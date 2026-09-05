@@ -2,6 +2,7 @@ import type { FormEvent } from 'react';
 import type { EpicFormData } from '@/ui/components/board/EpicFormDialog';
 import type { EpicExternalSourceMap } from '@/ui/hooks/useEpicExternalSourcesBatch';
 import type { EpicTimeTotalsMap } from '@/ui/hooks/useEpicTimeSummariesBatch';
+import type { EpicRelationCountsMap } from '@/ui/hooks/useEpicRelationCountsBatch';
 import type { BoardFilterParams } from '@/ui/lib/url-filters';
 import type { Agent, Epic, Status } from '@/ui/types';
 import type { BoardBulkEditController } from '@/ui/types/board-bulk-edit';
@@ -18,6 +19,13 @@ export type BoardExternalSourceMap = EpicExternalSourceMap;
  * loaded Board context. One guarded batch read; failures leave it empty.
  */
 export type BoardEpicTimeTotalsMap = EpicTimeTotalsMap;
+
+/**
+ * Relation counts by Epic ID for the loaded Kanban context (roots, or
+ * sub-Epics under a parent filter). One guarded batch read; failures leave
+ * it empty and Epics without relations have no entry.
+ */
+export type BoardRelationCountsMap = EpicRelationCountsMap;
 
 export interface BoardHeaderModel {
   readonly hasProject: boolean;
@@ -63,6 +71,8 @@ interface BoardKanbanColumnBase {
   readonly hasRunningWorktrees: boolean;
   /** Root-Epic estimated-time totals; collapsed rows badge them too. */
   readonly timeTotals?: BoardEpicTimeTotalsMap;
+  /** Relation counts for the loaded context; collapsed rows badge the total. */
+  readonly relationCounts?: BoardRelationCountsMap;
   getAgentName(agentId: string | null): string | null;
   addEpic(statusId: string): void;
   editEpic(epic: Epic): void;

@@ -234,6 +234,8 @@ describe('ProjectSelectionProvider', () => {
     currentProject: string | undefined;
     projectsLoading: boolean;
     workspaceSelectionLocked: boolean;
+    activationStatus: string | null;
+    activationProjectId: string | null;
     updateWorkspace: (workspaceId: string) => void;
     updateSelection: (projectId?: string) => void;
     activateProject: (project: { id: string; workspaceId: string }) => void;
@@ -250,6 +252,8 @@ describe('ProjectSelectionProvider', () => {
       currentProject: undefined,
       projectsLoading: false,
       workspaceSelectionLocked: false,
+      activationStatus: null,
+      activationProjectId: null,
       updateWorkspace: () => undefined,
       updateSelection: () => undefined,
       activateProject: () => undefined,
@@ -262,6 +266,7 @@ describe('ProjectSelectionProvider', () => {
         selectedProject,
         projectsLoading,
         isWorkspaceSelectionLocked,
+        projectActivation,
         setSelectedWorkspaceId,
         setSelectedProjectId,
         activateProject,
@@ -273,12 +278,15 @@ describe('ProjectSelectionProvider', () => {
         state.currentProject = selectedProject?.id;
         state.projectsLoading = projectsLoading;
         state.workspaceSelectionLocked = isWorkspaceSelectionLocked;
+        state.activationStatus = projectActivation?.status ?? null;
+        state.activationProjectId = projectActivation?.projectId ?? null;
         state.updateWorkspace = setSelectedWorkspaceId;
         state.updateSelection = setSelectedProjectId;
         state.activateProject = activateProject;
       }, [
         activateProject,
         isWorkspaceSelectionLocked,
+        projectActivation,
         projectsLoading,
         selectedProject,
         selectedProjectId,
@@ -576,6 +584,8 @@ describe('ProjectSelectionProvider', () => {
       expect(state.currentWorkspace).toBe(SECOND_WORKSPACE_ID);
       expect(state.currentSelection).toBe('project-delta');
       expect(state.currentProject).toBe('project-delta');
+      expect(state.activationStatus).toBe('confirmed');
+      expect(state.activationProjectId).toBe('project-delta');
     });
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(SECOND_WORKSPACE_ID);
     // The Default workspace entry comes from the initial first-project fallback.
@@ -632,6 +642,7 @@ describe('ProjectSelectionProvider', () => {
 
     await waitFor(() => expect(state.currentWorkspace).toBe(SECOND_WORKSPACE_ID));
     expect(state.currentSelection).toBe('project-new');
+    expect(state.activationStatus).toBe('pending');
     // The Default workspace entry comes from the initial first-project fallback.
     expect(JSON.parse(sessionStorage.getItem(WORKSPACE_PROJECTS_STORAGE_KEY) ?? '{}')).toEqual({
       [DEFAULT_WORKSPACE_ID]: 'project-alpha',
@@ -646,6 +657,7 @@ describe('ProjectSelectionProvider', () => {
       expect(state.currentWorkspace).toBe(SECOND_WORKSPACE_ID);
       expect(state.currentSelection).toBe('project-new');
       expect(state.currentProject).toBe('project-new');
+      expect(state.activationStatus).toBe('confirmed');
     });
   });
 

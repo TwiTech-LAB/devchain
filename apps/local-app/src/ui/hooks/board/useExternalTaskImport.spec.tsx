@@ -23,6 +23,8 @@ function wrapper(client: QueryClient) {
 const projectId = '11111111-1111-4111-8111-111111111111';
 const statusId = '22222222-2222-4222-8222-222222222222';
 const connectionEpoch = 'connection-jira-a:1';
+const projectBId = '44444444-4444-4444-8444-444444444444';
+const connectionEpochB = 'connection-jira-b:2';
 const detail: ExternalTaskDetail = {
   remoteId: 'ENG-1',
   remoteKey: 'ENG-1',
@@ -38,6 +40,44 @@ const detail: ExternalTaskDetail = {
   actions: [],
   linkState: { linked: false, epicId: null },
 };
+const detailB: ExternalTaskDetail = {
+  ...detail,
+  remoteId: 'OTHER-2',
+  remoteKey: 'OTHER-2',
+  title: 'Project B task',
+  webUrl: 'https://other.atlassian.net/browse/OTHER-2',
+  location: {
+    scopeKey: 'other.atlassian.net',
+    workAreaId: '84',
+    workAreaName: 'Other delivery',
+  },
+};
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function response(payload: unknown): Response {
+  return { ok: true, json: async () => payload } as Response;
+}
+
+function linkCacheItem(taskDetail: ExternalTaskDetail) {
+  return {
+    scopeKey: taskDetail.location.scopeKey,
+    taskId: taskDetail.remoteId,
+    linked: false,
+    epicId: null,
+    projectId: null,
+    projectName: null,
+    loggedMinutes: null,
+  };
+}
 
 describe('useExternalTaskImport', () => {
   beforeEach(() => fetchMock.mockReset());
@@ -55,7 +95,7 @@ describe('useExternalTaskImport', () => {
       };
       const linkInputs = [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }];
       const linkKey = [
-        ...externalMyWorkQueryKeys.links('jira', connectionEpoch),
+        ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, false),
         linkInputs,
       ] as const;
       client.setQueryData(linkKey, {
@@ -70,12 +110,6 @@ describe('useExternalTaskImport', () => {
         ],
       });
       fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-        if (url.startsWith('/api/projects')) {
-          return Promise.resolve({
-            ok: true,
-            json: async () => ({ items: [{ id: projectId, name: 'Product' }] }),
-          });
-        }
         if (url.startsWith('/api/statuses')) {
           return Promise.resolve({
             ok: true,
@@ -89,16 +123,18 @@ describe('useExternalTaskImport', () => {
       });
 
       const { result } = renderHook(
-        () => useExternalTaskImport('jira', detail, projectId, { connectionEpoch }),
+        () =>
+          useExternalTaskImport('jira', detail, projectId, {
+            connectionEpoch,
+            projectName: 'Product',
+          }),
         { wrapper: wrapper(client) },
       );
-      await waitFor(() => expect(result.current.projects.isSuccess).toBe(true));
       await waitFor(() => expect(result.current.statuses.isSuccess).toBe(true));
 
       let imported: ExternalTaskImportResponse | undefined;
       await act(async () => {
         imported = await result.current.mutation.mutateAsync({
-          projectId,
           statusId,
           title: 'Edited title',
           description: 'Edited description',
@@ -143,7 +179,6 @@ describe('useExternalTaskImport', () => {
       });
       await act(async () => {
         await result.current.mutation.mutateAsync({
-          projectId,
           statusId,
           title: 'Again',
           description: 'Again',
@@ -165,9 +200,415 @@ describe('useExternalTaskImport', () => {
       { wrapper: wrapper(client) },
     );
 
-    expect(result.current.projects.data).toBeUndefined();
     expect(result.current.statuses.data).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
+    client.clear();
+  });
+
+  it('keeps a globally existing link attributed by fetching only its exact project', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const existingProjectId = '33333333-3333-4333-8333-333333333333';
+    const linkKey = [
+      ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, false),
+      [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }],
+    ] as const;
+    client.setQueryData(linkKey, {
+      items: [
+        {
+          scopeKey: detail.location.scopeKey,
+          taskId: detail.remoteId,
+          linked: false,
+          epicId: null,
+          projectId: null,
+          projectName: null,
+        },
+      ],
+    });
+    fetchMock.mockImplementation((url: string) => {
+      if (url === `/api/statuses?projectId=${projectId}`) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [{ id: statusId, projectId, label: 'New', color: '#777', position: 0 }],
+          }),
+        });
+      }
+      if (url === '/api/epics/import-external-task') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            epic: { id: 'epic-existing', projectId: existingProjectId },
+            created: false,
+          }),
+        });
+      }
+      if (url === `/api/projects/${existingProjectId}`) {
+        return Promise.resolve({ ok: true, json: async () => ({ name: 'Original project' }) });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const { result } = renderHook(
+      () =>
+        useExternalTaskImport('jira', detail, projectId, {
+          connectionEpoch,
+          projectName: 'Current project',
+        }),
+      { wrapper: wrapper(client) },
+    );
+    await waitFor(() => expect(result.current.statuses.isSuccess).toBe(true));
+    await act(async () => {
+      await result.current.mutation.mutateAsync({
+        statusId,
+        title: detail.title,
+        description: detail.description ?? '',
+      });
+    });
+
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/projects\?/));
+    expect(fetchMock).toHaveBeenCalledWith(`/api/projects/${existingProjectId}`);
+    expect(client.getQueryData(linkKey)).toEqual({
+      items: [
+        expect.objectContaining({
+          linked: true,
+          epicId: 'epic-existing',
+          projectId: existingProjectId,
+          projectName: 'Original project',
+        }),
+      ],
+    });
+    client.clear();
+  });
+
+  it('reconciles a deferred Project A result only into captured A caches after rendering B', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const importResponse = deferred<Response>();
+    const linkedOwnerId = '55555555-5555-4555-8555-555555555555';
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/statuses')) {
+        return Promise.resolve(response({ items: [] }));
+      }
+      if (url === '/api/epics/import-external-task') return importResponse.promise;
+      if (url === `/api/projects/${linkedOwnerId}`) {
+        return Promise.resolve(response({ name: 'Original owner' }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const aInputs = [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }];
+    const bInputs = [{ scopeKey: detailB.location.scopeKey, taskId: detailB.remoteId }];
+    const aLinkKey = [
+      ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, false),
+      aInputs,
+    ] as const;
+    const bLinkKey = [
+      ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpochB, false),
+      bInputs,
+    ] as const;
+    client.setQueryData(aLinkKey, { items: [linkCacheItem(detail)] });
+    client.setQueryData(bLinkKey, { items: [linkCacheItem(detailB)] });
+    const invalidateSpy = jest.spyOn(client, 'invalidateQueries');
+    const onSuccess = jest.fn();
+    const hook = renderHook(
+      ({ taskDetail, selectedProjectId, epoch, selectedProjectName }) =>
+        useExternalTaskImport('jira', taskDetail, selectedProjectId, {
+          connectionEpoch: epoch,
+          projectName: selectedProjectName,
+        }),
+      {
+        wrapper: wrapper(client),
+        initialProps: {
+          taskDetail: detail,
+          selectedProjectId: projectId,
+          epoch: connectionEpoch,
+          selectedProjectName: 'Project A',
+        },
+      },
+    );
+
+    act(() =>
+      hook.result.current.mutation.mutate(
+        { statusId, title: 'Import A', description: 'A description' },
+        { onSuccess },
+      ),
+    );
+    await waitFor(() => expect(hook.result.current.mutation.isPending).toBe(true));
+    expect(hook.result.current.mutation.variables).toEqual(
+      expect.objectContaining({
+        scope: {
+          projectId,
+          provider: 'jira',
+          connectionEpoch,
+          taskId: detail.remoteId,
+        },
+        detail,
+        form: { statusId, title: 'Import A', description: 'A description' },
+        projectAttribution: { id: projectId, name: 'Project A' },
+        cacheKeys: expect.objectContaining({
+          links: externalMyWorkQueryKeys.links('jira', connectionEpoch),
+          taskDetail: externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, detail.remoteId),
+        }),
+        apiFetch: expect.any(Function),
+      }),
+    );
+
+    hook.rerender({
+      taskDetail: detailB,
+      selectedProjectId: projectBId,
+      epoch: connectionEpochB,
+      selectedProjectName: 'Project B',
+    });
+    expect(hook.result.current.mutation).toEqual(
+      expect.objectContaining({
+        data: undefined,
+        error: null,
+        variables: undefined,
+        status: 'idle',
+        isIdle: true,
+        isPending: false,
+        isSuccess: false,
+        isError: false,
+      }),
+    );
+
+    await act(async () =>
+      importResponse.resolve(
+        response({ epic: { id: 'epic-from-a', projectId: linkedOwnerId }, created: false }),
+      ),
+    );
+    await waitFor(() =>
+      expect(client.getQueryData(aLinkKey)).toEqual({
+        items: [
+          expect.objectContaining({
+            linked: true,
+            epicId: 'epic-from-a',
+            projectId: linkedOwnerId,
+            projectName: 'Original owner',
+          }),
+        ],
+      }),
+    );
+
+    expect(client.getQueryData(bLinkKey)).toEqual({ items: [linkCacheItem(detailB)] });
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(hook.result.current.mutation).toEqual(
+      expect.objectContaining({ data: undefined, error: null, status: 'idle', isSuccess: false }),
+    );
+    const invalidatedKeys = invalidateSpy.mock.calls.map(
+      ([filters]) => (filters as { queryKey: readonly unknown[] }).queryKey,
+    );
+    expect(invalidatedKeys).toEqual(
+      expect.arrayContaining([
+        ['epics', projectId],
+        externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, detail.remoteId),
+        externalMyWorkQueryKeys.links('jira', connectionEpoch),
+      ]),
+    );
+    expect(invalidatedKeys).not.toContainEqual(
+      externalMyWorkQueryKeys.taskDetail('jira', connectionEpochB, detailB.remoteId),
+    );
+    expect(invalidatedKeys).not.toContainEqual(
+      externalMyWorkQueryKeys.links('jira', connectionEpochB),
+    );
+    expect(invalidatedKeys).not.toContainEqual(epicExternalSourceQueryKeys.all);
+    client.clear();
+  });
+
+  it('settles epoch N only against epoch N caches after the connection advances to N+1', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const nextEpoch = 'connection-jira-a:2';
+    const importResponse = deferred<Response>();
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith('/api/statuses')
+        ? Promise.resolve(response({ items: [] }))
+        : importResponse.promise,
+    );
+    const inputs = [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }];
+    const oldKey = [
+      ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, false),
+      inputs,
+    ] as const;
+    const nextKey = [
+      ...externalMyWorkQueryKeys.linksBatch('jira', nextEpoch, false),
+      inputs,
+    ] as const;
+    client.setQueryData(oldKey, { items: [linkCacheItem(detail)] });
+    client.setQueryData(nextKey, { items: [linkCacheItem(detail)] });
+    const hook = renderHook(
+      ({ epoch }) =>
+        useExternalTaskImport('jira', detail, projectId, {
+          connectionEpoch: epoch,
+          projectName: 'Project A',
+        }),
+      {
+        wrapper: wrapper(client),
+        initialProps: { epoch: connectionEpoch },
+      },
+    );
+
+    act(() =>
+      hook.result.current.mutation.mutate({
+        statusId,
+        title: 'Old epoch',
+        description: '',
+      }),
+    );
+    await waitFor(() => expect(hook.result.current.mutation.isPending).toBe(true));
+    hook.rerender({ epoch: nextEpoch });
+    expect(hook.result.current.mutation.isPending).toBe(false);
+
+    await act(async () =>
+      importResponse.resolve(
+        response({ epic: { id: 'epic-old-epoch', projectId }, created: true }),
+      ),
+    );
+    await waitFor(() =>
+      expect(client.getQueryData(oldKey)).toEqual({
+        items: [expect.objectContaining({ linked: true, epicId: 'epic-old-epoch' })],
+      }),
+    );
+    expect(client.getQueryData(nextKey)).toEqual({ items: [linkCacheItem(detail)] });
+    expect(hook.result.current.mutation.data).toBeUndefined();
+    expect(hook.result.current.mutation.isSuccess).toBe(false);
+    client.clear();
+  });
+
+  it('does not present a deferred Project A failure after rendering Project B', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const importResponse = deferred<Response>();
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith('/api/statuses')
+        ? Promise.resolve(response({ items: [] }))
+        : importResponse.promise,
+    );
+    const onError = jest.fn();
+    const hook = renderHook(
+      ({ taskDetail, selectedProjectId, epoch }) =>
+        useExternalTaskImport('jira', taskDetail, selectedProjectId, {
+          connectionEpoch: epoch,
+        }),
+      {
+        wrapper: wrapper(client),
+        initialProps: {
+          taskDetail: detail,
+          selectedProjectId: projectId,
+          epoch: connectionEpoch,
+        },
+      },
+    );
+    act(() =>
+      hook.result.current.mutation.mutate(
+        { statusId, title: 'Import A', description: '' },
+        { onError },
+      ),
+    );
+    await waitFor(() => expect(hook.result.current.mutation.isPending).toBe(true));
+    hook.rerender({
+      taskDetail: detailB,
+      selectedProjectId: projectBId,
+      epoch: connectionEpochB,
+    });
+
+    await act(async () => importResponse.reject(new Error('Project A import failed')));
+    expect(onError).not.toHaveBeenCalled();
+    expect(hook.result.current.mutation).toEqual(
+      expect.objectContaining({
+        data: undefined,
+        error: null,
+        variables: undefined,
+        status: 'idle',
+        isIdle: true,
+        isPending: false,
+        isSuccess: false,
+        isError: false,
+      }),
+    );
+    client.clear();
+  });
+
+  it('preserves each cached item loggedMinutes and never appends an absent identity', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const enrichedKey = [
+      ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, true),
+      [
+        { scopeKey: detail.location.scopeKey, taskId: detail.remoteId },
+        { scopeKey: detail.location.scopeKey, taskId: 'ENG-9' },
+      ],
+    ] as const;
+    client.setQueryData(enrichedKey, {
+      items: [
+        {
+          scopeKey: detail.location.scopeKey,
+          taskId: detail.remoteId,
+          linked: false,
+          epicId: null,
+          projectId: null,
+          projectName: null,
+          loggedMinutes: 75,
+        },
+        {
+          scopeKey: detail.location.scopeKey,
+          taskId: 'ENG-9',
+          linked: false,
+          epicId: null,
+          projectId: null,
+          projectName: null,
+          loggedMinutes: 0,
+        },
+      ],
+    });
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/statuses')) {
+        return Promise.resolve(response({ items: [] }));
+      }
+      if (url === '/api/epics/import-external-task') {
+        return Promise.resolve(
+          response({ epic: { id: 'epic-imported', projectId }, created: true }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const { result } = renderHook(
+      () =>
+        useExternalTaskImport('jira', detail, projectId, {
+          connectionEpoch,
+          projectName: 'Product',
+        }),
+      { wrapper: wrapper(client) },
+    );
+    await waitFor(() => expect(result.current.statuses.isSuccess).toBe(true));
+    await act(async () => {
+      await result.current.mutation.mutateAsync({
+        statusId,
+        title: 'Import with checkpoint',
+        description: '',
+      });
+    });
+
+    // The imported item keeps its prior checkpoint knowledge instead of an
+    // invented zero; the untouched neighbor stays as cached; no identity is
+    // appended for a card the board never asked about.
+    expect(client.getQueryData(enrichedKey)).toEqual({
+      items: [
+        expect.objectContaining({
+          taskId: detail.remoteId,
+          linked: true,
+          epicId: 'epic-imported',
+          loggedMinutes: 75,
+        }),
+        expect.objectContaining({ taskId: 'ENG-9', linked: false, loggedMinutes: 0 }),
+      ],
+    });
     client.clear();
   });
 });

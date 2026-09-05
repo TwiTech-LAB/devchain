@@ -4,6 +4,7 @@ import { EpicCommentsController } from './controllers/epic-comments.controller';
 import { StorageModule } from '../storage/storage.module';
 import { EventsCoreModule } from '../events/events-core.module';
 import { EpicsService } from './services/epics.service';
+import { EpicRelationsService } from './services/epic-relations.service';
 import { SettingsModule } from '../settings/settings.module';
 import { AgentMessageDeliveryModule } from '../agent-message-delivery/agent-message-delivery.module';
 import { TeamsModule } from '../teams/teams.module';
@@ -19,7 +20,12 @@ import { SubEpicCreatedNotifierSubscriber } from './subscribers/sub-epic-created
     TeamsModule,
   ],
   controllers: [EpicsController, EpicCommentsController],
-  providers: [EpicsService, EpicAssignmentNotifierSubscriber, SubEpicCreatedNotifierSubscriber],
-  exports: [EpicsService],
+  providers: [
+    EpicsService,
+    EpicRelationsService,
+    EpicAssignmentNotifierSubscriber,
+    SubEpicCreatedNotifierSubscriber,
+  ],
+  exports: [EpicsService, EpicRelationsService],
 })
 export class EpicsModule {}

@@ -189,11 +189,30 @@ describe('TranscriptPathValidator', () => {
     });
 
     it('should throw if file does not exist (realpath fails)', async () => {
-      mockFs.realpath.mockRejectedValueOnce(new Error('ENOENT'));
+      mockFs.realpath.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
 
       const err = await validator.validateForRead(validPath, 'claude').catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ValidationError);
       expect((err as ValidationError).message).toMatch(/does not exist/);
+      expect((err as ValidationError).details).toMatchObject({
+        category: 'file-access',
+        path: validPath,
+        reason: 'missing',
+        fsCode: 'ENOENT',
+      });
+    });
+
+    it('distinguishes inaccessible files from not-yet-created files', async () => {
+      mockFs.realpath.mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+
+      const err = await validator.validateForRead(validPath, 'claude').catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as ValidationError).details).toMatchObject({
+        category: 'file-access',
+        path: validPath,
+        reason: 'unavailable',
+        fsCode: 'EACCES',
+      });
     });
 
     it('should throw if symlink resolves outside allowed root', async () => {

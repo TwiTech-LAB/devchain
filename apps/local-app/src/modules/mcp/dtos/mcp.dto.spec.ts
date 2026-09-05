@@ -5,6 +5,10 @@ import {
   DeleteEpicParamsSchema,
   DeleteEpicResponse,
   GetEpicByIdParamsSchema,
+  EpicRelationsListParamsSchema,
+  EpicRelationCandidatesListParamsSchema,
+  EpicRelationsSetParamsSchema,
+  EpicRelationsDeleteParamsSchema,
   ProjectsListParamsSchema,
   SendMessageParamsSchema,
   SendMessageResponse,
@@ -570,6 +574,133 @@ describe('MCP epic DTO schemas - skillsRequired validation', () => {
         }),
       ).toThrow(ZodError);
     });
+  });
+});
+
+describe('MCP Epic relation DTO schemas', () => {
+  const base = {
+    sessionId: 'abcd1234',
+    epicId: '11111111-1111-4111-8111-111111111111',
+  };
+
+  it('accepts strict bounded relation list pages and rejects invalid bounds', () => {
+    expect(EpicRelationsListParamsSchema.parse({ ...base, limit: 25, offset: 5 })).toEqual({
+      ...base,
+      limit: 25,
+      offset: 5,
+    });
+    expect(EpicRelationsListParamsSchema.safeParse({ ...base, limit: 101 }).success).toBe(false);
+    expect(EpicRelationsListParamsSchema.safeParse({ ...base, offset: -1 }).success).toBe(false);
+    expect(EpicRelationsListParamsSchema.safeParse({ ...base, extra: true }).success).toBe(false);
+  });
+
+  it('bounds and trims candidate search', () => {
+    expect(
+      EpicRelationCandidatesListParamsSchema.parse({ ...base, q: ' peer ', limit: 10 }),
+    ).toMatchObject({ q: 'peer', limit: 10 });
+    expect(
+      EpicRelationCandidatesListParamsSchema.safeParse({ ...base, q: 'x'.repeat(201) }).success,
+    ).toBe(false);
+  });
+
+  it.each(['related', 'blocks', 'blocked_by'] as const)(
+    'accepts the focal-relative %s value for set and atomic create',
+    (relation) => {
+      expect(
+        EpicRelationsSetParamsSchema.safeParse({
+          ...base,
+          relatedEpicId: '22222222',
+          relation,
+        }).success,
+      ).toBe(true);
+      expect(
+        CreateEpicParamsSchema.safeParse({
+          sessionId: base.sessionId,
+          title: 'Atomic',
+          relation: { relatedEpicId: '22222222', relation },
+        }).success,
+      ).toBe(true);
+    },
+  );
+
+  it('rejects the removed timeRoute field on set while related writes stay strict', () => {
+    expect(
+      EpicRelationsSetParamsSchema.safeParse({
+        ...base,
+        relatedEpicId: '22222222',
+        relation: 'related',
+      }),
+    ).toMatchObject({ success: true });
+    expect(
+      EpicRelationsSetParamsSchema.safeParse({
+        ...base,
+        relatedEpicId: '22222222',
+        relation: 'related',
+        timeRoute: 'focal_to_related',
+      }).success,
+    ).toBe(false);
+    expect(
+      EpicRelationsSetParamsSchema.safeParse({
+        ...base,
+        relatedEpicId: '22222222',
+        relation: 'related',
+        timeRoute: 'none',
+      }).success,
+    ).toBe(false);
+    expect(
+      EpicRelationsSetParamsSchema.safeParse({
+        ...base,
+        relatedEpicId: '22222222',
+        relation: 'related',
+        extra: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps initial Epic creation free of relation direction fields', () => {
+    expect(
+      CreateEpicParamsSchema.safeParse({
+        sessionId: base.sessionId,
+        title: 'Atomic',
+        timeRoute: 'focal_to_related',
+      }).success,
+    ).toBe(false);
+    expect(
+      CreateEpicParamsSchema.safeParse({
+        sessionId: base.sessionId,
+        title: 'Atomic',
+        relation: {
+          relatedEpicId: '22222222',
+          relation: 'related',
+          timeRoute: 'focal_to_related',
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps create relation nested and strict while update remains unchanged', () => {
+    expect(
+      CreateEpicParamsSchema.safeParse({
+        sessionId: base.sessionId,
+        title: 'Atomic',
+        relation: { relatedEpicId: '22222222', relation: 'related', extra: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateEpicParamsSchema.safeParse({
+        sessionId: base.sessionId,
+        id: base.epicId,
+        version: 1,
+        relation: { relatedEpicId: '22222222', relation: 'related' },
+      }).success,
+    ).toBe(false);
+    expect(
+      EpicRelationsDeleteParamsSchema.safeParse({
+        ...base,
+        relatedEpicId: '22222222',
+        relation: 'related',
+      }).success,
+    ).toBe(false);
   });
 });
 

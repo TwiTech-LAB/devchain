@@ -1,0 +1,10 @@
+root = true
+
+# Template source bytes must survive editor round-trips untouched.
+[apps/local-app/templates-src/**]
+insert_final_newline = false
+trim_trailing_whitespace = false
+
+[apps/local-app/templates/**]
+insert_final_newline = false
+trim_trailing_whitespace = false

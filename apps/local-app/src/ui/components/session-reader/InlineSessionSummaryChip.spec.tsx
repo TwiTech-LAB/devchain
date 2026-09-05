@@ -1,7 +1,9 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
-import { InlineSessionSummaryChip } from './InlineSessionSummaryChip';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { InlineSessionSummaryChip, DEFAULT_CHIP_VISIBLE_ITEMS } from './InlineSessionSummaryChip';
+import { InlineTerminalHeader } from '@/ui/components/chat/InlineTerminalHeader';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
 
 // Polyfill DOMRect for Radix floating-ui in jsdom
@@ -12,7 +14,6 @@ if (typeof globalThis.DOMRect === 'undefined') {
     width = 0;
     height = 0;
     top = 0;
-    right = 0;
     bottom = 0;
     left = 0;
     toJSON() {
@@ -46,25 +47,55 @@ function makeMetrics(overrides: Partial<UnifiedMetrics> = {}): UnifiedMetrics {
   };
 }
 
+function renderHeaderWithChip(
+  withChip: boolean,
+  unloggedTime?: { minutes: number; onAssign: () => void } | null,
+): HTMLElement {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <InlineTerminalHeader
+        agentName="Coder"
+        hasTranscript
+        onTabChange={jest.fn()}
+        sessionChip={
+          withChip
+            ? {
+                metrics: makeMetrics(),
+                activeTab: 'terminal',
+                onSwitchToSession: jest.fn(),
+              }
+            : undefined
+        }
+        unloggedTime={unloggedTime ?? null}
+      />
+    </QueryClientProvider>,
+  );
+  // The header root is the only element carrying tabIndex -1.
+  return document.querySelector('[tabindex="-1"]') as HTMLElement;
+}
+
+async function openHeaderMenu(root: HTMLElement) {
+  fireEvent.contextMenu(root);
+  await waitFor(() => {
+    expect(screen.getByText('Visible Items')).toBeInTheDocument();
+  });
+}
+
 describe('InlineSessionSummaryChip', () => {
   const storageKey = 'devchain:chipVisibleItems';
   const defaultProps = {
     metrics: makeMetrics(),
     activeTab: 'terminal' as const,
     onSwitchToSession: jest.fn(),
+    visibleItems: DEFAULT_CHIP_VISIBLE_ITEMS,
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
     window.localStorage.removeItem(storageKey);
+    window.localStorage.removeItem('devchain:headerUnloggedTimeVisible');
   });
-
-  async function openVisibilityMenu(chip: HTMLElement) {
-    fireEvent.contextMenu(chip);
-    await waitFor(() => {
-      expect(screen.getByText('Visible Items')).toBeInTheDocument();
-    });
-  }
 
   // -------------------------------------------------------------------------
   // Rendering
@@ -106,6 +137,14 @@ describe('InlineSessionSummaryChip', () => {
     const chip = screen.getByRole('button');
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('2.4k tokens'));
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('ongoing'));
+  });
+
+  it('should not render its own context menu or menu button semantics', () => {
+    render(<InlineSessionSummaryChip {...defaultProps} />);
+
+    const chip = screen.getByRole('button');
+    expect(chip).not.toHaveAttribute('aria-haspopup');
+    expect(chip).not.toHaveAttribute('aria-expanded');
   });
 
   // -------------------------------------------------------------------------
@@ -177,22 +216,6 @@ describe('InlineSessionSummaryChip', () => {
     expect(onSwitch).toHaveBeenCalledTimes(1);
   });
 
-  it('should show visibility context menu on right click', async () => {
-    render(
-      <InlineSessionSummaryChip
-        {...defaultProps}
-        activeTab="session"
-        onSwitchToSession={jest.fn()}
-      />,
-    );
-
-    await openVisibilityMenu(screen.getByRole('button'));
-    expect(screen.getByText('Tokens')).toBeInTheDocument();
-    expect(screen.getByText('Cost')).toBeInTheDocument();
-    expect(screen.getByText('Context')).toBeInTheDocument();
-    expect(screen.getByText('Compactions')).toBeInTheDocument();
-  });
-
   it('should NOT call onSwitchToSession when clicked on Session tab', () => {
     const onSwitch = jest.fn();
     render(
@@ -208,7 +231,7 @@ describe('InlineSessionSummaryChip', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Inline metrics and context menu behavior
+  // Inline metrics
   // -------------------------------------------------------------------------
 
   it('should show context percentage inline', () => {
@@ -260,7 +283,7 @@ describe('InlineSessionSummaryChip', () => {
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('compactions 0'));
   });
 
-  it('should apply model truncation classes and not include model toggle in context menu', async () => {
+  it('should apply model truncation classes', () => {
     const longModel = 'claude-sonnet-4-6-very-long-model-name-with-extra-segments-20260225';
     render(
       <InlineSessionSummaryChip
@@ -274,13 +297,9 @@ describe('InlineSessionSummaryChip', () => {
     const modelSpan = chip.querySelector(`span[title="${longModel}"]`);
     expect(modelSpan).toHaveClass('truncate', 'max-w-[120px]');
     expect(chip).toHaveTextContent(longModel);
-
-    await openVisibilityMenu(chip);
-    expect(screen.queryByText('Model')).not.toBeInTheDocument();
   });
 
   it('should show compaction count only when > 0', () => {
-    // No compactions — should not show
     const { unmount } = render(
       <InlineSessionSummaryChip
         {...defaultProps}
@@ -292,7 +311,6 @@ describe('InlineSessionSummaryChip', () => {
     expect(screen.getByRole('button')).not.toHaveTextContent('compaction');
     unmount();
 
-    // With compactions — should show
     render(
       <InlineSessionSummaryChip
         {...defaultProps}
@@ -313,23 +331,20 @@ describe('InlineSessionSummaryChip', () => {
       />,
     );
 
-    // totalContext(100k) / fallbackWindow(200k) = 50%
     expect(screen.getByRole('button')).toHaveTextContent('50%');
   });
 
-  it('should load visibility preferences from localStorage on mount', () => {
-    window.localStorage.setItem(
-      storageKey,
-      JSON.stringify({
-        tokens: false,
-        cost: true,
-        context: false,
-        compactions: false,
-      }),
-    );
+  // -------------------------------------------------------------------------
+  // Controlled visibleItems (the header's Visible Items menu owns the state)
+  // -------------------------------------------------------------------------
 
+  it('should hide controlled metric parts when visibleItems disables them', () => {
     render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ compactionCount: 3 })} />,
+      <InlineSessionSummaryChip
+        {...defaultProps}
+        metrics={makeMetrics({ compactionCount: 3 })}
+        visibleItems={{ tokens: false, cost: true, context: false, compactions: false }}
+      />,
     );
 
     const chip = screen.getByRole('button');
@@ -340,35 +355,12 @@ describe('InlineSessionSummaryChip', () => {
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
 
-  it('should fallback to defaults when stored JSON is invalid', () => {
-    window.localStorage.setItem(storageKey, '{invalid-json');
-    render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ compactionCount: 2 })} />,
-    );
-
-    const chip = screen.getByRole('button');
-    expect(chip).toHaveTextContent('2.4k');
-    expect(chip).toHaveTextContent('$0.04');
-    expect(chip).toHaveTextContent('50%');
-    expect(chip).toHaveTextContent('2 compactions');
-    expect(screen.getByRole('progressbar')).toBeInTheDocument();
-  });
-
   it('should keep model and status dot visible when all metric items are disabled', () => {
-    window.localStorage.setItem(
-      storageKey,
-      JSON.stringify({
-        tokens: false,
-        cost: false,
-        context: false,
-        compactions: false,
-      }),
-    );
-
     render(
       <InlineSessionSummaryChip
         {...defaultProps}
         metrics={makeMetrics({ compactionCount: 4, isOngoing: true })}
+        visibleItems={{ tokens: false, cost: false, context: false, compactions: false }}
       />,
     );
 
@@ -383,84 +375,101 @@ describe('InlineSessionSummaryChip', () => {
     expect(statusDot).toBeTruthy();
   });
 
-  it('should persist visibility toggles to localStorage', async () => {
+  it('should keep aria-label comprehensive even when metrics are hidden by prefs', () => {
     render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ compactionCount: 2 })} />,
+      <InlineSessionSummaryChip
+        {...defaultProps}
+        visibleItems={{ tokens: false, cost: false, context: false, compactions: true }}
+      />,
     );
-
     const chip = screen.getByRole('button');
-    await openVisibilityMenu(chip);
-
-    fireEvent.click(screen.getByText('Tokens'));
-    expect(chip).not.toHaveTextContent('2.4k');
-    expect(window.localStorage.getItem(storageKey)).toContain('"tokens":false');
-  });
-
-  it('should toggle cost, context, and compactions visibility via context menu', async () => {
-    render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ compactionCount: 2 })} />,
-    );
-
-    const chip = screen.getByRole('button');
-    await openVisibilityMenu(chip);
-    fireEvent.click(screen.getByText('Cost'));
-    expect(chip).not.toHaveTextContent('$0.04');
-
-    await openVisibilityMenu(chip);
-    fireEvent.click(screen.getByText('Context'));
-    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
-    expect(chip).not.toHaveTextContent('50%');
-
-    await openVisibilityMenu(chip);
-    fireEvent.click(screen.getByText('Compactions'));
-    expect(chip).not.toHaveTextContent('2 compactions');
-  });
-
-  it('should open context menu via Shift+F10 keyboard shortcut', async () => {
-    render(<InlineSessionSummaryChip {...defaultProps} />);
-
-    const chip = screen.getByRole('button');
-    expect(chip).toHaveAttribute('aria-haspopup', 'menu');
-    expect(chip).toHaveAttribute('aria-expanded', 'false');
-
-    fireEvent.keyDown(chip, { key: 'F10', shiftKey: true });
-
-    await waitFor(() => {
-      expect(screen.getByText('Visible Items')).toBeInTheDocument();
-      expect(chip).toHaveAttribute('aria-expanded', 'true');
-    });
-  });
-
-  it('should update aria-expanded when context menu opens and closes', async () => {
-    render(<InlineSessionSummaryChip {...defaultProps} />);
-    const chip = screen.getByRole('button');
-
-    expect(chip).toHaveAttribute('aria-expanded', 'false');
-    await openVisibilityMenu(chip);
-    expect(chip).toHaveAttribute('aria-expanded', 'true');
-
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => {
-      expect(chip).toHaveAttribute('aria-expanded', 'false');
-    });
-  });
-
-  it('should keep aria-label comprehensive even when metrics are hidden by prefs', async () => {
-    render(<InlineSessionSummaryChip {...defaultProps} />);
-    const chip = screen.getByRole('button');
-
-    await openVisibilityMenu(chip);
-    fireEvent.click(screen.getByText('Tokens'));
-    await openVisibilityMenu(chip);
-    fireEvent.click(screen.getByText('Cost'));
-    await openVisibilityMenu(chip);
-    fireEvent.click(screen.getByText('Context'));
 
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('total 2.4k tokens'));
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('cost $0.04'));
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('context window 50% used'));
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('compactions 0'));
   });
+
+  // -------------------------------------------------------------------------
+  // Header-root Visible Items menu: admission, checkboxes, Shift+F10
+  // -------------------------------------------------------------------------
+
+  it('opens the Visible Items menu from the header root with the four metric items', async () => {
+    const root = renderHeaderWithChip(true);
+
+    await openHeaderMenu(root);
+    expect(screen.getByText('Tokens')).toBeInTheDocument();
+    expect(screen.getByText('Cost')).toBeInTheDocument();
+    expect(screen.getByText('Context')).toBeInTheDocument();
+    expect(screen.getByText('Compactions')).toBeInTheDocument();
+    expect(screen.queryByText('Unlogged time')).not.toBeInTheDocument();
+  });
+
+  it('admits the menu without metrics and without unlogged capability', async () => {
+    const root = renderHeaderWithChip(false);
+
+    await openHeaderMenu(root);
+    expect(screen.getByText('Visible Items')).toBeInTheDocument();
+    expect(screen.queryByText('Tokens')).not.toBeInTheDocument();
+    expect(screen.queryByText('Unlogged time')).not.toBeInTheDocument();
+  });
+
+  it('shows the Unlogged time checkbox only when the header declares capability', async () => {
+    const root = renderHeaderWithChip(true, { minutes: 0, onAssign: jest.fn() });
+
+    await openHeaderMenu(root);
+    expect(screen.getByText('Unlogged time')).toBeInTheDocument();
+  });
+
+  it('controls chip parts and persists prefs through the header menu checkboxes', async () => {
+    const root = renderHeaderWithChip(true);
+    // Capture the chip before the menu opens: Radix hides outside content
+    // from the accessibility tree while the menu is open.
+    const chip = screen.getByRole('button', {
+      name: /Session metrics: model claude-sonnet-4-6/,
+    });
+    expect(chip).toHaveTextContent('2.4k');
+
+    await openHeaderMenu(root);
+    fireEvent.click(screen.getByText('Tokens'));
+    await waitFor(() => {
+      expect(chip).not.toHaveTextContent('2.4k');
+    });
+    expect(window.localStorage.getItem(storageKey)).toContain('"tokens":false');
+  });
+
+  it('toggles cost and context chip parts through the header menu', async () => {
+    const root = renderHeaderWithChip(true);
+    const chip = screen.getByRole('button', {
+      name: /Session metrics: model claude-sonnet-4-6/,
+    });
+
+    await openHeaderMenu(root);
+    fireEvent.click(screen.getByText('Cost'));
+    await waitFor(() => {
+      expect(chip).not.toHaveTextContent('$0.04');
+    });
+
+    await openHeaderMenu(root);
+    fireEvent.click(screen.getByText('Context'));
+    await waitFor(() => {
+      expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    });
+  });
+
+  it('opens the header menu via Shift+F10 from the keyboard', async () => {
+    const root = renderHeaderWithChip(true);
+
+    fireEvent.keyDown(root, { key: 'F10', shiftKey: true });
+
+    await waitFor(() => {
+      expect(screen.getByText('Visible Items')).toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Context bar colors
+  // -------------------------------------------------------------------------
 
   it('should render green context bar at <=50% window usage', () => {
     render(
@@ -532,14 +541,17 @@ describe('InlineSessionSummaryChip', () => {
     );
 
     const chip = screen.getByRole('button');
-    // 100k / 1M = 10%
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('context window 10% used'));
 
     const progressBar = screen.getByRole('progressbar');
     expect(progressBar).toHaveAttribute('aria-valuenow', '10');
   });
 
-  it('should show tooltip on hover when context menu is closed', async () => {
+  // -------------------------------------------------------------------------
+  // Tooltip
+  // -------------------------------------------------------------------------
+
+  it('should show tooltip on hover', async () => {
     render(<InlineSessionSummaryChip {...defaultProps} />);
     const chip = screen.getByRole('button');
 
@@ -593,28 +605,6 @@ describe('InlineSessionSummaryChip', () => {
     expect(screen.getAllByText('68% used (of 200k)').length).toBeGreaterThan(0);
   });
 
-  it('should suppress tooltip while context menu is open', async () => {
-    render(<InlineSessionSummaryChip {...defaultProps} />);
-    const chip = screen.getByRole('button');
-
-    jest.useFakeTimers();
-    try {
-      fireEvent.pointerMove(chip);
-      act(() => {
-        jest.advanceTimersByTime(350);
-      });
-
-      await waitFor(() => {
-        expect(screen.getAllByText('Session Metrics').length).toBeGreaterThan(0);
-      });
-
-      await openVisibilityMenu(chip);
-      expect(screen.queryAllByText('Session Metrics')).toHaveLength(0);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
   it('should not crash when window is undefined during SSR initialization', () => {
     const originalWindow = (globalThis as unknown as { window?: Window }).window;
     const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -627,6 +617,7 @@ describe('InlineSessionSummaryChip', () => {
             metrics={makeMetrics()}
             activeTab="terminal"
             onSwitchToSession={jest.fn()}
+            visibleItems={DEFAULT_CHIP_VISIBLE_ITEMS}
           />,
         ),
       ).not.toThrow();

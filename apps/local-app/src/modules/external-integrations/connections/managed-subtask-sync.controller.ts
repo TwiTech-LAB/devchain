@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
 import { IntegrationAdmissionGuard } from '../../../common/guards/integration-admission.guard';
 import { INTEGRATION_PROVIDER_IDS } from '../../storage/models/domain.models';
@@ -9,6 +9,7 @@ import {
 } from '../subscribers/managed-subtask-sync-health.service';
 
 const providerSchema = z.enum(INTEGRATION_PROVIDER_IDS);
+const projectIdSchema = z.string().uuid('projectId must be a valid UUID.');
 const idSchema = z.string().uuid();
 const emptyBodySchema = z.object({}).strict();
 
@@ -18,23 +19,74 @@ export class ManagedSubtaskSyncController {
   constructor(private readonly sync: ManagedSubtaskSyncHealthService) {}
 
   @Get(':provider/sync-health')
-  getHealth(@Param('provider') provider: string): Promise<ManagedSubtaskSyncHealth> {
-    return this.sync.getHealth(parseOrThrow(providerSchema, provider, 'Invalid provider.'));
+  getHealth(
+    @Param('provider') provider: string,
+    @Query('projectId') projectId: unknown,
+  ): Promise<ManagedSubtaskSyncHealth> {
+    return this.sync.getHealth(
+      parseOrThrow(projectIdSchema, projectId, 'Invalid project id.'),
+      parseOrThrow(providerSchema, provider, 'Invalid provider.'),
+    );
+  }
+
+  @Get('legacy/:connectionId/sync-health')
+  getLegacyHealth(@Param('connectionId') connectionId: string): Promise<ManagedSubtaskSyncHealth> {
+    return this.sync.getLegacyHealth(
+      parseOrThrow(idSchema, connectionId, 'Invalid connection id.'),
+    );
+  }
+
+  @Post('legacy/:connectionId/managed-subtasks/:id/verification')
+  verifyLegacy(
+    @Param('connectionId') connectionId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    parseOrThrow(emptyBodySchema, body, 'Verification request must be empty.');
+    return this.sync.verifyLegacy(
+      parseOrThrow(idSchema, connectionId, 'Invalid connection id.'),
+      parseOrThrow(idSchema, id, 'Invalid managed subtask id.'),
+    );
+  }
+
+  @Post('legacy/:connectionId/managed-subtasks/:id/retry')
+  retryLegacy(
+    @Param('connectionId') connectionId: string,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    parseOrThrow(emptyBodySchema, body, 'Retry request must be empty.');
+    return this.sync.retryLegacy(
+      parseOrThrow(idSchema, connectionId, 'Invalid connection id.'),
+      parseOrThrow(idSchema, id, 'Invalid managed subtask id.'),
+    );
   }
 
   @Post(':provider/managed-subtasks/:id/verification')
-  verify(@Param('provider') provider: string, @Param('id') id: string, @Body() body: unknown) {
+  verify(
+    @Param('provider') provider: string,
+    @Param('id') id: string,
+    @Query('projectId') projectId: unknown,
+    @Body() body: unknown,
+  ) {
     parseOrThrow(emptyBodySchema, body, 'Verification request must be empty.');
     return this.sync.verify(
+      parseOrThrow(projectIdSchema, projectId, 'Invalid project id.'),
       parseOrThrow(providerSchema, provider, 'Invalid provider.'),
       parseOrThrow(idSchema, id, 'Invalid managed subtask id.'),
     );
   }
 
   @Post(':provider/managed-subtasks/:id/retry')
-  retry(@Param('provider') provider: string, @Param('id') id: string, @Body() body: unknown) {
+  retry(
+    @Param('provider') provider: string,
+    @Param('id') id: string,
+    @Query('projectId') projectId: unknown,
+    @Body() body: unknown,
+  ) {
     parseOrThrow(emptyBodySchema, body, 'Retry request must be empty.');
     return this.sync.retry(
+      parseOrThrow(projectIdSchema, projectId, 'Invalid project id.'),
       parseOrThrow(providerSchema, provider, 'Invalid provider.'),
       parseOrThrow(idSchema, id, 'Invalid managed subtask id.'),
     );

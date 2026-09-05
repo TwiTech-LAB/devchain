@@ -124,6 +124,12 @@ export interface ChatSidebarData {
   humanHeldMessageCounts?: Record<string, number>;
   /** Agents whose informational waiting badge may now release the held lane. */
   humanHeldReleaseEligibleAgentIds?: Record<string, true>;
+  /**
+   * Whole settled-but-unlogged minutes keyed by main-project agent id. Only
+   * whole minutes appear; worktree rows and guests never read this map —
+   * the read describes the root project's buffers only.
+   */
+  unloggedTimeMinutes?: Record<string, number>;
 }
 
 /**
@@ -282,6 +288,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     projectProfiles,
     humanHeldMessageCounts,
     humanHeldReleaseEligibleAgentIds,
+    unloggedTimeMinutes,
   } = data;
   const {
     launchingAgentIds,
@@ -843,6 +850,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         onReleaseHeldMessages={() => onReleaseHeldMessages(agent.id)}
         releasingHeldMessages={releasingHeldAgentId === agent.id}
         activityBadge={renderActivityBadge(agent.id)}
+        unloggedTimeMinutes={unloggedTimeMinutes?.[agent.id]}
         isTeamLead={options?.isTeamLead ?? false}
         canOverride={agent.type !== 'guest' && Boolean(agent.profileId)}
         onOpenOverrides={(triggerEl) =>

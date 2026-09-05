@@ -29,7 +29,20 @@ const saveSession = richApi.saveSession as jest.Mock;
 const verifySession = richApi.verifySession as jest.Mock;
 const reloadSession = richApi.reloadSession as jest.Mock;
 
-const EPOCH = { connectionId: 'connection-1', generation: 1 } as const;
+const EPOCH = 'connection-1:1';
+const OTHER_EPOCH = 'connection-2:7';
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+const OTHER_PROJECT_ID = '22222222-2222-4222-8222-222222222222';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function sessionView(overrides: Partial<ExternalEditSessionView> = {}): ExternalEditSessionView {
   return {
@@ -63,8 +76,19 @@ const DOCUMENT = {
 
 function renderEdit() {
   return renderHook(
-    () => useExternalRichDescriptionEdit('jira', EPOCH, 'KAN-1' as never, { enabled: true }),
-    { wrapper },
+    ({ projectId, connectionEpoch, taskId }) =>
+      useExternalRichDescriptionEdit('jira', connectionEpoch, taskId, {
+        enabled: true,
+        projectId,
+      }),
+    {
+      wrapper,
+      initialProps: {
+        projectId: PROJECT_ID,
+        connectionEpoch: EPOCH,
+        taskId: 'KAN-1',
+      },
+    },
   );
 }
 
@@ -103,6 +127,28 @@ describe('useExternalRichDescriptionEdit', () => {
     expect(result.current.state.revision).toBe(0);
   });
 
+  it('ignores a deferred open error after the presentation scope changes', async () => {
+    const opening = deferred<ExternalEditSessionView>();
+    createDescriptionSession.mockReturnValueOnce(opening.promise);
+    const hook = renderEdit();
+
+    act(() => hook.result.current.startEdit());
+    await waitFor(() => expect(hook.result.current.state.phase).toBe('opening'));
+    hook.rerender({
+      projectId: OTHER_PROJECT_ID,
+      connectionEpoch: OTHER_EPOCH,
+      taskId: 'OTHER-2',
+    });
+    await waitFor(() => expect(hook.result.current.state.phase).toBe('idle'));
+    expect(hook.result.current.openPending).toBe(false);
+
+    await act(async () => opening.reject(new Error('Project A failed')));
+    await waitFor(() => expect(hook.result.current.openPending).toBe(false));
+    expect(hook.result.current.state).toEqual(
+      expect.objectContaining({ phase: 'idle', session: null, error: null }),
+    );
+  });
+
   it('a verified save reports saved, clears the draft, and invalidates caches', async () => {
     const { result } = renderEdit();
     act(() => result.current.startEdit());
@@ -111,9 +157,71 @@ describe('useExternalRichDescriptionEdit', () => {
     act(() => result.current.saveDraft(DOCUMENT));
     act(() => result.current.submitSave());
     await waitFor(() => expect(result.current.state.phase).toBe('saved'));
-    expect(saveSession).toHaveBeenCalledWith(expect.anything(), 'session-1', expect.anything(), 0);
+    expect(saveSession).toHaveBeenCalledWith(
+      expect.anything(),
+      PROJECT_ID,
+      'session-1',
+      expect.anything(),
+      0,
+    );
     expect(result.current.state.revision).toBe(1);
     expect(result.current.draft).toBeNull();
+  });
+
+  it('does not publish or invalidate for a deferred save from the previous scope', async () => {
+    const saved = deferred<ExternalSessionWriteOutcome>();
+    saveSession.mockReturnValueOnce(saved.promise);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidateSpy = jest.spyOn(client, 'invalidateQueries');
+    const scopedWrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const hook = renderHook(
+      ({ projectId, connectionEpoch, taskId }) =>
+        useExternalRichDescriptionEdit('jira', connectionEpoch, taskId, {
+          enabled: true,
+          projectId,
+        }),
+      {
+        wrapper: scopedWrapper,
+        initialProps: {
+          projectId: PROJECT_ID,
+          connectionEpoch: EPOCH,
+          taskId: 'KAN-1',
+        },
+      },
+    );
+
+    act(() => hook.result.current.startEdit());
+    await waitFor(() => expect(hook.result.current.state.phase).toBe('editing'));
+    act(() => hook.result.current.saveDraft(DOCUMENT));
+    act(() => hook.result.current.submitSave());
+    await waitFor(() => expect(hook.result.current.state.phase).toBe('saving'));
+    invalidateSpy.mockClear();
+
+    hook.rerender({
+      projectId: OTHER_PROJECT_ID,
+      connectionEpoch: OTHER_EPOCH,
+      taskId: 'OTHER-2',
+    });
+    await waitFor(() => expect(hook.result.current.state.phase).toBe('idle'));
+    expect(hook.result.current.savePending).toBe(false);
+    await act(async () =>
+      saved.resolve({
+        outcome: 'saved',
+        revision: 1,
+        session: sessionView({ revision: 1 }),
+      }),
+    );
+    await waitFor(() => expect(hook.result.current.savePending).toBe(false));
+
+    expect(hook.result.current.state).toEqual(
+      expect.objectContaining({ phase: 'idle', session: null, error: null }),
+    );
+    expect(hook.result.current.draft).toBeNull();
+    expect(invalidateSpy).not.toHaveBeenCalled();
   });
 
   it('an unknown outcome offers verify and same-payload retry only', async () => {

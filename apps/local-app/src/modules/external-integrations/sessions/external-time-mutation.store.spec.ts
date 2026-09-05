@@ -2,7 +2,10 @@ import {
   ExternalTimeMutationStore,
   timeEntryNoteFingerprint,
 } from './external-time-mutation.store';
-import type { ExternalTimeMutationTuple } from '../models/external-time-mutation.models';
+import {
+  TIME_OPERATION_RECEIPT_TTL_MS,
+  type ExternalTimeMutationTuple,
+} from '../models/external-time-mutation.models';
 
 function tuple(overrides: Partial<ExternalTimeMutationTuple> = {}): ExternalTimeMutationTuple {
   return {
@@ -76,6 +79,68 @@ describe('ExternalTimeMutationStore', () => {
     expect(terminal.reason).toBe('duplicate_terminal');
   });
 
+  it.each(['pending', 'dispatched', 'outcome_unknown'] as const)(
+    'finds an exact task receipt while it is %s',
+    (phase) => {
+      const store = new ExternalTimeMutationStore();
+      store.admit({ operationId: 'manual-op', kind: 'create', tuple: tuple(), baseline: null });
+      if (phase === 'dispatched') {
+        store.markDispatched('manual-op');
+      } else if (phase === 'outcome_unknown') {
+        store.markUnknown('manual-op');
+      }
+
+      expect(
+        store.findLiveTaskReceipt({
+          provider: 'clickup',
+          connectionId: 'connection-1',
+          connectionGeneration: 4,
+          remoteTaskId: 'task-1',
+        }),
+      ).toMatchObject({ operationId: 'manual-op', phase });
+    },
+  );
+
+  it('isolates task receipts by provider, connection epoch, task, and excluded operation', () => {
+    const store = new ExternalTimeMutationStore();
+    store.admit({ operationId: 'manual-op', kind: 'create', tuple: tuple(), baseline: null });
+
+    const exact = {
+      provider: 'clickup' as const,
+      connectionId: 'connection-1',
+      connectionGeneration: 4,
+      remoteTaskId: 'task-1',
+    };
+    expect(store.findLiveTaskReceipt({ ...exact, excludeOperationId: 'manual-op' })).toBeNull();
+    expect(store.findLiveTaskReceipt({ ...exact, remoteTaskId: 'task-2' })).toBeNull();
+    expect(store.findLiveTaskReceipt({ ...exact, connectionId: 'connection-2' })).toBeNull();
+    expect(store.findLiveTaskReceipt({ ...exact, connectionGeneration: 5 })).toBeNull();
+    expect(store.findLiveTaskReceipt({ ...exact, provider: 'jira' })).toBeNull();
+  });
+
+  it.each(['succeeded', 'failed', 'abandoned_unknown'] as const)(
+    'does not return a task receipt after it becomes %s',
+    (phase) => {
+      const store = new ExternalTimeMutationStore();
+      store.admit({ operationId: 'manual-op', kind: 'create', tuple: tuple(), baseline: null });
+      if (phase === 'abandoned_unknown') {
+        store.markUnknown('manual-op');
+        store.acknowledgeUnknown('manual-op');
+      } else {
+        store.markTerminal('manual-op', phase);
+      }
+
+      expect(
+        store.findLiveTaskReceipt({
+          provider: 'clickup',
+          connectionId: 'connection-1',
+          connectionGeneration: 4,
+          remoteTaskId: 'task-1',
+        }),
+      ).toBeNull();
+    },
+  );
+
   it('never evicts live receipts: capacity exhaustion fails busy', () => {
     const store = new ExternalTimeMutationStore(2, 4, 60_000);
     for (let index = 0; index < 2; index += 1) {
@@ -136,6 +201,30 @@ describe('ExternalTimeMutationStore', () => {
     expect(store.size()).toBe(0);
   });
 
+  it('drops a receipt at the real production TTL deadline its view advertised', () => {
+    let now = Date.parse('2026-09-01T10:00:00.000Z');
+    const store = new ExternalTimeMutationStore(32, 256, TIME_OPERATION_RECEIPT_TTL_MS, () => now);
+    store.admit({ operationId: 'op-1', kind: 'create', tuple: tuple(), baseline: null });
+    store.markUnknown('op-1');
+
+    const view = store.view(store.get('op-1')!);
+    expect(view.expiresAt).toBe(new Date(now + TIME_OPERATION_RECEIPT_TTL_MS).toISOString());
+
+    // One millisecond before the advertised deadline the receipt still exists.
+    now = Date.parse(view.expiresAt) - 1;
+    expect(store.get('op-1')).not.toBeNull();
+    expect(store.acknowledgeUnknown('op-1').ok).toBe(true);
+
+    // After the deadline the server receipt is gone, so its acknowledgement
+    // endpoint must answer not_found.
+    store.admit({ operationId: 'op-2', kind: 'create', tuple: tuple(), baseline: null });
+    store.markUnknown('op-2');
+    const second = store.view(store.get('op-2')!);
+    now = Date.parse(second.expiresAt) + 1;
+    expect(store.get('op-2')).toBeNull();
+    expect(store.acknowledgeUnknown('op-2').reason).toBe('not_found');
+  });
+
   it('transitions only a live unknown receipt to abandoned_unknown', () => {
     const store = new ExternalTimeMutationStore();
     store.admit({ operationId: 'op-1', kind: 'delete', tuple: tuple(), baseline: null });
@@ -167,10 +256,91 @@ describe('ExternalTimeMutationStore', () => {
       remoteTaskId: 'task-1',
       remoteEntryId: '9100',
       phase: 'succeeded',
+      canVerify: false,
       createdAt: expect.any(String),
       updatedAt: expect.any(String),
       expiresAt: expect.any(String),
     });
     expect(JSON.stringify(view)).not.toMatch(/Fingerprint|connectionId/);
   });
+
+  it.each([
+    {
+      label: 'unknown create with a complete baseline',
+      kind: 'create' as const,
+      baseline: { matchingIds: ['9001'], complete: true },
+      settle: 'unknown',
+      expected: true,
+    },
+    {
+      label: 'unknown create with an incomplete baseline',
+      kind: 'create' as const,
+      baseline: { matchingIds: [], complete: false },
+      settle: 'unknown',
+      expected: false,
+    },
+    {
+      label: 'unknown create without a baseline',
+      kind: 'create' as const,
+      baseline: null,
+      settle: 'unknown',
+      expected: false,
+    },
+    {
+      label: 'unknown delete',
+      kind: 'delete' as const,
+      baseline: null,
+      settle: 'unknown',
+      expected: true,
+    },
+    {
+      label: 'unknown update with an exact baseline',
+      kind: 'update' as const,
+      baseline: null,
+      settle: 'unknown',
+      expected: true,
+    },
+    {
+      label: 'dispatched create with a complete baseline',
+      kind: 'create' as const,
+      baseline: { matchingIds: [], complete: true },
+      settle: 'dispatched',
+      expected: false,
+    },
+    {
+      label: 'acknowledged create with a complete baseline',
+      kind: 'create' as const,
+      baseline: { matchingIds: [], complete: true },
+      settle: 'acknowledged',
+      expected: false,
+    },
+  ])(
+    'derives canVerify $expected from the live receipt of a $label',
+    ({ kind, baseline, settle, expected }) => {
+      const store = new ExternalTimeMutationStore();
+      store.admit({
+        operationId: 'op-1',
+        kind,
+        tuple: tuple(),
+        baseline,
+        updateBaseline:
+          kind === 'update'
+            ? { startedAt: new Date(0).toISOString(), durationMs: 60_000, noteFingerprint: 'fp' }
+            : null,
+      });
+      if (settle === 'dispatched') {
+        store.markDispatched('op-1');
+      } else if (settle === 'unknown') {
+        store.markUnknown('op-1');
+      } else {
+        store.markUnknown('op-1');
+        store.acknowledgeUnknown('op-1');
+      }
+
+      const receipt = store.get('op-1')!;
+      expect(store.view(receipt).canVerify).toBe(expected);
+      // Nothing was stored: the flag is recomputed from the receipt on every read.
+      expect(Object.keys(receipt)).not.toContain('canVerify');
+    },
+  );
 });

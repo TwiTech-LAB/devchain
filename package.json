@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,15 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.23.0": [
+      "Integrations: ClickUp and Jira connections, boards, and settings now belong to each project; synced subtasks hide local project paths",
+      "Epics: link related and blocking work across a workspace, preview relationships on the Board, and switch between an Epic and its linked task",
+      "Time tracking: assign unlogged agent activity to Epics, include team research and related work, and export only new time on the dates it happened",
+      "Remote boards: clearer linked-task and unlogged-time indicators, editable time entries, and more reliable ClickUp time confirmation",
+      "Stability: fewer Claude startup trust prompts, correct context limits for new Claude models, and fixes for model-selection crashes",
+      "Dev Template: improved code reviews and planning prompts",
+      "Mobile app 1.9.0: clearer transcript updates when reopening cached chats and fixes for missing-transcript errors"
+    ],
     "0.22.1": [
       "[Impr] Dev Template: tasks now go to a Coder matching the task's tier instead of staying with an overqualified worker"
     ],
@@ -378,8 +387,12 @@
     "dev": "pnpm --filter shared build && node scripts/cli.js start --dev",
     "dev:pure": "pnpm --filter local-app dev",
     "dev:ui": "pnpm --filter local-app dev:ui",
-    "build": "pnpm --filter shared build && pnpm --filter local-app build && node scripts/copy-local-app-dist.js && node scripts/copy-cli.js && node scripts/copy-prebuilds.js",
+    "build": "pnpm --filter shared build && node scripts/templates/index.js build --check && pnpm --filter local-app build && node scripts/copy-local-app-dist.js && node scripts/copy-cli.js && node scripts/copy-prebuilds.js",
     "build:fast": "pnpm --filter local-app build",
+    "templates:help": "node scripts/templates/index.js --help",
+    "templates:build": "node scripts/templates/index.js build",
+    "templates:extract": "node scripts/templates/index.js extract",
+    "check:templates": "node scripts/templates/index.js build --check",
     "prepack": "npm run build",
     "postinstall": "node scripts/postinstall.js",
     "lint": "pnpm --recursive --if-present lint",
@@ -469,6 +482,7 @@
     "pino": "^8.19.0",
     "pino-http": "^9.0.0",
     "pino-pretty": "^11.0.0",
+    "proper-lockfile": "4.1.2",
     "qrcode.react": "4.2.0",
     "react": "^18.2.0",
     "react-diff-view": "3.3.2",

@@ -1,9 +1,23 @@
 import { BusyError } from '../../../common/errors/error-types';
-import { ProviderOperationGate } from './provider-operation-gate';
+import {
+  exactConnectionOperationGateKey,
+  projectProviderOperationGateKey,
+  ProviderOperationGate,
+} from './provider-operation-gate';
 
 // Pure concurrency primitive — the cheapest reliable layer.
 
 describe('ProviderOperationGate', () => {
+  it('builds a pure stable key from project and provider identity', () => {
+    expect(projectProviderOperationGateKey('project-1', 'jira')).toBe('project-1:jira');
+    expect(projectProviderOperationGateKey('project-2', 'jira')).toBe('project-2:jira');
+  });
+
+  it('builds an isolated key for exact unassigned connection work', () => {
+    expect(exactConnectionOperationGateKey('connection-1')).toBe('connection:connection-1');
+    expect(exactConnectionOperationGateKey('connection-2')).toBe('connection:connection-2');
+  });
+
   it('serializes operations under the same key when the caller retries past busy', async () => {
     const gate = new ProviderOperationGate();
     const order: string[] = [];
@@ -66,6 +80,82 @@ describe('ProviderOperationGate', () => {
     await Promise.resolve();
     await expect(gate.run('jira', async () => 'jira-ok')).resolves.toBe('jira-ok');
     releaseClickUp();
+    await held;
+  });
+
+  it('keeps the same provider independent across projects', async () => {
+    const gate = new ProviderOperationGate();
+    let releaseFirst: () => void = () => undefined;
+    const held = gate.run(
+      { projectId: 'project-1', provider: 'clickup' },
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    );
+    await Promise.resolve();
+
+    await expect(
+      gate.run({ projectId: 'project-2', provider: 'clickup' }, async () => 'ok'),
+    ).resolves.toBe('ok');
+
+    releaseFirst();
+    await held;
+  });
+
+  it('reports public project and provider fields without exposing the internal gate key', async () => {
+    const gate = new ProviderOperationGate();
+    let releaseFirst: () => void = () => undefined;
+    const scope = { projectId: 'project-1', provider: 'jira' as const };
+    const held = gate.run(
+      scope,
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    );
+    await Promise.resolve();
+
+    const error = await gate.run(scope, async () => undefined).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BusyError);
+    expect(error).toMatchObject({
+      details: {
+        reason: 'operation_in_progress',
+        projectId: 'project-1',
+        provider: 'jira',
+      },
+    });
+    expect(JSON.stringify((error as BusyError).details)).not.toContain('project-1:jira');
+    releaseFirst();
+    await held;
+  });
+
+  it('serializes one exact legacy connection without blocking project-owned peers', async () => {
+    const gate = new ProviderOperationGate();
+    let releaseFirst: () => void = () => undefined;
+    const scope = { connectionId: 'connection-1', provider: 'jira' as const };
+    const held = gate.run(
+      scope,
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    );
+    await Promise.resolve();
+
+    await expect(gate.run(scope, async () => undefined)).rejects.toMatchObject({
+      details: {
+        reason: 'operation_in_progress',
+        connectionId: 'connection-1',
+        provider: 'jira',
+      },
+    });
+    await expect(
+      gate.run({ projectId: 'project-1', provider: 'jira' }, async () => 'project-ok'),
+    ).resolves.toBe('project-ok');
+
+    releaseFirst();
     await held;
   });
 });

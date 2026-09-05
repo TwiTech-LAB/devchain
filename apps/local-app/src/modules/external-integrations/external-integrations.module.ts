@@ -62,6 +62,11 @@ import { ManagedSubtaskSyncController } from './connections/managed-subtask-sync
     ExternalSubtaskSyncSubscriber,
     ManagedSubtaskSyncHealthService,
   ],
-  exports: [ExternalTaskProviderRegistry, EXTERNAL_TASK_PROVIDERS, ProviderOperationGate],
+  exports: [
+    ExternalTaskProviderRegistry,
+    EXTERNAL_TASK_PROVIDERS,
+    ProviderOperationGate,
+    ExternalTimeMutationService,
+  ],
 })
 export class ExternalIntegrationsModule {}

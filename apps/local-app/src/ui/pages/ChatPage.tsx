@@ -31,7 +31,13 @@ import {
   InlineTerminalHeader,
   type InlineTerminalTab,
 } from '@/ui/components/chat/InlineTerminalHeader';
+import {
+  AssignAgentTimeDialog,
+  type AssignAgentTimeTarget,
+} from '@/ui/components/chat/AssignAgentTimeDialog';
 import { Button } from '@/ui/components/ui/button';
+import { useAgentTimeBuffers } from '@/ui/hooks/useAgentTimeBuffers';
+import { epicTimeQueryKeys, formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 
 // Session reader
 import { useSessionTranscript } from '@/ui/hooks/useSessionTranscript';
@@ -241,6 +247,16 @@ export function ChatPage() {
     agents: queries.agents,
     agentsQuerySuccess: queries.agentsQuerySuccess,
   });
+
+  // One project-wide admitted read of claimable agent time; feeds every
+  // main-agent row dot and the selected inline-terminal header action.
+  const {
+    admitted: agentTimeAdmitted,
+    snapshot: agentTimeBufferSnapshot,
+    minutesByAgentId: unloggedMinutesByAgentId,
+  } = useAgentTimeBuffers(projectId);
+  const [assignTimeTarget, setAssignTimeTarget] = useState<AssignAgentTimeTarget | null>(null);
+  const inlineHeaderRef = useRef<HTMLDivElement | null>(null);
 
   // Inline terminal attach handler
   const handleInlineTerminalAttach = useCallback(
@@ -476,6 +492,71 @@ export function ChatPage() {
       isSessionRunning: isInlineTerminalSessionRunning,
     },
   );
+
+  // ── Manual buffered-time assignment ──
+
+  const handleOpenAssignTime = useCallback(() => {
+    const snapshot = agentTimeBufferSnapshot;
+    if (!snapshot || !inlineTerminalAgentId || !agentTimeAdmitted) {
+      return;
+    }
+    const item = snapshot.items.find((entry) => entry.agentId === inlineTerminalAgentId);
+    if (!item || !snapshot.capturedAt || item.minutes < 1) {
+      return;
+    }
+    const agentName =
+      queries.agents.find((agent) => agent.id === inlineTerminalAgentId)?.name ??
+      inlineTerminalAgentId;
+    setAssignTimeTarget({
+      agentId: item.agentId,
+      agentName,
+      capturedAt: snapshot.capturedAt,
+      snapshotToken: item.snapshotToken,
+      durationMs: item.durationMs,
+      minutes: item.minutes,
+      segmentCount: item.segmentCount,
+      oldestActivityAt: item.oldestActivityAt,
+      newestActivityAt: item.newestActivityAt,
+    });
+  }, [agentTimeAdmitted, agentTimeBufferSnapshot, inlineTerminalAgentId, queries.agents]);
+
+  const handleAssignTimeSuccess = useCallback(
+    (target: AssignAgentTimeTarget, epic: { id: string; title: string }) => {
+      setAssignTimeTarget(null);
+      void queryClient.invalidateQueries({ queryKey: epicTimeQueryKeys.bufferRoot() });
+      void queryClient.invalidateQueries({ queryKey: epicTimeQueryKeys.detailRoot() });
+      void queryClient.invalidateQueries({ queryKey: epicTimeQueryKeys.batchRoot() });
+      toast({
+        title: 'Time logged',
+        description: `Logged ${formatEpicTimeMinutes(target.minutes)} to ${epic.title}.`,
+      });
+      // Resolve after the dialog unmounts: its Radix focus restoration must
+      // not override the success target. The trigger action may already be
+      // gone; never focus a detached control — Terminal tab + inline
+      // terminal → the terminal itself, otherwise the stable header root.
+      window.setTimeout(() => {
+        if (inlineActiveTab === 'terminal' && !isInlineSessionWindowOpen && mainTerminalHandle) {
+          mainTerminalHandle.focus();
+        } else {
+          inlineHeaderRef.current?.focus();
+        }
+      }, 0);
+    },
+    [inlineActiveTab, isInlineSessionWindowOpen, mainTerminalHandle, queryClient, toast],
+  );
+
+  const selectedInlineUnloggedMinutes = inlineTerminalAgentId
+    ? (unloggedMinutesByAgentId[inlineTerminalAgentId] ?? 0)
+    : 0;
+  // Capability, not amount: declared whenever the main runtime is admitted so
+  // the header menu keeps its checkbox even at zero or hidden amounts.
+  const inlineUnloggedTime =
+    agentTimeAdmitted && inlineTerminalAgentId
+      ? {
+          minutes: selectedInlineUnloggedMinutes,
+          onAssign: handleOpenAssignTime,
+        }
+      : null;
 
   // ============================================
   // Handlers
@@ -957,6 +1038,7 @@ export function ChatPage() {
       projectProfiles: queries.profiles,
       humanHeldMessageCounts,
       humanHeldReleaseEligibleAgentIds,
+      unloggedTimeMinutes: unloggedMinutesByAgentId,
     }),
     [
       projectId,
@@ -979,6 +1061,7 @@ export function ChatPage() {
       queries.profiles,
       humanHeldMessageCounts,
       humanHeldReleaseEligibleAgentIds,
+      unloggedMinutesByAgentId,
     ],
   );
 
@@ -1156,6 +1239,8 @@ export function ChatPage() {
               sessionId={inlineTerminalSessionId}
               sessionName={inlineTerminalSessionName}
               projectId={projectId}
+              unloggedTime={inlineUnloggedTime}
+              headerRef={inlineHeaderRef}
               sessionChip={
                 sessionTranscript.metrics
                   ? {
@@ -1406,6 +1491,13 @@ export function ChatPage() {
       <SessionReadSlideOver
         sessionId={readSlideOverSessionId}
         onClose={() => setReadSlideOverSessionId(null)}
+      />
+      <AssignAgentTimeDialog
+        open={assignTimeTarget !== null}
+        projectId={projectId}
+        target={assignTimeTarget}
+        onCancel={() => setAssignTimeTarget(null)}
+        onSuccess={handleAssignTimeSuccess}
       />
       {customPromptTarget && (
         <CustomPromptPicker

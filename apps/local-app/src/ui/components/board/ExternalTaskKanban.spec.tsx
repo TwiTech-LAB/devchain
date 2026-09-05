@@ -4,6 +4,7 @@ import { axe } from 'jest-axe';
 import { MemoryRouter } from 'react-router-dom';
 import { ExternalTaskKanban } from './ExternalTaskKanban';
 import type { ExternalTaskKanbanMoves } from './ExternalTaskKanban';
+import { formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 
 const columns = [
   {
@@ -162,8 +163,10 @@ describe('ExternalTaskKanban', () => {
               epicId: 'epic-1',
               projectId: 'project-1',
               projectName: 'Product',
+              loggedMinutes: null,
             },
           ]}
+          epicTimeTotals={new Map([['epic-1', 90]])}
         />
       </MemoryRouter>,
     );
@@ -437,6 +440,129 @@ describe('ExternalTaskKanban move interactions', () => {
   });
 });
 
+describe('ExternalTaskKanban card time metrics', () => {
+  const linkedSummary = (loggedMinutes: number | null) => ({
+    scopeKey: 'site',
+    taskId: 'ENG-1',
+    linked: true,
+    epicId: 'epic-1',
+    projectId: 'project-1',
+    projectName: 'Product',
+    loggedMinutes,
+  });
+
+  function renderTimeBoard(loggedMinutes: number | null, totals?: ReadonlyMap<string, number>) {
+    return render(
+      <MemoryRouter>
+        <ExternalTaskKanban
+          columns={columns}
+          onOpenTask={jest.fn()}
+          links={[linkedSummary(loggedMinutes)]}
+          epicTimeTotals={totals}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  it('renders the Current badge and authoritative Logged and New figures', () => {
+    renderTimeBoard(30, new Map([['epic-1', 90]]));
+
+    expect(screen.getByTestId('external-card-time')).toHaveTextContent(
+      `Logged ${formatEpicTimeMinutes(30)} · New unlogged ${formatEpicTimeMinutes(60)}`,
+    );
+    expect(screen.getByText(`· New unlogged ${formatEpicTimeMinutes(60)}`)).toHaveClass(
+      'bg-amber-500/15',
+      'text-amber-700',
+      'dark:text-amber-300',
+    );
+    expect(screen.getByTestId('epic-time-badge')).toHaveTextContent(formatEpicTimeMinutes(90));
+  });
+
+  it('identifies Current, Logged, and New in accessible text without color', () => {
+    renderTimeBoard(30, new Map([['epic-1', 90]]));
+
+    expect(screen.getByText('Current DevChain time')).toBeInTheDocument();
+    expect(screen.getByTestId('external-card-time')).toHaveTextContent('Logged');
+    expect(screen.getByTestId('external-card-time')).toHaveTextContent('New unlogged');
+  });
+
+  it('hides the time row when Current and Logged are both zero', () => {
+    renderTimeBoard(0, new Map([['epic-1', 0]]));
+
+    expect(screen.queryByTestId('external-card-time')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
+  });
+
+  it('renders the real Logged value and New 0m when Logged exceeds Current', () => {
+    renderTimeBoard(90, new Map([['epic-1', 15]]));
+
+    expect(screen.getByTestId('external-card-time')).toHaveTextContent(
+      `Logged ${formatEpicTimeMinutes(90)} · New unlogged ${formatEpicTimeMinutes(0)}`,
+    );
+    expect(screen.getByTestId('epic-time-badge')).toHaveTextContent(formatEpicTimeMinutes(15));
+  });
+
+  it('never renders numeric Logged or New from a null checkpoint', () => {
+    renderTimeBoard(null, new Map([['epic-1', 90]]));
+
+    const row = screen.getByTestId('external-card-time');
+    expect(screen.getByTestId('epic-time-badge')).toHaveTextContent(formatEpicTimeMinutes(90));
+    expect(row.textContent).not.toContain('Logged');
+    expect(row.textContent).not.toContain('New');
+  });
+
+  it('renders Logged without New while the Current batch has no total yet', () => {
+    renderTimeBoard(75, undefined);
+
+    const row = screen.getByTestId('external-card-time');
+    expect(row).toHaveTextContent(`Logged ${formatEpicTimeMinutes(75)}`);
+    expect(row.textContent).not.toContain('New unlogged');
+    expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
+  });
+
+  it('renders no time row for an unlinked card even with totals present', () => {
+    render(
+      <MemoryRouter>
+        <ExternalTaskKanban
+          columns={columns}
+          onOpenTask={jest.fn()}
+          links={[{ ...linkedSummary(75), linked: false, epicId: null }]}
+          epicTimeTotals={new Map([['epic-1', 90]])}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId('external-card-time')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
+  });
+
+  it('has no accessibility violations with the time row visible', async () => {
+    const { container } = renderTimeBoard(30, new Map([['epic-1', 90]]));
+
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('suppresses every numeric time metric while the link set is placeholder or errored', () => {
+    render(
+      <MemoryRouter>
+        <ExternalTaskKanban
+          columns={columns}
+          onOpenTask={jest.fn()}
+          links={[linkedSummary(30)]}
+          epicTimeTotals={new Map([['epic-1', 90]])}
+          timeMetricsReady={false}
+        />
+      </MemoryRouter>,
+    );
+
+    // Existing link affordances survive; the time metrics do not.
+    expect(screen.getByText('DevChain project: Product')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open DevChain task' })).toBeInTheDocument();
+    expect(screen.queryByTestId('external-card-time')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
+  });
+});
+
 describe('ExternalTaskKanban quick import actions', () => {
   const unlinked = {
     scopeKey: 'site',
@@ -445,6 +571,7 @@ describe('ExternalTaskKanban quick import actions', () => {
     epicId: null,
     projectId: null,
     projectName: null,
+    loggedMinutes: null,
   };
 
   function renderBoard(overrides: Partial<Parameters<typeof ExternalTaskKanban>[0]> = {}) {
@@ -489,6 +616,7 @@ describe('ExternalTaskKanban quick import actions', () => {
             epicId: 'epic-1',
             projectId: 'project-1',
             projectName: 'Product',
+            loggedMinutes: null,
           },
         ],
       },
@@ -508,6 +636,7 @@ describe('ExternalTaskKanban quick import actions', () => {
           epicId: 'epic-1',
           projectId: 'project-1',
           projectName: 'Product',
+          loggedMinutes: null,
         },
       ],
     });

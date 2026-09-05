@@ -11,6 +11,7 @@ function baseInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionIn
   return {
     kind: 'description_edit',
     provider: 'jira',
+    projectId: 'project-1',
     connectionId: 'connection-1',
     connectionGeneration: 2,
     scopeKey: 'connection-1',
@@ -233,5 +234,23 @@ describe('ExternalEditSessionStore', () => {
         reason: 'invalid_state_for_operation',
       });
     });
+  });
+
+  it('invalidates sessions for only the replaced project connection', () => {
+    const store = smallStore({}, clock);
+    const first = (
+      store.create(baseInput({ connectionId: 'project-1-jira' })) as {
+        value: { sessionId: string };
+      }
+    ).value;
+    const second = (
+      store.create(baseInput({ connectionId: 'project-2-jira' })) as {
+        value: { sessionId: string };
+      }
+    ).value;
+
+    expect(store.invalidateConnection('project-1-jira')).toBe(1);
+    expect(store.get(first.sessionId)).toMatchObject({ value: { state: 'invalidated' } });
+    expect(store.get(second.sessionId)).toMatchObject({ value: { state: 'editable' } });
   });
 });

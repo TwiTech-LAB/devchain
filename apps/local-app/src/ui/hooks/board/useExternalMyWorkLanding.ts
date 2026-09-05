@@ -3,10 +3,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import type {
   ExternalMyWorkResult,
+  ExternalTaskLinkLookupInput,
   ExternalWorkArea,
 } from '@/modules/external-integrations/models/external-provider.models';
 import { useIntegrationConnections } from '@/ui/hooks/useIntegrationConnections';
+import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useExternalMyWork } from '@/ui/hooks/board/useExternalMyWork';
+import { useExternalTaskLinks } from '@/ui/hooks/board/useExternalTaskLinks';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import {
   EXTERNAL_COMPLETED_QUERY_PARAM,
@@ -25,6 +28,12 @@ export type ExternalWorkAreaCardModel = {
   kindLabel: string;
   description: string | null;
   assignedTaskCount: number;
+  /**
+   * Linked count over the exact same visibleTasks set as assignedTaskCount.
+   * Null while the link read is loading, placeholder, or failed — never a
+   * fabricated zero.
+   */
+  linkedTaskCount: number | null;
   locationLabel: string;
   workflowSummary: string;
   refreshState: ExternalWorkArea['refresh']['state'];
@@ -78,6 +87,7 @@ function workflowSummary(workArea: ExternalWorkArea): string {
 function toCardModel(
   workArea: ExternalWorkArea,
   assignedTaskCount: number,
+  linkedTaskCount: number | null,
 ): ExternalWorkAreaCardModel {
   return {
     key: `${workArea.scopeKey}:${workArea.remoteId}`,
@@ -87,10 +97,17 @@ function toCardModel(
     kindLabel: KIND_LABELS[workArea.kind],
     description: workArea.description,
     assignedTaskCount,
+    linkedTaskCount,
     locationLabel: locationLabel(workArea),
     workflowSummary: workflowSummary(workArea),
     refreshState: workArea.refresh.state,
   };
+}
+
+// Must stay the compound identity the links batch deduplicates on: scope key
+// and task ID together, never task ID alone.
+function linkIdentityKey(scopeKey: string, taskId: string): string {
+  return `${scopeKey}\u0000${taskId}`;
 }
 
 function isSupportedSnapshot(result: unknown): result is SupportedSnapshot {
@@ -124,8 +141,13 @@ export function useExternalMyWorkLanding(
   { enabled = true }: { enabled?: boolean } = {},
 ): ExternalMyWorkLanding {
   const queryClient = useQueryClient();
+  const { selectedProjectId: selectedProjectIdValue } = useSelectedProject();
+  const selectedProjectId = selectedProjectIdValue ?? null;
   const [searchParams, setSearchParams] = useSearchParams();
-  const { connections, isLoading: connectionsLoading } = useIntegrationConnections({ enabled });
+  const { connections, isLoading: connectionsLoading } = useIntegrationConnections({
+    projectId: selectedProjectId,
+    enabled,
+  });
   const [search, setSearch] = useState('');
   // Completed scope is URL-addressable so refresh, direct navigation, and browser Back
   // all restore the same data scope the user selected.
@@ -148,6 +170,7 @@ export function useExternalMyWorkLanding(
     includeCompleted,
     enabled: enabled && connected,
     connectionEpoch,
+    projectId: selectedProjectId,
   });
 
   const effectiveSnapshot = useMemo<SupportedSnapshot | null>(() => {
@@ -159,17 +182,69 @@ export function useExternalMyWorkLanding(
     return null;
   }, [connectionEpoch, enabled, provider, query.data, query.isError, queryClient]);
 
-  const cards = useMemo(
+  const workAreaProjections = useMemo(
     () =>
       effectiveSnapshot
-        ? effectiveSnapshot.workAreas.map((workArea) =>
-            toCardModel(
-              workArea,
-              projectWorkAreaTaskHierarchy(effectiveSnapshot.tasks, workArea).visibleTasks.length,
-            ),
-          )
+        ? effectiveSnapshot.workAreas.map((workArea) => ({
+            workArea,
+            visibleTasks: projectWorkAreaTaskHierarchy(effectiveSnapshot.tasks, workArea)
+              .visibleTasks,
+          }))
         : [],
     [effectiveSnapshot],
+  );
+
+  // Link identities derive from the same visibleTasks projection as the
+  // assigned counts, so grouped subtasks never reach the link read.
+  const linkIdentities = useMemo<ExternalTaskLinkLookupInput[]>(
+    () =>
+      workAreaProjections.flatMap(({ workArea, visibleTasks }) =>
+        visibleTasks.map((visibleTask) => ({
+          scopeKey: workArea.scopeKey,
+          taskId: visibleTask.remoteId,
+        })),
+      ),
+    [workAreaProjections],
+  );
+
+  const linksQuery = useExternalTaskLinks(provider, linkIdentities, {
+    enabled,
+    connectionEpoch,
+    // Coverage only: checkpoint minutes are the Kanban-side read.
+    includeLoggedMinutes: false,
+    projectId: selectedProjectId,
+  });
+
+  // Placeholder data belongs to a previous input set and an error carries no
+  // data, so only a fresh result may produce a numeric linked count.
+  const linkedCountResolved =
+    linksQuery.data !== undefined && !linksQuery.isPlaceholderData && !linksQuery.isError;
+
+  const linkedIdentities = useMemo(() => {
+    const linked = new Set<string>();
+    if (!linkedCountResolved) return linked;
+    for (const item of linksQuery.data?.items ?? []) {
+      if (item?.linked) {
+        linked.add(linkIdentityKey(item.scopeKey, item.taskId));
+      }
+    }
+    return linked;
+  }, [linkedCountResolved, linksQuery.data]);
+
+  const cards = useMemo(
+    () =>
+      workAreaProjections.map(({ workArea, visibleTasks }) =>
+        toCardModel(
+          workArea,
+          visibleTasks.length,
+          linkedCountResolved
+            ? visibleTasks.filter((visibleTask) =>
+                linkedIdentities.has(linkIdentityKey(workArea.scopeKey, visibleTask.remoteId)),
+              ).length
+            : null,
+        ),
+      ),
+    [linkedCountResolved, linkedIdentities, workAreaProjections],
   );
 
   const normalizedSearch = search.trim().toLowerCase();

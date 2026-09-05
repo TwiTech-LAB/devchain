@@ -59,6 +59,12 @@ interface PendingProjectActivation {
   previousDataUpdateCount: number;
 }
 
+interface ProjectActivationState {
+  workspaceId: string;
+  projectId: string;
+  status: 'pending' | 'confirmed' | 'failed';
+}
+
 interface ProjectSelectionContextValue {
   workspaces: ProjectWorkspace[];
   workspacesLoading: boolean;
@@ -74,6 +80,7 @@ interface ProjectSelectionContextValue {
   selectedProjectId?: string;
   selectedProject?: ProjectWithStats;
   setSelectedProjectId: (projectId?: string) => void;
+  projectActivation: ProjectActivationState | null;
   activateProject: (project: Pick<Project, 'id' | 'workspaceId'>) => void;
 }
 
@@ -246,6 +253,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
   const wasLockedRef = useRef(false);
   const lockedProjectsDataRef = useRef<ProjectsResponse | undefined>(undefined);
   const pendingActivationRef = useRef<PendingProjectActivation | null>(null);
+  const [projectActivation, setProjectActivation] = useState<ProjectActivationState | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -452,9 +460,11 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
   );
 
   const activateProject = useCallback(
-    (project: Pick<Project, 'id' | 'workspaceId'>) => {
+    (project: Pick<Project, 'id' | 'workspaceId'>): void => {
       if (isWorkspaceSelectionLocked) return;
-      if (!workspacesQuery.data?.some((workspace) => workspace.id === project.workspaceId)) return;
+      if (!workspacesQuery.data?.some((workspace) => workspace.id === project.workspaceId)) {
+        return;
+      }
 
       const targetQueryKey = projectsQueryKeys.available(project.workspaceId);
       pendingActivationRef.current = {
@@ -470,7 +480,32 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       persistSelectedWorkspace(project.workspaceId);
       persistSelectedProject(project.workspaceId, project.id);
       legacySelectedProjectIdRef.current = project.id;
-      void queryClient.invalidateQueries({ queryKey: targetQueryKey, exact: true });
+      setProjectActivation({
+        workspaceId: project.workspaceId,
+        projectId: project.id,
+        status: 'pending',
+      });
+      const settleActivation = (status: ProjectActivationState['status']): void => {
+        setProjectActivation((current) =>
+          current?.workspaceId === project.workspaceId && current.projectId === project.id
+            ? { ...current, status }
+            : current,
+        );
+      };
+      void queryClient
+        .fetchQuery({
+          queryKey: targetQueryKey,
+          queryFn: ({ signal }) => fetchProjects({ signal, workspaceId: project.workspaceId }),
+          staleTime: 0,
+        })
+        .then((targetProjects) => {
+          settleActivation(
+            targetProjects.items.some((candidate) => candidate.id === project.id)
+              ? 'confirmed'
+              : 'failed',
+          );
+        })
+        .catch(() => settleActivation('failed'));
     },
     [isWorkspaceSelectionLocked, queryClient, workspacesQuery.data],
   );
@@ -530,6 +565,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       refetchProjects,
       selectedProjectId: effectiveSelectedProjectId,
       selectedProject,
+      projectActivation,
       setSelectedProjectId,
       activateProject,
     }),
@@ -541,6 +577,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       projectsLoading,
       projectsQuery.data,
       projectsQuery.isError,
+      projectActivation,
       refetchProjects,
       selectedProject,
       selectedWorkspace,

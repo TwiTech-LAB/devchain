@@ -30,6 +30,8 @@ import { AutoCompactEnableModal } from './shared/AutoCompactEnableModal';
 import { BreadcrumbsProvider, useBreadcrumbs } from '../hooks/useBreadcrumbs';
 import { useRuntime } from '../hooks/useRuntime';
 import { useOptionalWorktreeTab } from '../hooks/useWorktreeTab';
+import { useEpicRelationsSync } from '../hooks/useEpicRelationsSync';
+import { useEpicTimeScopeSync } from '../hooks/useEpicTimeScopeSync';
 import { CloudStatusIndicator } from './cloud/CloudStatusIndicator';
 import { cn } from '../lib/utils';
 import { fetchPreflightChecks } from '../lib/preflight';
@@ -335,6 +337,8 @@ function LayoutShell({
     selectedProject,
     setSelectedProjectId,
   } = useSelectedProject();
+  useEpicRelationsSync(selectedWorkspaceId);
+  useEpicTimeScopeSync(selectedWorkspaceId);
   useProjectActivityReporter(selectedProjectId);
   const { toast } = useToast();
   const { activeWorktree, setActiveWorktree } = useOptionalWorktreeTab();

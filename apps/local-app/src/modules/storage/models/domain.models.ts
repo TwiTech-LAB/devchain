@@ -56,6 +56,127 @@ export interface Epic {
   updatedAt: string;
 }
 
+export type EpicRelationType = 'related' | 'blocks' | 'blocked_by';
+export type StoredEpicRelationType = 'related' | 'blocks';
+export type EpicRelationDirection = 'none' | 'left_to_right' | 'right_to_left';
+
+/**
+ * The durable route effect a destructive relation change displaces. Human
+ * writes must echo back the exact facts the server issued; agent command
+ * writes never carry them.
+ */
+export interface RelationRouteEffectFacts {
+  sourceEpicId: string;
+  targetEpicId: string;
+}
+
+/**
+ * The single derivation from a relation row's canonical endpoints plus its
+ * direction to the semantic source and target. `null` means the row carries
+ * no semantic direction: legacy pre-feature Related rows still store
+ * direction 'none' and stay readable, but nothing may write that state for
+ * Related anymore. For type=blocks the source blocks the target; for
+ * type=related the target includes eligible source time.
+ */
+export function resolveRelationEndpoints(
+  leftEpicId: string,
+  rightEpicId: string,
+  direction: EpicRelationDirection,
+): RelationRouteEffectFacts | null {
+  if (direction === 'none') {
+    return null;
+  }
+  return direction === 'left_to_right'
+    ? { sourceEpicId: leftEpicId, targetEpicId: rightEpicId }
+    : { sourceEpicId: rightEpicId, targetEpicId: leftEpicId };
+}
+
+export interface EpicRelation {
+  id: string;
+  leftEpicId: string;
+  rightEpicId: string;
+  type: StoredEpicRelationType;
+  direction: EpicRelationDirection;
+  sourceEpicId: string | null;
+  targetEpicId: string | null;
+  createdBy: AuthorType | null;
+  createdByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SetEpicRelation {
+  epicId: string;
+  relatedEpicId: string;
+  type: EpicRelationType;
+  acceptedRouteEffect?: RelationRouteEffectFacts;
+  createdBy?: AuthorType | null;
+  createdByAgentId?: string | null;
+}
+
+export interface EpicRelationListItem {
+  relationId: string;
+  epicId: string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  statusId: string;
+  statusLabel: string;
+  statusColor: string;
+  statusMcpHidden: boolean;
+  type: EpicRelationType;
+  sourceEpicId: string | null;
+  targetEpicId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EpicRelationSummary {
+  epicId: string;
+  related: number;
+  blocks: number;
+  blockedBy: number;
+  total: number;
+  /**
+   * Directional split of `related` naming each counterpart's role in the
+   * relation: `relatedSources` counts rows whose source is the counterpart
+   * (the focal Epic is the target), `relatedTargets` counts rows whose
+   * target is the counterpart (the focal Epic is the source), and
+   * `relatedNeutral` counts legacy direction-'none' rows. The group always
+   * satisfies related = relatedSources + relatedTargets + relatedNeutral.
+   */
+  relatedSources: number;
+  relatedTargets: number;
+  relatedNeutral: number;
+}
+
+export interface EpicRelationCandidate {
+  id: string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  statusId: string;
+  statusLabel: string;
+  statusColor: string;
+  statusMcpHidden: boolean;
+  parentId: string | null;
+}
+
+export interface EpicRelationWriteContext {
+  trustedLocalHuman?: boolean;
+  actor?: { type: 'agent' | 'guest'; id: string } | null;
+}
+
+export interface SetEpicRelationResult extends EpicRelation {
+  changed: boolean;
+  workspaceId: string;
+}
+
+export interface DeleteEpicRelationResult {
+  deleted: boolean;
+  workspaceId: string;
+}
+
 export const INTEGRATION_PROVIDER_IDS = ['clickup', 'jira'] as const;
 export type IntegrationProvider = (typeof INTEGRATION_PROVIDER_IDS)[number];
 
@@ -75,7 +196,9 @@ export type IntegrationCredentials = ClickUpIntegrationCredentials | JiraIntegra
 
 export interface IntegrationConnection {
   id: string;
+  projectId: string | null;
   provider: IntegrationProvider;
+  legacySourceConnectionId: string | null;
   generation: number;
   subtaskSyncEnabled: boolean;
   syncSettingRevision: number;
@@ -84,11 +207,18 @@ export interface IntegrationConnection {
 }
 
 export interface ReplaceIntegrationConnection {
+  projectId?: string;
   provider: IntegrationProvider;
   credentials: IntegrationCredentials;
   subtaskSyncEnabled?: boolean;
   acknowledgeOrphanRisk?: boolean;
 }
+
+export type IntegrationConnectionIdentity =
+  | { projectId: string; provider: IntegrationProvider }
+  | { connectionId: string };
+
+export type IntegrationConnectionLookup = IntegrationConnectionIdentity | IntegrationProvider;
 
 export interface ExternalTaskLink {
   id: string;
@@ -103,6 +233,127 @@ export interface ExternalTaskLink {
 }
 
 export type CreateExternalTaskLink = Omit<ExternalTaskLink, 'id' | 'createdAt' | 'updatedAt'>;
+
+export interface ExternalEstimateLogIdentity {
+  provider: IntegrationProvider;
+  remoteScopeKey: string;
+  remoteTaskId: string;
+}
+
+/**
+ * Batch checkpoint projection for link decoration. Only identities the caller
+ * authorized (link, connection, and project checks already passed) may be
+ * requested; absent rows mean "no checkpoint yet", not "unlinked".
+ */
+export interface ExternalEstimateLoggedMinutesEntry {
+  remoteScopeKey: string;
+  remoteTaskId: string;
+  loggedMinutes: number;
+}
+
+export type ExternalEstimateLogPendingPhase = 'prepared' | 'outcome_unknown';
+export type ExternalEstimateLogPendingResolution = 'logged' | 'not_logged';
+
+/** One dated whole-minute total of the validated daily estimate projection. */
+export interface ExternalEstimateDailyTotal {
+  activityDate: string;
+  minutes: number;
+}
+
+interface ExternalEstimateLogStateBase extends ExternalEstimateLogIdentity {
+  loggedMinutes: number;
+  revision: number;
+  /** Canonical IANA zone the dated ledger groups under; null until first bound. */
+  aggregationTimeZone: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ExternalEstimateLogState = ExternalEstimateLogStateBase &
+  (
+    | {
+        pendingOperationId: null;
+        pendingDeltaMinutes: null;
+        pendingEstimateTotalMinutes: null;
+        pendingStartedAt: null;
+        pendingConnectionId: null;
+        pendingConnectionGeneration: null;
+        pendingPhase: null;
+        pendingResolution: null;
+        pendingActivityDate: null;
+      }
+    | {
+        pendingOperationId: string;
+        pendingDeltaMinutes: number;
+        pendingEstimateTotalMinutes: number;
+        pendingStartedAt: string;
+        pendingConnectionId: string;
+        pendingConnectionGeneration: number;
+        pendingPhase: ExternalEstimateLogPendingPhase;
+        pendingResolution: ExternalEstimateLogPendingResolution | null;
+        /** Migrated legacy pending rows keep null; new pending rows carry a date. */
+        pendingActivityDate: string | null;
+      }
+  );
+
+/** One persisted dated-ledger row of a checkpoint. */
+export interface ExternalEstimateLogDay extends ExternalEstimateLogIdentity {
+  activityDate: string;
+  loggedMinutes: number;
+}
+
+/**
+ * Checkpoint projection with the dated ledger: days ordered by activityDate
+ * and the derived unallocatedLoggedMinutes (loggedMinutes minus the dated
+ * sum). The scalar invariant loggedMinutes >= SUM(days) holds on every read.
+ */
+export interface ExternalEstimateLogDailyCheckpoint {
+  state: ExternalEstimateLogState;
+  days: ExternalEstimateLogDay[];
+  unallocatedLoggedMinutes: number;
+}
+
+export interface SetExternalEstimateLoggedMinutes extends ExternalEstimateLogIdentity {
+  loggedMinutes: number;
+  expectedRevision: number;
+  /** Canonical IANA zone to bind; null keeps any existing binding. */
+  aggregationTimeZone: string | null;
+  /**
+   * Current validated daily projection. The rebuild clears the dated ledger
+   * and materializes min(loggedMinutes, current total) oldest-first; an
+   * empty projection leaves the full scalar as unallocated credit.
+   */
+  currentDailyTotals: ReadonlyArray<ExternalEstimateDailyTotal>;
+}
+
+export interface PrepareExternalEstimateLogOperation extends ExternalEstimateLogIdentity {
+  operationId: string;
+  deltaMinutes: number;
+  estimateTotalMinutes: number;
+  startedAt: string;
+  connectionId: string;
+  connectionGeneration: number;
+  expectedRevision: number;
+  /** Dated target of the pending delta; null keeps the legacy aggregate shape. */
+  activityDate: string | null;
+  /** Canonical IANA zone; binds when unset and rebinds when changed. */
+  aggregationTimeZone: string | null;
+  /**
+   * Captured validated daily projection. Before the pending row is written,
+   * remaining scalar credit materializes oldest-first into these buckets
+   * without changing loggedMinutes; excess credit stays unallocated.
+   */
+  capturedDailyTotals: ReadonlyArray<ExternalEstimateDailyTotal>;
+}
+
+export interface ExternalEstimateLogOperationMutation extends ExternalEstimateLogIdentity {
+  operationId: string;
+  expectedRevision: number;
+}
+
+export interface StoreExternalEstimateLogResolution extends ExternalEstimateLogOperationMutation {
+  resolution: ExternalEstimateLogPendingResolution;
+}
 
 export interface CreateEpicWithExternalTaskLink {
   epic: CreateEpic;

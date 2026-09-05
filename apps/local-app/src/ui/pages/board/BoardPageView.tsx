@@ -1,3 +1,4 @@
+import { useMemo, useRef } from 'react';
 import { AlertCircle, FolderOpen } from 'lucide-react';
 import { BoardColumn } from '@/ui/components/board/BoardColumn';
 import { BoardListView } from '@/ui/components/board/BoardListView';
@@ -5,6 +6,11 @@ import { BoardToolbar } from '@/ui/components/board/BoardToolbar';
 import { BulkEditDialog } from '@/ui/components/board/BulkEditDialog';
 import { CollapsedColumn } from '@/ui/components/board/CollapsedColumn';
 import { EpicFormDialog } from '@/ui/components/board/EpicFormDialog';
+import {
+  EpicRelationDragOverlay,
+  type EpicRelationDragOverlayHandle,
+} from '@/ui/components/board/EpicRelationDragOverlay';
+import { EpicRelationQuickLinkDialog } from '@/ui/components/board/EpicRelationQuickLinkDialog';
 import { MoveToWorktreeDialog } from '@/ui/components/board/MoveToWorktreeDialog';
 import { Button } from '@/ui/components/ui/button';
 import {
@@ -17,8 +23,10 @@ import {
 } from '@/ui/components/ui/dialog';
 import type {
   BoardContentModel,
+  BoardKanbanContentModel,
   BoardPagePresentation,
 } from '@/ui/pages/board/board-page-presentation';
+import { useBoardRelationQuickLink } from '@/ui/hooks/useBoardRelationQuickLink';
 
 function isLightColor(hex: string): boolean {
   const color = hex.replace('#', '');
@@ -31,6 +39,91 @@ function isLightColor(hex: string): boolean {
 
 export interface BoardPageViewProps {
   presentation: BoardPagePresentation;
+}
+
+function KanbanBoardContent({ content }: { content: BoardKanbanContentModel }) {
+  const overlayRef = useRef<EpicRelationDragOverlayHandle | null>(null);
+  const visibleExpandedEpics = useMemo(
+    () => content.columns.flatMap((column) => (column.kind === 'expanded' ? column.epics : [])),
+    [content.columns],
+  );
+  const quickLink = useBoardRelationQuickLink(visibleExpandedEpics, overlayRef);
+
+  return (
+    <>
+      <div
+        className="overflow-x-auto flex-1 min-h-0 snap-x snap-mandatory"
+        onScrollCapture={quickLink.bindings.cancel}
+      >
+        <div className="flex gap-4 sidebar-collapsed:gap-3 w-full h-full">
+          {content.columns.map((column) =>
+            column.kind === 'collapsed' ? (
+              <CollapsedColumn
+                key={column.status.id}
+                status={column.status}
+                count={column.epics.length}
+                epics={column.epics}
+                subEpicCounts={column.subEpicCounts}
+                timeTotals={column.timeTotals}
+                relationCounts={column.relationCounts}
+                isLightColor={isLightColor}
+                getAgentName={column.getAgentName}
+                onEpicEdit={column.editEpic}
+                onEpicDelete={column.deleteEpic}
+                onEpicBulkEdit={column.openBulkEdit}
+                onEpicViewDetails={column.openEpicDetails}
+                onEpicToggleParentFilter={column.toggleParentFilter}
+                onExpand={column.expand}
+                onAddEpic={column.addEpic}
+                onDragOver={column.dragOver}
+                onDrop={column.drop}
+                isActiveDrop={column.isActiveDrop}
+                onDragStartEpic={column.dragStart}
+                onDragEndEpic={column.dragEnd}
+              />
+            ) : (
+              <BoardColumn
+                key={column.status.id}
+                status={column.status}
+                epics={column.epics}
+                onAddEpic={column.addEpic}
+                onEditEpic={column.editEpic}
+                onDeleteEpic={column.deleteEpic}
+                onDragStart={column.dragStart}
+                onDragEnd={column.dragEnd}
+                onDragOver={column.dragOver}
+                onDrop={column.drop}
+                isActiveDrop={column.isActiveDrop}
+                draggedEpic={column.draggedEpic}
+                onKeyboardMove={column.keyboardMove}
+                onToggleParentFilter={column.toggleParentFilter}
+                activeParentId={column.activeParentId}
+                statusOrder={column.statusOrder}
+                getAgentName={column.getAgentName}
+                onCollapseColumn={column.collapse}
+                onBulkEdit={column.openBulkEdit}
+                onOpenEpicDetails={column.openEpicDetails}
+                onMoveToWorktree={column.hasRunningWorktrees ? column.moveToWorktree : undefined}
+                hasRunningWorktrees={column.hasRunningWorktrees}
+                isLightColor={isLightColor}
+                getSubEpicCountsByStatus={(epicId) => column.subEpicStatusCountsByEpicId[epicId]}
+                externalSources={column.externalSources}
+                timeTotals={column.timeTotals}
+                relationCounts={column.relationCounts}
+                relationQuickLink={quickLink.bindings}
+              />
+            ),
+          )}
+        </div>
+      </div>
+      <EpicRelationDragOverlay ref={overlayRef} />
+      <EpicRelationQuickLinkDialog
+        confirmation={quickLink.confirmation}
+        onCancel={quickLink.cancel}
+        onSuccess={quickLink.complete}
+      />
+    </>
+  );
 }
 
 function BoardContent({ content }: { content: BoardContentModel }) {
@@ -63,67 +156,7 @@ function BoardContent({ content }: { content: BoardContentModel }) {
         </div>
       );
     case 'kanban':
-      return (
-        <div className="overflow-x-auto flex-1 min-h-0 snap-x snap-mandatory">
-          <div className="flex gap-4 sidebar-collapsed:gap-3 w-full h-full">
-            {content.columns.map((column) =>
-              column.kind === 'collapsed' ? (
-                <CollapsedColumn
-                  key={column.status.id}
-                  status={column.status}
-                  count={column.epics.length}
-                  epics={column.epics}
-                  subEpicCounts={column.subEpicCounts}
-                  timeTotals={column.timeTotals}
-                  isLightColor={isLightColor}
-                  getAgentName={column.getAgentName}
-                  onEpicEdit={column.editEpic}
-                  onEpicDelete={column.deleteEpic}
-                  onEpicBulkEdit={column.openBulkEdit}
-                  onEpicViewDetails={column.openEpicDetails}
-                  onEpicToggleParentFilter={column.toggleParentFilter}
-                  onExpand={column.expand}
-                  onAddEpic={column.addEpic}
-                  onDragOver={column.dragOver}
-                  onDrop={column.drop}
-                  isActiveDrop={column.isActiveDrop}
-                  onDragStartEpic={column.dragStart}
-                  onDragEndEpic={column.dragEnd}
-                />
-              ) : (
-                <BoardColumn
-                  key={column.status.id}
-                  status={column.status}
-                  epics={column.epics}
-                  onAddEpic={column.addEpic}
-                  onEditEpic={column.editEpic}
-                  onDeleteEpic={column.deleteEpic}
-                  onDragStart={column.dragStart}
-                  onDragEnd={column.dragEnd}
-                  onDragOver={column.dragOver}
-                  onDrop={column.drop}
-                  isActiveDrop={column.isActiveDrop}
-                  draggedEpic={column.draggedEpic}
-                  onKeyboardMove={column.keyboardMove}
-                  onToggleParentFilter={column.toggleParentFilter}
-                  activeParentId={column.activeParentId}
-                  statusOrder={column.statusOrder}
-                  getAgentName={column.getAgentName}
-                  onCollapseColumn={column.collapse}
-                  onBulkEdit={column.openBulkEdit}
-                  onOpenEpicDetails={column.openEpicDetails}
-                  onMoveToWorktree={column.hasRunningWorktrees ? column.moveToWorktree : undefined}
-                  hasRunningWorktrees={column.hasRunningWorktrees}
-                  isLightColor={isLightColor}
-                  getSubEpicCountsByStatus={(epicId) => column.subEpicStatusCountsByEpicId[epicId]}
-                  externalSources={column.externalSources}
-                  timeTotals={column.timeTotals}
-                />
-              ),
-            )}
-          </div>
-        </div>
-      );
+      return <KanbanBoardContent content={content} />;
     case 'list':
       return (
         <BoardListView

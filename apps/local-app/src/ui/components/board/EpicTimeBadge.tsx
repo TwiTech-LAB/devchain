@@ -1,6 +1,6 @@
 import { formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 
-/** Noninteractive estimated-time label for root Board items. */
+/** Noninteractive estimated-time label for Board items. */
 export function EpicTimeBadge({ minutes }: { minutes: number }) {
   return (
     <span

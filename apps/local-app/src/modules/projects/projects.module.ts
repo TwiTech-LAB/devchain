@@ -15,6 +15,7 @@ import { RegistryModule } from '../registry/registry.module';
 import { CoreNormalModule } from '../core/core-normal.module';
 import { ProvidersModule } from '../providers/providers.module';
 import { ScheduledEpicsModule } from '../scheduled-epics/scheduled-epics.module';
+import { EventsCoreModule } from '../events/events-core.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { ScheduledEpicsModule } from '../scheduled-epics/scheduled-epics.module'
     CoreNormalModule,
     ProvidersModule,
     ScheduledEpicsModule,
+    EventsCoreModule,
   ],
   controllers: [ProjectsController],
   providers: [

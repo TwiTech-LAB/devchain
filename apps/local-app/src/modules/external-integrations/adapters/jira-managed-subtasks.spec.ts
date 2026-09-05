@@ -1,8 +1,5 @@
 import type { JiraIntegrationCredentials } from '../../storage/models/domain.models';
-import {
-  EXTERNAL_SUBTASK_MANAGEMENT_NOTE,
-  type ExternalProviderConnectionContext,
-} from '../models/external-provider.models';
+import type { ExternalProviderConnectionContext } from '../models/external-provider.models';
 import { SafeVendorHttpClient, SafeVendorHttpError } from '../transport/safe-vendor-http-client';
 import { JiraExternalTaskProvider } from './jira-external-task.provider';
 
@@ -16,15 +13,12 @@ const context: ExternalProviderConnectionContext = {
   connectionId: 'connection-jira',
   connectionGeneration: 2,
 };
-const ownershipToken = '9f025d13-01ef-4b53-a532-b2a0db008b7e';
-const property = { version: 1, ownershipToken };
+const ownershipToken = '9f025d13';
+const property = { version: 1, sourceId: ownershipToken };
 const description = {
   type: 'doc',
   version: 1,
-  content: [
-    { type: 'paragraph', content: [{ type: 'text', text: 'Original description' }] },
-    { type: 'paragraph', content: [{ type: 'text', text: EXTERNAL_SUBTASK_MANAGEMENT_NOTE }] },
-  ],
+  content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Original description' }] }],
 };
 
 function providerWith(
@@ -47,7 +41,7 @@ function issue(overrides: Record<string, unknown> = {}): Record<string, unknown>
       parent: { id: '10000', key: 'KAN-1' },
       project: { id: '20000', key: 'KAN' },
     },
-    properties: { 'devchain.managed-subtask': property },
+    properties: { SourceId: property },
     ...overrides,
   };
 }
@@ -112,8 +106,56 @@ describe('Jira managed subtasks', () => {
         description,
         assignee: { id: 'account-1' },
       },
-      properties: [{ key: 'devchain.managed-subtask', value: property }],
+      properties: [{ key: 'SourceId', value: property }],
     });
+  });
+
+  it('sends a null description instead of an empty ADF document on create', async () => {
+    const requestJson = jest
+      .fn()
+      .mockResolvedValueOnce(
+        issue({
+          id: '10000',
+          key: 'KAN-1',
+          fields: { project: { id: '20000', key: 'KAN' } },
+          properties: {},
+        }),
+      )
+      .mockResolvedValueOnce([{ id: '101', name: 'Subtask', subtask: true, hierarchyLevel: -1 }])
+      .mockResolvedValueOnce({ accountId: 'account-1', displayName: 'Connected user' })
+      .mockResolvedValueOnce({ id: '10001', key: 'KAN-2', fields: { description: null } });
+    const provider = providerWith(requestJson);
+
+    await expect(
+      provider.subtaskSync!.create(credentials, context, {
+        parentRemoteTaskId: 'KAN-1',
+        ownershipToken,
+        title: 'Child',
+        description: null,
+      }),
+    ).resolves.toMatchObject({ description: null });
+
+    const create = JSON.parse(requestJson.mock.calls[3]![0].body);
+    expect(create.fields.description).toBeNull();
+  });
+
+  it.each([
+    ['uppercase hex', '9F025D13'],
+    ['non-hexadecimal', 'zzzzzzz1'],
+    ['too short', '9f025d1'],
+    ['too long', '9f025d133'],
+    ['uuid-shaped', '9f025d13-01ef-4b53-a532-b2a0db008b7e'],
+  ])('rejects a %s ownership token at the provider boundary', async (_label, token) => {
+    const requestJson = jest.fn();
+    await expect(
+      providerWith(requestJson).subtaskSync!.create(credentials, context, {
+        parentRemoteTaskId: 'KAN-1',
+        ownershipToken: token,
+        title: 'Child',
+        description: null,
+      }),
+    ).rejects.toMatchObject({ details: { reason: 'request_rejected' } });
+    expect(requestJson).not.toHaveBeenCalled();
   });
 
   it('blocks truthfully when the linked project has no compatible sub-task issue type', async () => {
@@ -146,6 +188,64 @@ describe('Jira managed subtasks', () => {
     ).resolves.toBeNull();
   });
 
+  it('reads the source id property through an exact read and returns the plain description', async () => {
+    const requestJson = jest.fn().mockResolvedValue(issue());
+    await expect(
+      providerWith(requestJson).subtaskSync!.readExact(credentials, context, 'KAN-2'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ownershipToken,
+        title: 'Managed child',
+        description: 'Original description',
+      }),
+    );
+    expect(requestJson.mock.calls[0]![0].url).toContain('properties=SourceId');
+  });
+
+  it.each([
+    ['one trailing newline', 'Line\n'],
+    ['multiple trailing newlines', 'Line\n\n'],
+  ])('round-trips a managed description with %s', async (_label, sourceDescription) => {
+    const requestJson = jest.fn().mockResolvedValue(issue());
+    const requestNoContent = jest.fn().mockResolvedValue(undefined);
+    await providerWith(requestJson, requestNoContent).subtaskSync!.update(credentials, context, {
+      remoteTaskId: 'KAN-2',
+      expectedParentRemoteTaskId: 'KAN-1',
+      ownershipToken,
+      description: sourceDescription,
+    });
+    const writtenDescription = JSON.parse(requestNoContent.mock.calls[0]![0].body).fields
+      .description;
+    const readBack = issue({
+      fields: {
+        summary: 'Managed child',
+        description: writtenDescription,
+        parent: { id: '10000', key: 'KAN-1' },
+        project: { id: '20000', key: 'KAN' },
+      },
+    });
+
+    await expect(
+      providerWith(jest.fn().mockResolvedValue(readBack)).subtaskSync!.readExact(
+        credentials,
+        context,
+        'KAN-2',
+      ),
+    ).resolves.toEqual(expect.objectContaining({ description: sourceDescription }));
+  });
+
+  it.each([
+    ['an uppercase source id', { version: 1, sourceId: '9F025D13' }],
+    ['a non-hexadecimal source id', { version: 1, sourceId: 'zzzzzzz1' }],
+    ['a wrong property key', { version: 1, ownershipToken }],
+    ['a wrong property version', { version: 2, sourceId: ownershipToken }],
+  ])('treats %s as unowned', async (_label, value) => {
+    const requestJson = jest.fn().mockResolvedValue(issue({ properties: { SourceId: value } }));
+    await expect(
+      providerWith(requestJson).subtaskSync!.readExact(credentials, context, 'KAN-2'),
+    ).resolves.toEqual(expect.objectContaining({ ownershipToken: null }));
+  });
+
   it('preflights property ownership and parent before editing the exact issue', async () => {
     const requestJson = jest.fn().mockResolvedValue(issue());
     const requestNoContent = jest.fn().mockResolvedValue(undefined);
@@ -160,9 +260,32 @@ describe('Jira managed subtasks', () => {
       expect.objectContaining({
         method: 'PUT',
         url: 'https://test.atlassian.net/rest/api/3/issue/KAN-2',
-        body: expect.stringContaining(EXTERNAL_SUBTASK_MANAGEMENT_NOTE),
+        body: JSON.stringify({
+          fields: {
+            summary: 'Renamed',
+            description: {
+              type: 'doc',
+              version: 1,
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Replacement' }] }],
+            },
+          },
+        }),
       }),
     );
+  });
+
+  it('sends a null description on update when the source description is null', async () => {
+    const requestJson = jest.fn().mockResolvedValue(issue());
+    const requestNoContent = jest.fn().mockResolvedValue(undefined);
+    await providerWith(requestJson, requestNoContent).subtaskSync!.update(credentials, context, {
+      remoteTaskId: 'KAN-2',
+      expectedParentRemoteTaskId: 'KAN-1',
+      ownershipToken,
+      description: null,
+    });
+    expect(JSON.parse(requestNoContent.mock.calls[0]![0].body)).toEqual({
+      fields: { description: null },
+    });
   });
 
   it.each([
@@ -272,7 +395,7 @@ describe('Jira managed subtasks', () => {
       complete: true,
     });
     expect(requestJson.mock.calls[0]![0].url).toContain('fields=subtasks');
-    expect(requestJson.mock.calls[1]![0].url).toContain('properties=devchain.managed-subtask');
+    expect(requestJson.mock.calls[1]![0].url).toContain('properties=SourceId');
   });
 
   it('reports a capped Jira child walk incomplete', async () => {

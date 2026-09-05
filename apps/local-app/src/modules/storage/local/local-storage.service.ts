@@ -10,6 +10,9 @@ import {
   DocumentIdentifier,
   ListProjectEpicsOptions,
   ListAssignedEpicsOptions,
+  ListEpicRelationCandidatesOptions,
+  ListEpicRelationsOptions,
+  EpicRelationReadOptions,
   ListParentChildrenOptions,
   ListSubEpicsForParentsOptions,
   CreateEpicForProjectInput,
@@ -107,6 +110,7 @@ import {
   CreateExternalTaskLink,
   ExternalTaskLink,
   IntegrationConnection,
+  IntegrationConnectionLookup,
   IntegrationCredentials,
   IntegrationProvider,
   ReplaceIntegrationConnection,
@@ -117,6 +121,21 @@ import {
   ExternalManagedSubtaskLink,
   ConfirmExternalManagedSubtaskLink,
   ConfirmExternalManagedSubtaskLinkResult,
+  EpicRelationCandidate,
+  EpicRelationListItem,
+  EpicRelationSummary,
+  EpicRelationWriteContext,
+  SetEpicRelationResult,
+  DeleteEpicRelationResult,
+  SetEpicRelation,
+  ExternalEstimateLoggedMinutesEntry,
+  ExternalEstimateLogDailyCheckpoint,
+  ExternalEstimateLogIdentity,
+  ExternalEstimateLogOperationMutation,
+  ExternalEstimateLogState,
+  PrepareExternalEstimateLogOperation,
+  SetExternalEstimateLoggedMinutes,
+  StoreExternalEstimateLogResolution,
 } from '../models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
 import {
@@ -149,6 +168,7 @@ import { IntegrationStorageDelegate } from './delegates/integration.delegate';
 import { IntegrationCredentialCipher } from './integration-credential-cipher';
 import { WatcherStorageDelegate } from './delegates/watcher.delegate';
 import { ExternalManagedSubtaskStorageDelegate } from './delegates/external-managed-subtask.delegate';
+import { ExternalEstimateLogStorageDelegate } from './delegates/external-estimate-log.delegate';
 import { CommittedEventStore } from '../../events/services/committed-event.store';
 import { DurableEventRegistryService } from '../../events/services/durable-event-registry.service';
 import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
@@ -190,6 +210,7 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   private readonly sessionDelegate: SessionStorageDelegate;
   private readonly integrationDelegate: IntegrationStorageDelegate;
   private readonly externalManagedSubtaskDelegate: ExternalManagedSubtaskStorageDelegate;
+  private readonly externalEstimateLogDelegate: ExternalEstimateLogStorageDelegate;
 
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
@@ -246,6 +267,7 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     this.scheduledEpicDelegate = new ScheduledEpicStorageDelegate(context);
     this.sessionDelegate = new SessionStorageDelegate(context);
     this.externalManagedSubtaskDelegate = new ExternalManagedSubtaskStorageDelegate(context);
+    this.externalEstimateLogDelegate = new ExternalEstimateLogStorageDelegate(context);
     this.integrationDelegate = new IntegrationStorageDelegate(
       context,
       integrationCredentialCipher ?? new IntegrationCredentialCipher(),
@@ -254,8 +276,9 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
           this.epicDelegate.createEpicInCurrentTransaction(data),
         getEpic: (id) => this.epicDelegate.getEpic(id),
         appendEvent: (event) => eventStore.appendInCurrentTransaction(event),
-        handleProviderConnectionMutation: (provider, acknowledgeOrphanRisk) =>
-          this.externalManagedSubtaskDelegate.handleProviderConnectionMutationSync(
+        handleConnectionMutation: (connectionId, provider, acknowledgeOrphanRisk) =>
+          this.externalManagedSubtaskDelegate.handleConnectionMutationSync(
+            connectionId,
             provider,
             acknowledgeOrphanRisk,
           ),
@@ -298,6 +321,10 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
 
   async getProjectsByIdPrefix(prefix: string): Promise<Project[]> {
     return this.projectDelegate.getProjectsByIdPrefix(prefix);
+  }
+
+  async getProjectWorkspaceSnapshot(projectId: string): Promise<Project[]> {
+    return this.projectDelegate.getProjectWorkspaceSnapshot(projectId);
   }
 
   async updateProject(id: string, data: UpdateProject): Promise<Project> {
@@ -371,8 +398,9 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   async createEpicWithinTransaction(
     data: CreateEpic,
     eventFactory?: (epic: Epic) => PreparedEvent | null,
+    beforeEventAppend?: (epic: Epic) => Promise<void>,
   ): Promise<Epic> {
-    return this.epicDelegate.createEpicInCurrentTransaction(data, eventFactory);
+    return this.epicDelegate.createEpicInCurrentTransaction(data, eventFactory, beforeEventAppend);
   }
 
   async getEpic(id: string): Promise<Epic> {
@@ -418,7 +446,10 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     return this.epicDelegate.updateEpic(id, data, expectedVersion, eventFactory);
   }
 
-  async deleteEpic(id: string, eventFactory?: (epic: Epic) => PreparedEvent | null): Promise<void> {
+  async deleteEpic(
+    id: string,
+    eventFactory?: (epic: Epic, workspaceId: string) => PreparedEvent | null,
+  ): Promise<void> {
     return this.epicDelegate.deleteEpic(id, eventFactory);
   }
 
@@ -460,8 +491,11 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     return this.epicDelegate.listEpicComments(epicId, options);
   }
 
-  async createEpicComment(data: CreateEpicComment): Promise<EpicComment> {
-    return this.epicDelegate.createEpicComment(data);
+  async createEpicComment(
+    data: CreateEpicComment,
+    eventFactory?: FactualEventFactory<EpicComment, Epic>,
+  ): Promise<EpicComment> {
+    return this.epicDelegate.createEpicComment(data, eventFactory);
   }
 
   async deleteEpicComment(id: string): Promise<void> {
@@ -477,6 +511,50 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     prefix: string,
   ): Promise<Array<{ id: string; title: string }>> {
     return this.epicDelegate.getEpicsByIdPrefix(projectId, prefix);
+  }
+
+  async setEpicRelation(
+    data: SetEpicRelation,
+    context: EpicRelationWriteContext = { trustedLocalHuman: true },
+  ): Promise<SetEpicRelationResult> {
+    return this.epicDelegate.setEpicRelation(data, context);
+  }
+
+  async deleteEpicRelation(
+    epicId: string,
+    relatedEpicId: string,
+    context: EpicRelationWriteContext = { trustedLocalHuman: true },
+  ): Promise<DeleteEpicRelationResult> {
+    return this.epicDelegate.deleteEpicRelation(epicId, relatedEpicId, context);
+  }
+
+  async listEpicRelations(
+    epicId: string,
+    options: ListEpicRelationsOptions = {},
+  ): Promise<ListResult<EpicRelationListItem>> {
+    return this.epicDelegate.listEpicRelations(epicId, options);
+  }
+
+  async summarizeEpicRelationsBatch(
+    epicIds: string[],
+    options: EpicRelationReadOptions = {},
+  ): Promise<Map<string, EpicRelationSummary>> {
+    return this.epicDelegate.summarizeEpicRelationsBatch(epicIds, options);
+  }
+
+  async listEpicRelationCandidates(
+    epicId: string,
+    options: ListEpicRelationCandidatesOptions = {},
+  ): Promise<ListResult<EpicRelationCandidate>> {
+    return this.epicDelegate.listEpicRelationCandidates(epicId, options);
+  }
+
+  async getWorkspaceEpicsByIdPrefix(
+    epicId: string,
+    prefix: string,
+    options: EpicRelationReadOptions = {},
+  ): Promise<EpicRelationCandidate[]> {
+    return this.epicDelegate.getWorkspaceEpicsByIdPrefix(epicId, prefix, options);
   }
 
   // Prompts (with optimistic locking)
@@ -1207,40 +1285,106 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   }
 
   async getIntegrationConnection(
-    provider: IntegrationProvider,
+    identity: IntegrationConnectionLookup,
   ): Promise<IntegrationConnection | null> {
-    return this.integrationDelegate.getIntegrationConnection(provider);
+    return this.integrationDelegate.getIntegrationConnection(identity);
   }
 
-  async listIntegrationConnections(): Promise<IntegrationConnection[]> {
-    return this.integrationDelegate.listIntegrationConnections();
+  async getIntegrationConnectionById(connectionId: string): Promise<IntegrationConnection | null> {
+    return this.integrationDelegate.getIntegrationConnectionById(connectionId);
+  }
+
+  async assignUnassignedIntegrationConnection(
+    connectionId: string,
+    projectId: string,
+    eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
+  ): Promise<IntegrationConnection> {
+    return this.integrationDelegate.assignUnassignedIntegrationConnection(
+      connectionId,
+      projectId,
+      eventFactory,
+    );
+  }
+
+  async listIntegrationConnectionsByLegacySourceConnectionId(
+    legacySourceConnectionId: string,
+  ): Promise<IntegrationConnection[]> {
+    return this.integrationDelegate.listIntegrationConnectionsByLegacySourceConnectionId(
+      legacySourceConnectionId,
+    );
+  }
+
+  async listIntegrationConnections(projectId?: string): Promise<IntegrationConnection[]> {
+    return this.integrationDelegate.listIntegrationConnections(projectId);
   }
 
   async getIntegrationConnectionCredentials(
-    provider: IntegrationProvider,
+    identity: IntegrationConnectionLookup,
   ): Promise<IntegrationCredentials | null> {
-    return this.integrationDelegate.getIntegrationConnectionCredentials(provider);
+    return this.integrationDelegate.getIntegrationConnectionCredentials(identity);
+  }
+
+  async getIntegrationConnectionCredentialsById(
+    connectionId: string,
+  ): Promise<IntegrationCredentials | null> {
+    return this.integrationDelegate.getIntegrationConnectionCredentialsById(connectionId);
   }
 
   async disconnectIntegrationConnection(
-    provider: IntegrationProvider,
+    identity: IntegrationConnectionLookup,
     eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
     options?: { acknowledgeOrphanRisk?: boolean },
   ): Promise<boolean> {
     return this.integrationDelegate.disconnectIntegrationConnection(
-      provider,
+      identity,
+      eventFactory,
+      options,
+    );
+  }
+
+  async disconnectIntegrationConnectionById(
+    connectionId: string,
+    eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
+    options?: { acknowledgeOrphanRisk?: boolean },
+  ): Promise<boolean> {
+    return this.integrationDelegate.disconnectIntegrationConnectionById(
+      connectionId,
+      eventFactory,
+      options,
+    );
+  }
+
+  async disconnectUnassignedIntegrationConnection(
+    connectionId: string,
+    eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
+    options?: { acknowledgeOrphanRisk?: boolean },
+  ): Promise<boolean> {
+    return this.integrationDelegate.disconnectUnassignedIntegrationConnection(
+      connectionId,
       eventFactory,
       options,
     );
   }
 
   async updateIntegrationConnectionSyncSetting(
-    provider: IntegrationProvider,
+    identity: IntegrationConnectionLookup,
     subtaskSyncEnabled: boolean,
     eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
   ): Promise<IntegrationConnection> {
     return this.integrationDelegate.updateIntegrationConnectionSyncSetting(
-      provider,
+      identity,
+      subtaskSyncEnabled,
+      eventFactory,
+    );
+  }
+
+  async updateIntegrationConnectionSyncSettingById(
+    connectionId: string,
+    subtaskSyncEnabled: boolean,
+    eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
+  ): Promise<IntegrationConnection> {
+    return this.integrationDelegate.updateIntegrationConnectionSyncSettingById(
+      connectionId,
       subtaskSyncEnabled,
       eventFactory,
     );
@@ -1272,6 +1416,13 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     return this.integrationDelegate.listExternalTaskLinksByRemoteScope(provider, remoteScopeKey);
   }
 
+  async listExternalTaskLinksByRemoteTask(
+    provider: IntegrationProvider,
+    remoteTaskId: string,
+  ): Promise<ExternalTaskLink[]> {
+    return this.integrationDelegate.listExternalTaskLinksByRemoteTask(provider, remoteTaskId);
+  }
+
   async listExternalTaskLinksForEpic(epicId: string): Promise<ExternalTaskLink[]> {
     return this.integrationDelegate.listExternalTaskLinksForEpic(epicId);
   }
@@ -1294,6 +1445,12 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     provider: IntegrationProvider,
   ): Promise<ExternalManagedSubtaskLink[]> {
     return this.externalManagedSubtaskDelegate.listByProvider(provider);
+  }
+
+  async listExternalManagedSubtaskLinksByConnection(
+    connectionId: string,
+  ): Promise<ExternalManagedSubtaskLink[]> {
+    return this.externalManagedSubtaskDelegate.listByConnection(connectionId);
   }
 
   async listExternalManagedSubtaskLinksForEpicSnapshot(
@@ -1331,5 +1488,73 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
 
   async removeExternalManagedSubtaskLink(id: string): Promise<boolean> {
     return this.externalManagedSubtaskDelegate.remove(id);
+  }
+
+  async getExternalEstimateLogState(
+    identity: ExternalEstimateLogIdentity,
+  ): Promise<ExternalEstimateLogState | null> {
+    return this.externalEstimateLogDelegate.get(identity);
+  }
+
+  async getExternalEstimateLogDailyCheckpoint(
+    identity: ExternalEstimateLogIdentity,
+  ): Promise<ExternalEstimateLogDailyCheckpoint | null> {
+    return this.externalEstimateLogDelegate.getDailyCheckpoint(identity);
+  }
+
+  async listExternalEstimateLogStatesByRemoteTask(
+    provider: IntegrationProvider,
+    remoteTaskId: string,
+  ): Promise<ExternalEstimateLogState[]> {
+    return this.externalEstimateLogDelegate.listByRemoteTask(provider, remoteTaskId);
+  }
+
+  async listExternalEstimateLoggedMinutes(
+    provider: IntegrationProvider,
+    identities: ReadonlyArray<{ remoteScopeKey: string; remoteTaskId: string }>,
+  ): Promise<ExternalEstimateLoggedMinutesEntry[]> {
+    return this.externalEstimateLogDelegate.listLoggedMinutes(provider, identities);
+  }
+
+  async setExternalEstimateLoggedMinutes(
+    data: SetExternalEstimateLoggedMinutes,
+  ): Promise<ExternalEstimateLogState> {
+    return this.externalEstimateLogDelegate.setLoggedMinutes(data);
+  }
+
+  async prepareExternalEstimateLogOperation(
+    data: PrepareExternalEstimateLogOperation,
+  ): Promise<ExternalEstimateLogState> {
+    return this.externalEstimateLogDelegate.prepare(data);
+  }
+
+  async markExternalEstimateLogOperationOutcomeUnknown(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState> {
+    return this.externalEstimateLogDelegate.markOutcomeUnknown(data);
+  }
+
+  async confirmExternalEstimateLogOperation(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState> {
+    return this.externalEstimateLogDelegate.confirm(data);
+  }
+
+  async clearExternalEstimateLogOperation(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState> {
+    return this.externalEstimateLogDelegate.clear(data);
+  }
+
+  async storeExternalEstimateLogResolution(
+    data: StoreExternalEstimateLogResolution,
+  ): Promise<ExternalEstimateLogState> {
+    return this.externalEstimateLogDelegate.storeResolution(data);
+  }
+
+  async applyExternalEstimateLogResolution(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState> {
+    return this.externalEstimateLogDelegate.applyResolution(data);
   }
 }

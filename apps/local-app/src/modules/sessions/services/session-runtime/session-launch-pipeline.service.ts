@@ -414,14 +414,32 @@ export class SessionLaunchPipeline {
       }
     }
 
-    // Gemini-like providers: always ensure project-scope MCP
+    // Providers with pre-launch project provisioning needs (workspace/folder
+    // trust) run the trust-only provisioning path here — before runtime
+    // planning and before any provider command is typed. MCP drift repair is
+    // handled above through the full ensureMcp branch.
     try {
       const adapter = this.providerAdapterFactory.getAdapter(provider.name);
       if (isProjectProvisioningCapable(adapter) && projectRootPath) {
-        await this.mcpEnsureService.ensureMcp(provider, projectRootPath);
+        const provisioning = await this.mcpEnsureService.ensureProjectProvisioning(
+          provider,
+          projectRootPath,
+        );
+        for (const warning of provisioning.warnings) {
+          logger.warn(
+            {
+              providerId: provider.id,
+              providerName: provider.name,
+              projectRootPath,
+              code: warning.code,
+              source: warning.source,
+            },
+            'Project provisioning warning (non-fatal)',
+          );
+        }
       }
     } catch {
-      // Non-fatal
+      logger.warn({ providerName: provider.name }, 'Project provisioning failed (non-fatal)');
     }
 
     if (preflightResult.overall === 'fail') {

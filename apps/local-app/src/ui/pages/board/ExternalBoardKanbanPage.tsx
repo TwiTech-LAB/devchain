@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, RefreshCw } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import type { ExternalTaskDetail } from '@/modules/external-integrations/models/external-provider.models';
+import type {
+  ExternalTaskDetail,
+  ExternalTaskLinkStateSummary,
+} from '@/modules/external-integrations/models/external-provider.models';
 import { ExternalBoardNav } from '@/ui/components/board/ExternalBoardNav';
 import { ExternalTaskDetailDialog } from '@/ui/components/board/ExternalTaskDetailDialog';
 import { ExternalTaskImportDialog } from '@/ui/components/board/ExternalTaskImportDialog';
@@ -16,11 +19,13 @@ import { useExternalWorkArea } from '@/ui/hooks/board/useExternalWorkArea';
 import { useExternalTaskLinks } from '@/ui/hooks/board/useExternalTaskLinks';
 import { canColumnReceiveMove, useExternalTaskMove } from '@/ui/hooks/board/useExternalTaskMove';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useEpicTimeSummariesBatch } from '@/ui/hooks/useEpicTimeSummariesBatch';
 import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
 import { useIntegrationConnections } from '@/ui/hooks/useIntegrationConnections';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import {
   buildExternalBoardMyWorkPath,
+  externalBoardMyWorkPath,
   externalBoardProviderLabel,
   externalWorkAreaSourceUrl,
   isExternalBoardProvider,
@@ -31,7 +36,14 @@ import type {
   ExternalTaskMoveSource,
   ExternalTaskMoveTarget,
 } from '@/ui/hooks/board/useExternalTaskMove';
-import { getIntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
+import {
+  getIntegrationConnectionEpoch,
+  type IntegrationConnectionEpoch,
+} from '@/ui/lib/integration-connections';
+import {
+  isSameIntegrationPresentationScope,
+  type IntegrationPresentationScope,
+} from '@/ui/lib/integration-project-scope';
 import { fetchFreshExternalTaskDetail } from '@/ui/lib/external-task-detail-query';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { UnknownExternalBoardProviderPage } from '@/ui/pages/board/UnknownExternalBoardProviderPage';
@@ -39,6 +51,34 @@ import { UnknownExternalBoardProviderPage } from '@/ui/pages/board/UnknownExtern
 interface ValidExternalBoardKanbanPageProps {
   provider: 'clickup' | 'jira';
   workAreaId: string;
+}
+
+interface CurrentQuickImportScope {
+  provider: 'clickup' | 'jira';
+  projectId: string | null;
+  connectionEpoch: IntegrationConnectionEpoch | null;
+  enabled: boolean;
+}
+
+interface QuickImportOperation {
+  readonly token: number;
+  readonly presentationScope: IntegrationPresentationScope;
+}
+
+function isSameQuickImportScope(
+  operation: QuickImportOperation,
+  current: CurrentQuickImportScope,
+): boolean {
+  const currentPresentationScope =
+    current.enabled && current.projectId !== null && current.connectionEpoch !== null
+      ? {
+          provider: current.provider,
+          projectId: current.projectId,
+          connectionEpoch: current.connectionEpoch,
+          taskId: operation.presentationScope.taskId,
+        }
+      : null;
+  return isSameIntegrationPresentationScope(operation.presentationScope, currentPresentationScope);
 }
 
 /**
@@ -60,18 +100,39 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
   const navigate = useNavigate();
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
-  const { selectedProjectId } = useSelectedProject();
+  const { selectedProjectId: selectedProjectIdValue, selectedProject } = useSelectedProject();
+  const selectedProjectId = selectedProjectIdValue ?? null;
   const availability = useIntegrationAvailability();
-  const { connections } = useIntegrationConnections({ enabled: availability.canUseIntegrations });
+  const { connections } = useIntegrationConnections({
+    projectId: selectedProjectId,
+    enabled: availability.canUseIntegrations,
+  });
   const connectionEpoch = getIntegrationConnectionEpoch(
     connections.find((connection) => connection.provider === provider),
   );
   const [searchParams] = useSearchParams();
   const includeCompleted = readExternalCompletedParam(searchParams);
+  const previousProjectIdRef = useRef<string | null>(selectedProjectId);
+  useEffect(() => {
+    const previousProjectId = previousProjectIdRef.current;
+    previousProjectIdRef.current = selectedProjectId;
+    // A work-area URL addresses the connection that listed it; after a real
+    // project switch it may point into another project's board, so the tab
+    // restarts at the provider landing. Initial resolution (no prior project)
+    // keeps deep links working.
+    if (
+      previousProjectId !== null &&
+      selectedProjectId !== null &&
+      previousProjectId !== selectedProjectId
+    ) {
+      navigate(externalBoardMyWorkPath(provider));
+    }
+  }, [navigate, provider, selectedProjectId]);
   const board = useExternalWorkArea(provider, workAreaId, {
     enabled: availability.canUseIntegrations,
     connectionEpoch,
     includeCompleted,
+    projectId: selectedProjectId,
   });
   const visibleBoard = availability.canUseIntegrations ? board.data : undefined;
   const sourceUrl = visibleBoard
@@ -98,9 +159,69 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
   // Radix clears the controlled open state before onCloseAutoFocus runs, so
   // focus resolution must not read selectedTaskId — retain the last opened ID.
   const lastOpenedTaskIdRef = useRef<string | null>(null);
-  // Synchronous latch acquired before the quick-import detail fetch so a
-  // same-tick repeat or cross-task click cannot start a second lookup.
-  const quickImportInFlightRef = useRef(false);
+  const quickImportTokenRef = useRef(0);
+  // Token ownership prevents an older continuation from releasing a lookup
+  // that a replacement presentation scope has already started.
+  const quickImportOwnerRef = useRef<QuickImportOperation | null>(null);
+  const quickImportFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quickImportAliveRef = useRef(true);
+  const quickImportScopeRef = useRef<CurrentQuickImportScope>({
+    provider,
+    projectId: selectedProjectId,
+    connectionEpoch,
+    enabled: availability.canUseIntegrations,
+  });
+  quickImportScopeRef.current = {
+    provider,
+    projectId: selectedProjectId,
+    connectionEpoch,
+    enabled: availability.canUseIntegrations,
+  };
+  const releaseQuickImport = useCallback((operation: QuickImportOperation): boolean => {
+    if (quickImportOwnerRef.current?.token !== operation.token) return false;
+    const canPublish =
+      quickImportAliveRef.current &&
+      quickImportTokenRef.current === operation.token &&
+      isSameQuickImportScope(operation, quickImportScopeRef.current);
+    quickImportOwnerRef.current = null;
+    return canPublish;
+  }, []);
+  const isLatestQuickImportScope = useCallback((operation: QuickImportOperation): boolean => {
+    return (
+      quickImportAliveRef.current &&
+      quickImportTokenRef.current === operation.token &&
+      isSameQuickImportScope(operation, quickImportScopeRef.current)
+    );
+  }, []);
+
+  useEffect(() => {
+    quickImportAliveRef.current = true;
+    return () => {
+      quickImportAliveRef.current = false;
+      quickImportTokenRef.current += 1;
+      quickImportOwnerRef.current = null;
+      if (quickImportFocusTimerRef.current !== null) {
+        clearTimeout(quickImportFocusTimerRef.current);
+        quickImportFocusTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const operation = quickImportOwnerRef.current;
+    if (operation && isSameQuickImportScope(operation, quickImportScopeRef.current)) return;
+    quickImportTokenRef.current += 1;
+    quickImportOwnerRef.current = null;
+    if (quickImportFocusTimerRef.current !== null) {
+      clearTimeout(quickImportFocusTimerRef.current);
+      quickImportFocusTimerRef.current = null;
+    }
+    activeImportFocusResolverRef.current = null;
+    setQuickImportPendingTaskId(null);
+    setQuickImportError(null);
+    setImportDetail(null);
+  }, [availability.canUseIntegrations, connectionEpoch, provider, selectedProjectId]);
+
   const handleImportFocusTargetReady = useCallback((resolve: (() => HTMLElement | null) | null) => {
     detailImportFocusResolverRef.current = resolve;
   }, []);
@@ -129,9 +250,45 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
   const links = useExternalTaskLinks(provider, linkInputs, {
     enabled: availability.canUseIntegrations,
     connectionEpoch,
+    includeLoggedMinutes: true,
+    projectId: selectedProjectId,
   });
+  // Placeholder (previous input set) and error-retained data keep the existing
+  // link affordances, but the time metrics require a settled successful link
+  // identity set — stale identities must never drive a numeric figure.
+  const linksMetricsReady = links.data !== undefined && !links.isPlaceholderData && !links.isError;
+  // Current time comes from one mixed-focal batch over the deduplicated
+  // linked Epic IDs; a failed or unadmitted batch leaves the totals absent
+  // and the cards suppress the unknown figure instead of guessing.
+  const linkedEpicIds = useMemo(() => {
+    if (!linksMetricsReady || links.data === undefined) return [];
+    return [
+      ...new Set(
+        links.data.items
+          .filter((item) => item.linked && item.epicId !== null)
+          .map((item) => item.epicId as string),
+      ),
+    ];
+  }, [links.data, linksMetricsReady]);
+  const epicTime = useEpicTimeSummariesBatch(linkedEpicIds, {
+    enabled: availability.canUseIntegrations,
+  });
+  // TanStack retains the last successful map after a failed background
+  // refetch. The native Board keeps that retained decoration, but external
+  // cards must not derive stale Current/New figures from it, so a failed
+  // batch supplies no totals while an authoritative Logged value still
+  // renders alone. An initially unresolved batch (no error) passes through
+  // the same unknown-Current path.
+  const epicTimeTotals = epicTime.query.isError ? undefined : epicTime.totals;
+  const selectedTaskLink: ExternalTaskLinkStateSummary | null = links.isPlaceholderData
+    ? null
+    : (links.data?.items.find((link) => link.taskId === selectedTaskId) ?? null);
 
-  const move = useExternalTaskMove(provider, { connectionEpoch, includeCompleted });
+  const move = useExternalTaskMove(provider, {
+    connectionEpoch,
+    includeCompleted,
+    projectId: selectedProjectId,
+  });
   // Arrow movement needs columns in workflow order; the board builder is the
   // one place that knows which areas are only observed-status ordered.
   const keyboardMovesEnabled = visibleBoard?.workflowOrdered ?? true;
@@ -200,8 +357,28 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
     setImportDetail(detail);
   };
   const handleQuickImport = (task: ExternalKanbanTask) => {
-    if (quickImportInFlightRef.current) return;
-    quickImportInFlightRef.current = true;
+    if (
+      quickImportOwnerRef.current !== null ||
+      !availability.canUseIntegrations ||
+      selectedProjectId === null ||
+      connectionEpoch === null
+    ) {
+      return;
+    }
+    const operation: QuickImportOperation = {
+      token: ++quickImportTokenRef.current,
+      presentationScope: {
+        provider,
+        projectId: selectedProjectId,
+        connectionEpoch,
+        taskId: task.remoteId,
+      },
+    };
+    quickImportOwnerRef.current = operation;
+    if (!isLatestQuickImportScope(operation)) {
+      releaseQuickImport(operation);
+      return;
+    }
     setQuickImportError(null);
     setQuickImportPendingTaskId(task.remoteId);
     void (async () => {
@@ -210,33 +387,35 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
         detail = await fetchFreshExternalTaskDetail(
           queryClient,
           apiFetch,
-          provider,
-          connectionEpoch,
-          task.remoteId,
+          operation.presentationScope.provider,
+          operation.presentationScope.connectionEpoch,
+          operation.presentationScope.projectId,
+          operation.presentationScope.taskId,
         );
       } catch (error) {
-        quickImportInFlightRef.current = false;
+        if (!releaseQuickImport(operation)) return;
         setQuickImportPendingTaskId(null);
         setQuickImportError(getErrorMessage(error, 'This task could not be loaded.'));
         // Let React apply the re-enabled button state before refocusing it.
-        setTimeout(() => {
+        quickImportFocusTimerRef.current = setTimeout(() => {
+          quickImportFocusTimerRef.current = null;
+          if (!isLatestQuickImportScope(operation)) return;
           (
-            liveRegisteredElement(quickImportFocusRegistry, task.remoteId) ??
+            liveRegisteredElement(quickImportFocusRegistry, operation.presentationScope.taskId) ??
             boardFocusFallbackRef.current
           )?.focus();
         }, 0);
         return;
       }
+      if (!releaseQuickImport(operation)) return;
       if (detail.linkState.linked && detail.linkState.epicId) {
-        quickImportInFlightRef.current = false;
         setQuickImportPendingTaskId(null);
         navigate(`/epics/${detail.linkState.epicId}`);
         return;
       }
       activeImportFocusResolverRef.current = () =>
-        liveRegisteredElement(quickImportFocusRegistry, task.remoteId) ??
+        liveRegisteredElement(quickImportFocusRegistry, operation.presentationScope.taskId) ??
         boardFocusFallbackRef.current;
-      quickImportInFlightRef.current = false;
       setQuickImportPendingTaskId(null);
       // Opening Import from a card must not also open the task detail.
       setImportDetail(detail);
@@ -349,6 +528,8 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
               links={links.data?.items ?? []}
               linksFetching={links.isFetching}
               linksError={links.isError}
+              timeMetricsReady={linksMetricsReady}
+              epicTimeTotals={epicTimeTotals}
               onOpenTask={handleOpenTask}
               cardFocusRegistry={cardFocusRegistry}
               boardFocusFallbackRef={boardFocusFallbackRef}
@@ -377,6 +558,7 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
 
       <ExternalTaskDetailDialog
         provider={provider}
+        projectId={selectedProjectId}
         taskId={selectedTaskId}
         open={selectedTaskId !== null}
         onOpenChange={handleDetailOpenChange}
@@ -385,6 +567,7 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
         connectionEpoch={connectionEpoch}
         returnFocusTo={resolveDialogFocusTarget}
         onImportFocusTargetReady={handleImportFocusTargetReady}
+        globalLink={selectedTaskLink}
       />
       <ExternalTaskImportDialog
         provider={provider}
@@ -392,7 +575,8 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
         open={importDetail !== null}
         enabled={availability.canUseIntegrations}
         connectionEpoch={connectionEpoch}
-        initialProjectId={selectedProjectId}
+        projectId={selectedProjectId}
+        projectName={selectedProject?.name ?? null}
         onOpenChange={handleImportOpenChange}
         onImported={handleImported}
         returnFocusTo={resolveImportFocusTarget}

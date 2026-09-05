@@ -15,6 +15,11 @@ describe('param-suggestion', () => {
         expect(suggestion).toBe('Did you mean: assignment.clear?');
       });
 
+      it('suggests relation.relatedEpicId for misplaced create relation input', () => {
+        const suggestion = suggestNestedPath('relatedEpicId', 'devchain_create_epic');
+        expect(suggestion).toBe('Did you mean: relation.relatedEpicId?');
+      });
+
       it('returns null for unknown key not found anywhere', () => {
         const suggestion = suggestNestedPath('totallyUnknownField', 'devchain_update_epic');
         expect(suggestion).toBeNull();

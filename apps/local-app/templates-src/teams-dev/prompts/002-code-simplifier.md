@@ -1,0 +1,1 @@
+run devchain/code-simplifier (via devchain_get_skill)

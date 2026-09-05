@@ -78,6 +78,7 @@ function SubtaskStatusValue({
  */
 export function ExternalTaskSubtasksPanel({
   provider,
+  projectId,
   subtasks,
   subtasksTruncated,
   connectionEpoch,
@@ -85,6 +86,7 @@ export function ExternalTaskSubtasksPanel({
   identityAccepted,
 }: {
   provider: ExternalBoardProvider;
+  projectId: string | null;
   subtasks: ExternalTaskSubtaskSummary[];
   subtasksTruncated: boolean;
   connectionEpoch: IntegrationConnectionEpoch | null;
@@ -92,6 +94,7 @@ export function ExternalTaskSubtasksPanel({
   identityAccepted: boolean;
 }) {
   const statusEditor = useExternalSubtaskStatusEditor(provider, {
+    projectId,
     connectionEpoch,
     parentTaskId,
     enabled: identityAccepted,
@@ -135,7 +138,7 @@ export function ExternalTaskSubtasksPanel({
     }
     lastSuccessRef.current = null;
     setConfirmedHold(null);
-  }, [provider, connectionEpoch, parentTaskId, identityAccepted]);
+  }, [provider, projectId, connectionEpoch, parentTaskId, identityAccepted]);
 
   if (subtasks.length === 0 && !subtasksTruncated) return null;
 

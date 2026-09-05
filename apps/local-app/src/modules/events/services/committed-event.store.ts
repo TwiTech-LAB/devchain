@@ -12,6 +12,7 @@ import {
   type PreparedEvent,
   type RegisteredDurableEventSubscriber,
 } from './durable-event-registry.service';
+import { parseCommittedEventPayloadForReplay } from './committed-event-replay';
 
 export interface ClaimedDurableDelivery {
   deliveryId: string;
@@ -111,15 +112,30 @@ export class CommittedEventStore {
         eventOrder: row.event_order,
         leaseOwner: row.lease_owner,
         attempts: row.attempts,
-        event: {
-          id: row.event_id,
-          name: row.name,
-          payload: JSON.parse(row.payload_json) as CommittedEvent['payload'],
-          requestId: row.request_id,
-          publishedAt: row.published_at,
-        },
+        event: this.parseStoredEvent(row),
       };
     });
+  }
+
+  private parseStoredEvent(row: {
+    event_id: string;
+    name: EventName;
+    payload_json: string;
+    request_id: string | null;
+    published_at: string;
+  }): CommittedEvent {
+    const event = {
+      id: row.event_id,
+      name: row.name,
+      payload: parseCommittedEventPayloadForReplay(
+        row.name,
+        JSON.parse(row.payload_json) as unknown,
+      ),
+      requestId: row.request_id,
+      publishedAt: row.published_at,
+    };
+    // The replay parser selects the payload schema from this exact event name.
+    return event as CommittedEvent;
   }
 
   private findCandidate(

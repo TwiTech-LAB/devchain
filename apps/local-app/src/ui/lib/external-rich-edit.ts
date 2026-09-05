@@ -8,6 +8,7 @@ import type {
 } from '@/modules/external-integrations/models/external-edit-session.models';
 import type { FetchFn } from '@/ui/lib/sessions';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
+import { withIntegrationProjectId } from '@/ui/lib/integration-project-scope';
 
 /**
  * Browser client for the gated rich content actions. URLs mirror the
@@ -27,12 +28,16 @@ const SESSION_BASE = '/api/integrations/my-work/edit-sessions';
 
 export function readRichDescription(
   fetchFn: FetchFn,
+  projectId: string,
   provider: string,
   taskId: string,
   signal?: AbortSignal,
 ): Promise<ExternalRichDescriptionRead> {
   return fetchJsonOrThrow<ExternalRichDescriptionRead>(
-    `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/rich-description`,
+    withIntegrationProjectId(
+      `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/rich-description`,
+      projectId,
+    ),
     { signal },
     'The description could not be loaded.',
     '',
@@ -42,11 +47,15 @@ export function readRichDescription(
 
 export function createDescriptionSession(
   fetchFn: FetchFn,
+  projectId: string,
   provider: string,
   taskId: string,
 ): Promise<ExternalEditSessionView> {
   return fetchJsonOrThrow<ExternalEditSessionView>(
-    `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/edit-sessions`,
+    withIntegrationProjectId(
+      `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/edit-sessions`,
+      projectId,
+    ),
     { method: 'POST' },
     'The editing session could not be opened.',
     '',
@@ -56,10 +65,11 @@ export function createDescriptionSession(
 
 export function touchSession(
   fetchFn: FetchFn,
+  projectId: string,
   sessionId: string,
 ): Promise<ExternalEditSessionView> {
   return fetchJsonOrThrow<ExternalEditSessionView>(
-    `${SESSION_BASE}/${encodeURIComponent(sessionId)}/touch`,
+    withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}/touch`, projectId),
     { method: 'POST' },
     'The editing session could not be refreshed.',
     '',
@@ -69,12 +79,13 @@ export function touchSession(
 
 export function saveSession(
   fetchFn: FetchFn,
+  projectId: string,
   sessionId: string,
   document: ExternalRichDocumentV1,
   revision: number,
 ): Promise<ExternalSessionWriteOutcome> {
   return fetchJsonOrThrow<ExternalSessionWriteOutcome>(
-    `${SESSION_BASE}/${encodeURIComponent(sessionId)}/save`,
+    withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}/save`, projectId),
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -88,10 +99,11 @@ export function saveSession(
 
 export function verifySession(
   fetchFn: FetchFn,
+  projectId: string,
   sessionId: string,
 ): Promise<ExternalSessionVerifyResult> {
   return fetchJsonOrThrow<ExternalSessionVerifyResult>(
-    `${SESSION_BASE}/${encodeURIComponent(sessionId)}/verify`,
+    withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}/verify`, projectId),
     { method: 'POST' },
     'The remote content could not be verified.',
     '',
@@ -101,10 +113,11 @@ export function verifySession(
 
 export function reloadSession(
   fetchFn: FetchFn,
+  projectId: string,
   sessionId: string,
 ): Promise<ExternalSessionReloadResult> {
   return fetchJsonOrThrow<ExternalSessionReloadResult>(
-    `${SESSION_BASE}/${encodeURIComponent(sessionId)}/reload`,
+    withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}/reload`, projectId),
     { method: 'POST' },
     'The remote content could not be reloaded.',
     '',
@@ -114,13 +127,17 @@ export function reloadSession(
 
 export function createCommentEditSession(
   fetchFn: FetchFn,
+  projectId: string,
   provider: string,
   taskId: string,
   commentId: string,
   lookupToken: string | null,
 ): Promise<ExternalEditSessionView> {
   return fetchJsonOrThrow<ExternalEditSessionView>(
-    `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}/edit-sessions`,
+    withIntegrationProjectId(
+      `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}/edit-sessions`,
+      projectId,
+    ),
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -134,13 +151,17 @@ export function createCommentEditSession(
 
 export function createCommentDeleteSession(
   fetchFn: FetchFn,
+  projectId: string,
   provider: string,
   taskId: string,
   commentId: string,
   lookupToken: string | null,
 ): Promise<ExternalEditSessionView> {
   return fetchJsonOrThrow<ExternalEditSessionView>(
-    `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}/delete-sessions`,
+    withIntegrationProjectId(
+      `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}/delete-sessions`,
+      projectId,
+    ),
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -154,10 +175,11 @@ export function createCommentDeleteSession(
 
 export function executeCommentDelete(
   fetchFn: FetchFn,
+  projectId: string,
   sessionId: string,
 ): Promise<ExternalCommentDeleteOutcome> {
   return fetchJsonOrThrow<ExternalCommentDeleteOutcome>(
-    `${SESSION_BASE}/${encodeURIComponent(sessionId)}`,
+    withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}`, projectId),
     { method: 'DELETE' },
     'The comment could not be deleted.',
     '',

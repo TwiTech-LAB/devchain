@@ -11,7 +11,7 @@ import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
-import { InlineSessionSummaryChip } from './InlineSessionSummaryChip';
+import { InlineSessionSummaryChip, DEFAULT_CHIP_VISIBLE_ITEMS } from './InlineSessionSummaryChip';
 import { SessionViewerPanel } from './SessionViewerPanel';
 
 // ---------------------------------------------------------------------------
@@ -159,6 +159,7 @@ function IntegrationHarness({ sessionId }: { sessionId: string | null }) {
       {metrics && (
         <InlineSessionSummaryChip
           metrics={metrics}
+          visibleItems={DEFAULT_CHIP_VISIBLE_ITEMS}
           activeTab={activeTab}
           onSwitchToSession={() => setActiveTab('session')}
         />

@@ -576,14 +576,13 @@ describe('ProviderMcpEnsureService', () => {
     it('rejects path traversal attempt with ..', async () => {
       const provider = createProvider();
 
-      // Path with traversal that normalizes to a non-registered path
+      // Path with traversal: rejected on the raw spelling before normalization
       const result = await service.ensureMcp(provider, '/home/user/../../../etc/passwd');
 
       expect(result.success).toBe(false);
       expect(result.action).toBe('error');
-      // After normalize(), '../../../' resolves and path becomes /etc/passwd
-      // which is not a registered project
-      expect(result.message).toBe('Project path is not a registered project');
+      expect(result.message).toBe('Project path cannot contain path traversal sequences');
+      // Should not call ensureRegistration if validation fails
       expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
     });
 
@@ -666,8 +665,8 @@ describe('ProviderMcpEnsureService', () => {
 
       expect(result.success).toBe(false);
       expect(result.action).toBe('error');
-      // After normalization, path becomes /home/etc which is not registered
-      expect(result.message).toBe('Project path is not a registered project');
+      // The raw '..' segment is caught before normalization
+      expect(result.message).toBe('Project path cannot contain path traversal sequences');
     });
 
     it('rejects path starting with traversal that normalizes outside projects', async () => {
@@ -678,8 +677,8 @@ describe('ProviderMcpEnsureService', () => {
 
       expect(result.success).toBe(false);
       expect(result.action).toBe('error');
-      // normalize('/../etc/passwd') = '/etc/passwd' which is not registered
-      expect(result.message).toBe('Project path is not a registered project');
+      // The raw '..' segment is caught before normalization
+      expect(result.message).toBe('Project path cannot contain path traversal sequences');
     });
 
     it('accepts path with ".." as part of segment name (not traversal)', async () => {
@@ -714,8 +713,21 @@ describe('ProviderMcpEnsureService', () => {
 
       expect(result.success).toBe(false);
       expect(result.action).toBe('error');
-      // After normalize, this becomes /etc/passwd which is not registered
-      expect(result.message).toBe('Project path is not a registered project');
+      // The raw '..' segments are caught before normalization
+      expect(result.message).toBe('Project path cannot contain path traversal sequences');
+    });
+
+    it('REGRESSION: rejects traversal that normalizes back onto a registered root', async () => {
+      const provider = createProvider();
+
+      // normalize('/home/user/project/../project') === '/home/user/project',
+      // which IS registered — only the raw-spelling check catches it.
+      const result = await service.ensureMcp(provider, '/home/user/project/../project');
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe('error');
+      expect(result.message).toBe('Project path cannot contain path traversal sequences');
+      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
     });
   });
 
@@ -1128,6 +1140,152 @@ describe('ProviderMcpEnsureService', () => {
       expect(result.success).toBe(true);
       const provisioningWarning = result.warnings?.find((w) => w.source === 'provisioning');
       expect(provisioningWarning).toBeUndefined();
+    });
+  });
+
+  describe('ensureProjectProvisioning (trust-only)', () => {
+    const claudeProvider = createProvider({ name: 'claude' });
+    const projectPath = '/home/user/project';
+    let claudeProvisionProjectPath: jest.Mock;
+
+    beforeEach(() => {
+      claudeProvisionProjectPath = jest.fn().mockResolvedValue({ success: true, warnings: [] });
+      mockAdapterFactory.getAdapter.mockImplementation((name: string) => {
+        if (name === 'claude') {
+          return {
+            providerName: 'claude',
+            ensureProjectSettings: mockClaudeEnsureProjectSettings,
+            requiresProjectProvisioning: true,
+            provisionProjectPath: claudeProvisionProjectPath,
+          };
+        }
+        if (name === 'opencode') {
+          return { providerName: 'opencode', mcpMode: 'project_config' };
+        }
+        return { providerName: name };
+      });
+    });
+
+    it('delegates to provisionProjectPath for a validated registered root', async () => {
+      const result = await service.ensureProjectProvisioning(claudeProvider, projectPath);
+
+      expect(result).toEqual({ success: true, warnings: [] });
+      expect(claudeProvisionProjectPath).toHaveBeenCalledWith(projectPath);
+    });
+
+    it('performs zero MCP registration calls and no project-local settings writes', async () => {
+      await service.ensureProjectProvisioning(claudeProvider, projectPath);
+
+      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
+      expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
+      expect(mockMcpRegistration.registerProvider).not.toHaveBeenCalled();
+      expect(mockMcpRegistration.removeRegistration).not.toHaveBeenCalled();
+      expect(mockClaudeEnsureProjectSettings).not.toHaveBeenCalled();
+    });
+
+    it('maps adapter provisioning warnings through', async () => {
+      claudeProvisionProjectPath.mockResolvedValue({
+        success: false,
+        warnings: [
+          {
+            source: 'claude_project_trust',
+            level: 'warn',
+            message: 'malformed config',
+            code: 'CLAUDE_TRUST_PROVISION_FAILED',
+          },
+        ],
+      });
+
+      const result = await service.ensureProjectProvisioning(claudeProvider, projectPath);
+
+      expect(result.success).toBe(false);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({ code: 'CLAUDE_TRUST_PROVISION_FAILED' }),
+      ]);
+    });
+
+    it('an unregistered path never reaches the adapter', async () => {
+      const result = await service.ensureProjectProvisioning(
+        claudeProvider,
+        '/home/user/unknown-project',
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({ code: 'PROVISIONING_PATH_INVALID' }),
+      ]);
+      expect(claudeProvisionProjectPath).not.toHaveBeenCalled();
+      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
+    });
+
+    it('a relative path never reaches the adapter', async () => {
+      const result = await service.ensureProjectProvisioning(claudeProvider, 'relative/path');
+
+      expect(result.success).toBe(false);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({ code: 'PROVISIONING_PATH_INVALID' }),
+      ]);
+      expect(claudeProvisionProjectPath).not.toHaveBeenCalled();
+    });
+
+    it('REGRESSION: a traversal-bearing path that normalizes to a registered root never reaches the adapter', async () => {
+      // normalize('/home/user/project/../project') === '/home/user/project',
+      // which IS registered — only the raw-spelling check catches it.
+      const result = await service.ensureProjectProvisioning(
+        claudeProvider,
+        '/home/user/project/../project',
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({ code: 'PROVISIONING_PATH_INVALID' }),
+      ]);
+      expect(claudeProvisionProjectPath).not.toHaveBeenCalled();
+      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
+    });
+
+    it('still accepts segment names containing ".." as a substring (not traversal)', async () => {
+      // Registered root '/home/user/my..project' with '..' inside the name —
+      // the segment-exact raw check must not reject it.
+      const result = await service.ensureProjectProvisioning(
+        claudeProvider,
+        '/home/user/my..project',
+      );
+
+      expect(result).toEqual({ success: true, warnings: [] });
+      expect(claudeProvisionProjectPath).toHaveBeenCalledWith('/home/user/my..project');
+    });
+
+    it('returns a fixed-code warning for unsupported providers', async () => {
+      const result = await service.ensureProjectProvisioning(
+        createProvider({ name: 'unknown-provider' }),
+        projectPath,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({ code: 'PROVISIONING_UNSUPPORTED' }),
+      ]);
+    });
+
+    it('a provisioning throw stays non-fatal with a fixed-code warning', async () => {
+      claudeProvisionProjectPath.mockRejectedValue(new Error('disk on fire'));
+
+      const result = await service.ensureProjectProvisioning(claudeProvider, projectPath);
+
+      expect(result.warnings).toEqual([
+        expect.objectContaining({ code: 'PROVISIONING_FAILED', message: 'disk on fire' }),
+      ]);
+    });
+
+    it('is a no-op success for a non-provisioning adapter', async () => {
+      const result = await service.ensureProjectProvisioning(
+        createProvider({ name: 'codex' }),
+        projectPath,
+      );
+
+      expect(result).toEqual({ success: true, warnings: [] });
+      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
     });
   });
 });

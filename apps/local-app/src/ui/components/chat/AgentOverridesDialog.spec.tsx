@@ -7,6 +7,7 @@ import {
   type AgentOverridesSavePayload,
 } from './AgentOverridesDialog';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
+import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 
 // Shim the shadcn/Radix Select with a native <select> so tests can drive it
 // deterministically (Radix Select relies on pointer events that jsdom lacks).
@@ -139,8 +140,8 @@ function installFetch(options: FetchOptions = {}) {
 function renderDialog(
   props: Partial<React.ComponentProps<typeof AgentOverridesDialog>> = {},
   configs: OverridesConfigOption[] = CONFIGS,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onSave = props.onSave ?? jest.fn();
   const onOpenChange = props.onOpenChange ?? jest.fn();
   const fetchProviderConfigsForProfile =
@@ -194,6 +195,17 @@ describe('AgentOverridesDialog', () => {
 
     expect(await screen.findByText('Default (config: opus)')).toBeInTheDocument();
     expect(await screen.findByText('Default (config: high)')).toBeInTheDocument();
+  });
+
+  it('normalizes a string model catalog left in the shared cache by the import wizard', async () => {
+    installFetch();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(providerModelQueryKeys.main('provider-1'), ['anthropic/opus']);
+
+    renderDialog({}, CONFIGS, queryClient);
+
+    expect(await screen.findByRole('option', { name: 'opus' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Model')).toBeInTheDocument();
   });
 
   it('hides the effort select for providers that do not support effort (agy)', async () => {

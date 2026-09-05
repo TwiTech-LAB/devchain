@@ -679,12 +679,15 @@ describe('Jira task detail and workflow actions', () => {
     const provider = providerWith(requestJson);
     const connection = {
       id: 'connection-jira',
+      projectId: 'project-1',
+      legacySourceConnectionId: null,
       provider: 'jira' as const,
       generation: 4,
       createdAt: '2026-08-19T10:00:00.000Z',
       updatedAt: '2026-08-19T11:00:00.000Z',
     };
     const storage = {
+      getProject: jest.fn(async () => ({ id: 'project-1' })),
       getIntegrationConnection: jest.fn(async () => connection),
       getIntegrationConnectionCredentials: jest.fn(async () => credentials),
       findExternalTaskLink: jest.fn(async () => null),
@@ -694,7 +697,7 @@ describe('Jira task detail and workflow actions', () => {
       new ExternalTaskProviderRegistry([provider]),
     );
 
-    await expect(service.getTaskDetail('jira', 'ENG-1')).resolves.toEqual(
+    await expect(service.getTaskDetail('project-1', 'jira', 'ENG-1')).resolves.toEqual(
       expect.objectContaining({
         remoteId: 'ENG-1',
         allowedStatuses: [expect.objectContaining({ actionValue: '31', name: 'Done' })],
@@ -702,7 +705,10 @@ describe('Jira task detail and workflow actions', () => {
       }),
     );
     await expect(
-      service.addTaskComment('jira', 'ENG-1', { text: 'Generic route', notifyAll: false }),
+      service.addTaskComment('project-1', 'jira', 'ENG-1', {
+        text: 'Generic route',
+        notifyAll: false,
+      }),
     ).resolves.toEqual({
       remoteTaskId: 'ENG-1',
       action: 'add_comment',

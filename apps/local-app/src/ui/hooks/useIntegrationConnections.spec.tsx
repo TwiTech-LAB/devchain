@@ -13,6 +13,8 @@ import {
 } from './useIntegrationConnections';
 
 const fetchMock = jest.fn();
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+const OTHER_PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 
 // Layer: hook + real QueryClient. Cache cancellation, prefix removal, and deferred
 // resolution behavior cannot be proven by mocking the query client itself.
@@ -103,20 +105,24 @@ describe('useIntegrationConnections', () => {
         ],
       }),
     });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
     expect(result.current.connections).toHaveLength(2);
-    expect(queryClient.getQueryData(integrationConnectionQueryKeys.list())).toEqual({
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/integrations/connections?projectId=${PROJECT_ID}`,
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(queryClient.getQueryData(integrationConnectionQueryKeys.list(PROJECT_ID))).toEqual({
       items: result.current.connections,
     });
   });
 
   it('issues no request and hides cached connection data while disabled', () => {
-    queryClient.setQueryData(integrationConnectionQueryKeys.list(), {
+    queryClient.setQueryData(integrationConnectionQueryKeys.list(PROJECT_ID), {
       items: [
         {
           provider: 'clickup',
@@ -128,13 +134,70 @@ describe('useIntegrationConnections', () => {
       ],
     });
 
-    const { result } = renderHook(() => useIntegrationConnections({ enabled: false }), {
-      wrapper: wrapper(queryClient),
-    });
+    const { result } = renderHook(
+      () => useIntegrationConnections({ projectId: PROJECT_ID, enabled: false }),
+      {
+        wrapper: wrapper(queryClient),
+      },
+    );
 
     expect(result.current.connections).toEqual([]);
     expect(result.current.error).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('issues no request without a valid selected project', () => {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: null }), {
+      wrapper: wrapper(queryClient),
+    });
+
+    expect(result.current.connections).toEqual([]);
+    expect(result.current.isLoading).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never publishes a deferred connection list from the previously selected project', async () => {
+    let resolveFirstProject!: (response: { ok: true; json: () => Promise<unknown> }) => void;
+    const secondProjectConnection = {
+      ...oldJiraConnection,
+      connectionId: 'connection-jira-b',
+    };
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes(PROJECT_ID)) {
+        return new Promise((resolve) => {
+          resolveFirstProject = resolve;
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ items: [secondProjectConnection] }),
+      });
+    });
+
+    const { result, rerender } = renderHook(
+      ({ projectId }: { projectId: string }) => useIntegrationConnections({ projectId }),
+      {
+        wrapper: wrapper(queryClient),
+        initialProps: { projectId: PROJECT_ID },
+      },
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    rerender({ projectId: OTHER_PROJECT_ID });
+    await waitFor(() => expect(result.current.connections).toEqual([secondProjectConnection]));
+
+    await act(async () => {
+      resolveFirstProject({
+        ok: true,
+        json: async () => ({ items: [oldJiraConnection] }),
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.connections).toEqual([secondProjectConnection]);
+    expect(queryClient.getQueryData(integrationConnectionQueryKeys.list(OTHER_PROJECT_ID))).toEqual(
+      { items: [secondProjectConnection] },
+    );
   });
 
   it('replaces credentials through the one collection PUT and refreshes the list', async () => {
@@ -151,7 +214,7 @@ describe('useIntegrationConnections', () => {
         }),
       })
       .mockResolvedValue({ ok: true, json: async () => ({ items: [] }) });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -163,7 +226,7 @@ describe('useIntegrationConnections', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/integrations/connections', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'clickup', token: 'test-token' }),
+      body: JSON.stringify({ provider: 'clickup', token: 'test-token', projectId: PROJECT_ID }),
     });
   });
 
@@ -181,7 +244,7 @@ describe('useIntegrationConnections', () => {
         }),
       })
       .mockResolvedValue({ ok: true, json: async () => ({ items: [] }) });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -190,9 +253,10 @@ describe('useIntegrationConnections', () => {
       await result.current.disconnectConnection('jira');
     });
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/integrations/connections/jira', {
-      method: 'DELETE',
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/integrations/connections/jira?projectId=${PROJECT_ID}`,
+      { method: 'DELETE' },
+    );
   });
 
   it('updates only the managed-subtask setting without sending credentials', async () => {
@@ -206,7 +270,7 @@ describe('useIntegrationConnections', () => {
         ok: true,
         json: async () => ({ items: [replacementJiraConnection] }),
       });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.connections).toEqual([oldJiraConnection]));
@@ -218,7 +282,7 @@ describe('useIntegrationConnections', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/integrations/connections/jira/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subtaskSyncEnabled: true }),
+      body: JSON.stringify({ projectId: PROJECT_ID, subtaskSyncEnabled: true }),
     });
     expect(fetchMock.mock.calls[1]?.[1]?.body).not.toContain('token');
   });
@@ -236,7 +300,7 @@ describe('useIntegrationConnections', () => {
         }),
       })
       .mockResolvedValue({ ok: true, json: async () => ({ items: [] }) });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.connections).toEqual([oldJiraConnection]));
@@ -246,7 +310,7 @@ describe('useIntegrationConnections', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/integrations/connections/jira?acknowledgeOrphanRisk=true',
+      `/api/integrations/connections/jira?acknowledgeOrphanRisk=true&projectId=${PROJECT_ID}`,
       { method: 'DELETE' },
     );
   });
@@ -262,7 +326,7 @@ describe('useIntegrationConnections', () => {
           details: { provider: 'jira', reason: 'authentication_failed', retryable: false },
         }),
       });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -298,7 +362,7 @@ describe('useIntegrationConnections', () => {
           details: { provider: 'jira', reason: 'request_rejected', retryable: false },
         }),
       });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -346,7 +410,7 @@ describe('useIntegrationConnections', () => {
     ).toBeNull();
   });
 
-  it('cancels and purges every provider query family on replacement while retaining Epic sources', async () => {
+  it('purges only the replaced connection epoch while retaining other projects and Epic sources', async () => {
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [oldJiraConnection] }) })
       .mockResolvedValueOnce({ ok: true, json: async () => replacementJiraConnection })
@@ -358,27 +422,35 @@ describe('useIntegrationConnections', () => {
     const removeQueries = jest.spyOn(queryClient, 'removeQueries');
     const durableSource = { items: [{ provider: 'jira', taskId: 'ENG-1' }] };
     queryClient.setQueryData(epicExternalSourceQueryKeys.detail('epic-1'), durableSource);
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.connections).toEqual([oldJiraConnection]));
     seedProviderQueryFamilies(queryClient);
+    const otherProjectEpoch = 'connection-jira-other-project:1';
+    const otherProjectKey = externalMyWorkQueryKeys.taskDetail(
+      'jira',
+      otherProjectEpoch,
+      'OTHER-1',
+    );
+    queryClient.setQueryData(otherProjectKey, { account: 'other-project' });
 
     await act(async () => {
       await result.current.replaceConnection({ provider: 'jira', token: 'replacement-token' });
     });
 
     expect(cancelQueries).toHaveBeenCalledWith({
-      queryKey: externalMyWorkQueryKeys.provider('jira'),
+      queryKey: externalMyWorkQueryKeys.epoch('jira', oldEpoch),
     });
     expect(removeQueries).toHaveBeenCalledWith({
-      queryKey: externalMyWorkQueryKeys.provider('jira'),
+      queryKey: externalMyWorkQueryKeys.epoch('jira', oldEpoch),
     });
     expect(
       queryClient.getQueryCache().findAll({
-        queryKey: externalMyWorkQueryKeys.provider('jira'),
+        queryKey: externalMyWorkQueryKeys.epoch('jira', oldEpoch),
       }),
     ).toHaveLength(0);
+    expect(queryClient.getQueryData(otherProjectKey)).toEqual({ account: 'other-project' });
     expect(queryClient.getQueryData(epicExternalSourceQueryKeys.detail('epic-1'))).toEqual(
       durableSource,
     );
@@ -389,7 +461,7 @@ describe('useIntegrationConnections', () => {
     );
   });
 
-  it('cancels and purges provider data on disconnect without deleting durable Epic sources', async () => {
+  it('purges only the disconnected connection epoch without deleting other project data', async () => {
     const disconnected: IntegrationConnectionState = {
       provider: 'jira',
       connected: false,
@@ -405,11 +477,17 @@ describe('useIntegrationConnections', () => {
       .mockResolvedValue({ ok: true, json: async () => ({ items: [disconnected] }) });
     const durableSource = { items: [{ provider: 'jira', taskId: 'ENG-1' }] };
     queryClient.setQueryData(epicExternalSourceQueryKeys.detail('epic-1'), durableSource);
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.connections).toEqual([oldJiraConnection]));
     seedProviderQueryFamilies(queryClient);
+    const otherProjectKey = externalMyWorkQueryKeys.taskDetail(
+      'jira',
+      'connection-jira-other-project:1',
+      'OTHER-1',
+    );
+    queryClient.setQueryData(otherProjectKey, { account: 'other-project' });
 
     await act(async () => {
       await result.current.disconnectConnection('jira');
@@ -417,9 +495,10 @@ describe('useIntegrationConnections', () => {
 
     expect(
       queryClient.getQueryCache().findAll({
-        queryKey: externalMyWorkQueryKeys.provider('jira'),
+        queryKey: externalMyWorkQueryKeys.epoch('jira', oldEpoch),
       }),
     ).toHaveLength(0);
+    expect(queryClient.getQueryData(otherProjectKey)).toEqual({ account: 'other-project' });
     expect(queryClient.getQueryData(epicExternalSourceQueryKeys.detail('epic-1'))).toEqual(
       durableSource,
     );
@@ -433,7 +512,7 @@ describe('useIntegrationConnections', () => {
         ok: false,
         json: async () => ({ message: 'Verification failed.' }),
       });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.connections).toEqual([oldJiraConnection]));
@@ -461,7 +540,7 @@ describe('useIntegrationConnections', () => {
         ok: true,
         json: async () => ({ items: [replacementJiraConnection] }),
       });
-    const { result } = renderHook(() => useIntegrationConnections(), {
+    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
       wrapper: wrapper(queryClient),
     });
     await waitFor(() => expect(result.current.connections).toEqual([oldJiraConnection]));

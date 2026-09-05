@@ -10,6 +10,10 @@ describe('EpicsService', () => {
   let storage: {
     createEpic: jest.Mock;
     createEpicForProject: jest.Mock;
+    createEpicWithinTransaction: jest.Mock;
+    runInTransaction: jest.Mock;
+    setEpicRelation: jest.Mock;
+    getWorkspaceEpicsByIdPrefix: jest.Mock;
     getEpic: jest.Mock;
     updateEpic: jest.Mock;
     deleteEpic: jest.Mock;
@@ -57,6 +61,10 @@ describe('EpicsService', () => {
     storage = {
       createEpic: jest.fn(),
       createEpicForProject: jest.fn(),
+      createEpicWithinTransaction: jest.fn(),
+      runInTransaction: jest.fn((fn: () => Promise<unknown>) => fn()),
+      setEpicRelation: jest.fn(),
+      getWorkspaceEpicsByIdPrefix: jest.fn(),
       getEpic: jest.fn(),
       updateEpic: jest.fn(),
       deleteEpic: jest.fn(),
@@ -92,6 +100,11 @@ describe('EpicsService', () => {
       getAutoCleanStatusIds: jest.fn().mockReturnValue([]),
     };
     eventEmitter = { emit: jest.fn() };
+    storage.getProject.mockResolvedValue({
+      id: 'project-1',
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      name: 'Demo Project',
+    });
 
     const trackCallback = <TArgs extends unknown[], TResult>(
       callback: ((...args: TArgs) => TResult) | undefined,
@@ -131,6 +144,25 @@ describe('EpicsService', () => {
         tracked.callIfNeeded(epic);
         return epic;
       },
+      createEpicWithinTransaction: async (data, eventFactory, beforeEventAppend) => {
+        const tracked = trackCallback(eventFactory);
+        let beforeCalled = false;
+        const trackedBeforeEventAppend = beforeEventAppend
+          ? async (epic: Epic) => {
+              beforeCalled = true;
+              await beforeEventAppend(epic);
+            }
+          : undefined;
+        const epic = await storage.createEpicWithinTransaction(
+          data,
+          tracked.callback,
+          trackedBeforeEventAppend,
+        );
+        if (trackedBeforeEventAppend && !beforeCalled) await trackedBeforeEventAppend(epic);
+        tracked.callIfNeeded(epic);
+        return epic;
+      },
+      runInTransaction: async (fn) => storage.runInTransaction(fn),
       createEpicWithExternalTaskLink: async (data, eventFactory) => {
         const tracked = trackCallback(eventFactory);
         const result = await storage.createEpicWithExternalTaskLink(data, tracked.callback);
@@ -154,8 +186,20 @@ describe('EpicsService', () => {
         await storage.deleteEpic(id, tracked.callback);
         if (eventFactory && !tracked.wasCalled()) {
           if (!deleted) throw new Error(`Test storage did not observe Epic ${id} before delete.`);
-          tracked.callIfNeeded(deleted);
+          tracked.callIfNeeded(deleted, '11111111-1111-4111-8111-111111111111');
         }
+      },
+      createEpicComment: async (data, eventFactory) => {
+        const observed = observedEpics.get(data.epicId);
+        const tracked = trackCallback(eventFactory);
+        const comment = await storage.createEpicComment(data, tracked.callback);
+        if (eventFactory && !tracked.wasCalled()) {
+          if (!observed) {
+            throw new Error(`Test storage did not observe Epic ${data.epicId} before comment.`);
+          }
+          tracked.callIfNeeded(comment, observed);
+        }
+        return comment;
       },
     };
 
@@ -207,7 +251,11 @@ describe('EpicsService', () => {
     it('validates project status ownership and always creates an unassigned atomic import', async () => {
       storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Product' });
       storage.getStatus.mockResolvedValue({ id: 'status-1', projectId: 'project-1' });
-      storage.getIntegrationConnection.mockResolvedValue({ id: 'connection-1', provider: 'jira' });
+      storage.getIntegrationConnection.mockResolvedValue({
+        id: 'connection-1',
+        projectId: 'project-1',
+        provider: 'jira',
+      });
       storage.createEpicWithExternalTaskLink.mockResolvedValue({
         epic: baseEpic,
         externalTaskLink: { id: 'link-1', epicId: baseEpic.id },
@@ -216,6 +264,10 @@ describe('EpicsService', () => {
 
       await service.importExternalTask(importInput);
 
+      expect(storage.getIntegrationConnection).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        provider: 'jira',
+      });
       expect(storage.createEpicWithExternalTaskLink).toHaveBeenCalledWith(
         {
           epic: expect.objectContaining({
@@ -249,9 +301,104 @@ describe('EpicsService', () => {
     it('rejects a status from a different project before creating anything', async () => {
       storage.getProject.mockResolvedValue({ id: 'project-1' });
       storage.getStatus.mockResolvedValue({ id: 'status-other', projectId: 'project-other' });
-      storage.getIntegrationConnection.mockResolvedValue({ id: 'connection-1', provider: 'jira' });
+      storage.getIntegrationConnection.mockResolvedValue({
+        id: 'connection-1',
+        projectId: 'project-1',
+        provider: 'jira',
+      });
 
       await expect(service.importExternalTask(importInput)).rejects.toBeInstanceOf(ValidationError);
+      expect(storage.createEpicWithExternalTaskLink).not.toHaveBeenCalled();
+    });
+
+    it('publishes an Epic-time scope hint after ordinary link creation', async () => {
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'Product',
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+      storage.createEpicWithExternalTaskLink.mockResolvedValue({
+        epic: baseEpic,
+        externalTaskLink: { id: 'link-1', epicId: baseEpic.id },
+        created: true,
+      });
+
+      await service.createEpicWithExternalTaskLink({
+        epic: {
+          projectId: 'project-1',
+          title: 'Linked',
+          description: null,
+          statusId: 'status-1',
+          parentId: null,
+          agentId: null,
+          data: null,
+          skillsRequired: null,
+          tags: [],
+        },
+        externalTaskLink: {
+          connectionId: 'connection-1',
+          provider: 'jira',
+          remoteScopeKey: 'acme.atlassian.net',
+          remoteTaskId: 'ENG-1',
+          sourceSnapshot: {},
+        },
+      });
+
+      expect(eventsService.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+    });
+
+    it('publishes no Epic-time scope hint when link creation fails', async () => {
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'Product',
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+      storage.createEpicWithExternalTaskLink.mockRejectedValue(new Error('rolled back'));
+
+      await expect(
+        service.createEpicWithExternalTaskLink({
+          epic: {
+            projectId: 'project-1',
+            title: 'Linked',
+            description: null,
+            statusId: 'status-1',
+            parentId: null,
+            agentId: null,
+            data: null,
+            skillsRequired: null,
+            tags: [],
+          },
+          externalTaskLink: {
+            connectionId: 'connection-1',
+            provider: 'jira',
+            remoteScopeKey: 'acme.atlassian.net',
+            remoteTaskId: 'ENG-1',
+            sourceSnapshot: {},
+          },
+        }),
+      ).rejects.toThrow('rolled back');
+
+      expect(eventsService.publish).not.toHaveBeenCalledWith(
+        'epic.time.scope.invalidated',
+        expect.anything(),
+      );
+    });
+
+    it('rejects an import when the chosen project has no provider connection', async () => {
+      storage.getProject.mockResolvedValue({ id: 'project-1' });
+      storage.getStatus.mockResolvedValue({ id: 'status-1', projectId: 'project-1' });
+      storage.getIntegrationConnection.mockResolvedValue(null);
+
+      await expect(service.importExternalTask(importInput)).rejects.toMatchObject<ValidationError>({
+        message: 'Connect the integration before importing this task.',
+      });
+
+      expect(storage.getIntegrationConnection).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        provider: 'jira',
+      });
       expect(storage.createEpicWithExternalTaskLink).not.toHaveBeenCalled();
     });
 
@@ -418,6 +565,102 @@ describe('EpicsService', () => {
         expect.objectContaining({ title: baseEpic.title, skillsRequired: ['openai/review'] }),
         expect.any(Function),
       );
+    });
+
+    it('creates an initial relation before appending and announcing the Epic fact', async () => {
+      const relatedEpicId = 'related-epic';
+      storage.createEpicWithinTransaction.mockResolvedValue(baseEpic);
+      storage.getStatus.mockResolvedValue({
+        id: 'status-1',
+        label: 'New',
+        projectId: baseEpic.projectId,
+      });
+      storage.getWorkspaceEpicsByIdPrefix.mockResolvedValue([
+        {
+          id: relatedEpicId,
+          projectId: baseEpic.projectId,
+          projectName: 'Demo Project',
+          title: 'Related',
+          statusId: 'status-1',
+          statusLabel: 'New',
+          statusColor: '#ccc',
+          statusMcpHidden: false,
+          parentId: null,
+        },
+      ]);
+      storage.setEpicRelation.mockResolvedValue({
+        changed: true,
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+
+      await service.createEpicForProject(
+        baseEpic.projectId,
+        {
+          title: baseEpic.title,
+          statusId: 'status-1',
+          relation: { relatedEpicId, relation: 'blocked_by' },
+        },
+        { actor: { type: 'agent', id: 'agent-1' }, creatorAgentName: 'Creator' },
+      );
+
+      expect(storage.runInTransaction).toHaveBeenCalledTimes(1);
+      expect(storage.createEpicWithinTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: baseEpic.projectId, title: baseEpic.title }),
+        expect.any(Function),
+        expect.any(Function),
+      );
+      expect(storage.setEpicRelation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          epicId: baseEpic.id,
+          relatedEpicId,
+          type: 'blocked_by',
+          createdBy: 'agent',
+          createdByAgentId: 'agent-1',
+        }),
+        { actor: { type: 'agent', id: 'agent-1' } },
+      );
+      expect(storage.setEpicRelation.mock.invocationCallOrder[0]).toBeLessThan(
+        eventsService.prepareCommitted!.mock.invocationCallOrder[0],
+      );
+      expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
+      expect(eventsService.publish).toHaveBeenCalledWith('epic.relations.invalidated', {
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+    });
+
+    it('announces nothing when an initial relation transaction fails', async () => {
+      storage.createEpicWithinTransaction.mockResolvedValue(baseEpic);
+      storage.getStatus.mockResolvedValue({
+        id: 'status-1',
+        label: 'New',
+        projectId: baseEpic.projectId,
+      });
+      storage.getWorkspaceEpicsByIdPrefix.mockResolvedValue([
+        {
+          id: 'related-epic',
+          projectId: baseEpic.projectId,
+          projectName: 'Demo Project',
+          title: 'Related',
+          statusId: 'status-1',
+          statusLabel: 'New',
+          statusColor: '#ccc',
+          statusMcpHidden: false,
+          parentId: null,
+        },
+      ]);
+      storage.setEpicRelation.mockRejectedValue(new Error('injected relation insert failure'));
+
+      await expect(
+        service.createEpicForProject(baseEpic.projectId, {
+          title: baseEpic.title,
+          statusId: 'status-1',
+          relation: { relatedEpicId: 'related-epic', relation: 'related' },
+        }),
+      ).rejects.toThrow('injected relation insert failure');
+
+      expect(eventsService.prepareCommitted).not.toHaveBeenCalled();
+      expect(eventsService.emitCommitted).not.toHaveBeenCalled();
+      expect(eventsService.publish).not.toHaveBeenCalled();
     });
 
     it('persists the trusted agent-name snapshot through createEpic', async () => {
@@ -687,6 +930,62 @@ describe('EpicsService', () => {
             }),
           }),
         }),
+      );
+    });
+
+    it('publishes an Epic-time scope hint after a committed parent change', async () => {
+      storage.getEpic
+        .mockResolvedValueOnce({ ...baseEpic, parentId: 'parent-A' })
+        .mockResolvedValueOnce({ id: 'parent-A', title: 'Old Parent' })
+        .mockResolvedValueOnce({ id: 'parent-B', title: 'New Parent' });
+      storage.updateEpic.mockResolvedValue({ ...baseEpic, parentId: 'parent-B', version: 2 });
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'Demo Project',
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+
+      await service.updateEpic(baseEpic.id, { parentId: 'parent-B' }, baseEpic.version);
+
+      expect(eventsService.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+    });
+
+    it('skips the Epic-time scope hint when the parent stays unchanged', async () => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, parentId: null });
+      storage.updateEpic.mockResolvedValue({ ...baseEpic, title: 'Retitled', version: 2 });
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'Demo Project',
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+      storage.getStatus.mockResolvedValue({ id: 'status-1', label: 'New' });
+
+      await service.updateEpic(baseEpic.id, { title: 'Retitled' }, baseEpic.version);
+
+      expect(eventsService.publish).not.toHaveBeenCalledWith(
+        'epic.time.scope.invalidated',
+        expect.anything(),
+      );
+    });
+
+    it('publishes no Epic-time scope hint when the update fails', async () => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, parentId: 'parent-A' });
+      storage.getProject.mockResolvedValue({
+        id: 'project-1',
+        name: 'Demo Project',
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+      storage.updateEpic.mockRejectedValue(new Error('rolled back'));
+
+      await expect(
+        service.updateEpic(baseEpic.id, { parentId: 'parent-B' }, baseEpic.version),
+      ).rejects.toThrow('rolled back');
+
+      expect(eventsService.publish).not.toHaveBeenCalledWith(
+        'epic.time.scope.invalidated',
+        expect.anything(),
       );
     });
 
@@ -1098,6 +1397,9 @@ describe('EpicsService', () => {
         actor: null,
       }),
     );
+    expect(eventsService.publish).toHaveBeenCalledWith('epic.relations.invalidated', {
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+    });
   });
 
   it('publishes epic.deleted actor from operation context when provided', async () => {
@@ -1113,6 +1415,18 @@ describe('EpicsService', () => {
         epicId: baseEpic.id,
         actor,
       }),
+    );
+  });
+
+  it('does not invalidate relations when Epic deletion fails', async () => {
+    storage.getEpic.mockResolvedValue(baseEpic);
+    storage.deleteEpic.mockRejectedValue(new Error('delete rolled back'));
+
+    await expect(service.deleteEpic(baseEpic.id)).rejects.toThrow('delete rolled back');
+
+    expect(eventsService.publish).not.toHaveBeenCalledWith(
+      'epic.relations.invalidated',
+      expect.anything(),
     );
   });
 
@@ -1249,18 +1563,20 @@ describe('EpicsService', () => {
   });
 
   describe('addEpicComment', () => {
-    it('persists comment and publishes epic.comment.created event', async () => {
+    const storedAgentComment = {
+      id: 'comment-1',
+      epicId: 'epic-1',
+      authorName: 'Test Agent',
+      content: 'Hello world',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    it('prepares the exact-agent comment fact inside the storage transaction and emits it after commit', async () => {
       storage.getEpic.mockResolvedValue(baseEpic);
       storage.getAgent.mockResolvedValue({ id: 'agent-1', name: 'Test Agent' });
       storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
-      storage.createEpicComment.mockResolvedValue({
-        id: 'comment-1',
-        epicId: 'epic-1',
-        authorName: 'Test Agent',
-        content: 'Hello world',
-        createdAt: '2024-01-01T00:00:00.000Z',
-        updatedAt: '2024-01-01T00:00:00.000Z',
-      });
+      storage.createEpicComment.mockResolvedValue(storedAgentComment);
       const result = await service.addEpicComment(
         'epic-1',
         'project-1',
@@ -1269,7 +1585,11 @@ describe('EpicsService', () => {
         'agent',
       );
       expect(result.id).toBe('comment-1');
-      expect(eventsService.publish).toHaveBeenCalledWith(
+      expect(storage.createEpicComment).toHaveBeenCalledWith(
+        { epicId: 'epic-1', authorName: 'Test Agent', content: 'Hello world' },
+        expect.any(Function),
+      );
+      expect(eventsService.prepareCommitted).toHaveBeenCalledWith(
         'epic.comment.created',
         expect.objectContaining({
           commentId: 'comment-1',
@@ -1279,8 +1599,70 @@ describe('EpicsService', () => {
           authorName: 'Test Agent',
           content: 'Hello world',
           actor: { type: 'agent', id: 'agent-1' },
+          projectName: 'Test Project',
+          epicTitle: 'Initial Epic',
+          agentName: 'Test Agent',
+          recipientIds: [],
         }),
       );
+      expect(eventsService.emitCommitted).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'prepared-event', name: 'epic.comment.created' }),
+      );
+    });
+
+    it('emits the committed comment fact only after the storage call resolves', async () => {
+      storage.getEpic.mockResolvedValue(baseEpic);
+      storage.getAgent.mockResolvedValue({ id: 'agent-1', name: 'Test Agent' });
+      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
+      const order: string[] = [];
+      storage.createEpicComment.mockImplementation(async () => {
+        order.push('storage-resolved');
+        return storedAgentComment;
+      });
+      const innerEmit = eventsService.emitCommitted;
+      eventsService.emitCommitted = jest.fn((event) => {
+        order.push('emit');
+        innerEmit(event);
+      });
+
+      await service.addEpicComment('epic-1', 'project-1', 'Hello world', 'agent-1', 'agent');
+
+      expect(order).toEqual(['storage-resolved', 'emit']);
+    });
+
+    it('rejects the exact-agent comment when event validation fails inside the transaction', async () => {
+      storage.getEpic.mockResolvedValue(baseEpic);
+      storage.getAgent.mockResolvedValue({ id: 'agent-1', name: 'Test Agent' });
+      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
+      storage.createEpicComment.mockResolvedValue(storedAgentComment);
+      eventsService.prepareCommitted.mockImplementation(() => {
+        throw new Error('event payload rejected');
+      });
+
+      await expect(
+        service.addEpicComment('epic-1', 'project-1', 'Hello world', 'agent-1', 'agent'),
+      ).rejects.toThrow('event payload rejected');
+      expect(eventsService.emitCommitted).not.toHaveBeenCalled();
+    });
+
+    it('keeps the project-name lookup non-fatal for the exact-agent comment fact', async () => {
+      storage.getEpic.mockResolvedValue(baseEpic);
+      storage.getAgent.mockResolvedValue({ id: 'agent-1', name: 'Test Agent' });
+      storage.getProject.mockRejectedValue(new Error('project row missing'));
+      storage.createEpicComment.mockResolvedValue(storedAgentComment);
+
+      const result = await service.addEpicComment(
+        'epic-1',
+        'project-1',
+        'Hello world',
+        'agent-1',
+        'agent',
+      );
+
+      expect(result.id).toBe('comment-1');
+      const payload = eventsService.prepareCommitted.mock.calls[0]![1] as Record<string, unknown>;
+      expect(payload.projectName).toBeUndefined();
+      expect(eventsService.emitCommitted).toHaveBeenCalled();
     });
 
     it('throws ValidationError on project-boundary mismatch', async () => {
@@ -1291,7 +1673,7 @@ describe('EpicsService', () => {
       expect(storage.createEpicComment).not.toHaveBeenCalled();
     });
 
-    it('resolves guest author name correctly', async () => {
+    it('resolves guest author name correctly and publishes best-effort', async () => {
       storage.getEpic.mockResolvedValue(baseEpic);
       storage.getGuest.mockResolvedValue({ id: 'guest-1', name: 'Test Guest' });
       storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
@@ -1312,16 +1694,27 @@ describe('EpicsService', () => {
       );
       expect(result.authorName).toBe('Test Guest');
       expect(storage.getGuest).toHaveBeenCalledWith('guest-1');
+      expect(eventsService.publish).toHaveBeenCalledWith(
+        'epic.comment.created',
+        expect.objectContaining({
+          commentId: 'comment-2',
+          actor: { type: 'guest', id: 'guest-1' },
+        }),
+      );
+      expect(eventsService.prepareCommitted).not.toHaveBeenCalledWith(
+        'epic.comment.created',
+        expect.anything(),
+      );
     });
 
-    it('still returns comment when event publish fails', async () => {
+    it('still returns the guest comment when the best-effort publish fails', async () => {
       storage.getEpic.mockResolvedValue(baseEpic);
-      storage.getAgent.mockResolvedValue({ id: 'agent-1', name: 'Test Agent' });
+      storage.getGuest.mockResolvedValue({ id: 'guest-1', name: 'Test Guest' });
       storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
       storage.createEpicComment.mockResolvedValue({
         id: 'comment-3',
         epicId: 'epic-1',
-        authorName: 'Test Agent',
+        authorName: 'Test Guest',
         content: 'Resilient',
         createdAt: '2024-01-01T00:00:00.000Z',
         updatedAt: '2024-01-01T00:00:00.000Z',
@@ -1331,8 +1724,8 @@ describe('EpicsService', () => {
         'epic-1',
         'project-1',
         'Resilient',
-        'agent-1',
-        'agent',
+        'guest-1',
+        'guest',
       );
       expect(result.id).toBe('comment-3');
     });

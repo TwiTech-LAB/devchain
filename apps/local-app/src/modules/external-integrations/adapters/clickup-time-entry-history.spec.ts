@@ -87,6 +87,7 @@ describe('ClickUp time-entry history', () => {
           startedAt: new Date(BASE_DATE).toISOString(),
           note: null,
           noteTruncated: false,
+          canEdit: true,
           canDelete: true,
         },
         {
@@ -95,6 +96,7 @@ describe('ClickUp time-entry history', () => {
           startedAt: new Date(BASE_DATE - 60_000).toISOString(),
           note: 'Implementation',
           noteTruncated: false,
+          canEdit: true,
           canDelete: true,
         },
         {
@@ -103,6 +105,7 @@ describe('ClickUp time-entry history', () => {
           startedAt: new Date(BASE_DATE - 120_000).toISOString(),
           note: 'x'.repeat(10_000),
           noteTruncated: true,
+          canEdit: true,
           canDelete: true,
         },
       ],

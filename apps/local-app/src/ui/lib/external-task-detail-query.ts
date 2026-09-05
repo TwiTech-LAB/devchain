@@ -3,6 +3,10 @@ import type { ExternalTaskDetail } from '@/modules/external-integrations/models/
 import type { ExternalBoardProvider } from '@/ui/lib/external-board';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
+import {
+  validIntegrationProjectId,
+  withIntegrationProjectId,
+} from '@/ui/lib/integration-project-scope';
 import { fetchJsonOrThrow, type FetchFn } from '@/ui/lib/sessions';
 
 /**
@@ -15,6 +19,7 @@ export function externalTaskDetailQueryOptions(
   apiFetch: FetchFn,
   provider: ExternalBoardProvider,
   connectionEpoch: IntegrationConnectionEpoch | null,
+  projectId: string | null,
   taskId: string,
   { enabled = true }: { enabled?: boolean } = {},
 ): UseQueryOptions<ExternalTaskDetail, Error, ExternalTaskDetail, readonly unknown[]> {
@@ -22,13 +27,20 @@ export function externalTaskDetailQueryOptions(
     queryKey: externalMyWorkQueryKeys.taskDetail(provider, connectionEpoch, taskId),
     queryFn: ({ signal }) =>
       fetchJsonOrThrow<ExternalTaskDetail>(
-        `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}`,
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}`,
+          projectId,
+        ),
         { signal },
         'Task detail could not be loaded.',
         '',
         apiFetch,
       ),
-    enabled: enabled && connectionEpoch !== null && taskId !== '',
+    enabled:
+      enabled &&
+      connectionEpoch !== null &&
+      validIntegrationProjectId(projectId) !== null &&
+      taskId !== '',
   };
 }
 
@@ -43,10 +55,11 @@ export function fetchFreshExternalTaskDetail(
   apiFetch: FetchFn,
   provider: ExternalBoardProvider,
   connectionEpoch: IntegrationConnectionEpoch | null,
+  projectId: string,
   taskId: string,
 ): Promise<ExternalTaskDetail> {
   return queryClient.fetchQuery({
-    ...externalTaskDetailQueryOptions(apiFetch, provider, connectionEpoch, taskId),
+    ...externalTaskDetailQueryOptions(apiFetch, provider, connectionEpoch, projectId, taskId),
     staleTime: 0,
   });
 }

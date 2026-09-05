@@ -6,6 +6,8 @@ import { epicCreatedEvent } from './epic.created';
 import { epicDeletedEvent } from './epic.deleted';
 import { epicUpdatedEvent } from './epic.updated';
 import { epicCommentCreatedEvent } from './epic.comment.created';
+import { epicRelationsInvalidatedEvent } from './epic.relations.invalidated';
+import { epicTimeScopeInvalidatedEvent } from './epic.time.scope.invalidated';
 import { sessionStartedEvent } from './session.started';
 import { sessionStartingEvent } from './session.starting';
 import { sessionRestoredEvent } from './session.restored';
@@ -70,6 +72,8 @@ export const eventCatalog = {
   [epicDeletedEvent.name]: epicDeletedEvent.schema,
   [epicUpdatedEvent.name]: epicUpdatedEvent.schema,
   [epicCommentCreatedEvent.name]: epicCommentCreatedEvent.schema,
+  [epicRelationsInvalidatedEvent.name]: epicRelationsInvalidatedEvent.schema,
+  [epicTimeScopeInvalidatedEvent.name]: epicTimeScopeInvalidatedEvent.schema,
   [sessionStartedEvent.name]: sessionStartedEvent.schema,
   [sessionStartingEvent.name]: sessionStartingEvent.schema,
   [sessionRestoredEvent.name]: sessionRestoredEvent.schema,
@@ -116,6 +120,8 @@ export const eventNames = Object.keys(eventCatalog) as EventName[];
 // EventsService.publish enforces this policy. Direct EventLogService.recordPublished callers
 // bypass it; the only current production bypass is non-transient worktree activity.
 export const transientEventNames = [
+  'epic.relations.invalidated',
+  'epic.time.scope.invalidated',
   'session.transcript.updated',
 ] as const satisfies readonly EventName[];
 

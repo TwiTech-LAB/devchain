@@ -20,11 +20,14 @@ import type {
 import {
   TIME_CREATE_BASELINE_WINDOW_MS,
   TIME_ENTRY_START_TOLERANCE_MS,
+  timeOperationCanVerify,
   type ExternalTimeEntryCreateResult,
+  type ExternalTimeEntryUpdateResult,
   type ExternalTimeMutationReceipt,
   type ExternalTimeEntryDeleteResult,
   type ExternalTimeMutationTuple,
   type ExternalTimeOperationReceiptView,
+  type ExternalTimeOperationInspection,
   type ExternalTimeOperationVerifyResult,
 } from '../models/external-time-mutation.models';
 import { timeEntryNoteFingerprint } from '../sessions/external-time-mutation.store';
@@ -67,16 +70,75 @@ export class ExternalTimeMutationService {
     private readonly store: ExternalTimeMutationStore,
   ) {}
 
+  inspectOperation(operationId: string): ExternalTimeOperationInspection | null {
+    const receipt = this.store.get(operationId);
+    if (!receipt) {
+      return null;
+    }
+    const view = this.store.view(receipt);
+    return {
+      operationId: receipt.operationId,
+      kind: receipt.kind,
+      tuple: { ...receipt.tuple },
+      phase: receipt.phase,
+      canVerify: view.canVerify,
+      expiresAt: view.expiresAt,
+    };
+  }
+
   async createTimeEntry(
+    projectId: string,
+    provider: IntegrationProvider,
+    remoteTaskId: string,
+    input: ExternalTaskTimeEntryInput,
+    operationId: string,
+    expectedEpoch: number,
+    remoteScopeKey: string,
+  ): Promise<ExternalTimeEntryCreateResult> {
+    return this.createTimeEntryInternal(
+      projectId,
+      provider,
+      remoteTaskId,
+      input,
+      operationId,
+      expectedEpoch,
+      this.requireRemoteScopeKey(remoteScopeKey),
+    );
+  }
+
+  /** Estimate-only dispatch after EpicEstimateLoggingService has prepared the
+   * exact durable pending operation; ordinary callers must use createTimeEntry. */
+  async createEstimateTimeEntry(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     input: ExternalTaskTimeEntryInput,
     operationId: string,
     expectedEpoch: number,
   ): Promise<ExternalTimeEntryCreateResult> {
-    const connection = await this.precheckEpoch(provider, expectedEpoch);
+    return this.createTimeEntryInternal(
+      projectId,
+      provider,
+      remoteTaskId,
+      input,
+      operationId,
+      expectedEpoch,
+      null,
+    );
+  }
+
+  private async createTimeEntryInternal(
+    projectId: string,
+    provider: IntegrationProvider,
+    remoteTaskId: string,
+    input: ExternalTaskTimeEntryInput,
+    operationId: string,
+    expectedEpoch: number,
+    remoteScopeKey: string | null,
+  ): Promise<ExternalTimeEntryCreateResult> {
+    const connection = await this.precheckEpoch(projectId, provider, expectedEpoch);
     const capability = this.requireCapability(provider);
-    const credentials = await this.loadCredentials(provider);
+    const credentials = await this.loadCredentials(projectId, provider);
     const tuple: ExternalTimeMutationTuple = {
       provider,
       connectionId: connection.id,
@@ -92,8 +154,13 @@ export class ExternalTimeMutationService {
     const windowFrom = startedAtMs - TIME_CREATE_BASELINE_WINDOW_MS;
     const windowTo = startedAtMs + TIME_CREATE_BASELINE_WINDOW_MS;
 
-    return this.gate.run(provider, async () => {
-      await this.recheckEpoch(provider, connection);
+    return this.gate.run({ projectId, provider }, async () => {
+      await this.recheckEpoch(projectId, provider, connection);
+      if (remoteScopeKey !== null) {
+        await this.assertNoPendingEstimate(connection, provider, remoteScopeKey, remoteTaskId);
+      } else {
+        this.assertNoLiveTaskMutation(tuple, operationId);
+      }
 
       // Baseline before dispatch: own-entry ids near the effective start.
       const baseline = await capability.listOwnTimeEntryIdsInRange(
@@ -145,15 +212,18 @@ export class ExternalTimeMutationService {
   }
 
   async deleteTimeEntry(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     remoteEntryId: string,
     operationId: string,
     expectedEpoch: number,
+    remoteScopeKey: string,
   ): Promise<ExternalTimeEntryDeleteResult> {
-    const connection = await this.precheckEpoch(provider, expectedEpoch);
+    const normalizedScopeKey = this.requireRemoteScopeKey(remoteScopeKey);
+    const connection = await this.precheckEpoch(projectId, provider, expectedEpoch);
     const capability = this.requireCapability(provider);
-    const credentials = await this.loadCredentials(provider);
+    const credentials = await this.loadCredentials(projectId, provider);
     const tuple: ExternalTimeMutationTuple = {
       provider,
       connectionId: connection.id,
@@ -166,8 +236,9 @@ export class ExternalTimeMutationService {
     };
     const context = { connectionId: connection.id, connectionGeneration: connection.generation };
 
-    return this.gate.run(provider, async () => {
-      await this.recheckEpoch(provider, connection);
+    return this.gate.run({ projectId, provider }, async () => {
+      await this.recheckEpoch(projectId, provider, connection);
+      await this.assertNoPendingEstimate(connection, provider, normalizedScopeKey, remoteTaskId);
 
       // Provider-specific preflight: presence and ownership proof before any
       // mutation is dispatched.
@@ -213,16 +284,118 @@ export class ExternalTimeMutationService {
     });
   }
 
+  async updateTimeEntry(
+    projectId: string,
+    provider: IntegrationProvider,
+    remoteTaskId: string,
+    remoteEntryId: string,
+    input: ExternalTaskTimeEntryInput,
+    operationId: string,
+    expectedEpoch: number,
+    remoteScopeKey: string,
+  ): Promise<ExternalTimeEntryUpdateResult> {
+    const normalizedScopeKey = this.requireRemoteScopeKey(remoteScopeKey);
+    const connection = await this.precheckEpoch(projectId, provider, expectedEpoch);
+    const capability = this.requireCapability(provider);
+    const credentials = await this.loadCredentials(projectId, provider);
+    const tuple: ExternalTimeMutationTuple = {
+      provider,
+      connectionId: connection.id,
+      connectionGeneration: connection.generation,
+      remoteTaskId,
+      remoteEntryId,
+      effectiveStartedAt: input.startedAt,
+      durationMs: input.durationMs,
+      noteFingerprint: timeEntryNoteFingerprint(input.note),
+    };
+    const context = { connectionId: connection.id, connectionGeneration: connection.generation };
+
+    return this.gate.run({ projectId, provider }, async () => {
+      await this.recheckEpoch(projectId, provider, connection);
+      await this.assertNoPendingEstimate(connection, provider, normalizedScopeKey, remoteTaskId);
+      const baseline = await capability.assertTimeEntryEditable(
+        credentials,
+        context,
+        remoteTaskId,
+        remoteEntryId,
+      );
+      const updateBaseline = {
+        startedAt: baseline.startedAt,
+        durationMs: baseline.durationMs,
+        noteFingerprint: timeEntryNoteFingerprint(baseline.note),
+      };
+      const admitted = this.store.admit({
+        operationId,
+        kind: 'update',
+        tuple,
+        baseline: null,
+        updateBaseline,
+      });
+      if (!admitted.ok) {
+        if (
+          (admitted.reason === 'duplicate_live' || admitted.reason === 'duplicate_terminal') &&
+          admitted.receipt?.kind === 'update'
+        ) {
+          const replay = this.replayUpdate(admitted.receipt);
+          if (replay !== null) {
+            return replay;
+          }
+        }
+        throw this.admitFailure(operationId, admitted.reason, admitted.receipt?.phase);
+      }
+      if (this.exactMatchesTuple(baseline, tuple)) {
+        this.store.markTerminal(operationId, 'not_applied', remoteEntryId);
+        return { outcome: 'not_applied', receipt: this.requireView(operationId) };
+      }
+
+      try {
+        this.store.markDispatched(operationId);
+        await capability.updateTimeEntry(credentials, context, remoteTaskId, remoteEntryId, input);
+        let exact: Awaited<ReturnType<ExternalTimeEntryMutationsCapability['readTimeEntryExact']>>;
+        try {
+          exact = await capability.readTimeEntryExact(
+            credentials,
+            context,
+            remoteTaskId,
+            remoteEntryId,
+          );
+        } catch {
+          this.store.markUnknown(operationId);
+          return { outcome: 'outcome_unknown', receipt: this.requireView(operationId) };
+        }
+        if (exact !== null && this.exactMatchesTuple(exact, tuple)) {
+          this.store.markTerminal(operationId, 'succeeded', remoteEntryId);
+          return { outcome: 'updated', receipt: this.requireView(operationId) };
+        }
+        if (exact !== null && this.exactMatchesUpdateBaseline(exact, updateBaseline)) {
+          this.store.markTerminal(operationId, 'not_applied', remoteEntryId);
+          return { outcome: 'not_applied', receipt: this.requireView(operationId) };
+        }
+        this.store.markUnknown(operationId);
+        return { outcome: 'outcome_unknown', receipt: this.requireView(operationId) };
+      } catch (error) {
+        if (isUnknownOutcome(error)) {
+          this.store.markUnknown(operationId);
+          return { outcome: 'outcome_unknown', receipt: this.requireView(operationId) };
+        }
+        this.store.markTerminal(operationId, 'failed');
+        throw error;
+      }
+    });
+  }
+
   async getOperation(
+    projectId: string,
     provider: IntegrationProvider,
     operationId: string,
     expectedEpoch: number,
   ): Promise<ExternalTimeOperationReceiptView> {
-    await this.precheckEpoch(provider, expectedEpoch);
+    const connection = await this.precheckEpoch(projectId, provider, expectedEpoch);
     const receipt = this.store.get(operationId);
     if (!receipt || receipt.tuple.provider !== provider) {
       throw new NotFoundError('Time entry operation', operationId);
     }
+    this.assertReceiptConnection(receipt, connection);
     return this.store.view(receipt);
   }
 
@@ -230,14 +403,18 @@ export class ExternalTimeMutationService {
    * Resolves an unknown receipt from exact provider proof only: a create
    * needs complete before/after id sets and exactly one new matching entry;
    * a delete needs the exact-resource GET (404 proves deletion, presence
-   * proves it never landed). Collection absence never resolves anything.
+   * proves it never landed). Collection absence never resolves anything. An
+   * unknown create whose stored baseline was incomplete returns
+   * completeness_not_provable before credentials load and before any
+   * provider call.
    */
   async verifyOperation(
+    projectId: string,
     provider: IntegrationProvider,
     operationId: string,
     expectedEpoch: number,
   ): Promise<ExternalTimeOperationVerifyResult> {
-    const connection = await this.precheckEpoch(provider, expectedEpoch);
+    const connection = await this.precheckEpoch(projectId, provider, expectedEpoch);
     const receipt = this.store.get(operationId);
     if (!receipt) {
       throw new NotFoundError('Time entry operation', operationId);
@@ -258,36 +435,63 @@ export class ExternalTimeMutationService {
         resolution: 'already_terminal',
       };
     }
+    return this.gate.run({ projectId, provider }, async () => {
+      await this.recheckEpoch(projectId, provider, connection);
+      const current = this.store.get(operationId);
+      if (!current) {
+        throw new NotFoundError('Time entry operation', operationId);
+      }
+      this.assertReceiptConnection(current, connection);
+      if (current.phase !== 'outcome_unknown') {
+        return {
+          receipt: this.store.view(current),
+          resolved: false,
+          resolution: 'already_terminal',
+        };
+      }
+      if (!timeOperationCanVerify(current)) {
+        return {
+          receipt: this.store.view(current),
+          resolved: false,
+          resolution: 'completeness_not_provable',
+        };
+      }
+      const credentials = await this.loadReceiptCredentials(projectId, provider, connection);
+      return this.verifyUnknownOperation(
+        projectId,
+        provider,
+        operationId,
+        connection,
+        current,
+        credentials,
+      );
+    });
+  }
+
+  private async verifyUnknownOperation(
+    projectId: string,
+    provider: IntegrationProvider,
+    operationId: string,
+    connection: IntegrationConnection,
+    receipt: ExternalTimeMutationReceipt,
+    credentials: IntegrationCredentials,
+  ): Promise<ExternalTimeOperationVerifyResult> {
     const capability = this.requireCapability(provider);
-    const credentials = await this.loadCredentials(provider);
     const context = {
       connectionId: receipt.tuple.connectionId,
       connectionGeneration: receipt.tuple.connectionGeneration,
     };
 
-    if (receipt.kind === 'delete') {
+    if (receipt.kind === 'update') {
       const entryId = receipt.tuple.remoteEntryId!;
+      let exact: Awaited<ReturnType<ExternalTimeEntryMutationsCapability['readTimeEntryExact']>>;
       try {
-        const exact = await capability.readTimeEntryExact(
+        exact = await capability.readTimeEntryExact(
           credentials,
           context,
           receipt.tuple.remoteTaskId,
           entryId,
         );
-        if (exact === null) {
-          this.store.markTerminal(operationId, 'already_deleted', entryId);
-          return {
-            receipt: this.requireView(operationId),
-            resolved: true,
-            resolution: 'already_deleted',
-          };
-        }
-        this.store.markTerminal(operationId, 'not_applied', entryId);
-        return {
-          receipt: this.requireView(operationId),
-          resolved: true,
-          resolution: 'not_applied',
-        };
       } catch {
         return {
           receipt: this.requireView(operationId),
@@ -295,6 +499,66 @@ export class ExternalTimeMutationService {
           resolution: 'verify_failed',
         };
       }
+      await this.recheckEpoch(projectId, provider, connection);
+      if (exact !== null && this.exactMatchesTuple(exact, receipt.tuple)) {
+        this.store.markTerminal(operationId, 'succeeded', entryId);
+        return {
+          receipt: this.requireView(operationId),
+          resolved: true,
+          resolution: 'updated',
+        };
+      }
+      if (
+        exact !== null &&
+        receipt.updateBaseline !== null &&
+        this.exactMatchesUpdateBaseline(exact, receipt.updateBaseline)
+      ) {
+        this.store.markTerminal(operationId, 'not_applied', entryId);
+        return {
+          receipt: this.requireView(operationId),
+          resolved: true,
+          resolution: 'not_applied',
+        };
+      }
+      return {
+        receipt: this.requireView(operationId),
+        resolved: false,
+        resolution: 'unresolved',
+      };
+    }
+
+    if (receipt.kind === 'delete') {
+      const entryId = receipt.tuple.remoteEntryId!;
+      let exact: Awaited<ReturnType<ExternalTimeEntryMutationsCapability['readTimeEntryExact']>>;
+      try {
+        exact = await capability.readTimeEntryExact(
+          credentials,
+          context,
+          receipt.tuple.remoteTaskId,
+          entryId,
+        );
+      } catch {
+        return {
+          receipt: this.requireView(operationId),
+          resolved: false,
+          resolution: 'verify_failed',
+        };
+      }
+      await this.recheckEpoch(projectId, provider, connection);
+      if (exact === null) {
+        this.store.markTerminal(operationId, 'already_deleted', entryId);
+        return {
+          receipt: this.requireView(operationId),
+          resolved: true,
+          resolution: 'already_deleted',
+        };
+      }
+      this.store.markTerminal(operationId, 'not_applied', entryId);
+      return {
+        receipt: this.requireView(operationId),
+        resolved: true,
+        resolution: 'not_applied',
+      };
     }
 
     // Create verification: complete before/after id sets, then exactly one
@@ -329,6 +593,7 @@ export class ExternalTimeMutationService {
     const baselineIds = new Set(baseline.matchingIds);
     const newIds = after.ids.filter((id) => !baselineIds.has(id));
     if (newIds.length === 0) {
+      await this.recheckEpoch(projectId, provider, connection);
       this.store.markTerminal(operationId, 'not_applied');
       return { receipt: this.requireView(operationId), resolved: true, resolution: 'not_applied' };
     }
@@ -364,6 +629,7 @@ export class ExternalTimeMutationService {
       }
     }
     if (matches.length === 1) {
+      await this.recheckEpoch(projectId, provider, connection);
       this.store.markTerminal(operationId, 'succeeded', matches[0]!);
       return { receipt: this.requireView(operationId), resolved: true, resolution: 'created' };
     }
@@ -375,25 +641,30 @@ export class ExternalTimeMutationService {
    * unknown receipt and the receipt becomes terminal abandoned_unknown.
    */
   async acknowledgeOperation(
+    projectId: string,
     provider: IntegrationProvider,
     operationId: string,
     expectedEpoch: number,
   ): Promise<ExternalTimeOperationReceiptView> {
-    await this.precheckEpoch(provider, expectedEpoch);
-    const existing = this.store.get(operationId);
-    if (!existing || existing.tuple.provider !== provider) {
-      throw new NotFoundError('Time entry operation', operationId);
-    }
-    const acked = this.store.acknowledgeUnknown(operationId);
-    if (!acked.ok) {
-      if (acked.reason === 'not_found') {
+    const connection = await this.precheckEpoch(projectId, provider, expectedEpoch);
+    return this.gate.run({ projectId, provider }, async () => {
+      await this.recheckEpoch(projectId, provider, connection);
+      const existing = this.store.get(operationId);
+      if (!existing || existing.tuple.provider !== provider) {
         throw new NotFoundError('Time entry operation', operationId);
       }
-      throw new ConflictError('Only an unresolved operation can be acknowledged.', {
-        reason: 'operation_not_unknown',
-      });
-    }
-    return this.store.view(acked.receipt);
+      this.assertReceiptConnection(existing, connection);
+      const acked = this.store.acknowledgeUnknown(operationId);
+      if (!acked.ok) {
+        if (acked.reason === 'not_found') {
+          throw new NotFoundError('Time entry operation', operationId);
+        }
+        throw new ConflictError('Only an unresolved operation can be acknowledged.', {
+          reason: 'operation_not_unknown',
+        });
+      }
+      return this.store.view(acked.receipt);
+    });
   }
 
   /**
@@ -431,21 +702,69 @@ export class ExternalTimeMutationService {
     return null;
   }
 
+  private replayUpdate(receipt: ExternalTimeMutationReceipt): ExternalTimeEntryUpdateResult | null {
+    const view = this.store.view(receipt);
+    if (receipt.phase === 'outcome_unknown') {
+      return { outcome: 'outcome_unknown', receipt: view };
+    }
+    if (receipt.phase === 'succeeded') {
+      return { outcome: 'updated', receipt: view };
+    }
+    if (receipt.phase === 'not_applied') {
+      return { outcome: 'not_applied', receipt: view };
+    }
+    return null;
+  }
+
+  private exactMatchesTuple(
+    exact: {
+      startedAt: string;
+      durationMs: number;
+      note: string | null;
+    },
+    tuple: ExternalTimeMutationTuple,
+  ): boolean {
+    return (
+      exact.startedAt === tuple.effectiveStartedAt &&
+      exact.durationMs === tuple.durationMs &&
+      timeEntryNoteFingerprint(exact.note) === tuple.noteFingerprint
+    );
+  }
+
+  private exactMatchesUpdateBaseline(
+    exact: {
+      startedAt: string;
+      durationMs: number;
+      note: string | null;
+    },
+    baseline: NonNullable<ExternalTimeMutationReceipt['updateBaseline']>,
+  ): boolean {
+    return (
+      exact.startedAt === baseline.startedAt &&
+      exact.durationMs === baseline.durationMs &&
+      timeEntryNoteFingerprint(exact.note) === baseline.noteFingerprint
+    );
+  }
+
   /** Validates the caller's expected epoch before any credentials load. */
   private async precheckEpoch(
+    projectId: string,
     provider: IntegrationProvider,
     expectedEpoch: number,
   ): Promise<IntegrationConnection> {
-    const connection = await this.storage.getIntegrationConnection(provider);
-    if (!connection || connection.provider !== provider) {
+    await this.storage.getProject(projectId);
+    const connection = await this.storage.getIntegrationConnection({ projectId, provider });
+    if (connection?.projectId !== projectId || connection.provider !== provider) {
       throw new ValidationError('Connect the integration before changing time entries.', {
         provider,
+        projectId,
         reason: 'not_connected',
       });
     }
     if (connection.generation !== expectedEpoch) {
       throw new ConflictError('The connection changed; reload and retry with the current epoch.', {
         provider,
+        projectId,
         reason: 'connection_epoch_mismatch',
         expectedEpoch,
         currentEpoch: connection.generation,
@@ -456,32 +775,73 @@ export class ExternalTimeMutationService {
 
   /** Second epoch check inside the gate, against the live connection. */
   private async recheckEpoch(
+    projectId: string,
     provider: IntegrationProvider,
     expected: IntegrationConnection,
   ): Promise<void> {
-    const current = await this.storage.getIntegrationConnection(provider);
+    const current = await this.storage.getIntegrationConnection({ projectId, provider });
     if (
       !current ||
+      current.projectId !== projectId ||
       current.provider !== provider ||
       current.id !== expected.id ||
       current.generation !== expected.generation
     ) {
       throw new ConflictError('The connection changed; the operation was not dispatched.', {
         provider,
+        projectId,
         reason: 'connection_superseded',
       });
     }
   }
 
-  private async loadCredentials(provider: IntegrationProvider): Promise<IntegrationCredentials> {
-    const credentials = await this.storage.getIntegrationConnectionCredentials(provider);
+  private async loadCredentials(
+    projectId: string,
+    provider: IntegrationProvider,
+  ): Promise<IntegrationCredentials> {
+    const credentials = await this.storage.getIntegrationConnectionCredentials({
+      projectId,
+      provider,
+    });
     if (!credentials || credentials.provider !== provider) {
       throw new ValidationError('Connect the integration before changing time entries.', {
         provider,
+        projectId,
         reason: 'not_connected',
       });
     }
     return credentials;
+  }
+
+  private async loadReceiptCredentials(
+    projectId: string,
+    provider: IntegrationProvider,
+    connection: IntegrationConnection,
+  ): Promise<IntegrationCredentials> {
+    const credentials = await this.storage.getIntegrationConnectionCredentialsById(connection.id);
+    await this.recheckEpoch(projectId, provider, connection);
+    if (!credentials || credentials.provider !== provider) {
+      throw new ValidationError('Connect the integration before changing time entries.', {
+        provider,
+        projectId,
+        reason: 'not_connected',
+      });
+    }
+    return credentials;
+  }
+
+  private assertReceiptConnection(
+    receipt: ExternalTimeMutationReceipt,
+    connection: IntegrationConnection,
+  ): void {
+    if (
+      receipt.tuple.connectionId !== connection.id ||
+      receipt.tuple.connectionGeneration !== connection.generation
+    ) {
+      throw new ConflictError('The operation belongs to a different connection epoch.', {
+        reason: 'connection_superseded',
+      });
+    }
   }
 
   private requireCapability(provider: IntegrationProvider): ExternalTimeEntryMutationsCapability {
@@ -531,5 +891,87 @@ export class ExternalTimeMutationService {
       throw new NotFoundError('Time entry operation', operationId);
     }
     return this.store.view(receipt);
+  }
+
+  private assertNoLiveTaskMutation(tuple: ExternalTimeMutationTuple, operationId: string): void {
+    const blocking = this.store.findLiveTaskReceipt({
+      provider: tuple.provider,
+      connectionId: tuple.connectionId,
+      connectionGeneration: tuple.connectionGeneration,
+      remoteTaskId: tuple.remoteTaskId,
+      excludeOperationId: operationId,
+    });
+    if (blocking) {
+      throw new BusyError('The time-entry operation is still in progress.', {
+        reason: 'operation_in_progress',
+        operationId: blocking.operationId,
+        phase: blocking.phase,
+      });
+    }
+  }
+
+  private async assertNoPendingEstimate(
+    connection: IntegrationConnection,
+    provider: IntegrationProvider,
+    requestedScopeKey: string,
+    remoteTaskId: string,
+  ): Promise<void> {
+    const [links, states] = await Promise.all([
+      this.storage.listExternalTaskLinksByRemoteTask(provider, remoteTaskId),
+      this.storage.listExternalEstimateLogStatesByRemoteTask(provider, remoteTaskId),
+    ]);
+    const currentLinks = links.filter((link) => link.connectionId === connection.id);
+    const requestedLink = currentLinks.find((link) => link.remoteScopeKey === requestedScopeKey);
+    let authoritativeScopeKey = requestedScopeKey;
+    let linkedIdentity = requestedLink !== undefined;
+
+    if (currentLinks.length > 0 && !requestedLink) {
+      const currentScopes = new Set(currentLinks.map((link) => link.remoteScopeKey));
+      const pending = states.find(
+        (state) => currentScopes.has(state.remoteScopeKey) && state.pendingOperationId !== null,
+      );
+      if (pending) {
+        authoritativeScopeKey = pending.remoteScopeKey;
+        linkedIdentity = true;
+      } else {
+        throw new ConflictError('The remote scope does not match the current task link.', {
+          reason: 'remote_scope_mismatch',
+        });
+      }
+    } else if (currentLinks.length === 0) {
+      const ownedPending = states.find(
+        (state) => state.pendingOperationId !== null && state.pendingConnectionId === connection.id,
+      );
+      if (ownedPending) {
+        authoritativeScopeKey = ownedPending.remoteScopeKey;
+      }
+    }
+
+    const state = await this.storage.getExternalEstimateLogState({
+      provider,
+      remoteScopeKey: authoritativeScopeKey,
+      remoteTaskId,
+    });
+    const ownedPending =
+      state?.pendingOperationId && (linkedIdentity || state.pendingConnectionId === connection.id);
+    if (ownedPending) {
+      throw new BusyError('An estimate operation is pending for this task.', {
+        reason: 'estimate_operation_pending',
+        operationId: state.pendingOperationId,
+      });
+    }
+    if (currentLinks.length > 0 && !requestedLink) {
+      throw new ConflictError('The remote scope does not match the current task link.', {
+        reason: 'remote_scope_mismatch',
+      });
+    }
+  }
+
+  private requireRemoteScopeKey(value: string): string {
+    const normalized = value?.trim();
+    if (!normalized) {
+      throw new ValidationError('Remote scope identifier is required.');
+    }
+    return normalized;
   }
 }

@@ -8,6 +8,7 @@ import {
   index,
   foreignKey,
   primaryKey,
+  check,
 } from 'drizzle-orm/sqlite-core';
 
 export const DEFAULT_PROJECT_WORKSPACE_ID = '0defa017-0000-4000-8000-000000000001';
@@ -324,6 +325,7 @@ export const epics = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => ({
+    projectIdIdx: index('epics_project_id_idx').on(table.projectId),
     parentIdIdx: index('epics_parent_id_idx').on(table.parentId),
     agentIdIdx: index('epics_agent_id_idx').on(table.agentId),
     parentFk: foreignKey(() => ({
@@ -341,11 +343,40 @@ export const epics = sqliteTable(
   }),
 );
 
+export const epicRelations = sqliteTable(
+  'epic_relations',
+  {
+    id: text('id').primaryKey(),
+    leftEpicId: text('left_epic_id')
+      .notNull()
+      .references(() => epics.id, { onDelete: 'cascade' }),
+    rightEpicId: text('right_epic_id')
+      .notNull()
+      .references(() => epics.id, { onDelete: 'cascade' }),
+    type: text('type', { enum: ['related', 'blocks'] }).notNull(),
+    direction: text('direction', {
+      enum: ['none', 'left_to_right', 'right_to_left'],
+    }).notNull(),
+    createdBy: text('created_by', { enum: ['user', 'agent'] }),
+    createdByAgentId: text('created_by_agent_id').references(() => agents.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    pairUnique: uniqueIndex('epic_relations_pair_idx').on(table.leftEpicId, table.rightEpicId),
+    rightEpicIdx: index('epic_relations_right_epic_id_idx').on(table.rightEpicId),
+  }),
+);
+
 export const integrationConnections = sqliteTable(
   'integration_connections',
   {
     id: text('id').primaryKey(),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
     provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
+    legacySourceConnectionId: text('legacy_source_connection_id'),
     credentialCiphertext: text('credential_ciphertext').notNull(),
     generation: integer('generation').notNull().default(1),
     subtaskSyncEnabled: integer('subtask_sync_enabled', { mode: 'boolean' })
@@ -356,7 +387,14 @@ export const integrationConnections = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => ({
-    providerUnique: unique('integration_connections_provider_unique').on(table.provider),
+    projectProviderUnique: unique('integration_connections_project_provider_unique').on(
+      table.projectId,
+      table.provider,
+    ),
+    legacyProviderUnique: uniqueIndex('integration_connections_legacy_provider_unique')
+      .on(table.provider)
+      .where(sql`${table.projectId} IS NULL`),
+    projectIdIdx: index('integration_connections_project_id_idx').on(table.projectId),
   }),
 );
 
@@ -385,6 +423,110 @@ export const externalTaskLinks = sqliteTable(
     ),
     epicIdIdx: index('external_task_links_epic_id_idx').on(table.epicId),
     connectionIdIdx: index('external_task_links_connection_id_idx').on(table.connectionId),
+  }),
+);
+
+export const externalEstimateLogStates = sqliteTable(
+  'external_estimate_log_states',
+  {
+    provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
+    remoteScopeKey: text('remote_scope_key').notNull(),
+    remoteTaskId: text('remote_task_id').notNull(),
+    loggedMinutes: integer('logged_minutes').notNull().default(0),
+    revision: integer('revision').notNull().default(1),
+    pendingOperationId: text('pending_operation_id'),
+    pendingDeltaMinutes: integer('pending_delta_minutes'),
+    pendingEstimateTotalMinutes: integer('pending_estimate_total_minutes'),
+    pendingStartedAt: text('pending_started_at'),
+    pendingConnectionId: text('pending_connection_id'),
+    pendingConnectionGeneration: integer('pending_connection_generation'),
+    pendingPhase: text('pending_phase', { enum: ['prepared', 'outcome_unknown'] }),
+    pendingResolution: text('pending_resolution', { enum: ['logged', 'not_logged'] }),
+    // Canonical IANA zone the dated ledger groups under. Null until the
+    // first dated baseline binds one; a change is a rebind the service
+    // gates for safety. pending_activity_date stays outside the pending
+    // all-or-none CHECK: migrated legacy rows keep null while the
+    // application requires a date on every new pending row.
+    aggregationTimeZone: text('aggregation_time_zone'),
+    pendingActivityDate: text('pending_activity_date'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    remoteIdentityUnique: uniqueIndex('external_estimate_log_states_remote_identity_idx').on(
+      table.provider,
+      table.remoteScopeKey,
+      table.remoteTaskId,
+    ),
+    pendingOperationUnique: uniqueIndex('external_estimate_log_states_pending_operation_idx')
+      .on(table.pendingOperationId)
+      .where(sql`${table.pendingOperationId} IS NOT NULL`),
+    nonnegativeLoggedMinutes: check(
+      'external_estimate_log_states_logged_minutes_check',
+      sql`${table.loggedMinutes} >= 0`,
+    ),
+    positiveRevision: check(
+      'external_estimate_log_states_revision_check',
+      sql`${table.revision} >= 1`,
+    ),
+    pendingComplete: check(
+      'external_estimate_log_states_pending_complete_check',
+      sql`(
+        ${table.pendingOperationId} IS NULL
+        AND ${table.pendingDeltaMinutes} IS NULL
+        AND ${table.pendingEstimateTotalMinutes} IS NULL
+        AND ${table.pendingStartedAt} IS NULL
+        AND ${table.pendingConnectionId} IS NULL
+        AND ${table.pendingConnectionGeneration} IS NULL
+        AND ${table.pendingPhase} IS NULL
+        AND ${table.pendingResolution} IS NULL
+      ) OR (
+        ${table.pendingOperationId} IS NOT NULL
+        AND ${table.pendingDeltaMinutes} IS NOT NULL
+        AND ${table.pendingDeltaMinutes} > 0
+        AND ${table.pendingDeltaMinutes} * 60000 <= 604800000
+        AND ${table.pendingEstimateTotalMinutes} IS NOT NULL
+        AND ${table.pendingEstimateTotalMinutes} >= 0
+        AND ${table.pendingStartedAt} IS NOT NULL
+        AND ${table.pendingConnectionId} IS NOT NULL
+        AND ${table.pendingConnectionGeneration} IS NOT NULL
+        AND ${table.pendingConnectionGeneration} >= 1
+        AND ${table.pendingPhase} IS NOT NULL
+        AND ${table.pendingPhase} IN ('prepared', 'outcome_unknown')
+        AND (
+          ${table.pendingResolution} IS NULL
+          OR ${table.pendingResolution} IN ('logged', 'not_logged')
+        )
+      )`,
+    ),
+  }),
+);
+
+// Dated estimate ledger. One row per remote identity and local activity
+// date under the state row's canonical zone. The composite primary key is
+// the only key: identity prefix probes ride it, so a separate identity
+// index would be redundant. No foreign key — the ledger must survive link
+// and state deletion like the scalar checkpoint it accompanies.
+export const externalEstimateLogDays = sqliteTable(
+  'external_estimate_log_days',
+  {
+    provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
+    remoteScopeKey: text('remote_scope_key').notNull(),
+    remoteTaskId: text('remote_task_id').notNull(),
+    activityDate: text('activity_date').notNull(),
+    loggedMinutes: integer('logged_minutes').notNull().default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    identityDatePrimary: primaryKey({
+      name: 'external_estimate_log_days_identity_date_pk',
+      columns: [table.provider, table.remoteScopeKey, table.remoteTaskId, table.activityDate],
+    }),
+    nonnegativeLoggedMinutes: check(
+      'external_estimate_log_days_logged_minutes_check',
+      sql`${table.loggedMinutes} >= 0`,
+    ),
   }),
 );
 
@@ -868,6 +1010,34 @@ export const epicComments = sqliteTable(
   }),
 );
 
+export const epicTimeTeamBatches = sqliteTable(
+  'epic_time_team_batches',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    teamIdSnapshot: text('team_id_snapshot').notNull(),
+    teamNameSnapshot: text('team_name_snapshot').notNull(),
+    leadAgentIdSnapshot: text('lead_agent_id_snapshot').notNull(),
+    leadAgentNameSnapshot: text('lead_agent_name_snapshot').notNull(),
+    startedAt: text('started_at').notNull(),
+    sealedAt: text('sealed_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    openUnique: uniqueIndex('epic_time_team_batches_open_unique')
+      .on(table.projectId, table.teamIdSnapshot)
+      .where(sql`${table.sealedAt} IS NULL`),
+    projectSealedIdx: index('epic_time_team_batches_project_sealed_idx').on(
+      table.projectId,
+      table.sealedAt,
+      table.startedAt,
+    ),
+  }),
+);
+
 // Sessions (terminal/agent sessions)
 export const sessions = sqliteTable(
   'sessions',
@@ -913,6 +1083,14 @@ export const epicTimeSegments = sqliteTable(
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
     epicId: text('epic_id').references(() => epics.id, { onDelete: 'cascade' }),
+    teamBatchId: text('team_batch_id').references(() => epicTimeTeamBatches.id, {
+      onDelete: 'set null',
+    }),
+    attributionSource: text('attribution_source', { enum: ['direct', 'team'] })
+      .notNull()
+      .default('direct'),
+    teamIdSnapshot: text('team_id_snapshot'),
+    teamNameSnapshot: text('team_name_snapshot'),
     sessionIdSnapshot: text('session_id_snapshot').notNull(),
     agentIdSnapshot: text('agent_id_snapshot').notNull(),
     agentNameSnapshot: text('agent_name_snapshot').notNull(),
@@ -937,6 +1115,11 @@ export const epicTimeSegments = sqliteTable(
       table.projectId,
       table.agentIdSnapshot,
       table.lastActivityAt,
+    ),
+    teamBatchIdx: index('epic_time_segments_team_batch_idx').on(table.teamBatchId),
+    attributionSourceValid: check(
+      'epic_time_segments_attribution_source_check',
+      sql`${table.attributionSource} IN ('direct', 'team')`,
     ),
   }),
 );
@@ -1013,6 +1196,23 @@ export const events = sqliteTable(
   (table) => ({
     nameIdx: index('events_name_idx').on(table.name),
     publishedAtIdx: index('events_published_at_idx').on(table.publishedAt),
+  }),
+);
+
+export const epicTimeTeamBatchEventBarriers = sqliteTable(
+  'epic_time_team_batch_event_barriers',
+  {
+    teamBatchId: text('team_batch_id')
+      .notNull()
+      .references(() => epicTimeTeamBatches.id, { onDelete: 'cascade' }),
+    committedEventId: text('committed_event_id')
+      .notNull()
+      .references(() => events.id, { onDelete: 'cascade' }),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.teamBatchId, table.committedEventId] }),
+    eventIdx: index('epic_time_team_barriers_event_idx').on(table.committedEventId),
   }),
 );
 

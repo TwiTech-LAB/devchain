@@ -2,10 +2,9 @@ import { Injectable } from '@nestjs/common';
 import type { IntegrationCredentials } from '../../storage/models/domain.models';
 import { JiraProviderError } from '../errors/external-provider.errors';
 import {
-  EXTERNAL_SUBTASK_MANAGEMENT_NOTE,
   MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH,
-  MAX_EXTERNAL_SUBTASK_OWNERSHIP_TOKEN_LENGTH,
   MAX_EXTERNAL_SUBTASK_TITLE_LENGTH,
+  EXTERNAL_SUBTASK_SOURCE_ID_PATTERN,
   MAX_TASK_COMMENT_BODY_LENGTH,
   MAX_TASK_COMMENT_CURSOR_LENGTH,
   MAX_TASK_COMMENT_ID_LENGTH,
@@ -88,7 +87,7 @@ const JIRA_COMMENT_AUTHOR: VendorCommentAuthorSpec = {
 const JIRA_WORKLOG_PAGE_SIZE = 100;
 const JIRA_WORKLOG_MAX_PAGES = 5;
 const JIRA_WORKLOG_MAX_RAW = 500;
-const JIRA_MANAGED_SUBTASK_PROPERTY = 'devchain.managed-subtask';
+const JIRA_MANAGED_SUBTASK_PROPERTY = 'SourceId';
 const OTHER_ASSIGNED_WORK_AREA_ID = 'other-assigned';
 const JIRA_NEUTRAL_COLOR = '#6b778c';
 const JIRA_COMPLETED_COLOR = '#36b37e';
@@ -184,6 +183,8 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
   readonly timeEntryMutations: ExternalTimeEntryMutationsCapability = {
     createTimeEntry: (credentials, context, remoteTaskId, input) =>
       this.createTimeEntry(credentials, context, remoteTaskId, input),
+    updateTimeEntry: (credentials, context, remoteTaskId, remoteEntryId, input) =>
+      this.updateTimeEntry(credentials, context, remoteTaskId, remoteEntryId, input),
     deleteTimeEntry: (credentials, context, remoteTaskId, remoteEntryId) =>
       this.deleteTimeEntry(credentials, context, remoteTaskId, remoteEntryId),
     readTimeEntryExact: (credentials, context, remoteTaskId, remoteEntryId) =>
@@ -204,6 +205,8 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
       ),
     assertTimeEntryDeletable: (credentials, context, remoteTaskId, remoteEntryId) =>
       this.assertTimeEntryDeletable(credentials, context, remoteTaskId, remoteEntryId),
+    assertTimeEntryEditable: (credentials, context, remoteTaskId, remoteEntryId) =>
+      this.assertTimeEntryEditable(credentials, context, remoteTaskId, remoteEntryId),
   };
   private readonly boardMetadataCache = new VendorMetadataCache<CachedWorkAreaMetadata>(
     WORK_AREA_METADATA_CACHE_MAX_ENTRIES,
@@ -258,7 +261,7 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     const parent = await this.loadSubtaskParent(site, parentTaskId);
     const issueTypeId = await this.loadSubtaskIssueType(site, context, parent.workAreaRemoteId);
     const identity = await this.loadIdentity(site);
-    const propertyValue = { version: 1, ownershipToken };
+    const propertyValue = { version: 1, sourceId: ownershipToken };
     const payload = await this.requestJson(site, '/rest/api/3/issue', {
       method: 'POST',
       body: JSON.stringify({
@@ -555,27 +558,28 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
   }
 
   private parseJiraOwnershipProperty(value: unknown): string | null {
-    if (!isRecord(value) || value.version !== 1 || typeof value.ownershipToken !== 'string') {
+    if (!isRecord(value) || value.version !== 1 || typeof value.sourceId !== 'string') {
       return null;
     }
-    return this.isSubtaskOwnershipToken(value.ownershipToken) ? value.ownershipToken : null;
+    return this.isSubtaskOwnershipToken(value.sourceId) ? value.sourceId : null;
   }
 
-  private managedDescriptionAdf(description: string | null): Record<string, unknown> {
-    const paragraphs = description === null ? [] : description.split('\n');
+  /**
+   * The managed-subtask description carries only the source description;
+   * a null description must be sent as `null` because Jira rejects empty
+   * ADF documents on create and update.
+   */
+  private managedDescriptionAdf(description: string | null): Record<string, unknown> | null {
+    if (description === null) {
+      return null;
+    }
     return {
       type: 'doc',
       version: 1,
-      content: [
-        ...paragraphs.map((line) => ({
-          type: 'paragraph',
-          ...(line ? { content: [{ type: 'text', text: line }] } : {}),
-        })),
-        {
-          type: 'paragraph',
-          content: [{ type: 'text', text: EXTERNAL_SUBTASK_MANAGEMENT_NOTE }],
-        },
-      ],
+      content: description.split('\n').map((line) => ({
+        type: 'paragraph',
+        ...(line ? { content: [{ type: 'text', text: line }] } : {}),
+      })),
     };
   }
 
@@ -583,12 +587,7 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     if (value === null || value === undefined) {
       return null;
     }
-    const text = this.flattenAdfText(value);
-    if (text === EXTERNAL_SUBTASK_MANAGEMENT_NOTE) {
-      return null;
-    }
-    const suffix = `\n${EXTERNAL_SUBTASK_MANAGEMENT_NOTE}`;
-    return text.endsWith(suffix) ? text.slice(0, -suffix.length) || null : text || null;
+    return this.flattenAdfText(value, 'preserve') || null;
   }
 
   private requireSubtaskTitle(value: unknown): string {
@@ -613,10 +612,7 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
   }
 
   private isSubtaskOwnershipToken(value: string): boolean {
-    return (
-      value.length <= MAX_EXTERNAL_SUBTASK_OWNERSHIP_TOKEN_LENGTH &&
-      /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
-    );
+    return EXTERNAL_SUBTASK_SOURCE_ID_PATTERN.test(value);
   }
 
   private requireSubtaskOwnershipToken(value: unknown): string {
@@ -998,8 +994,58 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
       remoteId: parsed.remoteId,
       startedAt: new Date(parsed.startedAtMs).toISOString(),
       durationMs: parsed.durationMs,
+      note: parsed.note,
       owned: parsed.authorAccountId === accountId,
     };
+  }
+
+  private async updateTimeEntry(
+    credentials: IntegrationCredentials,
+    _context: ExternalProviderConnectionContext,
+    remoteTaskId: string,
+    remoteEntryId: string,
+    input: ExternalTaskTimeEntryInput,
+  ): Promise<void> {
+    const site = this.resolveSite(credentials);
+    const taskId = this.validate.requiredTaskId(remoteTaskId);
+    const entryId = this.validate.requiredIdentifier(remoteEntryId);
+    const startedAt = this.validate.timeEntryInput(input);
+    if (input.durationMs % 1000 !== 0) {
+      throw new JiraProviderError('request_rejected');
+    }
+    const body: Record<string, unknown> = {
+      started: new Date(startedAt).toISOString().replace('Z', '+0000'),
+      timeSpentSeconds: input.durationMs / 1000,
+      comment: this.plainTextAdf(input.note ?? ''),
+    };
+    const payload = await this.requestJson(
+      site,
+      `/rest/api/3/issue/${encodeURIComponent(taskId)}/worklog/${encodeURIComponent(entryId)}?adjustEstimate=leave&notifyUsers=false`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    );
+    if (!isRecord(payload) || this.validate.requiredIdentifier(payload.id) !== entryId) {
+      throw new JiraProviderError('invalid_response', undefined, { dispatched: true });
+    }
+  }
+
+  private async assertTimeEntryEditable(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    remoteTaskId: string,
+    remoteEntryId: string,
+  ): Promise<ExternalTimeEntryExactRead> {
+    const exact = await this.readTimeEntryExact(credentials, context, remoteTaskId, remoteEntryId);
+    if (exact === null) {
+      throw new JiraProviderError('not_found');
+    }
+    if (!exact.owned) {
+      throw new JiraProviderError('permission_denied');
+    }
+    const site = this.resolveSite(credentials);
+    if (!(await this.loadOwnWorklogsPermission(site, 'EDIT_OWN_WORKLOGS'))) {
+      throw new JiraProviderError('permission_denied');
+    }
+    return exact;
   }
 
   /**
@@ -1113,9 +1159,9 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     const taskId = this.validate.requiredTaskId(remoteTaskId);
     const now = Date.now();
     const startedAfterMs = now - TIME_ENTRY_HISTORY_WINDOW_DAYS * 86_400_000;
-    const [identity, canDeleteOwn] = await Promise.all([
+    const [identity, ownPermissions] = await Promise.all([
       this.loadIdentity(site),
-      this.loadDeleteOwnWorklogsPermission(site),
+      this.loadOwnWorklogsPermissions(site, ['EDIT_OWN_WORKLOGS', 'DELETE_OWN_WORKLOGS']),
     ]);
     const { raw, complete } = await this.fetchWindowedWorklogs(site, taskId, startedAfterMs, now);
     const own: JiraWorklogEntry[] = [];
@@ -1141,7 +1187,8 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
         startedAt: new Date(parsed.startedAtMs).toISOString(),
         note: parsed.note,
         noteTruncated: parsed.noteTruncated,
-        canDelete: canDeleteOwn,
+        canEdit: ownPermissions.EDIT_OWN_WORKLOGS,
+        canDelete: ownPermissions.DELETE_OWN_WORKLOGS,
       })),
     };
   }
@@ -1149,17 +1196,36 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
   /** One permission read per history response; per-entry canDelete derives
    * from it without further vendor calls. */
   private async loadDeleteOwnWorklogsPermission(site: JiraSite): Promise<boolean> {
+    return (await this.loadOwnWorklogsPermissions(site, ['DELETE_OWN_WORKLOGS']))
+      .DELETE_OWN_WORKLOGS;
+  }
+
+  private async loadOwnWorklogsPermission(
+    site: JiraSite,
+    permissionKey: 'EDIT_OWN_WORKLOGS' | 'DELETE_OWN_WORKLOGS',
+  ): Promise<boolean> {
+    return (await this.loadOwnWorklogsPermissions(site, [permissionKey]))[permissionKey];
+  }
+
+  private async loadOwnWorklogsPermissions(
+    site: JiraSite,
+    permissionKeys: ReadonlyArray<'EDIT_OWN_WORKLOGS' | 'DELETE_OWN_WORKLOGS'>,
+  ): Promise<Record<'EDIT_OWN_WORKLOGS' | 'DELETE_OWN_WORKLOGS', boolean>> {
     const url = new URL(`${site.origin}/rest/api/3/mypermissions`);
-    url.searchParams.set('permissions', 'DELETE_OWN_WORKLOGS');
+    url.searchParams.set('permissions', permissionKeys.join(','));
     const payload = await this.requestJson(site, `${url.pathname}${url.search}`);
     if (!isRecord(payload) || !isRecord(payload.permissions)) {
       throw new JiraProviderError('invalid_response');
     }
-    const permission = payload.permissions.DELETE_OWN_WORKLOGS;
-    if (!isRecord(permission)) {
-      throw new JiraProviderError('invalid_response');
+    const result = { EDIT_OWN_WORKLOGS: false, DELETE_OWN_WORKLOGS: false };
+    for (const permissionKey of permissionKeys) {
+      const permission = payload.permissions[permissionKey];
+      if (!isRecord(permission)) {
+        throw new JiraProviderError('invalid_response');
+      }
+      result[permissionKey] = permission.enabled === true;
     }
-    return permission.enabled === true;
+    return result;
   }
 
   /**
@@ -1660,7 +1726,7 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     };
   }
 
-  private flattenAdfText(value: unknown): string {
+  private flattenAdfText(value: unknown, terminalLineBreaks: 'trim' | 'preserve' = 'trim'): string {
     if (value === null || value === undefined) {
       return '';
     }
@@ -1707,7 +1773,10 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
       }
     };
     value.content.forEach((node) => visit(node, 0));
-    return fragments.join('').replace(/\n+$/, '');
+    const text = fragments.join('');
+    return terminalLineBreaks === 'preserve' && text.endsWith('\n')
+      ? text.slice(0, -1)
+      : text.replace(/\n+$/, '');
   }
 
   private adfAttrFallback(node: Record<string, unknown>, attr: string): string {

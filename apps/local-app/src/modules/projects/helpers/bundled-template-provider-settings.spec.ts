@@ -29,11 +29,11 @@ describe.each(TEMPLATE_NAMES)('%s provider settings', (templateName) => {
       .flatMap((profile) => profile.providerConfigs ?? [])
       .find(
         (config) =>
-          config.name === 'glm' && config.env?.ANTHROPIC_DEFAULT_OPUS_MODEL === 'glm-5.2[1m]',
+          config.name === 'glm' && config.env?.ANTHROPIC_DEFAULT_OPUS_MODEL === 'glm-5.3[1m]',
       );
 
     expect(glmConfig?.env).toMatchObject({
-      ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.2[1m]',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.3[1m]',
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '450000',
       CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '95',
     });

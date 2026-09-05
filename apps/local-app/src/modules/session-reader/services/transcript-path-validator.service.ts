@@ -127,10 +127,13 @@ export class TranscriptPathValidator {
     let realPath: string;
     try {
       realPath = await fs.realpath(normalized);
-    } catch {
+    } catch (error) {
+      const fsCode = (error as NodeJS.ErrnoException).code;
       throw new ValidationError('Transcript file does not exist or is not accessible', {
         category: 'file-access',
         path: normalized,
+        reason: fsCode === 'ENOENT' ? 'missing' : 'unavailable',
+        ...(fsCode ? { fsCode } : {}),
       });
     }
 
@@ -149,10 +152,13 @@ export class TranscriptPathValidator {
     let stat: Awaited<ReturnType<typeof fs.stat>>;
     try {
       stat = await fs.stat(realPath);
-    } catch {
+    } catch (error) {
+      const fsCode = (error as NodeJS.ErrnoException).code;
       throw new ValidationError('Transcript file does not exist or is not accessible', {
         category: 'file-access',
         path: realPath,
+        reason: fsCode === 'ENOENT' ? 'missing' : 'unavailable',
+        ...(fsCode ? { fsCode } : {}),
       });
     }
 

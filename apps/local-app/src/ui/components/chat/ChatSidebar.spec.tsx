@@ -1315,3 +1315,150 @@ describe('ChatSidebar guest and worktree compatibility', () => {
     expect(onTerminateWorktreeSession).not.toHaveBeenCalled();
   });
 });
+
+describe('ChatSidebar unlogged time markers', () => {
+  const originalFetch = global.fetch;
+  const guestAgent: AgentOrGuest = {
+    id: 'guest-1',
+    name: 'Guest Agent',
+    profileId: null,
+    projectId: 'project-1',
+    type: 'guest',
+  } as AgentOrGuest;
+  const worktreeAgent: AgentOrGuest = {
+    id: 'agent-wt-1',
+    name: 'Worktree Agent',
+    profileId: 'profile-wt-1',
+    projectId: 'project-wt-1',
+    providerConfigId: 'config-wt-1',
+    providerConfig: {
+      id: 'config-wt-1',
+      name: 'WT Config',
+      providerId: 'provider-claude',
+      providerName: 'Claude',
+    },
+  } as AgentOrGuest;
+  const worktreeGroup: WorktreeAgentGroup = {
+    id: 'worktree-1',
+    name: 'feature-auth',
+    status: 'running',
+    runtimeType: 'process',
+    devchainProjectId: 'project-wt-1',
+    apiBase: '/wt/feature-auth',
+    agents: [worktreeAgent],
+    agentPresence: {
+      [worktreeAgent.id]: {
+        online: true,
+        sessionId: 'session-wt-1',
+        activityState: 'busy',
+        busySince: new Date(Date.now()).toISOString(),
+      },
+    } as WorktreeAgentGroup['agentPresence'],
+    disabled: false,
+    error: null,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+    })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('marks main agent rows on the All path with the unlogged phrase', () => {
+    renderSidebar({ unloggedTimeMinutes: { 'agent-1': 10 } });
+
+    const row = screen.getByRole('listitem', {
+      name: 'Open terminal for Alpha (offline), 10m not logged to an Epic.',
+    });
+    expect(row.querySelector('[data-unlogged-time-marker]')).not.toBeNull();
+  });
+
+  it('marks main agent rows on the Teams path', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/teams?')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: 'team-1',
+                name: 'Team 1',
+                description: null,
+                teamLeadAgentId: null,
+                teamLeadAgentName: null,
+                memberCount: 1,
+                createdAt: '2024-01-01T00:00:00.000Z',
+                updatedAt: '2024-01-01T00:00:00.000Z',
+              },
+            ],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+        };
+      }
+      if (url.startsWith('/api/teams/')) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: 'team-1',
+            name: 'Team 1',
+            description: null,
+            teamLeadAgentId: null,
+            teamLeadAgentName: null,
+            memberCount: 1,
+            createdAt: '2024-01-01T00:00:00.000Z',
+            updatedAt: '2024-01-01T00:00:00.000Z',
+            members: [
+              {
+                agentId: 'agent-1',
+                agentName: 'Alpha',
+                isLead: false,
+                createdAt: '2024-01-01T00:00:00.000Z',
+              },
+            ],
+            profileIds: [],
+            profileConfigSelections: [],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    renderSidebar({ unloggedTimeMinutes: { 'agent-1': 90 } });
+
+    const row = await screen.findByRole('listitem', {
+      name: 'Open terminal for Alpha (offline), 1h 30m not logged to an Epic.',
+    });
+    expect(row.querySelector('[data-unlogged-time-marker]')).not.toBeNull();
+  });
+
+  it('never marks guests or worktree rows even when their ids carry minutes', async () => {
+    renderSidebar({
+      guests: [guestAgent],
+      worktreeAgentGroups: [worktreeGroup],
+      unloggedTimeMinutes: { 'guest-1': 19, 'agent-wt-1': 19, 'agent-1': 9 },
+    });
+
+    const guestRow = await screen.findByRole('listitem', { name: 'Guest: Guest Agent (online)' });
+    expect(guestRow.textContent).not.toContain('not logged');
+    expect(guestRow.querySelector('span.pointer-events-none')).toBeNull();
+
+    const worktreeRow = screen.getByRole('listitem', {
+      name: 'Open terminal for Worktree Agent in feature-auth (online)',
+    });
+    expect(worktreeRow.textContent).not.toContain('not logged');
+    expect(worktreeRow.querySelector('span.pointer-events-none')).toBeNull();
+    // A main agent below ten whole minutes stays unmarked too.
+    const mainRow = screen.getByRole('listitem', { name: 'Open terminal for Alpha (offline)' });
+    expect(mainRow.querySelector('span.pointer-events-none')).toBeNull();
+  });
+});

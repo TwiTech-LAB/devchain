@@ -129,6 +129,35 @@ function createBaseFetchMock(overrides?: {
     if (url.startsWith('/api/prompts')) {
       return { ok: true, json: async () => prompts } as Response;
     }
+    if (url === '/api/integrations/connections/directory') {
+      return {
+        ok: true,
+        json: async () => ({
+          items: [
+            {
+              project: { id: 'project-1', name: 'Demo Project' },
+              workspace: { id: 'workspace-1', name: 'Main' },
+              provider: 'clickup',
+              configured: false,
+              updatedAt: null,
+              subtaskSyncEnabled: false,
+              hasMigratedSharedOrigin: false,
+            },
+            {
+              project: { id: 'project-1', name: 'Demo Project' },
+              workspace: { id: 'workspace-1', name: 'Main' },
+              provider: 'jira',
+              configured: false,
+              updatedAt: null,
+              subtaskSyncEnabled: false,
+              hasMigratedSharedOrigin: false,
+            },
+          ],
+          unassignedConnections: [],
+          truncated: false,
+        }),
+      } as Response;
+    }
     if (url.startsWith('/api/integrations/connections')) {
       return {
         ok: true,
@@ -269,15 +298,28 @@ describe('SettingsPage sub-navigation', () => {
       );
     });
 
-    expect(await screen.findByRole('heading', { name: 'ClickUp' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Jira' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Demo Project' })).toBeInTheDocument();
+    expect(screen.getByText('ClickUp')).toBeInTheDocument();
+    expect(screen.getByText('Jira')).toBeInTheDocument();
   });
 
   it('renders no cached integration UI or request when runtime access is unavailable', async () => {
     canUseIntegrations = false;
     const { Wrapper, queryClient } = createWrapper(['/settings?section=integrations']);
-    queryClient.setQueryData(['integration-connections', 'list'], {
-      items: [{ provider: 'clickup', connected: true, generation: 1, updatedAt: null }],
+    queryClient.setQueryData(['integration-connections', 'directory'], {
+      items: [
+        {
+          project: { id: 'project-1', name: 'Demo Project' },
+          workspace: { id: 'workspace-1', name: 'Main' },
+          provider: 'clickup',
+          configured: true,
+          updatedAt: null,
+          subtaskSyncEnabled: false,
+          hasMigratedSharedOrigin: false,
+        },
+      ],
+      unassignedConnections: [],
+      truncated: false,
     });
 
     render(
@@ -287,7 +329,7 @@ describe('SettingsPage sub-navigation', () => {
     );
 
     expect(await screen.findByText('Integrations unavailable')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'ClickUp' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Demo Project' })).not.toBeInTheDocument();
     expect(
       (global.fetch as jest.Mock).mock.calls.some(([input]) =>
         String(input).startsWith('/api/integrations'),

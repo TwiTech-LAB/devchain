@@ -85,7 +85,7 @@ function healthItemMessage(item: ManagedSubtaskSyncHealthItem): string {
   return 'This projection is waiting to synchronize.';
 }
 
-function ManagedSubtaskHealthItemRow({
+export function ManagedSubtaskHealthItemRow({
   provider,
   item,
   pendingAction,

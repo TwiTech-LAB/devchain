@@ -34,6 +34,19 @@ interface ExternalWorkAreaCardProps {
   onSelect: (card: ExternalWorkAreaCardModel) => void;
 }
 
+function taskCountText(count: number, qualifier: 'assigned' | 'linked'): string {
+  return `${count} ${qualifier} ${count === 1 ? 'task' : 'tasks'}`;
+}
+
+function cardTaskCounts(card: ExternalWorkAreaCardModel): string {
+  const assigned = taskCountText(card.assignedTaskCount, 'assigned');
+  const linked =
+    card.linkedTaskCount === null
+      ? 'linked count unavailable'
+      : taskCountText(card.linkedTaskCount, 'linked');
+  return `${assigned} · ${linked}`;
+}
+
 function ExternalWorkAreaCard({ card, onSelect }: ExternalWorkAreaCardProps) {
   return (
     <Card className="overflow-hidden py-0 transition-colors hover:border-primary">
@@ -60,9 +73,7 @@ function ExternalWorkAreaCard({ card, onSelect }: ExternalWorkAreaCardProps) {
           <p className="line-clamp-2 text-xs text-muted-foreground" title={card.workflowSummary}>
             {card.kindLabel} · {card.workflowSummary}
           </p>
-          <p className="text-sm font-medium">
-            {card.assignedTaskCount} assigned{card.assignedTaskCount === 1 ? ' task' : ' tasks'}
-          </p>
+          <p className="text-sm font-medium">{cardTaskCounts(card)}</p>
         </CardContent>
       </Button>
     </Card>

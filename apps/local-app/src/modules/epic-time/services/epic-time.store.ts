@@ -1,7 +1,15 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import type {
+  AgentTimeBufferAssignmentInput,
+  AgentTimeBufferAssignmentResult,
+  AgentTimeBufferItem,
+  AgentTimeBufferSnapshot,
+  EpicTimeAttributionSource,
+} from '../models/epic-time.models';
+import { ConflictError, NotFoundError } from '../../../common/errors/error-types';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { TransactionRunner } from '../../storage/db/transaction-runner';
@@ -9,6 +17,43 @@ import { TransactionRunner } from '../../storage/db/transaction-runner';
 const TRACKING_STARTED_AT_KEY = 'epicTime.trackingStartedAt';
 const ACTIVITY_IDLE_TIMEOUT_KEY = 'activity.idleTimeoutMs';
 const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
+const MILLIS_PER_MINUTE = 60_000;
+const STALE_SNAPSHOT_MESSAGE =
+  'The captured agent time snapshot changed. Refresh the buffered time and try again.';
+
+/**
+ * Shared resolved-scope recursion. The json_each table-valued function seeds
+ * the focals (a one-element JSON array or a bound parameter), route_chain
+ * walks incoming eligible Related time routes — type=related with a stored
+ * direction between root Epics of one project — and stops at linked routed
+ * roots, and the UNION acts as the visited set so corrupt cycles terminate.
+ */
+const RESOLVED_SCOPE_CTE = `
+  focal(focal_id) AS (
+    SELECT CAST(json_each.value AS TEXT) FROM json_each(?)
+  ),
+  route_chain(focal_id, epic_id) AS (
+    SELECT f.focal_id, e.id
+    FROM focal f
+    JOIN epics e ON e.id = f.focal_id AND e.parent_id IS NULL
+    UNION
+    SELECT rc.focal_id, source.id
+    FROM route_chain rc
+    JOIN epics target ON target.id = rc.epic_id
+    JOIN epics source
+      ON source.parent_id IS NULL AND source.project_id = target.project_id
+    JOIN epic_relations rel
+      ON rel.type = 'related'
+     AND (
+       (rel.left_epic_id = source.id AND rel.right_epic_id = target.id
+          AND rel.direction = 'left_to_right')
+       OR (rel.left_epic_id = target.id AND rel.right_epic_id = source.id
+          AND rel.direction = 'right_to_left')
+     )
+    WHERE NOT EXISTS (
+      SELECT 1 FROM external_task_links link WHERE link.epic_id = source.id
+    )
+  )`;
 
 export interface EpicTimeActivation {
   trackingStartedAt: string;
@@ -39,7 +84,7 @@ export interface EpicTimeReconciliationOptions {
 
 export interface EpicTimeTaskTouch {
   committedEventId: string;
-  eventName: 'epic.created' | 'epic.updated';
+  eventName: 'epic.created' | 'epic.updated' | 'epic.comment.created';
   projectId: string;
   actorAgentId: string;
   targetEpicId: string;
@@ -53,6 +98,12 @@ export interface EpicTimeTaskTouchResult {
   discardedSegments: number;
 }
 
+export interface EpicTimeBatchProcessingResult {
+  sealedBatches: number;
+  finalizedBatches: number;
+  cancelledBatches: number;
+}
+
 export interface EpicTimeScope {
   id: string;
   parentId: string | null;
@@ -63,9 +114,15 @@ export interface EpicTimeSummarySegment {
   rootEpicId: string | null;
   epicId: string;
   epicTitle: string;
+  /** Display owner: the focal for focal rows, the routed root for routed rows. */
+  groupEpicId: string;
+  groupEpicTitle: string;
   isDirect: boolean;
   agentId: string;
   agentName: string;
+  attributionSource: EpicTimeAttributionSource;
+  teamId: string | null;
+  teamName: string | null;
   durationMs: number;
   lastActivityAt: string;
   updatedAt: string;
@@ -94,9 +151,37 @@ interface OpenSegmentRow {
   id: string;
   project_id: string;
   epic_id: string | null;
+  team_batch_id: string | null;
+  attribution_source: EpicTimeAttributionSource;
+  team_id_snapshot: string | null;
+  team_name_snapshot: string | null;
   agent_id_snapshot: string;
   last_activity_at: string;
   duration_ms: number;
+}
+
+interface EligibleTeamRow {
+  team_id: string;
+  team_name: string;
+  lead_agent_id: string;
+  lead_agent_name: string;
+}
+
+interface TeamBatchRow {
+  id: string;
+  project_id: string;
+  team_id_snapshot: string;
+  team_name_snapshot: string;
+  lead_agent_id_snapshot: string;
+  lead_agent_name_snapshot: string;
+  started_at: string;
+  sealed_at: string | null;
+}
+
+interface LaneWinnerRow {
+  agent_id_snapshot: string;
+  duration_ms: number;
+  earliest_started_at: string;
 }
 
 interface PendingBufferClaimRow {
@@ -107,6 +192,49 @@ interface PendingBufferClaimRow {
 interface PendingClaimResult {
   claimedSegmentIds: Set<string>;
   discardedSegmentIds: Set<string>;
+}
+
+/**
+ * One settled, unlogged accounting row eligible for manual buffer
+ * assignment. Column names match the epic_time_segments projection.
+ */
+interface EligibleBufferRow {
+  id: string;
+  agent_id_snapshot: string;
+  duration_ms: number;
+  started_at: string;
+  last_activity_at: string;
+  closed_at: string;
+  updated_at: string;
+}
+
+/**
+ * Fingerprint of one agent's exact eligible row set. Key order is fixed and
+ * alphabetical so the JSON form is canonical; the caller-visible aggregates
+ * (minutes, counts, capturedAt) never enter the hash, so only a real row-set
+ * change can alter the token.
+ */
+function buildBufferSnapshotToken(
+  projectId: string,
+  agentId: string,
+  rows: readonly EligibleBufferRow[],
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        agentId,
+        projectId,
+        rows: rows.map((row) => ({
+          closedAt: row.closed_at,
+          durationMs: row.duration_ms,
+          id: row.id,
+          lastActivityAt: row.last_activity_at,
+          startedAt: row.started_at,
+          updatedAt: row.updated_at,
+        })),
+      }),
+    )
+    .digest('hex');
 }
 
 @Injectable()
@@ -229,6 +357,10 @@ export class EpicTimeStore {
       if (hasNewActivity && activityAt) {
         const hadOpenSegment = openSegment !== null;
         const epicId = this.resolveAttributionEpic(session);
+        const eligibleTeam = epicId === null ? this.resolveEligibleTeam(session) : null;
+        const openTeamBatch = eligibleTeam
+          ? this.loadOpenTeamBatch(session.project_id, eligibleTeam.team_id)
+          : null;
         const priorActivityAt =
           openSegment?.last_activity_at ?? watermark?.last_activity_at ?? null;
         const busyStart =
@@ -241,6 +373,9 @@ export class EpicTimeStore {
           openSegment.project_id === session.project_id &&
           openSegment.agent_id_snapshot === session.agent_id &&
           openSegment.epic_id === epicId &&
+          (eligibleTeam
+            ? openTeamBatch !== null && openSegment.team_batch_id === openTeamBatch.id
+            : openSegment.team_batch_id === null) &&
           continuous;
 
         if (sameSegment && openSegment) {
@@ -270,19 +405,27 @@ export class EpicTimeStore {
               ? this.latestTimestamp([busyStart, lowerBound])
               : activityAt;
           const durationMs = Math.max(0, this.elapsedMs(startedAt, activityAt));
+          const teamBatch = eligibleTeam
+            ? (openTeamBatch ??
+              this.createOrLoadOpenTeamBatch(session.project_id, eligibleTeam, startedAt, nowIso))
+            : null;
           segmentId = randomUUID();
           this.rawClient
             .prepare(
               `INSERT INTO epic_time_segments
-                 (id, project_id, epic_id, session_id_snapshot, agent_id_snapshot,
-                  agent_name_snapshot, started_at, last_activity_at, closed_at,
-                  duration_ms, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+                 (id, project_id, epic_id, team_batch_id, attribution_source,
+                  team_id_snapshot, team_name_snapshot, session_id_snapshot,
+                  agent_id_snapshot, agent_name_snapshot, started_at, last_activity_at,
+                  closed_at, duration_ms, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'direct', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
             )
             .run(
               segmentId,
               session.project_id,
               epicId,
+              teamBatch?.id ?? null,
+              eligibleTeam?.team_id ?? null,
+              eligibleTeam?.team_name ?? null,
               session.id,
               session.agent_id,
               session.agent_name,
@@ -336,6 +479,68 @@ export class EpicTimeStore {
     });
   }
 
+  async processTeamBatches(
+    deliveryKey: string,
+    idleTimeoutMs: number,
+    now = new Date(),
+  ): Promise<EpicTimeBatchProcessingResult> {
+    const nowIso = now.toISOString();
+    const activeAfter = new Date(now.getTime() - idleTimeoutMs).toISOString();
+    return this.transactionRunner.runImmediateQueued(() => {
+      let sealedBatches = 0;
+      let finalizedBatches = 0;
+      let cancelledBatches = 0;
+      const openBatches = this.loadTeamBatches(false);
+      for (const batch of openBatches) {
+        if (this.hasActiveEligibleMember(batch, activeAfter)) {
+          continue;
+        }
+        this.rawClient
+          .prepare(
+            `UPDATE epic_time_segments
+             SET closed_at = COALESCE(closed_at, last_activity_at), updated_at = ?
+             WHERE team_batch_id = ?`,
+          )
+          .run(nowIso, batch.id);
+        this.rawClient
+          .prepare(
+            `UPDATE epic_time_team_batches
+             SET sealed_at = ?, updated_at = ?
+             WHERE id = ? AND sealed_at IS NULL`,
+          )
+          .run(nowIso, nowIso, batch.id);
+        this.rawClient
+          .prepare(
+            `INSERT OR IGNORE INTO epic_time_team_batch_event_barriers
+               (team_batch_id, committed_event_id, created_at)
+             SELECT ?, eh.event_id, ?
+             FROM event_handlers eh
+             INNER JOIN events e ON e.id = eh.event_id
+             WHERE eh.delivery_key = ?
+               AND eh.status IN ('pending', 'running', 'retry')
+               AND e.published_at <= ?`,
+          )
+          .run(batch.id, nowIso, deliveryKey, nowIso);
+        sealedBatches += 1;
+      }
+
+      const sealed = this.loadTeamBatches(true);
+      for (const batch of sealed) {
+        if (this.batchHasPendingBarrier(batch.id, deliveryKey)) {
+          continue;
+        }
+        if (!this.isTeamBatchIdentityCurrent(batch)) {
+          this.cancelTeamBatch(batch.id, nowIso);
+          cancelledBatches += 1;
+          continue;
+        }
+        this.finalizeTeamBatch(batch, nowIso);
+        finalizedBatches += 1;
+      }
+      return { sealedBatches, finalizedBatches, cancelledBatches };
+    });
+  }
+
   async recordTaskTouch(
     touch: EpicTimeTaskTouch,
     now = new Date(),
@@ -383,6 +588,127 @@ export class EpicTimeStore {
     });
   }
 
+  /**
+   * One project-wide ordered read of settled unlogged activity per current
+   * same-project agent. The inner join to live agents drops guests (separate
+   * table) and deleted-agent snapshots; the eligibility predicate excludes
+   * open activity, Epic-bound rows, and every open or sealed team-batch lane
+   * — a finalized winner re-enters only after its batch row deletion sets
+   * team_batch_id NULL, keeping the team attribution snapshots. Aggregation
+   * happens in-process over the single ordered row set so the response is
+   * byte-stable while the accounting rows do not change.
+   */
+  listAgentTimeBuffers(projectId: string): AgentTimeBufferSnapshot {
+    const rows = this.listEligibleBufferRows(projectId, null);
+    if (rows.length === 0) {
+      return { capturedAt: null, items: [] };
+    }
+
+    let capturedAt = rows[0].updated_at;
+    let capturedAtMs = this.timestampMs(capturedAt);
+    const rowsByAgent = new Map<string, EligibleBufferRow[]>();
+    for (const row of rows) {
+      const updatedAtMs = this.timestampMs(row.updated_at);
+      if (updatedAtMs > capturedAtMs) {
+        capturedAt = row.updated_at;
+        capturedAtMs = updatedAtMs;
+      }
+      const agentRows = rowsByAgent.get(row.agent_id_snapshot) ?? [];
+      agentRows.push(row);
+      rowsByAgent.set(row.agent_id_snapshot, agentRows);
+    }
+
+    const items: AgentTimeBufferItem[] = [];
+    for (const [agentId, agentRows] of rowsByAgent) {
+      const durationMs = agentRows.reduce((total, row) => total + row.duration_ms, 0);
+      let oldest = agentRows[0].last_activity_at;
+      let newest = agentRows[0].last_activity_at;
+      for (const row of agentRows.slice(1)) {
+        if (this.timestampMs(row.last_activity_at) < this.timestampMs(oldest)) {
+          oldest = row.last_activity_at;
+        }
+        if (this.timestampMs(row.last_activity_at) > this.timestampMs(newest)) {
+          newest = row.last_activity_at;
+        }
+      }
+      items.push({
+        agentId,
+        snapshotToken: buildBufferSnapshotToken(projectId, agentId, agentRows),
+        minutes: Math.floor(durationMs / MILLIS_PER_MINUTE),
+        durationMs,
+        segmentCount: agentRows.length,
+        oldestActivityAt: oldest,
+        newestActivityAt: newest,
+      });
+    }
+    items.sort((left, right) => left.agentId.localeCompare(right.agentId));
+    return { capturedAt, items };
+  }
+
+  /**
+   * Snapshot-fenced manual assignment of one agent's complete eligible row
+   * set to one same-project Epic. All validation — live agent, project,
+   * same-project target, the eligibility predicate, the capturedAt
+   * watermark, and the recomputed token — runs inside the single queued
+   * transaction, so the write either moves the exact captured rows or
+   * nothing (409). Only epic_id and updated_at change: attribution_source
+   * and team snapshots survive, no buffer-claim receipt is created, and
+   * nothing binds future activity.
+   */
+  async assignAgentTimeBuffer(
+    input: AgentTimeBufferAssignmentInput,
+    now = new Date(),
+  ): Promise<AgentTimeBufferAssignmentResult> {
+    const nowIso = now.toISOString();
+    return this.transactionRunner.runImmediateQueued(() => {
+      const project = this.rawClient
+        .prepare(`SELECT workspace_id FROM projects WHERE id = ?`)
+        .get(input.projectId) as { workspace_id: string } | undefined;
+      if (!project) {
+        throw new NotFoundError('Project', input.projectId);
+      }
+      const agent = this.rawClient
+        .prepare(`SELECT id FROM agents WHERE id = ? AND project_id = ?`)
+        .get(input.agentId, input.projectId);
+      if (!agent) {
+        throw new NotFoundError('Agent', input.agentId);
+      }
+      const epic = this.rawClient
+        .prepare(`SELECT id FROM epics WHERE id = ? AND project_id = ?`)
+        .get(input.targetEpicId, input.projectId);
+      if (!epic) {
+        throw new NotFoundError('Epic', input.targetEpicId);
+      }
+
+      const rows = this.listEligibleBufferRows(input.projectId, input.agentId);
+      const capturedAtMs = this.timestampMs(input.capturedAt);
+      if (
+        rows.length === 0 ||
+        rows.some((row) => this.timestampMs(row.updated_at) > capturedAtMs)
+      ) {
+        throw new ConflictError(STALE_SNAPSHOT_MESSAGE);
+      }
+      if (buildBufferSnapshotToken(input.projectId, input.agentId, rows) !== input.snapshotToken) {
+        throw new ConflictError(STALE_SNAPSHOT_MESSAGE);
+      }
+
+      const assignRow = this.rawClient.prepare(
+        `UPDATE epic_time_segments
+         SET epic_id = ?, updated_at = ?
+         WHERE id = ?
+           AND epic_id IS NULL
+           AND team_batch_id IS NULL
+           AND closed_at IS NOT NULL`,
+      );
+      for (const row of rows) {
+        if (assignRow.run(input.targetEpicId, nowIso, row.id).changes !== 1) {
+          throw new ConflictError(STALE_SNAPSHOT_MESSAGE);
+        }
+      }
+      return { workspaceId: project.workspace_id };
+    });
+  }
+
   getEpicTimeScope(epicId: string): EpicTimeScope | null {
     const row = this.rawClient
       .prepare(`SELECT id, parent_id FROM epics WHERE id = ?`)
@@ -402,69 +728,399 @@ export class EpicTimeStore {
     ).map((row) => ({ id: row.id, parentId: row.parent_id }));
   }
 
-  listClosedSegmentsForEpic(
-    epicId: string,
-    includeDirectChildren: boolean,
-  ): EpicTimeSummarySegment[] {
+  /**
+   * One shared resolved-scope loader for detail and batch: a single prepared
+   * recursive statement returns the deduplicated closed segments AND the
+   * routed-root scope metadata from one database snapshot, so totals and
+   * route metadata can never come from different route states. A child focal
+   * stays self-only; a root focal keeps its unfiltered direct children and
+   * additionally pulls same-project Related time routes. A linked routed root
+   * is excluded and stops that traversal branch, and a linked child of a
+   * routed root contributes nothing, while linked children of the focal root
+   * stay included. The recursive CTE uses UNION as its visited set, so a
+   * corrupt route cycle terminates instead of looping. Each scope row also
+   * carries its display-owner group — the focal for focal rows, the routed
+   * root for routed rows — so group identity is a pure function of
+   * focal_id and epic_id; one outer join resolves the group title.
+   */
+  listResolvedScope(focalEpicIds: readonly string[]): {
+    segments: EpicTimeSummarySegment[];
+    routedRootIdsByFocal: Map<string, string[]>;
+  } {
+    if (focalEpicIds.length === 0) {
+      return { segments: [], routedRootIdsByFocal: new Map() };
+    }
     const rows = this.rawClient
       .prepare(
-        `SELECT s.id, scoped.id AS epic_id, scoped.title AS epic_title,
-                s.agent_id_snapshot, s.agent_name_snapshot,
-                s.duration_ms, s.last_activity_at, s.updated_at
-         FROM epic_time_segments s
-         INNER JOIN epics scoped ON scoped.id = s.epic_id AND scoped.project_id = s.project_id
-         WHERE s.closed_at IS NOT NULL
-           AND (scoped.id = ? OR (? = 1 AND scoped.parent_id = ?))
-         ORDER BY s.last_activity_at, s.id`,
+        `WITH RECURSIVE
+         ${RESOLVED_SCOPE_CTE},
+         scope(focal_id, epic_id, is_direct, group_epic_id) AS (
+           SELECT f.focal_id, e.id, 1, f.focal_id
+           FROM focal f
+           JOIN epics e ON e.id = f.focal_id
+           UNION
+           SELECT f.focal_id, child.id, 0, f.focal_id
+           FROM focal f
+           JOIN epics e ON e.id = f.focal_id AND e.parent_id IS NULL
+           JOIN epics child ON child.parent_id = e.id AND child.project_id = e.project_id
+           UNION
+           SELECT rc.focal_id, rc.epic_id, 0, rc.epic_id
+           FROM route_chain rc
+           WHERE rc.epic_id <> rc.focal_id
+           UNION
+           SELECT rc.focal_id, child.id, 0, rc.epic_id
+           FROM route_chain rc
+           JOIN epics routed ON routed.id = rc.epic_id
+           JOIN epics child ON child.parent_id = routed.id AND child.project_id = routed.project_id
+           WHERE rc.epic_id <> rc.focal_id
+             AND NOT EXISTS (
+               SELECT 1 FROM external_task_links link WHERE link.epic_id = child.id
+             )
+         )
+         SELECT DISTINCT scope.focal_id AS root_epic_id,
+                seg.id AS segment_id,
+                scoped.id AS epic_id, scoped.title AS epic_title,
+                seg.agent_id_snapshot, seg.agent_name_snapshot, seg.attribution_source,
+                seg.team_id_snapshot, seg.team_name_snapshot,
+                seg.duration_ms, seg.last_activity_at, seg.updated_at,
+                scope.is_direct AS is_direct,
+                scope.group_epic_id AS group_epic_id,
+                group_epic.title AS group_epic_title,
+                NULL AS routed_epic_id
+         FROM scope
+         JOIN epics scoped ON scoped.id = scope.epic_id
+         LEFT JOIN epics group_epic ON group_epic.id = scope.group_epic_id
+         JOIN epic_time_segments seg
+           ON seg.epic_id = scoped.id
+          AND seg.project_id = scoped.project_id
+          AND seg.closed_at IS NOT NULL
+         UNION ALL
+         SELECT DISTINCT rc.focal_id, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, rc.epic_id
+         FROM route_chain rc
+         WHERE rc.epic_id <> rc.focal_id
+         ORDER BY root_epic_id, last_activity_at, segment_id`,
       )
-      .all(epicId, includeDirectChildren ? 1 : 0, epicId) as Array<{
-      id: string;
-      epic_id: string;
-      epic_title: string;
-      agent_id_snapshot: string;
-      agent_name_snapshot: string;
-      duration_ms: number;
-      last_activity_at: string;
-      updated_at: string;
+      .all(JSON.stringify(focalEpicIds)) as Array<{
+      root_epic_id: string;
+      segment_id: string | null;
+      epic_id: string | null;
+      epic_title: string | null;
+      agent_id_snapshot: string | null;
+      agent_name_snapshot: string | null;
+      attribution_source: EpicTimeAttributionSource | null;
+      team_id_snapshot: string | null;
+      team_name_snapshot: string | null;
+      duration_ms: number | null;
+      last_activity_at: string | null;
+      updated_at: string | null;
+      is_direct: number | null;
+      group_epic_id: string | null;
+      group_epic_title: string | null;
+      routed_epic_id: string | null;
     }>;
-    return rows.map((row) => this.mapSummarySegment(row, null, row.epic_id === epicId));
+    const segments: EpicTimeSummarySegment[] = [];
+    const routedRootIdsByFocal = new Map<string, string[]>();
+    for (const row of rows) {
+      if (row.routed_epic_id !== null) {
+        const routed = routedRootIdsByFocal.get(row.root_epic_id) ?? [];
+        routed.push(row.routed_epic_id);
+        routedRootIdsByFocal.set(row.root_epic_id, routed);
+        continue;
+      }
+      segments.push(
+        this.mapSummarySegment(
+          {
+            id: row.segment_id!,
+            epic_id: row.epic_id!,
+            epic_title: row.epic_title!,
+            agent_id_snapshot: row.agent_id_snapshot!,
+            agent_name_snapshot: row.agent_name_snapshot!,
+            attribution_source: row.attribution_source!,
+            team_id_snapshot: row.team_id_snapshot,
+            team_name_snapshot: row.team_name_snapshot,
+            duration_ms: row.duration_ms!,
+            last_activity_at: row.last_activity_at!,
+            updated_at: row.updated_at!,
+          },
+          row.root_epic_id,
+          row.is_direct === 1,
+          row.group_epic_id!,
+          row.group_epic_title!,
+        ),
+      );
+    }
+    for (const routed of routedRootIdsByFocal.values()) {
+      routed.sort();
+    }
+    for (const focalId of focalEpicIds) {
+      // Every requested focal carries an entry so callers never distinguish
+      // "no routed roots" from "focal absent".
+      if (!routedRootIdsByFocal.has(focalId)) {
+        routedRootIdsByFocal.set(focalId, []);
+      }
+    }
+    return { segments, routedRootIdsByFocal };
   }
 
-  listClosedSegmentsForRoots(rootEpicIds: readonly string[]): EpicTimeSummarySegment[] {
-    if (rootEpicIds.length === 0) {
-      return [];
+  private resolveEligibleTeam(session: SessionRow): EligibleTeamRow | null {
+    if (!session.agent_id || !session.project_id) {
+      return null;
     }
-    const placeholders = rootEpicIds.map(() => '?').join(', ');
-    const rows = this.rawClient
-      .prepare(
-        `SELECT roots.id AS root_epic_id, s.id, scoped.id AS epic_id,
-                scoped.title AS epic_title, s.agent_id_snapshot,
-                s.agent_name_snapshot, s.duration_ms, s.last_activity_at, s.updated_at
-         FROM epics roots
-         INNER JOIN epics scoped
-           ON (scoped.id = roots.id OR scoped.parent_id = roots.id)
-          AND scoped.project_id = roots.project_id
-         INNER JOIN epic_time_segments s
-           ON s.project_id = roots.project_id
-          AND s.epic_id = scoped.id
-          AND s.closed_at IS NOT NULL
-         WHERE roots.id IN (${placeholders})
-         ORDER BY roots.id, s.last_activity_at, s.id`,
-      )
-      .all(...rootEpicIds) as Array<{
-      root_epic_id: string;
-      id: string;
-      epic_id: string;
-      epic_title: string;
-      agent_id_snapshot: string;
-      agent_name_snapshot: string;
-      duration_ms: number;
-      last_activity_at: string;
-      updated_at: string;
-    }>;
-    return rows.map((row) =>
-      this.mapSummarySegment(row, row.root_epic_id, row.epic_id === row.root_epic_id),
+    return (
+      (this.rawClient
+        .prepare(
+          `SELECT t.id AS team_id, t.name AS team_name,
+                  lead.id AS lead_agent_id, lead.name AS lead_agent_name
+           FROM team_members tm
+           INNER JOIN teams t ON t.id = tm.team_id AND t.project_id = ?
+           INNER JOIN agents lead
+             ON lead.id = t.team_lead_agent_id AND lead.project_id = t.project_id
+           WHERE tm.agent_id = ?
+             AND t.team_lead_agent_id <> tm.agent_id
+             AND (
+               SELECT COUNT(*)
+               FROM team_members memberships
+               INNER JOIN teams member_teams
+                 ON member_teams.id = memberships.team_id
+                AND member_teams.project_id = ?
+               WHERE memberships.agent_id = tm.agent_id
+             ) = 1
+           LIMIT 1`,
+        )
+        .get(session.project_id, session.agent_id, session.project_id) as
+        | EligibleTeamRow
+        | undefined) ?? null
     );
+  }
+
+  private loadOpenTeamBatch(projectId: string, teamId: string): TeamBatchRow | null {
+    return (
+      (this.rawClient
+        .prepare(
+          `SELECT id, project_id, team_id_snapshot, team_name_snapshot,
+                  lead_agent_id_snapshot, lead_agent_name_snapshot, started_at, sealed_at
+           FROM epic_time_team_batches
+           WHERE project_id = ? AND team_id_snapshot = ? AND sealed_at IS NULL`,
+        )
+        .get(projectId, teamId) as TeamBatchRow | undefined) ?? null
+    );
+  }
+
+  private createOrLoadOpenTeamBatch(
+    projectId: string,
+    team: EligibleTeamRow,
+    startedAt: string,
+    nowIso: string,
+  ): TeamBatchRow {
+    this.rawClient
+      .prepare(
+        `INSERT INTO epic_time_team_batches
+           (id, project_id, team_id_snapshot, team_name_snapshot,
+            lead_agent_id_snapshot, lead_agent_name_snapshot, started_at,
+            sealed_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+         ON CONFLICT DO NOTHING`,
+      )
+      .run(
+        randomUUID(),
+        projectId,
+        team.team_id,
+        team.team_name,
+        team.lead_agent_id,
+        team.lead_agent_name,
+        startedAt,
+        nowIso,
+        nowIso,
+      );
+    const batch = this.loadOpenTeamBatch(projectId, team.team_id);
+    if (!batch) {
+      throw new Error('Unable to create or load the open Epic-time team batch.');
+    }
+    return batch;
+  }
+
+  private loadTeamBatches(sealed: boolean): TeamBatchRow[] {
+    return this.rawClient
+      .prepare(
+        `SELECT id, project_id, team_id_snapshot, team_name_snapshot,
+                lead_agent_id_snapshot, lead_agent_name_snapshot, started_at, sealed_at
+         FROM epic_time_team_batches
+         WHERE sealed_at IS ${sealed ? 'NOT NULL' : 'NULL'}
+         ORDER BY started_at, id`,
+      )
+      .all() as TeamBatchRow[];
+  }
+
+  private hasActiveEligibleMember(batch: TeamBatchRow, activeAfter: string): boolean {
+    return Boolean(
+      this.rawClient
+        .prepare(
+          `SELECT 1
+           FROM sessions s
+           INNER JOIN agents a
+             ON a.id = s.agent_id AND a.project_id = ?
+           INNER JOIN team_members tm
+             ON tm.agent_id = a.id AND tm.team_id = ?
+           INNER JOIN teams t
+             ON t.id = tm.team_id
+            AND t.project_id = ?
+            AND t.team_lead_agent_id = ?
+           INNER JOIN agents lead
+             ON lead.id = t.team_lead_agent_id AND lead.project_id = t.project_id
+           WHERE s.status = 'running'
+             AND (s.activity_state IS NULL OR s.activity_state <> 'idle')
+             AND s.last_activity_at > ?
+             AND a.id <> t.team_lead_agent_id
+             AND (
+               SELECT COUNT(*)
+               FROM team_members memberships
+               INNER JOIN teams member_teams
+                 ON member_teams.id = memberships.team_id
+                AND member_teams.project_id = ?
+               WHERE memberships.agent_id = a.id
+             ) = 1
+             AND NOT EXISTS (
+               SELECT 1 FROM epics bound
+               WHERE bound.id = s.epic_id AND bound.project_id = ?
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM epics assigned
+               WHERE assigned.project_id = ? AND assigned.agent_id = a.id
+             )
+           LIMIT 1`,
+        )
+        .get(
+          batch.project_id,
+          batch.team_id_snapshot,
+          batch.project_id,
+          batch.lead_agent_id_snapshot,
+          activeAfter,
+          batch.project_id,
+          batch.project_id,
+          batch.project_id,
+        ),
+    );
+  }
+
+  private batchHasPendingBarrier(batchId: string, deliveryKey: string): boolean {
+    return Boolean(
+      this.rawClient
+        .prepare(
+          `SELECT 1
+           FROM epic_time_team_batch_event_barriers barrier
+           INNER JOIN event_handlers delivery
+             ON delivery.event_id = barrier.committed_event_id
+            AND delivery.delivery_key = ?
+           WHERE barrier.team_batch_id = ?
+             AND delivery.status IN ('pending', 'running', 'retry')
+           LIMIT 1`,
+        )
+        .get(deliveryKey, batchId),
+    );
+  }
+
+  private isTeamBatchIdentityCurrent(batch: TeamBatchRow): boolean {
+    const teamStillMatches = Boolean(
+      this.rawClient
+        .prepare(
+          `SELECT 1
+           FROM teams t
+           INNER JOIN agents lead
+             ON lead.id = t.team_lead_agent_id AND lead.project_id = t.project_id
+           WHERE t.id = ? AND t.project_id = ? AND t.team_lead_agent_id = ?`,
+        )
+        .get(batch.team_id_snapshot, batch.project_id, batch.lead_agent_id_snapshot),
+    );
+    if (!teamStillMatches) {
+      return false;
+    }
+    return !this.rawClient
+      .prepare(
+        `SELECT 1
+         FROM epic_time_segments segment
+         LEFT JOIN agents original
+           ON original.id = segment.agent_id_snapshot AND original.project_id = segment.project_id
+         WHERE segment.team_batch_id = ?
+           AND segment.epic_id IS NULL
+           AND (
+             original.id IS NULL
+             OR NOT EXISTS (
+               SELECT 1 FROM team_members exact_membership
+               WHERE exact_membership.team_id = ?
+                 AND exact_membership.agent_id = segment.agent_id_snapshot
+             )
+             OR (
+               SELECT COUNT(*)
+               FROM team_members memberships
+               INNER JOIN teams member_teams
+                 ON member_teams.id = memberships.team_id
+                AND member_teams.project_id = segment.project_id
+               WHERE memberships.agent_id = segment.agent_id_snapshot
+             ) <> 1
+           )
+         LIMIT 1`,
+      )
+      .get(batch.id, batch.team_id_snapshot);
+  }
+
+  private cancelTeamBatch(batchId: string, nowIso: string): void {
+    this.rawClient
+      .prepare(
+        `UPDATE epic_time_segments
+         SET team_batch_id = NULL, attribution_source = 'direct',
+             team_id_snapshot = NULL, team_name_snapshot = NULL, updated_at = ?
+         WHERE team_batch_id = ? AND epic_id IS NULL`,
+      )
+      .run(nowIso, batchId);
+    this.rawClient.prepare(`DELETE FROM epic_time_team_batches WHERE id = ?`).run(batchId);
+  }
+
+  private finalizeTeamBatch(batch: TeamBatchRow, nowIso: string): void {
+    const winner = this.rawClient
+      .prepare(
+        `SELECT agent_id_snapshot, SUM(duration_ms) AS duration_ms,
+                MIN(started_at) AS earliest_started_at
+         FROM epic_time_segments
+         WHERE team_batch_id = ? AND epic_id IS NULL
+         GROUP BY agent_id_snapshot
+         ORDER BY duration_ms DESC, earliest_started_at, agent_id_snapshot
+         LIMIT 1`,
+      )
+      .get(batch.id) as LaneWinnerRow | undefined;
+    if (winner) {
+      const target = this.rawClient
+        .prepare(
+          `SELECT id
+           FROM epics
+           WHERE project_id = ? AND agent_id = ?
+           ORDER BY updated_at DESC, id DESC
+           LIMIT 1`,
+        )
+        .get(batch.project_id, batch.lead_agent_id_snapshot) as { id: string } | undefined;
+      this.rawClient
+        .prepare(
+          `DELETE FROM epic_time_segments
+           WHERE team_batch_id = ? AND epic_id IS NULL AND agent_id_snapshot <> ?`,
+        )
+        .run(batch.id, winner.agent_id_snapshot);
+      this.rawClient
+        .prepare(
+          `UPDATE epic_time_segments
+           SET epic_id = ?, agent_id_snapshot = ?, agent_name_snapshot = ?,
+               attribution_source = 'team', updated_at = ?
+           WHERE team_batch_id = ? AND epic_id IS NULL AND agent_id_snapshot = ?`,
+        )
+        .run(
+          target?.id ?? null,
+          batch.lead_agent_id_snapshot,
+          batch.lead_agent_name_snapshot,
+          nowIso,
+          batch.id,
+          winner.agent_id_snapshot,
+        );
+    }
+    this.rawClient.prepare(`DELETE FROM epic_time_team_batches WHERE id = ?`).run(batch.id);
   }
 
   private loadSession(sessionId: string): SessionRow | null {
@@ -490,21 +1146,35 @@ export class EpicTimeStore {
       epic_title: string;
       agent_id_snapshot: string;
       agent_name_snapshot: string;
+      attribution_source: EpicTimeAttributionSource;
+      team_id_snapshot: string | null;
+      team_name_snapshot: string | null;
       duration_ms: number;
       last_activity_at: string;
       updated_at: string;
     },
     rootEpicId: string | null,
     isDirect: boolean,
+    groupEpicId: string,
+    groupEpicTitle: string,
   ): EpicTimeSummarySegment {
+    const attributionSource =
+      row.attribution_source === 'team' && row.team_id_snapshot && row.team_name_snapshot
+        ? 'team'
+        : 'direct';
     return {
       id: row.id,
       rootEpicId,
       epicId: row.epic_id,
       epicTitle: row.epic_title,
+      groupEpicId,
+      groupEpicTitle,
       isDirect,
       agentId: row.agent_id_snapshot,
       agentName: row.agent_name_snapshot,
+      attributionSource,
+      teamId: attributionSource === 'team' ? row.team_id_snapshot : null,
+      teamName: attributionSource === 'team' ? row.team_name_snapshot : null,
       durationMs: row.duration_ms,
       lastActivityAt: row.last_activity_at,
       updatedAt: row.updated_at,
@@ -527,7 +1197,9 @@ export class EpicTimeStore {
     return (
       (this.rawClient
         .prepare(
-          `SELECT id, project_id, epic_id, agent_id_snapshot, last_activity_at, duration_ms
+          `SELECT id, project_id, epic_id, team_batch_id, attribution_source,
+                  team_id_snapshot, team_name_snapshot, agent_id_snapshot,
+                  last_activity_at, duration_ms
            FROM epic_time_segments
            WHERE session_id_snapshot = ? AND closed_at IS NULL`,
         )
@@ -595,6 +1267,21 @@ export class EpicTimeStore {
            WHERE earliest.project_id = s.project_id
              AND earliest.agent_id_snapshot = s.agent_id_snapshot
              AND earliest.published_at >= s.started_at
+             AND (
+               s.team_batch_id IS NULL
+               OR EXISTS (
+                 SELECT 1
+                 FROM epic_time_team_batches open_batch
+                 WHERE open_batch.id = s.team_batch_id
+                   AND open_batch.sealed_at IS NULL
+               )
+               OR EXISTS (
+                 SELECT 1
+                 FROM epic_time_team_batch_event_barriers barrier
+                 WHERE barrier.team_batch_id = s.team_batch_id
+                   AND barrier.committed_event_id = earliest.committed_event_id
+               )
+             )
            ORDER BY earliest.published_at, earliest.claim_sequence
            LIMIT 1
          )
@@ -609,7 +1296,21 @@ export class EpicTimeStore {
     const targetExists = new Map<string, boolean>();
     const updateSegment = this.rawClient.prepare(
       `UPDATE epic_time_segments
-       SET epic_id = ?, updated_at = ?
+       SET epic_id = ?,
+           attribution_source = CASE
+             WHEN team_batch_id IS NOT NULL THEN 'direct'
+             ELSE attribution_source
+           END,
+           team_id_snapshot = CASE
+             WHEN team_batch_id IS NOT NULL THEN NULL
+             ELSE team_id_snapshot
+           END,
+           team_name_snapshot = CASE
+             WHEN team_batch_id IS NOT NULL THEN NULL
+             ELSE team_name_snapshot
+           END,
+           team_batch_id = NULL,
+           updated_at = ?
        WHERE id = ? AND epic_id IS NULL`,
     );
     const deleteSegment = this.rawClient.prepare(
@@ -645,6 +1346,32 @@ export class EpicTimeStore {
     }
 
     return { claimedSegmentIds, discardedSegmentIds };
+  }
+
+  /**
+   * Shared eligibility predicate for the buffer read and the assignment
+   * command: one ordered, project-scoped statement whose live-agent inner
+   * join enforces the current real agent. A null agentId widens the read to
+   * every current same-project agent; ordering by agent, start, then row ID
+   * keeps both callers and the token fingerprint deterministic.
+   */
+  private listEligibleBufferRows(projectId: string, agentId: string | null): EligibleBufferRow[] {
+    return this.rawClient
+      .prepare(
+        `SELECT seg.id, seg.agent_id_snapshot, seg.duration_ms, seg.started_at,
+                seg.last_activity_at, seg.closed_at, seg.updated_at
+         FROM epic_time_segments seg
+         INNER JOIN agents a
+           ON a.id = seg.agent_id_snapshot AND a.project_id = seg.project_id
+         WHERE seg.project_id = ?
+           AND (? IS NULL OR seg.agent_id_snapshot = ?)
+           AND seg.epic_id IS NULL
+           AND seg.team_batch_id IS NULL
+           AND seg.closed_at IS NOT NULL
+           AND seg.duration_ms > 0
+         ORDER BY seg.agent_id_snapshot, seg.started_at, seg.id`,
+      )
+      .all(projectId, agentId, agentId) as EligibleBufferRow[];
   }
 
   private closeSegment(segmentId: string, closedAt: string, nowIso: string): void {

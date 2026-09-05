@@ -28,20 +28,40 @@ const doc = (text: string): ExternalRichDocumentV1 => ({
   blocks: [{ type: 'paragraph', content: [{ type: 'text', text, marks: [] }] }],
 });
 
+const PROJECT_ID = 'project-1';
+
 class FakeStorage {
-  connection = { id: 'connection-1', provider: 'jira', generation: 1 };
+  connection = { id: 'connection-1', projectId: PROJECT_ID, provider: 'jira', generation: 1 };
   connected = true;
 
-  async getIntegrationConnection(provider: string) {
+  async getProject(projectId: string) {
+    return { id: projectId };
+  }
+
+  async getIntegrationConnection(identity: unknown) {
     if (!this.connected) {
       return null;
     }
+    const provider =
+      typeof identity === 'object' && identity !== null && 'provider' in identity
+        ? (identity as { provider: string }).provider
+        : identity;
     return this.connection.provider === provider
       ? { ...this.connection, createdAt: '', updatedAt: '' }
       : null;
   }
 
-  async getIntegrationConnectionCredentials(provider: string) {
+  async getIntegrationConnectionById(connectionId: string) {
+    return this.connected && this.connection.id === connectionId
+      ? { ...this.connection, createdAt: '', updatedAt: '' }
+      : null;
+  }
+
+  async getIntegrationConnectionCredentials(identity: unknown) {
+    const provider =
+      typeof identity === 'object' && identity !== null && 'provider' in identity
+        ? (identity as { provider: string }).provider
+        : identity;
     if (!this.connected || this.connection.provider !== provider) {
       return null;
     }
@@ -118,6 +138,7 @@ function matrix(options: {
   const storage = new FakeStorage();
   storage.connection = {
     id: 'connection-1',
+    projectId: PROJECT_ID,
     provider: options.provider ?? 'jira',
     generation: 1,
   };
@@ -142,15 +163,15 @@ const unknownOutcome = (provider: IntegrationProvider, reason = 'timeout') =>
 describe('Phase 13 gate: session matrix', () => {
   it('multiple verified saves advance baseline and revision monotonically', async () => {
     const { service, adapter } = matrix({});
-    const session = await service.createDescriptionSession('jira', 'KAN-1');
+    const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
     expect(session.revision).toBe(0);
 
     for (let round = 1; round <= 3; round += 1) {
       const payload = doc(`revision ${round}`);
-      const written = await service.saveSession(session.sessionId, payload, round - 1);
+      const written = await service.saveSession(PROJECT_ID, session.sessionId, payload, round - 1);
       expect(written.outcome).toBe('saved_unverified');
       adapter.descriptionRaw = BASELINE_ADF(`revision ${round}`);
-      const verified = await service.verifySession(session.sessionId);
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
       expect(verified.remoteState).toBe('new_payload');
       expect(verified.session?.revision).toBe(round);
       expect(verified.session?.baselineFingerprint).toBeTruthy();
@@ -160,18 +181,18 @@ describe('Phase 13 gate: session matrix', () => {
   it('idle touch keeps a session alive across the idle limit; non-touched sessions expire', async () => {
     let nowMs = 1_700_000_000_000;
     const { service, store } = matrix({ clock: () => nowMs, limits: { idleLimitMs: 60_000 } });
-    const touchedSession = await service.createDescriptionSession('jira', 'KAN-A');
-    const idleSession = await service.createDescriptionSession('jira', 'KAN-B');
+    const touchedSession = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-A');
+    const idleSession = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-B');
 
     for (let tick = 0; tick < 5; tick += 1) {
       nowMs += 50_000;
-      await service.touchSession(touchedSession.sessionId);
+      await service.touchSession(PROJECT_ID, touchedSession.sessionId);
     }
     nowMs += 50_001;
 
-    const stillAlive = await service.touchSession(touchedSession.sessionId);
+    const stillAlive = await service.touchSession(PROJECT_ID, touchedSession.sessionId);
     expect(stillAlive.state).toBe('editable');
-    const verifyIdle = await service.verifySession(idleSession.sessionId);
+    const verifyIdle = await service.verifySession(PROJECT_ID, idleSession.sessionId);
     expect(verifyIdle).toMatchObject({
       session: null,
       remoteState: null,
@@ -186,14 +207,14 @@ describe('Phase 13 gate: session matrix', () => {
       clock: () => nowMs,
       limits: { idleLimitMs: 60_000, absoluteLimitMs: 120_000 },
     });
-    const session = await service.createDescriptionSession('jira', 'KAN-1');
+    const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
     // Keep the idle window constantly refreshed up to the absolute limit.
     nowMs += 55_000;
-    expect((await service.touchSession(session.sessionId)).state).toBe('editable');
+    expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe('editable');
     nowMs += 55_000;
-    expect((await service.touchSession(session.sessionId)).state).toBe('editable');
+    expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe('editable');
     nowMs += 15_000; // 125s > the 120s absolute limit, idle still refreshed
-    const write = await service.saveSession(session.sessionId, doc('late'), 0);
+    const write = await service.saveSession(PROJECT_ID, session.sessionId, doc('late'), 0);
     expect(write).toMatchObject({
       outcome: 'pre_dispatch_rejected',
       reason: 'session_not_found',
@@ -203,6 +224,7 @@ describe('Phase 13 gate: session matrix', () => {
   it('lookup expiry: a delete session whose comment proof ages out still verifies gone-or-present', async () => {
     const { service, adapter, provider } = matrix({ provider: 'clickup' });
     const session = await service.createCommentDeleteSession(
+      PROJECT_ID,
       'clickup',
       'task-1',
       'comment-1',
@@ -212,108 +234,149 @@ describe('Phase 13 gate: session matrix', () => {
 
     // Someone deletes the comment elsewhere: the bounded lookup now misses.
     adapter.snapshot = null;
-    const verified = await service.verifySession(session.sessionId);
+    const verified = await service.verifySession(PROJECT_ID, session.sessionId);
     expect(verified.remoteState).toBe('gone');
     expect(verified.session?.state).toBe('invalidated');
-    const after = await service.executeCommentDelete(session.sessionId);
+    const after = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
     expect(after).toMatchObject({ outcome: 'rejected', reason: 'session_not_editable' });
     void provider;
   });
 
   it('ambiguous write: dispatched timeout yields outcome_unknown, old baseline keeps it locked, exact retry lands', async () => {
     const { service, adapter, provider } = matrix({});
-    const session = await service.createDescriptionSession('jira', 'KAN-1');
+    const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
 
     adapter.writeImpl = () => {
       throw unknownOutcome(provider);
     };
-    const ambiguous = await service.saveSession(session.sessionId, doc('maybe'), 0);
+    const ambiguous = await service.saveSession(PROJECT_ID, session.sessionId, doc('maybe'), 0);
     expect(ambiguous.outcome).toBe('outcome_unknown');
 
     // Remote still shows the old baseline: no re-arm for a new payload.
-    const oldBaseline = await service.verifySession(session.sessionId);
+    const oldBaseline = await service.verifySession(PROJECT_ID, session.sessionId);
     expect(oldBaseline.remoteState).toBe('old_baseline');
-    const newPayload = await service.saveSession(session.sessionId, doc('different'), 0);
+    const newPayload = await service.saveSession(
+      PROJECT_ID,
+      session.sessionId,
+      doc('different'),
+      0,
+    );
     expect(newPayload).toMatchObject({ outcome: 'pre_dispatch_rejected' });
 
     // The exact same payload may retry.
     adapter.writeImpl = null;
-    const retried = await service.saveSession(session.sessionId, doc('maybe'), 0);
+    const retried = await service.saveSession(PROJECT_ID, session.sessionId, doc('maybe'), 0);
     expect(retried.outcome).toBe('saved_unverified');
     adapter.descriptionRaw = BASELINE_ADF('maybe');
-    const verified = await service.verifySession(session.sessionId);
+    const verified = await service.verifySession(PROJECT_ID, session.sessionId);
     expect(verified.remoteState).toBe('new_payload');
     expect(verified.session?.revision).toBe(1);
   });
 
   it('divergence after an unknown outcome is terminal for writes', async () => {
     const { service, adapter, provider } = matrix({});
-    const session = await service.createDescriptionSession('jira', 'KAN-1');
+    const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
     adapter.writeImpl = () => {
       throw unknownOutcome(provider, 'unavailable');
     };
-    await service.saveSession(session.sessionId, doc('lost cause'), 0);
+    await service.saveSession(PROJECT_ID, session.sessionId, doc('lost cause'), 0);
     adapter.descriptionRaw = BASELINE_ADF('remote drifted');
-    const verified = await service.verifySession(session.sessionId);
+    const verified = await service.verifySession(PROJECT_ID, session.sessionId);
     expect(verified.remoteState).toBe('diverged');
-    const blocked = await service.saveSession(session.sessionId, doc('anything'), 1);
+    const blocked = await service.saveSession(PROJECT_ID, session.sessionId, doc('anything'), 1);
     expect(blocked).toMatchObject({ outcome: 'pre_dispatch_rejected' });
   });
 
   it('connection replacement invalidates every live session of that provider', async () => {
     const { service, storage } = matrix({});
-    const description = await service.createDescriptionSession('jira', 'KAN-1');
-    storage.connection = { id: 'connection-1', provider: 'jira', generation: 2 };
-    const blocked = await service.saveSession(description.sessionId, doc('after swap'), 0);
+    const description = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+    storage.connection = {
+      id: 'connection-1',
+      projectId: PROJECT_ID,
+      provider: 'jira',
+      generation: 2,
+    };
+    const blocked = await service.saveSession(
+      PROJECT_ID,
+      description.sessionId,
+      doc('after swap'),
+      0,
+    );
     expect(blocked).toMatchObject({
       outcome: 'pre_dispatch_rejected',
       reason: 'connection_superseded',
     });
-    expect((await service.touchSession(description.sessionId)).state).toBe('invalidated');
+    expect((await service.touchSession(PROJECT_ID, description.sessionId)).state).toBe(
+      'invalidated',
+    );
   });
 
   it('delete outcomes: deleted, already_deleted (404), outcome_unknown, and known failure each land in their bucket', async () => {
     // deleted
     {
       const { service } = matrix({ provider: 'clickup' });
-      const session = await service.createCommentDeleteSession('clickup', 't', 'c', null);
-      const outcome = await service.executeCommentDelete(session.sessionId);
+      const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
+        'clickup',
+        't',
+        'c',
+        null,
+      );
+      const outcome = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(outcome.outcome).toBe('deleted');
     }
     // already_deleted on a later 404
     {
       const { service, adapter, provider } = matrix({ provider: 'clickup' });
-      const session = await service.createCommentDeleteSession('clickup', 't', 'c', null);
+      const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
+        'clickup',
+        't',
+        'c',
+        null,
+      );
       adapter.deleteImpl = () => {
         throw new ExternalProviderError(provider, 'not_found');
       };
-      const outcome = await service.executeCommentDelete(session.sessionId);
+      const outcome = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(outcome.outcome).toBe('already_deleted');
     }
     // outcome_unknown on a dispatched timeout, then verify sees it gone
     {
       const { service, adapter, provider } = matrix({ provider: 'clickup' });
-      const session = await service.createCommentDeleteSession('clickup', 't', 'c', null);
+      const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
+        'clickup',
+        't',
+        'c',
+        null,
+      );
       adapter.deleteImpl = () => {
         throw unknownOutcome(provider);
       };
-      const unknown = await service.executeCommentDelete(session.sessionId);
+      const unknown = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(unknown.outcome).toBe('outcome_unknown');
       adapter.deleteImpl = null;
       adapter.snapshot = null;
-      const verified = await service.verifySession(session.sessionId);
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
       expect(verified.remoteState).toBe('gone');
     }
     // known rejection fails closed
     {
       const { service, adapter, provider } = matrix({ provider: 'clickup' });
-      const session = await service.createCommentDeleteSession('clickup', 't', 'c', null);
+      const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
+        'clickup',
+        't',
+        'c',
+        null,
+      );
       adapter.deleteImpl = () => {
         throw new ExternalProviderError(provider, 'permission_denied');
       };
-      const rejected = await service.executeCommentDelete(session.sessionId);
+      const rejected = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(rejected).toMatchObject({ outcome: 'rejected', reason: 'delete_rejected' });
-      expect((await service.touchSession(session.sessionId)).state).toBe('invalidated');
+      expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe('invalidated');
     }
   });
 
@@ -325,7 +388,7 @@ describe('Phase 13 gate: session matrix', () => {
       createdAt: '2026-08-22T00:00:00.000Z',
     };
     await expect(
-      service.createCommentDeleteSession('clickup', 't', 'c', null),
+      service.createCommentDeleteSession(PROJECT_ID, 'clickup', 't', 'c', null),
     ).rejects.toMatchObject({ details: { reason: 'not_owned' } });
     expect(store.size()).toBe(0);
   });

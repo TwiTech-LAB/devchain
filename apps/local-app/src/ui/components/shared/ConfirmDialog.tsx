@@ -20,6 +20,8 @@ interface ConfirmDialogProps {
   cancelText?: string;
   variant?: 'default' | 'destructive';
   loading?: boolean;
+  /** Blocks only the confirm action (for example while context loads); Cancel stays available. */
+  confirmDisabled?: boolean;
 }
 
 export function ConfirmDialog({
@@ -32,6 +34,7 @@ export function ConfirmDialog({
   cancelText = 'Cancel',
   variant = 'default',
   loading = false,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const handleConfirm = () => {
     onConfirm();
@@ -58,7 +61,7 @@ export function ConfirmDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
             {cancelText}
           </Button>
-          <Button variant={variant} onClick={handleConfirm} disabled={loading}>
+          <Button variant={variant} onClick={handleConfirm} disabled={loading || confirmDisabled}>
             {loading ? 'Processing...' : confirmText}
           </Button>
         </DialogFooter>

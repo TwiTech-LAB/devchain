@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { epicTimeQueryKeys, resolveEpicTimeZone } from '@/ui/lib/epic-time';
 import { useEpicTimeSummariesBatch } from './useEpicTimeSummariesBatch';
@@ -172,6 +172,33 @@ describe('useEpicTimeSummariesBatch', () => {
     await waitFor(() => expect(result.current.query.isError).toBe(true));
 
     expect(result.current.totals).toEqual(new Map());
+  });
+
+  it('retains the last successful map for native decoration while flagging a failed 60-second background refetch', async () => {
+    jest.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      fetchMock.mockResolvedValueOnce(batchResponse([{ epicId: 'epic-1', totalMinutes: 90 }]));
+      const { result } = renderHook(() => useEpicTimeSummariesBatch(['epic-1']), {
+        wrapper: wrapper(client),
+      });
+
+      await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+      expect(result.current.totals?.get('epic-1')).toBe(90);
+      expect(result.current.query.isError).toBe(false);
+
+      fetchMock.mockResolvedValue({ ok: false, status: 502 });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+
+      // The hook itself keeps the retained map (native Board badges keep
+      // their decoration); consumers that must not show stale figures — the
+      // external Kanban page — gate on the error state.
+      expect(result.current.query.isError).toBe(true);
+      expect(result.current.totals?.get('epic-1')).toBe(90);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('ignores malformed batch items instead of crashing the Board', async () => {

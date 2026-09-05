@@ -14,6 +14,7 @@ describe('EpicTimeController', () => {
         isRoot: true,
         directMinutes: 1,
         totalMinutes: 2,
+        includesRelatedTime: false,
         items: [],
         taskItems: [],
       }),
@@ -28,6 +29,7 @@ describe('EpicTimeController', () => {
       isRoot: true,
       directMinutes: 1,
       totalMinutes: 2,
+      includesRelatedTime: false,
       items: [],
       taskItems: [],
     });

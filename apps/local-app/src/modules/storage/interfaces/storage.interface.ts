@@ -82,6 +82,7 @@ import {
   CreateExternalTaskLink,
   ExternalTaskLink,
   IntegrationConnection,
+  IntegrationConnectionLookup,
   IntegrationCredentials,
   IntegrationProvider,
   ReplaceIntegrationConnection,
@@ -92,6 +93,21 @@ import {
   ExternalManagedSubtaskLink,
   ConfirmExternalManagedSubtaskLink,
   ConfirmExternalManagedSubtaskLinkResult,
+  EpicRelationCandidate,
+  EpicRelationListItem,
+  EpicRelationSummary,
+  EpicRelationWriteContext,
+  SetEpicRelationResult,
+  DeleteEpicRelationResult,
+  SetEpicRelation,
+  ExternalEstimateLoggedMinutesEntry,
+  ExternalEstimateLogDailyCheckpoint,
+  ExternalEstimateLogIdentity,
+  ExternalEstimateLogOperationMutation,
+  ExternalEstimateLogState,
+  PrepareExternalEstimateLogOperation,
+  SetExternalEstimateLoggedMinutes,
+  StoreExternalEstimateLogResolution,
 } from '../models/domain.models';
 
 export type VerifyIntegrationCredentials = (credentials: IntegrationCredentials) => Promise<void>;
@@ -217,6 +233,21 @@ export interface ListParentChildrenOptions extends ListOptions {
   statusId?: string;
 }
 
+export interface ListEpicRelationCandidatesOptions extends ListOptions {
+  q?: string;
+  excludeMcpHidden?: boolean;
+  workspaceId?: string;
+}
+
+export interface EpicRelationReadOptions {
+  excludeMcpHidden?: boolean;
+  workspaceId?: string;
+}
+
+export interface ListEpicRelationsOptions extends EpicRelationReadOptions, ListOptions {
+  relatedEpicId?: string;
+}
+
 export interface CreateEpicForProjectInput {
   title: string;
   description?: string | null;
@@ -290,6 +321,11 @@ export interface ProjectStorage {
   deleteProject(id: string): Promise<void>;
   getProjectByRootPath(rootPath: string): Promise<Project | null>;
   findProjectContainingPath(absolutePath: string): Promise<Project | null>;
+  /**
+   * Return the project and its same-workspace peers in project-ID order from one SQL snapshot.
+   * The caller derives the owning project from the returned rows.
+   */
+  getProjectWorkspaceSnapshot(projectId: string): Promise<Project[]>;
   getFeatureFlags(): FeatureFlagConfig;
 }
 
@@ -313,9 +349,14 @@ export interface StatusStorage {
 
 export interface EpicStorage {
   createEpic(data: CreateEpic, eventFactory?: (epic: Epic) => PreparedEvent | null): Promise<Epic>;
+  /**
+   * The optional hook runs after the Epic and tags exist but before the durable event is
+   * appended. It runs inside the caller-owned transaction; throwing rolls back all three.
+   */
   createEpicWithinTransaction(
     data: CreateEpic,
     eventFactory?: (epic: Epic) => PreparedEvent | null,
+    beforeEventAppend?: (epic: Epic) => Promise<void>,
   ): Promise<Epic>;
   getEpic(id: string): Promise<Epic>;
   listEpics(projectId: string, options?: ListOptions): Promise<ListResult<Epic>>;
@@ -336,7 +377,10 @@ export interface EpicStorage {
     expectedVersion: number,
     eventFactory?: FactualEventFactory<Epic, Epic>,
   ): Promise<Epic>;
-  deleteEpic(id: string, eventFactory?: (epic: Epic) => PreparedEvent | null): Promise<void>;
+  deleteEpic(
+    id: string,
+    eventFactory?: (epic: Epic, workspaceId: string) => PreparedEvent | null,
+  ): Promise<void>;
   listSubEpics(parentId: string, options?: ListOptions): Promise<ListResult<Epic>>;
   listParentChildren(
     parentId: string,
@@ -351,7 +395,16 @@ export interface EpicStorage {
   countEpicsByStatus(statusId: string): Promise<number>;
   updateEpicsStatus(oldStatusId: string, newStatusId: string): Promise<number>;
   listEpicComments(epicId: string, options?: ListOptions): Promise<ListResult<EpicComment>>;
-  createEpicComment(data: CreateEpicComment): Promise<EpicComment>;
+  /**
+   * Create a comment. When `eventFactory` is provided, the comment insert and the
+   * factual event append (with its delivery rows) commit in one transaction; the
+   * factory receives the stored comment and the transaction-loaded Epic. A factory
+   * or append failure rolls back the comment.
+   */
+  createEpicComment(
+    data: CreateEpicComment,
+    eventFactory?: FactualEventFactory<EpicComment, Epic>,
+  ): Promise<EpicComment>;
   deleteEpicComment(id: string): Promise<void>;
   /**
    * Delete a comment scoped to its owning epic (`WHERE id = ? AND epic_id = ?`).
@@ -363,6 +416,32 @@ export interface EpicStorage {
     projectId: string,
     prefix: string,
   ): Promise<Array<{ id: string; title: string }>>;
+  setEpicRelation(
+    data: SetEpicRelation,
+    context?: EpicRelationWriteContext,
+  ): Promise<SetEpicRelationResult>;
+  deleteEpicRelation(
+    epicId: string,
+    relatedEpicId: string,
+    context?: EpicRelationWriteContext,
+  ): Promise<DeleteEpicRelationResult>;
+  listEpicRelations(
+    epicId: string,
+    options?: ListEpicRelationsOptions,
+  ): Promise<ListResult<EpicRelationListItem>>;
+  summarizeEpicRelationsBatch(
+    epicIds: string[],
+    options?: EpicRelationReadOptions,
+  ): Promise<Map<string, EpicRelationSummary>>;
+  listEpicRelationCandidates(
+    epicId: string,
+    options?: ListEpicRelationCandidatesOptions,
+  ): Promise<ListResult<EpicRelationCandidate>>;
+  getWorkspaceEpicsByIdPrefix(
+    epicId: string,
+    prefix: string,
+    options?: EpicRelationReadOptions,
+  ): Promise<EpicRelationCandidate[]>;
 }
 
 export interface PromptStorage {
@@ -673,18 +752,47 @@ export interface IntegrationStorage {
     verify: VerifyIntegrationCredentials,
     eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection | null>,
   ): Promise<IntegrationConnection>;
-  getIntegrationConnection(provider: IntegrationProvider): Promise<IntegrationConnection | null>;
-  listIntegrationConnections(): Promise<IntegrationConnection[]>;
+  getIntegrationConnection(
+    identity: IntegrationConnectionLookup,
+  ): Promise<IntegrationConnection | null>;
+  getIntegrationConnectionById(connectionId: string): Promise<IntegrationConnection | null>;
+  assignUnassignedIntegrationConnection(
+    connectionId: string,
+    projectId: string,
+    eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
+  ): Promise<IntegrationConnection>;
+  listIntegrationConnectionsByLegacySourceConnectionId(
+    legacySourceConnectionId: string,
+  ): Promise<IntegrationConnection[]>;
+  listIntegrationConnections(projectId?: string): Promise<IntegrationConnection[]>;
   getIntegrationConnectionCredentials(
-    provider: IntegrationProvider,
+    identity: IntegrationConnectionLookup,
+  ): Promise<IntegrationCredentials | null>;
+  getIntegrationConnectionCredentialsById(
+    connectionId: string,
   ): Promise<IntegrationCredentials | null>;
   disconnectIntegrationConnection(
-    provider: IntegrationProvider,
+    identity: IntegrationConnectionLookup,
+    eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
+    options?: { acknowledgeOrphanRisk?: boolean },
+  ): Promise<boolean>;
+  disconnectIntegrationConnectionById(
+    connectionId: string,
+    eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
+    options?: { acknowledgeOrphanRisk?: boolean },
+  ): Promise<boolean>;
+  disconnectUnassignedIntegrationConnection(
+    connectionId: string,
     eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
     options?: { acknowledgeOrphanRisk?: boolean },
   ): Promise<boolean>;
   updateIntegrationConnectionSyncSetting(
-    provider: IntegrationProvider,
+    identity: IntegrationConnectionLookup,
+    subtaskSyncEnabled: boolean,
+    eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
+  ): Promise<IntegrationConnection>;
+  updateIntegrationConnectionSyncSettingById(
+    connectionId: string,
     subtaskSyncEnabled: boolean,
     eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
   ): Promise<IntegrationConnection>;
@@ -702,6 +810,10 @@ export interface IntegrationStorage {
     provider: IntegrationProvider,
     remoteScopeKey: string,
   ): Promise<ExternalTaskLink[]>;
+  listExternalTaskLinksByRemoteTask(
+    provider: IntegrationProvider,
+    remoteTaskId: string,
+  ): Promise<ExternalTaskLink[]>;
   listExternalTaskLinksForEpic(epicId: string): Promise<ExternalTaskLink[]>;
   listExternalTaskLinksForEpics(epicIds: string[]): Promise<ExternalTaskLink[]>;
   createExternalManagedSubtaskLink(
@@ -710,6 +822,9 @@ export interface IntegrationStorage {
   getExternalManagedSubtaskLink(id: string): Promise<ExternalManagedSubtaskLink>;
   listExternalManagedSubtaskLinksByProvider(
     provider: IntegrationProvider,
+  ): Promise<ExternalManagedSubtaskLink[]>;
+  listExternalManagedSubtaskLinksByConnection(
+    connectionId: string,
   ): Promise<ExternalManagedSubtaskLink[]>;
   listExternalManagedSubtaskLinksForEpicSnapshot(
     epicIdSnapshot: string,
@@ -728,6 +843,44 @@ export interface IntegrationStorage {
     data: ConfirmExternalManagedSubtaskLink,
   ): Promise<ConfirmExternalManagedSubtaskLinkResult>;
   removeExternalManagedSubtaskLink(id: string): Promise<boolean>;
+}
+
+export interface ExternalEstimateLogStorage {
+  getExternalEstimateLogState(
+    identity: ExternalEstimateLogIdentity,
+  ): Promise<ExternalEstimateLogState | null>;
+  getExternalEstimateLogDailyCheckpoint(
+    identity: ExternalEstimateLogIdentity,
+  ): Promise<ExternalEstimateLogDailyCheckpoint | null>;
+  listExternalEstimateLogStatesByRemoteTask(
+    provider: IntegrationProvider,
+    remoteTaskId: string,
+  ): Promise<ExternalEstimateLogState[]>;
+  listExternalEstimateLoggedMinutes(
+    provider: IntegrationProvider,
+    identities: ReadonlyArray<{ remoteScopeKey: string; remoteTaskId: string }>,
+  ): Promise<ExternalEstimateLoggedMinutesEntry[]>;
+  setExternalEstimateLoggedMinutes(
+    data: SetExternalEstimateLoggedMinutes,
+  ): Promise<ExternalEstimateLogState>;
+  prepareExternalEstimateLogOperation(
+    data: PrepareExternalEstimateLogOperation,
+  ): Promise<ExternalEstimateLogState>;
+  markExternalEstimateLogOperationOutcomeUnknown(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState>;
+  confirmExternalEstimateLogOperation(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState>;
+  clearExternalEstimateLogOperation(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState>;
+  storeExternalEstimateLogResolution(
+    data: StoreExternalEstimateLogResolution,
+  ): Promise<ExternalEstimateLogState>;
+  applyExternalEstimateLogResolution(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState>;
 }
 
 export interface StorageService
@@ -751,6 +904,7 @@ export interface StorageService
     ReviewStorage,
     ScheduledEpicStorage,
     SessionStorage,
-    IntegrationStorage {}
+    IntegrationStorage,
+    ExternalEstimateLogStorage {}
 
 export const STORAGE_SERVICE = 'STORAGE_SERVICE';

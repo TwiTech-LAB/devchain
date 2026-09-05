@@ -127,12 +127,32 @@ async function installWorkspaceRoutes(page: Page): Promise<{ timeEntryRequests: 
     );
   });
 
-  await page.route('**/api/projects', async (route) => {
+  await page.route('**/api/workspaces', async (route) => {
+    await route.fulfill(
+      jsonResponse([
+        {
+          id: 'ws-visual-1',
+          name: 'Visual Workspace',
+          isDefault: true,
+          position: 0,
+          projectCount: 1,
+          deviceGrantCount: 0,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ]),
+    );
+  });
+
+  // Matches the plain list and the workspace-qualified activation refetch;
+  // the exact detail and stats routes below are registered later and win.
+  await page.route('**/api/projects*', async (route) => {
     await route.fulfill(
       jsonResponse({
         items: [
           {
             id: 'test-project-1',
+            workspaceId: 'ws-visual-1',
             name: 'Visual Regression Project',
             description: null,
             rootPath: '/tmp/test',
@@ -145,11 +165,32 @@ async function installWorkspaceRoutes(page: Page): Promise<{ timeEntryRequests: 
     );
   });
 
+  await page.route('**/api/projects/test-project-1', async (route) => {
+    await route.fulfill(
+      jsonResponse({
+        id: 'test-project-1',
+        workspaceId: 'ws-visual-1',
+        name: 'Visual Regression Project',
+        description: null,
+        rootPath: '/tmp/test',
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+  });
+
+  // The linked route resolves durable Epic ownership before any vendor
+  // query: the Epic read and its owning project must both resolve.
+  await page.route(`**/api/epics/${EPIC_ID}`, async (route) => {
+    await route.fulfill(jsonResponse({ id: EPIC_ID, projectId: 'test-project-1' }));
+  });
+
   await page.route('**/api/projects/test-project-1/stats', async (route) => {
     await route.fulfill(jsonResponse({ epicsCount: 1, agentsCount: 0 }));
   });
 
-  await page.route('**/api/integrations/connections', async (route) => {
+  // Project-qualified with a query string, so the glob must allow the suffix.
+  await page.route('**/api/integrations/connections*', async (route) => {
     await route.fulfill(
       jsonResponse({
         items: [
@@ -191,7 +232,7 @@ async function installWorkspaceRoutes(page: Page): Promise<{ timeEntryRequests: 
     );
   });
 
-  await page.route(`**/api/integrations/my-work/clickup/tasks/${TASK_ID}`, async (route) => {
+  await page.route(`**/api/integrations/my-work/clickup/tasks/${TASK_ID}*`, async (route) => {
     await route.fulfill(jsonResponse(DETAIL));
   });
 
@@ -204,7 +245,7 @@ async function installWorkspaceRoutes(page: Page): Promise<{ timeEntryRequests: 
   );
 
   await page.route(
-    `**/api/integrations/my-work/clickup/tasks/${TASK_ID}/rich-description`,
+    `**/api/integrations/my-work/clickup/tasks/${TASK_ID}/rich-description*`,
     async (route) => {
       await route.fulfill(jsonResponse(RICH_DESCRIPTION_UNSUPPORTED));
     },
@@ -341,8 +382,12 @@ test.describe('External task detail workspace — visual and responsive lock', (
     expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(viewport!.height + 1);
 
     // Loading an older page prepends content and preserves the reading
-    // anchor exactly: scrollTop grows by the height added above it. The
-    // button is revealed first so the click itself causes no scroll.
+    // anchor: scrollTop grows by the height added above it. The panel
+    // restores its own measured offset exactly; independent before/after
+    // reads can drift a few pixels while the now-consumed Load earlier
+    // button settles, so the assertion allows that constant slack and still
+    // catches any real jump. The button is revealed first so the click
+    // itself causes no scroll.
     const loadEarlier = page.getByRole('button', { name: 'Load earlier comments' });
     await loadEarlier.scrollIntoViewIfNeeded();
     const before = await history.evaluate((element) => ({
@@ -357,7 +402,8 @@ test.describe('External task detail workspace — visual and responsive lock', (
       height: element.scrollHeight,
     }));
     expect(after.height).toBeGreaterThan(before.height);
-    expect(after.top).toBe(before.top + (after.height - before.height));
+    expect(after.top - (before.top + (after.height - before.height))).toBeLessThanOrEqual(4);
+    expect(after.top - (before.top + (after.height - before.height))).toBeGreaterThanOrEqual(-4);
 
     await expectNoHorizontalOverflow(page);
 

@@ -2,6 +2,7 @@ import { Inject, Injectable, Optional, forwardRef } from '@nestjs/common';
 import type { ZodSchema } from 'zod';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { EpicsService } from '../../epics/services/epics.service';
+import { EpicRelationsService } from '../../epics/services/epic-relations.service';
 import { GuestsService } from '../../guests/services/guests.service';
 import { ProjectCommunicationService } from '../../project-communication/project-communication.service';
 import { ReviewsService } from '../../reviews/services/reviews.service';
@@ -36,6 +37,9 @@ export class McpToolBindingRegistry {
     @Optional()
     @Inject(forwardRef(() => EpicsService))
     epicsService?: EpicsService,
+    @Optional()
+    @Inject(EpicRelationsService)
+    epicRelationsService?: EpicRelationsService,
     @Optional()
     @Inject(forwardRef(() => SettingsService))
     settingsService?: SettingsService,
@@ -75,6 +79,7 @@ export class McpToolBindingRegistry {
       storage,
       sessionsService,
       epicsService,
+      epicRelationsService,
       settingsService,
       guestsService,
       skillsService,

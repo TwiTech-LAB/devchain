@@ -1,14 +1,18 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe } from 'jest-axe';
 import { useState } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from 'react-router-dom';
 import type {
   ExternalTaskComment,
   ExternalTaskDetail,
 } from '@/modules/external-integrations/models/external-provider.models';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { EpicTaskViewNav } from '@/ui/components/epics/EpicTaskViewNav';
+import { externalLinkedTaskState } from '@/ui/lib/external-board';
 import { ExternalTaskDetailDialog } from './ExternalTaskDetailDialog';
+
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 
 const useExternalTaskControllerMock = jest.fn();
 
@@ -109,6 +113,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof ExternalTaskDet
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <ExternalTaskDetailDialog
+          projectId={PROJECT_ID}
           provider="jira"
           taskId="ENG-1"
           open
@@ -121,8 +126,68 @@ function renderDialog(props: Partial<React.ComponentProps<typeof ExternalTaskDet
   );
 }
 
+function DialogNavigationProbe() {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  return (
+    <div>
+      <span data-testid="dialog-navigation-type">{navigationType}</span>
+      <span data-testid="dialog-location-state">{JSON.stringify(location.state ?? null)}</span>
+    </div>
+  );
+}
+
+function mountBodyTerminal(): HTMLButtonElement {
+  const terminal = document.createElement('button');
+  terminal.type = 'button';
+  terminal.textContent = 'Body terminal';
+  document.body.appendChild(terminal);
+  return terminal;
+}
+
+function hasModalOverlay(baseElement: HTMLElement): boolean {
+  return Array.from(baseElement.querySelectorAll('div')).some((node) =>
+    node.className.includes('bg-black/80'),
+  );
+}
+
 const useExternalTaskTimeEntriesMock = jest.fn();
 const useEpicTimeDetailMock = jest.fn();
+
+function timeEntriesValue(overrides: Record<string, unknown> = {}) {
+  return {
+    history: {
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: jest.fn(),
+    },
+    create: { isPending: false, isError: false, error: null, isSuccess: false, data: undefined },
+    submitCreate: jest.fn(),
+    update: {
+      isPending: false,
+      isError: false,
+      error: null,
+      isSuccess: false,
+      data: undefined,
+      reset: jest.fn(),
+    },
+    submitUpdate: jest.fn(),
+    delete: { isPending: false, isError: false, error: null, isSuccess: false, data: undefined },
+    submitDelete: jest.fn(),
+    verify: { isPending: false, isSuccess: false, data: undefined },
+    verifyUnknown: jest.fn(),
+    acknowledge: { isPending: false },
+    acknowledgeUnknown: jest.fn(),
+    unknownOperationId: null,
+    unknownOperationKind: null,
+    blockedByUnknown: false,
+    canVerifyUnknown: false,
+    writeBlocked: false,
+    ...overrides,
+  };
+}
 
 jest.mock('@/ui/hooks/board/useExternalTaskTimeEntries', () => ({
   useExternalTaskTimeEntries: (...args: unknown[]) =>
@@ -159,32 +224,12 @@ describe('ExternalTaskDetailDialog', () => {
       isStatusPending: false,
     });
     useExternalTaskTimeEntriesMock.mockReset();
-    useExternalTaskTimeEntriesMock.mockReturnValue({
-      history: {
-        data: undefined,
-        isLoading: false,
-        isError: false,
-        error: null,
-        refetch: jest.fn(),
-      },
-      create: { isPending: false, isError: false, error: null, isSuccess: false, data: undefined },
-      createOrigin: null,
-      submitCreate: jest.fn(),
-      delete: { isPending: false, isError: false, error: null, isSuccess: false, data: undefined },
-      submitDelete: jest.fn(),
-      verify: { isPending: false, isSuccess: false, data: undefined },
-      verifyUnknown: jest.fn(),
-      acknowledge: { isPending: false },
-      acknowledgeUnknown: jest.fn(),
-      unknownOperationId: null,
-      blockedByUnknown: false,
-      canVerifyUnknown: false,
-      writeBlocked: false,
-    });
+    useExternalTaskTimeEntriesMock.mockReturnValue(timeEntriesValue());
     useEpicTimeDetailMock.mockReset();
     useEpicTimeDetailMock.mockReturnValue({
       admitted: false,
       summary: undefined,
+      timeZone: 'UTC',
       query: { isLoading: false, isError: false },
     });
     useExternalRichDescriptionEditMock.mockReset();
@@ -420,7 +465,7 @@ describe('ExternalTaskDetailDialog', () => {
       'false',
     );
     expect(screen.queryByRole('form', { name: 'Log time' })).toBeNull();
-    expect(screen.getByText('Recent time entries', { selector: 'summary' })).not.toBeVisible();
+    expect(screen.getByLabelText('Recent time entries')).not.toBeVisible();
   });
 
   it('renders subtasks with status-only controls between Description and Time tracked', async () => {
@@ -501,6 +546,7 @@ describe('ExternalTaskDetailDialog', () => {
     expect(activate).toHaveBeenCalledTimes(1);
     expect(activate).toHaveBeenCalledWith('10001');
     expect(useExternalSubtaskStatusEditorMock).toHaveBeenCalledWith('jira', {
+      projectId: PROJECT_ID,
       connectionEpoch: 'connection-jira-a:1',
       parentTaskId: 'ENG-1',
       enabled: true,
@@ -633,6 +679,26 @@ describe('ExternalTaskDetailDialog', () => {
     expect(screen.queryByRole('button', { name: 'Create DevChain task' })).not.toBeInTheDocument();
   });
 
+  it('shows global link attribution and never offers a duplicate import', () => {
+    renderDialog({
+      globalLink: {
+        scopeKey: 'acme.atlassian.net',
+        taskId: 'ENG-1',
+        linked: true,
+        epicId: 'epic-other',
+        projectId: 'project-other',
+        projectName: 'Original project',
+      },
+    });
+
+    expect(screen.getByText('DevChain project: Original project')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open linked DevChain task' })).toHaveAttribute(
+      'href',
+      '/epics/epic-other',
+    );
+    expect(screen.queryByRole('button', { name: 'Create DevChain task' })).not.toBeInTheDocument();
+  });
+
   it('renders unsupported status and time actions read-only with guidance', () => {
     useExternalTaskControllerMock.mockReturnValue(
       controllerValue({
@@ -681,10 +747,51 @@ describe('ExternalTaskDetailDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Expand Time tracked' }));
     expect(timeSection).toHaveTextContent('Time tracking is unavailable.');
     expect(screen.queryByRole('form', { name: 'Log time' })).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('Recent time entries', { selector: 'summary' }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Recent time entries')).not.toBeInTheDocument();
     await expect(axe(baseElement)).resolves.toHaveNoViolations();
+  });
+
+  it('offers Verify in the task dialog for a verifiable unknown operation', async () => {
+    useExternalTaskTimeEntriesMock.mockReturnValue(
+      timeEntriesValue({
+        unknownOperationId: 'op-dialog',
+        blockedByUnknown: true,
+        canVerifyUnknown: true,
+        writeBlocked: true,
+      }),
+    );
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole('button', { name: 'Expand Time tracked' }));
+
+    expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Verify' })).toBeVisible();
+    expect(screen.getAllByRole('link', { name: /Open in source/ }).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Acknowledge duplicate risk' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+  });
+
+  it('renders only manual recovery in the task dialog when verification is unavailable', async () => {
+    useExternalTaskTimeEntriesMock.mockReturnValue(
+      timeEntriesValue({
+        unknownOperationId: 'op-dialog',
+        blockedByUnknown: true,
+        canVerifyUnknown: false,
+        writeBlocked: true,
+      }),
+    );
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole('button', { name: 'Expand Time tracked' }));
+
+    expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
+    expect(screen.getByText(/cannot be verified automatically/)).toBeVisible();
+    expect(screen.getAllByRole('link', { name: /Open in source/ }).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Acknowledge duplicate risk' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
   });
 
   it('returns focus to the supplied target on close', async () => {
@@ -699,6 +806,7 @@ describe('ExternalTaskDetailDialog', () => {
         <MemoryRouter>
           <QueryClientProvider client={new QueryClient()}>
             <ExternalTaskDetailDialog
+              projectId={PROJECT_ID}
               provider="jira"
               taskId="ENG-1"
               open={open}
@@ -727,6 +835,7 @@ describe('ExternalTaskDetailDialog', () => {
         <MemoryRouter>
           <QueryClientProvider client={new QueryClient()}>
             <ExternalTaskDetailDialog
+              projectId={PROJECT_ID}
               provider="jira"
               taskId="ENG-1"
               open={open}
@@ -777,7 +886,7 @@ describe('ExternalTaskDetailDialog', () => {
     expect(resolver()).toBe(screen.getByRole('heading', { name: detail.title }));
   });
 
-  it('shows the linked-task mismatch state with a route back and no cached comments, composer, or actions', () => {
+  it('uses the shared replace navigation in the linked-task mismatch state', () => {
     const cachedComment: ExternalTaskComment = {
       remoteId: 'C1',
       author: { remoteId: 'author-c1', displayName: 'Author C1' },
@@ -797,21 +906,60 @@ describe('ExternalTaskDetailDialog', () => {
         chronologicalComments: [cachedComment],
       }),
     );
-    renderDialog({ expectedLinkedEpicId: 'epic-1' });
+    const boardReturnState = externalLinkedTaskState('/board?st=s1&v=list&pg=2');
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <MemoryRouter
+        initialEntries={[{ pathname: '/board/jira/linked/epic-1', state: boardReturnState }]}
+      >
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route
+              path="/board/jira/linked/:epicId"
+              element={
+                <ExternalTaskDetailDialog
+                  projectId={PROJECT_ID}
+                  provider="jira"
+                  taskId="ENG-1"
+                  open
+                  connectionEpoch="connection-jira-a:1"
+                  onOpenChange={jest.fn()}
+                  expectedLinkedEpicId="epic-1"
+                  routeWindowNav={
+                    <EpicTaskViewNav
+                      epicId="epic-1"
+                      provider="jira"
+                      activeView="provider"
+                      boardReturnState={boardReturnState}
+                    />
+                  }
+                />
+              }
+            />
+            <Route path="/epics/:epicId" element={<DialogNavigationProbe />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
 
     expect(useExternalTaskControllerMock).toHaveBeenCalledWith('jira', 'ENG-1', {
       enabled: true,
       connectionEpoch: 'connection-jira-a:1',
+      projectId: PROJECT_ID,
       expectedLinkedEpicId: 'epic-1',
     });
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Linked task unavailable for the current connection',
     );
     expect(screen.getByText('Jira · Linked task unavailable')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open expected DevChain task' })).toHaveAttribute(
-      'href',
-      '/epics/epic-1',
-    );
+    expect(
+      screen.queryByRole('link', { name: 'Open expected DevChain task' }),
+    ).not.toBeInTheDocument();
+    const taskView = screen.getByRole('navigation', { name: 'Task view' });
+    const devChainLink = within(taskView).getByRole('link', { name: 'DevChain' });
+    expect(devChainLink).toHaveAttribute('href', '/epics/epic-1');
     expect(screen.queryByText('Cached comment body')).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Comments history' })).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Comment' })).not.toBeInTheDocument();
@@ -823,9 +971,15 @@ describe('ExternalTaskDetailDialog', () => {
     // An identity mismatch admits no subtask row and no child status action.
     expect(screen.queryByRole('region', { name: 'Subtasks' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /change status for/i })).not.toBeInTheDocument();
+
+    fireEvent.click(devChainLink);
+    expect(screen.getByTestId('dialog-navigation-type')).toHaveTextContent('REPLACE');
+    expect(screen.getByTestId('dialog-location-state')).toHaveTextContent(
+      JSON.stringify(boardReturnState),
+    );
   });
 
-  it('renders the accepted linked workspace and admits its estimate only after expansion', async () => {
+  it('renders the accepted linked workspace and admits its collapsed estimate header', async () => {
     useExternalTaskControllerMock.mockReturnValue(
       controllerValue({
         detail: {
@@ -849,9 +1003,85 @@ describe('ExternalTaskDetailDialog', () => {
     expect(screen.queryByRole('button', { name: 'Create DevChain task' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Comments' })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Comment' })).toBeInTheDocument();
-    expect(useEpicTimeDetailMock).toHaveBeenCalledWith('epic-1', { enabled: false });
+    expect(useEpicTimeDetailMock).toHaveBeenCalledWith('epic-1', { enabled: true });
+    const detailArgsBeforeExpand = useEpicTimeDetailMock.mock.lastCall;
 
     await userEvent.setup().click(screen.getByRole('button', { name: 'Expand Time tracked' }));
-    expect(useEpicTimeDetailMock).toHaveBeenLastCalledWith('epic-1', { enabled: true });
+    expect(useEpicTimeDetailMock.mock.lastCall).toEqual(detailArgsBeforeExpand);
+  });
+
+  it('renders the linked-route window non-modal: no overlay, body targets stay live, outside interaction never closes it', async () => {
+    const onOpenChange = jest.fn();
+    const terminal = mountBodyTerminal();
+    const { baseElement } = renderDialog({ expectedLinkedEpicId: 'epic-1', onOpenChange });
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(hasModalOverlay(baseElement)).toBe(false);
+    expect(terminal.hasAttribute('aria-hidden')).toBe(false);
+    expect(await axe(baseElement)).toHaveNoViolations();
+
+    // Radix attaches its document-level outside-pointer listener on the next
+    // macrotask after mount.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    fireEvent.pointerDown(terminal);
+    terminal.dispatchEvent(new Event('focusin', { bubbles: true }));
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    terminal.remove();
+  });
+
+  it('keeps the linked-route window open on Escape from an outside target and closes it from inside content', () => {
+    const onOpenChange = jest.fn();
+    const terminal = mountBodyTerminal();
+    renderDialog({ expectedLinkedEpicId: 'epic-1', onOpenChange });
+
+    terminal.focus();
+    fireEvent.keyDown(terminal, { key: 'Escape' });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    const close = screen.getByRole('button', { name: 'Close' });
+    close.focus();
+    fireEvent.keyDown(close, { key: 'Escape' });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    terminal.remove();
+  });
+
+  it('renders the route window nav inside the linked-route window only when provided', () => {
+    const { rerender } = renderDialog({
+      expectedLinkedEpicId: 'epic-1',
+      routeWindowNav: <nav aria-label="Task view">Task view placeholder</nav>,
+    });
+
+    const nav = screen.getByRole('navigation', { name: 'Task view' });
+    expect(nav.closest('[role="dialog"]')).toBe(screen.getByRole('dialog'));
+
+    rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient()}>
+          <ExternalTaskDetailDialog
+            projectId={PROJECT_ID}
+            provider="jira"
+            taskId="ENG-1"
+            open
+            connectionEpoch="connection-jira-a:1"
+            onOpenChange={jest.fn()}
+            expectedLinkedEpicId="epic-1"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole('navigation', { name: 'Task view' })).not.toBeInTheDocument();
+  });
+
+  it('keeps ordinary external Board task dialogs modal with overlay and body hidden', () => {
+    const terminal = mountBodyTerminal();
+    const { baseElement } = renderDialog();
+
+    expect(hasModalOverlay(baseElement)).toBe(true);
+    expect(terminal.getAttribute('aria-hidden')).toBe('true');
+    terminal.remove();
   });
 });

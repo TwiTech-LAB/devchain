@@ -76,6 +76,17 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
       ) as Promise<ExternalManagedSubtaskLink[]>;
   }
 
+  async listByConnection(connectionId: string): Promise<ExternalManagedSubtaskLink[]> {
+    return this.db
+      .select()
+      .from(externalManagedSubtaskLinks)
+      .where(eq(externalManagedSubtaskLinks.connectionIdSnapshot, connectionId.trim()))
+      .orderBy(
+        asc(externalManagedSubtaskLinks.createdAt),
+        asc(externalManagedSubtaskLinks.id),
+      ) as Promise<ExternalManagedSubtaskLink[]>;
+  }
+
   async listForEpicSnapshot(epicIdSnapshot: string): Promise<ExternalManagedSubtaskLink[]> {
     return this.db
       .select()
@@ -257,7 +268,8 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  handleProviderConnectionMutationSync(
+  handleConnectionMutationSync(
+    connectionId: string,
     provider: IntegrationProvider,
     acknowledgeOrphanRisk: boolean,
   ): void {
@@ -266,6 +278,7 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
       .from(externalManagedSubtaskLinks)
       .where(
         and(
+          eq(externalManagedSubtaskLinks.connectionIdSnapshot, connectionId),
           eq(externalManagedSubtaskLinks.provider, provider),
           inArray(externalManagedSubtaskLinks.operationPhase, [
             'dispatch_admitted',
@@ -280,7 +293,12 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
     if (!acknowledgeOrphanRisk) {
       throw new ConflictError(
         'Connection change requires acknowledgement of unresolved managed-subtask outcomes.',
-        { provider, reason: 'orphan_risk_ack_required', affectedCount: risky.length },
+        {
+          connectionId,
+          provider,
+          reason: 'orphan_risk_ack_required',
+          affectedCount: risky.length,
+        },
       );
     }
     const now = new Date().toISOString();
@@ -340,7 +358,7 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
     }
 
     const epic = this.db
-      .select({ id: epics.id, parentId: epics.parentId })
+      .select({ id: epics.id, parentId: epics.parentId, projectId: epics.projectId })
       .from(epics)
       .where(eq(epics.id, required.epicId))
       .get();
@@ -375,6 +393,7 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
       .get();
     if (
       !connection ||
+      connection.projectId !== epic.projectId ||
       connection.provider !== data.provider ||
       connection.generation !== data.connectionGeneration ||
       connection.syncSettingRevision !== data.syncSettingRevision ||

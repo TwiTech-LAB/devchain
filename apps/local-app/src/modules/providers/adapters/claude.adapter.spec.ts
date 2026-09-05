@@ -1,15 +1,76 @@
 import { ClaudeAdapter } from './claude.adapter';
+import { ensureClaudeProjectTrusted } from '../../sessions/utils/claude-config';
+
+jest.mock('../../sessions/utils/claude-config', () => ({
+  ensureClaudeProjectTrusted: jest.fn(),
+}));
+
+const mockEnsureClaudeProjectTrusted = ensureClaudeProjectTrusted as jest.MockedFunction<
+  typeof ensureClaudeProjectTrusted
+>;
 
 describe('ClaudeAdapter', () => {
   let adapter: ClaudeAdapter;
 
   beforeEach(() => {
     adapter = new ClaudeAdapter();
+    mockEnsureClaudeProjectTrusted.mockReset();
   });
 
   describe('providerName', () => {
     it('returns claude as provider name', () => {
       expect(adapter.providerName).toBe('claude');
+    });
+  });
+
+  describe('ProjectProvisioningCapability (trust-only)', () => {
+    it('declares requiresProjectProvisioning', () => {
+      expect(adapter.requiresProjectProvisioning).toBe(true);
+    });
+
+    it('delegates trust provisioning to ensureClaudeProjectTrusted with the exact path', async () => {
+      mockEnsureClaudeProjectTrusted.mockResolvedValue({ success: true });
+
+      const result = await adapter.provisionProjectPath('/home/user/project');
+
+      expect(mockEnsureClaudeProjectTrusted).toHaveBeenCalledWith('/home/user/project');
+      expect(result).toEqual({ success: true, warnings: [] });
+    });
+
+    it('maps a failed trust write to a fixed-code warning without throwing', async () => {
+      const secretSentinel = 'FAKE_SECRET_SENTINEL';
+      mockEnsureClaudeProjectTrusted.mockResolvedValue({
+        success: false,
+        error: `Unexpected token near ${secretSentinel}`,
+        errorType: 'invalid_config',
+      });
+
+      const result = await adapter.provisionProjectPath('/home/user/project');
+
+      expect(result.success).toBe(false);
+      expect(result.warnings).toEqual([
+        {
+          source: 'claude_project_trust',
+          level: 'warn',
+          message: 'Invalid Claude config: malformed or unsupported structure',
+          code: 'CLAUDE_TRUST_PROVISION_FAILED',
+        },
+      ]);
+      expect(JSON.stringify(result)).not.toContain(secretSentinel);
+    });
+
+    it('maps a rejection to the same fixed-code warning without throwing', async () => {
+      mockEnsureClaudeProjectTrusted.mockRejectedValue(new Error('lock contention'));
+
+      const result = await adapter.provisionProjectPath('/home/user/project');
+
+      expect(result.success).toBe(false);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({
+          code: 'CLAUDE_TRUST_PROVISION_FAILED',
+          message: 'lock contention',
+        }),
+      ]);
     });
   });
 

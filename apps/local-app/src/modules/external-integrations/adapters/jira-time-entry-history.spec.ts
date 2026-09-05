@@ -55,8 +55,11 @@ function providerWith(requestJson: jest.Mock): JiraExternalTaskProvider {
   } as unknown as SafeVendorHttpClient);
 }
 
-/** Identity plus DELETE_OWN_WORKLOGS permission served from fixed fixtures. */
-function historyTransport(worklogHandler: (params: URLSearchParams) => unknown, enabled = true) {
+/** Identity plus own-worklog permissions served from fixed fixtures. */
+function historyTransport(
+  worklogHandler: (params: URLSearchParams) => unknown,
+  permissions: { edit?: boolean; delete?: boolean } = {},
+) {
   const requests: SafeVendorJsonRequest[] = [];
   const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
     requests.push(request);
@@ -67,7 +70,16 @@ function historyTransport(worklogHandler: (params: URLSearchParams) => unknown, 
     if (url.pathname === '/rest/api/3/mypermissions') {
       return {
         permissions: {
-          DELETE_OWN_WORKLOGS: { id: 48, key: 'DELETE_OWN_WORKLOGS', enabled },
+          EDIT_OWN_WORKLOGS: {
+            id: 47,
+            key: 'EDIT_OWN_WORKLOGS',
+            enabled: permissions.edit ?? true,
+          },
+          DELETE_OWN_WORKLOGS: {
+            id: 48,
+            key: 'DELETE_OWN_WORKLOGS',
+            enabled: permissions.delete ?? true,
+          },
         },
       };
     }
@@ -129,6 +141,7 @@ describe('Jira time-entry history', () => {
           startedAt: '2026-08-19T11:00:00.000Z',
           note: null,
           noteTruncated: false,
+          canEdit: true,
           canDelete: true,
         },
         {
@@ -137,6 +150,7 @@ describe('Jira time-entry history', () => {
           startedAt: '2026-08-19T11:00:00.000Z',
           note: 'x'.repeat(10_000),
           noteTruncated: true,
+          canEdit: true,
           canDelete: true,
         },
         {
@@ -145,6 +159,7 @@ describe('Jira time-entry history', () => {
           startedAt: '2026-08-19T09:00:00.000Z',
           note: 'Implementation',
           noteTruncated: false,
+          canEdit: true,
           canDelete: true,
         },
       ],
@@ -158,7 +173,7 @@ describe('Jira time-entry history', () => {
     );
     expect(permissionCalls).toHaveLength(1);
     expect(new URL(permissionCalls[0]!.url).searchParams.get('permissions')).toBe(
-      'DELETE_OWN_WORKLOGS',
+      'EDIT_OWN_WORKLOGS,DELETE_OWN_WORKLOGS',
     );
 
     const pages = worklogRequests(requests);
@@ -178,12 +193,13 @@ describe('Jira time-entry history', () => {
   it('denies canDelete when DELETE_OWN_WORKLOGS is not granted', async () => {
     const { provider } = historyTransport(
       () => worklogPage({ maxResults: 1, total: 1, worklogs: [worklog()] }),
-      false,
+      { delete: false },
     );
 
     const result = await provider.myWork!.getTimeEntryHistory!(credentials, context, 'ENG-1');
 
     expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]!.canEdit).toBe(true);
     expect(result.entries[0]!.canDelete).toBe(false);
   });
 

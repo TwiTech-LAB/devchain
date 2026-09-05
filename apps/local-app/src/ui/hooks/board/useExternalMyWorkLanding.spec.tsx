@@ -12,6 +12,12 @@ import { useExternalMyWorkLanding } from './useExternalMyWorkLanding';
 import { integrationConnectionQueryKeys } from '@/ui/lib/integration-connections';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 
+const mockProjectId = '11111111-1111-4111-8111-111111111111';
+
+jest.mock('@/ui/hooks/useProjectSelection', () => ({
+  useSelectedProject: () => ({ selectedProjectId: mockProjectId }),
+}));
+
 // Layer: hook unit. The data hook is exercised through a fetch double (not module-mocked)
 // because the landing controller's status machine is the contract under test; the data
 // hook's own suite owns URL/key/error projections.
@@ -101,6 +107,23 @@ const task = (
   ...overrides,
 });
 
+function linksResult(items: Array<{ scopeKey: string; taskId: string; linked: boolean }>) {
+  return {
+    ok: true,
+    json: async () => ({
+      items: items.map((item) => ({
+        scopeKey: item.scopeKey,
+        taskId: item.taskId,
+        linked: item.linked,
+        epicId: item.linked ? `epic-${item.scopeKey}-${item.taskId}` : null,
+        projectId: item.linked ? mockProjectId : null,
+        projectName: item.linked ? 'Product' : null,
+        loggedMinutes: null,
+      })),
+    }),
+  };
+}
+
 describe('useExternalMyWorkLanding', () => {
   let queryClient: QueryClient;
 
@@ -143,7 +166,7 @@ describe('useExternalMyWorkLanding', () => {
   });
 
   it('hides cached connection and My Work data without issuing requests while unavailable', () => {
-    queryClient.setQueryData(integrationConnectionQueryKeys.list(), {
+    queryClient.setQueryData(integrationConnectionQueryKeys.list(mockProjectId), {
       items: connectionItems({ clickup: true }),
     });
     queryClient.setQueryData(
@@ -166,6 +189,15 @@ describe('useExternalMyWorkLanding', () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.startsWith('/api/integrations/connections')) {
         return { ok: true, json: async () => ({ items: connectionItems({ clickup: true }) }) };
+      }
+      if (url.includes('/links/batch')) {
+        // The grouped child is linked, but it never reaches the link read:
+        // identities come from the visibleTasks projection only.
+        return linksResult([
+          { scopeKey: 'team-1', taskId: 'parent', linked: false },
+          { scopeKey: 'team-1', taskId: 'orphan', linked: false },
+          { scopeKey: 'team-1', taskId: 'child', linked: true },
+        ]);
       }
       return {
         ok: true,
@@ -191,10 +223,268 @@ describe('useExternalMyWorkLanding', () => {
       locationLabel: 'Workspace / Product',
       workflowSummary: 'To do → Doing',
       assignedTaskCount: 2,
+      linkedTaskCount: 0,
       description: 'Current sprint work',
       refreshState: 'fresh',
     });
     expect(result.current.sourceUrl).toBe('https://app.clickup.com/');
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/integrations/my-work/clickup/links/batch'),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            items: [
+              { scopeKey: 'team-1', taskId: 'orphan' },
+              { scopeKey: 'team-1', taskId: 'parent' },
+            ],
+            includeLoggedMinutes: false,
+          }),
+        }),
+      ),
+    );
+  });
+
+  it('derives per-area linked counts over the visible universe with compound scope identities', async () => {
+    const sprintArea = workArea({ remoteId: 'list-1', scopeKey: 'team-1', name: 'Sprint board' });
+    const growthArea = workArea({
+      remoteId: 'list-1',
+      scopeKey: 'team-2',
+      name: 'Growth board',
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/integrations/connections')) {
+        return { ok: true, json: async () => ({ items: connectionItems({ clickup: true }) }) };
+      }
+      if (url.includes('/links/batch')) {
+        return linksResult([
+          // Same task ID in two scopes: linked in team-1 only, so the
+          // compound identity keeps the counts from colliding.
+          { scopeKey: 'team-1', taskId: 'shared', linked: true },
+          { scopeKey: 'team-2', taskId: 'shared', linked: false },
+          { scopeKey: 'team-1', taskId: 'a-only', linked: false },
+        ]);
+      }
+      return {
+        ok: true,
+        json: async () =>
+          snapshotResult(
+            [sprintArea, growthArea],
+            [
+              { workArea: sprintArea, task: task('shared', null) },
+              { workArea: sprintArea, task: task('a-only', null) },
+              { workArea: growthArea, task: task('shared', null) },
+            ],
+          ),
+      };
+    });
+
+    const { result } = renderLanding();
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(
+      result.current.cards.map((card) => ({
+        key: card.key,
+        assigned: card.assignedTaskCount,
+        linked: card.linkedTaskCount,
+      })),
+    ).toEqual([
+      { key: 'team-1:list-1', assigned: 2, linked: 1 },
+      { key: 'team-2:list-1', assigned: 1, linked: 0 },
+    ]);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/links/batch'),
+        expect.objectContaining({
+          body: JSON.stringify({
+            items: [
+              { scopeKey: 'team-1', taskId: 'a-only' },
+              { scopeKey: 'team-1', taskId: 'shared' },
+              { scopeKey: 'team-2', taskId: 'shared' },
+            ],
+            includeLoggedMinutes: false,
+          }),
+        }),
+      ),
+    );
+
+    // Search narrows which cards render; it never recomputes either count.
+    act(() => result.current.setSearch('growth'));
+    expect(result.current.cards).toHaveLength(1);
+    expect(result.current.cards[0]).toMatchObject({
+      key: 'team-2:list-1',
+      assignedTaskCount: 1,
+      linkedTaskCount: 0,
+    });
+  });
+
+  it('derives one shared link lookup and per-List linked counts for a task on several Lists', async () => {
+    const sprintList = workArea({ remoteId: 'list-1', scopeKey: 'team-1', name: 'Sprint board' });
+    const operationsList = workArea({
+      remoteId: 'list-2',
+      scopeKey: 'team-1',
+      name: 'Operations board',
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/integrations/connections')) {
+        return { ok: true, json: async () => ({ items: connectionItems({ clickup: true }) }) };
+      }
+      if (url.includes('/links/batch')) {
+        return linksResult([
+          { scopeKey: 'team-1', taskId: 'shared', linked: true },
+          { scopeKey: 'team-1', taskId: 'a-only', linked: false },
+        ]);
+      }
+      return {
+        ok: true,
+        json: async () =>
+          snapshotResult(
+            [sprintList, operationsList],
+            [
+              { workArea: sprintList, task: task('shared', null) },
+              { workArea: sprintList, task: task('a-only', null) },
+              { workArea: operationsList, task: task('shared', null) },
+            ],
+          ),
+      };
+    });
+
+    const { result } = renderLanding();
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(
+      result.current.cards.map((card) => ({
+        key: card.key,
+        assigned: card.assignedTaskCount,
+        linked: card.linkedTaskCount,
+      })),
+    ).toEqual([
+      { key: 'team-1:list-1', assigned: 2, linked: 1 },
+      { key: 'team-1:list-2', assigned: 1, linked: 1 },
+    ]);
+    // One task shown on two Lists resolves through one compound link
+    // identity, so the batch body lists it exactly once.
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/links/batch'),
+        expect.objectContaining({
+          body: JSON.stringify({
+            items: [
+              { scopeKey: 'team-1', taskId: 'a-only' },
+              { scopeKey: 'team-1', taskId: 'shared' },
+            ],
+            includeLoggedMinutes: false,
+          }),
+        }),
+      ),
+    );
+  });
+
+  it('keeps the linked count unknown while the link read is pending', async () => {
+    const area = workArea();
+    const pendingLinks = new Promise<never>(() => undefined);
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/integrations/connections')) {
+        return { ok: true, json: async () => ({ items: connectionItems({ clickup: true }) }) };
+      }
+      if (url.includes('/links/batch')) {
+        return pendingLinks;
+      }
+      return {
+        ok: true,
+        json: async () => snapshotResult([area], [{ workArea: area, task: task('a1', null) }]),
+      };
+    });
+
+    const { result } = renderLanding();
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.cards[0]).toMatchObject({
+      assignedTaskCount: 1,
+      linkedTaskCount: null,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/links/batch'),
+      expect.anything(),
+    );
+  });
+
+  it('keeps the linked count unknown while placeholder link data covers a changed input set', async () => {
+    const area = workArea();
+    let completedScope = false;
+    let linksCalls = 0;
+    const secondLinks = new Promise<never>(() => undefined);
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/integrations/connections')) {
+        return { ok: true, json: async () => ({ items: connectionItems({ clickup: true }) }) };
+      }
+      if (url.includes('/links/batch')) {
+        linksCalls += 1;
+        if (linksCalls === 1) {
+          return linksResult([{ scopeKey: 'team-1', taskId: 'a1', linked: true }]);
+        }
+        return secondLinks;
+      }
+      return {
+        ok: true,
+        json: async () =>
+          snapshotResult(
+            [area],
+            completedScope
+              ? [
+                  { workArea: area, task: task('a1', null) },
+                  { workArea: area, task: task('a2', null) },
+                ]
+              : [{ workArea: area, task: task('a1', null) }],
+          ),
+      };
+    });
+
+    const { result } = renderLanding();
+    await waitFor(() =>
+      expect(result.current.cards[0]).toMatchObject({ assignedTaskCount: 1, linkedTaskCount: 1 }),
+    );
+
+    completedScope = true;
+    await act(async () => {
+      result.current.toggleIncludeCompleted();
+    });
+
+    // The new universe carries three identities but its link read has not
+    // settled, so the previous set's count must not bleed through.
+    await waitFor(() =>
+      expect(result.current.cards[0]).toMatchObject({
+        assignedTaskCount: 2,
+        linkedTaskCount: null,
+      }),
+    );
+  });
+
+  it('keeps cards ready with unknown linked counts when the link batch fails', async () => {
+    const area = workArea();
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/integrations/connections')) {
+        return { ok: true, json: async () => ({ items: connectionItems({ clickup: true }) }) };
+      }
+      if (url.includes('/links/batch')) {
+        return { ok: false, json: async () => ({ message: 'Link batch failed.' }) };
+      }
+      return {
+        ok: true,
+        json: async () => snapshotResult([area], [{ workArea: area, task: task('a1', null) }]),
+      };
+    });
+
+    const { result } = renderLanding();
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    await waitFor(() =>
+      expect(result.current.cards[0]).toMatchObject({
+        assignedTaskCount: 1,
+        linkedTaskCount: null,
+      }),
+    );
+    expect(result.current.error).toBeNull();
   });
 
   it('derives the Jira tenant link from the unfiltered provider snapshot', async () => {
@@ -280,7 +570,7 @@ describe('useExternalMyWorkLanding', () => {
     expect(result.current.includeCompleted).toBe(true);
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/integrations/my-work/clickup?includeCompleted=true',
+        `/api/integrations/my-work/clickup?includeCompleted=true&projectId=${mockProjectId}`,
         expect.anything(),
       );
     });
@@ -304,7 +594,7 @@ describe('useExternalMyWorkLanding', () => {
     expect(result.current.includeCompleted).toBe(true);
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/integrations/my-work/clickup?includeCompleted=true',
+        `/api/integrations/my-work/clickup?includeCompleted=true&projectId=${mockProjectId}`,
         expect.anything(),
       ),
     );
@@ -332,7 +622,7 @@ describe('useExternalMyWorkLanding', () => {
 
     newIdentity = true;
     act(() => {
-      queryClient.setQueryData(integrationConnectionQueryKeys.list(), {
+      queryClient.setQueryData(integrationConnectionQueryKeys.list(mockProjectId), {
         items: [
           {
             provider: 'clickup',
@@ -407,6 +697,27 @@ describe('useExternalMyWorkLanding', () => {
     act(() => result.current.setSearch('no-match'));
     expect(result.current.cards).toEqual([]);
     expect(result.current.visibleCardCount).toBe(2);
+  });
+
+  it('issues no link request for an empty task universe', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/integrations/connections')) {
+        return { ok: true, json: async () => ({ items: connectionItems({ clickup: true }) }) };
+      }
+      return { ok: true, json: async () => snapshotResult([workArea()]) };
+    });
+
+    const { result } = renderLanding();
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.cards[0]).toMatchObject({
+      assignedTaskCount: 0,
+      linkedTaskCount: null,
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/links/batch'),
+      expect.anything(),
+    );
   });
 
   it('reports empty for a connected provider with no work areas', async () => {

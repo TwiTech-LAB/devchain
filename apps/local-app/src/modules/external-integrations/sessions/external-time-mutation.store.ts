@@ -4,11 +4,13 @@ import {
   TIME_OPERATION_MAX_LIVE_RECEIPTS,
   TIME_OPERATION_MAX_RECEIPTS,
   TIME_OPERATION_RECEIPT_TTL_MS,
+  timeOperationCanVerify,
   type ExternalTimeCreateBaseline,
   type ExternalTimeMutationKind,
   type ExternalTimeMutationPhase,
   type ExternalTimeMutationReceipt,
   type ExternalTimeMutationTuple,
+  type ExternalTimeUpdateBaseline,
   type ExternalTimeOperationReceiptView,
 } from '../models/external-time-mutation.models';
 
@@ -25,6 +27,13 @@ export type TimeMutationAdmitResult =
 export type TimeMutationAckResult =
   | { ok: true; receipt: ExternalTimeMutationReceipt }
   | { ok: false; reason: 'not_found' | 'not_unknown' };
+
+export type LiveTaskReceiptIdentity = Pick<
+  ExternalTimeMutationTuple,
+  'provider' | 'connectionId' | 'connectionGeneration' | 'remoteTaskId'
+> & {
+  excludeOperationId?: string;
+};
 
 /** Stable content fingerprint of a time-entry create payload. */
 export function timeEntryNoteFingerprint(note: string | null): string {
@@ -56,6 +65,7 @@ export class ExternalTimeMutationStore {
     kind: ExternalTimeMutationKind;
     tuple: ExternalTimeMutationTuple;
     baseline: ExternalTimeCreateBaseline | null;
+    updateBaseline?: ExternalTimeUpdateBaseline | null;
   }): TimeMutationAdmitResult {
     const existing = this.get(input.operationId);
     if (existing) {
@@ -84,6 +94,7 @@ export class ExternalTimeMutationStore {
       phase: 'pending',
       remoteEntryId: null,
       baseline: input.baseline,
+      updateBaseline: input.updateBaseline ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -101,6 +112,26 @@ export class ExternalTimeMutationStore {
       return null;
     }
     return receipt;
+  }
+
+  findLiveTaskReceipt(identity: LiveTaskReceiptIdentity): ExternalTimeMutationReceipt | null {
+    for (const operationId of this.receipts.keys()) {
+      if (operationId === identity.excludeOperationId) {
+        continue;
+      }
+      const receipt = this.get(operationId);
+      if (
+        receipt &&
+        !TERMINAL_TIME_MUTATION_PHASES.has(receipt.phase) &&
+        receipt.tuple.provider === identity.provider &&
+        receipt.tuple.connectionId === identity.connectionId &&
+        receipt.tuple.connectionGeneration === identity.connectionGeneration &&
+        receipt.tuple.remoteTaskId === identity.remoteTaskId
+      ) {
+        return receipt;
+      }
+    }
+    return null;
   }
 
   markDispatched(operationId: string): ExternalTimeMutationReceipt | null {
@@ -160,6 +191,7 @@ export class ExternalTimeMutationStore {
       remoteTaskId: receipt.tuple.remoteTaskId,
       remoteEntryId: receipt.remoteEntryId,
       phase: receipt.phase,
+      canVerify: timeOperationCanVerify(receipt),
       createdAt: new Date(receipt.createdAt).toISOString(),
       updatedAt: new Date(receipt.updatedAt).toISOString(),
       expiresAt: new Date(receipt.createdAt + this.ttlMs).toISOString(),

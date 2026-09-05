@@ -1,4 +1,9 @@
-import { formatEpicTimeMinutes, resolveEpicTimeZone } from '@/ui/lib/epic-time';
+import {
+  epicTimeExportScopeLabel,
+  epicTimeTotalLabel,
+  formatEpicTimeMinutes,
+  resolveEpicTimeZone,
+} from '@/ui/lib/epic-time';
 
 // Layer: pure unit. Formatting is deterministic over the native Intl
 // formatter with the pinned 'en' locale this UI renders.
@@ -35,5 +40,20 @@ describe('resolveEpicTimeZone', () => {
     expect(typeof timeZone).toBe('string');
     expect(timeZone.trim().length).toBeGreaterThan(0);
     expect(timeZone).not.toMatch(/^[+-]\d{2}:?\d{2}$/);
+  });
+});
+
+describe('epicTimeTotalLabel and epicTimeExportScopeLabel', () => {
+  it('name the related scope only when the rollup admits routed roots', () => {
+    expect(epicTimeTotalLabel(false, false)).toBe('Total');
+    expect(epicTimeTotalLabel(false, true)).toBe('Total');
+    expect(epicTimeTotalLabel(true, false)).toBe('Total (incl. sub-epics)');
+    expect(epicTimeTotalLabel(true, true)).toBe('Total (incl. sub-epics and related Epics)');
+    expect(epicTimeExportScopeLabel(false, false)).toBe('Task total');
+    expect(epicTimeExportScopeLabel(false, true)).toBe('Task total');
+    expect(epicTimeExportScopeLabel(true, false)).toBe('Total including sub-epics');
+    expect(epicTimeExportScopeLabel(true, true)).toBe(
+      'Total including sub-epics and related Epics',
+    );
   });
 });

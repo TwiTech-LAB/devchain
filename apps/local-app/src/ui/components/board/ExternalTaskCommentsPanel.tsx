@@ -16,6 +16,7 @@ type ExternalTaskController = ReturnType<typeof useExternalTaskController>;
 
 export interface ExternalTaskCommentsPanelProps {
   provider: ExternalBoardProvider;
+  projectId: string | null;
   taskId: string | null;
   controller: ExternalTaskController;
   canComment: boolean;
@@ -30,6 +31,7 @@ export interface ExternalTaskCommentsPanelProps {
 
 export function ExternalTaskCommentsPanel({
   provider,
+  projectId,
   taskId,
   controller,
   canComment,
@@ -39,6 +41,7 @@ export function ExternalTaskCommentsPanel({
   historyClassName,
 }: ExternalTaskCommentsPanelProps) {
   const ownedActions = useOwnedCommentActions(provider, controller.connectionEpoch, taskId, {
+    projectId,
     richEditEnabled,
     ownedDeleteEnabled,
   });

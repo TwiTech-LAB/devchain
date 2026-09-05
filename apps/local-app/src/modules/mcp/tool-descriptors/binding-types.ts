@@ -1,6 +1,7 @@
 import type { McpResponse } from '../dtos/mcp.dto';
 import type { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import type { EpicsService } from '../../epics/services/epics.service';
+import type { EpicRelationsService } from '../../epics/services/epic-relations.service';
 import type { GuestsService } from '../../guests/services/guests.service';
 import type { ProjectCommunicationService } from '../../project-communication/project-communication.service';
 import type { ReviewsService } from '../../reviews/services/reviews.service';
@@ -24,6 +25,7 @@ export interface McpBindingRuntime {
   readonly storage: StorageService;
   readonly sessionsService?: SessionsService;
   readonly epicsService?: EpicsService;
+  readonly epicRelationsService?: EpicRelationsService;
   readonly settingsService?: SettingsService;
   readonly guestsService?: GuestsService;
   readonly skillsService?: SkillsService;

@@ -728,12 +728,7 @@ export class ProjectsController {
   async deleteProject(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/projects/:id');
     this.assertMutationAllowedForScopedProject(id);
-    await this.storage.deleteProject(id);
-    // Clean up template metadata and presets from settings to prevent stale entries
-    await this.settings.clearProjectTemplateMetadata(id);
-    await this.settings.clearProjectPresets(id);
-    // Clean up active preset entry for this project
-    await this.settings.setProjectActivePreset(id, null);
+    await this.projects.deleteProject(id);
   }
 
   @Get(':id/export')

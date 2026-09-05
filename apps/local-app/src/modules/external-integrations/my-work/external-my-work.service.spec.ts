@@ -11,6 +11,7 @@ import type { ExternalTaskProvider } from '../ports/external-task-provider';
 import { ExternalMyWorkService } from './external-my-work.service';
 
 describe('ExternalMyWorkService', () => {
+  const projectId = 'project-1';
   const clickupDescriptor: ExternalProviderDescriptor = {
     provider: 'clickup',
     displayName: 'ClickUp',
@@ -70,13 +71,17 @@ describe('ExternalMyWorkService', () => {
   };
 
   let storage: jest.Mocked<
-    Pick<StorageService, 'getIntegrationConnection' | 'getIntegrationConnectionCredentials'>
+    Pick<
+      StorageService,
+      'getProject' | 'getIntegrationConnection' | 'getIntegrationConnectionCredentials'
+    >
   >;
   let discover: jest.MockedFunction<ExternalMyWorkCapability['discover']>;
   let service: ExternalMyWorkService;
 
   beforeEach(() => {
     storage = {
+      getProject: jest.fn().mockResolvedValue({ id: projectId }),
       getIntegrationConnection: jest.fn(),
       getIntegrationConnectionCredentials: jest.fn(),
     };
@@ -102,6 +107,8 @@ describe('ExternalMyWorkService', () => {
     const credentials: IntegrationCredentials = { provider: 'clickup', token: 'secret-token' };
     storage.getIntegrationConnection.mockResolvedValue({
       id: 'connection-clickup',
+      projectId,
+      legacySourceConnectionId: null,
       provider: 'clickup',
       generation: 7,
       createdAt: '2026-08-19T10:00:00.000Z',
@@ -117,7 +124,7 @@ describe('ExternalMyWorkService', () => {
       vendorPayload: { token: 'must-not-cross-the-service-boundary' },
     } as ExternalMyWorkSnapshot);
 
-    const result = await service.getMyWork('clickup', { includeCompleted: true });
+    const result = await service.getMyWork(projectId, 'clickup', { includeCompleted: true });
 
     expect(result).toEqual({
       provider: 'clickup',
@@ -130,6 +137,11 @@ describe('ExternalMyWorkService', () => {
       connectionId: 'connection-clickup',
       connectionGeneration: 7,
     });
+    expect(storage.getProject).toHaveBeenCalledWith(projectId);
+    expect(storage.getIntegrationConnectionCredentials).toHaveBeenCalledWith({
+      projectId,
+      provider: 'clickup',
+    });
     expect(JSON.stringify(result)).not.toMatch(
       /vendorPayload|vendorRelationship|must-not-cross-the-service-boundary|must-not-cross/,
     );
@@ -138,6 +150,8 @@ describe('ExternalMyWorkService', () => {
   it('returns a safe unsupported result for a connected provider without My Work', async () => {
     storage.getIntegrationConnection.mockResolvedValue({
       id: 'connection-jira',
+      projectId,
+      legacySourceConnectionId: null,
       provider: 'jira',
       generation: 2,
       createdAt: '2026-08-19T10:00:00.000Z',
@@ -150,7 +164,7 @@ describe('ExternalMyWorkService', () => {
       token: 'secret-token',
     });
 
-    const result = await service.getMyWork('jira', { includeCompleted: false });
+    const result = await service.getMyWork(projectId, 'jira', { includeCompleted: false });
 
     expect(result).toEqual({
       provider: 'jira',
@@ -165,6 +179,8 @@ describe('ExternalMyWorkService', () => {
   it('retries connection context reads when replacement changes the generation mid-read', async () => {
     const connection = (generation: number) => ({
       id: 'connection-clickup',
+      projectId,
+      legacySourceConnectionId: null,
       provider: 'clickup' as const,
       generation,
       createdAt: '2026-08-19T10:00:00.000Z',
@@ -180,7 +196,7 @@ describe('ExternalMyWorkService', () => {
     });
     discover.mockResolvedValue(snapshot);
 
-    await service.getMyWork('clickup', { includeCompleted: false });
+    await service.getMyWork(projectId, 'clickup', { includeCompleted: false });
 
     expect(discover).toHaveBeenCalledWith(
       { provider: 'clickup', token: 'replacement-token' },
@@ -195,6 +211,8 @@ describe('ExternalMyWorkService', () => {
   it('fails safely when connection replacement never stabilizes', async () => {
     const connection = (generation: number) => ({
       id: 'connection-clickup',
+      projectId,
+      legacySourceConnectionId: null,
       provider: 'clickup' as const,
       generation,
       createdAt: '2026-08-19T10:00:00.000Z',
@@ -213,7 +231,7 @@ describe('ExternalMyWorkService', () => {
     });
 
     await expect(
-      service.getMyWork('clickup', { includeCompleted: false }),
+      service.getMyWork(projectId, 'clickup', { includeCompleted: false }),
     ).rejects.toMatchObject<BusyError>({
       code: 'busy',
       details: { provider: 'clickup', reason: 'connection_changed' },
@@ -226,11 +244,31 @@ describe('ExternalMyWorkService', () => {
     storage.getIntegrationConnectionCredentials.mockResolvedValue(null);
 
     await expect(
-      service.getMyWork('clickup', { includeCompleted: false }),
+      service.getMyWork(projectId, 'clickup', { includeCompleted: false }),
     ).rejects.toMatchObject<ValidationError>({
       code: 'validation_error',
       details: { provider: 'clickup', reason: 'not_connected' },
     });
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched project connection before credential access', async () => {
+    storage.getIntegrationConnection.mockResolvedValue({
+      id: 'other-connection',
+      projectId: 'project-2',
+      provider: 'clickup',
+      generation: 1,
+      createdAt: '',
+      updatedAt: '',
+    } as never);
+
+    await expect(
+      service.getMyWork(projectId, 'clickup', { includeCompleted: false }),
+    ).rejects.toMatchObject<ValidationError>({
+      details: { projectId, provider: 'clickup', reason: 'not_connected' },
+    });
+
+    expect(storage.getIntegrationConnectionCredentials).not.toHaveBeenCalled();
     expect(discover).not.toHaveBeenCalled();
   });
 });

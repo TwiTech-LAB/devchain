@@ -28,6 +28,7 @@ const snapshot = {
   refreshedAt: '2026-08-19T00:00:00.000Z',
 };
 const connectionEpoch = 'connection-clickup-a:1';
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 
 describe('useExternalMyWork', () => {
   let queryClient: QueryClient;
@@ -50,6 +51,7 @@ describe('useExternalMyWork', () => {
           includeCompleted: false,
           enabled: true,
           connectionEpoch,
+          projectId: PROJECT_ID,
         }),
       { wrapper: wrapper(queryClient) },
     );
@@ -57,7 +59,7 @@ describe('useExternalMyWork', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/integrations/my-work/clickup?includeCompleted=false',
+      `/api/integrations/my-work/clickup?includeCompleted=false&projectId=${PROJECT_ID}`,
       { signal: expect.any(AbortSignal) },
     );
     expect(
@@ -76,6 +78,7 @@ describe('useExternalMyWork', () => {
           includeCompleted: false,
           enabled: false,
           connectionEpoch,
+          projectId: PROJECT_ID,
         }),
       { wrapper: wrapper(queryClient) },
     );
@@ -89,7 +92,12 @@ describe('useExternalMyWork', () => {
 
     const { result, rerender } = renderHook(
       ({ includeCompleted }: { includeCompleted: boolean }) =>
-        useExternalMyWork('jira', { includeCompleted, enabled: true, connectionEpoch }),
+        useExternalMyWork('jira', {
+          includeCompleted,
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       {
         wrapper: wrapper(queryClient),
         initialProps: { includeCompleted: false },
@@ -102,7 +110,7 @@ describe('useExternalMyWork', () => {
     });
     await waitFor(() =>
       expect(fetchMock).toHaveBeenLastCalledWith(
-        '/api/integrations/my-work/jira?includeCompleted=true',
+        `/api/integrations/my-work/jira?includeCompleted=true&projectId=${PROJECT_ID}`,
         { signal: expect.any(AbortSignal) },
       ),
     );
@@ -128,6 +136,7 @@ describe('useExternalMyWork', () => {
           includeCompleted: false,
           enabled: true,
           connectionEpoch,
+          projectId: PROJECT_ID,
         }),
       { wrapper: wrapper(queryClient) },
     );
@@ -149,7 +158,12 @@ describe('useExternalMyWork', () => {
 
     const { result, rerender } = renderHook(
       ({ includeCompleted }: { includeCompleted: boolean }) =>
-        useExternalMyWork('clickup', { includeCompleted, enabled: true, connectionEpoch }),
+        useExternalMyWork('clickup', {
+          includeCompleted,
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       {
         wrapper: wrapper(queryClient),
         initialProps: { includeCompleted: false },

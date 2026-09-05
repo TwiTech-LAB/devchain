@@ -6,6 +6,7 @@ import type { ExternalTaskProvider } from '../ports/external-task-provider';
 import { ExternalMyWorkService } from './external-my-work.service';
 
 describe('ExternalMyWorkService task details and actions', () => {
+  const projectId = 'project-1';
   const discover = jest.fn();
   const getTaskDetail = jest.fn();
   const listComments = jest.fn();
@@ -40,6 +41,8 @@ describe('ExternalMyWorkService task details and actions', () => {
   };
   const connection = {
     id: 'connection-clickup',
+    projectId,
+    legacySourceConnectionId: null,
     provider: 'clickup' as const,
     generation: 4,
     createdAt: '2026-08-19T10:00:00.000Z',
@@ -103,6 +106,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       | 'getIntegrationConnectionCredentials'
       | 'findExternalTaskLink'
       | 'listExternalTaskLinksByRemoteScope'
+      | 'listExternalEstimateLoggedMinutes'
       | 'getEpic'
       | 'getProject'
     >
@@ -116,8 +120,9 @@ describe('ExternalMyWorkService task details and actions', () => {
       getIntegrationConnectionCredentials: jest.fn().mockResolvedValue(credentials),
       findExternalTaskLink: jest.fn().mockResolvedValue(null),
       listExternalTaskLinksByRemoteScope: jest.fn().mockResolvedValue([]),
+      listExternalEstimateLoggedMinutes: jest.fn().mockResolvedValue([]),
       getEpic: jest.fn(),
-      getProject: jest.fn(),
+      getProject: jest.fn().mockResolvedValue({ id: projectId, name: 'Product' }),
     };
     service = new ExternalMyWorkService(
       storage as unknown as StorageService,
@@ -139,8 +144,9 @@ describe('ExternalMyWorkService task details and actions', () => {
     };
     getTaskDetail.mockResolvedValue(detail);
     storage.findExternalTaskLink.mockResolvedValue(link);
+    storage.getEpic.mockResolvedValue({ id: 'epic-1', projectId });
 
-    await expect(service.getTaskDetail('clickup', 'task-1')).resolves.toEqual({
+    await expect(service.getTaskDetail(projectId, 'clickup', 'task-1')).resolves.toEqual({
       ...detail,
       linkState: { linked: true, epicId: 'epic-1' },
     });
@@ -167,7 +173,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       })),
     });
 
-    const result = await service.getTaskDetail('clickup', 'task-1');
+    const result = await service.getTaskDetail(projectId, 'clickup', 'task-1');
 
     expect(result.linkState).toEqual({ linked: false, epicId: null });
     expect(result.subtasks).toEqual(detail.subtasks);
@@ -177,12 +183,69 @@ describe('ExternalMyWorkService task details and actions', () => {
     );
   });
 
+  it('does not expose a global task link owned by another project connection', async () => {
+    getTaskDetail.mockResolvedValue(detail);
+    storage.findExternalTaskLink.mockResolvedValue({
+      id: 'other-link',
+      epicId: 'other-epic',
+      connectionId: 'project-2-clickup-connection',
+      provider: 'clickup',
+      remoteScopeKey: 'workspace-1',
+      remoteTaskId: 'task-1',
+      sourceSnapshot: {},
+      createdAt: '',
+      updatedAt: '',
+    });
+
+    await expect(service.getTaskDetail(projectId, 'clickup', 'task-1')).resolves.toMatchObject({
+      linkState: { linked: false, epicId: null },
+    });
+
+    expect(storage.getEpic).not.toHaveBeenCalled();
+  });
+
+  it('suppresses batch links fenced to another project connection', async () => {
+    storage.listExternalTaskLinksByRemoteScope.mockResolvedValue([
+      {
+        id: 'other-link',
+        epicId: 'other-epic',
+        connectionId: 'project-2-clickup-connection',
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-1',
+        remoteTaskId: 'task-1',
+        sourceSnapshot: {},
+        createdAt: '',
+        updatedAt: '',
+      },
+    ]);
+
+    await expect(
+      service.getTaskLinkStates(projectId, 'clickup', [
+        { scopeKey: 'workspace-1', taskId: 'task-1' },
+      ]),
+    ).resolves.toEqual({
+      items: [
+        {
+          scopeKey: 'workspace-1',
+          taskId: 'task-1',
+          linked: false,
+          epicId: null,
+          projectId: null,
+          projectName: null,
+          loggedMinutes: null,
+        },
+      ],
+    });
+    expect(storage.getEpic).not.toHaveBeenCalled();
+    expect(storage.listExternalEstimateLoggedMinutes).not.toHaveBeenCalled();
+  });
+
   it('resolves card link state in one lookup per remote scope with linked project names', async () => {
     storage.listExternalTaskLinksByRemoteScope.mockResolvedValue([
       {
         id: 'link-1',
         epicId: 'epic-1',
-        connectionId: null,
+        connectionId: connection.id,
         provider: 'clickup',
         remoteScopeKey: 'workspace-1',
         remoteTaskId: 'task-1',
@@ -191,11 +254,10 @@ describe('ExternalMyWorkService task details and actions', () => {
         updatedAt: '2026-08-19T10:00:00.000Z',
       },
     ]);
-    storage.getEpic.mockResolvedValue({ id: 'epic-1', projectId: 'project-1' });
-    storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Product' });
+    storage.getEpic.mockResolvedValue({ id: 'epic-1', projectId });
 
     await expect(
-      service.getTaskLinkStates('clickup', [
+      service.getTaskLinkStates(projectId, 'clickup', [
         { scopeKey: 'workspace-1', taskId: 'task-1' },
         { scopeKey: 'workspace-1', taskId: 'task-2' },
       ]),
@@ -208,6 +270,7 @@ describe('ExternalMyWorkService task details and actions', () => {
           epicId: 'epic-1',
           projectId: 'project-1',
           projectName: 'Product',
+          loggedMinutes: null,
         },
         {
           scopeKey: 'workspace-1',
@@ -216,10 +279,122 @@ describe('ExternalMyWorkService task details and actions', () => {
           epicId: null,
           projectId: null,
           projectName: null,
+          loggedMinutes: null,
         },
       ],
     });
     expect(storage.listExternalTaskLinksByRemoteScope).toHaveBeenCalledTimes(1);
+    expect(storage.listExternalEstimateLoggedMinutes).not.toHaveBeenCalled();
+  });
+
+  it('projects logged minutes from one set-based read when includeLoggedMinutes is requested', async () => {
+    storage.listExternalTaskLinksByRemoteScope.mockResolvedValue([
+      {
+        id: 'link-1',
+        epicId: 'epic-1',
+        connectionId: connection.id,
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-1',
+        remoteTaskId: 'task-1',
+        sourceSnapshot: {},
+        createdAt: '2026-08-19T10:00:00.000Z',
+        updatedAt: '2026-08-19T10:00:00.000Z',
+      },
+      {
+        id: 'link-2',
+        epicId: 'epic-2',
+        connectionId: connection.id,
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-1',
+        remoteTaskId: 'task-2',
+        sourceSnapshot: {},
+        createdAt: '2026-08-19T10:00:00.000Z',
+        updatedAt: '2026-08-19T10:00:00.000Z',
+      },
+    ]);
+    storage.getEpic.mockImplementation(async (epicId: string) =>
+      epicId === 'epic-1' ? { id: 'epic-1', projectId } : { id: 'epic-2', projectId },
+    );
+    storage.listExternalEstimateLoggedMinutes.mockResolvedValue([
+      { remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1', loggedMinutes: 75 },
+    ]);
+
+    await expect(
+      service.getTaskLinkStates(
+        projectId,
+        'clickup',
+        [
+          { scopeKey: 'workspace-1', taskId: 'task-1' },
+          { scopeKey: 'workspace-1', taskId: 'task-2' },
+          { scopeKey: 'workspace-1', taskId: 'task-3' },
+        ],
+        { includeLoggedMinutes: true },
+      ),
+    ).resolves.toEqual({
+      items: [
+        {
+          scopeKey: 'workspace-1',
+          taskId: 'task-1',
+          linked: true,
+          epicId: 'epic-1',
+          projectId: 'project-1',
+          projectName: 'Product',
+          loggedMinutes: 75,
+        },
+        {
+          scopeKey: 'workspace-1',
+          taskId: 'task-2',
+          linked: true,
+          epicId: 'epic-2',
+          projectId: 'project-1',
+          projectName: 'Product',
+          loggedMinutes: 0,
+        },
+        {
+          scopeKey: 'workspace-1',
+          taskId: 'task-3',
+          linked: false,
+          epicId: null,
+          projectId: null,
+          projectName: null,
+          loggedMinutes: null,
+        },
+      ],
+    });
+    // Only the authorized linked identities reach the checkpoint read.
+    expect(storage.listExternalEstimateLoggedMinutes).toHaveBeenCalledTimes(1);
+    expect(storage.listExternalEstimateLoggedMinutes).toHaveBeenCalledWith('clickup', [
+      { remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1' },
+      { remoteScopeKey: 'workspace-1', remoteTaskId: 'task-2' },
+    ]);
+  });
+
+  it('never lets an orphan checkpoint row establish linkage or leak minutes', async () => {
+    storage.getEpic.mockResolvedValue({ id: 'epic-1', projectId });
+    storage.listExternalEstimateLoggedMinutes.mockResolvedValue([
+      { remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1', loggedMinutes: 55 },
+    ]);
+
+    const result = await service.getTaskLinkStates(
+      projectId,
+      'clickup',
+      [{ scopeKey: 'workspace-1', taskId: 'task-1' }],
+      { includeLoggedMinutes: true },
+    );
+
+    expect(result.items).toEqual([
+      {
+        scopeKey: 'workspace-1',
+        taskId: 'task-1',
+        linked: false,
+        epicId: null,
+        projectId: null,
+        projectName: null,
+        loggedMinutes: null,
+      },
+    ]);
+    // No linked identity survived the authority checks, so no checkpoint read ran.
+    expect(storage.listExternalEstimateLoggedMinutes).not.toHaveBeenCalled();
   });
 
   it('projects normalized comment pages without exposing vendor extras', async () => {
@@ -243,7 +418,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       nextCursor: 'MTA',
     });
 
-    await expect(service.listTaskComments('clickup', 'task-1', 'MTA')).resolves.toEqual({
+    await expect(service.listTaskComments(projectId, 'clickup', 'task-1', 'MTA')).resolves.toEqual({
       comments: [
         {
           remoteId: 'comment-1',
@@ -268,9 +443,9 @@ describe('ExternalMyWorkService task details and actions', () => {
       'task-1',
       'MTA',
     );
-    expect(JSON.stringify(await service.listTaskComments('clickup', 'task-1', null))).not.toMatch(
-      /vendor-extra/,
-    );
+    expect(
+      JSON.stringify(await service.listTaskComments(projectId, 'clickup', 'task-1', null)),
+    ).not.toMatch(/vendor-extra/);
   });
 
   it('projects the time-entry history without exposing vendor extras', async () => {
@@ -283,6 +458,7 @@ describe('ExternalMyWorkService task details and actions', () => {
           startedAt: '2026-08-19T10:00:00.000Z',
           note: 'Implementation',
           noteTruncated: false,
+          canEdit: true,
           canDelete: true,
           billable: true,
           authorEmail: 'vendor-extra@example.com',
@@ -293,7 +469,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       hasRunningTimer: true,
     });
 
-    await expect(service.getTimeEntryHistory('clickup', 'task-1', 4)).resolves.toEqual({
+    await expect(service.getTimeEntryHistory(projectId, 'clickup', 'task-1', 4)).resolves.toEqual({
       windowDays: 30,
       entries: [
         {
@@ -302,6 +478,7 @@ describe('ExternalMyWorkService task details and actions', () => {
           startedAt: '2026-08-19T10:00:00.000Z',
           note: 'Implementation',
           noteTruncated: false,
+          canEdit: true,
           canDelete: true,
         },
       ],
@@ -313,14 +490,43 @@ describe('ExternalMyWorkService task details and actions', () => {
       { connectionId: 'connection-clickup', connectionGeneration: 4 },
       'task-1',
     );
-    expect(JSON.stringify(await service.getTimeEntryHistory('clickup', 'task-1', 4))).not.toMatch(
-      /billable|authorEmail|taskUrl|vendor-extra/,
-    );
+    expect(
+      JSON.stringify(await service.getTimeEntryHistory(projectId, 'clickup', 'task-1', 4)),
+    ).not.toMatch(/billable|authorEmail|taskUrl|vendor-extra/);
+  });
+
+  it('never dispatches time history through credentials from a replacement generation', async () => {
+    storage.getIntegrationConnection
+      .mockResolvedValueOnce(connection)
+      .mockResolvedValueOnce({ ...connection, generation: 5 });
+    storage.getIntegrationConnectionCredentials.mockResolvedValue({
+      provider: 'clickup',
+      token: 'replacement-token',
+    });
+
+    await expect(
+      service.getTimeEntryHistory(projectId, 'clickup', 'task-1', 4),
+    ).rejects.toMatchObject({
+      code: 'conflict',
+      details: {
+        projectId,
+        provider: 'clickup',
+        reason: 'connection_epoch_mismatch',
+        expectedEpoch: 4,
+        currentEpoch: 5,
+      },
+    });
+
+    expect(storage.getIntegrationConnectionCredentials).toHaveBeenCalledWith({
+      projectId,
+      provider: 'clickup',
+    });
+    expect(getTimeEntryHistory).not.toHaveBeenCalled();
   });
 
   it('delegates each supported write once and returns normalized refresh hints', async () => {
     await expect(
-      service.changeTaskStatus('clickup', 'task-1', { status: 'Complete' }),
+      service.changeTaskStatus(projectId, 'clickup', 'task-1', { status: 'Complete' }),
     ).resolves.toEqual({
       remoteTaskId: 'task-1',
       action: 'change_status',
@@ -328,7 +534,10 @@ describe('ExternalMyWorkService task details and actions', () => {
       refresh: ['my_work', 'task_detail'],
     });
     await expect(
-      service.addTaskComment('clickup', 'task-1', { text: 'Ready for review', notifyAll: false }),
+      service.addTaskComment(projectId, 'clickup', 'task-1', {
+        text: 'Ready for review',
+        notifyAll: false,
+      }),
     ).resolves.toEqual({
       remoteTaskId: 'task-1',
       action: 'add_comment',
@@ -361,10 +570,11 @@ describe('ExternalMyWorkService task details and actions', () => {
     });
 
     for (const operation of [
-      () => service.getTaskDetail('jira', 'TASK-1'),
-      () => service.changeTaskStatus('jira', 'TASK-1', { status: 'Done' }),
-      () => service.addTaskComment('jira', 'TASK-1', { text: 'Comment', notifyAll: false }),
-      () => service.getTimeEntryHistory('jira', 'TASK-1', 4),
+      () => service.getTaskDetail(projectId, 'jira', 'TASK-1'),
+      () => service.changeTaskStatus(projectId, 'jira', 'TASK-1', { status: 'Done' }),
+      () =>
+        service.addTaskComment(projectId, 'jira', 'TASK-1', { text: 'Comment', notifyAll: false }),
+      () => service.getTimeEntryHistory(projectId, 'jira', 'TASK-1', 4),
     ]) {
       const promise = operation();
       await expect(promise).rejects.toBeInstanceOf(ValidationError);

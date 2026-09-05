@@ -1,13 +1,18 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { axe } from 'jest-axe';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InlineTerminalHeader } from './InlineTerminalHeader';
 
-jest.mock('@/ui/components/session-reader/InlineSessionSummaryChip', () => ({
-  InlineSessionSummaryChip: (props: Record<string, unknown>) => (
-    <div data-testid="session-chip" data-active-tab={props.activeTab} />
-  ),
-}));
+jest.mock('@/ui/components/session-reader/InlineSessionSummaryChip', () => {
+  const actual = jest.requireActual('@/ui/components/session-reader/InlineSessionSummaryChip');
+  return {
+    ...actual,
+    InlineSessionSummaryChip: (props: Record<string, unknown>) => (
+      <div data-testid="session-chip" data-active-tab={props.activeTab} />
+    ),
+  };
+});
 
 const defaultProps = {
   onBackToChat: jest.fn(),
@@ -298,4 +303,169 @@ describe('InlineTerminalHeader', () => {
     const chipButton = screen.getByRole('button', { name: /Rename session/i });
     expect(chipButton.textContent!.length).toBeLessThanOrEqual(17);
   });
+
+  // ---------------------------------------------------------------------------
+  // Unlogged-time action and Visible Items ownership
+  // ---------------------------------------------------------------------------
+
+  const UNLOGGED_KEY = 'devchain:headerUnloggedTimeVisible';
+  const CHIP_KEY = 'devchain:chipVisibleItems';
+
+  function headerRoot(): HTMLElement {
+    return document.querySelector('[tabindex="-1"]') as HTMLElement;
+  }
+
+  async function openMenu() {
+    fireEvent.contextMenu(headerRoot());
+    await waitFor(() => {
+      expect(screen.getByText('Visible Items')).toBeInTheDocument();
+    });
+  }
+
+  function renderHeader(unloggedTime?: { minutes: number; onAssign: () => void } | null) {
+    return renderWithQueryClient(
+      <InlineTerminalHeader
+        {...defaultProps}
+        agentName="Coder"
+        unloggedTime={unloggedTime ?? null}
+      />,
+    );
+  }
+
+  beforeEach(() => {
+    window.localStorage.removeItem(UNLOGGED_KEY);
+    window.localStorage.removeItem(CHIP_KEY);
+  });
+
+  it('shows the unlogged action with icon, amount, exact tooltip, and aria-label', async () => {
+    const onAssign = jest.fn();
+    renderHeader({ minutes: 90, onAssign });
+
+    const action = screen.getByRole('button', {
+      name: /Log unlogged time to an Epic \(1h 30m\)/i,
+    });
+    expect(action).toHaveTextContent('1h 30m');
+    expect(action.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(action.querySelector('svg')).toHaveClass('text-amber-700', 'dark:text-amber-500');
+
+    jest.useFakeTimers();
+    try {
+      fireEvent.pointerMove(action);
+      act(() => {
+        jest.advanceTimersByTime(350);
+      });
+      await waitFor(() => {
+        expect(screen.getAllByText('1h 30m not logged to an Epic.').length).toBeGreaterThan(0);
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+
+    fireEvent.click(action);
+    expect(onAssign).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides amounts below ten minutes but keeps the menu checkbox', async () => {
+    renderHeader({ minutes: 9, onAssign: jest.fn() });
+
+    expect(
+      screen.queryByRole('button', { name: /Log unlogged time to an Epic/i }),
+    ).not.toBeInTheDocument();
+
+    await openMenu();
+    expect(screen.getByText('Unlogged time')).toBeInTheDocument();
+  });
+
+  it('defaults the Unlogged time preference on and persists an opt-out', async () => {
+    renderHeader({ minutes: 10, onAssign: jest.fn() });
+
+    expect(
+      screen.getByRole('button', { name: /Log unlogged time to an Epic/i }),
+    ).toBeInTheDocument();
+
+    await openMenu();
+    fireEvent.click(screen.getByText('Unlogged time'));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: /Log unlogged time to an Epic/i }),
+      ).not.toBeInTheDocument();
+    });
+    expect(window.localStorage.getItem(UNLOGGED_KEY)).toBe('false');
+
+    // Re-enabling through the same menu restores the action.
+    await openMenu();
+    fireEvent.click(screen.getByText('Unlogged time'));
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /Log unlogged time to an Epic/i }),
+      ).toBeInTheDocument();
+    });
+    expect(window.localStorage.getItem(UNLOGGED_KEY)).toBe('true');
+  });
+
+  it('restores a persisted opt-out on mount', () => {
+    window.localStorage.setItem(UNLOGGED_KEY, 'false');
+    renderHeader({ minutes: 10, onAssign: jest.fn() });
+
+    expect(
+      screen.queryByRole('button', { name: /Log unlogged time to an Epic/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('falls back to the default when stored preferences are malformed', () => {
+    window.localStorage.setItem(UNLOGGED_KEY, '{not-json');
+    renderHeader({ minutes: 10, onAssign: jest.fn() });
+
+    expect(
+      screen.getByRole('button', { name: /Log unlogged time to an Epic/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the Unlogged time checkbox when capability is not declared', async () => {
+    renderHeader(null);
+
+    await openMenu();
+    expect(screen.queryByText('Unlogged time')).not.toBeInTheDocument();
+  });
+
+  it('keeps the menu reachable without metrics, amount, or visible action', async () => {
+    renderHeader(null);
+
+    await openMenu();
+    expect(screen.getByText('Visible Items')).toBeInTheDocument();
+  });
+
+  it('exposes a focusable root through the connected ref', () => {
+    const ref = React.createRef<HTMLDivElement>();
+    renderWithQueryClient(
+      <InlineTerminalHeader {...defaultProps} agentName="Coder" headerRef={ref} />,
+    );
+
+    const root = headerRoot();
+    expect(root).toBe(ref.current);
+    expect(root).toHaveAttribute('tabindex', '-1');
+
+    act_focus(root);
+    expect(document.activeElement).toBe(root);
+  });
+
+  it('opens the Visible Items menu with Shift+F10 from the root', async () => {
+    renderHeader({ minutes: 10, onAssign: jest.fn() });
+
+    fireEvent.keyDown(headerRoot(), { key: 'F10', shiftKey: true });
+    await waitFor(() => {
+      expect(screen.getByText('Visible Items')).toBeInTheDocument();
+    });
+  });
+
+  it('stays axe-clean with the unlogged action present', async () => {
+    const { container } = renderHeader({ minutes: 10, onAssign: jest.fn() });
+
+    expect(await axe(container)).toHaveNoViolations();
+  });
 });
+
+function act_focus(element: HTMLElement) {
+  element.focus();
+}

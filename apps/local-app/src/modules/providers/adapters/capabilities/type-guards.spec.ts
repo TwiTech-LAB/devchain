@@ -162,12 +162,13 @@ describe('type-guards', () => {
   });
 
   describe('isProjectProvisioningCapable', () => {
-    it('returns true for Antigravity (implements ProjectProvisioningCapability)', () => {
+    it('returns true for Claude, Antigravity, and Copilot (ProjectProvisioningCapability adopters)', () => {
+      expect(isProjectProvisioningCapable(claude)).toBe(true);
       expect(isProjectProvisioningCapable(antigravity)).toBe(true);
+      expect(isProjectProvisioningCapable(copilot)).toBe(true);
     });
 
     it('returns false for adapters without project provisioning', () => {
-      expect(isProjectProvisioningCapable(claude)).toBe(false);
       expect(isProjectProvisioningCapable(codex)).toBe(false);
       expect(isProjectProvisioningCapable(opencode)).toBe(false);
     });
@@ -176,6 +177,13 @@ describe('type-guards', () => {
       if (isProjectProvisioningCapable(antigravity)) {
         expect(antigravity.requiresProjectProvisioning).toBe(true);
         expect(typeof antigravity.provisionProjectPath).toBe('function');
+      }
+    });
+
+    it('narrows type to ProjectProvisioningCapability for Claude (trust-only provisioning)', () => {
+      if (isProjectProvisioningCapable(claude)) {
+        expect(claude.requiresProjectProvisioning).toBe(true);
+        expect(typeof claude.provisionProjectPath).toBe('function');
       }
     });
   });

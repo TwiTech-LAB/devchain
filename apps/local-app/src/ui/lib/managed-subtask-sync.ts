@@ -38,6 +38,9 @@ export interface ManagedSubtaskSyncHealth {
 
 export const managedSubtaskSyncQueryKeys = {
   all: ['managed-subtask-sync'] as const,
-  provider: (provider: IntegrationProvider) =>
-    [...managedSubtaskSyncQueryKeys.all, provider] as const,
+  project: (projectId: string) => [...managedSubtaskSyncQueryKeys.all, projectId] as const,
+  provider: (projectId: string, provider: IntegrationProvider) =>
+    [...managedSubtaskSyncQueryKeys.project(projectId), provider] as const,
+  legacy: (connectionId: string) =>
+    [...managedSubtaskSyncQueryKeys.all, 'legacy', connectionId] as const,
 };

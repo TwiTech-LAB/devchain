@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { CollapsedColumn } from '@/ui/components/board/CollapsedColumn';
+import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
 import type { Epic, Status } from '@/ui/types';
 
 // Layer: component unit. The tooltip wrapper is stubbed because this spec
@@ -67,6 +68,68 @@ function renderColumn(
   render(<CollapsedColumn {...props} />);
   return props;
 }
+
+describe('CollapsedColumn relation total badge', () => {
+  const counts: EpicRelationCounts = { related: 2, blocks: 1, blockedBy: 0, total: 3 };
+
+  function renderWithRelations(
+    epics: Epic[],
+    relationCounts?: ReadonlyMap<string, EpicRelationCounts>,
+    handlers: Partial<Parameters<typeof CollapsedColumn>[0]> = {},
+  ) {
+    return renderColumn(epics, undefined, { relationCounts, ...handlers });
+  }
+
+  it('shows one compact total badge on the row', () => {
+    renderWithRelations([createEpic()], new Map([['epic-1', counts]]));
+
+    const badge = screen.getByTestId('epic-relation-total-badge');
+    expect(badge).toHaveTextContent('3');
+    expect(badge).not.toHaveTextContent('Related');
+    expect(badge).not.toHaveTextContent('Blocks');
+  });
+
+  it('explains in the tooltip that counts can include Epics outside the current board', () => {
+    renderWithRelations([createEpic()], new Map([['epic-1', counts]]));
+
+    expect(screen.getByTestId('epic-relation-total-badge')).toHaveAttribute(
+      'title',
+      expect.stringContaining('outside the current board'),
+    );
+  });
+
+  it('keeps the compact one-line row beside the title like the time badge', () => {
+    renderWithRelations([createEpic()], new Map([['epic-1', counts]]));
+
+    const title = screen.getByText('Root epic');
+    const badge = screen.getByTestId('epic-relation-total-badge');
+    expect(badge.parentElement).toContainElement(title);
+    expect(badge.parentElement).toHaveClass('flex', 'items-center');
+    expect(title).toHaveClass('truncate');
+    expect(title.closest('.rounded')!.querySelector('.mt-1')).toBeNull();
+  });
+
+  it('badges child rows too; a zero total renders nothing', () => {
+    renderWithRelations(
+      [
+        createEpic({ id: 'child-1', parentId: 'epic-1' }),
+        createEpic({ id: 'zero-1', title: 'Zero epic' }),
+      ],
+      new Map([
+        ['child-1', counts],
+        ['zero-1', { related: 0, blocks: 0, blockedBy: 0, total: 0 }],
+      ]),
+    );
+
+    expect(screen.getAllByTestId('epic-relation-total-badge')).toHaveLength(1);
+  });
+
+  it('renders no badge without mapped counts', () => {
+    renderWithRelations([createEpic()]);
+
+    expect(screen.queryByTestId('epic-relation-total-badge')).not.toBeInTheDocument();
+  });
+});
 
 describe('CollapsedColumn estimated-time badge', () => {
   it('badges a root epic row with the mapped total', () => {

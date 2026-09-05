@@ -1,10 +1,10 @@
 import { Clock } from 'lucide-react';
 import type { EpicTimeDetailSummary } from '@/modules/epic-time/models/epic-time.models';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
-import { formatEpicTimeMinutes } from '@/ui/lib/epic-time';
+import { epicTimeTotalLabel, formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 
 export interface EpicTimeCardProps {
-  /** Root Epics add the direct subtotal and label the total as inclusive. */
+  /** Root Epics label the total as inclusive; children stay self-only. */
   isRoot: boolean;
   summary: EpicTimeDetailSummary | undefined;
   isLoading: boolean;
@@ -21,16 +21,20 @@ function EpicTimeCardContent({ isRoot, summary, isLoading, isError }: EpicTimeCa
   if (!summary || summary.items.length === 0) {
     return <p className="text-sm text-muted-foreground">No estimated time recorded yet.</p>;
   }
+  // Direct time is separated out whenever the total contains indirect time
+  // (sub-Epics or routed Related Epics); a child focal totals only itself and
+  // shows no split.
+  const showsDirect = summary.totalMinutes !== summary.directMinutes;
   return (
     <>
       <div className="space-y-2 text-sm">
         <div className="flex items-center justify-between gap-2">
           <span className="text-muted-foreground">
-            {isRoot ? 'Total (incl. sub-epics)' : 'Total'}
+            {epicTimeTotalLabel(isRoot, summary.includesRelatedTime)}
           </span>
           <span className="font-medium">{formatEpicTimeMinutes(summary.totalMinutes)}</span>
         </div>
-        {isRoot && (
+        {showsDirect && (
           <div className="flex items-center justify-between gap-2">
             <span className="text-muted-foreground">Direct</span>
             <span className="font-medium">{formatEpicTimeMinutes(summary.directMinutes)}</span>
@@ -38,17 +42,25 @@ function EpicTimeCardContent({ isRoot, summary, isLoading, isError }: EpicTimeCa
         )}
       </div>
       <div className="space-y-1.5">
-        {summary.items.map((item) => (
-          <div
-            key={`${item.activityDate}-${item.agentId}`}
-            className="flex items-center justify-between gap-2 text-sm"
-          >
-            <span className="min-w-0 truncate text-muted-foreground">
-              {item.activityDate} · {item.agentName}
-            </span>
-            <span className="font-medium">{formatEpicTimeMinutes(item.minutes)}</span>
-          </div>
-        ))}
+        {summary.items.map((item) => {
+          // Rows normally arrive hook-normalized; the team-name check keeps a
+          // degraded team row on the direct label instead of rendering
+          // "undefined".
+          const isTeam = item.attributionSource === 'team' && Boolean(item.teamName);
+          const label = isTeam
+            ? `${item.activityDate} · ${item.agentName} · Team work: ${item.teamName}`
+            : `${item.activityDate} · ${item.agentName}`;
+          const sourceKey = isTeam ? `team-${item.teamId ?? ''}` : 'direct';
+          return (
+            <div
+              key={`${item.activityDate}-${item.agentId}-${sourceKey}`}
+              className="flex items-center justify-between gap-2 text-sm"
+            >
+              <span className="min-w-0 truncate text-muted-foreground">{label}</span>
+              <span className="font-medium">{formatEpicTimeMinutes(item.minutes)}</span>
+            </div>
+          );
+        })}
       </div>
     </>
   );

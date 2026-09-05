@@ -235,14 +235,53 @@ describe('TranscriptWatcherService', () => {
       expect(mockedFsWatch).not.toHaveBeenCalled();
     });
 
-    it('should skip if file cannot be statted', async () => {
+    it('should keep a poll-only watcher while a file transcript is not created yet', async () => {
       mockedFsPromisesStat.mockRejectedValue(
         Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
       );
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
 
-      expect(service.activeWatcherCount).toBe(0);
+      expect(service.activeWatcherCount).toBe(1);
+      expect(mockedFsWatch).not.toHaveBeenCalled();
+      expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(0);
+    });
+
+    it('activates and publishes a canonical refetch when the pending file materializes', async () => {
+      mockedFsPromisesStat.mockRejectedValue(
+        Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+      );
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+
+      mockedFsPromisesStat.mockResolvedValue(makeStat(1000));
+      const session = makeSession({ metrics: makeMetrics({ messageCount: 1 }) });
+      mockCacheService.getOrParseWithMeta.mockResolvedValue({
+        session,
+        sourceVersion: 1000,
+        cacheHit: false,
+        sourceChangeKind: 'unknown-full-parse',
+        lastOffset: 1000,
+        lastSize: 1000,
+        lastMtime: 1706000000000,
+        boundaryFold: false,
+      });
+
+      await jest.advanceTimersByTimeAsync(3000);
+      expect(mockedFsWatch).toHaveBeenCalledWith(FILE_PATH, expect.any(Function));
+
+      await jest.advanceTimersByTimeAsync(150);
+
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledWith(
+        SESSION_ID,
+        FILE_PATH,
+        expect.anything(),
+      );
+      expect(mockEvents.publish).toHaveBeenCalledWith('session.transcript.updated', {
+        kind: 'full-refetch-required',
+        sessionId: SESSION_ID,
+        transcriptPath: FILE_PATH,
+        sourceChangeKind: 'unknown-full-parse',
+      });
     });
 
     it('should fall back to stat-poll only if fs.watch fails', async () => {

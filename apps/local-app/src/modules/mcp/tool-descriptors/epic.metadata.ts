@@ -3,6 +3,10 @@ import {
   ListAssignedEpicsTasksParamsSchema,
   CreateEpicParamsSchema,
   GetEpicByIdParamsSchema,
+  EpicRelationsListParamsSchema,
+  EpicRelationCandidatesListParamsSchema,
+  EpicRelationsSetParamsSchema,
+  EpicRelationsDeleteParamsSchema,
   AddEpicCommentParamsSchema,
   UpdateEpicParamsSchema,
   DeleteEpicParamsSchema,
@@ -91,6 +95,25 @@ export const epicMetadata: ToolMetadataEntry[] = [
           items: { type: 'string' },
           description: 'Optional list of required skill slugs for this epic',
         },
+        relation: {
+          type: 'object',
+          required: ['relatedEpicId', 'relation'],
+          properties: {
+            relatedEpicId: {
+              type: 'string',
+              pattern: '^[a-f0-9-]{8,36}$',
+              description:
+                'Related Epic UUID or 8+ character UUID prefix, resolved in the new Epic workspace',
+            },
+            relation: {
+              type: 'string',
+              enum: ['related', 'blocks', 'blocked_by'],
+              description: 'Relation value relative to the new Epic',
+            },
+          },
+          additionalProperties: false,
+          description: 'Optional single relation created atomically with the Epic',
+        },
       },
       additionalProperties: false,
     },
@@ -115,6 +138,125 @@ export const epicMetadata: ToolMetadataEntry[] = [
       additionalProperties: false,
     },
     paramsSchema: GetEpicByIdParamsSchema,
+  },
+  {
+    name: 'devchain_epic_relations_list',
+    description:
+      'List a bounded page of focal-relative Epic relations visible in the caller workspace; each item reports sourceEpicId and targetEpicId derived from the stored direction (null on legacy neutral rows)',
+    inputSchema: {
+      type: 'object',
+      required: ['sessionId', 'epicId'],
+      properties: {
+        sessionId: { type: 'string', description: 'Session ID (full UUID or 8+ char prefix)' },
+        epicId: {
+          type: 'string',
+          pattern: '^[a-f0-9-]{8,36}$',
+          description: 'Focal Epic UUID or 8+ character UUID prefix',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          description: 'Maximum relations to return (default: 50)',
+        },
+        offset: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Pagination offset (default: 0)',
+        },
+      },
+      additionalProperties: false,
+    },
+    paramsSchema: EpicRelationsListParamsSchema,
+  },
+  {
+    name: 'devchain_epic_relations_list_candidates',
+    description:
+      'Search a bounded page of same-workspace Epic relation candidates, excluding invalid and existing pairs',
+    inputSchema: {
+      type: 'object',
+      required: ['sessionId', 'epicId'],
+      properties: {
+        sessionId: { type: 'string', description: 'Session ID (full UUID or 8+ char prefix)' },
+        epicId: {
+          type: 'string',
+          pattern: '^[a-f0-9-]{8,36}$',
+          description: 'Focal Epic UUID or 8+ character UUID prefix',
+        },
+        q: {
+          type: 'string',
+          maxLength: 200,
+          description: 'Optional title or Epic ID-prefix search',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          description: 'Maximum candidates to return (default: 50)',
+        },
+        offset: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Pagination offset (default: 0)',
+        },
+      },
+      additionalProperties: false,
+    },
+    paramsSchema: EpicRelationCandidatesListParamsSchema,
+  },
+  {
+    name: 'devchain_epic_relations_set',
+    description:
+      'Create or replace one Epic relation after rechecking current caller authority; for relation=related, epicId is the source and relatedEpicId is the target — endpoint order defines the stored direction; blocks and blocked_by stay focal-relative',
+    inputSchema: {
+      type: 'object',
+      required: ['sessionId', 'epicId', 'relatedEpicId', 'relation'],
+      properties: {
+        sessionId: { type: 'string', description: 'Session ID (full UUID or 8+ char prefix)' },
+        epicId: {
+          type: 'string',
+          pattern: '^[a-f0-9-]{8,36}$',
+          description: 'Focal Epic UUID or 8+ character UUID prefix',
+        },
+        relatedEpicId: {
+          type: 'string',
+          pattern: '^[a-f0-9-]{8,36}$',
+          description: 'Related Epic UUID or same-workspace 8+ character UUID prefix',
+        },
+        relation: {
+          type: 'string',
+          enum: ['related', 'blocks', 'blocked_by'],
+          description: 'Relation value relative to the focal Epic',
+        },
+      },
+      additionalProperties: false,
+    },
+    paramsSchema: EpicRelationsSetParamsSchema,
+  },
+  {
+    name: 'devchain_epic_relations_delete',
+    description:
+      'Delete one Epic relation after resolving both endpoints and rechecking current caller authority',
+    inputSchema: {
+      type: 'object',
+      required: ['sessionId', 'epicId', 'relatedEpicId'],
+      properties: {
+        sessionId: { type: 'string', description: 'Session ID (full UUID or 8+ char prefix)' },
+        epicId: {
+          type: 'string',
+          pattern: '^[a-f0-9-]{8,36}$',
+          description: 'Focal Epic UUID or 8+ character UUID prefix',
+        },
+        relatedEpicId: {
+          type: 'string',
+          pattern: '^[a-f0-9-]{8,36}$',
+          description:
+            'Full UUID addresses the exact pair and may delete a target whose status is hidden from MCP reads (the exact ID a replacement refusal returned); prefixes resolve visible targets only',
+        },
+      },
+      additionalProperties: false,
+    },
+    paramsSchema: EpicRelationsDeleteParamsSchema,
   },
   {
     name: 'devchain_add_epic_comment',

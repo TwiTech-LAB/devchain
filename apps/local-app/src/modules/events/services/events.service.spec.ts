@@ -59,10 +59,26 @@ describe('EventsService', () => {
 
     const eventId = await service.publish('session.transcript.updated', payload);
 
-    expect(transientEventNames).toEqual(['session.transcript.updated']);
+    expect(transientEventNames).toEqual([
+      'epic.relations.invalidated',
+      'epic.time.scope.invalidated',
+      'session.transcript.updated',
+    ]);
     expect(eventId).toBeNull();
     expect(eventLogService.recordPublished).not.toHaveBeenCalled();
     expect(eventEmitter.emit).toHaveBeenCalledWith('session.transcript.updated', payload);
+    const emittedPayload = (eventEmitter.emit as jest.Mock).mock.calls[0][1];
+    expect(getEventMetadata(emittedPayload)).toBeNull();
+  });
+
+  it('publishes Epic-time scope hints transiently without event-log persistence', async () => {
+    const payload = { workspaceId: '11111111-1111-4111-8111-111111111111' };
+
+    const eventId = await service.publish('epic.time.scope.invalidated', payload);
+
+    expect(eventId).toBeNull();
+    expect(eventLogService.recordPublished).not.toHaveBeenCalled();
+    expect(eventEmitter.emit).toHaveBeenCalledWith('epic.time.scope.invalidated', payload);
     const emittedPayload = (eventEmitter.emit as jest.Mock).mock.calls[0][1];
     expect(getEventMetadata(emittedPayload)).toBeNull();
   });
@@ -134,6 +150,30 @@ describe('EventsService', () => {
       requestId: null,
     });
     expect(eventEmitter.emit).toHaveBeenCalledWith('session.started', projectedPayload);
+  });
+
+  it('keeps new integration connection facts strict and project-owned', () => {
+    const prepare = service.prepareCommitted.bind(service) as (
+      name: 'integration.connection.created',
+      payload: unknown,
+    ) => unknown;
+    const payload = {
+      connectionId: 'connection-1',
+      projectId: 'project-1',
+      provider: 'clickup',
+      generation: 1,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: 1,
+      createdAt: '2026-08-25T00:00:00.000Z',
+      updatedAt: '2026-08-25T00:00:00.000Z',
+    };
+
+    expect(() => prepare('integration.connection.created', payload)).not.toThrow();
+    const { projectId: _projectId, ...legacyPayload } = payload;
+    expect(() => prepare('integration.connection.created', legacyPayload)).toThrow(ZodError);
+    expect(() =>
+      prepare('integration.connection.created', { ...payload, unexpected: true }),
+    ).toThrow(ZodError);
   });
 
   it('rejects unknown event names', async () => {

@@ -73,6 +73,8 @@ interface WatcherState {
   lastSize: number;
   /** Set by the stat poll when it reopens a rotated file before the debounce runs. */
   replacementPending: boolean;
+  /** File providers may announce a transcript path before creating the file. */
+  pendingCreation: boolean;
   lastMessageCount: number;
   lastChunkCount: number;
   lastMetrics: MetricsSnapshot;
@@ -150,16 +152,29 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       return;
     }
 
-    let stat: fs.Stats;
-    try {
-      stat = await fsPromises.stat(filePath);
-    } catch {
-      this.logger.warn({ sessionId, filePath }, 'Cannot stat transcript file — skipping watcher');
-      return;
-    }
-
     const adapter = this.adapterFactory.getAdapter(providerName);
     const sourceKind = adapter?.sourceKind ?? 'file';
+
+    let stat: fs.Stats | null = null;
+    try {
+      stat = await fsPromises.stat(filePath);
+    } catch (error) {
+      const fsCode = (error as NodeJS.ErrnoException).code;
+      if (sourceKind !== 'file' || fsCode !== 'ENOENT') {
+        this.logger.warn(
+          { sessionId, filePath, fsCode },
+          'Cannot stat transcript file — skipping watcher',
+        );
+        return;
+      }
+      // SessionStart can provide a future JSONL path before Claude writes its
+      // first entry. Register a poll-only watcher so creation is observed and
+      // published without requiring a Local App restart or page reload.
+      this.logger.debug(
+        { sessionId, filePath },
+        'Transcript file not created yet — waiting with stat poll',
+      );
+    }
 
     let sourceRef: SessionSourceRef | undefined;
     if (sourceKind === 'db') {
@@ -180,19 +195,21 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     // Primary: fs.watch (may fail / not-yet-exist for `-wal` — that's fine, the
     // freshness poll is authoritative; never error or unsubscribe on this).
     let fsWatcher: fs.FSWatcher | null = null;
-    try {
-      fsWatcher = this.createFsWatcher(sessionId, watchPath);
-    } catch {
-      this.logger.warn(
-        { sessionId, watchPath },
-        'fs.watch failed to start — using poll only (expected for not-yet-created -wal)',
-      );
+    if (stat) {
+      try {
+        fsWatcher = this.createFsWatcher(sessionId, watchPath);
+      } catch {
+        this.logger.warn(
+          { sessionId, watchPath },
+          'fs.watch failed to start — using poll only (expected for not-yet-created -wal)',
+        );
+      }
     }
 
     // Seed watcher state from current session to avoid first-update flood.
     let lastMessageCount = 0;
     let lastChunkCount = 0;
-    let lastSourceVersion = stat.size;
+    let lastSourceVersion = stat?.size ?? 0;
     let lastFreshnessToken: unknown;
     let lastMetrics: MetricsSnapshot = {
       totalTokens: 0,
@@ -217,7 +234,7 @@ export class TranscriptWatcherService implements OnModuleDestroy {
         if (adapter.getFreshnessToken) {
           lastFreshnessToken = await adapter.getFreshnessToken(sourceRef);
         }
-      } else if (adapter && stat.size > 0) {
+      } else if (adapter && stat && stat.size > 0) {
         const { session, sourceVersion } = await this.cacheService.getOrParseWithMeta(
           sessionId,
           filePath,
@@ -250,10 +267,11 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       fsWatcher,
       pollTimer,
       debounceTimer: null,
-      lastDev: stat.dev,
-      lastIno: stat.ino,
-      lastSize: stat.size,
+      lastDev: stat?.dev ?? 0,
+      lastIno: stat?.ino ?? 0,
+      lastSize: stat?.size ?? 0,
       replacementPending: false,
+      pendingCreation: stat === null,
       lastMessageCount,
       lastChunkCount,
       lastMetrics,
@@ -263,7 +281,14 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     });
 
     this.logger.log(
-      { sessionId, filePath, watchPath, sourceKind, hasFsWatch: !!fsWatcher },
+      {
+        sessionId,
+        filePath,
+        watchPath,
+        sourceKind,
+        pendingCreation: stat === null,
+        hasFsWatch: !!fsWatcher,
+      },
       'Started transcript watcher',
     );
   }
@@ -436,11 +461,30 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       stat = await fsPromises.stat(state.filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        if (state.pendingCreation) return;
         this.logger.warn({ sessionId }, 'Transcript file deleted — stopping watcher');
         await this.stopWatching(sessionId, 'file.deleted');
         return;
       }
       throw error;
+    }
+
+    if (state.pendingCreation) {
+      state.pendingCreation = false;
+      state.lastDev = stat.dev;
+      state.lastIno = stat.ino;
+      // Preserve the synthetic empty generation (revision 0) until the change
+      // handler parses the newly materialized file and publishes a canonical
+      // replacement signal.
+      state.lastSize = 0;
+      state.replacementPending = true;
+      this.reopenFsWatcher(state);
+      this.scheduleDebounce(sessionId);
+      this.logger.log(
+        { sessionId, filePath: state.filePath },
+        'Transcript file materialized — activating watcher',
+      );
+      return;
     }
 
     const identityChanged = stat.dev !== state.lastDev || stat.ino !== state.lastIno;

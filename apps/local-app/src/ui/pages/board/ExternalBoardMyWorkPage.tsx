@@ -1,4 +1,4 @@
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 import { ExternalBoardNav } from '@/ui/components/board/ExternalBoardNav';
 import {
@@ -79,11 +79,8 @@ export function ExternalBoardMyWorkPage({ provider }: ExternalBoardMyWorkPagePro
           </p>
         ) : landing.status === 'disconnected' ? (
           <p className="mt-2 text-sm text-muted-foreground">
-            Connect {label} in{' '}
-            <Link to="/settings?section=integrations" className="underline underline-offset-2">
-              Settings &rarr; Integrations
-            </Link>{' '}
-            to see your assigned work.
+            Choose <strong>Add board</strong> above to connect {label} to this project and see your
+            assigned work.
           </p>
         ) : landing.status === 'connections-loading' || landing.status === 'loading' ? (
           <div className="mt-4">

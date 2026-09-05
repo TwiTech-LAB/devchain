@@ -159,6 +159,60 @@ describe('DurableEventDispatcherService', () => {
     expect(timeHandle).toHaveBeenCalledWith(expect.objectContaining({ id: 'event-keyed' }));
   });
 
+  it('delivers a seeded project-less connection fact once without retrying forever', async () => {
+    const handle = jest.fn().mockResolvedValue(undefined);
+    registry.register({
+      deliveryKey: 'managed-subtask-sync',
+      eventNames: ['integration.connection.updated'],
+      handle,
+    });
+    const legacyPayload = {
+      connectionId: 'legacy-connection',
+      provider: 'clickup',
+      previousGeneration: 1,
+      generation: 2,
+      previousSubtaskSyncEnabled: false,
+      subtaskSyncEnabled: true,
+      previousSyncSettingRevision: 1,
+      syncSettingRevision: 2,
+      createdAt: '2026-08-25T00:00:00.000Z',
+      updatedAt: '2026-08-25T01:00:00.000Z',
+    };
+    sqlite
+      .prepare(
+        `INSERT INTO events (id, name, payload_json, request_id, published_at)
+         VALUES ('legacy-event', 'integration.connection.updated', ?, NULL, ?)`,
+      )
+      .run(JSON.stringify(legacyPayload), '2026-08-25T01:00:00.000Z');
+    sqlite
+      .prepare(
+        `INSERT INTO event_handlers (
+          id, event_id, handler, status, delivery_key, attempts, started_at
+        ) VALUES (
+          'legacy-delivery', 'legacy-event', 'managed-subtask-sync', 'pending',
+          'managed-subtask-sync', 0, '2026-08-25T01:00:00.000Z'
+        )`,
+      )
+      .run();
+
+    const dispatcher = new DurableEventDispatcherService(store, registry);
+    await expect(dispatcher.dispatchAvailable()).resolves.toBe(1);
+    await expect(dispatcher.dispatchAvailable()).resolves.toBe(0);
+
+    expect(handle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'legacy-event',
+        name: 'integration.connection.updated',
+        payload: legacyPayload,
+      }),
+    );
+    expect(
+      sqlite
+        .prepare('SELECT status, attempts, retry_at FROM event_handlers WHERE id = ?')
+        .get('legacy-delivery'),
+    ).toEqual({ status: 'delivered', attempts: 1, retry_at: null });
+  });
+
   it('rejects transient durable subscriptions', () => {
     expect(
       [

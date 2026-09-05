@@ -2,11 +2,14 @@ import { CalendarDays } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useState, type KeyboardEvent, type MutableRefObject } from 'react';
 import type { ExternalTaskLinkStateSummary } from '@/modules/external-integrations/models/external-provider.models';
+import { EpicTimeBadge } from '@/ui/components/board/EpicTimeBadge';
 import { Button } from '@/ui/components/ui/button';
 import type {
   ExternalTaskMoveSource,
   ExternalTaskMoveTarget,
 } from '@/ui/hooks/board/useExternalTaskMove';
+import type { EpicTimeTotalsMap } from '@/ui/hooks/useEpicTimeSummariesBatch';
+import { formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 import { cn } from '@/ui/lib/utils';
 import type { ExternalKanbanColumn, ExternalKanbanTask } from '@/ui/lib/external-work-area';
 
@@ -21,6 +24,18 @@ export interface ExternalTaskKanbanProps {
    */
   linksFetching?: boolean;
   linksError?: boolean;
+  /**
+   * Linked Epic time totals from the guarded mixed-focal batch. An absent map
+   * or a missing Epic total means Current is unknown — cards never convert
+   * that into a numeric metric.
+   */
+  epicTimeTotals?: EpicTimeTotalsMap;
+  /**
+   * Whether the link identity set is settled and successful. Placeholder and
+   * error-retained link data keep the existing link affordances but suppress
+   * every numeric time metric.
+   */
+  timeMetricsReady?: boolean;
   /**
    * Live card-button registry keyed by stable remote task ID. The page uses it
    * as the focus target when the task dialog closes: cards remount on
@@ -86,12 +101,45 @@ function openTaskLabel(task: ExternalKanbanTask): string {
   return parts.join(', ');
 }
 
+interface ExternalCardTimeMetrics {
+  positiveCurrentMinutes: number | null;
+  loggedMinutes: number | null;
+  newMinutes: number | null;
+}
+
+/**
+ * Card time decoration from the linked Epic's local total and the durable
+ * checkpoint. An unknown Current (absent map or Epic total) or a null
+ * loggedMinutes never becomes a numeric metric, and New stays hidden until
+ * Current is known. Zero Current and zero Logged hide the row entirely.
+ */
+function cardTimeMetrics(
+  link: ExternalTaskLinkStateSummary | undefined,
+  totals: EpicTimeTotalsMap | undefined,
+  ready: boolean,
+): ExternalCardTimeMetrics {
+  if (!ready || !link?.linked || link.epicId === null) {
+    return { positiveCurrentMinutes: null, loggedMinutes: null, newMinutes: null };
+  }
+  const currentMinutes = totals?.get(link.epicId);
+  const positiveCurrentMinutes =
+    typeof currentMinutes === 'number' && currentMinutes > 0 ? currentMinutes : null;
+  const loggedMinutes = typeof link.loggedMinutes === 'number' ? link.loggedMinutes : null;
+  const newMinutes =
+    loggedMinutes !== null && typeof currentMinutes === 'number'
+      ? Math.max(0, currentMinutes - loggedMinutes)
+      : null;
+  return { positiveCurrentMinutes, loggedMinutes, newMinutes };
+}
+
 export function ExternalTaskKanban({
   columns,
   onOpenTask,
   links = [],
   linksFetching = false,
   linksError = false,
+  epicTimeTotals,
+  timeMetricsReady = true,
   cardFocusRegistry,
   boardFocusFallbackRef,
   moves,
@@ -205,6 +253,10 @@ export function ExternalTaskKanban({
             ) : null}
             {column.tasks.map((task) => {
               const link = linksByTaskId.get(task.remoteId);
+              const timeMetrics = cardTimeMetrics(link, epicTimeTotals, timeMetricsReady);
+              const showTimeRow =
+                timeMetrics.positiveCurrentMinutes !== null ||
+                (timeMetrics.loggedMinutes !== null && timeMetrics.loggedMinutes > 0);
               const isPending = moves?.pendingTaskId === task.remoteId;
               const isDragged = moves?.dragSource?.taskId === task.remoteId;
               const quickImportAvailable =
@@ -281,6 +333,32 @@ export function ExternalTaskKanban({
                       ) : null}
                     </span>
                   </Button>
+                  {showTimeRow ? (
+                    <div
+                      className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
+                      data-testid="external-card-time"
+                    >
+                      {timeMetrics.positiveCurrentMinutes !== null ? (
+                        <span className="inline-flex items-center">
+                          <span className="sr-only">Current DevChain time</span>
+                          <EpicTimeBadge minutes={timeMetrics.positiveCurrentMinutes} />
+                        </span>
+                      ) : null}
+                      {timeMetrics.loggedMinutes !== null ? (
+                        <span>
+                          <span>Logged {formatEpicTimeMinutes(timeMetrics.loggedMinutes)}</span>
+                          {timeMetrics.newMinutes !== null ? (
+                            <>
+                              {' '}
+                              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+                                · New unlogged {formatEpicTimeMinutes(timeMetrics.newMinutes)}
+                              </span>
+                            </>
+                          ) : null}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {link?.linked && link.epicId ? (
                     <div className="mt-3 border-t pt-2 text-xs">
                       <span className="text-muted-foreground">

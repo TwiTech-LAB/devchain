@@ -9,6 +9,8 @@ import {
   Query,
   BadRequestException,
   UseGuards,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ListResult, ListOptions } from '../../storage/interfaces/storage.interface';
 import {
@@ -27,6 +29,13 @@ import type {
   ExternalTaskImportResponse,
   ExternalTaskSourceSummary,
 } from '../../external-integrations/models/external-provider.models';
+import {
+  EpicRelationsService,
+  type EpicRelationBatchSummaryDto,
+  type EpicRelationCandidateDto,
+  type EpicRelationDto,
+} from '../services/epic-relations.service';
+import { RelationConfirmationSchema } from '../models/epic-relations.models';
 
 const logger = createLogger('EpicsController');
 
@@ -66,6 +75,31 @@ const BulkUpdateSchema = z.object({
   updates: z.array(BulkUpdateEntrySchema).min(1),
 });
 const ExternalProviderSchema = z.enum(INTEGRATION_PROVIDER_IDS);
+const EpicUuidSchema = z.string().uuid();
+const SetEpicRelationSchema = z
+  .object({
+    type: z.enum(['related', 'blocks', 'blocked_by']),
+    confirmation: RelationConfirmationSchema.optional(),
+  })
+  .strict();
+const RelationCandidatesQuerySchema = z
+  .object({
+    q: z.string().trim().max(200).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    offset: z.coerce.number().int().min(0).optional(),
+  })
+  .strict();
+const RelationsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    offset: z.coerce.number().int().min(0).optional(),
+  })
+  .strict();
+const RelationBatchSchema = z
+  .object({
+    epicIds: z.array(z.string().uuid()).min(1).max(1_000),
+  })
+  .strict();
 // 1,000 UUIDs do not belong in a URL; this bounded batch read matches the
 // existing project batch-route pattern. The limit stays below SQLite's
 // bind-variable ceiling, so one IN query needs no chunking.
@@ -109,7 +143,10 @@ const ImportExternalTaskSchema = z
 
 @Controller('api/epics')
 export class EpicsController {
-  constructor(private readonly epicsService: EpicsService) {}
+  constructor(
+    private readonly epicsService: EpicsService,
+    private readonly epicRelations: EpicRelationsService,
+  ) {}
 
   @Get()
   async listEpics(
@@ -164,6 +201,75 @@ export class EpicsController {
   async countSubEpicsByStatus(@Param('id') id: string): Promise<Record<string, number>> {
     logger.info({ id }, 'GET /api/epics/:id/sub-epics/counts');
     return this.epicsService.countSubEpicsByStatus(id);
+  }
+
+  @Get(':epicId/relations')
+  async listEpicRelations(
+    @Param('epicId') epicId: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ): Promise<ListResult<EpicRelationDto>> {
+    const resolvedEpicId = EpicUuidSchema.parse(epicId);
+    const options = RelationsQuerySchema.parse({ limit, offset });
+    logger.info({ epicId: resolvedEpicId, ...options }, 'GET /api/epics/:epicId/relations');
+    return this.epicRelations.listRelations(resolvedEpicId, options);
+  }
+
+  @Get(':epicId/relation-candidates')
+  async listEpicRelationCandidates(
+    @Param('epicId') epicId: string,
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ): Promise<ListResult<EpicRelationCandidateDto>> {
+    const resolvedEpicId = EpicUuidSchema.parse(epicId);
+    const options = RelationCandidatesQuerySchema.parse({ q, limit, offset });
+    logger.info({ epicId: resolvedEpicId }, 'GET /api/epics/:epicId/relation-candidates');
+    return this.epicRelations.listCandidates(resolvedEpicId, options);
+  }
+
+  @Post('relations/batch')
+  async summarizeEpicRelationsBatch(
+    @Body() body: unknown,
+  ): Promise<{ items: EpicRelationBatchSummaryDto[] }> {
+    const { epicIds } = RelationBatchSchema.parse(body);
+    logger.info({ epicCount: epicIds.length }, 'POST /api/epics/relations/batch');
+    return { items: await this.epicRelations.summarizeBatch(epicIds) };
+  }
+
+  @Put(':epicId/relations/:relatedEpicId')
+  async setEpicRelation(
+    @Param('epicId') epicId: string,
+    @Param('relatedEpicId') relatedEpicId: string,
+    @Body() body: unknown,
+  ): Promise<EpicRelationDto> {
+    const resolvedEpicId = EpicUuidSchema.parse(epicId);
+    const resolvedRelatedEpicId = EpicUuidSchema.parse(relatedEpicId);
+    const { type, confirmation } = SetEpicRelationSchema.parse(body);
+    logger.info(
+      { epicId: resolvedEpicId, relatedEpicId: resolvedRelatedEpicId },
+      'PUT /api/epics/:epicId/relations/:relatedEpicId',
+    );
+    return this.epicRelations.setRelation(resolvedEpicId, resolvedRelatedEpicId, type, undefined, {
+      confirmation,
+    });
+  }
+
+  @Delete(':epicId/relations/:relatedEpicId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteEpicRelation(
+    @Param('epicId') epicId: string,
+    @Param('relatedEpicId') relatedEpicId: string,
+  ): Promise<void> {
+    const resolvedEpicId = EpicUuidSchema.parse(epicId);
+    const resolvedRelatedEpicId = EpicUuidSchema.parse(relatedEpicId);
+    logger.info(
+      { epicId: resolvedEpicId, relatedEpicId: resolvedRelatedEpicId },
+      'DELETE /api/epics/:epicId/relations/:relatedEpicId',
+    );
+    // Explicit pair deletion is intentionally unconfirmed: it is the remedy
+    // for a blocked replacement on both the human and agent surfaces.
+    await this.epicRelations.deleteRelation(resolvedEpicId, resolvedRelatedEpicId);
   }
 
   @Get(':id')

@@ -29,6 +29,7 @@ export const DEFAULT_SESSION_STORE_LIMITS: SessionStoreLimits = {
 export interface CreateSessionInput {
   kind: ExternalEditSession['kind'];
   provider: ExternalEditSession['provider'];
+  projectId: string;
   connectionId: string;
   connectionGeneration: number;
   scopeKey: string;
@@ -87,6 +88,7 @@ export class ExternalEditSessionStore {
       sessionId: randomUUID(),
       kind: input.kind,
       provider: input.provider,
+      projectId: input.projectId,
       connectionId: input.connectionId,
       connectionGeneration: input.connectionGeneration,
       scopeKey: input.scopeKey,
@@ -344,10 +346,10 @@ export class ExternalEditSessionStore {
     this.moveToMostRecent(session);
   }
 
-  invalidateProvider(provider: ExternalEditSession['provider']): number {
+  invalidateConnection(connectionId: string): number {
     let invalidated = 0;
     for (const session of [...this.entries.values()]) {
-      if (session.provider === provider) {
+      if (session.connectionId === connectionId) {
         this.invalidate(session.sessionId);
         invalidated += 1;
       }

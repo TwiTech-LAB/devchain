@@ -25,6 +25,7 @@ import type {
 import type {
   ExternalTimeEntryCreateResult,
   ExternalTimeEntryDeleteResult,
+  ExternalTimeEntryUpdateResult,
   ExternalTimeOperationReceiptView,
   ExternalTimeOperationVerifyResult,
 } from '../models/external-time-mutation.models';
@@ -65,6 +66,7 @@ import {
   TASK_TIME_ENTRIES_RESPONSE_SCHEMA,
   TIME_ENTRY_CREATE_RESPONSE_SCHEMA,
   TIME_ENTRY_DELETE_RESPONSE_SCHEMA,
+  TIME_ENTRY_UPDATE_RESPONSE_SCHEMA,
   TIME_ENTRY_INPUT_BODY_SCHEMA,
   TIME_OPERATION_ACK_RESPONSE_SCHEMA,
   TIME_OPERATION_VERIFY_RESPONSE_SCHEMA,
@@ -75,17 +77,21 @@ import { ExternalMyWorkService } from './external-my-work.service';
 import { ExternalTimeMutationService } from './external-time-mutation.service';
 
 const providerSchema = z.enum(INTEGRATION_PROVIDER_IDS);
+const projectIdSchema = z.string().uuid('projectId must be a valid UUID.');
 const querySchema = z
   .object({
+    projectId: projectIdSchema,
     includeCompleted: z.enum(['true', 'false']).optional(),
   })
   .strict();
 const taskCommentsQuerySchema = z
   .object({
+    projectId: projectIdSchema,
     cursor: z.string().trim().min(1).max(MAX_TASK_COMMENT_CURSOR_LENGTH).optional(),
   })
   .strict();
 const remoteTaskIdSchema = z.string().trim().min(1).max(MAX_REMOTE_TASK_ID_LENGTH);
+const remoteScopeKeySchema = z.string().trim().min(1).max(256);
 const statusInputSchema = z
   .object({ status: z.string().trim().min(1).max(MAX_STATUS_LENGTH) })
   .strict();
@@ -109,7 +115,10 @@ const linkLookupInputSchema = z
   })
   .strict();
 const linkLookupBodySchema = z
-  .object({ items: z.array(linkLookupInputSchema).min(1).max(1_000) })
+  .object({
+    items: z.array(linkLookupInputSchema).min(1).max(1_000),
+    includeLoggedMinutes: z.boolean().optional(),
+  })
   .strict();
 const sessionIdSchema = z.string().uuid();
 const deleteSessionInputSchema = z
@@ -150,6 +159,7 @@ function parseOrThrow<T, I>(schema: z.ZodType<T, z.ZodTypeDef, I>, value: unknow
 @ApiTags('integrations')
 @Controller('api/integrations/my-work')
 @UseGuards(IntegrationAdmissionGuard)
+@ApiQuery({ name: 'projectId', required: true, type: String })
 @ApiResponse({ status: 400, description: 'Invalid request, connection, or capability' })
 @ApiResponse({ status: 403, description: 'The provider denied the operation' })
 @ApiResponse({ status: 404, description: 'The remote task was not found' })
@@ -184,7 +194,7 @@ export class ExternalMyWorkController {
   ): Promise<ExternalMyWorkResult> {
     const provider = parseOrThrow(providerSchema, providerValue);
     const query = parseOrThrow(querySchema, queryValue);
-    return this.myWork.getMyWork(provider, {
+    return this.myWork.getMyWork(query.projectId, provider, {
       includeCompleted: query.includeCompleted === 'true',
     });
   }
@@ -202,9 +212,10 @@ export class ExternalMyWorkController {
   async getTaskDetail(
     @Param('provider') providerValue: string,
     @Param('taskId') taskIdValue: string,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTaskDetail> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
-    return this.myWork.getTaskDetail(provider, taskId);
+    return this.myWork.getTaskDetail(this.parseProjectId(projectIdValue), provider, taskId);
   }
 
   @Get(':provider/tasks/:taskId/comments')
@@ -225,7 +236,7 @@ export class ExternalMyWorkController {
   ): Promise<ExternalTaskCommentPage> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
     const query = parseOrThrow(taskCommentsQuerySchema, queryValue);
-    return this.myWork.listTaskComments(provider, taskId, query.cursor ?? null);
+    return this.myWork.listTaskComments(query.projectId, provider, taskId, query.cursor ?? null);
   }
 
   @Get(':provider/tasks/:taskId/time-entries')
@@ -248,10 +259,16 @@ export class ExternalMyWorkController {
     @Param('provider') providerValue: string,
     @Param('taskId') taskIdValue: string,
     @Headers('x-devchain-connection-epoch') epochValue: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTaskTimeEntryHistory> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
     const epoch = parseOrThrow(connectionEpochHeaderSchema, String(epochValue ?? ''));
-    return this.myWork.getTimeEntryHistory(provider, taskId, epoch);
+    return this.myWork.getTimeEntryHistory(
+      this.parseProjectId(projectIdValue),
+      provider,
+      taskId,
+      epoch,
+    );
   }
 
   @Put(':provider/tasks/:taskId/status')
@@ -268,9 +285,15 @@ export class ExternalMyWorkController {
     @Param('provider') providerValue: string,
     @Param('taskId') taskIdValue: string,
     @Body() body: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTaskActionResult> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
-    return this.myWork.changeTaskStatus(provider, taskId, parseOrThrow(statusInputSchema, body));
+    return this.myWork.changeTaskStatus(
+      this.parseProjectId(projectIdValue),
+      provider,
+      taskId,
+      parseOrThrow(statusInputSchema, body),
+    );
   }
 
   @Post(':provider/tasks/:taskId/comments')
@@ -287,10 +310,11 @@ export class ExternalMyWorkController {
     @Param('provider') providerValue: string,
     @Param('taskId') taskIdValue: string,
     @Body() body: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTaskActionResult> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
     const input = parseOrThrow(commentInputSchema, body);
-    return this.myWork.addTaskComment(provider, taskId, {
+    return this.myWork.addTaskComment(this.parseProjectId(projectIdValue), provider, taskId, {
       text: input.text,
       notifyAll: input.notifyAll ?? false,
     });
@@ -304,6 +328,7 @@ export class ExternalMyWorkController {
   })
   @ApiParam({ name: 'provider', enum: [...INTEGRATION_PROVIDER_IDS] })
   @ApiParam({ name: 'taskId', type: String })
+  @ApiQuery({ name: 'scopeKey', type: String, required: true })
   @ApiBody({ schema: TIME_ENTRY_INPUT_BODY_SCHEMA })
   @ApiResponse({
     status: 200,
@@ -313,7 +338,8 @@ export class ExternalMyWorkController {
   @ApiResponse({ status: 400, description: 'Invalid input or unsupported capability' })
   @ApiResponse({
     status: 409,
-    description: 'Epoch precondition, idempotency conflict, or busy gate',
+    description:
+      'Epoch precondition, idempotency conflict, provider busy gate, or durable estimate operation pending',
   })
   async addTaskTimeEntry(
     @Param('provider') providerValue: string,
@@ -321,12 +347,15 @@ export class ExternalMyWorkController {
     @Headers('x-devchain-connection-epoch') epochValue: unknown,
     @Headers('idempotency-key') idempotencyKeyValue: unknown,
     @Body() body: unknown,
+    @Query('scopeKey') scopeKeyValue: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTimeEntryCreateResult> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
     const epoch = parseOrThrow(connectionEpochHeaderSchema, String(epochValue ?? ''));
     const operationId = parseOrThrow(idempotencyKeyHeaderSchema, String(idempotencyKeyValue ?? ''));
     const input = parseOrThrow(timeEntryInputSchema, body);
     return this.timeMutations.createTimeEntry(
+      this.parseProjectId(projectIdValue),
       provider,
       taskId,
       {
@@ -336,6 +365,52 @@ export class ExternalMyWorkController {
       },
       operationId,
       epoch,
+      parseOrThrow(remoteScopeKeySchema, String(scopeKeyValue ?? '')),
+    );
+  }
+
+  @Put(':provider/tasks/:taskId/time-entries/:entryId')
+  @ApiOperation({
+    summary: 'Update an owned remote time entry behind an operation receipt',
+    description:
+      'Changes only the provider entry. The DevChain estimate checkpoint is never adjusted. Requires the connection epoch and an Idempotency-Key; ambiguous outcomes resolve from the exact entry state without automatic retry.',
+  })
+  @ApiParam({ name: 'provider', enum: [...INTEGRATION_PROVIDER_IDS] })
+  @ApiParam({ name: 'taskId', type: String })
+  @ApiParam({ name: 'entryId', type: String })
+  @ApiQuery({ name: 'scopeKey', type: String, required: true })
+  @ApiBody({ schema: TIME_ENTRY_INPUT_BODY_SCHEMA })
+  @ApiResponse({ status: 200, schema: TIME_ENTRY_UPDATE_RESPONSE_SCHEMA })
+  @ApiResponse({ status: 400, description: 'Invalid input or unsupported capability' })
+  @ApiResponse({ status: 403, description: 'The entry is not editable by the connected user' })
+  @ApiResponse({
+    status: 409,
+    description: 'Epoch, idempotency, busy, or estimate-pending conflict',
+  })
+  async updateTaskTimeEntry(
+    @Param('provider') providerValue: string,
+    @Param('taskId') taskIdValue: string,
+    @Param('entryId') entryIdValue: string,
+    @Headers('x-devchain-connection-epoch') epochValue: unknown,
+    @Headers('idempotency-key') idempotencyKeyValue: unknown,
+    @Body() body: unknown,
+    @Query('scopeKey') scopeKeyValue: unknown,
+    @Query('projectId') projectIdValue: unknown,
+  ): Promise<ExternalTimeEntryUpdateResult> {
+    const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
+    const entryId = parseOrThrow(remoteEntryIdSchema, entryIdValue);
+    const epoch = parseOrThrow(connectionEpochHeaderSchema, String(epochValue ?? ''));
+    const operationId = parseOrThrow(idempotencyKeyHeaderSchema, String(idempotencyKeyValue ?? ''));
+    const input = parseOrThrow(timeEntryInputSchema, body);
+    return this.timeMutations.updateTimeEntry(
+      this.parseProjectId(projectIdValue),
+      provider,
+      taskId,
+      entryId,
+      { startedAt: input.startedAt, durationMs: input.durationMs, note: input.note ?? null },
+      operationId,
+      epoch,
+      parseOrThrow(remoteScopeKeySchema, String(scopeKeyValue ?? '')),
     );
   }
 
@@ -348,6 +423,7 @@ export class ExternalMyWorkController {
   @ApiParam({ name: 'provider', enum: [...INTEGRATION_PROVIDER_IDS] })
   @ApiParam({ name: 'taskId', type: String })
   @ApiParam({ name: 'entryId', type: String })
+  @ApiQuery({ name: 'scopeKey', type: String, required: true })
   @ApiResponse({
     status: 200,
     description: 'Deleted, already-deleted, not-applied, or a receipt-bound unknown outcome',
@@ -357,7 +433,8 @@ export class ExternalMyWorkController {
   @ApiResponse({ status: 403, description: 'The entry is not deletable by the connected user' })
   @ApiResponse({
     status: 409,
-    description: 'Epoch precondition, idempotency conflict, or busy gate',
+    description:
+      'Epoch precondition, idempotency conflict, provider busy gate, or durable estimate operation pending',
   })
   async deleteTaskTimeEntry(
     @Param('provider') providerValue: string,
@@ -365,12 +442,22 @@ export class ExternalMyWorkController {
     @Param('entryId') entryIdValue: string,
     @Headers('x-devchain-connection-epoch') epochValue: unknown,
     @Headers('idempotency-key') idempotencyKeyValue: unknown,
+    @Query('scopeKey') scopeKeyValue: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTimeEntryDeleteResult> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
     const entryId = parseOrThrow(remoteEntryIdSchema, entryIdValue);
     const epoch = parseOrThrow(connectionEpochHeaderSchema, String(epochValue ?? ''));
     const operationId = parseOrThrow(idempotencyKeyHeaderSchema, String(idempotencyKeyValue ?? ''));
-    return this.timeMutations.deleteTimeEntry(provider, taskId, entryId, operationId, epoch);
+    return this.timeMutations.deleteTimeEntry(
+      this.parseProjectId(projectIdValue),
+      provider,
+      taskId,
+      entryId,
+      operationId,
+      epoch,
+      parseOrThrow(remoteScopeKeySchema, String(scopeKeyValue ?? '')),
+    );
   }
 
   @Get(':provider/time-operations/:operationId')
@@ -386,18 +473,24 @@ export class ExternalMyWorkController {
     @Param('provider') providerValue: string,
     @Param('operationId') operationIdValue: string,
     @Headers('x-devchain-connection-epoch') epochValue: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTimeOperationReceiptView> {
     const provider = parseOrThrow(providerSchema, providerValue);
     const operationId = parseOrThrow(operationIdSchema, operationIdValue);
     const epoch = parseOrThrow(connectionEpochHeaderSchema, String(epochValue ?? ''));
-    return this.timeMutations.getOperation(provider, operationId, epoch);
+    return this.timeMutations.getOperation(
+      this.parseProjectId(projectIdValue),
+      provider,
+      operationId,
+      epoch,
+    );
   }
 
   @Post(':provider/time-operations/:operationId/verify')
   @ApiOperation({
     summary: 'Resolve an unknown time-entry operation from exact provider proof',
     description:
-      'Creates resolve only from complete before/after id sets plus exactly one new matching entry; deletes resolve only through the exact-resource read. Collection absence never resolves anything.',
+      'Creates resolve only from complete before/after id sets plus exactly one new matching entry; updates compare the exact entry with desired and baseline tuples; deletes resolve only through the exact-resource read. Collection absence never resolves anything. An unknown create whose pre-dispatch baseline was incomplete returns completeness_not_provable without any provider access.',
   })
   @ApiParam({ name: 'provider', enum: [...INTEGRATION_PROVIDER_IDS] })
   @ApiParam({ name: 'operationId', type: String })
@@ -408,11 +501,17 @@ export class ExternalMyWorkController {
     @Param('provider') providerValue: string,
     @Param('operationId') operationIdValue: string,
     @Headers('x-devchain-connection-epoch') epochValue: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTimeOperationVerifyResult> {
     const provider = parseOrThrow(providerSchema, providerValue);
     const operationId = parseOrThrow(operationIdSchema, operationIdValue);
     const epoch = parseOrThrow(connectionEpochHeaderSchema, String(epochValue ?? ''));
-    return this.timeMutations.verifyOperation(provider, operationId, epoch);
+    return this.timeMutations.verifyOperation(
+      this.parseProjectId(projectIdValue),
+      provider,
+      operationId,
+      epoch,
+    );
   }
 
   @Post(':provider/time-operations/:operationId/acknowledge')
@@ -430,20 +529,35 @@ export class ExternalMyWorkController {
     @Param('provider') providerValue: string,
     @Param('operationId') operationIdValue: string,
     @Headers('x-devchain-connection-epoch') epochValue: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalTimeOperationReceiptView> {
     const provider = parseOrThrow(providerSchema, providerValue);
     const operationId = parseOrThrow(operationIdSchema, operationIdValue);
     const epoch = parseOrThrow(connectionEpochHeaderSchema, String(epochValue ?? ''));
-    return this.timeMutations.acknowledgeOperation(provider, operationId, epoch);
+    return this.timeMutations.acknowledgeOperation(
+      this.parseProjectId(projectIdValue),
+      provider,
+      operationId,
+      epoch,
+    );
   }
 
   @Post(':provider/links/batch')
   @ApiOperation({ summary: 'Resolve DevChain link state for remote task cards' })
   @ApiParam({ name: 'provider', enum: [...INTEGRATION_PROVIDER_IDS] })
-  async getTaskLinkStates(@Param('provider') providerValue: string, @Body() body: unknown) {
+  async getTaskLinkStates(
+    @Param('provider') providerValue: string,
+    @Body() body: unknown,
+    @Query('projectId') projectIdValue: unknown,
+  ) {
     const provider = parseOrThrow(providerSchema, providerValue);
     const input = parseOrThrow(linkLookupBodySchema, body);
-    return this.myWork.getTaskLinkStates(provider, input.items);
+    return this.myWork.getTaskLinkStates(
+      this.parseProjectId(projectIdValue),
+      provider,
+      input.items,
+      { includeLoggedMinutes: input.includeLoggedMinutes ?? false },
+    );
   }
 
   @Post(':provider/tasks/:taskId/edit-sessions')
@@ -462,9 +576,14 @@ export class ExternalMyWorkController {
   async createDescriptionSession(
     @Param('provider') providerValue: string,
     @Param('taskId') taskIdValue: string,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalEditSessionView> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
-    return this.editSessions.createDescriptionSession(provider, taskId);
+    return this.editSessions.createDescriptionSession(
+      this.parseProjectId(projectIdValue),
+      provider,
+      taskId,
+    );
   }
 
   @Post(':provider/tasks/:taskId/comments/:commentId/delete-sessions')
@@ -487,10 +606,12 @@ export class ExternalMyWorkController {
     @Param('taskId') taskIdValue: string,
     @Param('commentId') commentIdValue: string,
     @Body() body: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalEditSessionView> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
     const input = parseOrThrow(deleteSessionInputSchema, body ?? {});
     return this.editSessions.createCommentDeleteSession(
+      this.parseProjectId(projectIdValue),
       provider,
       taskId,
       parseOrThrow(remoteCommentIdSchema, commentIdValue),
@@ -504,8 +625,14 @@ export class ExternalMyWorkController {
   })
   @ApiParam({ name: 'sessionId', type: String, format: 'uuid' })
   @ApiResponse({ status: 200, schema: EDIT_SESSION_RESPONSE_SCHEMA })
-  async touchSession(@Param('sessionId') sessionIdValue: string): Promise<ExternalEditSessionView> {
-    return this.editSessions.touchSession(parseOrThrow(sessionIdSchema, sessionIdValue));
+  async touchSession(
+    @Param('sessionId') sessionIdValue: string,
+    @Query('projectId') projectIdValue: unknown,
+  ): Promise<ExternalEditSessionView> {
+    return this.editSessions.touchSession(
+      this.parseProjectId(projectIdValue),
+      parseOrThrow(sessionIdSchema, sessionIdValue),
+    );
   }
 
   @Post('edit-sessions/:sessionId/verify')
@@ -518,8 +645,12 @@ export class ExternalMyWorkController {
   @ApiResponse({ status: 200, schema: EDIT_SESSION_VERIFY_RESPONSE_SCHEMA })
   async verifySession(
     @Param('sessionId') sessionIdValue: string,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalSessionVerifyResult> {
-    return this.editSessions.verifySession(parseOrThrow(sessionIdSchema, sessionIdValue));
+    return this.editSessions.verifySession(
+      this.parseProjectId(projectIdValue),
+      parseOrThrow(sessionIdSchema, sessionIdValue),
+    );
   }
 
   @Post('edit-sessions/:sessionId/save')
@@ -543,9 +674,11 @@ export class ExternalMyWorkController {
   async saveSession(
     @Param('sessionId') sessionIdValue: string,
     @Body() body: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalSessionWriteOutcome> {
     const input = parseOrThrow(descriptionWriteSchema, body);
     return this.editSessions.saveSession(
+      this.parseProjectId(projectIdValue),
       parseOrThrow(sessionIdSchema, sessionIdValue),
       input.document as ExternalRichDocumentV1,
       input.revision,
@@ -562,8 +695,12 @@ export class ExternalMyWorkController {
   @ApiResponse({ status: 200, schema: EDIT_SESSION_RELOAD_RESPONSE_SCHEMA })
   async reloadSession(
     @Param('sessionId') sessionIdValue: string,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalSessionReloadResult> {
-    return this.editSessions.reloadSession(parseOrThrow(sessionIdSchema, sessionIdValue));
+    return this.editSessions.reloadSession(
+      this.parseProjectId(projectIdValue),
+      parseOrThrow(sessionIdSchema, sessionIdValue),
+    );
   }
 
   @Get(':provider/tasks/:taskId/rich-description')
@@ -578,9 +715,14 @@ export class ExternalMyWorkController {
   async readRichDescription(
     @Param('provider') providerValue: string,
     @Param('taskId') taskIdValue: string,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalRichDescriptionRead> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
-    return this.editSessions.readRichDescription(provider, taskId);
+    return this.editSessions.readRichDescription(
+      this.parseProjectId(projectIdValue),
+      provider,
+      taskId,
+    );
   }
 
   @Post(':provider/tasks/:taskId/comments/:commentId/edit-sessions')
@@ -603,10 +745,12 @@ export class ExternalMyWorkController {
     @Param('taskId') taskIdValue: string,
     @Param('commentId') commentIdValue: string,
     @Body() body: unknown,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalEditSessionView> {
     const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
     const input = parseOrThrow(commentEditSessionInputSchema, body ?? {});
     return this.editSessions.createCommentEditSession(
+      this.parseProjectId(projectIdValue),
       provider,
       taskId,
       parseOrThrow(remoteCommentIdSchema, commentIdValue),
@@ -624,8 +768,12 @@ export class ExternalMyWorkController {
   @ApiResponse({ status: 200, schema: COMMENT_DELETE_RESPONSE_SCHEMA })
   async executeCommentDelete(
     @Param('sessionId') sessionIdValue: string,
+    @Query('projectId') projectIdValue: unknown,
   ): Promise<ExternalCommentDeleteOutcome> {
-    return this.editSessions.executeCommentDelete(parseOrThrow(sessionIdSchema, sessionIdValue));
+    return this.editSessions.executeCommentDelete(
+      this.parseProjectId(projectIdValue),
+      parseOrThrow(sessionIdSchema, sessionIdValue),
+    );
   }
 
   private parseTaskPath(
@@ -636,5 +784,9 @@ export class ExternalMyWorkController {
       provider: parseOrThrow(providerSchema, providerValue),
       taskId: parseOrThrow(remoteTaskIdSchema, taskIdValue),
     };
+  }
+
+  private parseProjectId(value: unknown): string {
+    return parseOrThrow(projectIdSchema, value);
   }
 }

@@ -11,9 +11,9 @@ interface BatchTimeSummaryPayload {
 }
 
 /**
- * One guarded batch read of root-Epic estimated-time totals for Board
- * badges. Only root Epic IDs may reach the request — the API rejects
- * sub-Epics — so the caller owns a root-only ID set. Worktree and
+ * One guarded batch read of estimated-time totals. Any Epic ID may join
+ * the request: a root focal total carries its sub-Epic and Related
+ * rollups, a sub-Epic focal total stays self-only. Worktree and
  * unresolved runtimes issue no request, key under an isolated cache scope,
  * and never see main-scope cached data through any returned field. A
  * failed read leaves the map empty: time badges are decoration, never a

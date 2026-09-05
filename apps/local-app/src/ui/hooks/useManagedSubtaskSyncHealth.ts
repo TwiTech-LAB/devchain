@@ -6,6 +6,10 @@ import {
 } from '@/ui/lib/managed-subtask-sync';
 import { throwIntegrationApiError } from './useIntegrationConnections';
 import { useFetchFactory } from './useFetchFactory';
+import {
+  validIntegrationProjectId,
+  withIntegrationProjectId,
+} from '@/ui/lib/integration-project-scope';
 
 interface RecoveryInput {
   action: 'verification' | 'retry';
@@ -14,29 +18,38 @@ interface RecoveryInput {
 
 export function useManagedSubtaskSyncHealth(
   provider: IntegrationProvider,
-  { enabled = true }: { enabled?: boolean } = {},
+  { projectId, enabled = true }: { projectId: string | null; enabled?: boolean },
 ) {
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
-  const queryKey = managedSubtaskSyncQueryKeys.provider(provider);
+  const scopedProjectId = validIntegrationProjectId(projectId);
+  const admitted = enabled && scopedProjectId !== null;
+  const queryKey = managedSubtaskSyncQueryKeys.provider(scopedProjectId ?? 'no-project', provider);
   const query = useQuery({
     queryKey,
     queryFn: async ({ signal }): Promise<ManagedSubtaskSyncHealth> => {
-      const response = await apiFetch(`/api/integrations/connections/${provider}/sync-health`, {
-        signal,
-      });
+      const response = await apiFetch(
+        withIntegrationProjectId(
+          `/api/integrations/connections/${provider}/sync-health`,
+          scopedProjectId,
+        ),
+        { signal },
+      );
       if (!response.ok) return throwIntegrationApiError(response);
       return response.json();
     },
-    enabled,
+    enabled: admitted,
     staleTime: 10_000,
   });
 
   const recoveryMutation = useMutation({
     mutationFn: async ({ action, id }: RecoveryInput) => {
-      if (!enabled) throw new Error('Managed subtask sync is unavailable.');
+      if (!admitted) throw new Error('Managed subtask sync is unavailable.');
       const response = await apiFetch(
-        `/api/integrations/connections/${provider}/managed-subtasks/${encodeURIComponent(id)}/${action}`,
+        withIntegrationProjectId(
+          `/api/integrations/connections/${provider}/managed-subtasks/${encodeURIComponent(id)}/${action}`,
+          scopedProjectId,
+        ),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -52,9 +65,9 @@ export function useManagedSubtaskSyncHealth(
   });
 
   return {
-    health: enabled ? query.data : undefined,
-    isLoading: enabled && query.isLoading,
-    error: enabled ? query.error : null,
+    health: admitted ? query.data : undefined,
+    isLoading: admitted && query.isLoading,
+    error: admitted ? query.error : null,
     verify: (id: string) => recoveryMutation.mutateAsync({ action: 'verification', id }),
     retry: (id: string) => recoveryMutation.mutateAsync({ action: 'retry', id }),
     pendingAction: recoveryMutation.isPending

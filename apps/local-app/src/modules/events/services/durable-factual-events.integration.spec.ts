@@ -207,6 +207,125 @@ describe('durable factual mutation events', () => {
     });
   });
 
+  it('commits an exact-agent comment with its factual event and pending delivery rows atomically', async () => {
+    registry.register({
+      deliveryKey: 'epic-time-accounting',
+      eventNames: ['epic.comment.created'],
+      ordered: true,
+      handle: async () => undefined,
+    });
+    const project = await storage.createProject({
+      name: 'Comment facts',
+      rootPath: '/tmp/comment-facts',
+      description: null,
+    });
+    const statusId = (await storage.listStatuses(project.id)).items[0]!.id;
+    const epic = await storage.createEpic({
+      projectId: project.id,
+      statusId,
+      title: 'Commented Epic',
+      description: null,
+    });
+
+    const comment = await storage.createEpicComment(
+      { epicId: epic.id, authorName: 'Coder', content: 'Claiming this work' },
+      (stored, committedEpic) =>
+        prepared('epic.comment.created', {
+          commentId: stored.id,
+          epicId: committedEpic.id,
+          projectId: committedEpic.projectId,
+          parentId: committedEpic.parentId ?? null,
+          authorName: stored.authorName,
+          content: stored.content,
+          actor: { type: 'agent', id: 'agent-1' },
+          epicTitle: committedEpic.title,
+          agentName: stored.authorName,
+          recipientIds: [],
+        }),
+    );
+
+    expect(
+      sqlite
+        .prepare('SELECT id, author_name, content FROM epic_comments WHERE id = ?')
+        .get(comment.id),
+    ).toEqual({ id: comment.id, author_name: 'Coder', content: 'Claiming this work' });
+    const fact = JSON.parse(
+      (
+        sqlite
+          .prepare("SELECT payload_json FROM events WHERE name = 'epic.comment.created'")
+          .get() as { payload_json: string }
+      ).payload_json,
+    ) as Record<string, unknown>;
+    expect(fact).toMatchObject({
+      commentId: comment.id,
+      epicId: epic.id,
+      projectId: project.id,
+      epicTitle: 'Commented Epic',
+      actor: { type: 'agent', id: 'agent-1' },
+    });
+    expect(deliveryRows()).toEqual([
+      expect.objectContaining({
+        name: 'epic.comment.created',
+        status: 'pending',
+        delivery_key: 'epic-time-accounting',
+        attempts: 0,
+      }),
+    ]);
+  });
+
+  it('rolls back the exact-agent comment when its factual append fails', async () => {
+    registry.register({
+      deliveryKey: 'epic-time-accounting',
+      eventNames: ['epic.comment.created'],
+      ordered: true,
+      handle: async () => undefined,
+    });
+    const project = await storage.createProject({
+      name: 'Comment rollback',
+      rootPath: '/tmp/comment-rollback',
+      description: null,
+    });
+    const statusId = (await storage.listStatuses(project.id)).items[0]!.id;
+    const epic = await storage.createEpic({
+      projectId: project.id,
+      statusId,
+      title: 'Unchanged comments',
+      description: null,
+    });
+    sqlite
+      .prepare(
+        `INSERT INTO events (id, name, payload_json, request_id, published_at)
+         VALUES ('duplicate-comment-event', 'epic.comment.created', '{}', NULL, ?)`,
+      )
+      .run(new Date().toISOString());
+
+    await expect(
+      storage.createEpicComment(
+        { epicId: epic.id, authorName: 'Coder', content: 'must roll back' },
+        (stored, committedEpic) =>
+          prepared(
+            'epic.comment.created',
+            {
+              commentId: stored.id,
+              epicId: committedEpic.id,
+              projectId: committedEpic.projectId,
+              parentId: committedEpic.parentId ?? null,
+              authorName: stored.authorName,
+              content: stored.content,
+              actor: { type: 'agent', id: 'agent-1' },
+              epicTitle: committedEpic.title,
+              recipientIds: [],
+            },
+            'duplicate-comment-event',
+          ),
+      ),
+    ).rejects.toThrow(/UNIQUE constraint failed/);
+
+    expect(sqlite.prepare('SELECT id FROM epic_comments WHERE epic_id = ?').all(epic.id)).toEqual(
+      [],
+    );
+  });
+
   it('records every recursive delete before removing the Epic rows', async () => {
     const project = await storage.createProject({
       name: 'Recursive delete',
@@ -246,6 +365,12 @@ describe('durable factual mutation events', () => {
   });
 
   it('commits factual connection create, update, and delete events with their writes', async () => {
+    const project = await storage.createProject({
+      name: 'Connection facts',
+      rootPath: '/tmp/connection-facts',
+      description: null,
+    });
+    const identity = { projectId: project.id, provider: 'clickup' as const };
     const eventFactory = (
       current: Awaited<ReturnType<LocalStorageService['replaceIntegrationConnection']>>,
       previous: Awaited<ReturnType<LocalStorageService['getIntegrationConnection']>>,
@@ -253,6 +378,7 @@ describe('durable factual mutation events', () => {
       previous
         ? prepared('integration.connection.updated', {
             connectionId: current.id,
+            projectId: project.id,
             provider: current.provider,
             previousGeneration: previous.generation,
             generation: current.generation,
@@ -265,6 +391,7 @@ describe('durable factual mutation events', () => {
           })
         : prepared('integration.connection.created', {
             connectionId: current.id,
+            projectId: project.id,
             provider: current.provider,
             generation: current.generation,
             subtaskSyncEnabled: current.subtaskSyncEnabled,
@@ -274,18 +401,27 @@ describe('durable factual mutation events', () => {
           });
 
     await storage.replaceIntegrationConnection(
-      { provider: 'clickup', credentials: { provider: 'clickup', token: 'first-token' } },
+      {
+        projectId: project.id,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'first-token' },
+      },
       async () => undefined,
       eventFactory,
     );
     const updated = await storage.replaceIntegrationConnection(
-      { provider: 'clickup', credentials: { provider: 'clickup', token: 'second-token' } },
+      {
+        projectId: project.id,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'second-token' },
+      },
       async () => undefined,
       eventFactory,
     );
-    await storage.disconnectIntegrationConnection('clickup', (deleted) =>
+    await storage.disconnectIntegrationConnection(identity, (deleted) =>
       prepared('integration.connection.deleted', {
         connectionId: deleted.id,
+        projectId: project.id,
         provider: deleted.provider,
         generation: deleted.generation,
         subtaskSyncEnabled: deleted.subtaskSyncEnabled,
@@ -295,7 +431,7 @@ describe('durable factual mutation events', () => {
     );
 
     expect(updated.generation).toBe(2);
-    expect(await storage.getIntegrationConnection('clickup')).toBeNull();
+    expect(await storage.getIntegrationConnection(identity)).toBeNull();
     expect(
       deliveryRows()
         .map((row) => row.name)

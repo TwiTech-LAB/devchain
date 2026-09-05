@@ -39,12 +39,13 @@ export class ExternalMyWorkService {
   ) {}
 
   async getMyWork(
+    projectId: string,
     provider: IntegrationProvider,
     options: ExternalMyWorkRequestOptions,
   ): Promise<ExternalMyWorkResult> {
     const adapter = this.providers.get(provider);
     const descriptor = this.providers.getDescriptor(provider);
-    const { connection, credentials } = await this.loadStableConnection(provider);
+    const { connection, credentials } = await this.loadStableConnection(projectId, provider);
 
     if (!adapter.myWork) {
       return { provider, descriptor, supported: false, reason: 'unsupported' };
@@ -72,26 +73,37 @@ export class ExternalMyWorkService {
   }
 
   async getTaskDetail(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
   ): Promise<ExternalTaskDetail> {
-    const detail = this.projectTaskDetail(
-      await this.runTaskOperation(provider, 'task_detail', (myWork, credentials, context) =>
-        myWork.getTaskDetail(credentials, context, remoteTaskId),
-      ),
+    const operation = await this.runTaskOperation(
+      projectId,
+      provider,
+      'task_detail',
+      (myWork, credentials, context) => myWork.getTaskDetail(credentials, context, remoteTaskId),
     );
+    const detail = this.projectTaskDetail(operation.value);
     const link = await this.storage.findExternalTaskLink(
       provider,
       detail.location.scopeKey,
       detail.remoteId,
     );
+    const linkedEpic =
+      link?.connectionId === operation.connection.id
+        ? await this.storage.getEpic(link.epicId)
+        : null;
+    const scopedLink = linkedEpic?.projectId === projectId ? link : null;
     return {
       ...detail,
-      linkState: link ? { linked: true, epicId: link.epicId } : { linked: false, epicId: null },
+      linkState: scopedLink
+        ? { linked: true, epicId: scopedLink.epicId }
+        : { linked: false, epicId: null },
     };
   }
 
   async listTaskComments(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     cursor: string | null,
@@ -99,7 +111,7 @@ export class ExternalMyWorkService {
     // Loads the connection itself so the page read and the ownership
     // annotation share one connection epoch.
     const adapter = this.providers.get(provider);
-    const { connection, credentials } = await this.loadStableConnection(provider);
+    const { connection, credentials } = await this.loadStableConnection(projectId, provider);
     if (!adapter.myWork) {
       throw this.unsupportedCapability(provider, 'list_comments');
     }
@@ -107,7 +119,7 @@ export class ExternalMyWorkService {
     const page = await adapter.myWork.listComments(credentials, context, remoteTaskId, cursor);
     // Server-confirmed ownership: one owner-id read per connection epoch
     // (cached), compared against each comment's author id.
-    const ownerRemoteId = await this.cachedOwnerRemoteId(provider, context);
+    const ownerRemoteId = await this.cachedOwnerRemoteId(provider, context, credentials);
     const ownedIds =
       ownerRemoteId === null
         ? null
@@ -120,23 +132,33 @@ export class ExternalMyWorkService {
   }
 
   async changeTaskStatus(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     input: ExternalTaskStatusInput,
   ): Promise<ExternalTaskActionResult> {
-    await this.runTaskOperation(provider, 'change_status', (myWork, credentials, context) =>
-      myWork.changeStatus(credentials, context, remoteTaskId, input),
+    await this.runTaskOperation(
+      projectId,
+      provider,
+      'change_status',
+      (myWork, credentials, context) =>
+        myWork.changeStatus(credentials, context, remoteTaskId, input),
     );
     return this.actionResult(remoteTaskId, 'change_status');
   }
 
   async addTaskComment(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     input: ExternalTaskCommentInput,
   ): Promise<ExternalTaskActionResult> {
-    await this.runTaskOperation(provider, 'add_comment', (myWork, credentials, context) =>
-      myWork.addComment(credentials, context, remoteTaskId, input),
+    await this.runTaskOperation(
+      projectId,
+      provider,
+      'add_comment',
+      (myWork, credentials, context) =>
+        myWork.addComment(credentials, context, remoteTaskId, input),
     );
     return this.actionResult(remoteTaskId, 'add_comment');
   }
@@ -147,38 +169,32 @@ export class ExternalMyWorkService {
    * redirect a read at a replacement connection.
    */
   async getTimeEntryHistory(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     expectedEpoch: number,
   ): Promise<ExternalTaskTimeEntryHistory> {
-    const connection = await this.storage.getIntegrationConnection(provider);
-    if (!connection || connection.provider !== provider) {
-      throw this.notConnected(provider);
-    }
-    if (connection.generation !== expectedEpoch) {
-      throw new ConflictError('The connection changed; reload and retry with the current epoch.', {
-        provider,
-        reason: 'connection_epoch_mismatch',
-        expectedEpoch,
-        currentEpoch: connection.generation,
-      });
-    }
     const history = await this.runTaskOperation(
+      projectId,
       provider,
       'time_entry_history',
       (myWork, credentials, context) =>
         myWork.getTimeEntryHistory(credentials, context, remoteTaskId),
+      expectedEpoch,
     );
-    return this.projectTimeEntryHistory(history);
+    return this.projectTimeEntryHistory(history.value);
   }
 
   async getTaskLinkStates(
+    projectId: string,
     provider: IntegrationProvider,
     inputs: ExternalTaskLinkLookupInput[],
+    options: { includeLoggedMinutes?: boolean } = {},
   ): Promise<{ items: ExternalTaskLinkStateSummary[] }> {
-    const connection = await this.storage.getIntegrationConnection(provider);
-    if (!connection || connection.provider !== provider) {
-      throw this.notConnected(provider);
+    const project = await this.storage.getProject(projectId);
+    const connection = await this.storage.getIntegrationConnection({ projectId, provider });
+    if (!this.matchesScope(connection, projectId, provider)) {
+      throw this.notConnected(projectId, provider);
     }
     const uniqueScopes = [...new Set(inputs.map((input) => input.scopeKey))];
     const linksByIdentity = new Map<
@@ -192,7 +208,9 @@ export class ExternalMyWorkService {
     );
     for (const links of scopeLinks) {
       for (const link of links) {
-        linksByIdentity.set(`${link.remoteScopeKey}\u0000${link.remoteTaskId}`, link);
+        if (link.connectionId === connection.id) {
+          linksByIdentity.set(`${link.remoteScopeKey}\u0000${link.remoteTaskId}`, link);
+        }
       }
     }
 
@@ -209,31 +227,87 @@ export class ExternalMyWorkService {
     const epics = new Map(
       await Promise.all(epicIds.map(async (id) => [id, await this.storage.getEpic(id)] as const)),
     );
-    const projectIds = [...new Set([...epics.values()].map((epic) => epic.projectId))];
-    const projects = new Map(
-      await Promise.all(
-        projectIds.map(async (id) => [id, await this.storage.getProject(id)] as const),
-      ),
-    );
-
+    // Checkpoint projection happens strictly after the link, connection, and
+    // project checks: an orphan checkpoint row can never establish linkage.
+    const loggedByIdentity = options.includeLoggedMinutes
+      ? await this.readAuthorizedLoggedMinutes(provider, matches, epics, projectId)
+      : null;
     const items: ExternalTaskLinkStateSummary[] = matches.map(({ input, link }) => {
       if (!link) {
-        return { ...input, linked: false, epicId: null, projectId: null, projectName: null };
+        return {
+          ...input,
+          linked: false,
+          epicId: null,
+          projectId: null,
+          projectName: null,
+          loggedMinutes: null,
+        };
       }
       const epic = epics.get(link.epicId)!;
-      const project = projects.get(epic.projectId)!;
+      if (epic.projectId !== projectId) {
+        return {
+          ...input,
+          linked: false,
+          epicId: null,
+          projectId: null,
+          projectName: null,
+          loggedMinutes: null,
+        };
+      }
+      // No checkpoint row means a confirmed link with nothing logged yet.
+      const loggedMinutes =
+        loggedByIdentity === null
+          ? null
+          : (loggedByIdentity.get(`${input.scopeKey}\u0000${input.taskId}`) ?? 0);
       return {
         ...input,
         linked: true,
         epicId: epic.id,
         projectId: project.id,
         projectName: project.name,
+        loggedMinutes,
       };
     });
     return { items };
   }
 
+  /**
+   * One set-based checkpoint read covering only the linked identities that
+   * passed every authority check; absent rows surface as caller-side zero.
+   */
+  private async readAuthorizedLoggedMinutes(
+    provider: IntegrationProvider,
+    matches: Array<{
+      input: ExternalTaskLinkLookupInput;
+      link: Awaited<ReturnType<StorageService['findExternalTaskLink']>>;
+    }>,
+    epics: Map<string, Awaited<ReturnType<StorageService['getEpic']>>>,
+    projectId: string,
+  ): Promise<Map<string, number>> {
+    const authorized = new Map<string, { remoteScopeKey: string; remoteTaskId: string }>();
+    for (const { input, link } of matches) {
+      if (!link || epics.get(link.epicId)!.projectId !== projectId) {
+        continue;
+      }
+      const key = `${input.scopeKey}\u0000${input.taskId}`;
+      authorized.set(key, { remoteScopeKey: input.scopeKey, remoteTaskId: input.taskId });
+    }
+    if (authorized.size === 0) {
+      return new Map();
+    }
+    const entries = await this.storage.listExternalEstimateLoggedMinutes(provider, [
+      ...authorized.values(),
+    ]);
+    return new Map(
+      entries.map((entry) => [
+        `${entry.remoteScopeKey}\u0000${entry.remoteTaskId}`,
+        entry.loggedMinutes,
+      ]),
+    );
+  }
+
   private async runTaskOperation<T>(
+    projectId: string,
     provider: IntegrationProvider,
     capability: 'task_detail' | 'list_comments' | 'time_entry_history' | ExternalTaskAction,
     run: (
@@ -241,13 +315,21 @@ export class ExternalMyWorkService {
       credentials: IntegrationCredentials,
       context: ExternalProviderConnectionContext,
     ) => Promise<T>,
-  ): Promise<T> {
+    expectedEpoch?: number,
+  ): Promise<{ value: T; connection: IntegrationConnection }> {
     const adapter = this.providers.get(provider);
-    const { connection, credentials } = await this.loadStableConnection(provider);
+    const { connection, credentials } = await this.loadStableConnection(
+      projectId,
+      provider,
+      expectedEpoch,
+    );
     if (!adapter.myWork) {
       throw this.unsupportedCapability(provider, capability);
     }
-    return run(adapter.myWork, credentials, this.connectionContext(connection));
+    return {
+      value: await run(adapter.myWork, credentials, this.connectionContext(connection)),
+      connection,
+    };
   }
 
   /**
@@ -258,6 +340,7 @@ export class ExternalMyWorkService {
   private async cachedOwnerRemoteId(
     provider: IntegrationProvider,
     context: ExternalProviderConnectionContext,
+    credentials: IntegrationCredentials,
   ): Promise<string | null> {
     const cacheKey = `${provider}:${context.connectionId}:${context.connectionGeneration}`;
     const cached = this.ownerRemoteIdCache.get(cacheKey);
@@ -266,10 +349,6 @@ export class ExternalMyWorkService {
     }
     const adapter = this.providers.get(provider);
     if (!adapter.ownedMutations) {
-      return null;
-    }
-    const credentials = await this.storage.getIntegrationConnectionCredentials(provider);
-    if (!credentials || credentials.provider !== provider) {
       return null;
     }
     try {
@@ -283,24 +362,35 @@ export class ExternalMyWorkService {
     }
   }
 
-  private async loadStableConnection(provider: IntegrationProvider): Promise<{
+  private async loadStableConnection(
+    projectId: string,
+    provider: IntegrationProvider,
+    expectedEpoch?: number,
+  ): Promise<{
     connection: IntegrationConnection;
     credentials: IntegrationCredentials;
   }> {
+    await this.storage.getProject(projectId);
+    const identity = { projectId, provider } as const;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const before = await this.storage.getIntegrationConnection(provider);
-      if (!before || before.provider !== provider) {
-        throw this.notConnected(provider);
+      const before = await this.storage.getIntegrationConnection(identity);
+      if (!this.matchesScope(before, projectId, provider)) {
+        throw this.notConnected(projectId, provider);
       }
-      const credentials = await this.storage.getIntegrationConnectionCredentials(provider);
-      const after = await this.storage.getIntegrationConnection(provider);
+      if (expectedEpoch !== undefined && before.generation !== expectedEpoch) {
+        throw this.epochMismatch(projectId, provider, expectedEpoch, before.generation);
+      }
+      const credentials = await this.storage.getIntegrationConnectionCredentials(identity);
+      const after = await this.storage.getIntegrationConnection(identity);
       if (
         !credentials ||
         credentials.provider !== provider ||
-        !after ||
-        after.provider !== provider
+        !this.matchesScope(after, projectId, provider)
       ) {
-        throw this.notConnected(provider);
+        throw this.notConnected(projectId, provider);
+      }
+      if (expectedEpoch !== undefined && after.generation !== expectedEpoch) {
+        throw this.epochMismatch(projectId, provider, expectedEpoch, after.generation);
       }
       if (before.id === after.id && before.generation === after.generation) {
         return { connection: after, credentials };
@@ -308,15 +398,40 @@ export class ExternalMyWorkService {
     }
     throw new BusyError('Integration connection changed during My Work refresh.', {
       provider,
+      projectId,
       reason: 'connection_changed',
     });
   }
 
-  private notConnected(provider: IntegrationProvider): ValidationError {
+  private notConnected(projectId: string, provider: IntegrationProvider): ValidationError {
     return new ValidationError('Connect the integration before loading My Work.', {
       provider,
+      projectId,
       reason: 'not_connected',
     });
+  }
+
+  private epochMismatch(
+    projectId: string,
+    provider: IntegrationProvider,
+    expectedEpoch: number,
+    currentEpoch: number,
+  ): ConflictError {
+    return new ConflictError('The connection changed; reload and retry with the current epoch.', {
+      provider,
+      projectId,
+      reason: 'connection_epoch_mismatch',
+      expectedEpoch,
+      currentEpoch,
+    });
+  }
+
+  private matchesScope(
+    connection: IntegrationConnection | null,
+    projectId: string,
+    provider: IntegrationProvider,
+  ): connection is IntegrationConnection & { projectId: string } {
+    return connection?.projectId === projectId && connection.provider === provider;
   }
 
   private connectionContext(connection: IntegrationConnection): ExternalProviderConnectionContext {
@@ -385,6 +500,7 @@ export class ExternalMyWorkService {
         startedAt: entry.startedAt,
         note: entry.note,
         noteTruncated: entry.noteTruncated,
+        canEdit: entry.canEdit,
         canDelete: entry.canDelete,
       })),
       truncated: history.truncated,

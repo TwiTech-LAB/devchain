@@ -6,14 +6,6 @@ import {
   TooltipContent,
   TooltipProvider,
 } from '@/ui/components/ui/tooltip';
-import {
-  ContextMenu,
-  ContextMenuTrigger,
-  ContextMenuContent,
-  ContextMenuLabel,
-  ContextMenuSeparator,
-  ContextMenuCheckboxItem,
-} from '@/ui/components/ui/context-menu';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
 import {
   formatTokensCompact as formatTokens,
@@ -28,25 +20,30 @@ import {
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const CHIP_VISIBLE_ITEMS_STORAGE_KEY = 'devchain:chipVisibleItems';
 
-type ChipVisibleItems = {
+export type ChipVisibleItems = {
   tokens: boolean;
   cost: boolean;
   context: boolean;
   compactions: boolean;
 };
 
-const DEFAULT_VISIBLE_ITEMS: ChipVisibleItems = {
+export const DEFAULT_CHIP_VISIBLE_ITEMS: ChipVisibleItems = {
   tokens: true,
   cost: true,
   context: true,
   compactions: true,
 };
 
-function readChipPrefs(): ChipVisibleItems {
-  if (typeof window === 'undefined') return DEFAULT_VISIBLE_ITEMS;
+/**
+ * Persisted chip preferences. The stable inline-terminal header owns the one
+ * Visible Items menu; the chip itself renders fully controlled so the menu and
+ * the chip can never disagree. Malformed storage falls back to all-visible.
+ */
+export function readChipPrefs(): ChipVisibleItems {
+  if (typeof window === 'undefined') return DEFAULT_CHIP_VISIBLE_ITEMS;
   try {
     const raw = window.localStorage.getItem(CHIP_VISIBLE_ITEMS_STORAGE_KEY);
-    if (!raw) return DEFAULT_VISIBLE_ITEMS;
+    if (!raw) return DEFAULT_CHIP_VISIBLE_ITEMS;
 
     const parsed = JSON.parse(raw) as Partial<ChipVisibleItems>;
     return {
@@ -56,11 +53,11 @@ function readChipPrefs(): ChipVisibleItems {
       compactions: parsed.compactions !== false,
     };
   } catch {
-    return DEFAULT_VISIBLE_ITEMS;
+    return DEFAULT_CHIP_VISIBLE_ITEMS;
   }
 }
 
-function writeChipPrefs(next: ChipVisibleItems) {
+export function writeChipPrefs(next: ChipVisibleItems) {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(CHIP_VISIBLE_ITEMS_STORAGE_KEY, JSON.stringify(next));
@@ -76,6 +73,8 @@ export interface InlineSessionSummaryChipProps {
   activeTab: 'terminal' | 'session';
   /** Switch panel to Session tab */
   onSwitchToSession: () => void;
+  /** Controlled visibility of the metric parts; owned by the header's menu. */
+  visibleItems: ChipVisibleItems;
   /** Optional extra className */
   className?: string;
 }
@@ -150,12 +149,10 @@ export function InlineSessionSummaryChip({
   metrics,
   activeTab,
   onSwitchToSession,
+  visibleItems,
   className,
 }: InlineSessionSummaryChipProps) {
-  const buttonRef = React.useRef<HTMLButtonElement>(null);
-  const [menuOpen, setMenuOpen] = React.useState(false);
   const [tooltipOpen, setTooltipOpen] = React.useState(false);
-  const [visible, setVisible] = React.useState<ChipVisibleItems>(() => readChipPrefs());
   const contextWindow = metrics.contextWindowTokens || DEFAULT_CONTEXT_WINDOW;
   const totalContext = metrics.totalContextTokens;
   const windowPctRaw = contextWindow > 0 ? (totalContext / contextWindow) * 100 : 0;
@@ -168,41 +165,6 @@ export function InlineSessionSummaryChip({
     }
   }, [activeTab, onSwitchToSession]);
 
-  const handleContextMenuShortcut = React.useCallback(
-    (event: React.KeyboardEvent<HTMLButtonElement>) => {
-      if (
-        event.key === 'F10' &&
-        event.shiftKey &&
-        !event.altKey &&
-        !event.ctrlKey &&
-        !event.metaKey
-      ) {
-        event.preventDefault();
-        event.stopPropagation();
-        buttonRef.current?.dispatchEvent(
-          new MouseEvent('contextmenu', {
-            bubbles: true,
-            cancelable: true,
-            button: 2,
-          }),
-        );
-      }
-    },
-    [],
-  );
-
-  const setVisibleItem = React.useCallback(
-    (key: keyof ChipVisibleItems, checked: boolean | 'indeterminate') => {
-      const nextChecked = checked === true;
-      setVisible((previous) => {
-        const next = { ...previous, [key]: nextChecked };
-        writeChipPrefs(next);
-        return next;
-      });
-    },
-    [],
-  );
-
   const formattedWindowPct = formatContextPercent(totalContext, contextWindow);
   const contextBarColorClass =
     windowPct > 80 ? 'bg-destructive' : windowPct > 50 ? 'bg-amber-500' : 'bg-primary/60';
@@ -211,21 +173,21 @@ export function InlineSessionSummaryChip({
     <span key="model" className="max-w-[120px] truncate" title={metrics.primaryModel}>
       {metrics.primaryModel}
     </span>,
-    ...(visible.tokens
+    ...(visibleItems.tokens
       ? [
           <span key="tokens" className="tabular-nums">
             {formatTokens(metrics.totalTokens)}
           </span>,
         ]
       : []),
-    ...(visible.cost
+    ...(visibleItems.cost
       ? [
           <span key="cost" className="tabular-nums">
             {formatCost(metrics.costUsd)}
           </span>,
         ]
       : []),
-    ...(visible.context
+    ...(visibleItems.context
       ? [
           <span key="context" className="inline-flex items-center gap-1">
             <span className="tabular-nums">{formattedWindowPct}</span>
@@ -245,7 +207,7 @@ export function InlineSessionSummaryChip({
           </span>,
         ]
       : []),
-    ...(visible.compactions && metrics.compactionCount > 0
+    ...(visibleItems.compactions && metrics.compactionCount > 0
       ? [
           <span key="compactions" className="tabular-nums">
             {metrics.compactionCount} compaction{metrics.compactionCount === 1 ? '' : 's'}
@@ -276,67 +238,31 @@ export function InlineSessionSummaryChip({
 
   return (
     <TooltipProvider delayDuration={300}>
-      <ContextMenu onOpenChange={setMenuOpen}>
-        <Tooltip open={!menuOpen && tooltipOpen} onOpenChange={setTooltipOpen}>
-          <ContextMenuTrigger asChild>
-            <TooltipTrigger asChild>
-              <button
-                ref={buttonRef}
-                type="button"
-                onClick={handleClick}
-                onKeyDown={handleContextMenuShortcut}
-                aria-label={ariaLabel}
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/50 px-2.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-                  className,
-                )}
-              >
-                <span
-                  className={cn(
-                    'inline-block h-1.5 w-1.5 rounded-full',
-                    metrics.isOngoing ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground/50',
-                  )}
-                  aria-hidden="true"
-                />
-                {inlineParts}
-              </button>
-            </TooltipTrigger>
-          </ContextMenuTrigger>
-          <TooltipContent align="end" className="w-64 p-3">
-            <MetricsPopoverContent metrics={metrics} />
-          </TooltipContent>
-        </Tooltip>
-        <ContextMenuContent className="w-48">
-          <ContextMenuLabel>Visible Items</ContextMenuLabel>
-          <ContextMenuSeparator />
-          <ContextMenuCheckboxItem
-            checked={visible.tokens}
-            onCheckedChange={(checked) => setVisibleItem('tokens', checked)}
+      <Tooltip open={tooltipOpen} onOpenChange={setTooltipOpen}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={handleClick}
+            aria-label={ariaLabel}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/50 px-2.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              className,
+            )}
           >
-            Tokens
-          </ContextMenuCheckboxItem>
-          <ContextMenuCheckboxItem
-            checked={visible.cost}
-            onCheckedChange={(checked) => setVisibleItem('cost', checked)}
-          >
-            Cost
-          </ContextMenuCheckboxItem>
-          <ContextMenuCheckboxItem
-            checked={visible.context}
-            onCheckedChange={(checked) => setVisibleItem('context', checked)}
-          >
-            Context
-          </ContextMenuCheckboxItem>
-          <ContextMenuCheckboxItem
-            checked={visible.compactions}
-            onCheckedChange={(checked) => setVisibleItem('compactions', checked)}
-          >
-            Compactions
-          </ContextMenuCheckboxItem>
-        </ContextMenuContent>
-      </ContextMenu>
+            <span
+              className={cn(
+                'inline-block h-1.5 w-1.5 rounded-full',
+                metrics.isOngoing ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground/50',
+              )}
+              aria-hidden="true"
+            />
+            {inlineParts}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent align="end" className="w-64 p-3">
+          <MetricsPopoverContent metrics={metrics} />
+        </TooltipContent>
+      </Tooltip>
     </TooltipProvider>
   );
 }

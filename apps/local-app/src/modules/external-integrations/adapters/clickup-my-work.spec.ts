@@ -283,6 +283,12 @@ describe('ClickUp My Work capability', () => {
           ],
         });
       }
+      if (parsed.pathname === '/api/v2/list/secondary-list') {
+        return listMetadata('secondary-list', {
+          folder: { id: 'folder-2', name: 'Operations' },
+          space: { id: 'space-2', name: 'Growth' },
+        });
+      }
       return {
         tasks: [
           task('task-1', { locations: [{ id: 'secondary-list', name: 'Secondary' }] }),
@@ -294,63 +300,260 @@ describe('ClickUp My Work capability', () => {
 
     const result = await provider.myWork!.discover(credentials, myWorkOptions);
 
-    expect(result.workAreas).toEqual([
-      {
-        remoteId: 'list-1',
-        scopeKey: 'workspace-1',
-        name: 'Sprint',
-        kind: 'list',
-        description: 'Current sprint delivery work.',
-        assignedTaskCount: 2,
-        hierarchy: [
-          { kind: 'workspace', remoteId: 'workspace-1', name: 'Engineering' },
-          { kind: 'space', remoteId: 'space-1', name: 'Product' },
-          { kind: 'folder', remoteId: 'folder-1', name: 'Delivery' },
+    expect(result.workAreas[0]).toEqual({
+      remoteId: 'list-1',
+      scopeKey: 'workspace-1',
+      name: 'Sprint',
+      kind: 'list',
+      description: 'Current sprint delivery work.',
+      assignedTaskCount: 2,
+      hierarchy: [
+        { kind: 'workspace', remoteId: 'workspace-1', name: 'Engineering' },
+        { kind: 'space', remoteId: 'space-1', name: 'Product' },
+        { kind: 'folder', remoteId: 'folder-1', name: 'Delivery' },
+      ],
+      workflow: {
+        isOverridden: true,
+        columns: [
+          {
+            remoteId: 'todo',
+            name: 'To Do',
+            color: '#d3d3d3',
+            category: 'active',
+            position: 0,
+          },
+          {
+            remoteId: 'progress',
+            name: 'In Progress',
+            color: '#7c4dff',
+            category: 'active',
+            position: 1,
+          },
+          {
+            remoteId: 'complete',
+            name: 'Complete',
+            color: '#6bc950',
+            category: 'completed',
+            position: 2,
+          },
         ],
-        workflow: {
-          isOverridden: true,
-          columns: [
-            {
-              remoteId: 'todo',
-              name: 'To Do',
-              color: '#d3d3d3',
-              category: 'active',
-              position: 0,
-            },
-            {
-              remoteId: 'progress',
-              name: 'In Progress',
-              color: '#7c4dff',
-              category: 'active',
-              position: 1,
-            },
-            {
-              remoteId: 'complete',
-              name: 'Complete',
-              color: '#6bc950',
-              category: 'completed',
-              position: 2,
-            },
-          ],
-        },
-        refresh: {
-          state: 'fresh',
-          refreshedAt: '2026-08-19T12:00:00.000Z',
-          retryable: false,
-          retryAt: null,
-        },
       },
+      refresh: {
+        state: 'fresh',
+        refreshedAt: '2026-08-19T12:00:00.000Z',
+        retryable: false,
+        retryAt: null,
+      },
+    });
+    expect(result.workAreas[1]).toEqual({
+      remoteId: 'secondary-list',
+      scopeKey: 'workspace-1',
+      name: 'List secondary-list',
+      kind: 'list',
+      description: null,
+      assignedTaskCount: 1,
+      hierarchy: [
+        { kind: 'workspace', remoteId: 'workspace-1', name: 'Engineering' },
+        { kind: 'space', remoteId: 'space-2', name: 'Growth' },
+        { kind: 'folder', remoteId: 'folder-2', name: 'Operations' },
+      ],
+      workflow: {
+        isOverridden: false,
+        columns: [
+          {
+            remoteId: 'open',
+            name: 'to do',
+            color: '#d3d3d3',
+            category: 'active',
+            position: 0,
+          },
+          {
+            remoteId: 'closed',
+            name: 'complete',
+            color: '#6bc950',
+            category: 'completed',
+            position: 1,
+          },
+        ],
+      },
+      refresh: {
+        state: 'fresh',
+        refreshedAt: '2026-08-19T12:00:00.000Z',
+        retryable: false,
+        retryAt: null,
+      },
+    });
+    expect(
+      result.tasks.map(({ workArea, task: item }) => [item.remoteId, workArea.remoteId]),
+    ).toEqual([
+      ['task-1', 'list-1'],
+      ['task-1', 'secondary-list'],
+      ['task-2', 'list-1'],
     ]);
-    expect(result.tasks).toHaveLength(2);
-    expect(result.tasks.every(({ workArea }) => workArea === result.workAreas[0])).toBe(true);
+    expect(
+      result.tasks
+        .filter(({ task: item }) => item.remoteId === 'task-2')
+        .every(({ workArea }) => workArea === result.workAreas[0]),
+    ).toBe(true);
     expect(
       requestJson.mock.calls.filter(([request]) =>
         new URL(request.url).pathname.startsWith('/api/v2/list/'),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(JSON.stringify(result.workAreas)).not.toMatch(
-      /task_count|markdown_content|secondary-list|"status":\{"status":"red"/,
+      /task_count|markdown_content|"status":\{"status":"red"/,
     );
+    expect(JSON.stringify(result)).not.toMatch(/"locations"/);
+  });
+
+  it('projects one task into its home List and every valid additional List exactly once', async () => {
+    const requestJson = jest.fn(async ({ url }: { url: string }) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/api/v2/user') {
+        return { user: { id: 42, username: 'Ada' } };
+      }
+      if (parsed.pathname === '/api/v2/team') {
+        return { teams: [{ id: 'workspace-1', name: 'Engineering' }] };
+      }
+      if (parsed.pathname === '/api/v2/list/list-1') {
+        return listMetadata('list-1');
+      }
+      if (parsed.pathname === '/api/v2/list/list-2') {
+        return listMetadata('list-2', {
+          folder: { id: 'folder-2', name: 'Operations' },
+          space: { id: 'space-2', name: 'Growth' },
+        });
+      }
+      if (parsed.pathname === '/api/v2/list/list-3') {
+        return listMetadata('list-3', {
+          folder: null,
+          space: { id: 'space-3', name: 'Support' },
+        });
+      }
+      return {
+        tasks: [
+          task('shared', {
+            locations: [
+              { id: 'list-2', name: 'Secondary' },
+              { id: 'list-1', name: 'Sprint' },
+              { id: 'list-2', name: 'Secondary again' },
+              { id: 'list-9' },
+              'malformed',
+              { id: 'list-3', name: 'Third' },
+            ],
+          }),
+          task('solo'),
+          task('second-shared', { locations: [{ id: 'list-2', name: 'Secondary' }] }),
+          task('done-hidden', {
+            status: { status: 'done', type: 'done' },
+            date_done: '1787133600000',
+            locations: [{ id: 'list-2', name: 'Secondary' }],
+          }),
+          task('other-user', {
+            assignees: [{ id: 7 }],
+            locations: [{ id: 'list-2', name: 'Secondary' }],
+          }),
+        ],
+      };
+    });
+    const provider = providerWith(requestJson);
+
+    const result = await provider.myWork!.discover(credentials, myWorkOptions);
+
+    expect(
+      result.tasks.map(({ workArea, task: item }) => [item.remoteId, workArea.remoteId]),
+    ).toEqual([
+      ['shared', 'list-1'],
+      ['shared', 'list-2'],
+      ['shared', 'list-3'],
+      ['solo', 'list-1'],
+      ['second-shared', 'list-1'],
+      ['second-shared', 'list-2'],
+    ]);
+    expect(
+      result.workAreas.map(({ remoteId, assignedTaskCount }) => [remoteId, assignedTaskCount]),
+    ).toEqual([
+      ['list-1', 3],
+      ['list-2', 2],
+      ['list-3', 1],
+    ]);
+    expect(result.workAreas[1].hierarchy).toEqual([
+      { kind: 'workspace', remoteId: 'workspace-1', name: 'Engineering' },
+      { kind: 'space', remoteId: 'space-2', name: 'Growth' },
+      { kind: 'folder', remoteId: 'folder-2', name: 'Operations' },
+    ]);
+    expect(result.workAreas[2].hierarchy).toEqual([
+      { kind: 'workspace', remoteId: 'workspace-1', name: 'Engineering' },
+      { kind: 'space', remoteId: 'space-3', name: 'Support' },
+    ]);
+    const listRequests = requestJson.mock.calls
+      .map(([request]) => new URL(request.url))
+      .filter((url) => url.pathname.startsWith('/api/v2/list/'));
+    expect(listRequests).toHaveLength(3);
+    expect(new Set(listRequests.map((url) => url.pathname)).size).toBe(3);
+    expect(JSON.stringify(result)).not.toMatch(/"locations"|"assignees"|list-9|Secondary again/);
+  });
+
+  it('adds later-page List memberships without duplicating earlier rows', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      task(
+        `task-${index}`,
+        index === 0 ? { locations: [{ id: 'list-2', name: 'Secondary' }] } : {},
+      ),
+    );
+    const requestJson = jest.fn(async ({ url }: { url: string }) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/api/v2/user') {
+        return { user: { id: 42, username: 'Ada' } };
+      }
+      if (parsed.pathname === '/api/v2/team') {
+        return { teams: [{ id: 'workspace-1', name: 'Engineering' }] };
+      }
+      if (parsed.pathname.startsWith('/api/v2/list/')) {
+        return listMetadata(decodeURIComponent(parsed.pathname.split('/').at(-1)!));
+      }
+      return parsed.searchParams.get('page') === '0'
+        ? { tasks: firstPage }
+        : {
+            tasks: [
+              task('task-0', {
+                locations: [
+                  { id: 'list-2', name: 'Secondary' },
+                  { id: 'list-3', name: 'Third' },
+                ],
+              }),
+              task('task-100'),
+            ],
+          };
+    });
+    const provider = providerWith(requestJson);
+
+    const result = await provider.myWork!.discover(credentials, myWorkOptions);
+
+    expect(
+      requestJson.mock.calls
+        .map(([request]) => new URL(request.url))
+        .filter((url) => url.pathname.endsWith('/task'))
+        .map((url) => url.searchParams.get('page')),
+    ).toEqual(['0', '1']);
+    expect(result.tasks).toHaveLength(103);
+    expect(
+      result.tasks
+        .filter(({ task: item }) => item.remoteId === 'task-0')
+        .map(({ workArea }) => workArea.remoteId),
+    ).toEqual(['list-1', 'list-2', 'list-3']);
+    expect(
+      result.tasks
+        .filter(({ task: item }) => item.remoteId === 'task-100')
+        .map(({ workArea }) => workArea.remoteId),
+    ).toEqual(['list-1']);
+    expect(
+      result.workAreas.map(({ remoteId, assignedTaskCount }) => [remoteId, assignedTaskCount]),
+    ).toEqual([
+      ['list-1', 101],
+      ['list-2', 1],
+      ['list-3', 1],
+    ]);
   });
 
   it('reuses valid List metadata and refetches it after connection generation changes', async () => {

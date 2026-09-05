@@ -23,6 +23,8 @@ import {
   handleAddEpicComment,
   handleUpdateEpic,
   handleDeleteEpic,
+  handleSetEpicRelation,
+  handleDeleteEpicRelation,
 } from './epic-tools';
 import {
   handleTeamsList,
@@ -42,6 +44,7 @@ import type { TeamsService } from '../../../teams/services/teams.service';
 import type { SettingsService } from '../../../settings/services/settings.service';
 import type { AgentMessageDeliveryService } from '../../../agent-message-delivery/agent-message-delivery.service';
 import type { EpicsService } from '../../../epics/services/epics.service';
+import type { EpicRelationsService } from '../../../epics/services/epic-relations.service';
 import type { ReviewsService } from '../../../reviews/services/reviews.service';
 import type { ReviewSuggestionApplier } from '../../../reviews/services/review-suggestion-applier.service';
 import type { SkillsService } from '../../../skills/services/skills.service';
@@ -129,6 +132,19 @@ function storageWithAgent(): Record<string, jest.Mock> {
       version: 1,
       tags: [],
     }),
+    getWorkspaceEpicsByIdPrefix: jest.fn().mockResolvedValue([
+      {
+        id: '00000000-0000-0000-0000-000000000011',
+        projectId: PROJECT_ID,
+        projectName: 'Test Project',
+        title: 'Related',
+        statusId: 'status-1',
+        statusLabel: 'Open',
+        statusColor: '#ccc',
+        statusMcpHidden: false,
+        parentId: null,
+      },
+    ]),
   };
 }
 
@@ -297,7 +313,7 @@ describe('review-tools SERVICE_UNAVAILABLE', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §4  epic-tools.ts — 4 SERVICE_UNAVAILABLE sites
+// §4  epic-tools.ts — 6 SERVICE_UNAVAILABLE sites
 // ---------------------------------------------------------------------------
 describe('epic-tools SERVICE_UNAVAILABLE', () => {
   it('handleCreateEpic: epicsService is null adapter', async () => {
@@ -351,6 +367,28 @@ describe('epic-tools SERVICE_UNAVAILABLE', () => {
     });
     assertServiceUnavailable(result, 'standalone MCP mode');
   });
+
+  it.each([
+    ['set', handleSetEpicRelation, { relation: 'related' }],
+    ['delete', handleDeleteEpicRelation, {}],
+  ] as const)(
+    'handle relation %s: relation service is null adapter',
+    async (_name, handler, extra) => {
+      const ctx: EpicToolContext = {
+        storage: storageWithAgent() as never,
+        epicsService: createNullAdapter<EpicsService>('EpicsService'),
+        epicRelationsService: createNullAdapter<EpicRelationsService>('EpicRelationsService'),
+        resolveSessionContext: resolveToAgent(),
+      };
+      const result = await handler(ctx, {
+        sessionId: SESSION_ID,
+        epicId: '00000000-0000-0000-0000-000000000010',
+        relatedEpicId: '00000000-0000-0000-0000-000000000011',
+        ...extra,
+      });
+      assertServiceUnavailable(result, 'standalone MCP mode');
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

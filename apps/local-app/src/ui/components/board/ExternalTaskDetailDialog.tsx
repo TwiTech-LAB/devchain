@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { ExternalLink, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import type { ExternalTaskDetail } from '@/modules/external-integrations/models/external-provider.models';
+import type {
+  ExternalTaskDetail,
+  ExternalTaskLinkStateSummary,
+} from '@/modules/external-integrations/models/external-provider.models';
 import { ExternalTaskCommentsPanel } from '@/ui/components/board/ExternalTaskCommentsPanel';
 import { ExternalTaskSubtasksPanel } from '@/ui/components/board/ExternalTaskSubtasksPanel';
 import { ExternalTaskTimeTracking } from '@/ui/components/board/ExternalTaskTimeTracking';
@@ -30,19 +33,30 @@ import { getErrorMessage } from '@/ui/lib/toast-helpers';
 
 export interface ExternalTaskDetailDialogProps {
   provider: ExternalBoardProvider;
+  projectId: string | null;
   taskId: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreateDevChainTask?: (detail: ExternalTaskDetail) => void;
   enabled?: boolean;
   connectionEpoch: IntegrationConnectionEpoch | null;
+  /** Global remote identity attribution from the Board batch-link lookup. */
+  globalLink?: ExternalTaskLinkStateSummary | null;
   /**
    * When set, this dialog is the DevChain linked-task workspace: detail,
    * comments, composer, and actions stay hidden until the loaded task links
    * to exactly this Epic, so a replaced connection cannot expose another
-   * account's task that merely reuses the remote ID.
+   * account's task that merely reuses the remote ID. It also turns the
+   * dialog into a non-modal route window that must coexist with body-level
+   * floating terminals.
    */
   expectedLinkedEpicId?: string | null;
+  /**
+   * Rendered as the route window's top bar — hosts the DevChain/provider
+   * view switcher on the linked-task route. Ordinary modal task dialogs
+   * pass nothing.
+   */
+  routeWindowNav?: ReactNode;
   /** Focus target when this dialog closes; defaults to the heading fallback. */
   returnFocusTo?: () => HTMLElement | null;
   /**
@@ -79,23 +93,27 @@ function taskDialogDescription(
 
 export function ExternalTaskDetailDialog({
   provider,
+  projectId,
   taskId,
   open,
   onOpenChange,
   onCreateDevChainTask,
   enabled = true,
   connectionEpoch,
+  globalLink = null,
   expectedLinkedEpicId,
+  routeWindowNav,
   returnFocusTo,
   onImportFocusTargetReady,
 }: ExternalTaskDetailDialogProps) {
   const controller = useExternalTaskController(provider, taskId, {
     enabled: enabled && open,
     connectionEpoch,
+    projectId,
     expectedLinkedEpicId,
   });
   const detail = enabled ? controller.detail.data : undefined;
-  const timeWriteScope = `${provider}:${connectionEpoch ?? ''}:${taskId ?? ''}`;
+  const timeWriteScope = `${projectId ?? ''}:${provider}:${connectionEpoch ?? ''}:${taskId ?? ''}`;
   const [historyDisclosure, setHistoryDisclosure] = useState({
     scope: timeWriteScope,
     open: false,
@@ -112,11 +130,14 @@ export function ExternalTaskDetailDialog({
     enabled: enabled && open,
     historyOpen,
     connectionEpoch,
+    projectId,
+    remoteScopeKey: detail?.location.scopeKey ?? null,
     identityAccepted: controller.identityAccepted,
     timeTrackingEnabled,
   });
   const richEdit = useExternalRichDescriptionEdit(provider, connectionEpoch, taskId, {
     enabled: enabled && open && controller.identityAccepted,
+    projectId,
   });
   const sourceUrl = detail ? safeExternalTaskUrl(provider, detail.webUrl) : null;
   const createButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -163,8 +184,31 @@ export function ExternalTaskDetailDialog({
 
   const successMessage = mutationSuccessLabel(controller.mutation.data?.action);
   const providerLabel = externalBoardProviderLabel(provider);
+  const isRouteWindow = expectedLinkedEpicId != null;
+  // Escape closes the route window only when the keypress targets this
+  // window's content; focus that lives in a body-level terminal or header
+  // must keep the window open, and Radix still routes nested dialogs (the
+  // highest layer) ahead of this guard.
+  const routeWindowContentRef = useRef<HTMLDivElement | null>(null);
+  const guardRouteWindowEscape = (event: KeyboardEvent) => {
+    const content = routeWindowContentRef.current;
+    if (content && event.target instanceof Node && content.contains(event.target)) return;
+    event.preventDefault();
+  };
   let devChainAction: ReactNode = null;
-  if (expectedLinkedEpicId == null && detail?.linkState.linked && detail.linkState.epicId) {
+  const attributedLink = globalLink?.linked && globalLink.epicId ? globalLink : null;
+  if (expectedLinkedEpicId == null && attributedLink) {
+    devChainAction = (
+      <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+        <span className="text-muted-foreground">
+          DevChain project: {attributedLink.projectName ?? 'Unknown'}
+        </span>
+        <Button asChild variant="outline" size="sm">
+          <Link to={`/epics/${attributedLink.epicId}`}>Open linked DevChain task</Link>
+        </Button>
+      </div>
+    );
+  } else if (expectedLinkedEpicId == null && detail?.linkState.linked && detail.linkState.epicId) {
     devChainAction = (
       <Button asChild variant="outline" size="sm">
         <Link to={`/epics/${detail.linkState.epicId}`}>Open linked DevChain task</Link>
@@ -185,8 +229,9 @@ export function ExternalTaskDetailDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={!isRouteWindow}>
       <DialogContent
+        ref={isRouteWindow ? routeWindowContentRef : undefined}
         className="flex h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-none flex-col gap-0 overflow-hidden bg-background p-0 supports-[height:100dvh]:h-[calc(100dvh-2rem)] sm:rounded-lg"
         onCloseAutoFocus={(event) => {
           // Prefer the owner's Kanban focus target; fall back to this dialog's
@@ -197,7 +242,17 @@ export function ExternalTaskDetailDialog({
             target.focus();
           }
         }}
+        // The route window has no overlay or modal focus trap: body-level
+        // surfaces can take focus without dismissing it. Radix still loops
+        // Tab navigation within the window.
+        onInteractOutside={isRouteWindow ? (event) => event.preventDefault() : undefined}
+        onEscapeKeyDown={isRouteWindow ? guardRouteWindowEscape : undefined}
       >
+        {routeWindowNav ? (
+          <div className="flex flex-none items-center border-b bg-muted/40 px-5 py-2">
+            {routeWindowNav}
+          </div>
+        ) : null}
         <DialogHeader className="grid flex-none gap-4 space-y-0 border-b bg-card p-5 pr-14 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
           <div className="min-w-0">
             {/* The fallback ref keeps the last attached node: on unmount React
@@ -322,12 +377,6 @@ export function ExternalTaskDetailDialog({
                 <AlertTitle>Linked task unavailable for the current connection</AlertTitle>
                 <AlertDescription>
                   <p>The remote task is not linked to the expected DevChain task.</p>
-                  <Link
-                    to={`/epics/${expectedLinkedEpicId}`}
-                    className="text-sm font-medium underline underline-offset-4"
-                  >
-                    Open expected DevChain task
-                  </Link>
                 </AlertDescription>
               </Alert>
             ) : null}
@@ -344,6 +393,7 @@ export function ExternalTaskDetailDialog({
 
                 <ExternalTaskSubtasksPanel
                   provider={provider}
+                  projectId={projectId}
                   subtasks={detail.subtasks}
                   subtasksTruncated={detail.subtasksTruncated}
                   connectionEpoch={connectionEpoch}
@@ -354,6 +404,8 @@ export function ExternalTaskDetailDialog({
                 <ExternalTaskTimeTracking
                   provider={provider}
                   taskId={taskId}
+                  projectId={projectId}
+                  remoteScopeKey={detail.location.scopeKey}
                   linkedEpicId={
                     controller.identityAccepted && detail.linkState.linked
                       ? (detail.linkState.epicId ?? null)
@@ -397,6 +449,7 @@ export function ExternalTaskDetailDialog({
             <div className="flex min-w-0 flex-none flex-col border-t bg-card p-5 lg:min-h-0 lg:border-l lg:border-t-0">
               <ExternalTaskCommentsPanel
                 provider={provider}
+                projectId={projectId}
                 taskId={taskId}
                 controller={controller}
                 canComment={Boolean(detail && supports(detail, 'add_comment'))}

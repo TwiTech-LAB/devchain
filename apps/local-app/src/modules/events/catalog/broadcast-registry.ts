@@ -174,6 +174,22 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
       clientReaction: { kind: 'invalidate', owner: 'useBoardSync' },
     },
   ],
+  'epic.relations.invalidated': [
+    {
+      topic: (p) => `workspace/${p.workspaceId}/epic-relations`,
+      type: 'invalidated',
+      payloadProjection: (p) => ({ workspaceId: p.workspaceId }),
+      clientReaction: { kind: 'invalidate', owner: 'useEpicRelationsSync' },
+    },
+  ],
+  'epic.time.scope.invalidated': [
+    {
+      topic: (p) => `workspace/${p.workspaceId}/epic-time-scope`,
+      type: 'invalidated',
+      payloadProjection: (p) => ({ workspaceId: p.workspaceId }),
+      clientReaction: { kind: 'invalidate', owner: 'useEpicTimeScopeSync' },
+    },
+  ],
   'epic.broadcast': [
     {
       topic: (p) => `project/${p.projectId}/epics`,

@@ -186,6 +186,7 @@ describe('LocalStorageService managed subtasks', () => {
         name: 'integration.connection.updated',
         payload: {
           connectionId: current.id,
+          projectId: current.projectId!,
           provider: current.provider,
           previousGeneration: previous.generation,
           generation: current.generation,
@@ -246,6 +247,7 @@ describe('LocalStorageService managed subtasks', () => {
             name: 'integration.connection.updated',
             payload: {
               connectionId: current.id,
+              projectId: current.projectId!,
               provider: current.provider,
               previousGeneration: previous!.generation,
               generation: current.generation,
@@ -285,6 +287,31 @@ describe('LocalStorageService managed subtasks', () => {
       parentRemoteTaskId: 'parent-task',
       ownershipToken: 'ownership-token-1',
     });
+  });
+
+  it('rejects a managed projection fenced to another project connection', async () => {
+    const otherProject = await storage.createProject({
+      name: 'Mismatched connection project',
+      rootPath: '/tmp/mismatched-managed-connection',
+      description: null,
+    });
+    const otherConnection = await storage.replaceIntegrationConnection(
+      {
+        projectId: otherProject.id,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'other-project-token' },
+        subtaskSyncEnabled: true,
+      },
+      async () => undefined,
+    );
+
+    await expect(
+      createProjection({
+        connectionIdSnapshot: otherConnection.id,
+        connectionGeneration: otherConnection.generation,
+        syncSettingRevision: otherConnection.syncSettingRevision,
+      }),
+    ).rejects.toThrow('Managed subtask connection fence does not match current state.');
   });
 
   it('enforces one projection per Epic and parent source snapshot', async () => {
@@ -445,26 +472,95 @@ describe('LocalStorageService managed subtasks', () => {
     await expect(storage.removeExternalManagedSubtaskLink(managed.id)).resolves.toBe(false);
   });
 
-  it('requires orphan-risk acknowledgement for replacement and disconnect', async () => {
+  it('scopes replacement and disconnect orphan-risk acknowledgement to the exact connection', async () => {
     const managed = await createProjection({ operationPhase: 'dispatch_admitted' });
+    const projectB = await storage.createProject({
+      name: 'Other managed subtasks',
+      rootPath: '/tmp/other-managed-subtasks',
+      description: null,
+    });
+    const statusB = (await storage.listStatuses(projectB.id)).items[0]!.id;
+    const parentB = await storage.createEpic({
+      projectId: projectB.id,
+      statusId: statusB,
+      title: 'Other parent',
+    });
+    const childB = await storage.createEpic({
+      projectId: projectB.id,
+      statusId: statusB,
+      title: 'Other child',
+      parentId: parentB.id,
+    });
+    const connectionB = await storage.replaceIntegrationConnection(
+      {
+        projectId: projectB.id,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'other-token' },
+        subtaskSyncEnabled: true,
+      },
+      async () => undefined,
+    );
+    const parentSourceB = await storage.createExternalTaskLink({
+      epicId: parentB.id,
+      connectionId: connectionB.id,
+      provider: 'clickup',
+      remoteScopeKey: 'workspace-2',
+      remoteTaskId: 'parent-task-2',
+      sourceSnapshot: { remoteKey: 'PARENT-2', workAreaId: 'list-2' },
+    });
+    const managedB = await storage.createExternalManagedSubtaskLink({
+      epicId: childB.id,
+      epicIdSnapshot: childB.id,
+      parentEpicIdSnapshot: parentB.id,
+      parentSourceLinkIdSnapshot: parentSourceB.id,
+      connectionIdSnapshot: connectionB.id,
+      provider: 'clickup',
+      remoteScopeKey: 'workspace-2',
+      workAreaRemoteId: 'list-2',
+      parentRemoteTaskId: 'parent-task-2',
+      connectionGeneration: connectionB.generation,
+      syncSettingRevision: connectionB.syncSettingRevision,
+      ownershipToken: 'ownership-token-2',
+      desiredVersion: childB.version,
+      desiredFingerprint: 'desired-fingerprint-2',
+      operationPhase: 'outcome_unknown',
+    });
+
+    await expect(
+      storage.listExternalManagedSubtaskLinksByConnection(connection.id),
+    ).resolves.toEqual([expect.objectContaining({ id: managed.id })]);
+    await expect(
+      storage.listExternalManagedSubtaskLinksByConnection(connectionB.id),
+    ).resolves.toEqual([expect.objectContaining({ id: managedB.id })]);
 
     await expect(
       storage.replaceIntegrationConnection(
         {
+          projectId: parent.projectId,
           provider: 'clickup',
           credentials: { provider: 'clickup', token: 'replacement-token' },
         },
         async () => undefined,
       ),
     ).rejects.toMatchObject<ConflictError>({
-      details: { reason: 'orphan_risk_ack_required', affectedCount: 1 },
+      details: {
+        connectionId: connection.id,
+        reason: 'orphan_risk_ack_required',
+        affectedCount: 1,
+      },
     });
-    expect((await storage.getIntegrationConnection('clickup'))?.generation).toBe(
-      connection.generation,
-    );
+    expect(
+      (
+        await storage.getIntegrationConnection({
+          projectId: parent.projectId,
+          provider: 'clickup',
+        })
+      )?.generation,
+    ).toBe(connection.generation);
 
     connection = await storage.replaceIntegrationConnection(
       {
+        projectId: parent.projectId,
         provider: 'clickup',
         credentials: { provider: 'clickup', token: 'replacement-token' },
         acknowledgeOrphanRisk: true,
@@ -475,17 +571,51 @@ describe('LocalStorageService managed subtasks', () => {
       tombstoneState: 'orphan_risk',
       safeErrorCode: 'connection_changed_with_unresolved_outcome',
     });
-
-    await storage.updateExternalManagedSubtaskLink(managed.id, {
+    expect(await storage.getExternalManagedSubtaskLink(managedB.id)).toMatchObject({
+      connectionIdSnapshot: connectionB.id,
+      tombstoneState: 'active',
+      safeErrorCode: null,
       operationPhase: 'outcome_unknown',
     });
+
     await expect(
-      storage.disconnectIntegrationConnection('clickup'),
-    ).rejects.toMatchObject<ConflictError>({ details: { reason: 'orphan_risk_ack_required' } });
+      storage.disconnectIntegrationConnection({ connectionId: connectionB.id }),
+    ).rejects.toMatchObject<ConflictError>({
+      details: { connectionId: connectionB.id, reason: 'orphan_risk_ack_required' },
+    });
     await expect(
-      storage.disconnectIntegrationConnection('clickup', undefined, {
+      storage.disconnectIntegrationConnection({ connectionId: connectionB.id }, undefined, {
         acknowledgeOrphanRisk: true,
       }),
     ).resolves.toBe(true);
+    await expect(storage.getIntegrationConnectionById(connection.id)).resolves.toMatchObject({
+      projectId: parent.projectId,
+      provider: 'clickup',
+    });
+
+    sqlite
+      .prepare('UPDATE integration_connections SET project_id = NULL WHERE id = ?')
+      .run(connection.id);
+    await storage.updateExternalManagedSubtaskLink(managed.id, {
+      operationPhase: 'outcome_unknown',
+      tombstoneState: 'active',
+      tombstonedAt: null,
+      safeErrorCode: 'provider_timeout',
+    });
+    await expect(
+      storage.disconnectUnassignedIntegrationConnection(connection.id),
+    ).rejects.toMatchObject<ConflictError>({
+      details: { connectionId: connection.id, reason: 'orphan_risk_ack_required' },
+    });
+    await expect(
+      storage.disconnectUnassignedIntegrationConnection(connection.id, undefined, {
+        acknowledgeOrphanRisk: true,
+      }),
+    ).resolves.toBe(true);
+    expect(await storage.getExternalManagedSubtaskLink(managed.id)).toMatchObject({
+      tombstoneState: 'orphan_risk',
+      safeErrorCode: 'connection_changed_with_unresolved_outcome',
+    });
+    await expect(storage.getIntegrationConnectionById(connection.id)).resolves.toBeNull();
   });
 });

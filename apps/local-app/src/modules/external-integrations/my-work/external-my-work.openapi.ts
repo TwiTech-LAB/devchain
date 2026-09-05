@@ -496,13 +496,25 @@ export const TIME_ENTRY_INPUT_BODY_SCHEMA: SchemaObject = {
 
 export const TASK_TIME_ENTRY_SCHEMA: SchemaObject = {
   type: 'object',
-  required: ['remoteId', 'durationMs', 'startedAt', 'note', 'noteTruncated', 'canDelete'],
+  required: [
+    'remoteId',
+    'durationMs',
+    'startedAt',
+    'note',
+    'noteTruncated',
+    'canEdit',
+    'canDelete',
+  ],
   properties: {
     remoteId: { type: 'string', maxLength: 256 },
     durationMs: { type: 'integer', minimum: 1, maximum: MAX_TIME_ENTRY_DURATION_MS },
     startedAt: { type: 'string', format: 'date-time' },
     note: { type: 'string', nullable: true, maxLength: MAX_TIME_ENTRY_NOTE_LENGTH },
     noteTruncated: { type: 'boolean' },
+    canEdit: {
+      type: 'boolean',
+      description: 'True only for the current owner with a confirmed provider edit permission.',
+    },
     canDelete: {
       type: 'boolean',
       description: 'True only for the current owner with a confirmed provider permission.',
@@ -543,6 +555,7 @@ export const TASK_TIME_ENTRIES_RESPONSE_SCHEMA: SchemaObject = {
         startedAt: '2026-08-19T10:00:00.000Z',
         note: 'Implementation',
         noteTruncated: false,
+        canEdit: true,
         canDelete: true,
       },
     ],
@@ -590,17 +603,23 @@ export const TIME_OPERATION_RECEIPT_SCHEMA: SchemaObject = {
     'remoteTaskId',
     'remoteEntryId',
     'phase',
+    'canVerify',
     'createdAt',
     'updatedAt',
     'expiresAt',
   ],
   properties: {
     operationId: { type: 'string', maxLength: 128 },
-    kind: { type: 'string', enum: ['create', 'delete'] },
+    kind: { type: 'string', enum: ['create', 'update', 'delete'] },
     provider: { type: 'string', enum: [...INTEGRATION_PROVIDER_IDS] },
     remoteTaskId: { type: 'string' },
     remoteEntryId: { type: 'string', nullable: true },
     phase: { type: 'string', enum: TIME_MUTATION_PHASES },
+    canVerify: {
+      type: 'boolean',
+      description:
+        'Authoritative Verify availability, derived from the receipt proof: true only while the operation is outcome_unknown and its stored evidence can settle it — an exact-read update/delete, or a create whose pre-dispatch baseline was complete. Busy, terminal, and unprovable receipts report false.',
+    },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
     expiresAt: {
@@ -670,6 +689,29 @@ export const TIME_ENTRY_DELETE_RESPONSE_SCHEMA: SchemaObject = {
   ],
 };
 
+export const TIME_ENTRY_UPDATE_RESPONSE_SCHEMA: SchemaObject = {
+  oneOf: [
+    {
+      type: 'object',
+      required: ['outcome', 'receipt'],
+      properties: {
+        outcome: { type: 'string', enum: ['updated', 'not_applied'] },
+        receipt: TIME_OPERATION_RECEIPT_SCHEMA,
+      },
+    },
+    {
+      type: 'object',
+      description:
+        'Dispatched with unknown vendor outcome; resolution compares the exact entry with the desired and pre-dispatch states.',
+      required: ['outcome', 'receipt'],
+      properties: {
+        outcome: { type: 'string', enum: ['outcome_unknown'] },
+        receipt: TIME_OPERATION_RECEIPT_SCHEMA,
+      },
+    },
+  ],
+};
+
 export const TIME_OPERATION_VERIFY_RESPONSE_SCHEMA: SchemaObject = {
   type: 'object',
   required: ['receipt', 'resolved', 'resolution'],
@@ -680,6 +722,7 @@ export const TIME_OPERATION_VERIFY_RESPONSE_SCHEMA: SchemaObject = {
       type: 'string',
       enum: [
         'created',
+        'updated',
         'deleted',
         'already_deleted',
         'not_applied',
@@ -696,7 +739,7 @@ export const TIME_OPERATION_VERIFY_RESPONSE_SCHEMA: SchemaObject = {
 export const TIME_OPERATION_ACK_RESPONSE_SCHEMA: SchemaObject = {
   type: 'object',
   description:
-    'Duplicate-risk acknowledgement: the caller accepts the ambiguity and the receipt becomes terminal abandoned_unknown.',
+    'Ambiguity acknowledgement: the caller accepts duplicate risk for creates or version uncertainty for updates/deletes, and the receipt becomes terminal abandoned_unknown.',
   required: ['receipt'],
   properties: {
     receipt: TIME_OPERATION_RECEIPT_SCHEMA,
@@ -902,4 +945,291 @@ export const DELETE_SESSION_INPUT_BODY_SCHEMA: SchemaObject = {
         'ClickUp page cursor that produced the comment; bounds deletion lookup to that page plus one adjacent page.',
     },
   },
+};
+
+const ESTIMATE_PENDING_DISPOSITIONS = [
+  'none',
+  'busy',
+  'outcome_unknown',
+  'manual_review',
+  'finishing',
+];
+
+/** Durable checkpoint pending-operation projection. The receipt tuple identity
+ * (connection id and generation) and provider credentials never enter this
+ * shape; it carries only what the client needs to render and recover. */
+const ESTIMATE_PENDING_OPERATION_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: [
+    'operationId',
+    'deltaMinutes',
+    'estimateTotalMinutes',
+    'startedAt',
+    'phase',
+    'resolution',
+    'activityDate',
+  ],
+  properties: {
+    operationId: { type: 'string', maxLength: 128 },
+    deltaMinutes: { type: 'integer', minimum: 1 },
+    estimateTotalMinutes: { type: 'integer', minimum: 0 },
+    startedAt: { type: 'string', format: 'date-time' },
+    phase: { type: 'string', enum: ['prepared', 'outcome_unknown'] },
+    resolution: { type: 'string', nullable: true, enum: ['logged', 'not_logged'] },
+    activityDate: {
+      type: 'string',
+      nullable: true,
+      pattern: '^\\d{4}-\\d{2}-\\d{2}$',
+      description:
+        'Target activity date of the pending dated delta; null on migrated legacy pending rows.',
+    },
+  },
+};
+
+/** One persisted dated-ledger row: minutes settled for one local activity date. */
+const ESTIMATE_LOGGED_DAY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['activityDate', 'loggedMinutes'],
+  properties: {
+    activityDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+    loggedMinutes: { type: 'integer', minimum: 0 },
+  },
+};
+
+export const ESTIMATE_LOG_STATE_RESPONSE_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: [
+    'initialized',
+    'revision',
+    'loggedMinutes',
+    'aggregationTimeZone',
+    'days',
+    'unallocatedLoggedMinutes',
+    'pendingDisposition',
+    'canVerify',
+    'verifyExpiresAt',
+    'pending',
+  ],
+  properties: {
+    initialized: {
+      type: 'boolean',
+      description:
+        'False until the first Set logged estimate or confirmed estimate create; absence of the durable row means uninitialized.',
+    },
+    revision: { type: 'integer', minimum: 0 },
+    loggedMinutes: { type: 'integer', minimum: 0 },
+    aggregationTimeZone: {
+      type: 'string',
+      nullable: true,
+      maxLength: 128,
+      description:
+        'Canonical IANA zone the dated ledger groups under; null until the first dated baseline binds one.',
+    },
+    days: {
+      type: 'array',
+      maxItems: 3_660,
+      description:
+        'The dated ledger, sorted ascending by activityDate. Never truncated: a ledger above the bound fails closed instead.',
+      items: ESTIMATE_LOGGED_DAY_SCHEMA,
+    },
+    unallocatedLoggedMinutes: {
+      type: 'integer',
+      minimum: 0,
+      description:
+        'Derived on every read as loggedMinutes minus the dated sum; legacy scalar credit waiting for oldest-first materialization.',
+    },
+    pendingDisposition: {
+      type: 'string',
+      enum: ESTIMATE_PENDING_DISPOSITIONS,
+      description:
+        'finishing is derived when a stored logged/not_logged resolution is still being applied; manual_review marks an ambiguous pending operation that needs an explicit choice.',
+    },
+    canVerify: {
+      type: 'boolean',
+      description:
+        'True only while provider Verify is available for the pending operation on the matching current connection epoch.',
+    },
+    verifyExpiresAt: {
+      type: 'string',
+      format: 'date-time',
+      nullable: true,
+      description:
+        'Receipt-absolute deadline of the current Verify availability; null whenever canVerify is false. Clients may schedule exactly one deadline transition from it — the receipt, not a client TTL, owns the timing.',
+    },
+    pending: {
+      oneOf: [ESTIMATE_PENDING_OPERATION_SCHEMA, { type: 'null' }],
+    },
+  },
+  example: {
+    initialized: true,
+    revision: 2,
+    loggedMinutes: 90,
+    aggregationTimeZone: 'Europe/Madrid',
+    days: [{ activityDate: '2026-08-29', loggedMinutes: 30 }],
+    unallocatedLoggedMinutes: 60,
+    pendingDisposition: 'none',
+    canVerify: false,
+    verifyExpiresAt: null,
+    pending: null,
+  },
+};
+
+export const ESTIMATE_TIME_ENTRY_CREATE_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: [
+    'scopeKey',
+    'requestKey',
+    'timeZone',
+    'estimateTotalMinutes',
+    'expectedRevision',
+    'dailySnapshot',
+  ],
+  additionalProperties: false,
+  properties: {
+    scopeKey: { type: 'string', minLength: 1, maxLength: 256 },
+    requestKey: {
+      type: 'string',
+      format: 'uuid',
+      description:
+        'One fresh browser crypto.randomUUID per click; never a stable Epic or task id. The server derives per-entry operation ids from it and never reuses a key across provider tuples.',
+    },
+    timeZone: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 128,
+      description: 'IANA time zone used for both client display and server recomputation.',
+    },
+    estimateTotalMinutes: {
+      type: 'integer',
+      minimum: 0,
+      description:
+        'Snapshot of the current DevChain estimate total; must equal the dailySnapshot sum and stay at or below the same-timezone live totals per date.',
+    },
+    expectedRevision: { type: 'integer', minimum: 0 },
+    dailySnapshot: {
+      type: 'array',
+      uniqueItems: true,
+      maxItems: 3_660,
+      description:
+        'Captured daily projection: unique canonical activity dates in ascending order summing exactly to estimateTotalMinutes. The 3,660-entry bound keeps the JSON body comfortably inside the configured Fastify body limit.',
+      items: {
+        type: 'object',
+        required: ['activityDate', 'minutes'],
+        additionalProperties: false,
+        properties: {
+          activityDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          minutes: { type: 'integer', minimum: 0 },
+        },
+      },
+    },
+  },
+};
+
+/** One create outcome variant sharing the settlement-count contract. */
+const estimateCreateOutcome = (
+  outcome: 'logged' | 'partially_logged' | 'outcome_unknown',
+  description: string,
+): SchemaObject => ({
+  type: 'object',
+  description,
+  required: ['outcome', 'entriesLogged', 'minutesLogged', 'hasMore', 'stoppedReason', 'state'],
+  properties: {
+    outcome: { type: 'string', enum: [outcome] },
+    entriesLogged: {
+      type: 'integer',
+      minimum: 0,
+      maximum: 10,
+      description: 'Provider entries this request settled durably.',
+    },
+    minutesLogged: { type: 'integer', minimum: 0 },
+    hasMore: {
+      type: 'boolean',
+      description: 'True when unlogged dated time remains for a later fresh click.',
+    },
+    stoppedReason: {
+      type: 'string',
+      enum: ['completed', 'entry_cap', 'provider_error', 'concurrent_write', 'outcome_unknown'],
+      description:
+        'Fixed safe stop reason; never carries provider detail. entry_cap means the 10-entry bound stopped a clean prefix.',
+    },
+    state: ESTIMATE_LOG_STATE_RESPONSE_SCHEMA,
+  },
+});
+
+export const ESTIMATE_TIME_ENTRY_CREATE_RESPONSE_SCHEMA: SchemaObject = {
+  oneOf: [
+    estimateCreateOutcome(
+      'logged',
+      'Every dispatched entry settled durably; live growth beyond the capture stays unlogged for a later click.',
+    ),
+    estimateCreateOutcome(
+      'partially_logged',
+      'A confirmed prefix settled durably before a known provider failure or a competing write; the safe stop reason explains the boundary.',
+    ),
+    estimateCreateOutcome(
+      'outcome_unknown',
+      'Dispatched with unknown vendor outcome. Never retried automatically; the pending date settles only through the estimate resolve route.',
+    ),
+  ],
+};
+
+export const ESTIMATE_LOG_STATE_SET_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['scopeKey', 'loggedMinutes', 'expectedRevision', 'timeZone'],
+  additionalProperties: false,
+  properties: {
+    scopeKey: { type: 'string', minLength: 1, maxLength: 256 },
+    loggedMinutes: {
+      type: 'integer',
+      minimum: 0,
+      description:
+        'Records DevChain submissions and explicit user assumptions; the correction path for bootstrap and drift. Rebuilds the dated baseline oldest-first from the live projection in timeZone and never writes to a provider.',
+    },
+    expectedRevision: { type: 'integer', minimum: 0 },
+    timeZone: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 128,
+      description: 'Canonical IANA zone to bind the rebuilt dated baseline to.',
+    },
+  },
+};
+
+export const ESTIMATE_TIME_OPERATION_RESOLVE_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['scopeKey', 'action', 'expectedRevision'],
+  additionalProperties: false,
+  properties: {
+    scopeKey: { type: 'string', minLength: 1, maxLength: 256 },
+    action: {
+      type: 'string',
+      enum: ['verify', 'logged', 'not_logged'],
+      description:
+        'Verify resolves from exact provider proof and requires the pending connection epoch; logged/not_logged are the explicit manual resolutions and stay available after receipt loss or connection replacement.',
+    },
+    expectedRevision: { type: 'integer', minimum: 0 },
+  },
+};
+
+export const ESTIMATE_TIME_OPERATION_RESOLVE_RESPONSE_SCHEMA: SchemaObject = {
+  oneOf: [
+    {
+      type: 'object',
+      required: ['outcome', 'state'],
+      properties: {
+        outcome: { type: 'string', enum: ['logged', 'not_logged'] },
+        state: ESTIMATE_LOG_STATE_RESPONSE_SCHEMA,
+      },
+    },
+    {
+      type: 'object',
+      description:
+        'The pending operation could not be resolved yet; the returned state explains the current disposition.',
+      required: ['outcome', 'state'],
+      properties: {
+        outcome: { type: 'string', enum: ['unresolved'] },
+        state: ESTIMATE_LOG_STATE_RESPONSE_SCHEMA,
+      },
+    },
+  ],
 };

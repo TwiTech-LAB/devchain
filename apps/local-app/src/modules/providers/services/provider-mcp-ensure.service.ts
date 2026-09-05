@@ -33,6 +33,11 @@ export interface EnsureMcpResult {
   warnings?: EnsureMcpWarning[];
 }
 
+export interface EnsureProjectProvisioningResult {
+  success: boolean;
+  warnings: EnsureMcpWarning[];
+}
+
 /**
  * ProviderMcpEnsureService
  * Shared service for ensuring MCP is properly configured for a provider.
@@ -41,6 +46,7 @@ export interface EnsureMcpResult {
 @Injectable()
 export class ProviderMcpEnsureService {
   private ensureLocks = new Map<string, Promise<EnsureMcpResult>>();
+  private provisionLocks = new Map<string, Promise<EnsureProjectProvisioningResult>>();
 
   constructor(
     @Inject('STORAGE_SERVICE') private readonly storage: StorageService,
@@ -95,6 +101,96 @@ export class ProviderMcpEnsureService {
       return await promise;
     } finally {
       this.ensureLocks.delete(lockKey);
+    }
+  }
+
+  /**
+   * Trust-only provisioning: validate the exact registered project root and run
+   * only `provisionProjectPath`. Performs no MCP discovery, no MCP registration,
+   * and no project-local settings writes — providers needing those belong on the
+   * full `ensureMcp` path. Failures are fixed-code warnings and stay non-fatal.
+   */
+  async ensureProjectProvisioning(
+    provider: Provider,
+    projectPath: string,
+  ): Promise<EnsureProjectProvisioningResult> {
+    if (!this.adapterFactory.isSupported(provider.name)) {
+      const message = `Provisioning not supported for provider: ${provider.name}`;
+      logger.warn({ providerId: provider.id, projectPath }, message);
+      return {
+        success: false,
+        warnings: [
+          { source: 'provisioning', level: 'warn', message, code: 'PROVISIONING_UNSUPPORTED' },
+        ],
+      };
+    }
+
+    const validationResult = await this.validateProjectPath(projectPath);
+    if (!validationResult.valid) {
+      logger.warn(
+        { providerId: provider.id, projectPath },
+        'Trust-only provisioning path rejected',
+      );
+      return {
+        success: false,
+        warnings: [
+          {
+            source: 'provisioning',
+            level: 'warn',
+            message: validationResult.message,
+            code: 'PROVISIONING_PATH_INVALID',
+          },
+        ],
+      };
+    }
+
+    const lockKey = `provision:${provider.id}:${projectPath}`;
+    const existingLock = this.provisionLocks.get(lockKey);
+    if (existingLock) {
+      logger.debug(
+        { providerId: provider.id, projectPath, lockKey },
+        'Awaiting existing provision lock',
+      );
+      return existingLock;
+    }
+
+    const promise = this.doEnsureProjectProvisioning(provider, projectPath);
+    this.provisionLocks.set(lockKey, promise);
+
+    try {
+      return await promise;
+    } finally {
+      this.provisionLocks.delete(lockKey);
+    }
+  }
+
+  private async doEnsureProjectProvisioning(
+    provider: Provider,
+    projectPath: string,
+  ): Promise<EnsureProjectProvisioningResult> {
+    try {
+      const adapter = this.adapterFactory.getAdapter(provider.name);
+      if (!isProjectProvisioningCapable(adapter)) {
+        return { success: true, warnings: [] };
+      }
+      const result = await adapter.provisionProjectPath(projectPath);
+      return {
+        success: result.success,
+        warnings: result.warnings.map((w) => ({
+          ...w,
+          source: w.source as EnsureMcpWarning['source'],
+        })),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn(
+        { error, projectPath, providerName: provider.name },
+        'Trust-only provisioning failed (non-fatal)',
+      );
+      return {
+        success: true,
+        warnings: [{ source: 'provisioning', level: 'warn', message, code: 'PROVISIONING_FAILED' }],
+      };
     }
   }
 
@@ -230,13 +326,17 @@ export class ProviderMcpEnsureService {
       return { valid: false, message: 'Project path must be an absolute path' };
     }
 
-    // Check 2: Prevent path traversal attacks (segment-based check to avoid false positives)
-    const normalized = normalize(projectPath);
-    const segments = normalized.split(sep);
-    if (segments.some((segment) => segment === '..')) {
-      logger.warn({ projectPath, normalized }, 'Rejected path traversal attempt');
+    // Check 2: Prevent path traversal attacks. The raw spelling must be checked
+    // BEFORE normalize(): normalization consumes `..` segments, so a traversal
+    // like /registered/root/../root would otherwise fold back onto a registered
+    // root and pass validation. Segment-exact matching keeps names that merely
+    // contain '..' as a substring (e.g. `my..project`) valid.
+    if (projectPath.split(sep).some((segment) => segment === '..')) {
+      logger.warn({ projectPath }, 'Rejected path traversal attempt');
       return { valid: false, message: 'Project path cannot contain path traversal sequences' };
     }
+
+    const normalized = normalize(projectPath);
 
     // Check 3: Validate against registered projects
     const projects = await this.storage.listProjects({ limit: 1000 });

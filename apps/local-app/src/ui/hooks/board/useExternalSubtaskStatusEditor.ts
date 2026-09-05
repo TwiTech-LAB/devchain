@@ -11,16 +11,21 @@ import { fetchExternalMyWorkSnapshot } from '@/ui/hooks/board/useExternalMyWork'
 import type { ExternalBoardProvider } from '@/ui/lib/external-board';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import {
-  canRestoreExternalTaskFromInclusiveSnapshot,
+  hasAuthoritativeExternalTaskOccurrence,
   settleExternalTaskStatusSnapshots,
   type ExternalMyWorkSupportedSnapshot,
 } from '@/ui/lib/external-my-work-snapshot';
 import { fetchFreshExternalTaskDetail } from '@/ui/lib/external-task-detail-query';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
+import {
+  validIntegrationProjectId,
+  withIntegrationProjectId,
+} from '@/ui/lib/integration-project-scope';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 
 interface EditorContext {
   provider: ExternalBoardProvider;
+  projectId: string;
   connectionEpoch: IntegrationConnectionEpoch;
   parentTaskId: string;
   childTaskId: string;
@@ -52,6 +57,7 @@ export type ExternalSubtaskStatusEditor =
   | (EditorBase & { phase: 'success'; confirmedStatus: ExternalTaskStatusOption });
 
 export interface UseExternalSubtaskStatusEditorOptions {
+  projectId: string | null;
   connectionEpoch: IntegrationConnectionEpoch | null;
   parentTaskId: string | null;
   enabled?: boolean;
@@ -59,6 +65,7 @@ export interface UseExternalSubtaskStatusEditorOptions {
 
 interface CurrentScope {
   provider: ExternalBoardProvider;
+  projectId: string | null;
   connectionEpoch: IntegrationConnectionEpoch | null;
   parentTaskId: string | null;
   enabled: boolean;
@@ -68,6 +75,7 @@ function sameContext(left: EditorContext, right: CurrentScope): boolean {
   return (
     right.enabled &&
     left.provider === right.provider &&
+    left.projectId === right.projectId &&
     left.connectionEpoch === right.connectionEpoch &&
     left.parentTaskId === right.parentTaskId
   );
@@ -106,15 +114,34 @@ function landingSnapshotKeys(context: EditorContext): LandingSnapshotKeys {
  */
 export function useExternalSubtaskStatusEditor(
   provider: ExternalBoardProvider,
-  { connectionEpoch, parentTaskId, enabled = true }: UseExternalSubtaskStatusEditorOptions,
+  {
+    projectId,
+    connectionEpoch,
+    parentTaskId,
+    enabled = true,
+  }: UseExternalSubtaskStatusEditorOptions,
 ) {
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
+  const scopedProjectId = validIntegrationProjectId(projectId);
+  const admitted = enabled && scopedProjectId !== null;
   const [editor, setEditor] = useState<ExternalSubtaskStatusEditor | null>(null);
   const editorRef = useRef<ExternalSubtaskStatusEditor | null>(null);
   const editorContextRef = useRef<EditorContext | null>(null);
-  const scopeRef = useRef<CurrentScope>({ provider, connectionEpoch, parentTaskId, enabled });
-  scopeRef.current = { provider, connectionEpoch, parentTaskId, enabled };
+  const scopeRef = useRef<CurrentScope>({
+    provider,
+    projectId: scopedProjectId,
+    connectionEpoch,
+    parentTaskId,
+    enabled: admitted,
+  });
+  scopeRef.current = {
+    provider,
+    projectId: scopedProjectId,
+    connectionEpoch,
+    parentTaskId,
+    enabled: admitted,
+  };
   const aliveRef = useRef(true);
   const presentationNonceRef = useRef(0);
   const writeOwnerNonceRef = useRef(0);
@@ -139,7 +166,7 @@ export function useExternalSubtaskStatusEditor(
     writeLatchRef.current = null;
     editorContextRef.current = null;
     publish(null);
-  }, [connectionEpoch, enabled, parentTaskId, provider, publish]);
+  }, [admitted, connectionEpoch, parentTaskId, provider, publish, scopedProjectId]);
 
   const isCurrentPresentation = useCallback((context: EditorContext, nonce: number): boolean => {
     return (
@@ -162,6 +189,7 @@ export function useExternalSubtaskStatusEditor(
           apiFetch,
           context.provider,
           context.connectionEpoch,
+          context.projectId,
           context.childTaskId,
         );
         if (!isCurrentPresentation(context, nonce)) return;
@@ -211,6 +239,7 @@ export function useExternalSubtaskStatusEditor(
       if (
         childTaskId === '' ||
         !scope.enabled ||
+        scope.projectId === null ||
         scope.connectionEpoch === null ||
         scope.parentTaskId === null ||
         writeLatchRef.current !== null
@@ -222,6 +251,7 @@ export function useExternalSubtaskStatusEditor(
 
       void loadFresh({
         provider: scope.provider,
+        projectId: scope.projectId,
         connectionEpoch: scope.connectionEpoch,
         parentTaskId: scope.parentTaskId,
         childTaskId,
@@ -291,13 +321,19 @@ export function useExternalSubtaskStatusEditor(
               inclusiveSnapshot = await queryClient.fetchQuery({
                 queryKey: snapshotKeys.completedInclusive,
                 queryFn: ({ signal }) =>
-                  fetchExternalMyWorkSnapshot(apiFetch, context.provider, true, signal),
+                  fetchExternalMyWorkSnapshot(
+                    apiFetch,
+                    context.provider,
+                    context.projectId,
+                    true,
+                    signal,
+                  ),
                 staleTime: 0,
               });
             }
             if (
               !isSupportedSnapshot(inclusiveSnapshot) ||
-              !canRestoreExternalTaskFromInclusiveSnapshot(
+              !hasAuthoritativeExternalTaskOccurrence(
                 activeSnapshot,
                 inclusiveSnapshot,
                 context.childTaskId,
@@ -311,9 +347,12 @@ export function useExternalSubtaskStatusEditor(
           if (!isCurrentPresentation(context, presentationNonce)) return;
 
           await fetchJsonOrThrow<ExternalTaskActionResult>(
-            `/api/integrations/my-work/${context.provider}/tasks/${encodeURIComponent(
-              context.childTaskId,
-            )}/status`,
+            withIntegrationProjectId(
+              `/api/integrations/my-work/${context.provider}/tasks/${encodeURIComponent(
+                context.childTaskId,
+              )}/status`,
+              context.projectId,
+            ),
             {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },

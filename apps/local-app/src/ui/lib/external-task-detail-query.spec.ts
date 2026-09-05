@@ -5,6 +5,7 @@ import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 // Layer: pure unit. The helper is a data-only factory; asserting its key, URL,
 // gating, and error text here keeps hook suites free of options-shape coupling.
 const mockFetch = jest.fn();
+const PROJECT_ID = 'project-1';
 
 const detail = {
   remoteId: 'ENG-1',
@@ -39,7 +40,13 @@ describe('externalTaskDetailQueryOptions', () => {
 
   it('builds the canonical key and encoded provider URL with the shared fetch', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => detail });
-    const options = externalTaskDetailQueryOptions(mockFetch, 'jira', 'conn-a:2', 'ENG 1/2');
+    const options = externalTaskDetailQueryOptions(
+      mockFetch,
+      'jira',
+      'conn-a:2',
+      PROJECT_ID,
+      'ENG 1/2',
+    );
 
     expect(options.queryKey).toEqual(
       externalMyWorkQueryKeys.taskDetail('jira', 'conn-a:2', 'ENG 1/2'),
@@ -48,17 +55,23 @@ describe('externalTaskDetailQueryOptions', () => {
 
     const signal = new AbortController().signal;
     await expect(options.queryFn!(context(signal))).resolves.toEqual(detail);
-    expect(mockFetch).toHaveBeenCalledWith('/api/integrations/my-work/jira/tasks/ENG%201%2F2', {
-      signal,
-    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      `/api/integrations/my-work/jira/tasks/ENG%201%2F2?projectId=${PROJECT_ID}`,
+      { signal },
+    );
   });
 
   it('stays disabled without a connection epoch, task id, or caller enablement', () => {
-    expect(externalTaskDetailQueryOptions(mockFetch, 'jira', null, 'ENG-1').enabled).toBe(false);
-    expect(externalTaskDetailQueryOptions(mockFetch, 'jira', 'conn-a:2', '').enabled).toBe(false);
     expect(
-      externalTaskDetailQueryOptions(mockFetch, 'jira', 'conn-a:2', 'ENG-1', { enabled: false })
-        .enabled,
+      externalTaskDetailQueryOptions(mockFetch, 'jira', null, PROJECT_ID, 'ENG-1').enabled,
+    ).toBe(false);
+    expect(
+      externalTaskDetailQueryOptions(mockFetch, 'jira', 'conn-a:2', PROJECT_ID, '').enabled,
+    ).toBe(false);
+    expect(
+      externalTaskDetailQueryOptions(mockFetch, 'jira', 'conn-a:2', PROJECT_ID, 'ENG-1', {
+        enabled: false,
+      }).enabled,
     ).toBe(false);
   });
 
@@ -66,7 +79,9 @@ describe('externalTaskDetailQueryOptions', () => {
     mockFetch.mockResolvedValue({ ok: false, json: async () => null });
 
     await expect(
-      externalTaskDetailQueryOptions(mockFetch, 'jira', 'conn-a:2', 'ENG-1').queryFn!(context()),
+      externalTaskDetailQueryOptions(mockFetch, 'jira', 'conn-a:2', PROJECT_ID, 'ENG-1').queryFn!(
+        context(),
+      ),
     ).rejects.toThrow('Task detail could not be loaded.');
   });
 });

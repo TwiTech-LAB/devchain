@@ -7,6 +7,7 @@ export type McpToolBindingRegistryFixtureDependencies = Partial<
     McpBindingRuntime,
     | 'sessionsService'
     | 'epicsService'
+    | 'epicRelationsService'
     | 'settingsService'
     | 'guestsService'
     | 'skillsService'
@@ -27,6 +28,7 @@ export function createMcpToolBindingRegistryFixture(
     storage,
     dependencies.sessionsService,
     dependencies.epicsService,
+    dependencies.epicRelationsService,
     dependencies.settingsService,
     dependencies.guestsService,
     dependencies.skillsService,

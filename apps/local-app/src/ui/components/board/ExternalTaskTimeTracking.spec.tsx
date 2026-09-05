@@ -14,6 +14,7 @@ jest.mock('@/ui/hooks/useFetchFactory', () => ({
 }));
 
 const connectionEpoch = 'connection-jira-a:4';
+const PROJECT_ID = 'project-1';
 
 function entry(overrides: Record<string, unknown> = {}) {
   return {
@@ -22,6 +23,7 @@ function entry(overrides: Record<string, unknown> = {}) {
     startedAt: '2026-08-19T10:00:00.000Z',
     note: 'Implementation',
     noteTruncated: false,
+    canEdit: true,
     canDelete: true,
     ...overrides,
   };
@@ -41,6 +43,46 @@ function jsonResponse(payload: unknown) {
   return { ok: true, json: async () => payload };
 }
 
+function futureReceiptIso(ms = 3_600_000): string {
+  return new Date(Date.now() + ms).toISOString();
+}
+
+const OriginalDateTimeFormat = Intl.DateTimeFormat;
+
+/**
+ * Simulates an operating-system or browser time-zone change: the no-argument
+ * resolver reports the given zone while every explicitly configured formatter
+ * keeps its real behavior.
+ */
+function mockBrowserTimeZone(timeZone: string): jest.SpyInstance {
+  return jest.spyOn(Intl, 'DateTimeFormat').mockImplementation(((
+    locale?: Intl.LocalesArgument,
+    options?: Intl.DateTimeFormatOptions,
+  ) => {
+    if (locale === undefined && options === undefined) {
+      const resolved = new OriginalDateTimeFormat().resolvedOptions();
+      return {
+        resolvedOptions: () => ({ ...resolved, timeZone }),
+      } as unknown as Intl.DateTimeFormat;
+    }
+    return new OriginalDateTimeFormat(locale, options);
+  }) as unknown as typeof Intl.DateTimeFormat);
+}
+
+function estimateCreateCalls(): [string, RequestInit][] {
+  return fetchMock.mock.calls.filter(
+    ([url, init]) =>
+      String(url).includes('/estimate-time-entries?') &&
+      (init as RequestInit | undefined)?.method === 'POST',
+  ) as [string, RequestInit][];
+}
+
+function timeLogUrls(): string[] {
+  return fetchMock.mock.calls
+    .map(([url]) => String(url))
+    .filter((url) => url.includes('/time-logs'));
+}
+
 type TimeTrackingHarnessProps = Omit<
   React.ComponentProps<typeof ExternalTaskTimeTracking>,
   'timeEntries' | 'onHistoryOpenChange'
@@ -58,6 +100,8 @@ function TimeTrackingHarness(props: TimeTrackingHarnessProps) {
     enabled: props.enabled,
     historyOpen,
     connectionEpoch: props.connectionEpoch,
+    projectId: PROJECT_ID,
+    remoteScopeKey: props.remoteScopeKey,
     identityAccepted: props.identityAccepted,
     timeTrackingEnabled: props.timeTrackingEnabled,
   });
@@ -80,6 +124,8 @@ function renderBlock(props: Partial<TimeTrackingHarnessProps> = {}) {
         provider="jira"
         taskId="ENG-1"
         linkedEpicId={null}
+        projectId={PROJECT_ID}
+        remoteScopeKey="acme.atlassian.net"
         connectionEpoch={connectionEpoch}
         enabled
         identityAccepted
@@ -107,7 +153,7 @@ async function openTimeBlock(): Promise<void> {
 async function openHistory(): Promise<void> {
   await openTimeBlock();
   const user = userEvent.setup();
-  await user.click(screen.getByText('Recent time entries', { selector: 'summary' }));
+  await user.click(screen.getByLabelText('Recent time entries'));
 }
 
 describe('ExternalTaskTimeTracking', () => {
@@ -124,7 +170,7 @@ describe('ExternalTaskTimeTracking', () => {
 
   function serveHistory(payload: unknown): void {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/time-entries') && !init?.method) {
+      if (String(url).includes('/time-entries?') && !init?.method) {
         return Promise.resolve(jsonResponse(payload));
       }
       if (init?.method === 'DELETE') {
@@ -132,6 +178,14 @@ describe('ExternalTaskTimeTracking', () => {
           jsonResponse({
             outcome: 'deleted',
             receipt: { operationId: 'op-2', phase: 'succeeded' },
+          }),
+        );
+      }
+      if (init?.method === 'PUT') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'updated',
+            receipt: { operationId: 'op-edit', kind: 'update', phase: 'succeeded' },
           }),
         );
       }
@@ -165,11 +219,28 @@ describe('ExternalTaskTimeTracking', () => {
       isRoot: true,
       directMinutes: 30,
       totalMinutes: 90,
-      items: [],
+      includesRelatedTime: false,
+      items: [{ activityDate: '2026-08-29', agentId: 'agent-1', agentName: 'Coder', minutes: 90 }],
       taskItems: [
         { epicId: 'epic-root', epicTitle: 'Root task', isDirect: true, minutes: 30 },
         { epicId: 'epic-child', epicTitle: 'Child task', isDirect: false, minutes: 60 },
       ],
+      ...overrides,
+    };
+  }
+
+  function estimateState(overrides: Record<string, unknown> = {}) {
+    return {
+      initialized: false,
+      revision: 0,
+      loggedMinutes: 0,
+      aggregationTimeZone: null,
+      days: [],
+      unallocatedLoggedMinutes: 0,
+      pendingDisposition: 'none',
+      canVerify: false,
+      verifyExpiresAt: null,
+      pending: null,
       ...overrides,
     };
   }
@@ -179,9 +250,23 @@ describe('ExternalTaskTimeTracking', () => {
       if (String(url).includes('/api/epics/') && String(url).includes('/time-logs')) {
         return Promise.resolve(jsonResponse(summary));
       }
-      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+      if (String(url).includes('/estimate-log-state?') && !init?.method) {
+        return Promise.resolve(jsonResponse(estimateState()));
+      }
+      if (String(url).includes('/estimate-time-entries?') && init?.method === 'POST') {
         return Promise.resolve(
-          jsonResponse({ outcome: 'created', remoteEntryId: '10002', refresh: ['task_detail'] }),
+          jsonResponse({
+            outcome: 'logged',
+            entriesLogged: 1,
+            minutesLogged: 90,
+            hasMore: false,
+            stoppedReason: 'completed',
+            state: estimateState({
+              initialized: true,
+              revision: 2,
+              loggedMinutes: 90,
+            }),
+          }),
         );
       }
       return Promise.resolve(jsonResponse(historyPayload([])));
@@ -195,35 +280,47 @@ describe('ExternalTaskTimeTracking', () => {
     const heading = screen.getByRole('heading', { level: 3, name: 'Time tracked' });
     const block = heading.closest('section')!;
     expect(block).toHaveTextContent('1h 30m');
-    expect(block).toHaveClass('border', 'border-l-4', 'border-l-primary', 'bg-card');
-    expect(heading).toHaveAttribute('tabindex', '-1');
-    expect(screen.getByRole('button', { name: 'Expand Time tracked' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    expect(block).toHaveClass('border', 'bg-card');
+    const toggle = screen.getByRole('button', { name: 'Expand Time tracked' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(container.querySelector('form[aria-label="Log time"]')).not.toBeVisible();
-    expect(screen.getByText('Recent time entries', { selector: 'summary' })).not.toBeVisible();
+    expect(screen.getByLabelText('Recent time entries')).not.toBeVisible();
     expect(container.querySelector('li[data-entry-id]')).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
 
-    await openTimeBlock();
+    const user = userEvent.setup();
+    toggle.focus();
+    await user.keyboard('{Enter}');
 
     expect(screen.getByRole('button', { name: 'Collapse Time tracked' })).toHaveAttribute(
       'aria-expanded',
       'true',
     );
     expect(screen.getByRole('form', { name: 'Log time' })).toBeVisible();
-    expect(
-      screen.getByText('Recent time entries', { selector: 'summary' }).closest('details'),
-    ).not.toHaveAttribute('open');
+    expect(screen.getByLabelText('Recent time entries').closest('details')).not.toHaveAttribute(
+      'open',
+    );
     expect(container.querySelector('li[data-entry-id]')).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('loads an accepted linked root lazily and places its task breakdown before the manual form', async () => {
+  it('loads linked estimate metrics in the collapsed header and reuses them in the panel', async () => {
     serveEstimate(estimateSummary());
     const { container } = renderBlock({ linkedEpicId: 'epic-root' });
-    expect(fetchMock).not.toHaveBeenCalled();
+
+    const toggle = screen.getByRole('button', { name: 'Expand Time tracked' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(within(toggle).getByText('Current estimate')).toBeVisible();
+    expect(within(toggle).getByText('Logged')).toBeVisible();
+    expect(within(toggle).getByText('New unlogged')).toBeVisible();
+    await waitFor(() =>
+      expect(within(toggle).getByText('Current estimate').nextElementSibling).toHaveTextContent(
+        '1h 30m',
+      ),
+    );
+    expect(within(toggle).getByText('Logged').nextElementSibling).toHaveTextContent('0m');
+    expect(within(toggle).getByText('New unlogged').nextElementSibling).toHaveTextContent('1h 30m');
+    expect(container.querySelector('form[aria-label="Log time"]')).not.toBeVisible();
 
     await openTimeBlock();
 
@@ -233,15 +330,30 @@ describe('ExternalTaskTimeTracking', () => {
     const panel = heading.closest('section')!;
     const form = screen.getByRole('form', { name: 'Log time' });
     expect(panel.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(panel).toHaveTextContent('Total including sub-epics');
+    expect(panel).toHaveTextContent('Current estimate');
+    expect(panel).toHaveTextContent('Already logged');
+    expect(panel).toHaveTextContent('Ready to log');
     expect(panel).toHaveTextContent('1h 30m');
     expect(within(panel).getByText('Root task')).toBeVisible();
     expect(within(panel).getByText('Child task')).toBeVisible();
-    expect(within(panel).getByRole('button', { name: 'Log full estimate — 1h 30m' })).toBeEnabled();
+    expect(within(panel).getByRole('button', { name: 'Review & log 1h 30m' })).toBeEnabled();
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/time-logs'))).toHaveLength(
       1,
     );
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes('/estimate-log-state?')),
+    ).toHaveLength(1);
     expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('shows compact placeholders while collapsed estimate metrics load', () => {
+    fetchMock.mockImplementation(() => new Promise(() => undefined));
+    renderBlock({ linkedEpicId: 'epic-root' });
+
+    const toggle = screen.getByRole('button', { name: 'Expand Time tracked' });
+    expect(within(toggle).getByText('Current estimate').nextElementSibling).toHaveTextContent('—');
+    expect(within(toggle).getByText('Logged').nextElementSibling).toHaveTextContent('—');
+    expect(within(toggle).getByText('New unlogged').nextElementSibling).toHaveTextContent('—');
   });
 
   it('shows a linked sub-epic own total and task row', async () => {
@@ -261,14 +373,155 @@ describe('ExternalTaskTimeTracking', () => {
         name: 'DevChain estimated time tracked',
       })
     ).closest('section')!;
-    expect(within(panel).getByText('Total')).toBeVisible();
-    expect(within(panel).queryByText('Total including sub-epics')).toBeNull();
+    expect(within(panel).getByText('Current estimate')).toBeVisible();
     expect(within(panel).getByText('Child task')).toBeVisible();
-    expect(within(panel).getAllByText('45m')).toHaveLength(2);
+    expect(within(panel).getAllByText('45m')).toHaveLength(4);
+  });
+
+  function groupedEstimateSummary(): Record<string, unknown> {
+    return estimateSummary({
+      totalMinutes: 120,
+      directMinutes: 30,
+      includesRelatedTime: true,
+      taskItems: [
+        {
+          epicId: 'epic-root',
+          epicTitle: 'Root task',
+          isDirect: true,
+          minutes: 30,
+          groupEpicId: 'epic-root',
+          groupEpicTitle: 'Root task',
+        },
+        {
+          epicId: 'epic-child',
+          epicTitle: 'Child task',
+          isDirect: false,
+          minutes: 60,
+          groupEpicId: 'epic-root',
+          groupEpicTitle: 'Root task',
+        },
+        {
+          epicId: 'epic-routed',
+          epicTitle: 'Routed task',
+          isDirect: false,
+          minutes: 15,
+          groupEpicId: 'epic-routed',
+          groupEpicTitle: 'Routed task',
+        },
+        {
+          epicId: 'epic-routed-child',
+          epicTitle: 'Routed child task',
+          isDirect: false,
+          minutes: 15,
+          groupEpicId: 'epic-routed',
+          groupEpicTitle: 'Routed task',
+        },
+      ],
+    });
+  }
+
+  it('renders collapsed contributor groups with totals for a healthy payload', async () => {
+    serveEstimate(groupedEstimateSummary());
+    const user = userEvent.setup();
+    const { container } = renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    const panel = (
+      await screen.findByRole('heading', { name: 'DevChain estimated time tracked' })
+    ).closest('section')!;
+    expect(
+      within(panel).getByText('Only DevChain activity that rolls into this remote task is shown.'),
+    ).toBeVisible();
+
+    const focalTrigger = within(panel).getByRole('button', {
+      name: /This task 1h 30m/,
+    });
+    expect(focalTrigger).toHaveAttribute('aria-expanded', 'false');
+    expect(focalTrigger).toHaveAttribute('aria-controls');
+    expect(within(panel).queryByText('Own activity')).toBeNull();
+    expect(within(panel).queryByText('Child task')).toBeNull();
+
+    const relatedTrigger = within(panel).getByRole('button', {
+      name: /Related: Routed task 30m/,
+    });
+    expect(relatedTrigger).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(focalTrigger);
+    expect(focalTrigger).toHaveAttribute('aria-expanded', 'true');
+    expect(within(panel).getByText('Own activity')).toBeVisible();
+    expect(within(panel).getByText('Child task')).toBeVisible();
+    // The two group totals (1h 30m + 30m) sum to the 2h header estimate.
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('renders the exact legacy flat list when one row lacks valid group metadata', async () => {
+    serveEstimate(
+      estimateSummary({
+        taskItems: [
+          {
+            epicId: 'epic-root',
+            epicTitle: 'Root task',
+            isDirect: true,
+            minutes: 30,
+            groupEpicId: 'epic-root',
+            groupEpicTitle: 'Root task',
+          },
+          { epicId: 'epic-child', epicTitle: 'Child task', isDirect: false, minutes: 60 },
+        ],
+      }),
+    );
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    const panel = (
+      await screen.findByRole('heading', { name: 'DevChain estimated time tracked' })
+    ).closest('section')!;
+    const list = within(panel).getByRole('list', { name: 'Contributing DevChain tasks' });
+    expect(
+      within(list)
+        .getAllByRole('listitem')
+        .map((row) => row.textContent),
+    ).toEqual(['Root task30m', 'Child task1h']);
+    expect(within(panel).queryByText('This task')).toBeNull();
+    expect(within(panel).queryByText(/Related:/)).toBeNull();
+    expect(
+      within(panel).queryByText(
+        'Only DevChain activity that rolls into this remote task is shown.',
+      ),
+    ).toBeNull();
+  });
+
+  it('resets group expansion when the same remote task relinks to another Epic', async () => {
+    serveEstimate(groupedEstimateSummary());
+    const user = userEvent.setup();
+    const { client, rerenderBlock } = renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+    const trigger = await screen.findByRole('button', { name: /This task/ });
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Own activity')).toBeVisible();
+
+    // Priming the next Epic's cache keeps the panel mounted across the
+    // relink; only the contributor list's focalEpicId key changes.
+    act(() => {
+      client.setQueryData(
+        epicTimeQueryKeys.detail('epic-relLinked', resolveEpicTimeZone()),
+        groupedEstimateSummary(),
+      );
+    });
+    rerenderBlock({ linkedEpicId: 'epic-relLinked' });
+
+    // The previously focal group re-labels as related and starts collapsed.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Related: Root task 1h 30m/ })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      ),
+    );
+    expect(screen.queryByText('Own activity')).toBeNull();
   });
 
   it.each([
-    ['collapsed', { linkedEpicId: 'epic-root' }, false],
     ['unlinked', { linkedEpicId: null }, true],
     ['identity unaccepted', { linkedEpicId: 'epic-root', identityAccepted: false }, true],
     ['unsupported', { linkedEpicId: 'epic-root', timeTrackingEnabled: false }, true],
@@ -282,12 +535,18 @@ describe('ExternalTaskTimeTracking', () => {
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/time-logs'))).toHaveLength(
       0,
     );
+    expect(screen.queryByText('Current estimate')).toBeNull();
+    expect(screen.queryByText('Logged')).toBeNull();
+    expect(screen.queryByText('New unlogged')).toBeNull();
   });
 
   it('keeps the manual form enabled when the native estimate fails', async () => {
     fetchMock.mockImplementation((url: string) => {
       if (String(url).includes('/time-logs')) {
         return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(jsonResponse(estimateState()));
       }
       return Promise.resolve(jsonResponse(historyPayload([])));
     });
@@ -297,39 +556,32 @@ describe('ExternalTaskTimeTracking', () => {
     expect(await screen.findByText('DevChain estimate is unavailable.')).toBeVisible();
     expect(screen.getByLabelText('Duration')).toBeEnabled();
     expect(screen.getByLabelText('Note (optional)')).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
   });
 
-  it.each([
-    [0, 'No estimated agent time recorded yet.'],
-    [10_081, 'The estimate exceeds the 7-day limit for one time entry.'],
-  ])('does not offer an estimate dispatch for %s minutes', async (totalMinutes, expectedCopy) => {
-    serveEstimate(
-      estimateSummary({
-        totalMinutes,
-        directMinutes: totalMinutes,
-        taskItems:
-          totalMinutes === 0
-            ? []
-            : [
-                {
-                  epicId: 'epic-root',
-                  epicTitle: 'Root task',
-                  isDirect: true,
-                  minutes: totalMinutes,
-                },
-              ],
-      }),
-    );
-    renderBlock({ linkedEpicId: `epic-${totalMinutes}` });
-    await openTimeBlock();
+  it.each([[0, 'Estimate is up to date.']])(
+    'does not offer an estimate dispatch for %s minutes',
+    async (totalMinutes, expectedCopy) => {
+      serveEstimate(
+        estimateSummary({
+          totalMinutes,
+          directMinutes: totalMinutes,
+          items: [],
+          taskItems: [],
+        }),
+      );
+      renderBlock({ linkedEpicId: `epic-${totalMinutes}` });
+      await openTimeBlock();
 
-    expect(await screen.findByText(expectedCopy)).toBeVisible();
-    expect(screen.queryByRole('button', { name: /Log full estimate/ })).toBeNull();
-    expect(
-      fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST'),
-    ).toBe(false);
-  });
+      expect(await screen.findByText(expectedCopy)).toBeVisible();
+      expect(screen.queryByRole('button', { name: /Log new estimate/ })).toBeNull();
+      expect(
+        fetchMock.mock.calls.some(
+          ([, init]) => (init as RequestInit | undefined)?.method === 'POST',
+        ),
+      ).toBe(false);
+    },
+  );
 
   it('submits one immutable estimate snapshot without changing the manual draft', async () => {
     let resolveCreate:
@@ -340,7 +592,10 @@ describe('ExternalTaskTimeTracking', () => {
       if (String(url).includes('/time-logs')) {
         return Promise.resolve(jsonResponse(estimateSummary()));
       }
-      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+      if (String(url).includes('/estimate-log-state?') && !init?.method) {
+        return Promise.resolve(jsonResponse(estimateState()));
+      }
+      if (String(url).includes('/estimate-time-entries?') && init?.method === 'POST') {
         return new Promise((resolve) => {
           resolveCreate = resolve;
         });
@@ -348,19 +603,26 @@ describe('ExternalTaskTimeTracking', () => {
       return Promise.resolve(jsonResponse(historyPayload([])));
     });
     const user = userEvent.setup();
-    const confirmedAtMs = Date.parse('2026-08-23T12:00:00.000Z');
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(confirmedAtMs);
     const { client } = renderBlock({ linkedEpicId: 'epic-root' });
     await openTimeBlock();
-    await screen.findByRole('button', { name: 'Log full estimate — 1h 30m' });
+    await screen.findByRole('button', { name: 'Review & log 1h 30m' });
     await user.type(screen.getByLabelText('Duration'), '15m');
     await user.type(screen.getByLabelText('Note (optional)'), 'Keep this manual draft');
 
-    await user.click(screen.getByRole('button', { name: 'Log full estimate — 1h 30m' }));
-    const confirmation = screen.getByRole('dialog', { name: 'Log the full DevChain estimate?' });
-    expect(within(confirmation).getByText('Total including sub-epics: 1h 30m')).toBeVisible();
-    expect(within(confirmation).getByText(/does not deduct existing provider time/)).toBeVisible();
-    expect(within(confirmation).getByText(/another full-total entry/)).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Review & log 1h 30m' }));
+    const confirmation = screen.getByRole('dialog', {
+      name: 'Log 1h 30m of new time?',
+    });
+    expect(within(confirmation).getByText('Current total').nextElementSibling).toHaveTextContent(
+      '1h 30m',
+    );
+    expect(within(confirmation).getByText('Already logged').nextElementSibling).toHaveTextContent(
+      '0m',
+    );
+    expect(within(confirmation).getByText('To log now').nextElementSibling).toHaveTextContent(
+      '1h 30m',
+    );
+    expect(within(confirmation).getByText(/Only unlogged time will be added/)).toBeVisible();
 
     act(() => {
       client.setQueryData(
@@ -370,13 +632,14 @@ describe('ExternalTaskTimeTracking', () => {
     });
     await waitFor(() =>
       expect(
-        screen.getByRole('button', { name: 'Log full estimate — 2h', hidden: true }),
+        screen.getByRole('button', { name: 'Review & log 2h', hidden: true }),
       ).toHaveTextContent('2h'),
     );
-    expect(within(confirmation).getByText('Total including sub-epics: 1h 30m')).toBeVisible();
+    expect(within(confirmation).getByText('Current total').nextElementSibling).toHaveTextContent(
+      '1h 30m',
+    );
 
-    await user.click(within(confirmation).getByRole('button', { name: 'Log full estimate' }));
-    nowSpy.mockRestore();
+    await user.click(within(confirmation).getByRole('button', { name: 'Log 1h 30m' }));
     await waitFor(() => expect(resolveCreate).toBeDefined());
     expect(screen.getByLabelText('Duration')).toHaveValue('15m');
     expect(screen.getByLabelText('Duration')).toBeEnabled();
@@ -386,26 +649,721 @@ describe('ExternalTaskTimeTracking', () => {
 
     const createCall = fetchMock.mock.calls.find(
       ([url, init]) =>
-        String(url).endsWith('/time-entries') &&
+        String(url).includes('/estimate-time-entries?') &&
         (init as RequestInit | undefined)?.method === 'POST',
     )!;
     expect((createCall[1] as RequestInit).body).toBe(
       JSON.stringify({
-        startedAt: '2026-08-23T10:30:00.000Z',
-        durationMs: 5_400_000,
-        note: 'DevChain estimated agent time',
+        scopeKey: 'acme.atlassian.net',
+        requestKey: 'generated-operation-id',
+        timeZone: resolveEpicTimeZone(),
+        estimateTotalMinutes: 90,
+        expectedRevision: 0,
+        dailySnapshot: [{ activityDate: '2026-08-29', minutes: 90 }],
       }),
     );
 
     resolveCreate!(
-      jsonResponse({ outcome: 'created', remoteEntryId: '10002', refresh: ['task_detail'] }),
+      jsonResponse({
+        outcome: 'logged',
+        entriesLogged: 1,
+        minutesLogged: 90,
+        hasMore: false,
+        stoppedReason: 'completed',
+        state: estimateState({ initialized: true, revision: 2, loggedMinutes: 90 }),
+      }),
     );
     await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
     expect(screen.getByLabelText('Duration')).toHaveValue('15m');
     expect(screen.getByLabelText('Note (optional)')).toHaveValue('Keep this manual draft');
     expect(screen.getByRole('status', { hidden: true })).toHaveTextContent(
-      'DevChain estimate added.',
+      'New DevChain estimate time logged: 1 entry (1h 30m).',
     );
+  });
+
+  it('shows and submits only the later unlogged estimate delta', async () => {
+    const state = estimateState({
+      initialized: true,
+      revision: 5,
+      loggedMinutes: 90,
+      aggregationTimeZone: resolveEpicTimeZone(),
+      days: [{ activityDate: '2026-08-29', loggedMinutes: 90 }],
+      unallocatedLoggedMinutes: 0,
+    });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateSummary({
+              totalMinutes: 120,
+              directMinutes: 120,
+              items: [
+                {
+                  activityDate: '2026-08-29',
+                  agentId: 'agent-1',
+                  agentName: 'Coder',
+                  minutes: 120,
+                },
+              ],
+              taskItems: [
+                { epicId: 'epic-root', epicTitle: 'Root task', isDirect: true, minutes: 120 },
+              ],
+            }),
+          ),
+        );
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(jsonResponse(state));
+      }
+      if (String(url).includes('/estimate-time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'logged',
+            entriesLogged: 1,
+            minutesLogged: 30,
+            hasMore: false,
+            stoppedReason: 'completed',
+            state: estimateState({ initialized: true, revision: 7, loggedMinutes: 120 }),
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    const user = userEvent.setup();
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    await user.click(await screen.findByRole('button', { name: 'Review & log 30m' }));
+    const dialog = screen.getByRole('dialog', { name: 'Log 30m of new time?' });
+    expect(within(dialog).getByText('Current total').nextElementSibling).toHaveTextContent('2h');
+    expect(within(dialog).getByText('Already logged').nextElementSibling).toHaveTextContent(
+      '1h 30m',
+    );
+    expect(within(dialog).getByText('To log now').nextElementSibling).toHaveTextContent('30m');
+    await user.click(within(dialog).getByRole('button', { name: 'Log 30m' }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url).includes('/estimate-time-entries?') && init?.method === 'POST',
+        ),
+      ).toBe(true),
+    );
+    const request = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes('/estimate-time-entries?') && init?.method === 'POST',
+    )!;
+    expect((request[1] as RequestInit).body).toBe(
+      JSON.stringify({
+        scopeKey: 'acme.atlassian.net',
+        requestKey: 'generated-operation-id',
+        timeZone: resolveEpicTimeZone(),
+        estimateTotalMinutes: 120,
+        expectedRevision: 5,
+        dailySnapshot: [{ activityDate: '2026-08-29', minutes: 120 }],
+      }),
+    );
+  });
+
+  it('previews dated entries exactly as the POST snapshot and submits them', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateSummary({
+              totalMinutes: 120,
+              directMinutes: 30,
+              items: [
+                { activityDate: '2026-08-28', agentId: 'agent-1', agentName: 'Coder', minutes: 30 },
+                { activityDate: '2026-08-29', agentId: 'agent-1', agentName: 'Coder', minutes: 90 },
+              ],
+            }),
+          ),
+        );
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(jsonResponse(estimateState()));
+      }
+      if (String(url).includes('/estimate-time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'logged',
+            entriesLogged: 2,
+            minutesLogged: 120,
+            hasMore: false,
+            stoppedReason: 'completed',
+            state: estimateState({ initialized: true, revision: 2, loggedMinutes: 120 }),
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    const user = userEvent.setup();
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    await user.click(await screen.findByRole('button', { name: 'Review & log 2h' }));
+    const dialog = screen.getByRole('dialog', { name: 'Log 2h of new time?' });
+    const firstDate = within(dialog).getByText('Aug 28, 2026').closest('li')!;
+    expect(within(firstDate).getByText('30m date total')).toBeVisible();
+    expect(within(firstDate).getByText('+30m')).toBeVisible();
+    expect(within(firstDate).getByText('1 entry')).toBeVisible();
+    const secondDate = within(dialog).getByText('Aug 29, 2026').closest('li')!;
+    expect(within(secondDate).getByText('1h 30m date total')).toBeVisible();
+    expect(within(secondDate).getByText('+1h 30m')).toBeVisible();
+    expect(within(dialog).getByText(/beginning of each local activity date/)).toBeVisible();
+    expect(await axe(dialog)).toHaveNoViolations();
+    await user.click(within(dialog).getByRole('button', { name: 'Log 2h' }));
+
+    const request = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes('/estimate-time-entries?') && init?.method === 'POST',
+    )!;
+    expect((request[1] as RequestInit).body).toBe(
+      JSON.stringify({
+        scopeKey: 'acme.atlassian.net',
+        requestKey: 'generated-operation-id',
+        timeZone: resolveEpicTimeZone(),
+        estimateTotalMinutes: 120,
+        expectedRevision: 0,
+        dailySnapshot: [
+          { activityDate: '2026-08-28', minutes: 30 },
+          { activityDate: '2026-08-29', minutes: 90 },
+        ],
+      }),
+    );
+    expect((request[1] as RequestInit).headers).toMatchObject({
+      'Idempotency-Key': 'generated-operation-id',
+    });
+  });
+
+  it('keeps fully credited captured dates visible in a mixed-ledger preview', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateSummary({
+              totalMinutes: 120,
+              directMinutes: 30,
+              items: [
+                { activityDate: '2026-08-28', agentId: 'agent-1', agentName: 'Coder', minutes: 30 },
+                { activityDate: '2026-08-29', agentId: 'agent-1', agentName: 'Coder', minutes: 90 },
+              ],
+            }),
+          ),
+        );
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateState({
+              initialized: true,
+              revision: 2,
+              loggedMinutes: 30,
+              aggregationTimeZone: resolveEpicTimeZone(),
+              days: [{ activityDate: '2026-08-28', loggedMinutes: 30 }],
+              unallocatedLoggedMinutes: 0,
+            }),
+          ),
+        );
+      }
+      if (String(url).includes('/estimate-time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'logged',
+            entriesLogged: 1,
+            minutesLogged: 90,
+            hasMore: false,
+            stoppedReason: 'completed',
+            state: estimateState({ initialized: true, revision: 3, loggedMinutes: 120 }),
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    const user = userEvent.setup();
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    await user.click(await screen.findByRole('button', { name: 'Review & log 1h 30m' }));
+    const dialog = screen.getByRole('dialog', { name: 'Log 1h 30m of new time?' });
+    // The growing date stays prominent. The fully credited date starts in
+    // the compact no-new-time disclosure and remains inspectable.
+    const activeDate = within(dialog).getByText('Aug 29, 2026').closest('li')!;
+    expect(within(activeDate).getByText('+1h 30m')).toBeVisible();
+    expect(within(dialog).queryByText('Aug 28, 2026')).toBeNull();
+    await user.click(within(dialog).getByRole('button', { name: '1 date has no new time' }));
+    expect(within(dialog).getByText('Aug 28, 2026')).toBeVisible();
+    expect(within(dialog).getByText('30m date total')).toBeVisible();
+    await user.click(within(dialog).getByRole('button', { name: 'Log 1h 30m' }));
+
+    const request = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes('/estimate-time-entries?') && init?.method === 'POST',
+    )!;
+    expect(JSON.parse(String((request[1] as RequestInit).body))).toMatchObject({
+      estimateTotalMinutes: 120,
+      dailySnapshot: [
+        { activityDate: '2026-08-28', minutes: 30 },
+        { activityDate: '2026-08-29', minutes: 90 },
+      ],
+    });
+  });
+
+  it('explains the 10-entry cap when one busy date needs more than ten entries', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateSummary({
+              totalMinutes: 15_000,
+              directMinutes: 15_000,
+              items: [
+                {
+                  activityDate: '2026-08-29',
+                  agentId: 'agent-1',
+                  agentName: 'Coder',
+                  minutes: 15_000,
+                },
+              ],
+              taskItems: [
+                { epicId: 'epic-root', epicTitle: 'Root task', isDirect: true, minutes: 15_000 },
+              ],
+            }),
+          ),
+        );
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(jsonResponse(estimateState()));
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    const user = userEvent.setup();
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    await user.click(await screen.findByRole('button', { name: /Review & log/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Log 250h of new time?' });
+    const dateRow = within(dialog).getByText('Aug 29, 2026').closest('li')!;
+    expect(within(dateRow).getByText('250h date total')).toBeVisible();
+    expect(within(dateRow).getByText('+250h')).toBeVisible();
+    expect(within(dateRow).getByText('11 entries')).toBeVisible();
+    expect(
+      within(dialog).getByText(/writes the oldest 10 entries and leaves the remaining 1 unlogged/),
+    ).toBeVisible();
+    expect(within(dialog).getByText(/One busy date can consume all 10 entries/)).toBeVisible();
+  });
+
+  it('offers one-click recapture when the captured snapshot went stale', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(jsonResponse(estimateState()));
+      }
+      if (String(url).includes('/estimate-time-entries?') && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          json: async () => ({
+            message: 'The estimate snapshot is stale; recapture the current estimate.',
+            details: { reason: 'estimate_snapshot_stale' },
+          }),
+        });
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    const user = userEvent.setup();
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    await user.click(await screen.findByRole('button', { name: 'Review & log 1h 30m' }));
+    await user.click(
+      within(screen.getByRole('dialog', { name: /Log .* of new time\?/ })).getByRole('button', {
+        name: /^Log /,
+      }),
+    );
+
+    expect(await screen.findByText(/changed after this confirmation was opened/)).toBeVisible();
+    const recapture = screen.getByRole('button', { name: 'Recapture estimate' });
+    expect(recapture).toBeVisible();
+    // A stale-only case never directs to the destructive rebaseline copy.
+    expect(screen.queryByText(/Reconcile logged time/)).toBeNull();
+    expect(screen.queryByRole('dialog', { name: /Log .* of new time\?/ })).toBeNull();
+
+    await user.click(recapture);
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([url]) => String(url).includes('/time-logs')).length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([url]) => String(url).includes('/estimate-log-state?')).length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it('keeps the preview, recapture, and POST on the detail query zone after the browser zone drifts', async () => {
+    const mountedZone = resolveEpicTimeZone();
+    const driftedZone = mountedZone === 'America/New_York' ? 'Europe/Berlin' : 'America/New_York';
+    let createCallCount = 0;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(jsonResponse(estimateState()));
+      }
+      if (String(url).includes('/estimate-time-entries?') && init?.method === 'POST') {
+        createCallCount += 1;
+        if (createCallCount === 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            json: async () => ({
+              message: 'The estimate snapshot is stale; recapture the current estimate.',
+              details: { reason: 'estimate_snapshot_stale' },
+            }),
+          });
+        }
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'logged',
+            entriesLogged: 1,
+            minutesLogged: 90,
+            hasMore: false,
+            stoppedReason: 'completed',
+            state: estimateState({ initialized: true, revision: 2, loggedMinutes: 90 }),
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    let driftSpy: jest.SpyInstance | null = null;
+    try {
+      const user = userEvent.setup();
+      renderBlock({ linkedEpicId: 'epic-root' });
+      await openTimeBlock();
+
+      await screen.findByRole('button', { name: 'Review & log 1h 30m' });
+      // The detail query mounted before the drift, so its request and every
+      // export surface below carry the original zone.
+      expect(timeLogUrls()).toHaveLength(1);
+      expect(timeLogUrls()[0]).toBe(
+        `/api/epics/epic-root/time-logs?timeZone=${encodeURIComponent(mountedZone)}`,
+      );
+
+      driftSpy = mockBrowserTimeZone(driftedZone);
+
+      await user.click(screen.getByRole('button', { name: 'Review & log 1h 30m' }));
+      await user.click(
+        within(screen.getByRole('dialog', { name: /Log .* of new time\?/ })).getByRole('button', {
+          name: /^Log /,
+        }),
+      );
+
+      await waitFor(() => expect(estimateCreateCalls()).toHaveLength(1));
+      expect(JSON.parse(estimateCreateCalls()[0][1].body as string).timeZone).toBe(mountedZone);
+
+      // The stale rejection offers a one-click recapture with no reload; the
+      // recaptured detail query still runs in the mounted zone.
+      expect(await screen.findByText(/changed after this confirmation was opened/)).toBeVisible();
+      await user.click(screen.getByRole('button', { name: 'Recapture estimate' }));
+      await waitFor(() => expect(timeLogUrls().length).toBeGreaterThanOrEqual(2));
+      expect(timeLogUrls().at(-1)).toBe(
+        `/api/epics/epic-root/time-logs?timeZone=${encodeURIComponent(mountedZone)}`,
+      );
+
+      await user.click(await screen.findByRole('button', { name: 'Review & log 1h 30m' }));
+      await user.click(
+        within(screen.getByRole('dialog', { name: /Log .* of new time\?/ })).getByRole('button', {
+          name: /^Log /,
+        }),
+      );
+
+      await waitFor(() => expect(estimateCreateCalls()).toHaveLength(2));
+      expect(JSON.parse(estimateCreateCalls()[1][1].body as string).timeZone).toBe(mountedZone);
+    } finally {
+      driftSpy?.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      label: 'logged with more dated time remaining',
+      response: {
+        outcome: 'logged',
+        entriesLogged: 10,
+        minutesLogged: 600,
+        hasMore: true,
+        stoppedReason: 'entry_cap',
+      },
+      expected: 'Oldest 10 entries (10h) logged. More dated estimate time remains unlogged.',
+    },
+    {
+      label: 'partially logged after a provider failure',
+      response: {
+        outcome: 'partially_logged',
+        entriesLogged: 1,
+        minutesLogged: 30,
+        hasMore: true,
+        stoppedReason: 'provider_error',
+      },
+      expected: 'Confirmed entries were saved (1 entry (30m)); later entries were not sent.',
+    },
+  ])('announces a $label distinctly', async ({ response, expected }) => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(jsonResponse(estimateState()));
+      }
+      if (String(url).includes('/estimate-time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            ...response,
+            state: estimateState({ initialized: true, revision: 2, loggedMinutes: 30 }),
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    const user = userEvent.setup();
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    await user.click(await screen.findByRole('button', { name: 'Review & log 1h 30m' }));
+    await user.click(
+      within(screen.getByRole('dialog', { name: /Log .* of new time\?/ })).getByRole('button', {
+        name: /^Log /,
+      }),
+    );
+
+    expect(await screen.findByRole('status')).toHaveTextContent(expected);
+  });
+
+  it('keeps zero new time when the logged checkpoint exceeds the current estimate', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateSummary({
+              totalMinutes: 60,
+              directMinutes: 60,
+              items: [
+                { activityDate: '2026-08-29', agentId: 'agent-1', agentName: 'Coder', minutes: 60 },
+              ],
+              taskItems: [
+                { epicId: 'epic-root', epicTitle: 'Root task', isDirect: true, minutes: 60 },
+              ],
+            }),
+          ),
+        );
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateState({
+              initialized: true,
+              revision: 4,
+              loggedMinutes: 90,
+              unallocatedLoggedMinutes: 90,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    expect(await screen.findByText(/no longer matches this estimate/)).toBeVisible();
+    expect(screen.getByText(/Use Reconcile logged time to rebuild/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Reconcile logged time' })).toBeVisible();
+    const panel = screen
+      .getByRole('heading', { name: 'DevChain estimated time tracked' })
+      .closest('section')!;
+    expect(within(panel).getByText('Ready to log').nextElementSibling).toHaveTextContent('0m');
+    expect(within(panel).queryByRole('button', { name: /Log new estimate/ })).toBeNull();
+  });
+
+  it('reconciles an incompatible logged state without changing the manual draft', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateState({
+              initialized: true,
+              revision: 4,
+              loggedMinutes: 120,
+              unallocatedLoggedMinutes: 120,
+            }),
+          ),
+        );
+      }
+      if (init?.method === 'PUT') {
+        return Promise.resolve(
+          jsonResponse(estimateState({ initialized: true, revision: 1, loggedMinutes: 30 })),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    const user = userEvent.setup();
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+    await user.type(screen.getByLabelText('Duration'), '15m');
+    await user.type(screen.getByLabelText('Note (optional)'), 'Keep this draft');
+
+    const trigger = await screen.findByRole('button', { name: 'Reconcile logged time' });
+    await user.click(trigger);
+    const dialog = screen.getByRole('dialog', { name: 'Reconcile logged time' });
+    expect(within(dialog).getByLabelText('Logged minutes to recognize')).toHaveValue(120);
+    expect(
+      within(dialog).getByText(/Lowering the value can submit duplicate remote time/),
+    ).toBeVisible();
+    await user.clear(within(dialog).getByLabelText('Logged minutes to recognize'));
+    await user.type(within(dialog).getByLabelText('Logged minutes to recognize'), '-1');
+    await user.click(within(dialog).getByRole('button', { name: 'Save reconciliation' }));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/nonnegative whole number/);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+    await user.clear(within(dialog).getByLabelText('Logged minutes to recognize'));
+    await user.type(within(dialog).getByLabelText('Logged minutes to recognize'), '30');
+    expect(await axe(document.body)).toHaveNoViolations();
+    await user.click(within(dialog).getByRole('button', { name: 'Save reconciliation' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Reconcile logged time' })).toBeNull(),
+    );
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.getByLabelText('Duration')).toHaveValue('15m');
+    expect(screen.getByLabelText('Note (optional)')).toHaveValue('Keep this draft');
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')!;
+    expect((put[1] as RequestInit).body).toBe(
+      JSON.stringify({
+        scopeKey: 'acme.atlassian.net',
+        loggedMinutes: 30,
+        expectedRevision: 4,
+        timeZone: resolveEpicTimeZone(),
+      }),
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/estimate-time-entries')),
+    ).toBe(false);
+  });
+
+  it('blocks manual writes and exposes honest manual recovery for durable pending state', async () => {
+    const pendingState = estimateState({
+      initialized: true,
+      revision: 2,
+      pendingDisposition: 'manual_review',
+      pending: {
+        operationId: 'estimate-pending-1',
+        deltaMinutes: 30,
+        estimateTotalMinutes: 120,
+        startedAt: '2026-08-30T10:00:00.000Z',
+        phase: 'prepared',
+        resolution: null,
+      },
+    });
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(jsonResponse(pendingState));
+      }
+      if (String(url).includes('/time-entries?')) {
+        return Promise.resolve(jsonResponse(historyPayload([entry()])));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openHistory();
+
+    expect(await screen.findByText('Estimate submission needs review')).toBeVisible();
+    expect(screen.getByText(/unavailable after restart or connection replacement/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeEnabled();
+    expect(screen.getByRole('link', { name: /Open in source/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Reconcile logged time' })).toBeNull();
+    expect(await screen.findByRole('button', { name: /Delete 1h entry started/ })).toBeDisabled();
+  });
+
+  it('shows Verify only for a pending operation whose current epoch permits it', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateState({
+              initialized: true,
+              revision: 2,
+              pendingDisposition: 'outcome_unknown',
+              canVerify: true,
+              pending: {
+                operationId: 'estimate-pending-1',
+                deltaMinutes: 30,
+                estimateTotalMinutes: 120,
+                startedAt: '2026-08-30T10:00:00.000Z',
+                phase: 'outcome_unknown',
+                resolution: null,
+              },
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    expect(await screen.findByRole('button', { name: 'Verify' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
+  });
+
+  it('renders a stored finishing choice without offering a second resolution', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateState({
+              initialized: true,
+              revision: 3,
+              pendingDisposition: 'finishing',
+              pending: {
+                operationId: 'estimate-pending-1',
+                deltaMinutes: 30,
+                estimateTotalMinutes: 120,
+                startedAt: '2026-08-30T10:00:00.000Z',
+                phase: 'outcome_unknown',
+                resolution: 'logged',
+              },
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    expect(await screen.findByText('Finishing estimate resolution')).toBeVisible();
+    expect(screen.getByText('Saved choice: Mark logged.')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Mark logged' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Mark not logged' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
   });
 
   it('resets an open estimate confirmation when the operation scope changes', async () => {
@@ -413,13 +1371,13 @@ describe('ExternalTaskTimeTracking', () => {
     const user = userEvent.setup();
     const { rerenderBlock } = renderBlock({ linkedEpicId: 'epic-root' });
     await openTimeBlock();
-    await user.click(await screen.findByRole('button', { name: 'Log full estimate — 1h 30m' }));
-    expect(screen.getByRole('dialog', { name: 'Log the full DevChain estimate?' })).toBeVisible();
+    await user.click(await screen.findByRole('button', { name: 'Review & log 1h 30m' }));
+    expect(screen.getByRole('dialog', { name: /Log .* of new time\?/ })).toBeVisible();
 
     rerenderBlock({ connectionEpoch: 'connection-jira-b:5' });
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Log the full DevChain estimate?' })).toBeNull(),
+      expect(screen.queryByRole('dialog', { name: /Log .* of new time\?/ })).toBeNull(),
     );
     expect(screen.getByRole('button', { name: 'Expand Time tracked' })).toHaveAttribute(
       'aria-expanded',
@@ -445,6 +1403,7 @@ describe('ExternalTaskTimeTracking', () => {
         entry(),
         entry({
           remoteId: '10002',
+          canEdit: false,
           canDelete: false,
           note: 'x'.repeat(10_000) + 'more',
           noteTruncated: true,
@@ -455,7 +1414,7 @@ describe('ExternalTaskTimeTracking', () => {
     renderBlock();
     await openHistory();
 
-    expect(screen.getByText('Your entries · last 30 days')).toBeVisible();
+    expect(screen.getByText('Last 30 days')).toBeVisible();
     const rows = await screen.findAllByRole('listitem');
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveClass('grid', 'min-w-0');
@@ -465,10 +1424,47 @@ describe('ExternalTaskTimeTracking', () => {
     expect(within(rows[0]!).getByText('1h')).toBeVisible();
     expect(within(rows[0]!).getByText(/2026/)).toBeVisible();
     expect(within(rows[0]!).getByText('Implementation')).toBeVisible();
+    expect(within(rows[0]!).getByRole('button', { name: /Edit 1h entry started/ })).toBeVisible();
     expect(within(rows[0]!).getByRole('button', { name: /Delete 1h entry started/ })).toBeVisible();
-    // Foreign or non-deletable entries never receive a Delete affordance.
+    // Foreign or non-editable/non-deletable entries receive no mutation affordance.
+    expect(within(rows[1]!).queryByRole('button', { name: /Edit/ })).toBeNull();
     expect(within(rows[1]!).queryByRole('button', { name: /Delete/ })).toBeNull();
     expect(within(rows[1]!).getByText(/note was shortened/)).toBeVisible();
+  });
+
+  it('edits an owned remote entry without changing the DevChain checkpoint', async () => {
+    serveHistory(historyPayload([entry()]));
+    const user = userEvent.setup();
+    renderBlock();
+    await openHistory();
+
+    await user.click(await screen.findByRole('button', { name: /Edit 1h entry started/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit time entry' });
+    expect(dialog).toHaveTextContent(
+      "This changes the provider entry only. DevChain's Already logged value will not change.",
+    );
+    const durationInput = within(dialog).getByLabelText('Duration');
+    await user.clear(durationInput);
+    await user.type(durationInput, '1h 30m');
+    const noteInput = within(dialog).getByLabelText('Note (optional)');
+    await user.clear(noteInput);
+    await user.type(noteInput, 'Updated remotely');
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit time entry' })).toBeNull(),
+    );
+    const updateCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes('/time-entries/10001?') && init?.method === 'PUT',
+    );
+    expect(updateCall).toBeDefined();
+    expect(JSON.parse(String((updateCall![1] as RequestInit).body))).toMatchObject({
+      durationMs: 5_400_000,
+      note: 'Updated remotely',
+    });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/estimate-log-state'))).toBe(
+      false,
+    );
   });
 
   it('hides cached rows again when history closes', async () => {
@@ -478,7 +1474,7 @@ describe('ExternalTaskTimeTracking', () => {
     await openHistory();
 
     await waitFor(() => expect(container.querySelector('li[data-entry-id]')).not.toBeNull());
-    await user.click(screen.getByText('Recent time entries', { selector: 'summary' }));
+    await user.click(screen.getByLabelText('Recent time entries'));
 
     await waitFor(() => expect(container.querySelector('li[data-entry-id]')).toBeNull());
     expect(screen.queryByText('Implementation')).toBeNull();
@@ -500,9 +1496,9 @@ describe('ExternalTaskTimeTracking', () => {
       ),
     );
     expect(container.querySelector('li[data-entry-id]')).toBeNull();
-    expect(
-      screen.getByText('Recent time entries', { selector: 'summary' }).closest('details'),
-    ).not.toHaveAttribute('open');
+    expect(screen.getByLabelText('Recent time entries').closest('details')).not.toHaveAttribute(
+      'open',
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     await openTimeBlock();
@@ -524,9 +1520,9 @@ describe('ExternalTaskTimeTracking', () => {
     rerenderBlock(nextProps);
 
     await waitFor(() =>
-      expect(
-        screen.getByText('Recent time entries', { selector: 'summary' }).closest('details'),
-      ).not.toHaveAttribute('open'),
+      expect(screen.getByLabelText('Recent time entries').closest('details')).not.toHaveAttribute(
+        'open',
+      ),
     );
     expect(screen.getByRole('button', { name: 'Expand Time tracked' })).toHaveAttribute(
       'aria-expanded',
@@ -592,7 +1588,7 @@ describe('ExternalTaskTimeTracking', () => {
       expect(
         fetchMock.mock.calls.some(
           ([url, init]) =>
-            String(url).endsWith('/time-entries') && (init as RequestInit).method === 'POST',
+            String(url).includes('/time-entries?') && (init as RequestInit).method === 'POST',
         ),
       ).toBe(true),
     );
@@ -608,7 +1604,7 @@ describe('ExternalTaskTimeTracking', () => {
     );
     expect(
       fetchMock.mock.calls.filter(
-        ([url, init]) => String(url).endsWith('/time-entries') && !init?.method,
+        ([url, init]) => String(url).includes('/time-entries?') && !init?.method,
       ),
     ).toHaveLength(0);
   });
@@ -654,7 +1650,7 @@ describe('ExternalTaskTimeTracking', () => {
 
     // The second submission flips every create to an unknown outcome.
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/time-entries') && !init?.method) {
+      if (String(url).includes('/time-entries?') && !init?.method) {
         return Promise.resolve(jsonResponse(historyPayload([])));
       }
       if (init?.method === 'POST' && String(url).includes('/acknowledge')) {
@@ -672,7 +1668,12 @@ describe('ExternalTaskTimeTracking', () => {
       return Promise.resolve(
         jsonResponse({
           outcome: 'outcome_unknown',
-          receipt: { operationId: 'op-1', phase: 'outcome_unknown' },
+          receipt: {
+            operationId: 'op-1',
+            phase: 'outcome_unknown',
+            canVerify: true,
+            expiresAt: futureReceiptIso(),
+          },
         }),
       );
     });
@@ -702,11 +1703,16 @@ describe('ExternalTaskTimeTracking', () => {
           jsonResponse({ operationId: 'op-epoch', phase: 'abandoned_unknown' }),
         );
       }
-      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
         return Promise.resolve(
           jsonResponse({
             outcome: 'outcome_unknown',
-            receipt: { operationId: 'op-epoch', phase: 'outcome_unknown' },
+            receipt: {
+              operationId: 'op-epoch',
+              phase: 'outcome_unknown',
+              canVerify: true,
+              expiresAt: futureReceiptIso(),
+            },
           }),
         );
       }
@@ -718,6 +1724,7 @@ describe('ExternalTaskTimeTracking', () => {
     await user.type(screen.getByLabelText('Duration'), '15m');
     await user.click(screen.getByRole('button', { name: 'Log time' }));
     expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Verify' })).toBeVisible();
 
     rerenderBlock({ connectionEpoch: 'connection-jira-b:5' });
     await openTimeBlock();
@@ -729,6 +1736,295 @@ describe('ExternalTaskTimeTracking', () => {
 
     await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
+  });
+
+  it('hides Verify for an unprovable unknown create and directs to the source and acknowledgement', async () => {
+    serveHistory(historyPayload([]));
+    const user = userEvent.setup();
+    renderBlock();
+    await openTimeBlock();
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && !init?.method) {
+        return Promise.resolve(jsonResponse(historyPayload([])));
+      }
+      if (init?.method === 'POST' && String(url).includes('/acknowledge')) {
+        return Promise.resolve(
+          jsonResponse({ operationId: 'op-unprovable', phase: 'abandoned_unknown' }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          outcome: 'outcome_unknown',
+          receipt: {
+            operationId: 'op-unprovable',
+            phase: 'outcome_unknown',
+            canVerify: false,
+            expiresAt: futureReceiptIso(),
+          },
+        }),
+      );
+    });
+
+    await user.type(screen.getByLabelText('Duration'), '15m');
+    await user.click(screen.getByRole('button', { name: 'Log time' }));
+
+    expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
+    expect(screen.getByText(/cannot be verified automatically/)).toBeVisible();
+    expect(screen.getByRole('link', { name: /Open in source/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Acknowledge duplicate risk' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
+  });
+
+  it('hides Verify once the receipt expires but keeps the unknown write lock and recovery', async () => {
+    serveHistory(historyPayload([]));
+    const user = userEvent.setup();
+    renderBlock();
+    await openTimeBlock();
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && !init?.method) {
+        return Promise.resolve(jsonResponse(historyPayload([])));
+      }
+      if (init?.method === 'POST' && String(url).includes('/acknowledge')) {
+        return Promise.resolve(
+          jsonResponse({ operationId: 'op-expired', phase: 'abandoned_unknown' }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          outcome: 'outcome_unknown',
+          receipt: {
+            operationId: 'op-expired',
+            phase: 'outcome_unknown',
+            canVerify: true,
+            expiresAt: '2020-01-01T00:00:00.000Z',
+          },
+        }),
+      );
+    });
+
+    await user.type(screen.getByLabelText('Duration'), '15m');
+    await user.click(screen.getByRole('button', { name: 'Log time' }));
+
+    expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
+    expect(screen.getByRole('link', { name: /Open in source/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Acknowledge duplicate risk' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
+  });
+
+  it('directs estimate recovery to the source and manual marks when Verify is unsupported', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        return Promise.resolve(
+          jsonResponse(
+            estimateState({
+              initialized: true,
+              revision: 2,
+              pendingDisposition: 'outcome_unknown',
+              canVerify: false,
+              pending: {
+                operationId: 'estimate-pending-2',
+                deltaMinutes: 30,
+                estimateTotalMinutes: 120,
+                startedAt: '2026-08-30T10:00:00.000Z',
+                phase: 'outcome_unknown',
+                resolution: null,
+                activityDate: '2026-08-29',
+              },
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    expect(await screen.findByText('Estimate submission needs review')).toBeVisible();
+    expect(screen.getByText(/cannot confirm whether the estimate entry was created/)).toBeVisible();
+    expect(screen.getByText(/30m on 2026-08-29/)).toBeVisible();
+    expect(screen.getByText(/Open the entry in the source and check it/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
+    expect(screen.getByRole('link', { name: /Open in source/ })).toBeVisible();
+  });
+
+  it('removes estimate Verify at the receipt deadline and keeps the manual marks', async () => {
+    const deadline = Date.now() + 300;
+    const pendingView = estimateState({
+      initialized: true,
+      revision: 2,
+      pendingDisposition: 'outcome_unknown',
+      canVerify: true,
+      verifyExpiresAt: new Date(deadline).toISOString(),
+      pending: {
+        operationId: 'estimate-pending-3',
+        deltaMinutes: 30,
+        estimateTotalMinutes: 120,
+        startedAt: '2026-08-30T10:00:00.000Z',
+        phase: 'outcome_unknown',
+        resolution: null,
+      },
+    });
+    const manualReviewView = estimateState({
+      initialized: true,
+      revision: 2,
+      pendingDisposition: 'manual_review',
+      canVerify: false,
+      verifyExpiresAt: null,
+      pending: {
+        operationId: 'estimate-pending-3',
+        deltaMinutes: 30,
+        estimateTotalMinutes: 120,
+        startedAt: '2026-08-30T10:00:00.000Z',
+        phase: 'outcome_unknown',
+        resolution: null,
+      },
+    });
+    let stateServed = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        stateServed += 1;
+        return Promise.resolve(jsonResponse(stateServed === 1 ? pendingView : manualReviewView));
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    expect(await screen.findByRole('button', { name: 'Verify' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
+
+    // One receipt-absolute deadline transition flips the mounted panel to
+    // server-derived manual review; Verify disappears, the marks remain.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull(), {
+      timeout: 2_000,
+    });
+    expect(screen.getByText(/unavailable after restart or connection replacement/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+
+    // No polling: exactly one deadline refetch.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const stateFetches = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes('/estimate-log-state?'),
+    );
+    expect(stateFetches).toHaveLength(2);
+  });
+
+  it('keeps estimate Verify expired when the deadline refetch fails', async () => {
+    const deadline = Date.now() + 300;
+    const pendingView = estimateState({
+      initialized: true,
+      revision: 2,
+      pendingDisposition: 'outcome_unknown',
+      canVerify: true,
+      verifyExpiresAt: new Date(deadline).toISOString(),
+      pending: {
+        operationId: 'estimate-pending-refetch-failure',
+        deltaMinutes: 30,
+        estimateTotalMinutes: 120,
+        startedAt: '2026-08-30T10:00:00.000Z',
+        phase: 'outcome_unknown',
+        resolution: null,
+      },
+    });
+    let stateFetches = 0;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-state?')) {
+        stateFetches += 1;
+        return stateFetches === 1
+          ? Promise.resolve(jsonResponse(pendingView))
+          : Promise.reject(new Error('checkpoint unavailable'));
+      }
+      if (init?.method) {
+        return Promise.reject(new Error('provider mutation must not run'));
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    expect(await screen.findByRole('button', { name: 'Verify' })).toBeVisible();
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull(), {
+      timeout: 2_000,
+    });
+    expect(
+      screen.getByText(
+        'The estimate checkpoint is unavailable. Time writes are locked until it reloads.',
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+    expect(fetchMock.mock.calls.some(([, init]) => Boolean(init?.method))).toBe(false);
+    expect(stateFetches).toBe(2);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(stateFetches).toBe(2);
+  });
+
+  it('unlocks the manual form after receipt expiry through the displayed acknowledge action', async () => {
+    serveHistory(historyPayload([]));
+    const user = userEvent.setup();
+    renderBlock();
+    await openTimeBlock();
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && !init?.method) {
+        return Promise.resolve(jsonResponse(historyPayload([])));
+      }
+      if (String(url).includes('/acknowledge')) {
+        // The server receipt is gone after expiry; this endpoint must never
+        // be called by the expiry-safe path.
+        return Promise.reject(new Error('impossible server acknowledgement'));
+      }
+      return Promise.resolve(
+        jsonResponse({
+          outcome: 'outcome_unknown',
+          receipt: {
+            operationId: 'op-settled',
+            phase: 'outcome_unknown',
+            canVerify: true,
+            expiresAt: '2020-01-01T00:00:00.000Z',
+          },
+        }),
+      );
+    });
+
+    await user.type(screen.getByLabelText('Duration'), '15m');
+    await user.click(screen.getByRole('button', { name: 'Log time' }));
+
+    expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/acknowledge'))).toBe(false);
   });
 
   it('confirms deletion naming duration and date, warns about the remote entry, and refocuses the next row', async () => {
@@ -759,15 +2055,15 @@ describe('ExternalTaskTimeTracking', () => {
       expect(
         fetchMock.mock.calls.some(
           ([url, init]) =>
-            String(url).endsWith('/time-entries/10001') &&
+            String(url).includes('/time-entries/10001?') &&
             (init as RequestInit).method === 'DELETE',
         ),
       ).toBe(true);
     });
-    // Focus lands on the next remaining row's Delete button.
+    // Focus lands on the next remaining row's first mutation affordance.
     await waitFor(() => {
-      expect(document.activeElement?.dataset.entryDelete).toBeDefined();
-      expect(document.activeElement?.textContent).toBe('Delete');
+      expect(document.activeElement?.dataset.entryEdit).toBeDefined();
+      expect(document.activeElement?.textContent).toBe('Edit');
     });
     expect(screen.getByRole('status', { hidden: true })).toHaveTextContent('Time entry deleted.');
   });
@@ -947,7 +2243,7 @@ describe('ExternalTaskTimeTracking', () => {
     renderBlock({ identityAccepted: false });
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.queryByText('Your entries · last 30 days')).toBeNull();
+    expect(screen.queryByText('Last 30 days')).toBeNull();
   });
 
   it('has no axe violations in the form and expanded history', async () => {

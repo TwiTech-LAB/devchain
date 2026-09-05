@@ -2,10 +2,29 @@ import type { ReactNode } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe } from 'jest-axe';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { EpicCard, type EpicCardProps } from '@/ui/components/board/EpicCard';
 import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
 import type { Epic, Status } from '@/ui/types';
+import type { BoardRelationQuickLinkBindings } from '@/ui/hooks/useBoardRelationQuickLink';
+
+// Layer: card composition unit. The relation-detail hook and project selection
+// are stubbed because this spec owns card-level intent wiring and drag fences;
+// the preview's own suites own navigation and focus behavior.
+const useEpicRelationsMock = jest.fn();
+jest.mock('@/ui/hooks/useEpicRelations', () => ({
+  useEpicRelations: (...args: unknown[]) => useEpicRelationsMock(...args),
+}));
+
+const mockProjectSelection = {
+  selectedWorkspace: { id: 'workspace-1', name: 'Workspace One' },
+  activateProject: jest.fn(),
+};
+
+jest.mock('@/ui/hooks/useProjectSelection', () => ({
+  useSelectedProject: () => mockProjectSelection,
+}));
 
 jest.mock('@/ui/components/shared/EpicTooltipWrapper', () => ({
   EpicTooltipWrapper: ({
@@ -27,6 +46,13 @@ jest.mock('@/ui/components/shared/EpicTooltipWrapper', () => ({
     </div>
   ),
 }));
+
+beforeEach(() => {
+  useEpicRelationsMock.mockReset();
+  useEpicRelationsMock.mockReturnValue({ data: undefined, isLoading: false, isError: false });
+  mockProjectSelection.activateProject.mockClear();
+  mockProjectSelection.selectedWorkspace = { id: 'workspace-1', name: 'Workspace One' };
+});
 
 const status: Status = {
   id: 'todo',
@@ -220,6 +246,271 @@ describe('EpicCard estimated-time badge', () => {
   });
 });
 
+describe('EpicCard relation badges', () => {
+  function renderCardWithRelations(
+    epic = createEpic(),
+    overrides: Partial<EpicCardProps> = {},
+  ): EpicCardProps {
+    const props: EpicCardProps = {
+      epic,
+      onEdit: jest.fn(),
+      onDelete: jest.fn(),
+      onDragStart: jest.fn(),
+      onDragEnd: jest.fn(),
+      isDragging: false,
+      onKeyboardMove: jest.fn(),
+      onToggleParentFilter: jest.fn(),
+      isActiveParent: false,
+      onOpenEpicDetails: jest.fn(),
+      statuses: [status],
+      relationCounts: { related: 2, blocks: 0, blockedBy: 1, total: 3 },
+      ...overrides,
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <main>
+            <EpicCard {...props} />
+          </main>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return props;
+  }
+
+  it('shows only the nonzero typed badges with counts', () => {
+    renderCardWithRelations();
+
+    expect(screen.getByText('Related 2')).toBeInTheDocument();
+    expect(screen.getByText('Blocked by 1')).toBeInTheDocument();
+    expect(screen.queryByText('Blocks 0')).not.toBeInTheDocument();
+  });
+
+  it('explains in tooltips that counts can include Epics outside the current board', () => {
+    renderCardWithRelations();
+
+    for (const badge of [
+      screen.getByText('Related 2'),
+      screen.getByText('Blocked by 1'),
+    ] as HTMLElement[]) {
+      expect(badge).toHaveAttribute('title', expect.stringContaining('outside the current board'));
+    }
+  });
+
+  it('renders no badges when every typed count is zero', () => {
+    renderCardWithRelations(createEpic(), {
+      relationCounts: { related: 0, blocks: 0, blockedBy: 0, total: 0 },
+    });
+
+    expect(screen.queryByTestId('epic-relation-badges')).not.toBeInTheDocument();
+  });
+
+  it('badges child cards too, unlike root-only time totals', () => {
+    renderCardWithRelations(createEpic({ title: 'Child epic', parentId: 'parent-1' }));
+
+    expect(screen.getByText('Related 2')).toBeInTheDocument();
+  });
+
+  it('joins relation badges with the time badge in the footer row', () => {
+    renderCardWithRelations(createEpic(), { timeTotalMinutes: 90 });
+
+    const badges = screen.getByTestId('epic-relation-badges');
+    const timeBadge = screen.getByTitle('Estimated agent time');
+    // Both sit in the same trailing footer container, right-aligned.
+    expect(badges.parentElement).toBe(timeBadge.parentElement);
+    expect(badges.parentElement).toHaveClass('ml-auto', 'shrink-0');
+  });
+
+  it('passes composed accessibility checks with badges present', async () => {
+    const { baseElement } = renderCardView(createEpic());
+    expect(await axe(baseElement)).toHaveNoViolations();
+  });
+
+  function renderCardView(epic: Epic) {
+    const props: EpicCardProps = {
+      epic,
+      onEdit: jest.fn(),
+      onDelete: jest.fn(),
+      onDragStart: jest.fn(),
+      onDragEnd: jest.fn(),
+      isDragging: false,
+      onKeyboardMove: jest.fn(),
+      onToggleParentFilter: jest.fn(),
+      isActiveParent: false,
+      onOpenEpicDetails: jest.fn(),
+      statuses: [status],
+      relationCounts: { related: 2, blocks: 0, blockedBy: 1, total: 3 },
+    };
+    return render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <main>
+            <EpicCard {...props} />
+          </main>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  // jsdom has no PointerEvent constructor, so the pointer fields travel as
+  // own properties on a MouseEvent to reach the React handlers.
+  function firePointer(
+    element: HTMLElement,
+    type: 'pointerdown' | 'pointerup',
+    init: { pointerId: number },
+  ) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 });
+    Object.assign(event, { pointerType: 'mouse', pointerId: init.pointerId });
+    fireEvent(element, event);
+  }
+
+  it('keeps the preview trigger activation off every card intent', () => {
+    const props = renderCardWithRelations();
+    const previewTrigger = screen.getByTestId('epic-relation-badges');
+
+    fireEvent.click(previewTrigger);
+    fireEvent.keyDown(previewTrigger, { key: 'Enter' });
+    fireEvent.keyDown(previewTrigger, { key: 'ArrowRight' });
+
+    expect(props.onOpenEpicDetails).not.toHaveBeenCalled();
+    expect(props.onToggleParentFilter).not.toHaveBeenCalled();
+    expect(props.onKeyboardMove).not.toHaveBeenCalled();
+  });
+
+  it('keeps relation title clicks and drags off every card intent and card drag', () => {
+    useEpicRelationsMock.mockReturnValue({
+      data: {
+        pages: [
+          {
+            items: [
+              {
+                relationId: 'rel-1',
+                type: 'related',
+                sourceEpicId: 'epic-1',
+                targetEpicId: 'epic-2',
+                relatedEpic: {
+                  id: 'epic-2',
+                  shortId: 'epic-2',
+                  title: 'Related epic',
+                  status: { id: 'todo', label: 'Todo', color: '#ffffff' },
+                  project: { id: 'project-1', name: 'Current Project' },
+                },
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+              },
+            ],
+            total: 1,
+            limit: 20,
+            offset: 0,
+          },
+        ],
+        pageParams: [0],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    const props = renderCardWithRelations();
+    const previewTrigger = screen.getByTestId('epic-relation-badges');
+
+    previewTrigger.focus();
+    fireEvent.focus(previewTrigger);
+
+    const link = screen.getByRole('link', { name: 'Related epic' });
+    expect(link).toHaveAttribute('draggable', 'false');
+
+    // The preview portal still bubbles through the card's React tree, so the
+    // title must stop both the native drag and the activation intents.
+    fireEvent.dragStart(link);
+    expect(props.onDragStart).not.toHaveBeenCalled();
+
+    fireEvent.click(link);
+    expect(props.onOpenEpicDetails).not.toHaveBeenCalled();
+    expect(props.onToggleParentFilter).not.toHaveBeenCalled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+    expect(props.onEdit).not.toHaveBeenCalled();
+  });
+
+  it('suppresses card drag while the preview pointer is down and restores it after release', () => {
+    const props = renderCardWithRelations();
+    const card = screen.getByRole('group', { name: /^Epic: Parent epic/ });
+    const previewTrigger = screen.getByTestId('epic-relation-badges');
+
+    firePointer(previewTrigger, 'pointerdown', { pointerId: 11 });
+    expect(fireEvent.dragStart(card)).toBe(false);
+    expect(props.onDragStart).not.toHaveBeenCalled();
+
+    // Pointer capture keeps the release on the trigger even outside it; the
+    // release clears the fence so a later ordinary card drag starts.
+    firePointer(previewTrigger, 'pointerup', { pointerId: 11 });
+    expect(fireEvent.dragStart(card)).toBe(true);
+    expect(props.onDragStart).toHaveBeenCalledWith(props.epic);
+  });
+
+  it('restores card drag when the armed preview badge unmounts', () => {
+    const props: EpicCardProps = {
+      epic: createEpic(),
+      onEdit: jest.fn(),
+      onDelete: jest.fn(),
+      onDragStart: jest.fn(),
+      onDragEnd: jest.fn(),
+      isDragging: false,
+      onKeyboardMove: jest.fn(),
+      onToggleParentFilter: jest.fn(),
+      isActiveParent: false,
+      onOpenEpicDetails: jest.fn(),
+      statuses: [status],
+      relationCounts: { related: 2, blocks: 0, blockedBy: 1, total: 3 },
+    };
+    const queryClient = new QueryClient();
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <main>
+            <EpicCard {...props} />
+          </main>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const previewTrigger = screen.getByTestId('epic-relation-badges');
+
+    firePointer(previewTrigger, 'pointerdown', { pointerId: 13 });
+    expect(fireEvent.dragStart(screen.getByRole('group', { name: /^Epic: Parent epic/ }))).toBe(
+      false,
+    );
+
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <main>
+            <EpicCard
+              {...props}
+              relationCounts={{ related: 0, blocks: 0, blockedBy: 0, total: 0 }}
+            />
+          </main>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.queryByTestId('epic-relation-badges')).not.toBeInTheDocument();
+    expect(fireEvent.dragStart(screen.getByRole('group', { name: /^Epic: Parent epic/ }))).toBe(
+      true,
+    );
+    expect(props.onDragStart).toHaveBeenCalledWith(props.epic);
+  });
+
+  it('clears the drag fence on card drag-end', () => {
+    const props = renderCardWithRelations();
+    const card = screen.getByRole('group', { name: /^Epic: Parent epic/ });
+    const previewTrigger = screen.getByTestId('epic-relation-badges');
+
+    firePointer(previewTrigger, 'pointerdown', { pointerId: 12 });
+    fireEvent.dragEnd(card);
+
+    expect(props.onDragEnd).toHaveBeenCalledTimes(1);
+    expect(fireEvent.dragStart(card)).toBe(true);
+  });
+});
+
 describe('EpicCard sourced composition', () => {
   function cardGroup() {
     return screen.getByRole('group', { name: /^Epic: Parent epic/ });
@@ -332,5 +623,113 @@ describe('EpicCard sourced composition', () => {
     const group = cardGroup();
     expect(group).toHaveAttribute('draggable', 'true');
     expect(group.parentElement!.tagName).toBe('MAIN');
+  });
+});
+
+describe('EpicCard relation quick-link connector', () => {
+  function quickLinkBindings(
+    overrides: Partial<BoardRelationQuickLinkBindings> = {},
+  ): BoardRelationQuickLinkBindings {
+    return {
+      selectionSourceId: null,
+      pointerDown: jest.fn(),
+      pointerMove: jest.fn(),
+      pointerUp: jest.fn(),
+      pointerCancel: jest.fn(),
+      lostPointerCapture: jest.fn(),
+      activate: jest.fn(),
+      selectTarget: jest.fn(),
+      cancel: jest.fn(),
+      ...overrides,
+    };
+  }
+
+  function renderQuickLinkCard(bindings = quickLinkBindings()) {
+    const props: EpicCardProps = {
+      epic: createEpic(),
+      onEdit: jest.fn(),
+      onDelete: jest.fn(),
+      onDragStart: jest.fn(),
+      onDragEnd: jest.fn(),
+      isDragging: false,
+      onKeyboardMove: jest.fn(),
+      onToggleParentFilter: jest.fn(),
+      isActiveParent: false,
+      onOpenEpicDetails: jest.fn(),
+      statuses: [status],
+      relationQuickLink: bindings,
+    };
+    const view = render(
+      <main>
+        <EpicCard {...props} />
+      </main>,
+    );
+    return { props, bindings, view };
+  }
+
+  it('synchronously suppresses native status drag after connector pointer-down', () => {
+    const { props } = renderQuickLinkCard();
+    const handle = screen.getByRole('button', { name: 'Link Parent epic to another epic' });
+    const card = screen.getByRole('group', { name: /^Epic: Parent epic/ });
+
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 10, clientY: 10 });
+    expect(fireEvent.dragStart(card)).toBe(false);
+    expect(props.onDragStart).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(handle, { pointerId: 7, clientX: 10, clientY: 10 });
+    expect(fireEvent.dragStart(card)).toBe(true);
+    expect(props.onDragStart).toHaveBeenCalledWith(props.epic);
+  });
+
+  it('keeps connector activation and keys out of card shortcuts', () => {
+    const { props, bindings } = renderQuickLinkCard();
+    const handle = screen.getByRole('button', { name: 'Link Parent epic to another epic' });
+
+    fireEvent.keyDown(handle, { key: 'Enter' });
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    fireEvent.keyDown(handle, { key: 'Delete' });
+    fireEvent.click(handle);
+
+    expect(bindings.activate).toHaveBeenCalledTimes(1);
+    expect(props.onOpenEpicDetails).not.toHaveBeenCalled();
+    expect(props.onKeyboardMove).not.toHaveBeenCalled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+  });
+
+  it('activates exactly once from Enter, Space, and an assistive click', async () => {
+    const user = userEvent.setup();
+    const { props, bindings } = renderQuickLinkCard();
+    const handle = screen.getByRole('button', { name: 'Link Parent epic to another epic' });
+    handle.focus();
+
+    await user.keyboard('{Enter}');
+    expect(bindings.activate).toHaveBeenCalledTimes(1);
+    (bindings.activate as jest.Mock).mockClear();
+    await user.keyboard(' ');
+    expect(bindings.activate).toHaveBeenCalledTimes(1);
+    (bindings.activate as jest.Mock).mockClear();
+    fireEvent.click(handle, { detail: 0 });
+    expect(bindings.activate).toHaveBeenCalledTimes(1);
+    expect(props.onOpenEpicDetails).not.toHaveBeenCalled();
+  });
+
+  it('offers a focusable keyboard-safe target action only on other cards', () => {
+    const bindings = quickLinkBindings({ selectionSourceId: 'source-epic' });
+    const { props } = renderQuickLinkCard(bindings);
+    const target = screen.getByRole('button', { name: 'Link here' });
+
+    fireEvent.keyDown(target, { key: 'Enter' });
+    fireEvent.keyDown(target, { key: 'ArrowLeft' });
+    fireEvent.click(target);
+
+    expect(bindings.selectTarget).toHaveBeenCalledWith(props.epic);
+    expect(props.onOpenEpicDetails).not.toHaveBeenCalled();
+    expect(props.onKeyboardMove).not.toHaveBeenCalled();
+  });
+
+  it('passes accessibility checks with connector and target action visible', async () => {
+    const { view } = renderQuickLinkCard(quickLinkBindings({ selectionSourceId: 'source-epic' }));
+
+    expect(await axe(view.baseElement)).toHaveNoViolations();
   });
 });

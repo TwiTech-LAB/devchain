@@ -294,12 +294,15 @@ describe('Jira My Work capability', () => {
     const provider = providerWith(requestJson);
     const connection = {
       id: 'connection-jira',
+      projectId: 'project-1',
+      legacySourceConnectionId: null,
       provider: 'jira' as const,
       generation: 2,
       createdAt: '2026-08-19T10:00:00.000Z',
       updatedAt: '2026-08-19T11:00:00.000Z',
     };
     const storage = {
+      getProject: jest.fn(async () => ({ id: 'project-1' })),
       getIntegrationConnection: jest.fn(async () => connection),
       getIntegrationConnectionCredentials: jest.fn(async () => credentials),
     };
@@ -308,7 +311,9 @@ describe('Jira My Work capability', () => {
       new ExternalTaskProviderRegistry([provider]),
     );
 
-    await expect(service.getMyWork('jira', { includeCompleted: false })).resolves.toEqual(
+    await expect(
+      service.getMyWork('project-1', 'jira', { includeCompleted: false }),
+    ).resolves.toEqual(
       expect.objectContaining({
         provider: 'jira',
         descriptor: {

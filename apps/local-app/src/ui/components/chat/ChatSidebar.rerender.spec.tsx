@@ -60,4 +60,23 @@ describe('ChatSidebar referential stability', () => {
     rerenderSidebar({ ...bundles, data: { ...bundles.data } });
     expect(agentRowRenders).toBeGreaterThan(afterInitial);
   });
+
+  it('treats an unchanged unlogged-minute map reference as an unchanged poll', () => {
+    const unloggedTimeMinutes = { 'agent-1': 4 };
+    const bundles = packChatSidebarProps(makeFlatChatSidebarProps({ unloggedTimeMinutes }));
+    const { rerenderSidebar } = renderSidebar(bundles);
+    const afterInitial = agentRowRenders;
+
+    // The poll kept the map's reference (recordsEqual retention upstream);
+    // the sidebar bundle stays identity-equal and AgentRow stays idle.
+    rerenderSidebar(bundles);
+    expect(agentRowRenders).toBe(afterInitial);
+
+    // A genuinely new map reference is a real data change and must flow through.
+    rerenderSidebar({
+      ...bundles,
+      data: { ...bundles.data, unloggedTimeMinutes: { 'agent-1': 6 } },
+    });
+    expect(agentRowRenders).toBeGreaterThan(afterInitial);
+  });
 });

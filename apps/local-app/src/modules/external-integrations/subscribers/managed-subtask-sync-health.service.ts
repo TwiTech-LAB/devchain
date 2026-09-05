@@ -56,11 +56,39 @@ export class ManagedSubtaskSyncHealthService {
     private readonly subscriber: ExternalSubtaskSyncSubscriber,
   ) {}
 
-  async getHealth(provider: IntegrationProvider): Promise<ManagedSubtaskSyncHealth> {
-    const [connection, rows] = await Promise.all([
-      this.storage.getIntegrationConnection(provider),
-      this.storage.listExternalManagedSubtaskLinksByProvider(provider),
-    ]);
+  async getHealth(
+    projectId: string,
+    provider: IntegrationProvider,
+  ): Promise<ManagedSubtaskSyncHealth> {
+    await this.storage.getProject(projectId);
+    const connection = await this.storage.getIntegrationConnection({ projectId, provider });
+    return this.buildHealth(provider, connection);
+  }
+
+  async getLegacyHealth(connectionId: string): Promise<ManagedSubtaskSyncHealth> {
+    const connection = await this.requireUnassignedConnection(connectionId);
+    return this.buildHealth(connection.provider, connection);
+  }
+
+  async verifyLegacy(connectionId: string, id: string): Promise<ManagedSubtaskReconcileResult> {
+    await this.assertLegacyScope(connectionId, id);
+    return this.subscriber.verifyManagedLink(id, connectionId);
+  }
+
+  async retryLegacy(connectionId: string, id: string): Promise<ManagedSubtaskReconcileResult> {
+    await this.assertLegacyScope(connectionId, id);
+    return this.subscriber.retryManagedLink(id, connectionId);
+  }
+
+  private async buildHealth(
+    provider: IntegrationProvider,
+    connection: Awaited<ReturnType<StorageService['getIntegrationConnection']>>,
+  ): Promise<ManagedSubtaskSyncHealth> {
+    const rows = connection
+      ? (await this.storage.listExternalManagedSubtaskLinksByConnection(connection.id)).filter(
+          (row) => row.provider === provider,
+        )
+      : [];
     const pending = rows.filter(
       (row) => row.operationPhase === 'pre_dispatch' || row.operationPhase === 'dispatch_admitted',
     ).length;
@@ -74,7 +102,7 @@ export class ManagedSubtaskSyncHealthService {
           ...new Set(boundedRows.map((row) => row.epicIdSnapshot)),
         ])
       : [];
-    const credentials = await this.loadCredentialsForUrls(provider, boundedRows);
+    const credentials = await this.loadCredentialsForUrls(connection?.id ?? null, boundedRows);
     const items = await Promise.all(boundedRows.map((row) => this.toItem(row, credentials, links)));
     return {
       provider,
@@ -87,14 +115,22 @@ export class ManagedSubtaskSyncHealthService {
     };
   }
 
-  async verify(provider: IntegrationProvider, id: string): Promise<ManagedSubtaskReconcileResult> {
-    await this.assertProvider(id, provider);
-    return this.subscriber.verifyManagedLink(id);
+  async verify(
+    projectId: string,
+    provider: IntegrationProvider,
+    id: string,
+  ): Promise<ManagedSubtaskReconcileResult> {
+    const connectionId = await this.assertScope(projectId, provider, id);
+    return this.subscriber.verifyManagedLink(id, connectionId);
   }
 
-  async retry(provider: IntegrationProvider, id: string): Promise<ManagedSubtaskReconcileResult> {
-    await this.assertProvider(id, provider);
-    return this.subscriber.retryManagedLink(id);
+  async retry(
+    projectId: string,
+    provider: IntegrationProvider,
+    id: string,
+  ): Promise<ManagedSubtaskReconcileResult> {
+    const connectionId = await this.assertScope(projectId, provider, id);
+    return this.subscriber.retryManagedLink(id, connectionId);
   }
 
   private async toItem(
@@ -105,6 +141,7 @@ export class ManagedSubtaskSyncHealthService {
     const recognition = links.find(
       (link) =>
         link.epicId === row.epicIdSnapshot &&
+        link.connectionId === row.connectionIdSnapshot &&
         link.provider === row.provider &&
         link.remoteScopeKey === row.remoteScopeKey &&
         link.remoteTaskId === row.remoteTaskId,
@@ -129,14 +166,17 @@ export class ManagedSubtaskSyncHealthService {
   }
 
   private async loadCredentialsForUrls(
-    provider: IntegrationProvider,
+    connectionId: string | null,
     rows: ExternalManagedSubtaskLink[],
   ): Promise<IntegrationCredentials | null> {
-    if (provider !== 'jira' || !rows.some((row) => row.remoteTaskId && row.remoteKey)) {
+    if (
+      !connectionId ||
+      !rows.some((row) => row.provider === 'jira' && row.remoteTaskId && row.remoteKey)
+    ) {
       return null;
     }
     try {
-      return await this.storage.getIntegrationConnectionCredentials(provider);
+      return await this.storage.getIntegrationConnectionCredentialsById(connectionId);
     } catch {
       return null;
     }
@@ -171,10 +211,39 @@ export class ManagedSubtaskSyncHealthService {
     return 'idle';
   }
 
-  private async assertProvider(id: string, provider: IntegrationProvider): Promise<void> {
-    const row = await this.storage.getExternalManagedSubtaskLink(id);
-    if (row.provider !== provider) {
+  private async assertScope(
+    projectId: string,
+    provider: IntegrationProvider,
+    id: string,
+  ): Promise<string> {
+    await this.storage.getProject(projectId);
+    const [row, connection] = await Promise.all([
+      this.storage.getExternalManagedSubtaskLink(id),
+      this.storage.getIntegrationConnection({ projectId, provider }),
+    ]);
+    if (row.provider !== provider || !connection || row.connectionIdSnapshot !== connection.id) {
       throw new NotFoundError('Managed subtask link', id);
     }
+    return connection.id;
+  }
+
+  private async assertLegacyScope(connectionId: string, id: string): Promise<void> {
+    const [connection, row] = await Promise.all([
+      this.requireUnassignedConnection(connectionId),
+      this.storage.getExternalManagedSubtaskLink(id),
+    ]);
+    if (row.connectionIdSnapshot !== connection.id || row.provider !== connection.provider) {
+      throw new NotFoundError('Managed subtask link', id);
+    }
+  }
+
+  private async requireUnassignedConnection(
+    connectionId: string,
+  ): Promise<NonNullable<Awaited<ReturnType<StorageService['getIntegrationConnectionById']>>>> {
+    const connection = await this.storage.getIntegrationConnectionById(connectionId);
+    if (!connection || connection.projectId !== null) {
+      throw new NotFoundError('Unassigned integration connection', connectionId);
+    }
+    return connection;
   }
 }

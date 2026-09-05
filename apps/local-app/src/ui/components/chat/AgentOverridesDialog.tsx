@@ -76,14 +76,18 @@ interface AgentOverridesDialogProps {
 
 const DEFAULT_VALUE = '__default__';
 
-// Mirrors parseProviderModels in ChatSidebar/AgentFormDialog — provider model
-// catalogs are stored verbatim, so we defensively normalise the raw payload.
+// Provider-model query keys are shared across UI surfaces, so normalize both
+// fetched responses and values supplied by another cache producer.
 function parseCatalogOptions(payload: unknown, providerId: string): CatalogOption[] {
   if (!Array.isArray(payload)) {
     return [];
   }
   return payload
     .map((raw, index) => {
+      if (typeof raw === 'string') {
+        const name = raw.trim();
+        return name ? { id: `${providerId}:${name}:${index}`, name } : null;
+      }
       if (
         !raw ||
         typeof raw !== 'object' ||
@@ -177,7 +181,10 @@ function useOverridesController(
     enabled: open && Boolean(providerId),
     staleTime: 5 * 60 * 1000,
   });
-  const models = useMemo(() => (Array.isArray(modelsData) ? modelsData : []), [modelsData]);
+  const models = useMemo(
+    () => parseCatalogOptions(modelsData, providerId ?? 'none'),
+    [modelsData, providerId],
+  );
 
   const {
     data: effortsData,

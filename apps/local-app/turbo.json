@@ -3,7 +3,11 @@
   "extends": ["//"],
   "tasks": {
     "test": {
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/scripts/**"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/scripts/templates/**",
+        "$TURBO_ROOT$/scripts/__tests__/templates-*.test.js"
+      ]
     }
   }
 }

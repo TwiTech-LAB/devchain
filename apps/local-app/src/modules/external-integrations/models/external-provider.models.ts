@@ -17,9 +17,11 @@ export const MAX_TASK_COMMENT_ID_LENGTH = 256;
 export const MAX_TASK_COMMENT_CURSOR_LENGTH = 1_024;
 export const MAX_EXTERNAL_SUBTASK_TITLE_LENGTH = 255;
 export const MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH = 65_536;
-export const MAX_EXTERNAL_SUBTASK_OWNERSHIP_TOKEN_LENGTH = 256;
-export const EXTERNAL_SUBTASK_MANAGEMENT_NOTE =
-  'Managed by DevChain. Update or delete this subtask in DevChain; remote changes are not imported.';
+/**
+ * Ownership token of a managed subtask projection: the first eight
+ * characters of a random UUID. Must match exactly at provider boundaries.
+ */
+export const EXTERNAL_SUBTASK_SOURCE_ID_PATTERN = /^[0-9a-f]{8}$/;
 export const TIME_ENTRY_HISTORY_WINDOW_DAYS = 30;
 export const MAX_TIME_ENTRY_HISTORY_ENTRIES = 100;
 
@@ -226,8 +228,8 @@ export interface ExternalTaskTimeEntryInput {
 }
 
 /**
- * One completed time entry of the connected user. `canDelete` is true only
- * for the current owner with a confirmed provider permission.
+ * One completed time entry of the connected user. Edit and delete permissions
+ * are independent provider facts and never imply checkpoint ownership.
  */
 export interface ExternalTaskTimeEntry {
   remoteId: string;
@@ -235,6 +237,7 @@ export interface ExternalTaskTimeEntry {
   startedAt: string;
   note: string | null;
   noteTruncated: boolean;
+  canEdit: boolean;
   canDelete: boolean;
 }
 
@@ -268,6 +271,12 @@ export interface ExternalTaskLinkStateSummary extends ExternalTaskLinkLookupInpu
   epicId: string | null;
   projectId: string | null;
   projectName: string | null;
+  /**
+   * Durable estimate-checkpoint minutes. Null means unavailable, unlinked, or
+   * awaiting an authoritative refresh; zero means the server confirmed a
+   * linked task that has no checkpoint row. Never convert null to zero.
+   */
+  loggedMinutes: number | null;
 }
 
 export interface ExternalTaskSourceSummary {
@@ -353,6 +362,7 @@ export interface ExternalTimeEntryExactRead {
   remoteId: string;
   startedAt: string;
   durationMs: number;
+  note: string | null;
   owned: boolean;
 }
 
@@ -385,6 +395,13 @@ export interface ExternalTimeEntryMutationsCapability {
     remoteTaskId: string,
     input: ExternalTaskTimeEntryInput,
   ): Promise<ExternalTimeEntryCreateProof>;
+  updateTimeEntry(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    remoteTaskId: string,
+    remoteEntryId: string,
+    input: ExternalTaskTimeEntryInput,
+  ): Promise<void>;
   deleteTimeEntry(
     credentials: IntegrationCredentials,
     context: ExternalProviderConnectionContext,
@@ -412,6 +429,14 @@ export interface ExternalTimeEntryMutationsCapability {
     remoteTaskId: string,
     remoteEntryId: string,
   ): Promise<void>;
+  /** Provider-specific update preflight; returns the exact owned baseline or
+   * throws when the entry is missing, foreign, or not editable. */
+  assertTimeEntryEditable(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    remoteTaskId: string,
+    remoteEntryId: string,
+  ): Promise<ExternalTimeEntryExactRead>;
 }
 
 export interface ExternalSubtaskOwnershipProof {

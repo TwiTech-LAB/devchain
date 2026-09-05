@@ -2,6 +2,24 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { ExternalBoardNav } from './ExternalBoardNav';
+
+const PROJECT_A = '11111111-1111-4111-8111-111111111111';
+const PROJECT_B = '22222222-2222-4222-8222-222222222222';
+
+const mockSelectedProject: { id: string | null; name: string | null } = {
+  id: PROJECT_A,
+  name: 'Acme Project',
+};
+
+jest.mock('@/ui/hooks/useProjectSelection', () => ({
+  useSelectedProject: () => ({
+    selectedProjectId: mockSelectedProject.id,
+    selectedProject:
+      mockSelectedProject.id === null
+        ? null
+        : { id: mockSelectedProject.id, name: mockSelectedProject.name },
+  }),
+}));
 import {
   IntegrationConnectionApiError,
   type IntegrationConnectionState,
@@ -78,8 +96,8 @@ function LocationProbe() {
   return <div data-testid="current-location">{`${location.pathname}${location.search}`}</div>;
 }
 
-function renderNav(initialEntry = '/board') {
-  return render(
+function navRouter(initialEntry = '/board') {
+  return (
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/board" element={<ExternalBoardNav />} />
@@ -89,8 +107,12 @@ function renderNav(initialEntry = '/board') {
         <Route path="*" element={<div data-testid="not-found" />} />
       </Routes>
       <LocationProbe />
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderNav(initialEntry = '/board') {
+  return render(navRouter(initialEntry));
 }
 
 beforeEach(() => {
@@ -109,6 +131,8 @@ describe('ExternalBoardNav', () => {
   beforeEach(() => {
     canUseIntegrations = true;
     window.sessionStorage.clear();
+    mockSelectedProject.id = PROJECT_A;
+    mockSelectedProject.name = 'Acme Project';
     useIntegrationConnectionsMock.mockReset();
     useIntegrationConnectionsMock.mockReturnValue(baseHookValue({}));
   });
@@ -143,7 +167,10 @@ describe('ExternalBoardNav', () => {
 
     renderNav('/board/clickup');
 
-    expect(useIntegrationConnectionsMock).toHaveBeenCalledWith({ enabled: false });
+    expect(useIntegrationConnectionsMock).toHaveBeenCalledWith({
+      projectId: PROJECT_A,
+      enabled: false,
+    });
     expect(screen.getByRole('link', { name: 'DevChain' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^ClickUp/ })).not.toBeInTheDocument();
     expect(screen.queryByText('Connected')).not.toBeInTheDocument();
@@ -287,14 +314,14 @@ describe('ExternalBoardNav', () => {
       baseHookValue({ connections: [connection('jira', true)] }),
     );
     window.sessionStorage.setItem(
-      'devchain:board:lastRoute:jira',
+      `devchain:board:lastRoute:${PROJECT_A}:jira`,
       '/board/jira/list-9?completed=1',
     );
 
     renderNav('/board/jira/linked/epic-9');
     await act(async () => {});
 
-    expect(window.sessionStorage.getItem('devchain:board:lastRoute:jira')).toBe(
+    expect(window.sessionStorage.getItem(`devchain:board:lastRoute:${PROJECT_A}:jira`)).toBe(
       '/board/jira/list-9?completed=1',
     );
     await user.click(screen.getByRole('link', { name: /^Jira/ }));
@@ -308,12 +335,86 @@ describe('ExternalBoardNav', () => {
     useIntegrationConnectionsMock.mockReturnValue(
       baseHookValue({ connections: [connection('jira', true)] }),
     );
-    window.sessionStorage.setItem('devchain:board:lastRoute:jira', '/board/jira/linked/epic-9');
+    window.sessionStorage.setItem(
+      `devchain:board:lastRoute:${PROJECT_A}:jira`,
+      '/board/jira/linked/epic-9',
+    );
 
     renderNav('/board');
 
     await user.click(screen.getByRole('link', { name: /^Jira/ }));
     expect(screen.getByTestId('current-location')).toHaveTextContent('/board/jira');
+  });
+
+  it('restores route memory per project without crossing projects', () => {
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseHookValue({ connections: [connection('clickup', true)] }),
+    );
+    window.sessionStorage.setItem(
+      `devchain:board:lastRoute:${PROJECT_A}:clickup`,
+      '/board/clickup/list-a?completed=1',
+    );
+    window.sessionStorage.setItem(
+      `devchain:board:lastRoute:${PROJECT_B}:clickup`,
+      '/board/clickup/list-b',
+    );
+
+    const view = renderNav('/board');
+    expect(screen.getByRole('link', { name: /^ClickUp/ })).toHaveAttribute(
+      'href',
+      '/board/clickup/list-a?completed=1',
+    );
+
+    mockSelectedProject.id = PROJECT_B;
+    view.rerender(navRouter('/board'));
+
+    expect(screen.getByRole('link', { name: /^ClickUp/ })).toHaveAttribute(
+      'href',
+      '/board/clickup/list-b',
+    );
+  });
+
+  it('never restores a legacy unscoped route-memory key', () => {
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseHookValue({ connections: [connection('jira', true)] }),
+    );
+    window.sessionStorage.setItem('devchain:board:lastRoute:jira', '/board/jira/legacy-1');
+    window.sessionStorage.setItem('devchain:board:lastRoute:devchain', '/board?status=active');
+
+    renderNav('/board');
+
+    expect(screen.getByRole('link', { name: /^Jira/ })).toHaveAttribute('href', '/board/jira');
+    expect(screen.getByRole('link', { name: 'DevChain' })).toHaveAttribute('href', '/board');
+  });
+
+  it('removes the legacy unscoped key when remembering a project route', async () => {
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseHookValue({ connections: [connection('jira', true)] }),
+    );
+    window.sessionStorage.setItem('devchain:board:lastRoute:jira', '/board/jira/legacy-1');
+
+    renderNav('/board/jira/list-2');
+    await act(async () => {});
+
+    expect(window.sessionStorage.getItem('devchain:board:lastRoute:jira')).toBeNull();
+    expect(window.sessionStorage.getItem(`devchain:board:lastRoute:${PROJECT_A}:jira`)).toBe(
+      '/board/jira/list-2',
+    );
+  });
+
+  it('does not remember board routes without a selected project', async () => {
+    mockSelectedProject.id = null;
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseHookValue({ connections: [connection('clickup', true)] }),
+    );
+
+    renderNav('/board/clickup/list-9?completed=1');
+    await act(async () => {});
+
+    const remembered = Object.keys(window.sessionStorage).filter((key) =>
+      key.startsWith('devchain:board:lastRoute:'),
+    );
+    expect(remembered).toEqual([]);
   });
 });
 
@@ -322,6 +423,8 @@ describe('ExternalBoardNav Add board', () => {
 
   beforeEach(() => {
     window.sessionStorage.clear();
+    mockSelectedProject.id = PROJECT_A;
+    mockSelectedProject.name = 'Acme Project';
     hookValue = baseHookValue();
     useIntegrationConnectionsMock.mockReset();
     useIntegrationConnectionsMock.mockImplementation(() => hookValue);
@@ -347,6 +450,13 @@ describe('ExternalBoardNav Add board', () => {
     renderNav();
 
     expect(screen.queryByRole('button', { name: /add board/i })).not.toBeInTheDocument();
+  });
+
+  it('names the selected project as the connection target', () => {
+    renderNav();
+    fireEvent.click(screen.getByRole('button', { name: /add board/i }));
+
+    expect(screen.getByText('Connect an external work board to Acme Project.')).toBeInTheDocument();
   });
 
   it('offers both providers when nothing is connected', () => {

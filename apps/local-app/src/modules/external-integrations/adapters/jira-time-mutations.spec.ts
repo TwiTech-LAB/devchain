@@ -52,6 +52,7 @@ function providerWith(requestJson: jest.Mock): JiraExternalTaskProvider {
 function mutationTransport(handlers: {
   worklogList?: (params: URLSearchParams) => unknown;
   worklogExact?: (entryId: string) => unknown;
+  updateWorklog?: (entryId: string, params: URLSearchParams) => unknown;
   deleteWorklog?: (params: URLSearchParams) => unknown;
   permission?: (enabled: boolean | undefined) => unknown;
 }) {
@@ -65,6 +66,11 @@ function mutationTransport(handlers: {
     if (url.pathname === '/rest/api/3/mypermissions') {
       return {
         permissions: {
+          EDIT_OWN_WORKLOGS: {
+            id: 47,
+            key: 'EDIT_OWN_WORKLOGS',
+            enabled: handlers.permission?.(true),
+          },
           DELETE_OWN_WORKLOGS: {
             id: 48,
             key: 'DELETE_OWN_WORKLOGS',
@@ -82,6 +88,9 @@ function mutationTransport(handlers: {
     }
     if (exact && request.method === 'DELETE') {
       return handlers.deleteWorklog?.(url.searchParams);
+    }
+    if (exact && request.method === 'PUT') {
+      return handlers.updateWorklog?.(decodeURIComponent(exact[1]!), url.searchParams);
     }
     throw new Error(`unexpected Jira request: ${url.toString()}`);
   });
@@ -105,6 +114,7 @@ describe('Jira time-entry mutations', () => {
       remoteId: '10001',
       startedAt: '2026-08-19T10:00:00.000Z',
       durationMs: 3_600_000,
+      note: 'Implementation',
       owned: true,
     });
   });
@@ -135,6 +145,56 @@ describe('Jira time-entry mutations', () => {
         '10001',
       ),
     ).resolves.toBeNull();
+  });
+
+  it('updates an editable own worklog while leaving the Jira estimate unchanged', async () => {
+    const { provider, requests } = mutationTransport({
+      updateWorklog: (entryId) => worklog({ id: entryId }),
+    });
+
+    await provider.timeEntryMutations!.updateTimeEntry!(credentials, context, 'ENG-1', '10001', {
+      startedAt: '2026-08-19T11:30:00.000Z',
+      durationMs: 5_400_000,
+      note: 'Revised',
+    });
+
+    const update = requests.find((request) => request.method === 'PUT')!;
+    const updateUrl = new URL(update.url);
+    expect(updateUrl.pathname).toBe('/rest/api/3/issue/ENG-1/worklog/10001');
+    expect(updateUrl.searchParams.get('adjustEstimate')).toBe('leave');
+    expect(updateUrl.searchParams.get('notifyUsers')).toBe('false');
+    expect(JSON.parse(String(update.body))).toMatchObject({
+      started: '2026-08-19T11:30:00.000+0000',
+      timeSpentSeconds: 5_400,
+    });
+  });
+
+  it('requires own-worklog edit permission before an update', async () => {
+    const allowed = mutationTransport({
+      worklogExact: (entryId) => worklog({ id: entryId }),
+      permission: () => true,
+    });
+    await expect(
+      allowed.provider.timeEntryMutations!.assertTimeEntryEditable!(
+        credentials,
+        context,
+        'ENG-1',
+        '10001',
+      ),
+    ).resolves.toMatchObject({ remoteId: '10001', owned: true });
+
+    const denied = mutationTransport({
+      worklogExact: (entryId) => worklog({ id: entryId }),
+      permission: () => false,
+    });
+    await expect(
+      denied.provider.timeEntryMutations!.assertTimeEntryEditable!(
+        credentials,
+        context,
+        'ENG-1',
+        '10001',
+      ),
+    ).rejects.toMatchObject({ code: 'jira_permission_denied' });
   });
 
   it('lists own ids with completeness proven by a short page', async () => {

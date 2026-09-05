@@ -16,6 +16,22 @@ export interface IntegrationConnectionState {
   updatedAt: string | null;
 }
 
+export interface IntegrationConnectionDirectoryEntry {
+  project: { id: string; name: string };
+  workspace: { id: string; name: string };
+  provider: IntegrationProvider;
+  configured: boolean;
+  updatedAt: string | null;
+  subtaskSyncEnabled: boolean;
+  hasMigratedSharedOrigin: boolean;
+}
+
+export interface IntegrationConnectionDirectory {
+  items: IntegrationConnectionDirectoryEntry[];
+  unassignedConnections: IntegrationConnectionState[];
+  truncated: boolean;
+}
+
 export function disconnectedConnectionState(
   provider: IntegrationProvider,
 ): IntegrationConnectionState {
@@ -32,7 +48,8 @@ export function disconnectedConnectionState(
 
 export const integrationConnectionQueryKeys = {
   all: ['integration-connections'] as const,
-  list: () => [...integrationConnectionQueryKeys.all, 'list'] as const,
+  list: (projectId: string) => [...integrationConnectionQueryKeys.all, 'list', projectId] as const,
+  directory: () => [...integrationConnectionQueryKeys.all, 'directory'] as const,
 };
 
 export type IntegrationConnectionEpoch = string;

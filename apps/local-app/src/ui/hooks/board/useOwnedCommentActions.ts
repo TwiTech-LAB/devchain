@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import type {
   ExternalCommentDeleteOutcome,
@@ -22,6 +22,11 @@ import {
   verifySession,
 } from '@/ui/lib/external-rich-edit';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
+import {
+  isSameIntegrationPresentationScope,
+  validIntegrationProjectId,
+  type IntegrationPresentationScope,
+} from '@/ui/lib/integration-project-scope';
 
 export type CommentEditStatus =
   | 'idle'
@@ -117,13 +122,36 @@ export function useOwnedCommentActions(
   connectionEpoch: IntegrationConnectionEpoch | null,
   taskId: string | null,
   {
+    projectId,
     richEditEnabled,
     ownedDeleteEnabled,
-  }: { richEditEnabled: boolean; ownedDeleteEnabled: boolean },
+  }: {
+    projectId: string | null;
+    richEditEnabled: boolean;
+    ownedDeleteEnabled: boolean;
+  },
 ) {
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
-  const commentsKey = externalMyWorkQueryKeys.taskComments(provider, connectionEpoch, taskId ?? '');
+  const scopedProjectId = validIntegrationProjectId(projectId);
+  const presentationScope: IntegrationPresentationScope | null =
+    scopedProjectId !== null && connectionEpoch !== null && taskId !== null
+      ? { projectId: scopedProjectId, provider, connectionEpoch, taskId }
+      : null;
+  const presentationScopeRef = useRef(presentationScope);
+  presentationScopeRef.current = presentationScope;
+
+  const isCurrentScope = useCallback(
+    (scope: IntegrationPresentationScope) =>
+      isSameIntegrationPresentationScope(scope, presentationScopeRef.current),
+    [],
+  );
+
+  const commentsKeyForScope = useCallback(
+    (scope: IntegrationPresentationScope) =>
+      externalMyWorkQueryKeys.taskComments(scope.provider, scope.connectionEpoch, scope.taskId),
+    [],
+  );
 
   // ---- Editing (one comment at a time) ----
   const [editTarget, setEditTarget] = useState<string | null>(null);
@@ -135,14 +163,35 @@ export function useOwnedCommentActions(
   const [editDraft, setEditDraft] = useState<{ document: unknown } | null>(null);
 
   const openEditSession = useMutation({
-    mutationFn: ({ commentId, lookupToken }: { commentId: string; lookupToken: string | null }) =>
-      createCommentEditSession(apiFetch, provider, taskId!, commentId, lookupToken),
-    onMutate: () => setEditState({ status: 'opening', session: null, error: null }),
-    onSuccess: (session) => {
+    mutationFn: ({
+      scope,
+      commentId,
+      lookupToken,
+    }: {
+      scope: IntegrationPresentationScope;
+      commentId: string;
+      lookupToken: string | null;
+    }) => {
+      return createCommentEditSession(
+        apiFetch,
+        scope.projectId,
+        scope.provider,
+        scope.taskId,
+        commentId,
+        lookupToken,
+      );
+    },
+    onMutate: (variables) => {
+      if (!isCurrentScope(variables.scope)) return;
+      setEditState({ status: 'opening', session: null, error: null });
+    },
+    onSuccess: (session, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       setEditState({ status: 'editing', session, error: null });
       setEditDraft(null);
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       // A lookup that misses (expired/evicted/shifted ClickUp proof) means
       // the page data is stale: the user must refresh; retry cannot fix it.
       const refreshRequired = /could not be found|not_owned|lookup/i.test(error.message);
@@ -157,30 +206,45 @@ export function useOwnedCommentActions(
   // A saved comment patches in place: only the matching remoteId changes and
   // the loaded history position (cursor stack) is untouched.
   const commitEditToCache = useCallback(
-    (document: unknown) => {
-      if (editTarget === null) {
-        return;
-      }
-      queryClient.setQueryData<InfiniteData<ExternalTaskCommentPage>>(commentsKey, (data) =>
-        patchCommentInPages(data, editTarget, (existing) => ({
-          ...existing,
-          rich: { document: document as never, supported: true },
-        })),
+    (scope: IntegrationPresentationScope, commentId: string, document: unknown) => {
+      if (!isCurrentScope(scope)) return;
+      queryClient.setQueryData<InfiniteData<ExternalTaskCommentPage>>(
+        commentsKeyForScope(scope),
+        (data) =>
+          patchCommentInPages(data, commentId, (existing) => ({
+            ...existing,
+            rich: { document: document as never, supported: true },
+          })),
       );
     },
-    [queryClient, commentsKey, editTarget],
+    [commentsKeyForScope, isCurrentScope, queryClient],
   );
 
   const saveEdit = useMutation({
-    mutationFn: ({ document, revision }: { document: unknown; revision: number }) => {
+    mutationFn: ({
+      scope,
+      sessionId,
+      document,
+      revision,
+    }: {
+      scope: IntegrationPresentationScope;
+      commentId: string;
+      sessionId: string;
+      document: unknown;
+      revision: number;
+    }) => {
       const canonical = canonicalizeRichDocument(document);
       if (canonical === null) {
         throw new Error('The edited comment is outside the supported set.');
       }
-      return saveSession(apiFetch, editState.session!.sessionId, canonical, revision);
+      return saveSession(apiFetch, scope.projectId, sessionId, canonical, revision);
     },
-    onMutate: () => setEditState((previous) => ({ ...previous, status: 'saving', error: null })),
+    onMutate: (variables) => {
+      if (!isCurrentScope(variables.scope)) return;
+      setEditState((previous) => ({ ...previous, status: 'saving', error: null }));
+    },
     onSuccess: (outcome: ExternalSessionWriteOutcome, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       if (outcome.outcome === 'saved') {
         setEditState((previous) => ({
           ...previous,
@@ -189,7 +253,7 @@ export function useOwnedCommentActions(
           error: null,
         }));
         // Patch the saved canonical document into the loaded pages in place.
-        commitEditToCache(variables.document);
+        commitEditToCache(variables.scope, variables.commentId, variables.document);
         return;
       }
       if (outcome.outcome === 'outcome_unknown' || outcome.outcome === 'saved_unverified') {
@@ -209,14 +273,24 @@ export function useOwnedCommentActions(
         error: null,
       }));
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       setEditState((previous) => ({ ...previous, status: 'error', error: error.message }));
     },
   });
 
   const verifyEdit = useMutation({
-    mutationFn: () => verifySession(apiFetch, editState.session!.sessionId),
-    onSuccess: (result: ExternalSessionVerifyResult) => {
+    mutationFn: ({
+      scope,
+      sessionId,
+    }: {
+      scope: IntegrationPresentationScope;
+      sessionId: string;
+    }) => {
+      return verifySession(apiFetch, scope.projectId, sessionId);
+    },
+    onSuccess: (result: ExternalSessionVerifyResult, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       if (result.remoteState === 'new_payload') {
         setEditState((previous) => ({
           ...previous,
@@ -232,7 +306,8 @@ export function useOwnedCommentActions(
         session: result.session,
       }));
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       setEditState((previous) => ({ ...previous, error: error.message }));
     },
   });
@@ -245,12 +320,14 @@ export function useOwnedCommentActions(
 
   const startEdit = useCallback(
     (comment: ExternalTaskComment) => {
-      if (!richEditEnabled) {
+      const scope = presentationScopeRef.current;
+      if (!richEditEnabled || scope === null) {
         return;
       }
       setEditTarget(comment.remoteId);
       setEditDraft(null);
       openEditSession.mutate({
+        scope,
         commentId: comment.remoteId,
         lookupToken: comment.lookupToken,
       });
@@ -263,9 +340,18 @@ export function useOwnedCommentActions(
   const [deleteStatus, setDeleteStatus] = useState<CommentDeleteStatus>('idle');
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  useEffect(() => {
+    setEditTarget(null);
+    setEditDraft(null);
+    setEditState({ status: 'idle', session: null, error: null });
+    setDeleteTarget(null);
+    setDeleteStatus('idle');
+    setDeleteError(null);
+  }, [connectionEpoch, provider, scopedProjectId, taskId]);
+
   const requestDelete = useCallback(
     (comment: ExternalTaskComment) => {
-      if (!ownedDeleteEnabled) {
+      if (!ownedDeleteEnabled || presentationScopeRef.current === null) {
         return;
       }
       setDeleteTarget(comment.remoteId);
@@ -286,39 +372,48 @@ export function useOwnedCommentActions(
   // honest state.
   const confirmDelete = useMutation({
     mutationFn: async ({
+      scope,
       commentId,
       lookupToken,
     }: {
+      scope: IntegrationPresentationScope;
       commentId: string;
       lookupToken: string | null;
     }) => {
       const session: ExternalEditSessionView = await createCommentDeleteSession(
         apiFetch,
-        provider,
-        taskId!,
+        scope.projectId,
+        scope.provider,
+        scope.taskId,
         commentId,
         lookupToken,
       );
+      if (!isCurrentScope(scope)) return null;
       const outcome: ExternalCommentDeleteOutcome = await executeCommentDelete(
         apiFetch,
+        scope.projectId,
         session.sessionId,
       );
       return outcome;
     },
-    onMutate: () => {
+    onMutate: (variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       setDeleteStatus('opening');
       setDeleteError(null);
     },
-    onSuccess: (outcome) => {
+    onSuccess: (outcome, variables) => {
+      if (outcome === null || !isCurrentScope(variables.scope)) return;
       if (outcome.outcome === 'deleted' || outcome.outcome === 'already_deleted') {
         setDeleteStatus('deleted');
         // Reset to page one: later pages' cursors may have shifted.
+        const commentsKey = commentsKeyForScope(variables.scope);
         void queryClient.cancelQueries({ queryKey: commentsKey, exact: true });
         queryClient.resetQueries({ queryKey: commentsKey, exact: true });
         return;
       }
       if (outcome.outcome === 'outcome_unknown') {
         setDeleteStatus('unknown');
+        const commentsKey = commentsKeyForScope(variables.scope);
         void queryClient.cancelQueries({ queryKey: commentsKey, exact: true });
         queryClient.resetQueries({ queryKey: commentsKey, exact: true });
         return;
@@ -327,7 +422,8 @@ export function useOwnedCommentActions(
       setDeleteStatus(deleteRejectionStatus(reason));
       setDeleteError(deleteRejectionMessage(reason));
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       const refreshRequired = /could not be found|not_owned|lookup/i.test(error.message);
       setDeleteStatus(refreshRequired ? 'refresh_required' : 'error');
       setDeleteError(error.message);
@@ -343,20 +439,62 @@ export function useOwnedCommentActions(
       start: startEdit,
       close: closeEdit,
       submit: () => {
-        if (editDraft === null || editState.session === null) {
+        const scope = presentationScopeRef.current;
+        if (
+          scope === null ||
+          editTarget === null ||
+          editDraft === null ||
+          editState.session === null
+        ) {
           return;
         }
-        saveEdit.mutate({ document: editDraft.document, revision: editState.session.revision });
+        saveEdit.mutate({
+          scope,
+          commentId: editTarget,
+          sessionId: editState.session.sessionId,
+          document: editDraft.document,
+          revision: editState.session.revision,
+        });
       },
       retrySamePayload: () => {
-        if (editDraft === null || editState.session === null || editState.status !== 'unknown') {
+        const scope = presentationScopeRef.current;
+        if (
+          scope === null ||
+          editTarget === null ||
+          editDraft === null ||
+          editState.session === null ||
+          editState.status !== 'unknown'
+        ) {
           return;
         }
-        saveEdit.mutate({ document: editDraft.document, revision: editState.session.revision });
+        saveEdit.mutate({
+          scope,
+          commentId: editTarget,
+          sessionId: editState.session.sessionId,
+          document: editDraft.document,
+          revision: editState.session.revision,
+        });
       },
-      verify: () => verifyEdit.mutate(),
-      pending: openEditSession.isPending || saveEdit.isPending || verifyEdit.isPending,
-      commitEditToCache,
+      verify: () => {
+        const scope = presentationScopeRef.current;
+        if (scope === null || editState.session === null) return;
+        verifyEdit.mutate({ scope, sessionId: editState.session.sessionId });
+      },
+      pending:
+        (openEditSession.isPending &&
+          openEditSession.variables !== undefined &&
+          isCurrentScope(openEditSession.variables.scope)) ||
+        (saveEdit.isPending &&
+          saveEdit.variables !== undefined &&
+          isCurrentScope(saveEdit.variables.scope)) ||
+        (verifyEdit.isPending &&
+          verifyEdit.variables !== undefined &&
+          isCurrentScope(verifyEdit.variables.scope)),
+      commitEditToCache: (document: unknown) => {
+        const scope = presentationScopeRef.current;
+        if (scope === null || editTarget === null) return;
+        commitEditToCache(scope, editTarget, document);
+      },
     },
     delete: {
       target: deleteTarget,
@@ -364,18 +502,25 @@ export function useOwnedCommentActions(
       error: deleteError,
       unknown: deleteStatus === 'unknown',
       request: requestDelete,
-      confirm: (comment: ExternalTaskComment) =>
+      confirm: (comment: ExternalTaskComment) => {
+        const scope = presentationScopeRef.current;
+        if (scope === null) return;
         confirmDelete.mutate({
+          scope,
           commentId: comment.remoteId,
           lookupToken: comment.lookupToken,
-        }),
+        });
+      },
       cancel: cancelDelete,
       dismiss: () => {
         setDeleteTarget(null);
         setDeleteStatus('idle');
         setDeleteError(null);
       },
-      pending: confirmDelete.isPending,
+      pending:
+        confirmDelete.isPending &&
+        confirmDelete.variables !== undefined &&
+        isCurrentScope(confirmDelete.variables.scope),
     },
   };
 }

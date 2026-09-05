@@ -36,6 +36,7 @@ const summaryPayload = {
   isRoot: true,
   directMinutes: 30,
   totalMinutes: 90,
+  includesRelatedTime: true,
   items: [
     { activityDate: '2026-08-22', agentId: 'agent-1', agentName: 'Alpha', minutes: 60 },
     { activityDate: '2026-08-22', agentId: 'agent-2', agentName: 'Bravo', minutes: 30 },
@@ -45,6 +46,28 @@ const summaryPayload = {
     { epicId: 'epic-2', epicTitle: 'Child task', isDirect: false, minutes: 60 },
   ],
 };
+
+const OriginalDateTimeFormat = Intl.DateTimeFormat;
+
+/**
+ * Simulates an operating-system or browser time-zone change: the no-argument
+ * resolver reports the given zone while every explicitly configured formatter
+ * keeps its real behavior.
+ */
+function mockBrowserTimeZone(timeZone: string): jest.SpyInstance {
+  return jest.spyOn(Intl, 'DateTimeFormat').mockImplementation(((
+    locale?: Intl.LocalesArgument,
+    options?: Intl.DateTimeFormatOptions,
+  ) => {
+    if (locale === undefined && options === undefined) {
+      const resolved = new OriginalDateTimeFormat().resolvedOptions();
+      return {
+        resolvedOptions: () => ({ ...resolved, timeZone }),
+      } as unknown as Intl.DateTimeFormat;
+    }
+    return new OriginalDateTimeFormat(locale, options);
+  }) as unknown as typeof Intl.DateTimeFormat);
+}
 
 describe('useEpicTimeDetail', () => {
   let client: QueryClient;
@@ -72,6 +95,9 @@ describe('useEpicTimeDetail', () => {
       { signal: expect.any(AbortSignal) },
     );
     expect(result.current.admitted).toBe(true);
+    // The exposed zone is the exact value behind the query key and request,
+    // so export surfaces can reuse it without re-reading the browser.
+    expect(result.current.timeZone).toBe(timeZone);
     expect(result.current.summary).toEqual(summaryPayload);
     expect(client.getQueryData(epicTimeQueryKeys.detail('epic-1', timeZone))).toEqual(
       summaryPayload,
@@ -90,9 +116,164 @@ describe('useEpicTimeDetail', () => {
       isRoot: false,
       directMinutes: 0,
       totalMinutes: 0,
+      includesRelatedTime: false,
       items: [],
       taskItems: [],
     });
+  });
+
+  it('defaults the routed-scope flag to false when the payload omits it', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        isRoot: true,
+        directMinutes: 30,
+        totalMinutes: 90,
+        items: summaryPayload.items,
+        taskItems: summaryPayload.taskItems,
+      }),
+    });
+    const { result } = renderHook(() => useEpicTimeDetail('epic-1'), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+
+    expect(result.current.summary?.includesRelatedTime).toBe(false);
+  });
+
+  it('keeps complete team rows and normalizes incomplete attribution to direct time', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        isRoot: true,
+        directMinutes: 40,
+        totalMinutes: 50,
+        items: [
+          {
+            activityDate: '2026-08-22',
+            agentId: 'agent-1',
+            agentName: 'Alpha',
+            minutes: 30,
+            attributionSource: 'team',
+            teamId: 'team-builders',
+            teamName: 'Builders',
+          },
+          {
+            activityDate: '2026-08-22',
+            agentId: 'agent-1',
+            agentName: 'Alpha',
+            minutes: 10,
+            attributionSource: 'team',
+            teamId: 7,
+            teamName: 'Builders',
+          },
+          {
+            activityDate: '2026-08-21',
+            agentId: 'agent-2',
+            agentName: 'Bravo',
+            minutes: 5,
+            attributionSource: 'unknown-source',
+            teamId: 'team-builders',
+            teamName: 'Builders',
+          },
+          {
+            activityDate: '2026-08-20',
+            agentId: 'agent-3',
+            agentName: 'Charlie',
+            minutes: 5,
+            attributionSource: 'team',
+            teamId: 'team-builders',
+            teamName: '',
+          },
+        ],
+        taskItems: [],
+      }),
+    });
+    const { result } = renderHook(() => useEpicTimeDetail('epic-1'), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+
+    expect(result.current.summary?.items).toEqual([
+      {
+        activityDate: '2026-08-22',
+        agentId: 'agent-1',
+        agentName: 'Alpha',
+        minutes: 30,
+        attributionSource: 'team',
+        teamId: 'team-builders',
+        teamName: 'Builders',
+      },
+      { activityDate: '2026-08-22', agentId: 'agent-1', agentName: 'Alpha', minutes: 10 },
+      { activityDate: '2026-08-21', agentId: 'agent-2', agentName: 'Bravo', minutes: 5 },
+      { activityDate: '2026-08-20', agentId: 'agent-3', agentName: 'Charlie', minutes: 5 },
+    ]);
+  });
+
+  it('retains every valid base task row and keeps only complete group pairs', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        isRoot: true,
+        directMinutes: 30,
+        totalMinutes: 90,
+        includesRelatedTime: true,
+        items: summaryPayload.items,
+        taskItems: [
+          {
+            epicId: 'epic-1',
+            epicTitle: 'Root task',
+            isDirect: true,
+            minutes: 30,
+            groupEpicId: 'group-focal',
+            groupEpicTitle: 'Focal task',
+          },
+          {
+            epicId: 'epic-2',
+            epicTitle: 'Empty group id',
+            isDirect: false,
+            minutes: 20,
+            groupEpicId: '',
+            groupEpicTitle: 'Focal task',
+          },
+          {
+            epicId: 'epic-3',
+            epicTitle: 'Non-string title',
+            isDirect: false,
+            minutes: 20,
+            groupEpicId: 'group-focal',
+            groupEpicTitle: 42,
+          },
+          {
+            epicId: 'epic-4',
+            epicTitle: 'Missing pair',
+            isDirect: false,
+            minutes: 20,
+          },
+        ],
+      }),
+    });
+    const { result } = renderHook(() => useEpicTimeDetail('epic-1'), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+
+    expect(result.current.summary?.taskItems).toEqual([
+      {
+        epicId: 'epic-1',
+        epicTitle: 'Root task',
+        isDirect: true,
+        minutes: 30,
+        groupEpicId: 'group-focal',
+        groupEpicTitle: 'Focal task',
+      },
+      { epicId: 'epic-2', epicTitle: 'Empty group id', isDirect: false, minutes: 20 },
+      { epicId: 'epic-3', epicTitle: 'Non-string title', isDirect: false, minutes: 20 },
+      { epicId: 'epic-4', epicTitle: 'Missing pair', isDirect: false, minutes: 20 },
+    ]);
   });
 
   it('issues no request and hides cached data for unresolved, worktree, or missing IDs', async () => {
@@ -187,6 +368,55 @@ describe('useEpicTimeDetail', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
       jest.useRealTimers();
+    }
+  });
+
+  it('keeps the mounted zone across browser-zone drift and adopts a new zone only on remount', async () => {
+    const mountedZone = resolveEpicTimeZone();
+    const driftedZone = mountedZone === 'America/New_York' ? 'Europe/Berlin' : 'America/New_York';
+    const driftSpy = mockBrowserTimeZone(driftedZone);
+    try {
+      jest.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const { result, unmount } = renderHook(() => useEpicTimeDetail('epic-1'), {
+          wrapper: wrapper(client),
+        });
+
+        await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+        expect(result.current.timeZone).toBe(mountedZone);
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(60_000);
+        });
+
+        // The 60-second refresh keeps requesting and caching under the
+        // mounted zone; the exposed value never drifts with the browser.
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock).toHaveBeenLastCalledWith(
+          `/api/epics/epic-1/time-logs?timeZone=${encodeURIComponent(mountedZone)}`,
+          { signal: expect.any(AbortSignal) },
+        );
+        expect(result.current.timeZone).toBe(mountedZone);
+        expect(
+          client.getQueryData(epicTimeQueryKeys.detail('epic-1', mountedZone, 'main')),
+        ).toBeDefined();
+
+        unmount();
+      } finally {
+        jest.useRealTimers();
+      }
+
+      const remounted = renderHook(() => useEpicTimeDetail('epic-1'), {
+        wrapper: wrapper(client),
+      });
+      await waitFor(() => expect(remounted.result.current.query.isSuccess).toBe(true));
+      expect(remounted.result.current.timeZone).toBe(driftedZone);
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        `/api/epics/epic-1/time-logs?timeZone=${encodeURIComponent(driftedZone)}`,
+        { signal: expect.any(AbortSignal) },
+      );
+    } finally {
+      driftSpy.mockRestore();
     }
   });
 

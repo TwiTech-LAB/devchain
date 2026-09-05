@@ -35,7 +35,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
     this.activation = await this.store.activate();
     this.unregisterDurableSubscriber = this.events.registerDurableSubscriber({
       deliveryKey: EPIC_TIME_DELIVERY_KEY,
-      eventNames: ['epic.created', 'epic.updated'],
+      eventNames: ['epic.created', 'epic.updated', 'epic.comment.created'],
       ordered: true,
       handle: (event) => this.handleCommittedTaskTouch(event),
     });
@@ -68,8 +68,28 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
     return this.requestSessionReconciliation(payload.sessionId);
   }
 
-  async handleCommittedTaskTouch(event: CommittedEvent): Promise<void> {
-    if (event.name !== 'epic.created' && event.name !== 'epic.updated') {
+  handleCommittedTaskTouch(event: CommittedEvent): Promise<void> {
+    return this.enqueue(async () => {
+      // Subscriber registration gates admission; callbacks accepted before
+      // unregistration must drain even if module teardown has since begun.
+      await this.recordCommittedTaskTouch(event);
+      const activation = this.activation;
+      if (activation) {
+        await this.store.processTeamBatches(
+          EPIC_TIME_DELIVERY_KEY,
+          activation.idleTimeoutMs,
+          new Date(),
+        );
+      }
+    });
+  }
+
+  private async recordCommittedTaskTouch(event: CommittedEvent): Promise<void> {
+    if (
+      event.name !== 'epic.created' &&
+      event.name !== 'epic.updated' &&
+      event.name !== 'epic.comment.created'
+    ) {
       return;
     }
     const payload = event.payload as {
@@ -84,15 +104,29 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
     if (payload.actor?.type !== 'agent') {
       return;
     }
-    const createdParentId = event.name === 'epic.created' ? payload.parentId : null;
-    const targetEpicId = createdParentId ?? payload.epicId;
-    const targetEpicTitle =
-      event.name === 'epic.created'
-        ? ((createdParentId ? payload.parentTitle : payload.title) ?? payload.title)
-        : payload.epicTitle;
+
+    let targetEpicId = payload.epicId;
+    let targetEpicTitle = payload.epicTitle;
+    if (event.name === 'epic.created') {
+      if (payload.parentId) {
+        targetEpicId = payload.parentId;
+        targetEpicTitle = payload.parentTitle ?? payload.title;
+      } else {
+        targetEpicTitle = payload.title;
+      }
+    }
+
     if (!targetEpicTitle) {
+      if (event.name === 'epic.comment.created') {
+        logger.warn(
+          { eventId: event.id, eventName: event.name },
+          'Skipping comment task touch without an Epic title snapshot',
+        );
+        return;
+      }
       throw new Error('Committed Epic task touch is missing its target title snapshot.');
     }
+
     await this.store.recordTaskTouch({
       committedEventId: event.id,
       eventName: event.name,
@@ -116,6 +150,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
         activation.idleTimeoutMs,
         now,
       );
+      await this.store.processTeamBatches(EPIC_TIME_DELIVERY_KEY, activation.idleTimeoutMs, now);
     });
   }
 
@@ -138,6 +173,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
           { forceCloseOpenSegment: options.forceCloseOpenSegments ?? false },
         );
       }
+      await this.store.processTeamBatches(EPIC_TIME_DELIVERY_KEY, activation.idleTimeoutMs, now);
     });
   }
 

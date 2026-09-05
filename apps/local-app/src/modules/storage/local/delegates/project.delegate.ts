@@ -5,7 +5,7 @@ import type {
 } from '../../interfaces/storage.interface';
 import type { CreateProject, Project, UpdateProject } from '../../models/domain.models';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import {
   ConflictError,
   StorageError,
@@ -324,11 +324,35 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
     return rows.map((row) => this.mapProject(row));
   }
 
+  async getProjectWorkspaceSnapshot(projectId: string): Promise<Project[]> {
+    // One scalar-subquery statement: if the owner row is missing, the subquery yields
+    // NULL, the equality matches nothing, and the owner lookup below reports it.
+    const rows = await this.db
+      .select()
+      .from(projects)
+      .where(
+        eq(
+          projects.workspaceId,
+          sql`(SELECT workspace_id FROM ${projects} WHERE ${projects.id} = ${projectId})`,
+        ),
+      )
+      .orderBy(asc(projects.id));
+
+    if (!rows.some((row) => row.id === projectId)) {
+      throw new NotFoundError('Project', projectId);
+    }
+
+    return rows.map((row) => this.mapProject(row));
+  }
+
   async updateProject(id: string, data: UpdateProject): Promise<Project> {
     return this.txRunner.runImmediateQueuedOrJoin(() => {
-      this.getProjectSync(id);
+      const current = this.getProjectSync(id);
       const workspaceId =
         data.workspaceId === undefined ? undefined : this.resolveWorkspaceIdSync(data.workspaceId);
+      if (workspaceId !== undefined && workspaceId !== current.workspaceId) {
+        this.ensureWorkspaceMovePreservesRelationsSync(id, workspaceId);
+      }
 
       this.db
         .update(projects)
@@ -401,6 +425,34 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
     return workspaceId;
   }
 
+  private ensureWorkspaceMovePreservesRelationsSync(
+    projectId: string,
+    targetWorkspaceId: string,
+  ): void {
+    const conflict = this.rawClient
+      .prepare(
+        `SELECT relation.id
+         FROM epic_relations relation
+         INNER JOIN epics left_epic ON left_epic.id = relation.left_epic_id
+         INNER JOIN epics right_epic ON right_epic.id = relation.right_epic_id
+         WHERE (left_epic.project_id = ? AND right_epic.project_id <> ?)
+            OR (right_epic.project_id = ? AND left_epic.project_id <> ?)
+         LIMIT 1`,
+      )
+      .get(projectId, projectId, projectId, projectId) as { id: string } | undefined;
+    if (conflict) {
+      throw new ConflictError(
+        'Cannot move a project when the move would split a cross-project Epic relation.',
+        {
+          code: 'PROJECT_WORKSPACE_RELATION_CONFLICT',
+          projectId,
+          targetWorkspaceId,
+          relationId: conflict.id,
+        },
+      );
+    }
+  }
+
   async deleteProject(id: string): Promise<void> {
     const {
       projects,
@@ -428,187 +480,208 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
       tags,
       statuses,
       guests,
+      integrationConnections,
+      teamMembers,
+      teams,
     } = await import('../../db/schema');
     const { eq, inArray } = await import('drizzle-orm');
 
-    // Manual cascade delete to handle foreign key constraints properly
-    // Order matters: delete children before parents
-
-    // Get all IDs we'll need for cascade deletion
-    const projectEpics = await this.db
-      .select({ id: epics.id })
-      .from(epics)
-      .where(eq(epics.projectId, id));
-    const epicIds = projectEpics.map((e) => e.id);
-
-    const projectChatThreads = await this.db
-      .select({ id: chatThreads.id })
-      .from(chatThreads)
-      .where(eq(chatThreads.projectId, id));
-    const threadIds = projectChatThreads.map((t) => t.id);
-
-    const projectMessages =
-      threadIds.length > 0
-        ? await this.db
-            .select({ id: chatMessages.id })
-            .from(chatMessages)
-            .where(inArray(chatMessages.threadId, threadIds))
-        : [];
-    const messageIds = projectMessages.map((m) => m.id);
-
-    const projectAgents = await this.db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(eq(agents.projectId, id));
-    const agentIds = projectAgents.map((a) => a.id);
-
-    const projectDocs = await this.db
-      .select({ id: documents.id })
-      .from(documents)
-      .where(eq(documents.projectId, id));
-    const docIds = projectDocs.map((d) => d.id);
-
-    const projectPrompts = await this.db
-      .select({ id: prompts.id })
-      .from(prompts)
-      .where(eq(prompts.projectId, id));
-    const promptIds = projectPrompts.map((p) => p.id);
-
-    const projectProfiles = await this.db
-      .select({ id: agentProfiles.id })
-      .from(agentProfiles)
-      .where(eq(agentProfiles.projectId, id));
-    const profileIds = projectProfiles.map((p) => p.id);
-
-    const projectTags = await this.db
-      .select({ id: tags.id })
-      .from(tags)
-      .where(eq(tags.projectId, id));
-    const tagIds = projectTags.map((t) => t.id);
-
-    const projectSessions =
-      agentIds.length > 0
-        ? await this.db
-            .select({ id: sessions.id })
-            .from(sessions)
-            .where(inArray(sessions.agentId, agentIds))
-        : [];
-    const sessionIds = projectSessions.map((s) => s.id);
-
-    // Delete in order: deepest children first
-
-    // 1. Chat message-related records
-    if (messageIds.length > 0) {
-      await this.db.delete(chatMessageReads).where(inArray(chatMessageReads.messageId, messageIds));
-      await this.db
-        .delete(chatMessageTargets)
-        .where(inArray(chatMessageTargets.messageId, messageIds));
-      await this.db
-        .delete(chatThreadSessionInvites)
-        .where(inArray(chatThreadSessionInvites.inviteMessageId, messageIds));
-    }
-
-    // 2. Chat activities, members, and other agent-related chat records
-    if (agentIds.length > 0) {
-      await this.db.delete(chatMessageReads).where(inArray(chatMessageReads.agentId, agentIds));
-      await this.db.delete(chatMessageTargets).where(inArray(chatMessageTargets.agentId, agentIds));
-      await this.db
-        .delete(chatThreadSessionInvites)
-        .where(inArray(chatThreadSessionInvites.agentId, agentIds));
-      await this.db.delete(chatActivities).where(inArray(chatActivities.agentId, agentIds));
-      await this.db.delete(chatMembers).where(inArray(chatMembers.agentId, agentIds));
-    }
-
-    // 3. Chat messages
-    if (messageIds.length > 0) {
-      await this.db.delete(chatMessages).where(inArray(chatMessages.threadId, threadIds));
-    }
-
-    // 4. Chat threads
-    if (threadIds.length > 0) {
-      await this.db.delete(chatThreads).where(inArray(chatThreads.id, threadIds));
-    }
-
-    // 5. Session transcripts and sessions (sessions.agentId has onDelete: 'restrict')
-    if (sessionIds.length > 0) {
-      await this.db.delete(transcripts).where(inArray(transcripts.sessionId, sessionIds));
-      await this.db.delete(sessions).where(inArray(sessions.id, sessionIds));
-    }
-
-    // 6. Epic-related records
-    if (epicIds.length > 0) {
-      await this.db.delete(epicComments).where(inArray(epicComments.epicId, epicIds));
-      const projectRecords = await this.db
-        .select({ id: records.id })
-        .from(records)
-        .where(inArray(records.epicId, epicIds));
-      const recordIds = projectRecords.map((r) => r.id);
-      if (recordIds.length > 0) {
-        await this.db.delete(recordTags).where(inArray(recordTags.recordId, recordIds));
-        await this.db.delete(records).where(inArray(records.id, recordIds));
+    await this.txRunner.runImmediateAsync(async () => {
+      const projectConnection = this.db
+        .select({ id: integrationConnections.id })
+        .from(integrationConnections)
+        .where(eq(integrationConnections.projectId, id))
+        .limit(1)
+        .get();
+      if (projectConnection) {
+        throw new ConflictError('Cannot delete a project with an integration connection.', {
+          code: 'PROJECT_HAS_INTEGRATION_CONNECTIONS',
+          projectId: id,
+        });
       }
-      await this.db.delete(epicTags).where(inArray(epicTags.epicId, epicIds));
-    }
 
-    // 7. Delete epics (must be before statuses)
-    if (epicIds.length > 0) {
-      await this.db.delete(epics).where(inArray(epics.id, epicIds));
-    }
+      // Manual cascade delete to handle foreign key constraints properly
+      // Order matters: delete children before parents
 
-    // 8. Document-related records
-    if (docIds.length > 0) {
-      await this.db.delete(documentTags).where(inArray(documentTags.documentId, docIds));
-      await this.db.delete(documents).where(inArray(documents.id, docIds));
-    }
+      // Get all IDs we'll need for cascade deletion
+      const projectEpics = await this.db
+        .select({ id: epics.id })
+        .from(epics)
+        .where(eq(epics.projectId, id));
+      const epicIds = projectEpics.map((e) => e.id);
 
-    // 9. Prompt-related records
-    if (promptIds.length > 0) {
-      await this.db.delete(promptTags).where(inArray(promptTags.promptId, promptIds));
-      await this.db
-        .delete(agentProfilePrompts)
-        .where(inArray(agentProfilePrompts.promptId, promptIds));
-      await this.db.delete(prompts).where(inArray(prompts.id, promptIds));
-    }
+      const projectChatThreads = await this.db
+        .select({ id: chatThreads.id })
+        .from(chatThreads)
+        .where(eq(chatThreads.projectId, id));
+      const threadIds = projectChatThreads.map((t) => t.id);
 
-    // 9b. Teams — team_members then teams (must be BEFORE agents due to FK constraints)
-    const { teamMembers, teams } = await import('../../db/schema');
-    const projectTeams = await this.db
-      .select({ id: teams.id })
-      .from(teams)
-      .where(eq(teams.projectId, id));
-    const teamIds = projectTeams.map((t) => t.id);
+      const projectMessages =
+        threadIds.length > 0
+          ? await this.db
+              .select({ id: chatMessages.id })
+              .from(chatMessages)
+              .where(inArray(chatMessages.threadId, threadIds))
+          : [];
+      const messageIds = projectMessages.map((m) => m.id);
 
-    if (teamIds.length > 0) {
-      await this.db.delete(teamMembers).where(inArray(teamMembers.teamId, teamIds));
-      await this.db.delete(teams).where(inArray(teams.id, teamIds));
-    }
+      const projectAgents = await this.db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.projectId, id));
+      const agentIds = projectAgents.map((a) => a.id);
 
-    // 10. Agents (must be BEFORE agent profiles since agents.profileId references agentProfiles.id)
-    if (agentIds.length > 0) {
-      await this.db.delete(agents).where(inArray(agents.id, agentIds));
-    }
+      const projectDocs = await this.db
+        .select({ id: documents.id })
+        .from(documents)
+        .where(eq(documents.projectId, id));
+      const docIds = projectDocs.map((d) => d.id);
 
-    // 11. Agent profiles (also handles agentProfilePrompts if any remain)
-    if (profileIds.length > 0) {
-      await this.db
-        .delete(agentProfilePrompts)
-        .where(inArray(agentProfilePrompts.profileId, profileIds));
-      await this.db.delete(agentProfiles).where(inArray(agentProfiles.id, profileIds));
-    }
+      const projectPrompts = await this.db
+        .select({ id: prompts.id })
+        .from(prompts)
+        .where(eq(prompts.projectId, id));
+      const promptIds = projectPrompts.map((p) => p.id);
 
-    // 12. Tags
-    if (tagIds.length > 0) {
-      await this.db.delete(tags).where(inArray(tags.id, tagIds));
-    }
+      const projectProfiles = await this.db
+        .select({ id: agentProfiles.id })
+        .from(agentProfiles)
+        .where(eq(agentProfiles.projectId, id));
+      const profileIds = projectProfiles.map((p) => p.id);
 
-    // 13. Statuses (must be after epics)
-    await this.db.delete(statuses).where(eq(statuses.projectId, id));
+      const projectTags = await this.db
+        .select({ id: tags.id })
+        .from(tags)
+        .where(eq(tags.projectId, id));
+      const tagIds = projectTags.map((t) => t.id);
 
-    // 14. Guests
-    await this.db.delete(guests).where(eq(guests.projectId, id));
+      const projectSessions =
+        agentIds.length > 0
+          ? await this.db
+              .select({ id: sessions.id })
+              .from(sessions)
+              .where(inArray(sessions.agentId, agentIds))
+          : [];
+      const sessionIds = projectSessions.map((s) => s.id);
 
-    // 15. Finally, delete the project itself
-    await this.db.delete(projects).where(eq(projects.id, id));
+      // Delete in order: deepest children first
+
+      // 1. Chat message-related records
+      if (messageIds.length > 0) {
+        await this.db
+          .delete(chatMessageReads)
+          .where(inArray(chatMessageReads.messageId, messageIds));
+        await this.db
+          .delete(chatMessageTargets)
+          .where(inArray(chatMessageTargets.messageId, messageIds));
+        await this.db
+          .delete(chatThreadSessionInvites)
+          .where(inArray(chatThreadSessionInvites.inviteMessageId, messageIds));
+      }
+
+      // 2. Chat activities, members, and other agent-related chat records
+      if (agentIds.length > 0) {
+        await this.db.delete(chatMessageReads).where(inArray(chatMessageReads.agentId, agentIds));
+        await this.db
+          .delete(chatMessageTargets)
+          .where(inArray(chatMessageTargets.agentId, agentIds));
+        await this.db
+          .delete(chatThreadSessionInvites)
+          .where(inArray(chatThreadSessionInvites.agentId, agentIds));
+        await this.db.delete(chatActivities).where(inArray(chatActivities.agentId, agentIds));
+        await this.db.delete(chatMembers).where(inArray(chatMembers.agentId, agentIds));
+      }
+
+      // 3. Chat messages
+      if (messageIds.length > 0) {
+        await this.db.delete(chatMessages).where(inArray(chatMessages.threadId, threadIds));
+      }
+
+      // 4. Chat threads
+      if (threadIds.length > 0) {
+        await this.db.delete(chatThreads).where(inArray(chatThreads.id, threadIds));
+      }
+
+      // 5. Session transcripts and sessions (sessions.agentId has onDelete: 'restrict')
+      if (sessionIds.length > 0) {
+        await this.db.delete(transcripts).where(inArray(transcripts.sessionId, sessionIds));
+        await this.db.delete(sessions).where(inArray(sessions.id, sessionIds));
+      }
+
+      // 6. Epic-related records
+      if (epicIds.length > 0) {
+        await this.db.delete(epicComments).where(inArray(epicComments.epicId, epicIds));
+        const projectRecords = await this.db
+          .select({ id: records.id })
+          .from(records)
+          .where(inArray(records.epicId, epicIds));
+        const recordIds = projectRecords.map((r) => r.id);
+        if (recordIds.length > 0) {
+          await this.db.delete(recordTags).where(inArray(recordTags.recordId, recordIds));
+          await this.db.delete(records).where(inArray(records.id, recordIds));
+        }
+        await this.db.delete(epicTags).where(inArray(epicTags.epicId, epicIds));
+      }
+
+      // 7. Delete epics (must be before statuses)
+      if (epicIds.length > 0) {
+        await this.db.delete(epics).where(inArray(epics.id, epicIds));
+      }
+
+      // 8. Document-related records
+      if (docIds.length > 0) {
+        await this.db.delete(documentTags).where(inArray(documentTags.documentId, docIds));
+        await this.db.delete(documents).where(inArray(documents.id, docIds));
+      }
+
+      // 9. Prompt-related records
+      if (promptIds.length > 0) {
+        await this.db.delete(promptTags).where(inArray(promptTags.promptId, promptIds));
+        await this.db
+          .delete(agentProfilePrompts)
+          .where(inArray(agentProfilePrompts.promptId, promptIds));
+        await this.db.delete(prompts).where(inArray(prompts.id, promptIds));
+      }
+
+      // 9b. Teams — team_members then teams (must be BEFORE agents due to FK constraints)
+      const projectTeams = await this.db
+        .select({ id: teams.id })
+        .from(teams)
+        .where(eq(teams.projectId, id));
+      const teamIds = projectTeams.map((t) => t.id);
+
+      if (teamIds.length > 0) {
+        await this.db.delete(teamMembers).where(inArray(teamMembers.teamId, teamIds));
+        await this.db.delete(teams).where(inArray(teams.id, teamIds));
+      }
+
+      // 10. Agents (must be BEFORE agent profiles since agents.profileId references agentProfiles.id)
+      if (agentIds.length > 0) {
+        await this.db.delete(agents).where(inArray(agents.id, agentIds));
+      }
+
+      // 11. Agent profiles (also handles agentProfilePrompts if any remain)
+      if (profileIds.length > 0) {
+        await this.db
+          .delete(agentProfilePrompts)
+          .where(inArray(agentProfilePrompts.profileId, profileIds));
+        await this.db.delete(agentProfiles).where(inArray(agentProfiles.id, profileIds));
+      }
+
+      // 12. Tags
+      if (tagIds.length > 0) {
+        await this.db.delete(tags).where(inArray(tags.id, tagIds));
+      }
+
+      // 13. Statuses (must be after epics)
+      await this.db.delete(statuses).where(eq(statuses.projectId, id));
+
+      // 14. Guests
+      await this.db.delete(guests).where(eq(guests.projectId, id));
+
+      // 15. Finally, delete the project itself
+      await this.db.delete(projects).where(eq(projects.id, id));
+    });
 
     logger.info({ projectId: id }, 'Deleted project and all related records');
   }

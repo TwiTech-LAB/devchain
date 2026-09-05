@@ -22,16 +22,19 @@ jest.mock('@/ui/components/board/BoardColumn', () => ({
     activeParentId,
     externalSources,
     timeTotals,
+    relationQuickLink,
   }: {
     status: Status;
     activeParentId: string | null;
     externalSources?: ReadonlyMap<string, unknown>;
     timeTotals?: ReadonlyMap<string, number>;
+    relationQuickLink?: unknown;
   }) => (
     <div
       data-active-parent-id={activeParentId ?? ''}
       data-has-sources={externalSources?.size ?? 0}
       data-has-time-totals={timeTotals?.size ?? 0}
+      data-has-relation-quick-link={String(Boolean(relationQuickLink))}
     >
       Expanded {status.label}
     </div>
@@ -65,6 +68,9 @@ jest.mock('@/ui/components/board/MoveToWorktreeDialog', () => ({
   MoveToWorktreeDialog: ({ open }: { open: boolean }) => (
     <div>Move dialog {open ? 'open' : 'closed'}</div>
   ),
+}));
+jest.mock('@/ui/components/board/EpicRelationQuickLinkDialog', () => ({
+  EpicRelationQuickLinkDialog: () => null,
 }));
 
 const status: Status = {
@@ -232,6 +238,10 @@ describe('BoardPageView presentation', () => {
     expect(screen.getByText('Expanded Done')).toHaveAttribute('data-active-parent-id', epic.id);
     expect(screen.getByText('Expanded Done')).toHaveAttribute('data-has-sources', '1');
     expect(screen.getByText('Expanded Done')).toHaveAttribute('data-has-time-totals', '1');
+    expect(screen.getByText('Expanded Done')).toHaveAttribute(
+      'data-has-relation-quick-link',
+      'true',
+    );
 
     rerender(
       <BoardPageView

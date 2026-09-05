@@ -4,7 +4,7 @@ import type {
 } from '@/modules/external-integrations/models/external-provider.models';
 import {
   applyExternalTaskStatusSnapshot,
-  canRestoreExternalTaskFromInclusiveSnapshot,
+  hasAuthoritativeExternalTaskOccurrence,
   settleExternalTaskStatusSnapshots,
 } from './external-my-work-snapshot';
 
@@ -158,18 +158,19 @@ describe('applyExternalTaskStatusSnapshot', () => {
         .filter((entry) => entry.task.remoteId === 'CHILD-1')
         .every((entry) => entry.task.status.category === 'active'),
     ).toBe(true);
-    expect(canRestoreExternalTaskFromInclusiveSnapshot(activeOnly, inclusive, 'CHILD-1')).toBe(
-      true,
-    );
+    expect(hasAuthoritativeExternalTaskOccurrence(activeOnly, inclusive, 'CHILD-1')).toBe(true);
+    // Inclusive occurrences may point at work areas the active-only cache
+    // never discovered; one same-provider occurrence is enough assignment
+    // proof, and the restore path attaches only the areas that exist.
     expect(
-      canRestoreExternalTaskFromInclusiveSnapshot(
+      hasAuthoritativeExternalTaskOccurrence(
         { ...activeOnly, workAreas: activeOnly.workAreas.slice(0, 1) },
         inclusive,
         'CHILD-1',
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
-      canRestoreExternalTaskFromInclusiveSnapshot(
+      hasAuthoritativeExternalTaskOccurrence(
         activeOnly,
         {
           ...inclusive,
@@ -178,5 +179,50 @@ describe('applyExternalTaskStatusSnapshot', () => {
         'CHILD-1',
       ),
     ).toBe(false);
+    expect(
+      hasAuthoritativeExternalTaskOccurrence(
+        { ...activeOnly, provider: 'clickup' },
+        inclusive,
+        'CHILD-1',
+      ),
+    ).toBe(false);
+  });
+
+  it('restores only occurrences whose work areas exist and leaves absent areas unattached', () => {
+    const inclusive = applyExternalTaskStatusSnapshot(
+      snapshot(),
+      'CHILD-1',
+      status('completed'),
+      false,
+    );
+    const activeOnly: SupportedSnapshot = {
+      ...inclusive,
+      workAreas: [{ ...inclusive.workAreas[0]!, assignedTaskCount: 1 }],
+      tasks: inclusive.tasks.filter((entry) => entry.task.remoteId !== 'CHILD-1'),
+    };
+
+    const settled = settleExternalTaskStatusSnapshots(
+      { activeOnly, completedInclusive: inclusive },
+      'CHILD-1',
+      status('active'),
+    );
+
+    expect(settled.activeOnly?.tasks.map((entry) => entry.task.remoteId)).toEqual([
+      'OTHER-1',
+      'CHILD-1',
+    ]);
+    expect(settled.activeOnly?.workAreas.map((area) => area.remoteId)).toEqual(['board-1']);
+    expect(settled.activeOnly?.workAreas[0]?.assignedTaskCount).toBe(2);
+    expect(
+      settled.activeOnly?.tasks
+        .filter((entry) => entry.task.remoteId === 'CHILD-1')
+        .every((entry) => entry.workArea.remoteId === 'board-1'),
+    ).toBe(true);
+    expect(
+      settled.completedInclusive?.tasks
+        .filter((entry) => entry.task.remoteId === 'CHILD-1')
+        .every((entry) => entry.task.status.category === 'active'),
+    ).toBe(true);
+    expect(hasAuthoritativeExternalTaskOccurrence(activeOnly, inclusive, 'CHILD-1')).toBe(true);
   });
 });

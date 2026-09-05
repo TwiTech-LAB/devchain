@@ -13,7 +13,7 @@ export const TIME_CREATE_BASELINE_WINDOW_MS = 10 * 60_000;
  * start (Jira rounds worklog starts). */
 export const TIME_ENTRY_START_TOLERANCE_MS = 90_000;
 
-export type ExternalTimeMutationKind = 'create' | 'delete';
+export type ExternalTimeMutationKind = 'create' | 'update' | 'delete';
 
 /**
  * Receipt phases. `pending` and `dispatched` exist only while the request is
@@ -61,6 +61,13 @@ export interface ExternalTimeCreateBaseline {
   complete: boolean;
 }
 
+/** Exact entry state captured before an update is dispatched. */
+export interface ExternalTimeUpdateBaseline {
+  startedAt: string;
+  durationMs: number;
+  noteFingerprint: string;
+}
+
 export interface ExternalTimeMutationReceipt {
   operationId: string;
   kind: ExternalTimeMutationKind;
@@ -69,8 +76,21 @@ export interface ExternalTimeMutationReceipt {
   /** Provider proof: the created/deleted remote entry id once known. */
   remoteEntryId: string | null;
   baseline: ExternalTimeCreateBaseline | null;
+  updateBaseline: ExternalTimeUpdateBaseline | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/** Internal read-only projection used to reconcile durable callers with the
+ * process-local receipt without exposing provider credentials or baselines. */
+export interface ExternalTimeOperationInspection {
+  operationId: string;
+  kind: ExternalTimeMutationKind;
+  tuple: Readonly<ExternalTimeMutationTuple>;
+  phase: ExternalTimeMutationPhase;
+  canVerify: boolean;
+  /** Absolute end of the receipt guarantee; the store drops it after this. */
+  expiresAt: string;
 }
 
 /** Public (wire) shape of a receipt; the tuple fingerprint stays internal. */
@@ -81,9 +101,33 @@ export interface ExternalTimeOperationReceiptView {
   remoteTaskId: string;
   remoteEntryId: string | null;
   phase: ExternalTimeMutationPhase;
+  canVerify: boolean;
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
+}
+
+/** A delete proves itself with one exact-resource read, but a create can only
+ * be proven from a complete before/after id diff: without a complete
+ * pre-dispatch baseline the provider range cannot prove a new entry absent,
+ * so Verify must stay unavailable (ClickUp ranges are never complete). */
+export function timeOperationCanVerify(receipt: {
+  kind: ExternalTimeMutationKind;
+  phase: ExternalTimeMutationPhase;
+  baseline: ExternalTimeCreateBaseline | null;
+  updateBaseline: ExternalTimeUpdateBaseline | null;
+}): boolean {
+  if (receipt.phase !== 'outcome_unknown') {
+    return false;
+  }
+  switch (receipt.kind) {
+    case 'create':
+      return receipt.baseline?.complete === true;
+    case 'update':
+      return receipt.updateBaseline !== null;
+    case 'delete':
+      return true;
+  }
 }
 
 export type ExternalTimeEntryCreateResult =
@@ -104,8 +148,14 @@ export type ExternalTimeEntryDeleteResult =
   | { outcome: 'not_applied'; receipt: ExternalTimeOperationReceiptView }
   | { outcome: 'outcome_unknown'; receipt: ExternalTimeOperationReceiptView };
 
+export type ExternalTimeEntryUpdateResult =
+  | { outcome: 'updated'; receipt: ExternalTimeOperationReceiptView }
+  | { outcome: 'not_applied'; receipt: ExternalTimeOperationReceiptView }
+  | { outcome: 'outcome_unknown'; receipt: ExternalTimeOperationReceiptView };
+
 export type ExternalTimeOperationVerifyResolution =
   | 'created'
+  | 'updated'
   | 'deleted'
   | 'already_deleted'
   | 'not_applied'

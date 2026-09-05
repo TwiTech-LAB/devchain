@@ -9,12 +9,11 @@ import {
   MAX_TASK_DETAIL_SUBTASKS,
   MAX_TASK_DETAIL_TEXT_LENGTH,
   MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH,
-  MAX_EXTERNAL_SUBTASK_OWNERSHIP_TOKEN_LENGTH,
   MAX_EXTERNAL_SUBTASK_TITLE_LENGTH,
   MAX_TIME_ENTRY_HISTORY_ENTRIES,
   MAX_TIME_ENTRY_NOTE_LENGTH,
   TIME_ENTRY_HISTORY_WINDOW_DAYS,
-  EXTERNAL_SUBTASK_MANAGEMENT_NOTE,
+  EXTERNAL_SUBTASK_SOURCE_ID_PATTERN,
   type ExternalDescriptionEditCapability,
   type ExternalMyWorkCapability,
   type ExternalMyWorkOptions,
@@ -77,13 +76,20 @@ import {
 } from './vendor-shared';
 
 const CLICKUP_ORIGIN = 'https://api.clickup.com';
+/** Task URLs an exact proof accepts; app.clickup.com shares never qualify. */
+const CLICKUP_TASK_URL_HOST = 'prod.clickup.com';
 const CLICKUP_TASK_PAGE_SIZE = 100;
 const CLICKUP_MAX_TASK_PAGES = 1_000;
 const CLICKUP_COMMENT_PAGE_SIZE = 25;
 const CLICKUP_SUBTASK_PAGE_SIZE = 100;
 const CLICKUP_SUBTASK_MAX_PAGES = 10;
-const CLICKUP_OWNERSHIP_PREFIX = 'DevChain ownership token: `';
-const CLICKUP_OWNERSHIP_SUFFIX = '`';
+/**
+ * A managed-subtask description ends with the marker as its final line,
+ * optionally preceded by the source description and one blank line. The
+ * marker must be terminal: any trailing or embedded occurrence leaves the
+ * task unowned.
+ */
+const CLICKUP_SOURCE_ID_MARKER_PATTERN = /^(?:([\s\S]*)\n\n)?SourceId: ([0-9a-f]{8})$/;
 const CLICKUP_COMMENT_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
 const CLICKUP_COMMENT_AUTHOR: VendorCommentAuthorSpec = {
   nameKey: 'username',
@@ -128,6 +134,8 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
   readonly timeEntryMutations: ExternalTimeEntryMutationsCapability = {
     createTimeEntry: (credentials, context, remoteTaskId, input) =>
       this.createTimeEntry(credentials, context, remoteTaskId, input),
+    updateTimeEntry: (credentials, context, remoteTaskId, remoteEntryId, input) =>
+      this.updateTimeEntry(credentials, context, remoteTaskId, remoteEntryId, input),
     deleteTimeEntry: (credentials, context, remoteTaskId, remoteEntryId) =>
       this.deleteTimeEntry(credentials, context, remoteTaskId, remoteEntryId),
     readTimeEntryExact: (credentials, context, remoteTaskId, remoteEntryId) =>
@@ -148,6 +156,8 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
       ),
     assertTimeEntryDeletable: (credentials, context, remoteTaskId, remoteEntryId) =>
       this.assertTimeEntryDeletable(credentials, context, remoteTaskId, remoteEntryId),
+    assertTimeEntryEditable: (credentials, context, remoteTaskId, remoteEntryId) =>
+      this.assertTimeEntryEditable(credentials, context, remoteTaskId, remoteEntryId),
   };
   private readonly listMetadataCache = new VendorMetadataCache<CachedWorkAreaMetadata>(
     WORK_AREA_METADATA_CACHE_MAX_ENTRIES,
@@ -434,8 +444,8 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
   }
 
   private managedMarkdown(description: string | null, ownershipToken: string): string {
-    const footer = `${EXTERNAL_SUBTASK_MANAGEMENT_NOTE}\n\n${CLICKUP_OWNERSHIP_PREFIX}${ownershipToken}${CLICKUP_OWNERSHIP_SUFFIX}`;
-    return description === null ? footer : `${description}\n\n${footer}`;
+    const marker = `SourceId: ${ownershipToken}`;
+    return description === null ? marker : `${description}\n\n${marker}`;
   }
 
   private parseManagedMarkdown(value: string | null): {
@@ -445,27 +455,11 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     if (value === null || value === '') {
       return { description: null, ownershipToken: null };
     }
-    const notePosition = value.lastIndexOf(`\n\n${EXTERNAL_SUBTASK_MANAGEMENT_NOTE}\n\n`);
-    const startsWithNote = value.startsWith(`${EXTERNAL_SUBTASK_MANAGEMENT_NOTE}\n\n`);
-    const markerStart =
-      notePosition >= 0
-        ? notePosition + 2 + EXTERNAL_SUBTASK_MANAGEMENT_NOTE.length + 2
-        : startsWithNote
-          ? EXTERNAL_SUBTASK_MANAGEMENT_NOTE.length + 2
-          : -1;
-    if (markerStart < 0 || !value.startsWith(CLICKUP_OWNERSHIP_PREFIX, markerStart)) {
-      return { description: value || null, ownershipToken: null };
+    const match = CLICKUP_SOURCE_ID_MARKER_PATTERN.exec(value);
+    if (match === null) {
+      return { description: value, ownershipToken: null };
     }
-    const tokenStart = markerStart + CLICKUP_OWNERSHIP_PREFIX.length;
-    if (!value.endsWith(CLICKUP_OWNERSHIP_SUFFIX)) {
-      return { description: value || null, ownershipToken: null };
-    }
-    const token = value.slice(tokenStart, -CLICKUP_OWNERSHIP_SUFFIX.length);
-    if (!this.isSubtaskOwnershipToken(token)) {
-      return { description: value || null, ownershipToken: null };
-    }
-    const description = notePosition > 0 ? value.slice(0, notePosition) : null;
-    return { description: description || null, ownershipToken: token };
+    return { description: match[1] || null, ownershipToken: match[2]! };
   }
 
   private requireSubtaskTitle(value: unknown): string {
@@ -490,10 +484,7 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
   }
 
   private isSubtaskOwnershipToken(value: string): boolean {
-    return (
-      value.length <= MAX_EXTERNAL_SUBTASK_OWNERSHIP_TOKEN_LENGTH &&
-      /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
-    );
+    return EXTERNAL_SUBTASK_SOURCE_ID_PATTERN.test(value);
   }
 
   private requireSubtaskOwnershipToken(value: unknown): string {
@@ -929,11 +920,11 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
   ): Promise<ExternalTimeEntryCreateProof> {
     const token = this.requireToken(credentials);
     const taskId = this.validate.requiredTaskId(remoteTaskId);
-    const startedAt = this.validate.timeEntryInput(input);
+    const startedAtMs = this.validate.timeEntryInput(input);
 
     const workspaceId = await this.loadTaskWorkspace(token, taskId);
     const body: Record<string, unknown> = {
-      start: startedAt,
+      start: startedAtMs,
       duration: input.durationMs,
     };
     if (input.note !== null) {
@@ -945,12 +936,110 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
       `${CLICKUP_ORIGIN}/api/v2/team/${encodeURIComponent(workspaceId)}/time_entries`,
       { method: 'POST', body: JSON.stringify(body) },
     );
-    // A confirmed 200 must carry the documented created-entry receipt; any
-    // parse or schema failure leaves the vendor outcome unknown.
-    if (!isRecord(payload) || !this.isDocumentedCreateReceipt(payload, taskId)) {
+    // A confirmed 200 must prove the create before it can count as landed:
+    // the documented flat receipt, the same complete receipt inside a
+    // supported envelope, or one exact GET keyed by the single entry id an
+    // incomplete response named. Any other shape — and any failure inside
+    // the fallback — leaves the vendor outcome unknown: never failed, and
+    // never a second POST.
+    const receipt = this.singularTimeEntryBody(payload);
+    if (receipt !== null && this.isDocumentedCreateReceipt(receipt, taskId)) {
+      return { remoteEntryId: this.optionalIdentifier(receipt.id) };
+    }
+    const entryId = receipt !== null ? this.optionalIdentifier(receipt.id) : null;
+    if (entryId === null) {
       throw new ClickUpProviderError('invalid_response', undefined, true);
     }
-    return { remoteEntryId: this.optionalIdentifier(payload.id) };
+    await this.confirmCreatedEntryExactly(
+      token,
+      workspaceId,
+      entryId,
+      taskId,
+      startedAtMs,
+      input.durationMs,
+    );
+    return { remoteEntryId: entryId };
+  }
+
+  /**
+   * One exact singular-entry GET to prove an incomplete create response.
+   * The POST already landed, so every read or proof failure here —
+   * transport, parse, or tuple mismatch — converts to a dispatched
+   * invalid_response and stays outcome_unknown at the service boundary.
+   */
+  private async confirmCreatedEntryExactly(
+    token: string,
+    workspaceId: string,
+    entryId: string,
+    taskId: string,
+    startedAtMs: number,
+    durationMs: number,
+  ): Promise<void> {
+    try {
+      const payload = await this.requestJson(
+        token,
+        `${CLICKUP_ORIGIN}/api/v2/team/${encodeURIComponent(workspaceId)}/time_entries/${encodeURIComponent(entryId)}`,
+      );
+      const entry = this.singularTimeEntryBody(payload);
+      if (entry === null) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+      const remoteId = this.optionalIdentifier(entry.id);
+      if (remoteId !== entryId) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+      if (!this.provesExactTaskAssociation(entry, taskId)) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+      if (this.numericValue(entry.start) !== startedAtMs) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+      if (this.numericValue(entry.duration) !== durationMs) {
+        throw new ClickUpProviderError('invalid_response');
+      }
+    } catch {
+      throw new ClickUpProviderError('invalid_response', undefined, true);
+    }
+  }
+
+  /**
+   * Task identity for the exact create fallback: the private task object's
+   * id, or the production task URL in exactly its strict /t/<task-id>
+   * form. Notes and ownership play no part in this proof.
+   */
+  private provesExactTaskAssociation(entry: Record<string, unknown>, taskId: string): boolean {
+    if (isRecord(entry.task)) {
+      const taskRemoteId = this.optionalIdentifier(entry.task.id);
+      if (taskRemoteId !== null && taskRemoteId === taskId) {
+        return true;
+      }
+    }
+    return this.isStrictClickUpTaskUrl(entry.task_url, taskId);
+  }
+
+  /** https://prod.clickup.com/t/<task-id> and nothing more — any extra
+   * path, query, fragment, credentials, port, or scheme is not an exact
+   * task proof. */
+  private isStrictClickUpTaskUrl(value: unknown, taskId: string): boolean {
+    if (typeof value !== 'string' || value === '') {
+      return false;
+    }
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return false;
+    }
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === CLICKUP_TASK_URL_HOST &&
+      url.port === '' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.pathname === `/t/${taskId}` &&
+      url.search === '' &&
+      url.hash === ''
+    );
   }
 
   /**
@@ -1021,12 +1110,63 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     if (owner === null) {
       throw new ClickUpProviderError('invalid_response');
     }
+    const description = entry.description;
+    if (description !== null && description !== undefined && typeof description !== 'string') {
+      throw new ClickUpProviderError('invalid_response');
+    }
     return {
       remoteId,
       startedAt: new Date(this.numericValue(entry.start)).toISOString(),
       durationMs: this.numericValue(entry.duration),
+      note: description || null,
       owned: owner === ownerId,
     };
+  }
+
+  private async updateTimeEntry(
+    credentials: IntegrationCredentials,
+    _context: ExternalProviderConnectionContext,
+    remoteTaskId: string,
+    remoteEntryId: string,
+    input: ExternalTaskTimeEntryInput,
+  ): Promise<void> {
+    const token = this.requireToken(credentials);
+    const taskId = this.validate.requiredTaskId(remoteTaskId);
+    const entryId = this.validate.requiredIdentifier(remoteEntryId);
+    const startedAtMs = this.validate.timeEntryInput(input);
+    const workspaceId = await this.loadTaskWorkspace(token, taskId);
+    await this.requestJson(
+      token,
+      `${CLICKUP_ORIGIN}/api/v2/team/${encodeURIComponent(workspaceId)}/time_entries/${encodeURIComponent(entryId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          start: startedAtMs,
+          end: startedAtMs + input.durationMs,
+          duration: input.durationMs,
+          description: input.note ?? '',
+        }),
+      },
+    );
+  }
+
+  private async assertTimeEntryEditable(
+    credentials: IntegrationCredentials,
+    context: ExternalProviderConnectionContext,
+    remoteTaskId: string,
+    remoteEntryId: string,
+  ): Promise<ExternalTimeEntryExactRead> {
+    // ClickUp's singular entry does not consistently carry a task id, so the
+    // task-filtered own-entry range remains the association/ownership proof.
+    await this.assertTimeEntryDeletable(credentials, context, remoteTaskId, remoteEntryId);
+    const exact = await this.readTimeEntryExact(credentials, context, remoteTaskId, remoteEntryId);
+    if (exact === null) {
+      throw new ClickUpProviderError('not_found');
+    }
+    if (!exact.owned) {
+      throw new ClickUpProviderError('permission_denied');
+    }
+    return exact;
   }
 
   /**
@@ -1248,6 +1388,7 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
         noteTruncated: note.length > MAX_TIME_ENTRY_NOTE_LENGTH,
         // A personal token acts with its user's full rights, so owning the
         // entry is the whole permission proof ClickUp offers.
+        canEdit: true,
         canDelete: true,
       },
       running: false,
@@ -1410,6 +1551,7 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
           continue;
         }
         result.push(task);
+        result.push(...this.supplementalListMemberships(value, workspace, task));
       }
 
       if (payload.tasks.length < CLICKUP_TASK_PAGE_SIZE) {
@@ -1445,22 +1587,11 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     const remoteId = this.validate.requiredIdentifier(value.id);
     const statusType = this.validate.requiredString(value.status.type).toLowerCase();
     const completedAt = this.optionalTimestamp(value.date_done ?? value.date_closed);
-    const workArea = {
-      remoteId: this.validate.requiredIdentifier(value.list.id),
-      scopeKey: workspace.id,
-      name: this.validate.requiredString(value.list.name),
-      kind: 'list' as const,
-      description: null,
-      assignedTaskCount: 0,
-      hierarchy: [{ kind: 'workspace' as const, remoteId: workspace.id, name: workspace.name }],
-      workflow: { isOverridden: false, columns: [] },
-      refresh: {
-        state: 'error' as const,
-        refreshedAt: null,
-        retryable: true,
-        retryAt: null,
-      },
-    };
+    const workArea = this.baseListWorkArea(
+      workspace,
+      this.validate.requiredIdentifier(value.list.id),
+      this.validate.requiredString(value.list.name),
+    );
     return {
       workArea,
       task: {
@@ -1479,6 +1610,62 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
         dueAt: this.optionalTimestamp(value.due_date),
         completedAt,
         webUrl: this.safeTaskUrl(value.url),
+      },
+    };
+  }
+
+  /**
+   * Additional ClickUp List memberships arrive in the provider's optional
+   * `locations` array as `{ id, name }` List references. Each entry is parsed
+   * leniently on its own: a malformed entry is skipped so it can never hide
+   * the home-List projection, unlike the canonical `payload.list` which
+   * stays strictly validated.
+   */
+  private supplementalListMemberships(
+    value: Record<string, unknown>,
+    workspace: ClickUpWorkspace,
+    home: ExternalWorkAreaTask,
+  ): ExternalWorkAreaTask[] {
+    if (!Array.isArray(value.locations)) {
+      return [];
+    }
+    const memberships: ExternalWorkAreaTask[] = [];
+    for (const location of value.locations) {
+      if (!isRecord(location)) {
+        continue;
+      }
+      const remoteId = this.optionalIdentifier(location.id);
+      const name = typeof location.name === 'string' ? location.name.trim() : '';
+      if (remoteId === null || !name) {
+        continue;
+      }
+      memberships.push({
+        workArea: this.baseListWorkArea(workspace, remoteId, name),
+        task: home.task,
+      });
+    }
+    return memberships;
+  }
+
+  private baseListWorkArea(
+    workspace: ClickUpWorkspace,
+    remoteId: string,
+    name: string,
+  ): ExternalWorkArea {
+    return {
+      remoteId,
+      scopeKey: workspace.id,
+      name,
+      kind: 'list',
+      description: null,
+      assignedTaskCount: 0,
+      hierarchy: [{ kind: 'workspace' as const, remoteId: workspace.id, name: workspace.name }],
+      workflow: { isOverridden: false, columns: [] },
+      refresh: {
+        state: 'error' as const,
+        refreshedAt: null,
+        retryable: true,
+        retryAt: null,
       },
     };
   }
@@ -1574,9 +1761,9 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     additions: ExternalWorkAreaTask[],
   ): void {
     for (const item of additions) {
-      const taskKey = `${item.workArea.scopeKey}:${item.task.remoteId}`;
-      if (!tasks.has(taskKey)) {
-        tasks.set(taskKey, item);
+      const membershipKey = this.workAreaKey(item.workArea, item.task.remoteId);
+      if (!tasks.has(membershipKey)) {
+        tasks.set(membershipKey, item);
       }
     }
   }
@@ -1818,8 +2005,12 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     return url;
   }
 
-  private workAreaKey(workArea: ExternalWorkArea): string {
-    return JSON.stringify([workArea.scopeKey, workArea.remoteId]);
+  private workAreaKey(workArea: ExternalWorkArea, taskId?: string): string {
+    const parts = [workArea.scopeKey, workArea.remoteId];
+    if (taskId !== undefined) {
+      parts.push(taskId);
+    }
+    return JSON.stringify(parts);
   }
 
   private optionalDescription(value: unknown): string | null {

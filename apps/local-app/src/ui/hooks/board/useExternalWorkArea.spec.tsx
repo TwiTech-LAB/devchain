@@ -7,6 +7,7 @@ import { useExternalWorkArea } from './useExternalWorkArea';
 // Layer: hook unit. The fetch factory is mocked because this spec owns the URL,
 // query-key, and board-derivation contract; worktree-aware fetch has its own suite.
 const fetchMock = jest.fn();
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({
   useFetchFactory: () => fetchMock,
@@ -53,13 +54,18 @@ describe('useExternalWorkArea', () => {
     });
 
     const { result } = renderHook(
-      () => useExternalWorkArea('clickup', 'list-1', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalWorkArea('clickup', 'list-1', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/integrations/my-work/clickup?includeCompleted=false',
+      `/api/integrations/my-work/clickup?includeCompleted=false&projectId=${PROJECT_ID}`,
       { signal: expect.any(AbortSignal) },
     );
     expect(result.current.data).toEqual(
@@ -109,13 +115,18 @@ describe('useExternalWorkArea', () => {
     });
 
     const { result } = renderHook(
-      () => useExternalWorkArea('clickup', 'list-1', { connectionEpoch, includeCompleted: true }),
+      () =>
+        useExternalWorkArea('clickup', 'list-1', {
+          connectionEpoch,
+          includeCompleted: true,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/integrations/my-work/clickup?includeCompleted=true',
+      `/api/integrations/my-work/clickup?includeCompleted=true&projectId=${PROJECT_ID}`,
       { signal: expect.any(AbortSignal) },
     );
 

@@ -82,6 +82,7 @@ describe('ProjectsController', () => {
       exportProject: jest.fn(),
       importProject: jest.fn(),
       updateProject: jest.fn(),
+      deleteProject: jest.fn(),
       getTemplateManifestForProject: jest.fn(),
       getBundledUpgradesForProjects: jest.fn().mockReturnValue(new Map()),
     };
@@ -2041,42 +2042,25 @@ describe('ProjectsController', () => {
   });
 
   describe('DELETE /api/projects/:id', () => {
-    it('deletes project and clears template metadata, presets, and activePreset', async () => {
-      storage.deleteProject.mockResolvedValue(undefined);
-      settingsService.clearProjectTemplateMetadata.mockResolvedValue(undefined);
-      settingsService.clearProjectPresets.mockResolvedValue(undefined);
-      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest
-        .fn()
-        .mockResolvedValue(undefined);
+    it('routes deletion and cleanup through ProjectsService', async () => {
+      projectsService.deleteProject!.mockResolvedValue(undefined);
 
       await controller.deleteProject('p1');
 
-      expect(storage.deleteProject).toHaveBeenCalledWith('p1');
-      expect(settingsService.clearProjectTemplateMetadata).toHaveBeenCalledWith('p1');
-      expect(settingsService.clearProjectPresets).toHaveBeenCalledWith('p1');
-      expect(
-        (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
-      ).toHaveBeenCalledWith('p1', null);
+      expect(projectsService.deleteProject).toHaveBeenCalledWith('p1');
+      expect(storage.deleteProject).not.toHaveBeenCalled();
+      expect(settingsService.clearProjectTemplateMetadata).not.toHaveBeenCalled();
+      expect(settingsService.clearProjectPresets).not.toHaveBeenCalled();
     });
 
-    it('clears template metadata, presets, and activePreset even if project had none', async () => {
-      storage.deleteProject.mockResolvedValue(undefined);
-      settingsService.clearProjectTemplateMetadata.mockResolvedValue(undefined);
-      settingsService.clearProjectPresets.mockResolvedValue(undefined);
-      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest
-        .fn()
-        .mockResolvedValue(undefined);
+    it('propagates ProjectsService deletion failures', async () => {
+      projectsService.deleteProject!.mockRejectedValue(new Error('delete failed'));
 
-      await controller.deleteProject('project-without-metadata');
-
-      // Should still call clear to ensure cleanup
-      expect(settingsService.clearProjectTemplateMetadata).toHaveBeenCalledWith(
-        'project-without-metadata',
+      await expect(controller.deleteProject('project-without-metadata')).rejects.toThrow(
+        'delete failed',
       );
-      expect(settingsService.clearProjectPresets).toHaveBeenCalledWith('project-without-metadata');
-      expect(
-        (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
-      ).toHaveBeenCalledWith('project-without-metadata', null);
+
+      expect(projectsService.deleteProject).toHaveBeenCalledWith('project-without-metadata');
     });
 
     it('rejects delete mutation for non-scoped project when CONTAINER_PROJECT_ID is set', async () => {
@@ -2089,7 +2073,7 @@ describe('ProjectsController', () => {
 
       await expect(controller.deleteProject('p2')).rejects.toThrow(ForbiddenException);
 
-      expect(storage.deleteProject).not.toHaveBeenCalled();
+      expect(projectsService.deleteProject).not.toHaveBeenCalled();
       expect(settingsService.clearProjectTemplateMetadata).not.toHaveBeenCalled();
       expect(settingsService.clearProjectPresets).not.toHaveBeenCalled();
       expect(

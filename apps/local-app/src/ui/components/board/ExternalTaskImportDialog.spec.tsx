@@ -26,18 +26,8 @@ const detail: ExternalTaskDetail = {
   linkState: { linked: false, epicId: null },
 };
 
-const projects = {
-  data: {
-    items: [
-      { id: 'project-1', name: 'Product' },
-      { id: 'project-2', name: 'Platform' },
-    ],
-  },
-};
-
-function controllerValue(projectItems = projects.data.items) {
+function controllerValue() {
   return {
-    projects: { data: { items: projectItems } },
     statuses: {
       data: {
         items: [
@@ -62,68 +52,67 @@ function controllerValue(projectItems = projects.data.items) {
   };
 }
 
+function renderDialog(overrides: Partial<Parameters<typeof ExternalTaskImportDialog>[0]> = {}) {
+  return render(
+    <ExternalTaskImportDialog
+      provider="clickup"
+      detail={detail}
+      open
+      enabled
+      connectionEpoch="connection-clickup-a:1"
+      projectId="project-1"
+      projectName="Product"
+      onOpenChange={jest.fn()}
+      onImported={jest.fn()}
+      {...overrides}
+    />,
+  );
+}
+
 describe('ExternalTaskImportDialog', () => {
+  beforeEach(() => {
+    useExternalTaskImportMock.mockReset();
+    useExternalTaskImportMock.mockReturnValue(controllerValue());
+  });
+
   it.each([true, false])(
-    'prefills safe text and navigates from the minimal response when created=%s',
+    'fixes the form to the Board project and navigates when created=%s',
     async (created) => {
       const user = userEvent.setup();
-      const mutate = jest.fn();
+      const controller = controllerValue();
       const onImported = jest.fn();
-      useExternalTaskImportMock.mockReturnValue({
-        projects: { data: { items: [{ id: 'project-1', name: 'Product' }] } },
-        statuses: {
-          data: {
-            items: [
-              {
-                id: 'status-1',
-                projectId: 'project-1',
-                label: 'New',
-                color: '#777777',
-                position: 0,
-              },
-            ],
-          },
-          isLoading: false,
-        },
-        mutation: { mutate, reset: jest.fn(), isPending: false, isError: false, error: null },
-      });
+      useExternalTaskImportMock.mockReturnValue(controller);
+      const { baseElement } = renderDialog({ onImported });
 
-      const { baseElement } = render(
-        <ExternalTaskImportDialog
-          provider="clickup"
-          detail={detail}
-          open
-          enabled
-          connectionEpoch="connection-clickup-a:1"
-          onOpenChange={jest.fn()}
-          onImported={onImported}
-        />,
-      );
-
+      expect(screen.getByText('Product')).toBeInTheDocument();
+      expect(screen.queryByRole('combobox', { name: 'Project' })).not.toBeInTheDocument();
       expect(screen.getByLabelText('Title')).toHaveValue(detail.title);
       expect(screen.getByLabelText('Description')).toHaveValue(detail.description);
       expect(baseElement.querySelector('script')).toBeNull();
-      expect(screen.getByRole('button', { name: 'Create task' })).toBeDisabled();
 
-      await user.selectOptions(screen.getByLabelText('Project'), 'project-1');
       await user.selectOptions(screen.getByLabelText('Status'), 'status-1');
       await user.clear(screen.getByLabelText('Title'));
       await user.type(screen.getByLabelText('Title'), 'Edited title');
       await user.click(screen.getByRole('button', { name: 'Create task' }));
 
-      expect(mutate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: 'project-1',
+      expect(controller.mutation.mutate).toHaveBeenCalledWith(
+        {
           statusId: 'status-1',
           title: 'Edited title',
-        }),
+          description: detail.description,
+        },
         expect.objectContaining({ onSuccess: expect.any(Function) }),
       );
-      const mutationOptions = mutate.mock.calls[0][1];
+      const mutationOptions = controller.mutation.mutate.mock.calls[0]![1];
       const epicId = created ? 'new-epic' : 'existing-epic';
       mutationOptions.onSuccess({ epic: { id: epicId, projectId: 'project-1' }, created });
       expect(onImported).toHaveBeenCalledWith(epicId);
-      expect(await axe(baseElement)).toHaveNoViolations();
+      expect(useExternalTaskImportMock).toHaveBeenLastCalledWith(
+        'clickup',
+        detail,
+        'project-1',
+        expect.objectContaining({ projectName: 'Product' }),
+      );
     },
   );
 
@@ -136,17 +125,6 @@ describe('ExternalTaskImportDialog', () => {
     ],
   ])('closing via %s restores focus to the supplied target', async (_case, close) => {
     const user = userEvent.setup();
-    useExternalTaskImportMock.mockReturnValue({
-      projects: { data: { items: [] } },
-      statuses: { data: undefined, isLoading: false },
-      mutation: {
-        mutate: jest.fn(),
-        reset: jest.fn(),
-        isPending: false,
-        isError: false,
-        error: null,
-      },
-    });
     const origin = document.createElement('button');
     origin.textContent = 'Create DevChain task';
     document.body.appendChild(origin);
@@ -160,6 +138,8 @@ describe('ExternalTaskImportDialog', () => {
           open={open}
           enabled
           connectionEpoch="connection-clickup-a:1"
+          projectId="project-1"
+          projectName="Product"
           onOpenChange={setOpen}
           onImported={jest.fn()}
           returnFocusTo={() => origin}
@@ -169,162 +149,53 @@ describe('ExternalTaskImportDialog', () => {
     render(<Harness />);
 
     await close(user);
-
-    // Radix's default close-focus target for a triggerless dialog is body;
-    // the explicit target must win.
     await waitFor(() => expect(origin).toHaveFocus());
     expect(document.activeElement).not.toBe(document.body);
     origin.remove();
   });
-});
 
-describe('ExternalTaskImportDialog project preselection', () => {
-  beforeEach(() => {
-    useExternalTaskImportMock.mockReset();
-    useExternalTaskImportMock.mockReturnValue(controllerValue());
-  });
+  it('resets status when the owning Board project changes', async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderDialog();
+    await user.selectOptions(screen.getByLabelText('Status'), 'status-1');
 
-  function renderDialog(overrides: Partial<Parameters<typeof ExternalTaskImportDialog>[0]> = {}) {
-    return render(
+    rerender(
       <ExternalTaskImportDialog
         provider="clickup"
         detail={detail}
         open
         enabled
-        connectionEpoch="connection-clickup-a:1"
+        connectionEpoch="connection-clickup-b:2"
+        projectId="project-2"
+        projectName="Platform"
         onOpenChange={jest.fn()}
         onImported={jest.fn()}
-        {...overrides}
       />,
     );
-  }
 
-  it('preselects the initial project, leaves status empty, and starts the status wiring', () => {
-    renderDialog({ initialProjectId: 'project-2' });
-
-    expect(screen.getByLabelText('Project')).toHaveValue('project-2');
-    expect(screen.getByLabelText('Status')).toHaveValue('');
-    expect(screen.getByLabelText('Status')).toBeEnabled();
-    // The preselected project reaches the import hook, which scopes the
-    // project status query.
-    expect(useExternalTaskImportMock).toHaveBeenCalledWith(
+    await waitFor(() => expect(screen.getByLabelText('Status')).toHaveValue(''));
+    expect(screen.getByText('Platform')).toBeInTheDocument();
+    expect(useExternalTaskImportMock).toHaveBeenLastCalledWith(
       'clickup',
       detail,
       'project-2',
-      expect.anything(),
+      expect.objectContaining({ projectName: 'Platform' }),
     );
   });
 
-  it('preserves an empty selection when no initial project is supplied', () => {
-    renderDialog();
-
-    expect(screen.getByLabelText('Project')).toHaveValue('');
+  it('stays unavailable without an owning Board project', () => {
+    renderDialog({ projectId: null, projectName: null });
+    expect(screen.getByRole('button', { name: 'Create task' })).toBeDisabled();
     expect(useExternalTaskImportMock).toHaveBeenLastCalledWith(
       'clickup',
       detail,
-      '',
+      null,
       expect.anything(),
     );
   });
 
-  it('keeps a manual project choice when the initial project changes while open', async () => {
-    const user = userEvent.setup();
-    const { rerender } = renderDialog({ initialProjectId: 'project-1' });
-
-    await user.selectOptions(screen.getByLabelText('Project'), 'project-2');
-
-    rerender(
-      <ExternalTaskImportDialog
-        provider="clickup"
-        detail={detail}
-        open
-        enabled
-        connectionEpoch="connection-clickup-a:1"
-        onOpenChange={jest.fn()}
-        onImported={jest.fn()}
-        initialProjectId="project-1"
-      />,
-    );
-
-    expect(screen.getByLabelText('Project')).toHaveValue('project-2');
-  });
-
-  it('clears a stale preselection once the project list resolves without it', async () => {
-    useExternalTaskImportMock.mockReturnValue({
-      projects: { data: undefined },
-      statuses: { data: undefined, isLoading: false },
-      mutation: {
-        mutate: jest.fn(),
-        reset: jest.fn(),
-        isPending: false,
-        isError: false,
-        error: null,
-      },
-    });
-    const { rerender } = renderDialog({ initialProjectId: 'deleted-project' });
-
-    useExternalTaskImportMock.mockReturnValue(
-      controllerValue([{ id: 'project-1', name: 'Product' }]),
-    );
-    rerender(
-      <ExternalTaskImportDialog
-        provider="clickup"
-        detail={detail}
-        open
-        enabled
-        connectionEpoch="connection-clickup-a:1"
-        onOpenChange={jest.fn()}
-        onImported={jest.fn()}
-        initialProjectId="deleted-project"
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByLabelText('Project')).toHaveValue(''));
-    expect(useExternalTaskImportMock).toHaveBeenLastCalledWith(
-      'clickup',
-      detail,
-      '',
-      expect.anything(),
-    );
-  });
-
-  it('reopens with the then-current selected project', async () => {
-    const user = userEvent.setup();
-    function Harness({ initialProjectId }: { initialProjectId: string | undefined }) {
-      const [open, setOpen] = useState(true);
-      return (
-        <>
-          <button type="button" onClick={() => setOpen(true)}>
-            Reopen
-          </button>
-          <ExternalTaskImportDialog
-            provider="clickup"
-            detail={detail}
-            open={open}
-            enabled
-            connectionEpoch="connection-clickup-a:1"
-            onOpenChange={setOpen}
-            onImported={jest.fn()}
-            initialProjectId={initialProjectId}
-          />
-        </>
-      );
-    }
-    const { rerender } = render(<Harness initialProjectId="project-1" />);
-    expect(screen.getByLabelText('Project')).toHaveValue('project-1');
-
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByLabelText('Project')).not.toBeInTheDocument();
-
-    rerender(<Harness initialProjectId="project-2" />);
-    await user.click(screen.getByRole('button', { name: 'Reopen' }));
-
-    expect(screen.getByLabelText('Project')).toHaveValue('project-2');
-  });
-
-  it('keeps the preselected form free of accessibility violations', async () => {
-    const { baseElement } = renderDialog({ initialProjectId: 'project-1' });
-
+  it('has no accessibility violations', async () => {
+    const { baseElement } = renderDialog();
     expect(await axe(baseElement)).toHaveNoViolations();
   });
 });

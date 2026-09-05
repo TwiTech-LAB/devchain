@@ -36,6 +36,8 @@ function wrapper(client: QueryClient) {
 }
 
 const connectionEpoch = 'connection-jira-a:1';
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+const PROJECT_B_ID = '22222222-2222-4222-8222-222222222222';
 const landingActiveKey = externalMyWorkQueryKeys.landingSnapshot('jira', connectionEpoch, false);
 const landingCompletedKey = externalMyWorkQueryKeys.landingSnapshot('jira', connectionEpoch, true);
 const detailKey = externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, 'ENG-1');
@@ -159,12 +161,34 @@ const doneTarget: ExternalTaskMoveTarget = {
 
 function detailFetchCount(): number {
   return fetchMock.mock.calls.filter(
-    ([url, init]) => String(url).endsWith('/tasks/ENG-1') && !init?.method,
+    ([url, init]) => String(url).includes('/tasks/ENG-1?') && !init?.method,
   ).length;
 }
 
 function statusWriteCount(): number {
-  return fetchMock.mock.calls.filter(([url, _init]) => String(url).endsWith('/status')).length;
+  return fetchMock.mock.calls.filter(([url, _init]) => String(url).includes('/status?')).length;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function successfulActionResponse() {
+  return {
+    ok: true,
+    json: async () => ({
+      remoteTaskId: 'ENG-1',
+      action: 'change_status',
+      succeeded: true,
+      refresh: ['my_work', 'task_detail'],
+    }),
+  };
 }
 
 describe('resolveExternalMoveOptions', () => {
@@ -305,7 +329,7 @@ describe('useExternalTaskMove', () => {
           }),
         });
       }
-      if (String(url).endsWith('/tasks/ENG-1')) {
+      if (String(url).includes('/tasks/ENG-1?')) {
         return Promise.resolve({
           ok: true,
           json: async () =>
@@ -332,7 +356,12 @@ describe('useExternalTaskMove', () => {
 
   it('tracks drag identity without any provider request', () => {
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -344,7 +373,12 @@ describe('useExternalTaskMove', () => {
 
   it('announces keyboard boundary attempts without a provider request', () => {
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -357,7 +391,12 @@ describe('useExternalTaskMove', () => {
   it('performs one fresh detail load and one status write per requested move', async () => {
     seedLanding();
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -368,7 +407,7 @@ describe('useExternalTaskMove', () => {
 
     expect(detailFetchCount()).toBe(1);
     expect(statusWriteCount()).toBe(1);
-    const [, init] = fetchMock.mock.calls.find(([url, _init]) => String(url).endsWith('/status'))!;
+    const [, init] = fetchMock.mock.calls.find(([url, _init]) => String(url).includes('/status?'))!;
     expect(init).toEqual(
       expect.objectContaining({
         method: 'PUT',
@@ -387,7 +426,12 @@ describe('useExternalTaskMove', () => {
   it('issues at most one remote write for two same-tick move requests', async () => {
     seedLanding();
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -404,7 +448,12 @@ describe('useExternalTaskMove', () => {
   it('reloads current transitions for a second consecutive move', async () => {
     seedLanding();
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -435,7 +484,12 @@ describe('useExternalTaskMove', () => {
     ],
   ])('rejects a %s before any provider request', async (_case, request, expected) => {
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -463,7 +517,12 @@ describe('useExternalTaskMove', () => {
   ])('produces no write for a %s and releases the latch', async (_case, target) => {
     seedLanding();
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -484,7 +543,7 @@ describe('useExternalTaskMove', () => {
 
   it('produces no write when the provider marks status change unsupported', async () => {
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith('/tasks/ENG-1')) {
+      if (String(url).includes('/tasks/ENG-1?')) {
         const detail = detailFixture([
           optionFixture('21', 'In Progress', 'status-progress', 'active'),
         ]);
@@ -497,7 +556,12 @@ describe('useExternalTaskMove', () => {
     });
     seedLanding();
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -523,7 +587,7 @@ describe('useExternalTaskMove', () => {
           }),
         });
       }
-      if (String(url).endsWith('/tasks/ENG-1')) {
+      if (String(url).includes('/tasks/ENG-1?')) {
         return Promise.resolve({
           ok: true,
           json: async () =>
@@ -536,7 +600,12 @@ describe('useExternalTaskMove', () => {
       throw new Error(`unexpected request: ${String(url)}`);
     });
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -562,7 +631,7 @@ describe('useExternalTaskMove', () => {
     });
     await waitFor(() => expect(result.current.announcement).toBe(MOVE_SUCCESS_ANNOUNCEMENT));
 
-    const [, init] = fetchMock.mock.calls.find(([url, _init]) => String(url).endsWith('/status'))!;
+    const [, init] = fetchMock.mock.calls.find(([url, _init]) => String(url).includes('/status?'))!;
     expect(init).toEqual(
       expect.objectContaining({
         method: 'PUT',
@@ -587,7 +656,7 @@ describe('useExternalTaskMove', () => {
     });
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (init?.method === 'PUT') return pendingWrite;
-      if (String(url).endsWith('/tasks/ENG-1')) {
+      if (String(url).includes('/tasks/ENG-1?')) {
         return Promise.resolve({
           ok: true,
           json: async () =>
@@ -600,7 +669,12 @@ describe('useExternalTaskMove', () => {
       throw new Error(`unexpected request: ${String(url)}`);
     });
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -638,7 +712,7 @@ describe('useExternalTaskMove', () => {
   it('releases the latch when the choice dialog is canceled', async () => {
     seedLanding();
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith('/tasks/ENG-1')) {
+      if (String(url).includes('/tasks/ENG-1?')) {
         return Promise.resolve({
           ok: true,
           json: async () =>
@@ -651,7 +725,12 @@ describe('useExternalTaskMove', () => {
       throw new Error(`unexpected request: ${String(url)}`);
     });
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -670,7 +749,12 @@ describe('useExternalTaskMove', () => {
   it('patches every same-ID task copy optimistically and keeps the patch on success', async () => {
     const snapshot = seedLanding();
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -701,7 +785,12 @@ describe('useExternalTaskMove', () => {
   it('removes active-only completed moves from the snapshot and decrements each affected count once', async () => {
     const snapshot = seedLanding();
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -724,7 +813,12 @@ describe('useExternalTaskMove', () => {
   it('keeps a completed move visible in a completed-inclusive scope', async () => {
     seedLanding();
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: true }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: true,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -751,7 +845,7 @@ describe('useExternalTaskMove', () => {
           json: async () => ({ message: 'Provider unavailable' }),
         });
       }
-      if (String(url).endsWith('/tasks/ENG-1')) {
+      if (String(url).includes('/tasks/ENG-1?')) {
         return Promise.resolve({
           ok: true,
           json: async () =>
@@ -764,7 +858,12 @@ describe('useExternalTaskMove', () => {
       throw new Error(`unexpected request: ${String(url)}`);
     });
     const { result } = renderHook(
-      () => useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+      () =>
+        useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -786,7 +885,7 @@ describe('useExternalTaskMove', () => {
   it('clears in-flight state when the connection epoch changes', async () => {
     seedLanding();
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith('/tasks/ENG-1')) {
+      if (String(url).includes('/tasks/ENG-1?')) {
         return Promise.resolve({
           ok: true,
           json: async () =>
@@ -800,7 +899,11 @@ describe('useExternalTaskMove', () => {
     });
     const { result, rerender } = renderHook(
       (epoch: string | null) =>
-        useExternalTaskMove('jira', { connectionEpoch: epoch, includeCompleted: false }),
+        useExternalTaskMove('jira', {
+          connectionEpoch: epoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient), initialProps: connectionEpoch },
     );
 
@@ -814,6 +917,179 @@ describe('useExternalTaskMove', () => {
 
     expect(result.current.choice).toBeNull();
     expect(result.current.dragSource).toBeNull();
+    expect(result.current.pendingTaskId).toBeNull();
+  });
+
+  it.each([
+    {
+      caseName: 'connection epoch N changes to N+1',
+      initial: { epoch: connectionEpoch, projectId: PROJECT_ID },
+      next: { epoch: 'connection-jira-a:2', projectId: PROJECT_ID },
+    },
+    {
+      caseName: 'Project A changes to Project B',
+      initial: { epoch: connectionEpoch, projectId: PROJECT_ID },
+      next: { epoch: 'connection-jira-b:1', projectId: PROJECT_B_ID },
+    },
+  ])('drops a deferred fresh-detail continuation when $caseName', async ({ initial, next }) => {
+    const pendingDetail = deferred<{
+      ok: boolean;
+      json: () => Promise<ExternalTaskDetail>;
+    }>();
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') return Promise.resolve(successfulActionResponse());
+      if (String(url).includes('/tasks/ENG-1?')) return pendingDetail.promise;
+      throw new Error(`unexpected request: ${String(url)}`);
+    });
+    seedLanding();
+    const { result, rerender } = renderHook(
+      ({ epoch, projectId }: { epoch: string; projectId: string }) =>
+        useExternalTaskMove('jira', {
+          connectionEpoch: epoch,
+          includeCompleted: false,
+          projectId,
+        }),
+      { wrapper: wrapper(queryClient), initialProps: initial },
+    );
+
+    act(() => result.current.requestMove({ source, target: progressTarget }));
+    await waitFor(() => expect(detailFetchCount()).toBe(1));
+
+    rerender(next);
+    expect(result.current.pendingTaskId).toBeNull();
+    expect(result.current.announcement).toBeNull();
+
+    await act(async () => {
+      pendingDetail.resolve({
+        ok: true,
+        json: async () =>
+          detailFixture([optionFixture('21', 'In Progress', 'status-progress', 'active')]),
+      });
+      await pendingDetail.promise;
+    });
+
+    expect(statusWriteCount()).toBe(0);
+    expect(result.current.choice).toBeNull();
+    expect(result.current.pendingTaskId).toBeNull();
+    expect(result.current.announcement).toBeNull();
+    expect(result.current.settledMove).toBeNull();
+  });
+
+  it('ignores a transition choice callback captured by a stale scope', async () => {
+    seedLanding();
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') return Promise.resolve(successfulActionResponse());
+      if (String(url).includes('/tasks/ENG-1?')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            detailFixture([
+              optionFixture('31', 'Done', 'status-done', 'completed'),
+              optionFixture('61', 'Done', 'status-done', 'completed'),
+            ]),
+        });
+      }
+      throw new Error(`unexpected request: ${String(url)}`);
+    });
+    const { result, rerender } = renderHook(
+      (epoch: string) =>
+        useExternalTaskMove('jira', {
+          connectionEpoch: epoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
+      { wrapper: wrapper(queryClient), initialProps: connectionEpoch },
+    );
+
+    act(() => result.current.requestMove({ source, target: doneTarget }));
+    await waitFor(() => expect(result.current.choice).not.toBeNull());
+    const staleResolveChoice = result.current.resolveChoice;
+    const staleOption = result.current.choice!.options[0]!;
+
+    rerender('connection-jira-a:2');
+    act(() => result.current.requestMove({ source, target: doneTarget }));
+    await waitFor(() => expect(detailFetchCount()).toBe(2));
+    await waitFor(() => expect(result.current.choice).not.toBeNull());
+
+    act(() => staleResolveChoice(staleOption));
+
+    expect(statusWriteCount()).toBe(0);
+    expect(result.current.choice).not.toBeNull();
+    expect(result.current.pendingTaskId).toBe('ENG-1');
+    expect(result.current.announcement).toBe(MOVE_CHOICE_ANNOUNCEMENT);
+
+    act(() => result.current.resolveChoice(result.current.choice!.options[0]!));
+    await waitFor(() => expect(result.current.announcement).toBe(MOVE_SUCCESS_ANNOUNCEMENT));
+    expect(statusWriteCount()).toBe(1);
+  });
+
+  it('keeps a newer move latched when an older dispatched write settles', async () => {
+    const nextEpoch = 'connection-jira-a:2';
+    const nextLandingKey = externalMyWorkQueryKeys.landingSnapshot('jira', nextEpoch, false);
+    const nextDetailKey = externalMyWorkQueryKeys.taskDetail('jira', nextEpoch, 'ENG-1');
+    const oldSnapshot = seedLanding();
+    const nextSnapshot = snapshotFixture();
+    queryClient.setQueryData(nextLandingKey, nextSnapshot);
+    const pendingWrites: Array<
+      ReturnType<typeof deferred<ReturnType<typeof successfulActionResponse>>>
+    > = [];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        const pending = deferred<ReturnType<typeof successfulActionResponse>>();
+        pendingWrites.push(pending);
+        return pending.promise;
+      }
+      if (String(url).includes('/tasks/ENG-1?')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            detailFixture([optionFixture('21', 'In Progress', 'status-progress', 'active')]),
+        });
+      }
+      throw new Error(`unexpected request: ${String(url)}`);
+    });
+    const { result, rerender } = renderHook(
+      (epoch: string) =>
+        useExternalTaskMove('jira', {
+          connectionEpoch: epoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
+      { wrapper: wrapper(queryClient), initialProps: connectionEpoch },
+    );
+
+    act(() => result.current.requestMove({ source, target: progressTarget }));
+    await waitFor(() => expect(pendingWrites).toHaveLength(1));
+
+    rerender(nextEpoch);
+    act(() => result.current.requestMove({ source, target: progressTarget }));
+    await waitFor(() => expect(pendingWrites).toHaveLength(2));
+    expect(result.current.announcement).toBe(MOVE_PENDING_ANNOUNCEMENT);
+
+    await act(async () => {
+      pendingWrites[0]!.resolve({
+        ok: false,
+        json: async () => ({ message: 'Old connection failed' }),
+      });
+      await pendingWrites[0]!.promise;
+    });
+    await waitFor(() => expect(queryClient.getQueryState(detailKey)?.isInvalidated).toBe(true));
+
+    expect(queryClient.getQueryData(landingActiveKey)).toStrictEqual(oldSnapshot);
+    expect(queryClient.getQueryState(nextLandingKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(nextDetailKey)?.isInvalidated).toBe(false);
+    expect(result.current.announcement).toBe(MOVE_PENDING_ANNOUNCEMENT);
+    expect(result.current.settledMove).toBeNull();
+
+    act(() => result.current.requestMove({ source, target: doneTarget }));
+    expect(pendingWrites).toHaveLength(2);
+    expect(detailFetchCount()).toBe(2);
+
+    await act(async () => {
+      pendingWrites[1]!.resolve(successfulActionResponse());
+      await pendingWrites[1]!.promise;
+    });
+    await waitFor(() => expect(result.current.announcement).toBe(MOVE_SUCCESS_ANNOUNCEMENT));
     expect(result.current.pendingTaskId).toBeNull();
   });
 });
@@ -832,7 +1108,7 @@ describe('useExternalTaskMove landing reconciliation', () => {
           json: async () => ({ message: 'Provider unavailable' }),
         });
       }
-      if (String(url).endsWith('/tasks/ENG-1')) {
+      if (String(url).includes('/tasks/ENG-1?')) {
         return Promise.resolve({
           ok: true,
           json: async () =>
@@ -849,7 +1125,11 @@ describe('useExternalTaskMove landing reconciliation', () => {
 
     const { result } = renderHook(
       () => ({
-        move: useExternalTaskMove('jira', { connectionEpoch, includeCompleted: false }),
+        move: useExternalTaskMove('jira', {
+          connectionEpoch,
+          includeCompleted: false,
+          projectId: PROJECT_ID,
+        }),
         landing: useQuery({
           queryKey: landingActiveKey,
           queryFn: ({ signal }) =>

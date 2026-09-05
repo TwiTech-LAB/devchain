@@ -98,6 +98,7 @@ export class ExternalEditSessionService {
    * edit-session route is the only path that creates one.
    */
   async readRichDescription(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
   ): Promise<ExternalRichDescriptionRead> {
@@ -105,7 +106,7 @@ export class ExternalEditSessionService {
     if (!adapter.descriptionEdit) {
       throw this.unsupported(provider);
     }
-    const { connection, credentials } = await this.loadStableConnection(provider);
+    const { connection, credentials } = await this.loadStableConnection(projectId, provider);
     const raw = await adapter.descriptionEdit.readDescription(
       credentials,
       this.context(connection),
@@ -134,6 +135,7 @@ export class ExternalEditSessionService {
 
   /** Explicit Edit action: opens a description session from a fresh read. */
   async createDescriptionSession(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
   ): Promise<ExternalEditSessionView> {
@@ -142,7 +144,7 @@ export class ExternalEditSessionService {
     if (!adapter.descriptionEdit) {
       throw this.unsupported(provider);
     }
-    const { connection, credentials } = await this.loadStableConnection(provider);
+    const { connection, credentials } = await this.loadStableConnection(projectId, provider);
     const raw = await adapter.descriptionEdit.readDescription(
       credentials,
       this.context(connection),
@@ -159,6 +161,7 @@ export class ExternalEditSessionService {
     const created = this.store.create({
       kind: 'description_edit',
       provider,
+      projectId,
       connectionId: connection.id,
       connectionGeneration: connection.generation,
       scopeKey: this.scopeKey(connection),
@@ -182,6 +185,7 @@ export class ExternalEditSessionService {
    * belongs to the current authenticated vendor user.
    */
   async createCommentEditSession(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     commentId: string,
@@ -189,6 +193,7 @@ export class ExternalEditSessionService {
   ): Promise<ExternalEditSessionView> {
     this.requireRichEditCapability();
     const { session } = await this.createCommentSession(
+      projectId,
       provider,
       remoteTaskId,
       commentId,
@@ -203,6 +208,7 @@ export class ExternalEditSessionService {
    * same owner-validated bounded lookup.
    */
   async createCommentDeleteSession(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     commentId: string,
@@ -210,6 +216,7 @@ export class ExternalEditSessionService {
   ): Promise<ExternalEditSessionView> {
     this.requireOwnedDeleteCapability();
     const { session } = await this.createCommentSession(
+      projectId,
       provider,
       remoteTaskId,
       commentId,
@@ -220,7 +227,12 @@ export class ExternalEditSessionService {
   }
 
   /** Lightweight touch; never calls the provider. */
-  async touchSession(sessionId: string): Promise<ExternalEditSessionView> {
+  async touchSession(projectId: string, sessionId: string): Promise<ExternalEditSessionView> {
+    await this.storage.getProject(projectId);
+    const current = this.store.get(sessionId);
+    if (!current.ok || !this.sessionBelongsToProject(projectId, current.value)) {
+      throw this.sessionFailure('session_not_found');
+    }
     const touched = this.store.touch(sessionId);
     if (!touched.ok) {
       throw this.sessionFailure(touched.reason);
@@ -237,10 +249,12 @@ export class ExternalEditSessionService {
    * state intact.
    */
   async saveSession(
+    projectId: string,
     sessionId: string,
     payload: ExternalRichDocumentV1,
     expectedRevision: number,
   ): Promise<ExternalSessionWriteOutcome> {
+    await this.storage.getProject(projectId);
     const canonical = canonicalizeRichDocument(payload);
     if (canonical === null) {
       throw new ValidationError('The payload is outside the supported rich content set.', {
@@ -251,6 +265,9 @@ export class ExternalEditSessionService {
     const initial = this.store.get(sessionId);
     if (!initial.ok) {
       return this.writeRejected(null, this.writeFailure(initial.reason));
+    }
+    if (!this.sessionBelongsToProject(projectId, initial.value)) {
+      return this.writeRejected(null, 'session_not_found');
     }
     const kind = initial.value.kind;
     if (kind === 'comment_delete') {
@@ -263,8 +280,16 @@ export class ExternalEditSessionService {
 
     let phase: GatePhase;
     try {
-      phase = await this.gate.run(provider, () =>
-        this.saveDispatchPhase(sessionId, provider, kind, canonical, fingerprint, expectedRevision),
+      phase = await this.gate.run({ projectId, provider }, () =>
+        this.saveDispatchPhase(
+          projectId,
+          sessionId,
+          provider,
+          kind,
+          canonical,
+          fingerprint,
+          expectedRevision,
+        ),
       );
     } catch (error) {
       if (error instanceof BusyError) {
@@ -286,10 +311,11 @@ export class ExternalEditSessionService {
     // Gate released: read-only post-write verification with generation
     // rechecks before and after. Failures keep the prior saved_unverified
     // state and remain retryable through the verify route.
-    return this.postWriteVerification(sessionId, provider, kind, fingerprint, canonical);
+    return this.postWriteVerification(projectId, sessionId, provider, kind, fingerprint, canonical);
   }
 
   private async saveDispatchPhase(
+    projectId: string,
     sessionId: string,
     provider: IntegrationProvider,
     kind: 'description_edit' | 'comment_edit',
@@ -298,13 +324,14 @@ export class ExternalEditSessionService {
     expectedRevision: number,
   ): Promise<GatePhase> {
     const adapter = this.providers.get(provider);
-    const connection = await this.storage.getIntegrationConnection(provider);
+    const connection = await this.storage.getIntegrationConnection({ projectId, provider });
     const session = this.store.get(sessionId);
     if (!session.ok) {
       return { phase: 'rejected', reason: this.writeFailure(session.reason) };
     }
     if (
       !connection ||
+      connection.projectId !== projectId ||
       connection.provider !== provider ||
       connection.id !== session.value.connectionId ||
       connection.generation !== session.value.connectionGeneration
@@ -322,7 +349,7 @@ export class ExternalEditSessionService {
         throw this.unsupported(provider);
       }
       const raw = await adapter.descriptionEdit.readDescription(
-        (await this.storage.getIntegrationConnectionCredentials(provider))!,
+        (await this.storage.getIntegrationConnectionCredentials({ projectId, provider }))!,
         context,
         session.value.remoteTaskId,
       );
@@ -349,7 +376,7 @@ export class ExternalEditSessionService {
         return { phase: 'rejected', reason: 'connection_superseded' };
       }
       const snapshot = await adapter.ownedMutations.findComment(
-        (await this.storage.getIntegrationConnectionCredentials(provider))!,
+        (await this.storage.getIntegrationConnectionCredentials({ projectId, provider }))!,
         context,
         session.value.remoteTaskId,
         session.value.remoteCommentId!,
@@ -409,7 +436,7 @@ export class ExternalEditSessionService {
       const raw = 'ok' in emit && 'markdown' in emit ? emit.markdown : emit;
       try {
         await adapter.descriptionEdit!.writeDescription(
-          (await this.storage.getIntegrationConnectionCredentials(provider))!,
+          (await this.storage.getIntegrationConnectionCredentials({ projectId, provider }))!,
           context,
           session.value.remoteTaskId,
           raw,
@@ -424,7 +451,7 @@ export class ExternalEditSessionService {
     } else {
       try {
         await adapter.ownedMutations!.updateOwnedComment(
-          (await this.storage.getIntegrationConnectionCredentials(provider))!,
+          (await this.storage.getIntegrationConnectionCredentials({ projectId, provider }))!,
           context,
           session.value.remoteTaskId,
           session.value.remoteCommentId!,
@@ -448,6 +475,7 @@ export class ExternalEditSessionService {
   }
 
   private async postWriteVerification(
+    projectId: string,
     sessionId: string,
     provider: IntegrationProvider,
     kind: 'description_edit' | 'comment_edit',
@@ -458,7 +486,7 @@ export class ExternalEditSessionService {
     if (!session.ok) {
       return this.writeRejected(null, this.writeFailure(session.reason));
     }
-    const read = await this.freshContentFingerprint(provider, kind, session.value);
+    const read = await this.freshContentFingerprint(projectId, provider, kind, session.value);
     if (read.generationChanged) {
       this.store.invalidate(sessionId);
       return { outcome: 'saved_unverified', session: this.currentView(sessionId)! };
@@ -488,14 +516,16 @@ export class ExternalEditSessionService {
 
   /** Fresh read-only content fingerprint with generation rechecks. */
   private async freshContentFingerprint(
+    projectId: string,
     provider: IntegrationProvider,
     kind: 'description_edit' | 'comment_edit',
     session: ExternalEditSession,
   ): Promise<{ ok: boolean; fingerprint: string | null; generationChanged: boolean }> {
     const adapter = this.providers.get(provider);
-    const before = await this.storage.getIntegrationConnection(provider);
+    const before = await this.storage.getIntegrationConnection({ projectId, provider });
     if (
       !before ||
+      before.projectId !== projectId ||
       before.provider !== provider ||
       before.id !== session.connectionId ||
       before.generation !== session.connectionGeneration
@@ -509,7 +539,7 @@ export class ExternalEditSessionService {
           throw this.unsupported(provider);
         }
         const raw = await adapter.descriptionEdit.readDescription(
-          (await this.storage.getIntegrationConnectionCredentials(provider))!,
+          (await this.storage.getIntegrationConnectionCredentials({ projectId, provider }))!,
           this.context(before),
           session.remoteTaskId,
         );
@@ -524,7 +554,7 @@ export class ExternalEditSessionService {
           token === null
             ? null
             : await adapter.ownedMutations.findComment(
-                (await this.storage.getIntegrationConnectionCredentials(provider))!,
+                (await this.storage.getIntegrationConnectionCredentials({ projectId, provider }))!,
                 this.context(before),
                 session.remoteTaskId,
                 session.remoteCommentId!,
@@ -538,9 +568,10 @@ export class ExternalEditSessionService {
     } catch {
       return { ok: false, fingerprint: null, generationChanged: false };
     }
-    const after = await this.storage.getIntegrationConnection(provider);
+    const after = await this.storage.getIntegrationConnection({ projectId, provider });
     if (
       !after ||
+      after.projectId !== projectId ||
       after.provider !== provider ||
       after.id !== session.connectionId ||
       after.generation !== session.connectionGeneration
@@ -551,10 +582,14 @@ export class ExternalEditSessionService {
   }
 
   /** Explicit reload: re-baselines an editable session from a fresh read. */
-  async reloadSession(sessionId: string): Promise<ExternalSessionReloadResult> {
+  async reloadSession(projectId: string, sessionId: string): Promise<ExternalSessionReloadResult> {
+    await this.storage.getProject(projectId);
     const session = this.store.get(sessionId);
     if (!session.ok) {
       throw this.sessionFailure(session.reason);
+    }
+    if (!this.sessionBelongsToProject(projectId, session.value)) {
+      throw this.sessionFailure('session_not_found');
     }
     if (session.value.kind === 'comment_delete') {
       throw new ValidationError('The session does not support reload.', {
@@ -563,7 +598,7 @@ export class ExternalEditSessionService {
     }
     this.requireRichEditCapability();
     const provider = session.value.provider;
-    const { connection, credentials } = await this.loadStableConnection(provider);
+    const { connection, credentials } = await this.loadStableConnection(projectId, provider);
     if (connection.id !== session.value.connectionId) {
       this.store.invalidate(sessionId);
       throw new ValidationError('The connection was replaced; the session is invalid.', {
@@ -644,15 +679,20 @@ export class ExternalEditSessionService {
    * baseline never re-arms writes; anything else is divergence. Verification
    * failures leave the prior state untouched and stay retryable.
    */
-  async verifySession(sessionId: string): Promise<ExternalSessionVerifyResult> {
+  async verifySession(projectId: string, sessionId: string): Promise<ExternalSessionVerifyResult> {
+    await this.storage.getProject(projectId);
     const session = this.store.get(sessionId);
     if (!session.ok) {
       return { session: null, remoteState: null, reason: this.verifyFailure(session.reason) };
     }
+    if (!this.sessionBelongsToProject(projectId, session.value)) {
+      return { session: null, remoteState: null, reason: 'session_not_found' };
+    }
     if (session.value.kind === 'comment_delete') {
-      return this.verifyDeleteSession(session.value);
+      return this.verifyDeleteSession(projectId, session.value);
     }
     const read = await this.freshContentFingerprint(
+      projectId,
       session.value.provider,
       session.value.kind,
       session.value,
@@ -685,7 +725,11 @@ export class ExternalEditSessionService {
   }
 
   /** Executes an owned comment deletion through the shared gate. */
-  async executeCommentDelete(sessionId: string): Promise<ExternalCommentDeleteOutcome> {
+  async executeCommentDelete(
+    projectId: string,
+    sessionId: string,
+  ): Promise<ExternalCommentDeleteOutcome> {
+    await this.storage.getProject(projectId);
     this.requireOwnedDeleteCapability();
     const session = this.store.get(sessionId);
     if (!session.ok) {
@@ -694,6 +738,9 @@ export class ExternalEditSessionService {
         reason: this.deleteFailure(session.reason),
         session: null,
       };
+    }
+    if (!this.sessionBelongsToProject(projectId, session.value)) {
+      return { outcome: 'rejected', reason: 'session_not_found', session: null };
     }
     if (session.value.kind !== 'comment_delete') {
       throw new ValidationError('The session does not support comment deletion.', {
@@ -707,10 +754,11 @@ export class ExternalEditSessionService {
     }
 
     try {
-      return await this.gate.run(provider, async () => {
-        const connection = await this.storage.getIntegrationConnection(provider);
+      return await this.gate.run({ projectId, provider }, async () => {
+        const connection = await this.storage.getIntegrationConnection({ projectId, provider });
         if (
           !connection ||
+          connection.projectId !== projectId ||
           connection.provider !== provider ||
           connection.id !== session.value.connectionId ||
           connection.generation !== session.value.connectionGeneration
@@ -769,7 +817,7 @@ export class ExternalEditSessionService {
 
         try {
           await adapter.ownedMutations!.deleteComment(
-            (await this.storage.getIntegrationConnectionCredentials(provider))!,
+            (await this.storage.getIntegrationConnectionCredentials({ projectId, provider }))!,
             this.context(connection),
             session.value.remoteTaskId,
             session.value.remoteCommentId!,
@@ -805,6 +853,7 @@ export class ExternalEditSessionService {
   }
 
   private async createCommentSession(
+    projectId: string,
     provider: IntegrationProvider,
     remoteTaskId: string,
     commentId: string,
@@ -815,7 +864,7 @@ export class ExternalEditSessionService {
     if (!adapter.ownedMutations) {
       throw this.unsupported(provider);
     }
-    const { connection, credentials } = await this.loadStableConnection(provider);
+    const { connection, credentials } = await this.loadStableConnection(projectId, provider);
     const [ownerRemoteId, snapshot] = await Promise.all([
       adapter.ownedMutations.getCurrentOwnerRemoteId(credentials),
       adapter.ownedMutations.findComment(
@@ -866,6 +915,7 @@ export class ExternalEditSessionService {
     const created = this.store.create({
       kind,
       provider,
+      projectId,
       connectionId: connection.id,
       connectionGeneration: connection.generation,
       scopeKey: this.scopeKey(connection),
@@ -918,24 +968,30 @@ export class ExternalEditSessionService {
     }
   }
 
-  private async loadStableConnection(provider: IntegrationProvider): Promise<{
+  private async loadStableConnection(
+    projectId: string,
+    provider: IntegrationProvider,
+  ): Promise<{
     connection: IntegrationConnection;
     credentials: IntegrationCredentials;
   }> {
+    await this.storage.getProject(projectId);
+    const identity = { projectId, provider } as const;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const before = await this.storage.getIntegrationConnection(provider);
-      if (!before || before.provider !== provider) {
-        throw this.notConnected(provider);
+      const before = await this.storage.getIntegrationConnection(identity);
+      if (before?.projectId !== projectId || before.provider !== provider) {
+        throw this.notConnected(projectId, provider);
       }
-      const credentials = await this.storage.getIntegrationConnectionCredentials(provider);
-      const after = await this.storage.getIntegrationConnection(provider);
+      const credentials = await this.storage.getIntegrationConnectionCredentials(identity);
+      const after = await this.storage.getIntegrationConnection(identity);
       if (
         !credentials ||
         credentials.provider !== provider ||
         !after ||
+        after.projectId !== projectId ||
         after.provider !== provider
       ) {
-        throw this.notConnected(provider);
+        throw this.notConnected(projectId, provider);
       }
       if (before.id === after.id && before.generation === after.generation) {
         return { connection: after, credentials };
@@ -943,6 +999,7 @@ export class ExternalEditSessionService {
     }
     throw new BusyError('Integration connection changed during the operation.', {
       provider,
+      projectId,
       reason: 'connection_changed',
     });
   }
@@ -965,6 +1022,7 @@ export class ExternalEditSessionService {
   }
 
   private async verifyDeleteSession(
+    projectId: string,
     session: ExternalEditSession,
   ): Promise<ExternalSessionVerifyResult> {
     const adapter = this.providers.get(session.provider);
@@ -976,7 +1034,10 @@ export class ExternalEditSessionService {
       this.store.invalidate(session.sessionId);
       return this.verifyResult(session.sessionId, 'diverged');
     }
-    const { connection, credentials } = await this.loadStableConnection(session.provider);
+    const { connection, credentials } = await this.loadStableConnection(
+      projectId,
+      session.provider,
+    );
     if (connection.id !== session.connectionId) {
       this.store.invalidate(session.sessionId);
       return this.verifyResult(session.sessionId, 'diverged');
@@ -1055,11 +1116,16 @@ export class ExternalEditSessionService {
     });
   }
 
-  private notConnected(provider: IntegrationProvider): ValidationError {
+  private notConnected(projectId: string, provider: IntegrationProvider): ValidationError {
     return new ValidationError('Connect the integration before editing.', {
       provider,
+      projectId,
       reason: 'not_connected',
     });
+  }
+
+  private sessionBelongsToProject(projectId: string, session: ExternalEditSession): boolean {
+    return session.projectId === projectId;
   }
 
   private unsupported(provider: IntegrationProvider): ValidationError {

@@ -1,0 +1,4 @@
+# Template sources and compiled templates round-trip byte-for-byte;
+# reformatting would corrupt them.
+apps/local-app/templates-src/
+apps/local-app/templates/

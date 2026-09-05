@@ -3,6 +3,10 @@ import {
   handleListAssignedEpicsTasks,
   handleCreateEpic,
   handleGetEpicById,
+  handleListEpicRelations,
+  handleListEpicRelationCandidates,
+  handleSetEpicRelation,
+  handleDeleteEpicRelation,
   handleAddEpicComment,
   handleUpdateEpic,
   handleDeleteEpic,
@@ -12,8 +16,11 @@ import type { AgentSessionContext } from '../../dtos/mcp.dto';
 import {
   NotFoundError,
   OptimisticLockError,
+  RelationConfirmationRequiredError,
   ValidationError,
+  ForbiddenError,
 } from '../../../../common/errors/error-types';
+import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -65,6 +72,7 @@ const SESSION_ID = '00000000-0000-0000-0000-000000000003';
 const EPIC_ID = '00000000-0000-0000-0000-000000000004';
 const STATUS_ID = '00000000-0000-0000-0000-000000000005';
 const COMMENT_ID = '00000000-0000-0000-0000-000000000006';
+const RELATED_ID = '00000000-0000-0000-0000-000000000007';
 
 function makeAgentCtx(): AgentSessionContext {
   return {
@@ -180,6 +188,19 @@ function makeStorageMock() {
       projectId: PROJECT_ID,
     }),
     listEpicComments: jest.fn().mockResolvedValue({ items: [] }),
+    listEpicRelations: jest.fn().mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+    }),
+    listEpicRelationCandidates: jest.fn().mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+    }),
+    getWorkspaceEpicsByIdPrefix: jest.fn().mockResolvedValue([]),
     addEpicComment: jest.fn().mockResolvedValue({
       id: COMMENT_ID,
       epicId: EPIC_ID,
@@ -270,6 +291,10 @@ function makeEpicCtx(overrides: Partial<EpicToolContext> = {}): EpicToolContext 
   return {
     storage: makeStorageMock(),
     epicsService: makeEpicsServiceMock(),
+    epicRelationsService: {
+      setRelation: jest.fn(),
+      deleteRelation: jest.fn(),
+    } as never,
     resolveSessionContext: jest.fn().mockResolvedValue({ success: true, data: makeAgentCtx() }),
     ...overrides,
   };
@@ -338,6 +363,27 @@ describe('epic-tools handlers', () => {
       );
     });
 
+    it('forwards one focal-relative initial relation to the atomic service workflow', async () => {
+      const ctx = makeEpicCtx();
+
+      await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        title: 'Atomic Epic',
+        relation: { relatedEpicId: RELATED_ID.slice(0, 8), relation: 'blocked_by' },
+      });
+
+      expect(ctx.epicsService.createEpicForProject).toHaveBeenCalledWith(
+        PROJECT_ID,
+        expect.objectContaining({
+          relation: {
+            relatedEpicId: RELATED_ID.slice(0, 8),
+            relation: 'blocked_by',
+          },
+        }),
+        { actor: { type: 'agent', id: AGENT_ID }, creatorAgentName: AGENT_NAME },
+      );
+    });
+
     it('returns error when status not found', async () => {
       const ctx = makeEpicCtx();
       const result = await handleCreateEpic(ctx, {
@@ -348,16 +394,59 @@ describe('epic-tools handlers', () => {
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('STATUS_NOT_FOUND');
     });
+
+    it.each([
+      [new NotFoundError('Related Epic'), 'RELATED_EPIC_NOT_FOUND'],
+      [
+        new ValidationError('Multiple Epics match the related Epic address.', {
+          code: 'AMBIGUOUS_RELATED_EPIC',
+        }),
+        'AMBIGUOUS_RELATED_EPIC',
+      ],
+      [new ForbiddenError('Guests cannot write Epic relations.'), 'AGENT_CONTEXT_REQUIRED'],
+    ])(
+      'maps atomic relation creation errors without exposing a partial Epic',
+      async (error, code) => {
+        const ctx = makeEpicCtx();
+        (ctx.epicsService.createEpicForProject as jest.Mock).mockRejectedValue(error);
+
+        const result = await handleCreateEpic(ctx, {
+          sessionId: SESSION_ID,
+          title: 'Atomic Epic',
+          relation: { relatedEpicId: RELATED_ID, relation: 'related' },
+        });
+
+        expect(result.error?.code).toBe(code);
+      },
+    );
   });
 
   describe('handleGetEpicById', () => {
     it('returns epic with children and comments', async () => {
       const ctx = makeEpicCtx();
       (ctx.storage.listSubEpics as jest.Mock).mockResolvedValue({ items: [], total: 0 });
+      (ctx.storage.listEpicRelations as jest.Mock).mockResolvedValue({
+        items: [],
+        total: 51,
+        limit: 50,
+        offset: 0,
+      });
 
       const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
       expect(result.success).toBe(true);
       expect(result.data.epic.id).toBe(EPIC_ID);
+      expect(result.data.relations).toMatchObject({
+        items: [],
+        total: 51,
+        limit: 50,
+        offset: 0,
+        truncated: true,
+      });
+      expect(ctx.storage.listEpicRelations).toHaveBeenCalledWith(EPIC_ID, {
+        excludeMcpHidden: true,
+        limit: 50,
+        offset: 0,
+      });
     });
 
     it('returns error when epic not found', async () => {
@@ -367,6 +456,400 @@ describe('epic-tools handlers', () => {
       const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('EPIC_NOT_FOUND');
+    });
+  });
+
+  describe('Epic relation resources', () => {
+    const relationRow = {
+      relationId: 'relation-1',
+      epicId: RELATED_ID,
+      projectId: PROJECT_ID,
+      projectName: 'Test Project',
+      title: 'Related Epic',
+      statusId: STATUS_ID,
+      statusLabel: 'New',
+      statusColor: '#ccc',
+      statusMcpHidden: false,
+      type: 'blocked_by',
+      sourceEpicId: null,
+      targetEpicId: null,
+      createdAt: '2026-08-29T00:00:00.000Z',
+      updatedAt: '2026-08-29T00:00:00.000Z',
+    } as const;
+    const candidate = {
+      id: RELATED_ID,
+      projectId: PROJECT_ID,
+      projectName: 'Test Project',
+      title: 'Related Epic',
+      statusId: STATUS_ID,
+      statusLabel: 'New',
+      statusColor: '#ccc',
+      statusMcpHidden: false,
+      parentId: null,
+    };
+
+    it('lists bounded focal-relative rows with MCP-hidden filtering', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.listEpicRelations as jest.Mock).mockResolvedValue({
+        items: [relationRow],
+        total: 3,
+        limit: 1,
+        offset: 1,
+      });
+
+      const result = await handleListEpicRelations(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        limit: 1,
+        offset: 1,
+      });
+
+      expect(result).toMatchObject({
+        success: true,
+        data: {
+          total: 3,
+          limit: 1,
+          offset: 1,
+          items: [
+            {
+              relationId: 'relation-1',
+              relation: 'blocked_by',
+              sourceEpicId: null,
+              targetEpicId: null,
+              relatedEpic: { id: RELATED_ID, shortId: RELATED_ID.slice(0, 8) },
+            },
+          ],
+        },
+      });
+      expect(ctx.storage.listEpicRelations).toHaveBeenCalledWith(EPIC_ID, {
+        excludeMcpHidden: true,
+        limit: 1,
+        offset: 1,
+      });
+    });
+
+    it('reports the stored semantic source and target on list reads', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.listEpicRelations as jest.Mock).mockResolvedValue({
+        items: [{ ...relationRow, sourceEpicId: EPIC_ID, targetEpicId: RELATED_ID }],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+
+      const result = await handleListEpicRelations(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+      });
+
+      expect(result).toMatchObject({
+        success: true,
+        data: { items: [{ sourceEpicId: EPIC_ID, targetEpicId: RELATED_ID }] },
+      });
+    });
+
+    it('lists workspace candidates with MCP-hidden filtering and paging', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.listEpicRelationCandidates as jest.Mock).mockResolvedValue({
+        items: [candidate],
+        total: 1,
+        limit: 10,
+        offset: 0,
+      });
+
+      const result = await handleListEpicRelationCandidates(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        q: 'related',
+        limit: 10,
+        offset: 0,
+      });
+
+      expect(result).toMatchObject({
+        success: true,
+        data: { items: [{ id: RELATED_ID, shortId: RELATED_ID.slice(0, 8) }], total: 1 },
+      });
+      expect(ctx.storage.listEpicRelationCandidates).toHaveBeenCalledWith(EPIC_ID, {
+        q: 'related',
+        excludeMcpHidden: true,
+        limit: 10,
+        offset: 0,
+      });
+    });
+
+    it('resolves a visible workspace target and delegates an agent set to the relation service', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([candidate]);
+      (ctx.epicRelationsService.setRelation as jest.Mock).mockResolvedValue({
+        type: 'blocks',
+        sourceEpicId: EPIC_ID,
+        targetEpicId: RELATED_ID,
+      });
+
+      const result = await handleSetEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: RELATED_ID.slice(0, 8),
+        relation: 'blocks',
+      });
+
+      expect(result).toEqual({
+        success: true,
+        data: {
+          epicId: EPIC_ID,
+          relatedEpicId: RELATED_ID,
+          relation: 'blocks',
+          sourceEpicId: EPIC_ID,
+          targetEpicId: RELATED_ID,
+        },
+      });
+      expect(ctx.storage.getWorkspaceEpicsByIdPrefix).toHaveBeenCalledWith(
+        EPIC_ID,
+        RELATED_ID.slice(0, 8),
+        { excludeMcpHidden: true },
+      );
+      expect(ctx.epicRelationsService.setRelation).toHaveBeenCalledWith(
+        EPIC_ID,
+        RELATED_ID,
+        'blocks',
+        { actor: { type: 'agent', id: AGENT_ID } },
+      );
+    });
+
+    it('reports the derived source and target for a Related set', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([candidate]);
+      (ctx.epicRelationsService.setRelation as jest.Mock).mockResolvedValue({
+        type: 'related',
+        sourceEpicId: EPIC_ID,
+        targetEpicId: RELATED_ID,
+      });
+
+      const result = await handleSetEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: RELATED_ID,
+        relation: 'related',
+      });
+
+      expect(result).toEqual({
+        success: true,
+        data: {
+          epicId: EPIC_ID,
+          relatedEpicId: RELATED_ID,
+          relation: 'related',
+          sourceEpicId: EPIC_ID,
+          targetEpicId: RELATED_ID,
+        },
+      });
+      expect(ctx.epicRelationsService.setRelation).toHaveBeenCalledWith(
+        EPIC_ID,
+        RELATED_ID,
+        'related',
+        { actor: { type: 'agent', id: AGENT_ID } },
+      );
+    });
+
+    it('returns safe ambiguity without invoking a relation mutation', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([
+        candidate,
+        { ...candidate, id: '00000000-0000-0000-0000-000000000008' },
+      ]);
+
+      const result = await handleSetEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: '00000000',
+        relation: 'related',
+      });
+
+      expect(result.error?.code).toBe('AMBIGUOUS_RELATED_EPIC');
+      expect(ctx.epicRelationsService.setRelation).not.toHaveBeenCalled();
+    });
+
+    it('returns the current target on a displacing set and demands an explicit delete', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([candidate]);
+      const currentEffect = { sourceEpicId: EPIC_ID, targetEpicId: RELATED_ID };
+      (ctx.epicRelationsService.setRelation as jest.Mock).mockRejectedValue(
+        new RelationConfirmationRequiredError(currentEffect),
+      );
+
+      const result = await handleSetEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: '33333333',
+        relation: 'related',
+      });
+
+      expect(result).toEqual({
+        success: false,
+        error: {
+          code: 'RELATION_CONFIRMATION_REQUIRED',
+          message:
+            'This change displaces an active relation time route. Delete the existing Related pair explicitly, then retry this command.',
+          data: { currentEffect },
+        },
+      });
+    });
+
+    it('delegates delete and maps guest authorization and standalone service errors', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([candidate]);
+      (ctx.epicRelationsService.deleteRelation as jest.Mock).mockResolvedValue(true);
+
+      await expect(
+        handleDeleteEpicRelation(ctx, {
+          sessionId: SESSION_ID,
+          epicId: EPIC_ID,
+          relatedEpicId: RELATED_ID,
+        }),
+      ).resolves.toEqual({
+        success: true,
+        data: { epicId: EPIC_ID, relatedEpicId: RELATED_ID, deleted: true },
+      });
+
+      (ctx.epicRelationsService.deleteRelation as jest.Mock).mockRejectedValueOnce(
+        new ForbiddenError('Guests cannot write Epic relations.'),
+      );
+      expect(
+        (
+          await handleDeleteEpicRelation(ctx, {
+            sessionId: SESSION_ID,
+            epicId: EPIC_ID,
+            relatedEpicId: RELATED_ID,
+          })
+        ).error?.code,
+      ).toBe('AGENT_CONTEXT_REQUIRED');
+
+      (ctx.epicRelationsService.deleteRelation as jest.Mock).mockRejectedValueOnce(
+        new ServiceUnavailableError('EpicRelationsService'),
+      );
+      expect(
+        (
+          await handleDeleteEpicRelation(ctx, {
+            sessionId: SESSION_ID,
+            epicId: EPIC_ID,
+            relatedEpicId: RELATED_ID,
+          })
+        ).error?.code,
+      ).toBe('SERVICE_UNAVAILABLE');
+    });
+
+    it('deletes an exact full target ID without any prefix lookup', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.epicRelationsService.deleteRelation as jest.Mock).mockResolvedValue(true);
+
+      const result = await handleDeleteEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: RELATED_ID,
+      });
+
+      expect(result).toEqual({
+        success: true,
+        data: { epicId: EPIC_ID, relatedEpicId: RELATED_ID, deleted: true },
+      });
+      // The exact path resolves no prefix and applies no MCP-hidden filter:
+      // a target hidden from reads stays deletable by its server-issued ID.
+      expect(ctx.storage.getWorkspaceEpicsByIdPrefix).not.toHaveBeenCalled();
+      expect(ctx.epicRelationsService.deleteRelation).toHaveBeenCalledWith(
+        EPIC_ID,
+        RELATED_ID,
+        expect.anything(),
+      );
+    });
+
+    it('keeps prefix resolution visible-only and never discloses hidden targets', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([]);
+
+      const result = await handleDeleteEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: '22222222',
+      });
+
+      expect(result.error?.code).toBe('RELATED_EPIC_NOT_FOUND');
+      expect(ctx.storage.getWorkspaceEpicsByIdPrefix).toHaveBeenCalledWith(EPIC_ID, '22222222', {
+        excludeMcpHidden: true,
+      });
+      expect(ctx.epicRelationsService.deleteRelation).not.toHaveBeenCalled();
+    });
+
+    it('recovers a blocked replacement through exact deletion and retry', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([candidate]);
+      const hiddenTargetId = '44444444-4444-4444-4444-444444444444';
+      const setRelation = ctx.epicRelationsService.setRelation as jest.Mock;
+      const deleteRelation = ctx.epicRelationsService.deleteRelation as jest.Mock;
+      setRelation.mockRejectedValueOnce(
+        new RelationConfirmationRequiredError({
+          sourceEpicId: EPIC_ID,
+          targetEpicId: hiddenTargetId,
+        }),
+      );
+      deleteRelation.mockResolvedValueOnce(true);
+      setRelation.mockResolvedValueOnce({
+        relationId: 'relation-recovered',
+        type: 'related',
+        sourceEpicId: EPIC_ID,
+        targetEpicId: RELATED_ID,
+      });
+
+      // The replacement refusal names the exact hidden current target.
+      const refused = await handleSetEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: RELATED_ID,
+        relation: 'related',
+      });
+      expect(refused).toMatchObject({
+        success: false,
+        error: { code: 'RELATION_CONFIRMATION_REQUIRED' },
+      });
+
+      // The agent deletes that exact pair — no prefix lookup, no disclosure.
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockClear();
+      const deleted = await handleDeleteEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: hiddenTargetId,
+      });
+      expect(deleted).toEqual({
+        success: true,
+        data: { epicId: EPIC_ID, relatedEpicId: hiddenTargetId, deleted: true },
+      });
+      expect(ctx.storage.getWorkspaceEpicsByIdPrefix).not.toHaveBeenCalled();
+
+      // The replacement retry now succeeds.
+      const retried = await handleSetEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: RELATED_ID,
+        relation: 'related',
+      });
+      expect(retried).toMatchObject({
+        success: true,
+        data: { relation: 'related', sourceEpicId: EPIC_ID, targetEpicId: RELATED_ID },
+      });
+    });
+
+    it('does not let a full focal UUID escape the session project boundary', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getEpic as jest.Mock).mockResolvedValueOnce({
+        id: EPIC_ID,
+        projectId: 'foreign-project',
+      });
+
+      const result = await handleListEpicRelations(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+      });
+
+      expect(result.error?.code).toBe('EPIC_NOT_FOUND');
+      expect(ctx.storage.listEpicRelations).not.toHaveBeenCalled();
     });
   });
 

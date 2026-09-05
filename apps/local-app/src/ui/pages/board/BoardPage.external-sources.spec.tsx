@@ -1,12 +1,14 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RuntimeProvider } from '@/ui/hooks/useRuntime';
 
 // Layer: page integration. The board data hooks are stubbed at the fetch
-// boundary so this spec owns the controller's batch-source wiring: ID
-// derivation before filters, request gating, and cache suppression.
+// boundary so this spec owns the controller's batch-source wiring and the
+// Epic-navigation return state: ID derivation before filters, request
+// gating, cache suppression, and the exact Board URL seeded into history
+// state when a card opens or edits an Epic.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const BoardPage: React.ComponentType = require('../BoardPage').BoardPage;
 
@@ -68,6 +70,19 @@ jest.mock('@/ui/hooks/useRuntime', () => {
   };
 });
 
+// Inspects what the real Board controller put into history state when it
+// navigated to the Epic route — the Epic window's only validated close
+// target is this exact native Board URL.
+function EpicStateProbe() {
+  const location = useLocation();
+  return (
+    <div>
+      <span data-testid="epic-probe-path">{`${location.pathname}${location.search}`}</span>
+      <span data-testid="epic-probe-state">{JSON.stringify(location.state ?? null)}</span>
+    </div>
+  );
+}
+
 function renderBoard(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -76,6 +91,7 @@ function renderBoard(path: string) {
         <RuntimeProvider>
           <Routes>
             <Route path="/board" element={<BoardPage />} />
+            <Route path="/epics/:id" element={<EpicStateProbe />} />
           </Routes>
         </RuntimeProvider>
       </QueryClientProvider>
@@ -197,5 +213,32 @@ describe('BoardPage stored source batch read', () => {
 
     expect(batchCalls()).toEqual([]);
     expect(view.queryByRole('link', { name: /Open linked task/ })).not.toBeInTheDocument();
+  });
+
+  it('seeds the exact native Board URL as return state when opening epic details', async () => {
+    renderBoard('/board?st=s1&pg=2');
+
+    // Root-epic titles toggle the parent filter; Enter on the card group is
+    // the documented open-details path. Waiting for the sourced note first
+    // keeps the grabbed node live — the card remounts when its source arrives.
+    await screen.findByRole('link', { name: 'Open linked task ENG-1 in DevChain' });
+    const card = screen.getByRole('group', { name: /Epic: Epic root-1/ });
+    fireEvent.keyDown(card, { key: 'Enter' });
+
+    expect(await screen.findByTestId('epic-probe-path')).toHaveTextContent('/epics/root-1');
+    expect(screen.getByTestId('epic-probe-state')).toHaveTextContent(
+      JSON.stringify({ boardReturnUrl: '/board?st=s1&pg=2' }),
+    );
+  });
+
+  it('seeds the same exact Board URL as return state when editing from the list view', async () => {
+    renderBoard('/board?v=list&st=s1');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'More actions' }));
+
+    expect(await screen.findByTestId('epic-probe-path')).toHaveTextContent('/epics/root-1?edit=1');
+    expect(screen.getByTestId('epic-probe-state')).toHaveTextContent(
+      JSON.stringify({ boardReturnUrl: '/board?v=list&st=s1' }),
+    );
   });
 });

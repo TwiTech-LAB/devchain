@@ -12,13 +12,15 @@ jest.mock('../../../storage/db/sqlite-raw', () => ({
 }));
 
 jest.mock('../../../../common/logging/logger', () => ({
-  createLogger: () => ({
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    debug: jest.fn(),
-  }),
+  createLogger: () => mockLogger,
 }));
+
+const mockLogger = {
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+};
 
 jest.mock('../../../../common/config/env.config', () => ({
   getEnvConfig: () => ({ HOST: '127.0.0.1', PORT: 3000 }),
@@ -31,9 +33,9 @@ jest.mock('@devchain/shared', () => ({
 }));
 
 jest.mock('../../../providers/adapters/capabilities', () => ({
-  isAutoCompactCapable: () => false,
-  isHookCapable: () => false,
-  isProjectProvisioningCapable: () => false,
+  isAutoCompactCapable: jest.fn(() => false),
+  isHookCapable: jest.fn(() => false),
+  isProjectProvisioningCapable: jest.fn(() => false),
 }));
 
 jest.mock('../../utils/tmux-naming.util', () => ({
@@ -43,6 +45,9 @@ jest.mock('../../utils/tmux-naming.util', () => ({
 // ── Imports ────────────────────────────────────────────────────────────
 
 import { createLaunchPipelineHarness } from './__test-utils__/pipeline-harness';
+import { isProjectProvisioningCapable } from '../../../providers/adapters/capabilities';
+
+const mockIsProjectProvisioningCapable = isProjectProvisioningCapable as unknown as jest.Mock;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -795,6 +800,155 @@ describe('SessionLaunchPipeline', () => {
       // Existing out-of-band paste still happens
       expect(mocks.terminalIO.deliver).toHaveBeenCalled();
       expect(mocks.terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Trust-only project provisioning + MCP drift repair ────────────────
+  describe('verifyProvider: project provisioning and MCP drift', () => {
+    const noRunningSelect = (sql: string) => {
+      if (sql.includes('SELECT') && sql.includes("status = 'running'")) {
+        return {
+          run: jest.fn(),
+          get: jest.fn().mockReturnValue(undefined),
+          all: jest.fn().mockReturnValue([]),
+        };
+      }
+      return { run: jest.fn().mockReturnValue({ changes: 1 }), get: jest.fn(), all: jest.fn() };
+    };
+
+    afterEach(() => {
+      mockIsProjectProvisioningCapable.mockReturnValue(false);
+    });
+
+    it('provisioning-capable provider runs the trust-only path instead of a second full ensureMcp', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mockIsProjectProvisioningCapable.mockReturnValue(true);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      const provider = await mocks.storage.getProvider.mock.results[0].value;
+      expect(mocks.mcpEnsureService.ensureProjectProvisioning).toHaveBeenCalledWith(
+        provider,
+        '/tmp/project',
+      );
+      // No MCP drift (preflight mcpStatus pass): the full ensureMcp must not run.
+      expect(mocks.mcpEnsureService.ensureMcp).not.toHaveBeenCalled();
+    });
+
+    it('completes provisioning before runtime planning and before the provider command is typed', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mockIsProjectProvisioningCapable.mockReturnValue(true);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      const provisionOrder =
+        mocks.mcpEnsureService.ensureProjectProvisioning.mock.invocationCallOrder[0];
+      expect(provisionOrder).toBeLessThan(
+        mocks.providerRuntimePreparation.createPlan.mock.invocationCallOrder[0],
+      );
+      expect(provisionOrder).toBeLessThan(mocks.terminalIO.typeCommand.mock.invocationCallOrder[0]);
+    });
+
+    it('logs provisioning warnings with their fixed code and startup continues', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const secretSentinel = 'FAKE_SECRET_SENTINEL';
+      mockIsProjectProvisioningCapable.mockReturnValue(true);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+      mocks.mcpEnsureService.ensureProjectProvisioning.mockResolvedValue({
+        success: false,
+        warnings: [
+          {
+            source: 'claude_project_trust',
+            level: 'warn',
+            message: `Unexpected token near ${secretSentinel}`,
+            code: 'CLAUDE_TRUST_PROVISION_FAILED',
+          },
+        ],
+      });
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'CLAUDE_TRUST_PROVISION_FAILED',
+          source: 'claude_project_trust',
+        }),
+        'Project provisioning warning (non-fatal)',
+      );
+      expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain(secretSentinel);
+      // Non-fatal: the session still starts and the CLI command is typed.
+      expect(mocks.terminalIO.typeCommand).toHaveBeenCalled();
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+        'session.started',
+        expect.objectContaining({ agentId: 'agent-1' }),
+      );
+    });
+
+    it('a provisioning rejection stays non-fatal and startup continues', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mockIsProjectProvisioningCapable.mockReturnValue(true);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+      mocks.mcpEnsureService.ensureProjectProvisioning.mockRejectedValue(
+        new Error('provisioning exploded'),
+      );
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ providerName: 'test-provider' }),
+        'Project provisioning failed (non-fatal)',
+      );
+      expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain('provisioning exploded');
+      expect(mocks.terminalIO.typeCommand).toHaveBeenCalled();
+    });
+
+    it('MCP drift still triggers the full ensureMcp and a recheck that clears the drift', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+      mocks.preflightService.runChecks
+        .mockResolvedValueOnce({
+          overall: 'pass',
+          checks: [],
+          providers: [{ id: 'provider-1', mcpStatus: 'fail', mcpMessage: 'not registered' }],
+        })
+        .mockResolvedValue({
+          overall: 'pass',
+          checks: [],
+          providers: [{ id: 'provider-1', mcpStatus: 'pass' }],
+        });
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mocks.mcpEnsureService.ensureMcp).toHaveBeenCalledTimes(1);
+      expect(mocks.preflightService.runChecks).toHaveBeenCalledTimes(2);
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+        'session.started',
+        expect.objectContaining({ agentId: 'agent-1' }),
+      );
+    });
+
+    it('unresolved MCP drift blocks the launch after the ensure-and-recheck retry', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+      mocks.preflightService.runChecks.mockResolvedValue({
+        overall: 'pass',
+        checks: [],
+        providers: [{ id: 'provider-1', mcpStatus: 'fail', mcpMessage: 'still not registered' }],
+      });
+
+      await expect(runWithTimers(() => pipeline.launch(launchDto))).rejects.toThrow(
+        'MCP configuration failed after auto-ensure',
+      );
+
+      expect(mocks.mcpEnsureService.ensureMcp).toHaveBeenCalledTimes(1);
+      expect(mocks.preflightService.runChecks).toHaveBeenCalledTimes(2);
+      expect(mocks.terminalIO.typeCommand).not.toHaveBeenCalled();
+      const insertCalls = mocks.sqliteMock.prepare.mock.calls.filter(([sql]: [string]) =>
+        sql.includes('INSERT INTO sessions'),
+      );
+      expect(insertCalls).toHaveLength(0);
     });
   });
 });

@@ -17,6 +17,7 @@ function wrapper(queryClient: QueryClient) {
 }
 
 const connectionEpoch = 'connection-jira-a:4';
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const historyPayload = {
   windowDays: 30,
   entries: [
@@ -26,6 +27,7 @@ const historyPayload = {
       startedAt: '2026-08-19T10:00:00.000Z',
       note: 'Implementation',
       noteTruncated: false,
+      canEdit: true,
       canDelete: true,
     },
   ],
@@ -47,6 +49,8 @@ function renderTimeEntries(
         enabled: true,
         historyOpen: true,
         connectionEpoch,
+        projectId: PROJECT_ID,
+        remoteScopeKey: 'acme.atlassian.net',
         identityAccepted: true,
         timeTrackingEnabled: true,
         ...overrides,
@@ -71,18 +75,19 @@ describe('useExternalTaskTimeEntries', () => {
 
   afterEach(() => {
     cryptoRandomUuid.mockRestore();
+    jest.useRealTimers();
     queryClient.clear();
   });
 
   function historyCalls(): Array<[string, RequestInit | undefined]> {
     return fetchMock.mock.calls.filter(
-      ([url, init]) => String(url).endsWith('/time-entries') && !init?.method,
+      ([url, init]) => String(url).includes('/time-entries?') && !init?.method,
     ) as Array<[string, RequestInit | undefined]>;
   }
 
   it('loads history with the epoch precondition header', async () => {
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith('/time-entries'))
+      if (String(url).includes('/time-entries?'))
         return Promise.resolve(jsonResponse(historyPayload));
       throw new Error(`unexpected fetch: ${url}`);
     });
@@ -92,7 +97,9 @@ describe('useExternalTaskTimeEntries', () => {
     await waitFor(() => expect(result.current.history.isSuccess).toBe(true));
     expect(result.current.history.data).toEqual(historyPayload);
     const [url, init] = historyCalls()[0]!;
-    expect(url).toBe('/api/integrations/my-work/jira/tasks/ENG-1/time-entries');
+    expect(url).toBe(
+      `/api/integrations/my-work/jira/tasks/ENG-1/time-entries?projectId=${PROJECT_ID}`,
+    );
     expect((init?.headers as Record<string, string>)['X-DevChain-Connection-Epoch']).toBe('4');
   });
 
@@ -101,6 +108,7 @@ describe('useExternalTaskTimeEntries', () => {
     ['log_time capability off', { timeTrackingEnabled: false }],
     ['disabled', { enabled: false }],
     ['history closed', { historyOpen: false }],
+    ['remote scope unresolved', { remoteScopeKey: null }],
   ])('issues no request and hides cached data while %s', async (_case, overrides) => {
     fetchMock.mockResolvedValue(jsonResponse(historyPayload));
 
@@ -127,12 +135,12 @@ describe('useExternalTaskTimeEntries', () => {
     );
     const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
         return Promise.resolve(
           jsonResponse({ outcome: 'created', remoteEntryId: '10002', refresh: ['task_detail'] }),
         );
       }
-      if (String(url).endsWith('/time-entries')) {
+      if (String(url).includes('/time-entries?')) {
         return Promise.resolve(jsonResponse(historyPayload));
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -156,6 +164,9 @@ describe('useExternalTaskTimeEntries', () => {
     const createCall = fetchMock.mock.calls.find(
       ([, init]) => (init as RequestInit | undefined)?.method === 'POST',
     )!;
+    expect(createCall[0]).toBe(
+      `/api/integrations/my-work/jira/tasks/ENG-1/time-entries?scopeKey=${encodeURIComponent('acme.atlassian.net')}&projectId=${PROJECT_ID}`,
+    );
     const headers = (createCall[1] as RequestInit).headers as Record<string, string>;
     expect(headers['X-DevChain-Connection-Epoch']).toBe('4');
     expect(headers['Idempotency-Key']).toBe('generated-operation-id');
@@ -166,6 +177,56 @@ describe('useExternalTaskTimeEntries', () => {
 
     // Exactly two invalidations: the sibling history and the exact detail —
     // never comments or the landing family.
+    await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2));
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.taskTimeEntries('jira', connectionEpoch, 'ENG-1'),
+      exact: true,
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, 'ENG-1'),
+      exact: true,
+    });
+  });
+
+  it('updates one remote entry with receipt headers and refreshes only history and detail', async () => {
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries/10001?') && init?.method === 'PUT') {
+        return Promise.resolve(jsonResponse({ outcome: 'updated' }));
+      }
+      if (String(url).includes('/time-entries?') && !init?.method) {
+        return Promise.resolve(jsonResponse(historyPayload));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const { result } = renderTimeEntries(queryClient);
+    await waitFor(() => expect(result.current.history.isSuccess).toBe(true));
+    invalidate.mockClear();
+
+    act(() => {
+      result.current.submitUpdate('10001', {
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 5_400_000,
+        note: 'Revised',
+      });
+    });
+    await waitFor(() => expect(result.current.update.isSuccess).toBe(true));
+
+    const updateCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes('/time-entries/10001?') && init?.method === 'PUT',
+    )!;
+    expect(updateCall[0]).toBe(
+      `/api/integrations/my-work/jira/tasks/ENG-1/time-entries/10001?scopeKey=${encodeURIComponent('acme.atlassian.net')}&projectId=${PROJECT_ID}`,
+    );
+    expect((updateCall[1] as RequestInit).headers).toMatchObject({
+      'X-DevChain-Connection-Epoch': '4',
+      'Idempotency-Key': 'generated-operation-id',
+    });
+    expect(JSON.parse(String((updateCall[1] as RequestInit).body))).toEqual({
+      startedAt: '2026-08-22T11:30:00.000Z',
+      durationMs: 5_400_000,
+      note: 'Revised',
+    });
     await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2));
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: externalMyWorkQueryKeys.taskTimeEntries('jira', connectionEpoch, 'ENG-1'),
@@ -188,7 +249,7 @@ describe('useExternalTaskTimeEntries', () => {
           }),
         );
       }
-      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
         return Promise.resolve(
           jsonResponse({
             outcome: 'outcome_unknown',
@@ -196,7 +257,7 @@ describe('useExternalTaskTimeEntries', () => {
           }),
         );
       }
-      if (String(url).endsWith('/time-entries')) {
+      if (String(url).includes('/time-entries?')) {
         return Promise.resolve(jsonResponse(historyPayload));
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -240,7 +301,7 @@ describe('useExternalTaskTimeEntries', () => {
       if (String(url).includes('/acknowledge')) {
         return Promise.resolve(jsonResponse({ operationId: 'op-1', phase: 'abandoned_unknown' }));
       }
-      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
         return Promise.resolve(
           jsonResponse({
             outcome: 'outcome_unknown',
@@ -273,7 +334,7 @@ describe('useExternalTaskTimeEntries', () => {
 
   it('clears the unknown lock and operation state when the task changes', async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
         return Promise.resolve(
           jsonResponse({
             outcome: 'outcome_unknown',
@@ -291,6 +352,8 @@ describe('useExternalTaskTimeEntries', () => {
           enabled: true,
           historyOpen: true,
           connectionEpoch,
+          projectId: PROJECT_ID,
+          remoteScopeKey: 'acme.atlassian.net',
           identityAccepted: true,
           timeTrackingEnabled: true,
         }),
@@ -321,7 +384,7 @@ describe('useExternalTaskTimeEntries', () => {
       | ((response: { ok: boolean; json: () => Promise<unknown> }) => void)
       | undefined;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/time-entries') && init?.method === 'POST') {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
         return new Promise((resolve) => {
           resolveCreate = resolve;
         });
@@ -340,6 +403,8 @@ describe('useExternalTaskTimeEntries', () => {
           enabled: true,
           historyOpen: false,
           connectionEpoch: epoch,
+          projectId: PROJECT_ID,
+          remoteScopeKey: 'acme.atlassian.net',
           identityAccepted: true,
           timeTrackingEnabled: true,
         }),
@@ -411,6 +476,8 @@ describe('useExternalTaskTimeEntries', () => {
           enabled: true,
           historyOpen: false,
           connectionEpoch: epoch,
+          projectId: PROJECT_ID,
+          remoteScopeKey: 'acme.atlassian.net',
           identityAccepted: true,
           timeTrackingEnabled: true,
         }),
@@ -462,6 +529,8 @@ describe('useExternalTaskTimeEntries', () => {
           enabled: true,
           historyOpen: false,
           connectionEpoch: epoch,
+          projectId: PROJECT_ID,
+          remoteScopeKey: 'acme.atlassian.net',
           identityAccepted: true,
           timeTrackingEnabled: true,
         }),
@@ -505,6 +574,8 @@ describe('useExternalTaskTimeEntries', () => {
           enabled: true,
           historyOpen: false,
           connectionEpoch: epoch,
+          projectId: PROJECT_ID,
+          remoteScopeKey: 'acme.atlassian.net',
           identityAccepted: true,
           timeTrackingEnabled: true,
         }),
@@ -524,7 +595,6 @@ describe('useExternalTaskTimeEntries', () => {
     rerender({ connectionEpoch: 'connection-jira-b:5' });
     expect(result.current.create.isSuccess).toBe(false);
     expect(result.current.create.data).toBeUndefined();
-    expect(result.current.createOrigin).toBeNull();
   });
 
   it('ignores a late unknown result after the provider task changes', async () => {
@@ -546,6 +616,8 @@ describe('useExternalTaskTimeEntries', () => {
           enabled: true,
           historyOpen: false,
           connectionEpoch,
+          projectId: PROJECT_ID,
+          remoteScopeKey: 'acme.atlassian.net',
           identityAccepted: true,
           timeTrackingEnabled: true,
         }),
@@ -600,7 +672,9 @@ describe('useExternalTaskTimeEntries', () => {
     const deleteCall = fetchMock.mock.calls.find(
       ([, init]) => (init as RequestInit | undefined)?.method === 'DELETE',
     )!;
-    expect(deleteCall[0]).toBe('/api/integrations/my-work/jira/tasks/ENG-1/time-entries/10001');
+    expect(deleteCall[0]).toBe(
+      `/api/integrations/my-work/jira/tasks/ENG-1/time-entries/10001?scopeKey=${encodeURIComponent('acme.atlassian.net')}&projectId=${PROJECT_ID}`,
+    );
     const headers = (deleteCall[1] as RequestInit).headers as Record<string, string>;
     expect(headers['X-DevChain-Connection-Epoch']).toBe('4');
     expect(headers['Idempotency-Key']).toBe('generated-operation-id');
@@ -631,5 +705,370 @@ describe('useExternalTaskTimeEntries', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.current.create.isIdle ?? true).toBe(true);
+  });
+
+  it.each([
+    ['a supported create receipt', 'create', true],
+    ['an unprovable create receipt', 'create', false],
+    ['an unknown delete receipt', 'delete', true],
+  ])('mirrors receipt verify availability for %s', async (_case, kind, canVerify) => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'generated-operation-id',
+              phase: 'outcome_unknown',
+              canVerify,
+              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            },
+          }),
+        );
+      }
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'generated-operation-id',
+              phase: 'outcome_unknown',
+              canVerify,
+              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
+    await act(async () => {
+      if (kind === 'delete') {
+        result.current.submitDelete('10001');
+      } else {
+        result.current.submitCreate({
+          startedAt: '2026-08-22T11:30:00.000Z',
+          durationMs: 1_800_000,
+          note: null,
+        });
+      }
+    });
+
+    await waitFor(() => expect(result.current.blockedByUnknown).toBe(true));
+    expect(result.current.canVerifyUnknown).toBe(canVerify);
+  });
+
+  it('keeps Verify off for an already-expired receipt while keeping the lock', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'generated-operation-id',
+              phase: 'outcome_unknown',
+              canVerify: true,
+              expiresAt: '2020-01-01T00:00:00.000Z',
+            },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
+    await act(async () => {
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      });
+    });
+
+    await waitFor(() => expect(result.current.blockedByUnknown).toBe(true));
+    expect(result.current.canVerifyUnknown).toBe(false);
+  });
+
+  it('hides Verify when the deadline timer fires but keeps the unknown lock', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-01T10:00:00Z'));
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'generated-operation-id',
+              phase: 'outcome_unknown',
+              canVerify: true,
+              expiresAt: '2026-09-01T11:00:00.000Z',
+            },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
+    await act(async () => {
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      });
+    });
+
+    expect(result.current.blockedByUnknown).toBe(true);
+    expect(result.current.canVerifyUnknown).toBe(true);
+
+    act(() => {
+      jest.setSystemTime(new Date('2026-09-01T11:00:01.000Z'));
+      jest.advanceTimersByTime(3_601_000);
+    });
+
+    expect(result.current.canVerifyUnknown).toBe(false);
+    expect(result.current.blockedByUnknown).toBe(true);
+  });
+
+  it('re-checks the wall clock when a suspended tab regains focus or visibility', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-01T10:00:00Z'));
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'generated-operation-id',
+              phase: 'outcome_unknown',
+              canVerify: true,
+              expiresAt: '2026-09-01T11:00:00.000Z',
+            },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
+    await act(async () => {
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      });
+    });
+
+    expect(result.current.canVerifyUnknown).toBe(true);
+
+    // The tab slept through the deadline: no timer fired, so the stale
+    // presentation stands until a resume event re-reads the clock.
+    jest.setSystemTime(new Date('2026-09-01T11:30:00.000Z'));
+    expect(result.current.canVerifyUnknown).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(result.current.canVerifyUnknown).toBe(false);
+    expect(result.current.blockedByUnknown).toBe(true);
+  });
+
+  it('re-checks the wall clock on the visibilitychange resume', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-01T10:00:00Z'));
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'generated-operation-id',
+              phase: 'outcome_unknown',
+              canVerify: true,
+              expiresAt: '2026-09-01T11:00:00.000Z',
+            },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
+    await act(async () => {
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      });
+    });
+
+    jest.setSystemTime(new Date('2026-09-01T11:30:00.000Z'));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(result.current.canVerifyUnknown).toBe(false);
+  });
+
+  it.each([
+    [
+      'an unexpired receipt still uses the server acknowledgement endpoint',
+      '2027-01-01T00:00:00.000Z',
+      true,
+    ],
+    [
+      'an already-expired receipt clears only the matching local guard',
+      '2020-01-01T00:00:00.000Z',
+      false,
+    ],
+  ])('acknowledges %s', async (_case, expiresAt, expectsServerCall) => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/acknowledge')) {
+        return Promise.resolve(jsonResponse({ operationId: 'op-1', phase: 'abandoned_unknown' }));
+      }
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'op-1',
+              phase: 'outcome_unknown',
+              canVerify: false,
+              expiresAt,
+            },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
+    await act(async () => {
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      });
+    });
+    await waitFor(() => expect(result.current.blockedByUnknown).toBe(true));
+
+    const callsBeforeAcknowledge = fetchMock.mock.calls.length;
+    await act(async () => {
+      result.current.acknowledgeUnknown('op-1');
+    });
+
+    const acknowledgeCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes('/acknowledge'),
+    );
+    if (expectsServerCall) {
+      expect(acknowledgeCalls).toHaveLength(1);
+    } else {
+      // Expired: no receipt endpoint, no provider endpoint — the explicit
+      // user action cleared the exact local guard with zero requests.
+      expect(acknowledgeCalls).toHaveLength(0);
+      expect(fetchMock.mock.calls).toHaveLength(callsBeforeAcknowledge);
+    }
+    await waitFor(() => expect(result.current.blockedByUnknown).toBe(false));
+    expect(result.current.writeBlocked).toBe(false);
+  });
+
+  it('cannot clear an expired guard through a nonmatching operation id', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'op-real',
+              phase: 'outcome_unknown',
+              canVerify: false,
+              expiresAt: '2020-01-01T00:00:00.000Z',
+            },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+
+    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
+    await act(async () => {
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      });
+    });
+    await waitFor(() => expect(result.current.blockedByUnknown).toBe(true));
+
+    const callsBefore = fetchMock.mock.calls.length;
+    await act(async () => {
+      result.current.acknowledgeUnknown('op-other');
+    });
+
+    expect(fetchMock.mock.calls).toHaveLength(callsBefore);
+    expect(result.current.blockedByUnknown).toBe(true);
+    expect(result.current.unknownOperationId).toBe('op-real');
+  });
+
+  it('cannot clear an expired guard retained across a connection-epoch change', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/acknowledge')) {
+        return Promise.resolve(
+          jsonResponse({ operationId: 'op-epoch-expired', phase: 'abandoned_unknown' }),
+        );
+      }
+      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse({
+            outcome: 'outcome_unknown',
+            receipt: {
+              operationId: 'op-epoch-expired',
+              phase: 'outcome_unknown',
+              canVerify: true,
+              expiresAt: '2020-01-01T00:00:00.000Z',
+            },
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload));
+    });
+    const initialProps = { connectionEpoch };
+    const { result, rerender } = renderHook(
+      ({ connectionEpoch: epoch }) =>
+        useExternalTaskTimeEntries('jira', 'ENG-1', {
+          enabled: true,
+          historyOpen: false,
+          connectionEpoch: epoch,
+          projectId: PROJECT_ID,
+          remoteScopeKey: 'acme.atlassian.net',
+          identityAccepted: true,
+          timeTrackingEnabled: true,
+        }),
+      { initialProps, wrapper: wrapper(queryClient) },
+    );
+
+    await act(async () => {
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      });
+    });
+    await waitFor(() => expect(result.current.unknownOperationId).toBe('op-epoch-expired'));
+
+    // The guard survives the epoch change (duplicate risk is task-scoped),
+    // but its receipt belonged to the replaced connection: the current
+    // epoch's Acknowledge must neither call anything nor clear it.
+    rerender({ connectionEpoch: 'connection-jira-b:5' });
+    expect(result.current.blockedByUnknown).toBe(true);
+
+    const callsBefore = fetchMock.mock.calls.length;
+    await act(async () => {
+      result.current.acknowledgeUnknown('op-epoch-expired');
+    });
+
+    expect(fetchMock.mock.calls).toHaveLength(callsBefore);
+    expect(result.current.blockedByUnknown).toBe(true);
+    expect(result.current.unknownOperationId).toBe('op-epoch-expired');
   });
 });

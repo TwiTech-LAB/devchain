@@ -28,6 +28,7 @@ export interface AddBoardButtonProps {
   isLoading: boolean;
   onConnect: (input: ReplaceIntegrationConnectionInput) => Promise<unknown>;
   replacingProvider?: IntegrationProvider | undefined;
+  projectName?: string | null;
 }
 
 export function AddBoardButton({
@@ -35,6 +36,7 @@ export function AddBoardButton({
   isLoading,
   onConnect,
   replacingProvider,
+  projectName,
 }: AddBoardButtonProps) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -90,7 +92,11 @@ export function AddBoardButton({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add board</DialogTitle>
-            <DialogDescription>Connect an external work board to this app.</DialogDescription>
+            <DialogDescription>
+              {projectName
+                ? `Connect an external work board to ${projectName}.`
+                : 'Connect an external work board to this app.'}
+            </DialogDescription>
           </DialogHeader>
           {effectiveSelected === null ? (
             <div className="flex flex-col gap-2">

@@ -589,8 +589,8 @@ describe('App board routes', () => {
   });
 
   it.each([
-    ['/board/clickup', 'ClickUp My Work'],
-    ['/board/jira', 'Jira My Work'],
+    ['/board/clickup', 'ClickUp'],
+    ['/board/jira', 'Jira'],
   ])(
     'renders the external My Work page on %s without mounting the native board',
     async (path, heading) => {
@@ -609,10 +609,7 @@ describe('App board routes', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'ClickUp board' })).toBeInTheDocument();
     });
-    expect(screen.getByRole('link', { name: 'Back to ClickUp My Work' })).toHaveAttribute(
-      'href',
-      '/board/clickup',
-    );
+    expect(screen.getByRole('link', { name: 'Clickup' })).toHaveAttribute('href', '/board/clickup');
     expect(boardPageMock).not.toHaveBeenCalled();
   });
 
@@ -620,7 +617,7 @@ describe('App board routes', () => {
     renderAt('/board/clickup?archived=all&status=xyz');
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'ClickUp My Work' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'ClickUp' })).toBeInTheDocument();
     });
     expect(boardPageMock).not.toHaveBeenCalled();
   });

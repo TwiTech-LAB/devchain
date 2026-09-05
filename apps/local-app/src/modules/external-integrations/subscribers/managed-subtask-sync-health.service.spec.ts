@@ -1,3 +1,4 @@
+import { NotFoundError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { ExternalManagedSubtaskLink } from '../../storage/models/domain.models';
 import type { ExternalSubtaskSyncSubscriber } from './external-subtask-sync.subscriber';
@@ -37,10 +38,13 @@ function row(overrides: Partial<ExternalManagedSubtaskLink> = {}): ExternalManag
 }
 
 describe('ManagedSubtaskSyncHealthService', () => {
+  const projectId = 'project-1';
   let storage: {
+    getProject: jest.Mock;
     getIntegrationConnection: jest.Mock;
-    listExternalManagedSubtaskLinksByProvider: jest.Mock;
-    getIntegrationConnectionCredentials: jest.Mock;
+    getIntegrationConnectionById: jest.Mock;
+    listExternalManagedSubtaskLinksByConnection: jest.Mock;
+    getIntegrationConnectionCredentialsById: jest.Mock;
     listExternalTaskLinksForEpics: jest.Mock;
     getExternalManagedSubtaskLink: jest.Mock;
   };
@@ -52,20 +56,24 @@ describe('ManagedSubtaskSyncHealthService', () => {
 
   beforeEach(() => {
     storage = {
+      getProject: jest.fn().mockResolvedValue({ id: projectId }),
       getIntegrationConnection: jest.fn().mockResolvedValue({
         id: 'connection-1',
+        projectId,
         provider: 'clickup',
         generation: 1,
         subtaskSyncEnabled: true,
         syncSettingRevision: 1,
       }),
-      listExternalManagedSubtaskLinksByProvider: jest.fn(),
-      getIntegrationConnectionCredentials: jest
+      getIntegrationConnectionById: jest.fn().mockResolvedValue(null),
+      listExternalManagedSubtaskLinksByConnection: jest.fn(),
+      getIntegrationConnectionCredentialsById: jest
         .fn()
         .mockResolvedValue({ provider: 'clickup', token: 'secret-token' }),
       listExternalTaskLinksForEpics: jest.fn().mockResolvedValue([
         {
           epicId: 'epic-1',
+          connectionId: 'connection-1',
           provider: 'clickup',
           remoteScopeKey: 'workspace-1',
           remoteTaskId: 'remote-task',
@@ -85,7 +93,7 @@ describe('ManagedSubtaskSyncHealthService', () => {
   });
 
   it('returns bounded provider health without credentials or handler internals', async () => {
-    storage.listExternalManagedSubtaskLinksByProvider.mockResolvedValue([
+    storage.listExternalManagedSubtaskLinksByConnection.mockResolvedValue([
       row(),
       row({
         id: '22222222-2222-4222-8222-222222222222',
@@ -95,7 +103,7 @@ describe('ManagedSubtaskSyncHealthService', () => {
       }),
     ]);
 
-    const result = await service.getHealth('clickup');
+    const result = await service.getHealth(projectId, 'clickup');
 
     expect(result).toMatchObject({
       provider: 'clickup',
@@ -118,16 +126,23 @@ describe('ManagedSubtaskSyncHealthService', () => {
       ],
     });
     expect(JSON.stringify(result)).not.toMatch(/secret-token|delivery_key|handler/i);
+    expect(storage.getIntegrationConnection).toHaveBeenCalledWith({
+      projectId,
+      provider: 'clickup',
+    });
+    expect(storage.listExternalManagedSubtaskLinksByConnection).toHaveBeenCalledWith(
+      'connection-1',
+    );
   });
 
   it('bounds detail rows at 100 while counts remain authoritative', async () => {
-    storage.listExternalManagedSubtaskLinksByProvider.mockResolvedValue(
+    storage.listExternalManagedSubtaskLinksByConnection.mockResolvedValue(
       Array.from({ length: 101 }, (_, index) =>
         row({ id: `${String(index).padStart(8, '0')}-1111-4111-8111-111111111111` }),
       ),
     );
 
-    const result = await service.getHealth('clickup');
+    const result = await service.getHealth(projectId, 'clickup');
 
     expect(result.counts.total).toBe(101);
     expect(result.items).toHaveLength(100);
@@ -137,11 +152,11 @@ describe('ManagedSubtaskSyncHealthService', () => {
   it.each(MANAGED_SUBTASK_RETRY_BLOCKED_REASONS)(
     'hides Retry but preserves Verify and Open in source for blocked reason %s',
     async (safeErrorCode) => {
-      storage.listExternalManagedSubtaskLinksByProvider.mockResolvedValue([
+      storage.listExternalManagedSubtaskLinksByConnection.mockResolvedValue([
         row({ operationPhase: 'needs_attention', safeErrorCode }),
       ]);
 
-      const result = await service.getHealth('clickup');
+      const result = await service.getHealth(projectId, 'clickup');
 
       expect(result.items[0]).toMatchObject({
         safeErrorCode,
@@ -153,28 +168,152 @@ describe('ManagedSubtaskSyncHealthService', () => {
   );
 
   it('shows Retry for an otherwise retryable needs-attention reason', async () => {
-    storage.listExternalManagedSubtaskLinksByProvider.mockResolvedValue([
+    storage.listExternalManagedSubtaskLinksByConnection.mockResolvedValue([
       row({ operationPhase: 'needs_attention', safeErrorCode: 'provider_request_rejected' }),
     ]);
 
-    const result = await service.getHealth('clickup');
+    const result = await service.getHealth(projectId, 'clickup');
 
     expect(result.items[0]).toMatchObject({ canRetry: true, canVerify: true });
   });
 
-  it('routes Verify and Retry only to a matching provider row', async () => {
+  it('derives Jira source URLs only from the exact project connection credentials', async () => {
+    storage.getIntegrationConnection.mockResolvedValue({
+      id: 'jira-connection-1',
+      projectId,
+      provider: 'jira',
+      generation: 1,
+      subtaskSyncEnabled: true,
+      syncSettingRevision: 1,
+    });
+    storage.listExternalManagedSubtaskLinksByConnection.mockResolvedValue([
+      row({
+        connectionIdSnapshot: 'jira-connection-1',
+        provider: 'jira',
+        remoteTaskId: '10001',
+        remoteKey: 'ENG-1',
+      }),
+    ]);
+    storage.getIntegrationConnectionCredentialsById.mockResolvedValue({
+      provider: 'jira',
+      siteUrl: 'https://acme.atlassian.net',
+      email: 'user@example.com',
+      token: 'jira-secret-token',
+    });
+
+    const result = await service.getHealth(projectId, 'jira');
+
+    expect(result.items[0]?.openInSourceUrl).toBe('https://acme.atlassian.net/browse/ENG-1');
+    expect(storage.getIntegrationConnectionCredentialsById).toHaveBeenCalledWith(
+      'jira-connection-1',
+    );
+    expect(JSON.stringify(result)).not.toContain('jira-secret-token');
+  });
+
+  it('routes Verify and Retry only to a matching project connection row', async () => {
     storage.getExternalManagedSubtaskLink.mockResolvedValue(row());
     subscriber.verifyManagedLink.mockResolvedValue({ outcome: 'confirmed' });
     subscriber.retryManagedLink.mockResolvedValue({ outcome: 'confirmed' });
 
     await expect(
-      service.verify('clickup', '11111111-1111-4111-8111-111111111111'),
+      service.verify(projectId, 'clickup', '11111111-1111-4111-8111-111111111111'),
     ).resolves.toEqual({ outcome: 'confirmed' });
-    await expect(service.retry('clickup', '11111111-1111-4111-8111-111111111111')).resolves.toEqual(
-      { outcome: 'confirmed' },
+    await expect(
+      service.retry(projectId, 'clickup', '11111111-1111-4111-8111-111111111111'),
+    ).resolves.toEqual({ outcome: 'confirmed' });
+    expect(subscriber.verifyManagedLink).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      'connection-1',
     );
-    await expect(service.verify('jira', '11111111-1111-4111-8111-111111111111')).rejects.toThrow(
-      'Managed subtask link',
+    expect(subscriber.retryManagedLink).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      'connection-1',
     );
+
+    storage.getIntegrationConnection.mockResolvedValueOnce({
+      id: 'connection-other',
+      projectId: 'project-other',
+      provider: 'clickup',
+    });
+    await expect(
+      service.verify('project-other', 'clickup', '11111111-1111-4111-8111-111111111111'),
+    ).rejects.toThrow('Managed subtask link');
+  });
+
+  it('returns health for one exact unassigned connection without provider fallback', async () => {
+    storage.getIntegrationConnectionById.mockResolvedValue({
+      id: 'legacy-connection-1',
+      projectId: null,
+      provider: 'clickup',
+      generation: 1,
+      subtaskSyncEnabled: true,
+      syncSettingRevision: 1,
+    });
+    storage.listExternalManagedSubtaskLinksByConnection.mockResolvedValue([
+      row({ connectionIdSnapshot: 'legacy-connection-1' }),
+    ]);
+
+    const result = await service.getLegacyHealth('legacy-connection-1');
+
+    expect(result).toMatchObject({
+      provider: 'clickup',
+      enabled: true,
+      counts: { total: 1, outcomeUnknown: 1 },
+    });
+    expect(storage.listExternalManagedSubtaskLinksByConnection).toHaveBeenCalledWith(
+      'legacy-connection-1',
+    );
+    expect(storage.getIntegrationConnection).not.toHaveBeenCalled();
+  });
+
+  it('rejects project-owned rows from every exact legacy health and recovery action', async () => {
+    storage.getIntegrationConnectionById.mockResolvedValue({
+      id: 'connection-1',
+      projectId,
+      provider: 'clickup',
+    });
+
+    await expect(service.getLegacyHealth('connection-1')).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      service.verifyLegacy('connection-1', '11111111-1111-4111-8111-111111111111'),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      service.retryLegacy('connection-1', '11111111-1111-4111-8111-111111111111'),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('routes legacy Verify and Retry only when row and exact connection match', async () => {
+    storage.getIntegrationConnectionById.mockResolvedValue({
+      id: 'legacy-connection-1',
+      projectId: null,
+      provider: 'clickup',
+    });
+    storage.getExternalManagedSubtaskLink.mockResolvedValue(
+      row({ connectionIdSnapshot: 'legacy-connection-1' }),
+    );
+    subscriber.verifyManagedLink.mockResolvedValue({ outcome: 'confirmed' });
+    subscriber.retryManagedLink.mockResolvedValue({ outcome: 'confirmed' });
+
+    await expect(
+      service.verifyLegacy('legacy-connection-1', '11111111-1111-4111-8111-111111111111'),
+    ).resolves.toEqual({ outcome: 'confirmed' });
+    await expect(
+      service.retryLegacy('legacy-connection-1', '11111111-1111-4111-8111-111111111111'),
+    ).resolves.toEqual({ outcome: 'confirmed' });
+    expect(subscriber.verifyManagedLink).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      'legacy-connection-1',
+    );
+    expect(subscriber.retryManagedLink).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      'legacy-connection-1',
+    );
+
+    storage.getExternalManagedSubtaskLink.mockResolvedValue(
+      row({ connectionIdSnapshot: 'different-connection' }),
+    );
+    await expect(
+      service.verifyLegacy('legacy-connection-1', '11111111-1111-4111-8111-111111111111'),
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 });

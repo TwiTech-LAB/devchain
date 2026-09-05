@@ -1,10 +1,17 @@
 import type { EpicOperationContext } from '../../../epics/services/epics.service';
-import type { Status, Epic } from '../../../storage/models/domain.models';
+import type {
+  Status,
+  Epic,
+  EpicRelationCandidate,
+  EpicRelationListItem,
+} from '../../../storage/models/domain.models';
 import { createLogger } from '../../../../common/logging/logger';
 import {
   NotFoundError,
   OptimisticLockError,
+  RelationConfirmationRequiredError,
   ValidationError,
+  ForbiddenError,
 } from '../../../../common/errors/error-types';
 import {
   McpResponse,
@@ -26,6 +33,16 @@ import {
   type AddEpicCommentParams,
   type UpdateEpicParams,
   type DeleteEpicParams,
+  type EpicRelationsListParams,
+  type EpicRelationCandidatesListParams,
+  type EpicRelationsSetParams,
+  type EpicRelationsDeleteParams,
+  type EpicRelationSummary,
+  type EpicRelationCandidateSummary,
+  type EpicRelationsPageResponse,
+  type EpicRelationCandidatesPageResponse,
+  type EpicRelationMutationResponse,
+  type DeleteEpicRelationResponse,
 } from '../../dtos/mcp.dto';
 import {
   mapEpicSummary,
@@ -39,8 +56,139 @@ import { resolveEpicId } from '../utils/resolve-epic-id';
 import { resolveSessionContext, getActorFromContext } from '../utils/session-context-helpers';
 import { resolveAgentNames } from '../utils/agent-name-resolver';
 import { requireProject } from '../utils/require-project';
+import {
+  resolveEpicRelationDeletionTarget,
+  resolveEpicRelationTarget,
+} from '../../../epics/services/epic-relation-target-resolver';
 
 const logger = createLogger('McpService');
+const EPIC_DETAIL_RELATION_LIMIT = 50;
+
+function mapRelation(row: EpicRelationListItem): EpicRelationSummary {
+  return {
+    relationId: row.relationId,
+    relation: row.type,
+    sourceEpicId: row.sourceEpicId,
+    targetEpicId: row.targetEpicId,
+    relatedEpic: {
+      id: row.epicId,
+      shortId: row.epicId.slice(0, 8),
+      title: row.title,
+      status: { id: row.statusId, label: row.statusLabel, color: row.statusColor },
+      project: { id: row.projectId, name: row.projectName },
+    },
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function mapRelationCandidate(row: EpicRelationCandidate): EpicRelationCandidateSummary {
+  return {
+    id: row.id,
+    shortId: row.id.slice(0, 8),
+    title: row.title,
+    status: { id: row.statusId, label: row.statusLabel, color: row.statusColor },
+    project: { id: row.projectId, name: row.projectName },
+    parentId: row.parentId,
+  };
+}
+
+function relationServiceUnavailable(): McpResponse {
+  return {
+    success: false,
+    error: {
+      code: 'SERVICE_UNAVAILABLE',
+      message:
+        'Epic relation writes require full app context (not available in standalone MCP mode)',
+    },
+  };
+}
+
+function relationActorFromSession(
+  sessionContext: SessionContext,
+): NonNullable<EpicOperationContext['actor']> | null {
+  if (sessionContext.type === 'guest') {
+    return { type: 'guest', id: sessionContext.guest.id };
+  }
+  if (sessionContext.agent) {
+    return { type: 'agent', id: sessionContext.agent.id };
+  }
+  return null;
+}
+
+function relationAgentContextRequired(): McpResponse {
+  return {
+    success: false,
+    error: { code: 'AGENT_CONTEXT_REQUIRED', message: 'An agent context is required.' },
+  };
+}
+
+function mapRelationError(error: unknown): McpResponse {
+  if (error instanceof ServiceUnavailableError) {
+    return relationServiceUnavailable();
+  }
+  if (error instanceof ForbiddenError) {
+    return {
+      success: false,
+      error: { code: 'AGENT_CONTEXT_REQUIRED', message: error.message },
+    };
+  }
+  if (error instanceof NotFoundError) {
+    return {
+      success: false,
+      error: { code: 'RELATED_EPIC_NOT_FOUND', message: 'Related Epic not found.' },
+    };
+  }
+  if (error instanceof RelationConfirmationRequiredError) {
+    // Agent commands never carry accepted facts, so the remedy on this surface
+    // is always the explicit one: delete the displaced Related pair, retry.
+    return {
+      success: false,
+      error: {
+        code: 'RELATION_CONFIRMATION_REQUIRED',
+        message:
+          'This change displaces an active relation time route. Delete the existing Related pair explicitly, then retry this command.',
+        data: error.details,
+      },
+    };
+  }
+  if (error instanceof ValidationError) {
+    const code =
+      error.details?.code === 'AMBIGUOUS_RELATED_EPIC'
+        ? 'AMBIGUOUS_RELATED_EPIC'
+        : 'VALIDATION_ERROR';
+    return {
+      success: false,
+      error: { code, message: error.message, data: error.details },
+    };
+  }
+  throw error;
+}
+
+async function resolveFocalRelationEpic(
+  ctx: EpicToolContext,
+  projectId: string,
+  epicAddress: string,
+): Promise<McpResponse> {
+  const resolved = await resolveEpicId(ctx.storage, projectId, epicAddress);
+  if (!resolved.success) return resolved;
+  const epicId = (resolved.data as { epicId: string }).epicId;
+  try {
+    const epic = await ctx.storage.getEpic(epicId);
+    if (epic.projectId !== projectId) {
+      throw new NotFoundError('Epic');
+    }
+    return { success: true, data: { epicId } };
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      return {
+        success: false,
+        error: { code: 'EPIC_NOT_FOUND', message: `Epic ${epicId} was not found.` },
+      };
+    }
+    throw error;
+  }
+}
 
 export async function handleListEpics(ctx: EpicToolContext, params: unknown): Promise<McpResponse> {
   const validated = params as ListEpicsParams;
@@ -265,6 +413,7 @@ export async function handleCreateEpic(
         agentName: validated.agentName,
         parentId: validated.parentId ?? null,
         skillsRequired: validated.skillsRequired ?? null,
+        relation: validated.relation,
       },
       context,
     );
@@ -286,6 +435,9 @@ export async function handleCreateEpic(
       };
     }
     if (error instanceof NotFoundError) {
+      if (validated.relation && error.message.startsWith('Related Epic')) {
+        return mapRelationError(error);
+      }
       return {
         success: false,
         error: {
@@ -296,6 +448,9 @@ export async function handleCreateEpic(
     }
 
     if (error instanceof ValidationError) {
+      if (error.details?.code === 'AMBIGUOUS_RELATED_EPIC') {
+        return mapRelationError(error);
+      }
       return {
         success: false,
         error: {
@@ -304,6 +459,9 @@ export async function handleCreateEpic(
           data: error.details,
         },
       };
+    }
+    if (error instanceof ForbiddenError) {
+      return mapRelationError(error);
     }
 
     throw error;
@@ -356,6 +514,11 @@ export async function handleGetEpicById(
     offset: 0,
   });
   const subEpicsResult = await ctx.storage.listSubEpics(epic.id, { limit: 250, offset: 0 });
+  const relationsResult = await ctx.storage.listEpicRelations(epic.id, {
+    excludeMcpHidden: true,
+    limit: EPIC_DETAIL_RELATION_LIMIT,
+    offset: 0,
+  });
 
   let parentEpic: Epic | undefined;
   if (epic.parentId) {
@@ -415,6 +578,13 @@ export async function handleGetEpicById(
       .reverse()
       .map((comment, idx) => ({ ...mapEpicComment(comment), commentNumber: idx + 1 })),
     subEpics: subEpicsWithStatus,
+    relations: {
+      items: relationsResult.items.map(mapRelation),
+      total: relationsResult.total,
+      limit: relationsResult.limit,
+      offset: relationsResult.offset,
+      truncated: relationsResult.total > relationsResult.items.length,
+    },
   };
 
   if (parentSummary) {
@@ -422,6 +592,154 @@ export async function handleGetEpicById(
   }
 
   return { success: true, data: response };
+}
+
+export async function handleListEpicRelations(
+  ctx: EpicToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as EpicRelationsListParams;
+  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+
+  const focal = await resolveFocalRelationEpic(ctx, projectResult.project.id, validated.epicId);
+  if (!focal.success) return focal;
+  const epicId = (focal.data as { epicId: string }).epicId;
+  try {
+    const result = await ctx.storage.listEpicRelations(epicId, {
+      excludeMcpHidden: true,
+      limit: validated.limit,
+      offset: validated.offset,
+    });
+    const response: EpicRelationsPageResponse = {
+      items: result.items.map(mapRelation),
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset,
+    };
+    return { success: true, data: response };
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      return {
+        success: false,
+        error: { code: 'EPIC_NOT_FOUND', message: `Epic ${epicId} was not found.` },
+      };
+    }
+    throw error;
+  }
+}
+
+export async function handleListEpicRelationCandidates(
+  ctx: EpicToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as EpicRelationCandidatesListParams;
+  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+
+  const focal = await resolveFocalRelationEpic(ctx, projectResult.project.id, validated.epicId);
+  if (!focal.success) return focal;
+  const epicId = (focal.data as { epicId: string }).epicId;
+  try {
+    const result = await ctx.storage.listEpicRelationCandidates(epicId, {
+      q: validated.q,
+      excludeMcpHidden: true,
+      limit: validated.limit,
+      offset: validated.offset,
+    });
+    const response: EpicRelationCandidatesPageResponse = {
+      items: result.items.map(mapRelationCandidate),
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset,
+    };
+    return { success: true, data: response };
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      return {
+        success: false,
+        error: { code: 'EPIC_NOT_FOUND', message: `Epic ${epicId} was not found.` },
+      };
+    }
+    throw error;
+  }
+}
+
+export async function handleSetEpicRelation(
+  ctx: EpicToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as EpicRelationsSetParams;
+  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const sessionCtx = sessionCtxResult.data as SessionContext;
+
+  const focal = await resolveFocalRelationEpic(ctx, projectResult.project.id, validated.epicId);
+  if (!focal.success) return focal;
+  const epicId = (focal.data as { epicId: string }).epicId;
+  const relationService = ctx.epicRelationsService;
+  if (!relationService) return relationServiceUnavailable();
+  try {
+    const target = await resolveEpicRelationTarget(ctx.storage, epicId, validated.relatedEpicId, {
+      excludeMcpHidden: true,
+    });
+    const actor = relationActorFromSession(sessionCtx);
+    if (!actor) return relationAgentContextRequired();
+    const relation = await relationService.setRelation(epicId, target.id, validated.relation, {
+      actor,
+    });
+    const response: EpicRelationMutationResponse = {
+      epicId,
+      relatedEpicId: target.id,
+      relation: relation.type,
+      sourceEpicId: relation.sourceEpicId,
+      targetEpicId: relation.targetEpicId,
+    };
+    return { success: true, data: response };
+  } catch (error) {
+    return mapRelationError(error);
+  }
+}
+
+export async function handleDeleteEpicRelation(
+  ctx: EpicToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const validated = params as EpicRelationsDeleteParams;
+  const sessionCtxResult = await resolveSessionContext(ctx, validated.sessionId);
+  const projectResult = requireProject(sessionCtxResult);
+  if (!('project' in projectResult)) return projectResult;
+  const sessionCtx = sessionCtxResult.data as SessionContext;
+
+  const focal = await resolveFocalRelationEpic(ctx, projectResult.project.id, validated.epicId);
+  if (!focal.success) return focal;
+  const epicId = (focal.data as { epicId: string }).epicId;
+  const relationService = ctx.epicRelationsService;
+  if (!relationService) return relationServiceUnavailable();
+  try {
+    // Exact full IDs address the pair directly (the delete-only path that
+    // keeps a replacement-refusal target deletable after it becomes
+    // MCP-hidden); prefixes resolve visible targets only.
+    const target = await resolveEpicRelationDeletionTarget(
+      ctx.storage,
+      epicId,
+      validated.relatedEpicId,
+    );
+    const actor = relationActorFromSession(sessionCtx);
+    if (!actor) return relationAgentContextRequired();
+    const deleted = await relationService.deleteRelation(epicId, target.id, { actor });
+    const response: DeleteEpicRelationResponse = {
+      epicId,
+      relatedEpicId: target.id,
+      deleted,
+    };
+    return { success: true, data: response };
+  } catch (error) {
+    return mapRelationError(error);
+  }
 }
 
 export async function handleAddEpicComment(

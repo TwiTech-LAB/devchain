@@ -29,6 +29,8 @@ const UPDATED_DOCUMENT: ExternalRichDocumentV1 = {
   blocks: [{ type: 'paragraph', content: [{ type: 'text', text: 'updated text', marks: [] }] }],
 };
 
+const PROJECT_ID = 'project-1';
+
 function adfWithText(text: string) {
   return {
     type: 'doc',
@@ -52,23 +54,42 @@ function knownRejection(provider: IntegrationProvider): ExternalProviderError {
 class FakeStorage {
   connection: {
     id: string;
+    projectId: string;
     provider: string;
     generation: number;
-  } = { id: 'connection-1', provider: 'jira', generation: 1 };
+  } = { id: 'connection-1', projectId: PROJECT_ID, provider: 'jira', generation: 1 };
   connected = true;
 
-  async getIntegrationConnection(provider: string) {
+  async getProject(projectId: string) {
+    return { id: projectId };
+  }
+
+  async getIntegrationConnection(identity: unknown) {
     if (!this.connected) {
       return null;
     }
+    const provider =
+      typeof identity === 'object' && identity !== null && 'provider' in identity
+        ? (identity as { provider: string }).provider
+        : identity;
     return this.connection.provider === provider
       ? { ...this.connection, createdAt: '', updatedAt: '' }
       : null;
   }
 
+  async getIntegrationConnectionById(connectionId: string) {
+    return this.connected && this.connection.id === connectionId
+      ? { ...this.connection, createdAt: '', updatedAt: '' }
+      : null;
+  }
+
   async getIntegrationConnectionCredentials(
-    provider: string,
+    identity: unknown,
   ): Promise<IntegrationCredentials | null> {
+    const provider =
+      typeof identity === 'object' && identity !== null && 'provider' in identity
+        ? (identity as { provider: string }).provider
+        : identity;
     if (!this.connected || this.connection.provider !== provider) {
       return null;
     }
@@ -193,7 +214,7 @@ class FakeRegistry {
 
 function setup(provider: IntegrationProvider = 'jira') {
   const storage = new FakeStorage();
-  storage.connection = { id: 'connection-1', provider, generation: 1 };
+  storage.connection = { id: 'connection-1', projectId: PROJECT_ID, provider, generation: 1 };
   const adapter = new FakeAdapter();
   const registry = new FakeRegistry(adapter);
   const gate = new ProviderOperationGate();
@@ -213,19 +234,38 @@ describe('ExternalEditSessionService', () => {
     // Read-only description reads happen through the adapter directly; the
     // session store stays empty until an explicit create call.
     expect(store.size()).toBe(0);
-    await expect(service.touchSession('00000000-0000-4000-8000-000000000000')).rejects.toThrow();
+    await expect(
+      service.touchSession(PROJECT_ID, '00000000-0000-4000-8000-000000000000'),
+    ).rejects.toThrow();
     expect(store.size()).toBe(0);
   });
 
   it('creates a description session pinned to the connection with a canonical baseline', async () => {
     const { service, store } = setup();
-    const session = await service.createDescriptionSession('jira', 'KAN-1');
+    const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
     expect(session.state).toBe('editable');
     expect(session.revision).toBe(0);
     expect(session.baselineFingerprint).toBe(
       JSON.stringify(adfToRichDocument(BASELINE_ADF).document ?? null),
     );
     expect(store.size()).toBe(1);
+  });
+
+  it('does not expose or invalidate another project session', async () => {
+    const { service } = setup();
+    const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+
+    await expect(
+      service.saveSession('project-2', session.sessionId, UPDATED_DOCUMENT, 0),
+    ).resolves.toEqual({
+      outcome: 'pre_dispatch_rejected',
+      reason: 'session_not_found',
+      session: null,
+    });
+
+    await expect(service.touchSession(PROJECT_ID, session.sessionId)).resolves.toMatchObject({
+      state: 'editable',
+    });
   });
 
   it('refuses to create a session for unsupported baseline content', async () => {
@@ -235,7 +275,9 @@ describe('ExternalEditSessionService', () => {
       version: 1,
       content: [{ type: 'table', content: [] }],
     };
-    await expect(service.createDescriptionSession('jira', 'KAN-1')).rejects.toMatchObject({
+    await expect(
+      service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1'),
+    ).rejects.toMatchObject({
       details: { reason: 'unsupported_content' },
     });
     expect(store.size()).toBe(0);
@@ -244,81 +286,81 @@ describe('ExternalEditSessionService', () => {
   describe('description writes', () => {
     it('happy path: saved_unverified, then verified save advances baseline and revision exactly once', async () => {
       const { service, adapter } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
-      const written = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+      const written = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(written.outcome).toBe('saved_unverified');
       expect(adapter.writeCalls).toHaveLength(1);
 
       // The remote now shows the payload.
       adapter.descriptionRaw = adfWithText('updated text');
-      const verified = await service.verifySession(session.sessionId);
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
       expect(verified.remoteState).toBe('new_payload');
       expect(verified.session?.state).toBe('editable');
       expect(verified.session?.revision).toBe(1);
 
       // A second verify of the same content cannot advance again.
-      const again = await service.verifySession(session.sessionId);
+      const again = await service.verifySession(PROJECT_ID, session.sessionId);
       expect(again.session?.revision).toBe(1);
     });
 
     it('a dispatched timeout classifies as outcome_unknown', async () => {
       const { service, adapter, provider } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.writeImpl = () => {
         throw dispatchedUnknown(provider);
       };
-      const outcome = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const outcome = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(outcome.outcome).toBe('outcome_unknown');
       expect(outcome.session?.state).toBe('outcome_unknown');
     });
 
     it('a known 4xx rejection keeps the session editable', async () => {
       const { service, adapter, provider } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.writeImpl = () => {
         throw knownRejection(provider);
       };
       await expect(
-        service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0),
+        service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0),
       ).rejects.toBeInstanceOf(ExternalProviderError);
-      const view = await service.touchSession(session.sessionId);
+      const view = await service.touchSession(PROJECT_ID, session.sessionId);
       expect(view.state).toBe('editable');
     });
 
     it('outcome_unknown permits only an exact-payload retry, never a different payload', async () => {
       const { service, adapter, provider } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.writeImpl = () => {
         throw dispatchedUnknown(provider);
       };
-      await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
 
       const different: ExternalRichDocumentV1 = {
         version: 1,
         blocks: [{ type: 'paragraph', content: [{ type: 'text', text: 'other', marks: [] }] }],
       };
-      const rejected = await service.saveSession(session.sessionId, different, 0);
+      const rejected = await service.saveSession(PROJECT_ID, session.sessionId, different, 0);
       expect(rejected).toMatchObject({
         outcome: 'pre_dispatch_rejected',
         reason: 'session_not_editable',
       });
 
       adapter.writeImpl = null;
-      const retried = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const retried = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(retried.outcome).toBe('saved_unverified');
     });
 
     it('seeing the old baseline after outcome_unknown does not re-arm writes', async () => {
       const { service, adapter, provider } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.writeImpl = () => {
         throw dispatchedUnknown(provider);
       };
-      await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       adapter.writeImpl = null;
 
       // Remote still shows the baseline.
-      const verified = await service.verifySession(session.sessionId);
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
       expect(verified.remoteState).toBe('old_baseline');
       expect(verified.session?.state).toBe('outcome_unknown');
 
@@ -326,22 +368,23 @@ describe('ExternalEditSessionService', () => {
         version: 1,
         blocks: [{ type: 'paragraph', content: [{ type: 'text', text: 'new idea', marks: [] }] }],
       };
-      const rejected = await service.saveSession(session.sessionId, different, 0);
+      const rejected = await service.saveSession(PROJECT_ID, session.sessionId, different, 0);
       expect(rejected).toMatchObject({ outcome: 'pre_dispatch_rejected' });
     });
 
     it('remote drift after an unknown outcome reports divergence and blocks writes', async () => {
       const { service, adapter, provider } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.writeImpl = () => {
         throw dispatchedUnknown(provider);
       };
-      await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       adapter.descriptionRaw = adfWithText('someone else edited this');
-      const verified = await service.verifySession(session.sessionId);
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
       expect(verified.remoteState).toBe('diverged');
       expect(verified.session?.state).toBe('diverged');
       const blocked = await service.saveSession(
+        PROJECT_ID,
         session.sessionId,
         UPDATED_DOCUMENT,
         verified.session?.revision ?? 0,
@@ -354,8 +397,8 @@ describe('ExternalEditSessionService', () => {
 
     it('rejects a stale revision with revision_conflict', async () => {
       const { service } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
-      const outcome = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 9);
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+      const outcome = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 9);
       expect(outcome).toMatchObject({
         outcome: 'pre_dispatch_rejected',
         reason: 'revision_conflict',
@@ -364,17 +407,17 @@ describe('ExternalEditSessionService', () => {
 
     it('a busy gate rejects with operation_busy, distinct from revision_conflict', async () => {
       const { service, gate, provider } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       let release: () => void = () => undefined;
       const held = gate.run(
-        provider,
+        { projectId: PROJECT_ID, provider },
         () =>
           new Promise<void>((resolve) => {
             release = resolve;
           }),
       );
       await Promise.resolve();
-      const busy = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const busy = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(busy).toMatchObject({ outcome: 'pre_dispatch_rejected', reason: 'operation_busy' });
       release();
       await held;
@@ -382,42 +425,49 @@ describe('ExternalEditSessionService', () => {
 
     it('write versus connection replacement: a generation bump rejects and invalidates', async () => {
       const { service, storage } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
-      storage.connection = { id: 'connection-1', provider: 'jira', generation: 2 };
-      const outcome = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+      storage.connection = {
+        id: 'connection-1',
+        projectId: PROJECT_ID,
+        provider: 'jira',
+        generation: 2,
+      };
+      const outcome = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(outcome).toMatchObject({
         outcome: 'pre_dispatch_rejected',
         reason: 'connection_superseded',
       });
-      const view = await service.touchSession(session.sessionId);
+      const view = await service.touchSession(PROJECT_ID, session.sessionId);
       expect(view.state).toBe('invalidated');
     });
 
     it('write versus connection replacement: disconnect rejects as superseded', async () => {
       const { service, storage } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       storage.connected = false;
-      const outcome = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const outcome = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       // A vanished connection is the superseded case for a live session.
       expect(outcome).toMatchObject({
         outcome: 'pre_dispatch_rejected',
         reason: 'connection_superseded',
       });
-      const view = await service.touchSession(session.sessionId);
+      const view = await service.touchSession(PROJECT_ID, session.sessionId);
       expect(view.state).toBe('invalidated');
     });
 
     it('replacement versus write: the connections gate rejects while a write holds the gate', async () => {
       const { service, gate, provider, adapter } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       let releaseWrite: () => void = () => undefined;
       adapter.writeImpl = () =>
         new Promise<void>((resolve) => {
           releaseWrite = resolve;
         });
-      const write = service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const write = service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       await new Promise((resolve) => setTimeout(resolve, 10));
-      await expect(gate.run(provider, async () => undefined)).rejects.toMatchObject({
+      await expect(
+        gate.run({ projectId: PROJECT_ID, provider }, async () => undefined),
+      ).rejects.toMatchObject({
         details: { reason: 'operation_in_progress' },
       });
       releaseWrite();
@@ -426,12 +476,12 @@ describe('ExternalEditSessionService', () => {
 
     it('rejects a payload outside the closed schema before any dispatch', async () => {
       const { service, adapter } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       await expect(
-        service.saveSession(session.sessionId, { version: 1, blocks: [] }, 0),
+        service.saveSession(PROJECT_ID, session.sessionId, { version: 1, blocks: [] }, 0),
       ).rejects.toMatchObject({ details: { reason: 'unsupported_content' } });
       expect(adapter.writeCalls).toHaveLength(0);
-      const view = await service.touchSession(session.sessionId);
+      const view = await service.touchSession(PROJECT_ID, session.sessionId);
       expect(view.state).toBe('editable');
     });
   });
@@ -440,6 +490,7 @@ describe('ExternalEditSessionService', () => {
     it('creates an owner-validated session through the bounded lookup', async () => {
       const { service, adapter } = setup('clickup');
       const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
@@ -458,7 +509,7 @@ describe('ExternalEditSessionService', () => {
         createdAt: '2026-08-22T00:00:00.000Z',
       };
       await expect(
-        service.createCommentDeleteSession('clickup', 'task-1', 'comment-1', null),
+        service.createCommentDeleteSession(PROJECT_ID, 'clickup', 'task-1', 'comment-1', null),
       ).rejects.toMatchObject({ details: { reason: 'not_owned' } });
       expect(store.size()).toBe(0);
     });
@@ -466,12 +517,13 @@ describe('ExternalEditSessionService', () => {
     it('executes the deletion and marks the session done', async () => {
       const { service, adapter } = setup('clickup');
       const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
         null,
       );
-      const outcome = await service.executeCommentDelete(session.sessionId);
+      const outcome = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(outcome.outcome).toBe('deleted');
       expect(adapter.deleteCalls).toBe(1);
       expect(outcome.session?.state).toBe('invalidated');
@@ -480,6 +532,7 @@ describe('ExternalEditSessionService', () => {
     it('a later vendor 404 is treated as already deleted', async () => {
       const { service, adapter, provider } = setup('clickup');
       const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
@@ -488,13 +541,14 @@ describe('ExternalEditSessionService', () => {
       adapter.deleteImpl = () => {
         throw providerNotFound(provider);
       };
-      const outcome = await service.executeCommentDelete(session.sessionId);
+      const outcome = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(outcome.outcome).toBe('already_deleted');
     });
 
     it('a known delete rejection fails closed and invalidates the session', async () => {
       const { service, adapter, provider } = setup('clickup');
       const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
@@ -503,15 +557,16 @@ describe('ExternalEditSessionService', () => {
       adapter.deleteImpl = () => {
         throw knownRejection(provider);
       };
-      const outcome = await service.executeCommentDelete(session.sessionId);
+      const outcome = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(outcome).toMatchObject({ outcome: 'rejected', reason: 'delete_rejected' });
-      const view = await service.touchSession(session.sessionId);
+      const view = await service.touchSession(PROJECT_ID, session.sessionId);
       expect(view.state).toBe('invalidated');
     });
 
     it('a dispatched delete timeout is outcome_unknown; verify seeing it gone completes', async () => {
       const { service, adapter, provider } = setup('clickup');
       const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
@@ -520,12 +575,12 @@ describe('ExternalEditSessionService', () => {
       adapter.deleteImpl = () => {
         throw dispatchedUnknown(provider);
       };
-      const unknown = await service.executeCommentDelete(session.sessionId);
+      const unknown = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(unknown.outcome).toBe('outcome_unknown');
 
       adapter.deleteImpl = null;
       adapter.snapshot = null;
-      const verified = await service.verifySession(session.sessionId);
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
       expect(verified.remoteState).toBe('gone');
       expect(verified.session?.state).toBe('invalidated');
     });
@@ -533,13 +588,19 @@ describe('ExternalEditSessionService', () => {
     it('a delete session bound to a replaced connection rejects as superseded', async () => {
       const { service, storage } = setup('clickup');
       const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
         null,
       );
-      storage.connection = { id: 'connection-2', provider: 'clickup', generation: 1 };
-      const outcome = await service.executeCommentDelete(session.sessionId);
+      storage.connection = {
+        id: 'connection-2',
+        projectId: PROJECT_ID,
+        provider: 'clickup',
+        generation: 1,
+      };
+      const outcome = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
       expect(outcome).toMatchObject({
         outcome: 'rejected',
         reason: 'connection_superseded',
@@ -557,17 +618,17 @@ describe('ExternalEditSessionService', () => {
       // The bounded-lookup bound is enforced inside the ClickUp adapter's
       // findComment loop; through the service it appears as exactly one
       // findComment call per session create (plus one per verify).
-      await service.createCommentDeleteSession('clickup', 'task-1', 'comment-1', null);
+      await service.createCommentDeleteSession(PROJECT_ID, 'clickup', 'task-1', 'comment-1', null);
       expect(adapter.findCalls).toBe(1);
     });
   });
 
   it('touch extends the session without any provider interaction', async () => {
     const { service, adapter } = setup();
-    const session = await service.createDescriptionSession('jira', 'KAN-1');
+    const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
     const before = adapter.descriptionEdit;
     void before;
-    const touched = await service.touchSession(session.sessionId);
+    const touched = await service.touchSession(PROJECT_ID, session.sessionId);
     expect(touched.sessionId).toBe(session.sessionId);
     expect(adapter.writeCalls).toHaveLength(0);
     expect(adapter.findCalls).toBe(0);
@@ -576,7 +637,7 @@ describe('ExternalEditSessionService', () => {
   describe('Phase 14: stateless rich reads, comment editing, reload, and capability gates', () => {
     it('readRichDescription returns the document and flags without creating a session', async () => {
       const { service, store } = setup();
-      const read = await service.readRichDescription('jira', 'KAN-1');
+      const read = await service.readRichDescription(PROJECT_ID, 'jira', 'KAN-1');
       expect(read.supported).toBe(true);
       expect(read.readOnlyReason).toBeNull();
       expect(read.canEdit).toBe(true);
@@ -593,7 +654,7 @@ describe('ExternalEditSessionService', () => {
         version: 1,
         content: [{ type: 'table', content: [] }],
       };
-      const read = await service.readRichDescription('jira', 'KAN-1');
+      const read = await service.readRichDescription(PROJECT_ID, 'jira', 'KAN-1');
       expect(read).toMatchObject({
         supported: false,
         readOnlyReason: 'unsupported_content',
@@ -606,13 +667,13 @@ describe('ExternalEditSessionService', () => {
 
     it('a verified save returns the new revision and commits the baseline once', async () => {
       const { service, adapter } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       // The fake write lands immediately: verification sees the payload.
       adapter.writeImpl = (raw: unknown) => {
         adapter.descriptionRaw = raw;
         return Promise.resolve();
       };
-      const saved = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const saved = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(saved.outcome).toBe('saved');
       if (saved.outcome === 'saved') {
         expect(saved.revision).toBe(1);
@@ -620,7 +681,7 @@ describe('ExternalEditSessionService', () => {
       expect(saved.session?.state).toBe('editable');
       // A repeated save of the same content is a fresh preflight pass, not a
       // second commit of the old pending write.
-      const again = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 1);
+      const again = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 1);
       expect(again.outcome).toBe('saved');
       if (again.outcome === 'saved') {
         expect(again.revision).toBe(2);
@@ -629,7 +690,7 @@ describe('ExternalEditSessionService', () => {
 
     it('a verification-read failure keeps saved_unverified retryable', async () => {
       const { service, adapter, provider } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       const originalRead = adapter.descriptionEdit.readDescription;
       adapter.writeImpl = () => Promise.resolve();
       // The post-write verification read fails transiently.
@@ -641,41 +702,52 @@ describe('ExternalEditSessionService', () => {
         }
         return originalRead();
       };
-      const outcome = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const outcome = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(outcome.outcome).toBe('saved_unverified');
-      const view = await service.touchSession(session.sessionId);
+      const view = await service.touchSession(PROJECT_ID, session.sessionId);
       expect(view.state).toBe('saved_unverified');
     });
 
     it('a generation change after dispatch invalidates before verification', async () => {
       const { service, storage, adapter } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.writeImpl = () => Promise.resolve();
       // Replace the connection the moment the mutation completed.
       const originalWrite = adapter.writeImpl;
       adapter.writeImpl = async (raw: unknown) => {
         await originalWrite!(raw);
-        storage.connection = { id: 'connection-1', provider: 'jira', generation: 9 };
+        storage.connection = {
+          id: 'connection-1',
+          projectId: PROJECT_ID,
+          provider: 'jira',
+          generation: 9,
+        };
       };
-      const outcome = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const outcome = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(outcome.outcome).toBe('saved_unverified');
-      const view = await service.touchSession(session.sessionId);
+      const view = await service.touchSession(PROJECT_ID, session.sessionId);
       expect(view.state).toBe('invalidated');
     });
 
     it('preflight drift before dispatch rejects with diverged and never mutates', async () => {
       const { service, adapter } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.descriptionRaw = adfWithText('someone raced ahead');
-      const rejected = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const rejected = await service.saveSession(
+        PROJECT_ID,
+        session.sessionId,
+        UPDATED_DOCUMENT,
+        0,
+      );
       expect(rejected).toMatchObject({ outcome: 'pre_dispatch_rejected', reason: 'diverged' });
       expect(adapter.writeCalls).toHaveLength(0);
-      expect((await service.touchSession(session.sessionId)).state).toBe('diverged');
+      expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe('diverged');
     });
 
     it('comment edit sessions: owner-validated create, save preserves fetched metadata exactly', async () => {
       const { service, adapter } = setup('clickup');
       const session = await service.createCommentEditSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
@@ -697,7 +769,7 @@ describe('ExternalEditSessionService', () => {
           },
         ],
       };
-      const saved = await service.saveSession(session.sessionId, payload, 0);
+      const saved = await service.saveSession(PROJECT_ID, session.sessionId, payload, 0);
       expect(saved.outcome).toBe('saved');
       expect(adapter.commentUpdateCalls).toHaveLength(1);
       // The freshly fetched ClickUp state rides along unchanged.
@@ -711,27 +783,38 @@ describe('ExternalEditSessionService', () => {
     it('comment save rejects with target_gone when the comment disappears', async () => {
       const { service, adapter } = setup('clickup');
       const session = await service.createCommentEditSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
         null,
       );
       adapter.snapshot = null;
-      const rejected = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const rejected = await service.saveSession(
+        PROJECT_ID,
+        session.sessionId,
+        UPDATED_DOCUMENT,
+        0,
+      );
       expect(rejected).toMatchObject({ outcome: 'pre_dispatch_rejected', reason: 'target_gone' });
-      expect((await service.touchSession(session.sessionId)).state).toBe('invalidated');
+      expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe('invalidated');
     });
 
     it('reload re-baselines an editable description session and advances the revision', async () => {
       const { service, adapter } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.descriptionRaw = adfWithText('fresh remote content');
-      const reloaded = await service.reloadSession(session.sessionId);
+      const reloaded = await service.reloadSession(PROJECT_ID, session.sessionId);
       expect(reloaded.status).toBe('reloaded');
       expect(reloaded.session?.revision).toBe(1);
       expect(reloaded.session?.state).toBe('editable');
       // The stale editor revision now conflicts.
-      const rejected = await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
+      const rejected = await service.saveSession(
+        PROJECT_ID,
+        session.sessionId,
+        UPDATED_DOCUMENT,
+        0,
+      );
       expect(rejected).toMatchObject({
         outcome: 'pre_dispatch_rejected',
         reason: 'revision_conflict',
@@ -740,12 +823,12 @@ describe('ExternalEditSessionService', () => {
 
     it('reload is unavailable while a pending write is unknown', async () => {
       const { service, adapter, provider } = setup();
-      const session = await service.createDescriptionSession('jira', 'KAN-1');
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.writeImpl = () => {
         throw dispatchedUnknown(provider);
       };
-      await service.saveSession(session.sessionId, UPDATED_DOCUMENT, 0);
-      await expect(service.reloadSession(session.sessionId)).rejects.toMatchObject({
+      await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
+      await expect(service.reloadSession(PROJECT_ID, session.sessionId)).rejects.toMatchObject({
         details: { reason: 'session_not_editable' },
       });
     });
@@ -753,20 +836,26 @@ describe('ExternalEditSessionService', () => {
     it('comment reload reports gone when the comment vanished remotely', async () => {
       const { service, adapter } = setup('clickup');
       const session = await service.createCommentEditSession(
+        PROJECT_ID,
         'clickup',
         'task-1',
         'comment-1',
         null,
       );
       adapter.snapshot = null;
-      const reloaded = await service.reloadSession(session.sessionId);
+      const reloaded = await service.reloadSession(PROJECT_ID, session.sessionId);
       expect(reloaded.status).toBe('gone');
       expect(reloaded.session?.state).toBe('invalidated');
     });
 
     it('NO_GO capability flags disable every gated entry point', async () => {
       const storage = new FakeStorage();
-      storage.connection = { id: 'connection-1', provider: 'jira', generation: 1 };
+      storage.connection = {
+        id: 'connection-1',
+        projectId: PROJECT_ID,
+        provider: 'jira',
+        generation: 1,
+      };
       const adapter = new FakeAdapter();
       const service = new ExternalEditSessionService(
         storage as unknown as StorageService,
@@ -775,13 +864,15 @@ describe('ExternalEditSessionService', () => {
         new ExternalEditSessionStore(),
         { richEdit: false, ownedDelete: false },
       );
-      await expect(service.createDescriptionSession('jira', 'KAN-1')).rejects.toMatchObject({
+      await expect(
+        service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1'),
+      ).rejects.toMatchObject({
         details: { reason: 'capability_no_go' },
       });
       await expect(
-        service.createCommentDeleteSession('jira', 'KAN-1', 'c1', null),
+        service.createCommentDeleteSession(PROJECT_ID, 'jira', 'KAN-1', 'c1', null),
       ).rejects.toMatchObject({ details: { reason: 'capability_no_go' } });
-      const read = await service.readRichDescription('jira', 'KAN-1');
+      const read = await service.readRichDescription(PROJECT_ID, 'jira', 'KAN-1');
       expect(read.canEdit).toBe(false);
       expect(read.canDeleteOwnedComments).toBe(false);
 
@@ -793,7 +884,7 @@ describe('ExternalEditSessionService', () => {
         version: 1,
         content: [{ type: 'table', content: [] }],
       };
-      const unsupportedRead = await service.readRichDescription('jira', 'KAN-1');
+      const unsupportedRead = await service.readRichDescription(PROJECT_ID, 'jira', 'KAN-1');
       expect(unsupportedRead).toMatchObject({
         supported: false,
         readOnlyReason: 'unsupported_content',

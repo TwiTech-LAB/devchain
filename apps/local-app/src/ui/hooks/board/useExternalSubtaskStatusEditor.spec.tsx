@@ -33,6 +33,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const epochOne = 'connection-jira-a:1';
 const epochTwo = 'connection-jira-a:2';
 const parentTaskId = 'PARENT-1';
@@ -183,7 +184,7 @@ describe('useExternalSubtaskStatusEditor', () => {
           }),
         );
       }
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         return Promise.resolve(response(detail(childTaskId, [option('21', 'In progress')])));
       }
       throw new Error(`Unexpected request: ${String(url)}`);
@@ -200,12 +201,13 @@ describe('useExternalSubtaskStatusEditor', () => {
       warm,
     );
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) return freshRead.promise;
+      if (String(url).includes(`/tasks/${childTaskId}?`)) return freshRead.promise;
       throw new Error(`Unexpected request: ${String(url)}`);
     });
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -218,7 +220,9 @@ describe('useExternalSubtaskStatusEditor', () => {
     act(() => result.current.activate(childTaskId));
 
     expect(result.current.editor).toEqual({ taskId: childTaskId, phase: 'loading' });
-    expect(detailReads()).toEqual([`/api/integrations/my-work/jira/tasks/${childTaskId}`]);
+    expect(detailReads()).toEqual([
+      `/api/integrations/my-work/jira/tasks/${childTaskId}?projectId=${PROJECT_ID}`,
+    ]);
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/comments'))).toBe(false);
 
     await act(async () => {
@@ -246,6 +250,7 @@ describe('useExternalSubtaskStatusEditor', () => {
       const { result } = renderHook(
         () =>
           useExternalSubtaskStatusEditor('jira', {
+            projectId: PROJECT_ID,
             connectionEpoch: epochOne,
             parentTaskId,
           }),
@@ -267,7 +272,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const write = deferred<ReturnType<typeof response>>();
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (init?.method === 'PUT') return write.promise;
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         return Promise.resolve(response(detail(childTaskId, [option('21', 'In progress')])));
       }
       throw new Error(`Unexpected request: ${String(url)}`);
@@ -275,6 +280,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -327,7 +333,7 @@ describe('useExternalSubtaskStatusEditor', () => {
           }),
         );
       }
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         detailCount += 1;
         const transition = detailCount === 1 ? option('old', 'Old') : option('new', 'New');
         return Promise.resolve(response(detail(childTaskId, [transition])));
@@ -337,6 +343,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -368,7 +375,7 @@ describe('useExternalSubtaskStatusEditor', () => {
   it('requires a new fresh read after a detail failure before selection', async () => {
     let detailCount = 0;
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         detailCount += 1;
         return Promise.resolve(
           detailCount === 1
@@ -381,6 +388,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -416,7 +424,7 @@ describe('useExternalSubtaskStatusEditor', () => {
           }),
         );
       }
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         return Promise.resolve(response(detail(childTaskId, [option('31', 'Done', 'completed')])));
       }
       throw new Error(`Unexpected request: ${String(url)}`);
@@ -424,6 +432,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -470,6 +479,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -532,7 +542,7 @@ describe('useExternalSubtaskStatusEditor', () => {
           }),
         );
       }
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         return Promise.resolve(
           response(detail(childTaskId, [option('21', 'In progress')], true, 'completed')),
         );
@@ -542,6 +552,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -574,6 +585,91 @@ describe('useExternalSubtaskStatusEditor', () => {
     );
   });
 
+  it('reopens through a partial cache when inclusive occurrences span undiscovered work areas', async () => {
+    const activeKey = externalMyWorkQueryKeys.landingSnapshot('jira', epochOne, false);
+    const inclusiveKey = externalMyWorkQueryKeys.landingSnapshot('jira', epochOne, true);
+    const inclusive = snapshot();
+    const boardOne = inclusive.workAreas[0]!;
+    const boardTwo = { ...boardOne, remoteId: 'board-2', name: 'Board 2' };
+    const boardThree = { ...boardOne, remoteId: 'board-3', name: 'Board 3' };
+    const childEntry = inclusive.tasks.find((entry) => entry.task.remoteId === childTaskId)!;
+    inclusive.workAreas = [boardOne, boardTwo, boardThree];
+    inclusive.tasks = [
+      ...inclusive.tasks,
+      { ...childEntry, workArea: boardTwo },
+      { ...childEntry, workArea: boardThree },
+    ].map((entry) =>
+      entry.task.remoteId === childTaskId
+        ? {
+            ...entry,
+            task: {
+              ...entry.task,
+              status: { remoteId: 'done', name: 'Done', category: 'completed' as const },
+            },
+          }
+        : entry,
+    );
+    const activeOnly: SupportedSnapshot = {
+      ...inclusive,
+      workAreas: [{ ...boardOne, assignedTaskCount: 1 }],
+      tasks: inclusive.tasks.filter((entry) => entry.task.remoteId !== childTaskId),
+    };
+    queryClient.setQueryData(activeKey, activeOnly);
+    queryClient.setQueryData(inclusiveKey, inclusive);
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        return Promise.resolve(
+          response({
+            remoteTaskId: childTaskId,
+            action: 'change_status',
+            succeeded: true,
+            refresh: ['my_work', 'task_detail'],
+          }),
+        );
+      }
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
+        return Promise.resolve(
+          response(detail(childTaskId, [option('21', 'In progress')], true, 'completed')),
+        );
+      }
+      throw new Error(`Unexpected request: ${String(url)}`);
+    });
+    const { result } = renderHook(
+      () =>
+        useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
+          connectionEpoch: epochOne,
+          parentTaskId,
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => result.current.activate(childTaskId));
+    await waitFor(() => expect(result.current.editor?.phase).toBe('ready'));
+    act(() => result.current.selectStatus('21'));
+    await waitFor(() => expect(result.current.editor?.phase).toBe('success'));
+
+    expect(statusWrites()).toHaveLength(1);
+    const activeAfter = queryClient.getQueryData<SupportedSnapshot>(activeKey)!;
+    expect(activeAfter.tasks.filter((entry) => entry.task.remoteId === childTaskId)).toHaveLength(
+      1,
+    );
+    expect(activeAfter.workAreas.map((area) => area.remoteId)).toEqual(['board-1']);
+    expect(activeAfter.workAreas[0]?.assignedTaskCount).toBe(2);
+    expect(
+      activeAfter.tasks.find((entry) => entry.task.remoteId === childTaskId)?.task.status,
+    ).toEqual({
+      remoteId: 'progress',
+      name: 'In progress',
+      category: 'active',
+    });
+    expect(queryClient.getQueryState(activeKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(inclusiveKey)?.isInvalidated).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('includeCompleted='))).toBe(
+      false,
+    );
+  });
+
   it('loads a missing completed-inclusive source before reopening and never refetches it after', async () => {
     const activeKey = externalMyWorkQueryKeys.landingSnapshot('jira', epochOne, false);
     const inclusive = snapshot();
@@ -594,7 +690,7 @@ describe('useExternalSubtaskStatusEditor', () => {
           }),
         );
       }
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         return Promise.resolve(
           response(detail(childTaskId, [option('21', 'In progress')], true, 'completed')),
         );
@@ -607,6 +703,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -641,7 +738,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     activeOnly.workAreas = [{ ...activeOnly.workAreas[0]!, assignedTaskCount: 1 }];
     queryClient.setQueryData(activeKey, activeOnly);
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         return Promise.resolve(
           response(detail(childTaskId, [option('21', 'In progress')], true, 'completed')),
         );
@@ -654,6 +751,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -694,7 +792,7 @@ describe('useExternalSubtaskStatusEditor', () => {
           }),
         );
       }
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         return Promise.resolve(
           response(detail(childTaskId, [option('21', 'In progress')], true, 'completed')),
         );
@@ -707,6 +805,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -743,7 +842,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     queryClient.setQueryData(activeKey, activeOnly);
     const recovery = deferred<ReturnType<typeof response>>();
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith(`/tasks/${childTaskId}`)) {
+      if (String(url).includes(`/tasks/${childTaskId}?`)) {
         return Promise.resolve(
           response(detail(childTaskId, [option('21', 'In progress')], true, 'completed')),
         );
@@ -754,6 +853,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result, rerender } = renderHook(
       (epoch: string) =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epoch,
           parentTaskId,
         }),
@@ -782,8 +882,8 @@ describe('useExternalSubtaskStatusEditor', () => {
   it('ignores a superseded detail result in the current row presentation', async () => {
     const first = deferred<ReturnType<typeof response>>();
     fetchMock.mockImplementation((url: string) => {
-      if (String(url).endsWith('/tasks/CHILD-1')) return first.promise;
-      if (String(url).endsWith('/tasks/CHILD-2')) {
+      if (String(url).includes('/tasks/CHILD-1?')) return first.promise;
+      if (String(url).includes('/tasks/CHILD-2?')) {
         return Promise.resolve(response(detail('CHILD-2', [option('22', 'Review')])));
       }
       throw new Error(`Unexpected request: ${String(url)}`);
@@ -791,6 +891,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -818,6 +919,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result, unmount } = renderHook(
       () =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epochOne,
           parentTaskId,
         }),
@@ -864,6 +966,7 @@ describe('useExternalSubtaskStatusEditor', () => {
     const { result, rerender } = renderHook(
       (epoch: string) =>
         useExternalSubtaskStatusEditor('jira', {
+          projectId: PROJECT_ID,
           connectionEpoch: epoch,
           parentTaskId,
         }),
@@ -903,7 +1006,7 @@ describe('useExternalSubtaskStatusEditor', () => {
         .tasks.find((entry) => entry.task.remoteId === childTaskId)?.task.status.remoteId,
     ).toBe('open');
     act(() => result.current.activate('CHILD-3'));
-    expect(detailReads().some((url) => url.endsWith('/tasks/CHILD-3'))).toBe(false);
+    expect(detailReads().some((url) => url.includes('/tasks/CHILD-3?'))).toBe(false);
 
     await act(async () => {
       secondWrite.resolve(

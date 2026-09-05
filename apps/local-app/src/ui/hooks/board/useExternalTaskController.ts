@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useMutation,
   useQuery,
@@ -18,11 +18,36 @@ import type { ExternalBoardProvider } from '@/ui/lib/external-board';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import { externalTaskDetailQueryOptions } from '@/ui/lib/external-task-detail-query';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
-import { fetchJsonOrThrow } from '@/ui/lib/sessions';
+import {
+  isSameIntegrationPresentationScope,
+  validIntegrationProjectId,
+  withIntegrationProjectId,
+  type IntegrationPresentationScope,
+} from '@/ui/lib/integration-project-scope';
+import { fetchJsonOrThrow, type FetchFn } from '@/ui/lib/sessions';
 
-type ExternalTaskMutation =
+export type ExternalTaskMutation =
   | { action: 'change_status'; input: ExternalTaskStatusInput }
   | { action: 'add_comment'; input: ExternalTaskCommentInput };
+
+export interface ExternalTaskMutationVariables {
+  operationId: number;
+  scope: IntegrationPresentationScope;
+  request: ExternalTaskMutation;
+  identityAccepted: boolean;
+  cacheKeys: {
+    comments: ReturnType<typeof externalMyWorkQueryKeys.taskComments>;
+    detail: ReturnType<typeof externalMyWorkQueryKeys.taskDetail>;
+    landing: ReturnType<typeof externalMyWorkQueryKeys.landing>;
+  };
+  apiFetch: FetchFn;
+}
+
+interface ExternalTaskMutationCallbacks {
+  onSuccess?: (result: ExternalTaskActionResult) => void;
+  onError?: (error: Error) => void;
+  onSettled?: (result: ExternalTaskActionResult | undefined, error: Error | null) => void;
+}
 
 export const MAX_DUPLICATE_ONLY_CHASE_PAGES = 3;
 export const COMMENTS_CHANGED_WHILE_LOADING_MESSAGE =
@@ -40,6 +65,13 @@ export function chaseAttemptMessage(attempt: number): string {
 function mutationRequest(mutation: ExternalTaskMutation): { path: string; method: string } {
   if (mutation.action === 'change_status') return { path: 'status', method: 'PUT' };
   return { path: 'comments', method: 'POST' };
+}
+
+function copyMutationRequest(request: ExternalTaskMutation): ExternalTaskMutation {
+  if (request.action === 'change_status') {
+    return { action: 'change_status', input: { ...request.input } };
+  }
+  return { action: 'add_comment', input: { ...request.input } };
 }
 
 /**
@@ -82,28 +114,46 @@ export function useExternalTaskController(
   {
     enabled,
     connectionEpoch,
+    projectId,
     expectedLinkedEpicId,
   }: {
     enabled: boolean;
     connectionEpoch: IntegrationConnectionEpoch | null;
+    projectId: string | null;
     expectedLinkedEpicId?: string | null;
   },
 ) {
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
+  const scopedProjectId = validIntegrationProjectId(projectId);
+  const admitted = enabled && scopedProjectId !== null;
+  const presentationScope: IntegrationPresentationScope | null =
+    admitted && connectionEpoch !== null && taskId !== null
+      ? { projectId: scopedProjectId, provider, connectionEpoch, taskId }
+      : null;
+  const presentationScopeRef = useRef(presentationScope);
+  presentationScopeRef.current = presentationScope;
+  const nextOperationIdRef = useRef(1);
+  const currentOperationIdRef = useRef<number | null>(null);
   const encodedTaskId = taskId ? encodeURIComponent(taskId) : '';
   const [commentText, setCommentText] = useState('');
   const [commentsMessage, setCommentsMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    currentOperationIdRef.current = null;
     setCommentText('');
     setCommentsMessage(null);
-  }, [taskId, connectionEpoch]);
+  }, [enabled, provider, taskId, connectionEpoch, scopedProjectId, expectedLinkedEpicId]);
 
   const detail = useQuery(
-    externalTaskDetailQueryOptions(apiFetch, provider, connectionEpoch, taskId ?? '', {
-      enabled,
-    }),
+    externalTaskDetailQueryOptions(
+      apiFetch,
+      provider,
+      connectionEpoch,
+      scopedProjectId,
+      taskId ?? '',
+      { enabled: admitted },
+    ),
   );
 
   // A replaced connection can reuse a remote task ID inside another account.
@@ -118,6 +168,23 @@ export function useExternalTaskController(
       detail.data.linkState.epicId === expectedLinkedEpicId);
   const identityMismatch =
     expectedLinkedEpicId != null && detail.data !== undefined && !identityAccepted;
+  useEffect(() => {
+    if (!identityAccepted) currentOperationIdRef.current = null;
+  }, [identityAccepted]);
+  const submissionRef = useRef<{
+    scope: IntegrationPresentationScope;
+    identityAccepted: boolean;
+    apiFetch: FetchFn;
+  } | null>(null);
+  submissionRef.current =
+    presentationScope === null ? null : { scope: presentationScope, identityAccepted, apiFetch };
+
+  const isCurrentOperation = useCallback(
+    (variables: ExternalTaskMutationVariables) =>
+      currentOperationIdRef.current === variables.operationId &&
+      isSameIntegrationPresentationScope(variables.scope, presentationScopeRef.current),
+    [],
+  );
 
   // Memoized so `loadEarlier` below keeps a stable identity: the key is rebuilt
   // by value on every render and would otherwise defeat its own useCallback.
@@ -130,15 +197,18 @@ export function useExternalTaskController(
     initialPageParam: null as string | null,
     queryFn: ({ signal, pageParam }) =>
       fetchJsonOrThrow<ExternalTaskCommentPage>(
-        `/api/integrations/my-work/${provider}/tasks/${encodedTaskId}/comments${
-          pageParam === null ? '' : `?cursor=${encodeURIComponent(pageParam)}`
-        }`,
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${provider}/tasks/${encodedTaskId}/comments${
+            pageParam === null ? '' : `?cursor=${encodeURIComponent(pageParam)}`
+          }`,
+          scopedProjectId,
+        ),
         { signal },
         'Task comments could not be loaded.',
         '',
         apiFetch,
       ),
-    enabled: enabled && connectionEpoch !== null && taskId !== null && identityAccepted,
+    enabled: admitted && connectionEpoch !== null && taskId !== null && identityAccepted,
     getNextPageParam: (lastPage, _allPages, _lastPageParam, allPageParams) =>
       nextCommentPageParam(lastPage, allPageParams),
   });
@@ -189,15 +259,18 @@ export function useExternalTaskController(
     queryClient,
   ]);
 
-  const mutation = useMutation({
-    mutationFn: async (request: ExternalTaskMutation): Promise<ExternalTaskActionResult> => {
-      if (!identityAccepted) {
+  const mutation = useMutation<ExternalTaskActionResult, Error, ExternalTaskMutationVariables>({
+    mutationFn: async (variables): Promise<ExternalTaskActionResult> => {
+      const { scope, request, apiFetch: capturedFetch } = variables;
+      if (!variables.identityAccepted) {
         throw new Error('Linked task unavailable for the current connection.');
       }
-      if (!taskId) throw new Error('Select a task before using remote actions.');
       const target = mutationRequest(request);
       return fetchJsonOrThrow<ExternalTaskActionResult>(
-        `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(taskId)}/${target.path}`,
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${scope.provider}/tasks/${encodeURIComponent(scope.taskId)}/${target.path}`,
+          scope.projectId,
+        ),
         {
           method: target.method,
           headers: { 'Content-Type': 'application/json' },
@@ -205,29 +278,116 @@ export function useExternalTaskController(
         },
         'The remote action could not be completed.',
         '',
-        apiFetch,
+        capturedFetch,
       );
     },
-    onSuccess: async (_result, request) => {
-      if (!taskId) return;
+    onSuccess: async (_result, variables) => {
+      const { request, cacheKeys } = variables;
       if (request.action === 'add_comment') {
         // Reset to the initial page only: a full infinite refetch would replay
         // every older cursor the user already paged through.
-        setCommentText('');
-        await queryClient.cancelQueries({ queryKey: commentsKey, exact: true });
-        queryClient.resetQueries({ queryKey: commentsKey, exact: true });
+        if (isCurrentOperation(variables)) setCommentText('');
+        await queryClient.cancelQueries({ queryKey: cacheKeys.comments, exact: true });
+        queryClient.resetQueries({ queryKey: cacheKeys.comments, exact: true });
       }
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: externalMyWorkQueryKeys.taskDetail(provider, connectionEpoch, taskId),
+          queryKey: cacheKeys.detail,
           exact: true,
         }),
         queryClient.invalidateQueries({
-          queryKey: externalMyWorkQueryKeys.landing(provider, connectionEpoch),
+          queryKey: cacheKeys.landing,
         }),
       ]);
     },
   });
+
+  const captureMutation = useCallback(
+    (request: ExternalTaskMutation): ExternalTaskMutationVariables | null => {
+      const submission = submissionRef.current;
+      if (submission === null) return null;
+      const operationId = nextOperationIdRef.current;
+      nextOperationIdRef.current += 1;
+      currentOperationIdRef.current = operationId;
+      const { scope } = submission;
+      return {
+        operationId,
+        scope,
+        request: copyMutationRequest(request),
+        identityAccepted: submission.identityAccepted,
+        cacheKeys: {
+          comments: externalMyWorkQueryKeys.taskComments(
+            scope.provider,
+            scope.connectionEpoch,
+            scope.taskId,
+          ),
+          detail: externalMyWorkQueryKeys.taskDetail(
+            scope.provider,
+            scope.connectionEpoch,
+            scope.taskId,
+          ),
+          landing: externalMyWorkQueryKeys.landing(scope.provider, scope.connectionEpoch),
+        },
+        apiFetch: submission.apiFetch,
+      };
+    },
+    [],
+  );
+
+  const mutate = useCallback(
+    (request: ExternalTaskMutation, callbacks?: ExternalTaskMutationCallbacks) => {
+      const variables = captureMutation(request);
+      if (variables === null) return;
+      mutation.mutate(variables, {
+        onSuccess: (result, settledVariables) => {
+          if (isCurrentOperation(settledVariables)) callbacks?.onSuccess?.(result);
+        },
+        onError: (error, settledVariables) => {
+          if (isCurrentOperation(settledVariables)) callbacks?.onError?.(error);
+        },
+        onSettled: (result, error, settledVariables) => {
+          if (isCurrentOperation(settledVariables)) callbacks?.onSettled?.(result, error);
+        },
+      });
+    },
+    [captureMutation, isCurrentOperation, mutation],
+  );
+
+  const mutateAsync = useCallback(
+    (request: ExternalTaskMutation) => {
+      const variables = captureMutation(request);
+      return variables === null
+        ? Promise.reject(new Error('Integration requests are unavailable.'))
+        : mutation.mutateAsync(variables);
+    },
+    [captureMutation, mutation],
+  );
+
+  const resetMutation = useCallback(() => {
+    currentOperationIdRef.current = null;
+    mutation.reset();
+  }, [mutation]);
+
+  const mutationPresentationCurrent =
+    mutation.variables === undefined || isCurrentOperation(mutation.variables);
+  const presentedMutation = {
+    ...mutation,
+    mutate,
+    mutateAsync,
+    reset: resetMutation,
+    data: mutationPresentationCurrent ? mutation.data : undefined,
+    error: mutationPresentationCurrent ? mutation.error : null,
+    variables: mutationPresentationCurrent ? mutation.variables?.request : undefined,
+    capturedVariables: mutationPresentationCurrent ? mutation.variables : undefined,
+    status: mutationPresentationCurrent ? mutation.status : ('idle' as const),
+    isIdle: mutationPresentationCurrent ? mutation.isIdle : true,
+    isPending: mutationPresentationCurrent ? mutation.isPending : false,
+    isSuccess: mutationPresentationCurrent ? mutation.isSuccess : false,
+    isError: mutationPresentationCurrent ? mutation.isError : false,
+    failureCount: mutationPresentationCurrent ? mutation.failureCount : 0,
+    failureReason: mutationPresentationCurrent ? mutation.failureReason : null,
+    submittedAt: mutationPresentationCurrent ? mutation.submittedAt : 0,
+  };
 
   // The composer's draft lives in this hook, so this runs on every keystroke
   // without the memo. `mergeExternalTaskCommentPages` returns a private array,
@@ -248,7 +408,7 @@ export function useExternalTaskController(
     commentText,
     setCommentText,
     commentsMessage,
-    mutation,
+    mutation: presentedMutation,
     identityAccepted,
     identityMismatch,
     connectionEpoch,

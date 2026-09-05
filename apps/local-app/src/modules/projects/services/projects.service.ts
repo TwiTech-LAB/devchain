@@ -65,6 +65,7 @@ import {
   PROJECT_WORKSPACE_CHANGED_EVENT,
   type ProjectWorkspaceChangedEvent,
 } from '../events/project-workspace-changed.events';
+import { EventsService } from '../../events/services/events.service';
 
 export interface TemplateInfo {
   id: string;
@@ -145,6 +146,7 @@ export class ProjectsService {
     @Optional()
     @Inject(SNAPSHOT_PROMPT_WRITER)
     private readonly snapshotPromptWriter?: SnapshotPromptWriter,
+    @Optional() private readonly eventsService?: EventsService,
   ) {}
 
   async listTemplates(): Promise<TemplateInfo[]> {
@@ -314,6 +316,24 @@ export class ProjectsService {
     }
 
     return { project, provisioningWarnings };
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    const project = await this.storage.getProject(id);
+    await this.storage.deleteProject(id);
+    if (this.eventsService) {
+      await this.eventsService.publish('epic.relations.invalidated', {
+        workspaceId: project.workspaceId,
+      });
+    } else {
+      this.eventEmitter?.emit('epic.relations.invalidated', {
+        workspaceId: project.workspaceId,
+      });
+    }
+
+    await this.settings.clearProjectTemplateMetadata(id);
+    await this.settings.clearProjectPresets(id);
+    await this.settings.setProjectActivePreset(id, null);
   }
 
   async computeFamilyAlternatives(

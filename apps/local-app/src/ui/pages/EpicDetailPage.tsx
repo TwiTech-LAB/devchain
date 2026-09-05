@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../hooks/use-toast';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
@@ -9,6 +9,11 @@ import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailabilit
 import { useEpicExternalSources } from '@/ui/hooks/useEpicExternalSources';
 import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
 import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
+import {
+  boardReturnUrlFromState,
+  externalLinkedTaskState,
+  hasInAppHistoryBack,
+} from '@/ui/lib/external-board';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
 import { useEpicTimeDetail } from '@/ui/hooks/useEpicTimeDetail';
 import { Button } from '@/ui/components/ui/button';
@@ -16,6 +21,13 @@ import { Badge } from '@/ui/components/ui/badge';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { Textarea } from '@/ui/components/ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/ui/components/ui/dialog';
 import {
   Card,
   CardContent,
@@ -38,8 +50,9 @@ import { Breadcrumbs } from '@/ui/components/shared/Breadcrumbs';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { CategoryBadge } from '@/ui/components/skills/CategoryBadge';
 import { SkillDetailDrawer } from '@/ui/components/skills/SkillDetailDrawer';
-import { ExternalTaskSourcePanel } from '@/ui/components/epics/ExternalTaskSourcePanel';
+import { EpicTaskViewNav } from '@/ui/components/epics/EpicTaskViewNav';
 import { EpicTimeCard } from '@/ui/components/epics/EpicTimeCard';
+import { EpicRelationsCard } from '@/ui/components/epics/EpicRelationsCard';
 import {
   Play,
   Square,
@@ -372,9 +385,68 @@ async function deleteEpic(epicId: string, fetchFn: FetchFn) {
   }
 }
 
+interface EpicRouteWindowProps {
+  /** Accessible window name; the visible identity stays in the body. */
+  title: string;
+  description: string;
+  /** Shared with the page so its Escape guard can test event origins. */
+  contentRef: React.RefObject<HTMLDivElement>;
+  onEscapeKeyDown: (event: KeyboardEvent) => void;
+  onDismiss: () => void;
+  nav?: ReactNode;
+  children: ReactNode;
+}
+
+/**
+ * The one window shell for every `/epics/:id` state: mounted while the route
+ * is, non-modal so body-level floating terminals stay usable, and never
+ * dismissed by outside pointer or focus events. Only the title, the
+ * description, and the body change between states — source loading must
+ * never control whether this shell mounts.
+ */
+function EpicRouteWindow({
+  title,
+  description,
+  contentRef,
+  onEscapeKeyDown,
+  onDismiss,
+  nav,
+  children,
+}: EpicRouteWindowProps) {
+  return (
+    <Dialog open onOpenChange={(open) => !open && onDismiss()} modal={false}>
+      <DialogContent
+        ref={contentRef}
+        className="flex h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-none flex-col gap-0 overflow-hidden bg-background p-0 supports-[height:100dvh]:h-[calc(100dvh-2rem)] sm:rounded-lg"
+        onInteractOutside={(event) => event.preventDefault()}
+        onEscapeKeyDown={onEscapeKeyDown}
+        onCloseAutoFocus={(event) => {
+          // The route unmounts this window on close; focus must not remain
+          // on the removed subtree (jsdom would otherwise keep a detached
+          // activeElement), and no opener element exists to return to.
+          event.preventDefault();
+          document.body.focus();
+        }}
+      >
+        {nav ? (
+          <div className="flex flex-none items-center border-b bg-muted/40 px-5 py-2">{nav}</div>
+        ) : null}
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="space-y-8 px-6 py-6">{children}</div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function EpicDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const boardReturnUrl = boardReturnUrlFromState(useLocation().state);
   const { toast } = useToast();
   const { selectedProject } = useSelectedProject();
   const openTerminalWindow = useTerminalWindowManager();
@@ -781,36 +853,96 @@ export function EpicDetailPage() {
   }, [commentsData?.items]);
   const isCommentFormValid = commentForm.content.trim().length > 0;
 
+  const routeWindowContentRef = useRef<HTMLDivElement>(null);
+  // Escape dismisses the window only when the keypress targets its content
+  // and no title draft is in flight; the title input's own handler cancels
+  // editing, and Radix still routes nested dialogs (the highest layer)
+  // ahead of this guard.
+  const guardRouteWindowEscape = (event: KeyboardEvent) => {
+    if (titleEditing) {
+      event.preventDefault();
+      return;
+    }
+    const content = routeWindowContentRef.current;
+    if (content && event.target instanceof Node && content.contains(event.target)) return;
+    event.preventDefault();
+  };
+  // Close order: a validated /board return URL with replace, then in-app
+  // history back, then the /board entry itself — a direct or reloaded deep
+  // link has no in-app entry to return to.
+  const closeWindow = () => {
+    if (boardReturnUrl !== null) {
+      navigate(boardReturnUrl, { replace: true });
+      return;
+    }
+    if (hasInAppHistoryBack()) {
+      navigate(-1);
+      return;
+    }
+    navigate('/board', { replace: true });
+  };
+  // Storage orders sources by creation time, so items[0] is the canonical
+  // link; while unsourced, loading, failed, or integration-denied it is null
+  // and no empty switcher renders.
+  const firstSource = externalSources.data?.items?.[0] ?? null;
+  const switchState = boardReturnUrl !== null ? externalLinkedTaskState(boardReturnUrl) : undefined;
+  const taskViewNav = firstSource ? (
+    <EpicTaskViewNav
+      epicId={id!}
+      provider={firstSource.provider}
+      activeView="devchain"
+      boardReturnState={switchState}
+    />
+  ) : null;
+  const renderWindow = (title: string, description: string, body: ReactNode) => (
+    <EpicRouteWindow
+      title={title}
+      description={description}
+      contentRef={routeWindowContentRef}
+      onEscapeKeyDown={guardRouteWindowEscape}
+      onDismiss={closeWindow}
+      nav={taskViewNav}
+    >
+      {body}
+    </EpicRouteWindow>
+  );
+
   if (!id) {
-    return (
+    return renderWindow(
+      'Epic unavailable',
+      'The Epic identifier is missing.',
       <div className="flex items-center justify-center py-16">
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error</AlertTitle>
           <AlertDescription>Epic ID not provided</AlertDescription>
         </Alert>
-      </div>
+      </div>,
     );
   }
 
   if (epicLoading) {
-    return (
+    return renderWindow(
+      'Loading epic',
+      'Resolving this DevChain task.',
       <div className="flex items-center justify-center py-16">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-muted-foreground">Loading epic...</span>
-      </div>
+        <span className="ml-2 text-muted-foreground">Loading epic…</span>
+      </div>,
     );
   }
 
   if (!epic) {
-    return (
+    return renderWindow(
+      'Epic not found',
+      'This DevChain task does not exist or is unavailable.',
       <div className="flex items-center justify-center py-16">
         <Alert variant="destructive">
           <XCircle className="h-4 w-4" />
           <AlertTitle>Not Found</AlertTitle>
           <AlertDescription>Epic not found</AlertDescription>
         </Alert>
-      </div>
+      </div>,
     );
   }
 
@@ -939,8 +1071,10 @@ export function EpicDetailPage() {
 
   const formatDate = (value: string) => new Date(value).toLocaleString();
 
-  return (
-    <div className="space-y-8">
+  return renderWindow(
+    epic.title,
+    'DevChain task',
+    <>
       {/* Unified Header: Title above Controls */}
       <div className="space-y-2">
         {/* Breadcrumb navigation for sub-epics */}
@@ -1190,9 +1324,6 @@ export function EpicDetailPage() {
         </div>
 
         <aside className="space-y-8">
-          {externalSources.data?.items?.length ? (
-            <ExternalTaskSourcePanel items={externalSources.data.items} />
-          ) : null}
           {epicSessions.length > 0 && (
             <Card>
               <CardHeader>
@@ -1474,6 +1605,13 @@ export function EpicDetailPage() {
             </Card>
           )}
 
+          <EpicRelationsCard
+            epicId={epic.id}
+            epicTitle={epic.title}
+            focalProjectId={epic.projectId}
+            focalIsRoot={epic.parentId === null}
+          />
+
           {requiredSkillSlugs.length > 0 && (
             <Card>
               <CardHeader>
@@ -1616,6 +1754,6 @@ export function EpicDetailPage() {
         loading={deleteSubEpicMutation.isPending || deleteThisEpicMutation.isPending}
         onConfirm={handleConfirmDelete}
       />
-    </div>
+    </>,
   );
 }

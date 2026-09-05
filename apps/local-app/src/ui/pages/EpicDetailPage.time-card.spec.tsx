@@ -95,7 +95,7 @@ const timeLogsPayload = {
   taskItems: [],
 };
 
-function mockPageFetches(epic: Record<string, unknown>) {
+function mockPageFetches(epic: Record<string, unknown>, timePayload = timeLogsPayload) {
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
 
@@ -121,7 +121,7 @@ function mockPageFetches(epic: Record<string, unknown>) {
       return jsonResponse({ overall: 'pass', checks: [], providers: [] });
     }
     if (url.startsWith(`/api/epics/${epic.id}/time-logs`)) {
-      return jsonResponse(timeLogsPayload);
+      return jsonResponse(timePayload);
     }
     return jsonResponse({});
   });
@@ -164,7 +164,13 @@ describe('EpicDetailPage estimated-time card', () => {
   });
 
   it('renders the self-only summary for a sub-epic', async () => {
-    mockPageFetches(rootEpic({ id: 'sub-epic-1', title: 'Child Epic', parentId: 'epic-1' }));
+    // A child focal is self-only on the server, so its direct and total match.
+    mockPageFetches(rootEpic({ id: 'sub-epic-1', title: 'Child Epic', parentId: 'epic-1' }), {
+      ...timeLogsPayload,
+      isRoot: false,
+      directMinutes: timeLogsPayload.totalMinutes,
+      items: [timeLogsPayload.items[0]],
+    });
 
     renderAt('/epics/sub-epic-1');
 
@@ -181,7 +187,11 @@ describe('EpicDetailPage estimated-time card', () => {
 
     renderAt('/epics/epic-1');
 
-    await waitFor(() => expect(screen.getByText('Parent Epic')).toBeInTheDocument());
+    // The window title is exposed twice: the sr-only dialog name and the
+    // editable title button; the button is the visible identity.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Parent Epic' })).toBeInTheDocument(),
+    );
     await waitFor(() => expect(screen.queryByTestId('epic-time-card')).not.toBeInTheDocument());
     const requestedUrls = fetchMock.mock.calls.map(([input]) => String(input));
     expect(requestedUrls.some((url) => url.includes('time-logs'))).toBe(false);

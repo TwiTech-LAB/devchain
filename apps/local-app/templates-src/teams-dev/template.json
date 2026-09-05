@@ -1,0 +1,1552 @@
+{
+  "_manifest": {
+    "slug": "teams-dev",
+    "name": "Teams Development Flow",
+    "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy",
+    "version": "1.1.51",
+    "category": "development",
+    "tags": [
+      "development",
+      "claude",
+      "codex",
+      "glm",
+      "agy"
+    ],
+    "authorName": "Devchain",
+    "changelog": "",
+    "minDevchainVersion": "0.12.0",
+    "publishedAt": "2026-09-05T11:26:11.476Z"
+  },
+  "version": 1,
+  "exportedAt": "2026-09-05T11:26:11.477Z",
+  "prompts": [
+    {
+      "id": "2596066e-761f-47cf-9314-da62ae8ffd4a",
+      "title": "Autonomous Code Reviewer",
+      "content": {
+        "$file": "prompts/001-autonomous-code-reviewer.md"
+      },
+      "version": 1,
+      "tags": [
+        "type:system"
+      ]
+    },
+    {
+      "id": "c7b98920-5b20-48df-82d3-2a180fdab735",
+      "title": "Code Simplifier",
+      "content": {
+        "$file": "prompts/002-code-simplifier.md"
+      },
+      "version": 1,
+      "tags": [
+        "type:custom"
+      ]
+    },
+    {
+      "id": "86d8213a-3ecf-4737-91dc-adf18fcf061f",
+      "title": "Code-Aware Technical Lead - SOP",
+      "content": {
+        "$file": "prompts/003-code-aware-technical-lead-sop.md"
+      },
+      "version": 1,
+      "tags": [
+        "agent:profile:sub-architect",
+        "type:system"
+      ]
+    },
+    {
+      "id": "aa5be33c-08cc-4030-8219-bc4f3caf20d7",
+      "title": "Create commit",
+      "content": {
+        "$file": "prompts/004-create-commit.md"
+      },
+      "version": 1,
+      "tags": [
+        "type:custom"
+      ]
+    },
+    {
+      "id": "b9e4c075-52ec-4c93-bb82-7c8ee0d7935f",
+      "title": "Development Standards",
+      "content": {
+        "$file": "prompts/005-development-standards.md"
+      },
+      "version": 1,
+      "tags": [
+        "docs:create-development-standards",
+        "type:system"
+      ]
+    },
+    {
+      "id": "906f4379-677c-45ab-bc20-a031d8c4dbb8",
+      "title": "Documentation Refactoring & Cleanup",
+      "content": {
+        "$file": "prompts/006-documentation-refactoring-cleanup.md"
+      },
+      "version": 1,
+      "tags": [
+        "docs:docs-refactoring-cleanup",
+        "type:custom"
+      ]
+    },
+    {
+      "id": "963511af-f2b5-4719-8496-f19e4db19938",
+      "title": "Epic Master - instructions SOP",
+      "content": {
+        "$file": "prompts/007-epic-master-instructions-sop.md"
+      },
+      "version": 1,
+      "tags": [
+        "agent:profile:epic-master",
+        "type:system"
+      ]
+    },
+    {
+      "id": "68899520-8cfa-44a3-8ddd-065df9a04bc4",
+      "title": "Improve Codebase Architecture",
+      "content": {
+        "$file": "prompts/008-improve-codebase-architecture.md"
+      },
+      "version": 1,
+      "tags": [
+        "type:custom"
+      ]
+    },
+    {
+      "id": "c1c7b960-2b30-42b0-838f-554f32d15b65",
+      "title": "Initialize Agent",
+      "content": {
+        "$file": "prompts/009-initialize-agent.md"
+      },
+      "version": 1,
+      "tags": [
+        "type:system"
+      ]
+    },
+    {
+      "id": "d9286a24-056b-4e71-9b9b-b0c63da00e72",
+      "title": "Initialize project documentation",
+      "content": {
+        "$file": "prompts/010-initialize-project-documentation.md"
+      },
+      "version": 1,
+      "tags": [
+        "docs:create-docs",
+        "type:system"
+      ]
+    },
+    {
+      "id": "2ee72285-1a79-42ad-92c9-c47ec1e6d1f6",
+      "title": "Reviewer/Architect — Plan Decomposition SOP",
+      "content": {
+        "$file": "prompts/011-reviewer-architect-plan-decomposition-sop.md"
+      },
+      "version": 2,
+      "tags": [
+        "agent:profile:architect",
+        "type:system"
+      ]
+    },
+    {
+      "id": "372ab6ec-e9d7-46a5-95b7-735cd4640f18",
+      "title": "Team Management — Routing & Scaling",
+      "content": {
+        "$file": "prompts/012-team-management-routing-scaling.md"
+      },
+      "version": 1,
+      "tags": [
+        "agent:reference:team-management",
+        "type:system"
+      ]
+    },
+    {
+      "id": "17652dac-798e-4299-a427-72b86d05e3ca",
+      "title": "Test Prompt",
+      "content": {
+        "$file": "prompts/013-test-prompt.md"
+      },
+      "version": 1,
+      "tags": [
+        "type:custom"
+      ]
+    },
+    {
+      "id": "33225b66-7a53-4165-bcd0-dc6ef9598ae7",
+      "title": "Worker AI - Task Execution SOP",
+      "content": {
+        "$file": "prompts/014-worker-ai-task-execution-sop.md"
+      },
+      "version": 1,
+      "tags": [
+        "agent:profile:coder",
+        "type:system"
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "ae7273fe-73a9-464e-bf2d-130a943d6931",
+      "name": "Architect",
+      "provider": {
+        "id": "provider-claude",
+        "name": "claude"
+      },
+      "familySlug": "sub-architect",
+      "instructions": {
+        "$file": "profiles/001-architect.md"
+      },
+      "temperature": null,
+      "maxTokens": null,
+      "providerConfigs": [
+        {
+          "name": "opus",
+          "providerName": "claude",
+          "description": null,
+          "options": "--dangerously-skip-permissions --disallowed-tools EnterPlanMode",
+          "env": null,
+          "model": "opus",
+          "effort": "xhigh",
+          "position": 0
+        },
+        {
+          "name": "opus46",
+          "providerName": "claude",
+          "description": null,
+          "options": "--dangerously-skip-permissions --disallowed-tools EnterPlanMode",
+          "env": null,
+          "model": "claude-opus-4-6[1m]",
+          "effort": "xhigh",
+          "position": 1
+        },
+        {
+          "name": "gpt",
+          "providerName": "codex",
+          "description": null,
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "position": 2
+        },
+        {
+          "name": "agy",
+          "providerName": "agy",
+          "description": null,
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "Gemini 3.1 Pro (High)",
+          "position": 4
+        },
+        {
+          "name": "opencode",
+          "providerName": "opencode",
+          "description": "--auto",
+          "options": null,
+          "env": null,
+          "position": 5
+        },
+        {
+          "name": "copilot",
+          "providerName": "copilot",
+          "description": null,
+          "options": "--yolo",
+          "env": null,
+          "position": 6
+        }
+      ]
+    },
+    {
+      "id": "6c808b78-dc5a-4256-9d1a-14311bd15a2e",
+      "name": "Architect/Planner",
+      "provider": {
+        "id": "provider-claude",
+        "name": "claude"
+      },
+      "familySlug": "architect",
+      "instructions": {
+        "$file": "profiles/002-architect-planner.md"
+      },
+      "temperature": null,
+      "maxTokens": null,
+      "providerConfigs": [
+        {
+          "name": "opus",
+          "providerName": "claude",
+          "description": null,
+          "options": "--dangerously-skip-permissions --disallowed-tools EnterPlanMode",
+          "env": null,
+          "model": "opus",
+          "effort": "xhigh",
+          "position": 0
+        },
+        {
+          "name": "gpt",
+          "providerName": "codex",
+          "description": null,
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "position": 1
+        },
+        {
+          "name": "agy",
+          "providerName": "agy",
+          "description": null,
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "Gemini 3.1 Pro (High)",
+          "position": 2
+        },
+        {
+          "name": "opencode",
+          "providerName": "opencode",
+          "description": null,
+          "options": "--auto",
+          "env": null,
+          "position": 3
+        },
+        {
+          "name": "copilot",
+          "providerName": "copilot",
+          "description": null,
+          "options": "--yolo",
+          "env": null,
+          "position": 4
+        }
+      ]
+    },
+    {
+      "id": "eeabdebe-cc1e-443b-8a1a-a01095aac21a",
+      "name": "Code Reviewer",
+      "provider": {
+        "id": "provider-claude",
+        "name": "claude"
+      },
+      "familySlug": "code reviewer",
+      "instructions": {
+        "$file": "profiles/003-code-reviewer.md"
+      },
+      "temperature": null,
+      "maxTokens": null,
+      "providerConfigs": [
+        {
+          "name": "opus",
+          "providerName": "claude",
+          "description": null,
+          "options": "--dangerously-skip-permissions --disallowed-tools EnterPlanMode",
+          "env": null,
+          "model": "opus",
+          "effort": "xhigh",
+          "position": 0
+        },
+        {
+          "name": "gpt",
+          "providerName": "codex",
+          "description": null,
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "position": 1
+        },
+        {
+          "name": "agy",
+          "providerName": "agy",
+          "description": null,
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "Gemini 3.1 Pro (High)",
+          "position": 3
+        },
+        {
+          "name": "opencode",
+          "providerName": "opencode",
+          "description": null,
+          "options": "--auto",
+          "env": null,
+          "position": 4
+        },
+        {
+          "name": "copilot",
+          "providerName": "copilot",
+          "description": null,
+          "options": "--yolo",
+          "env": null,
+          "position": 5
+        }
+      ]
+    },
+    {
+      "id": "29376a62-2fb2-41c8-a102-7431db6b146a",
+      "name": "Coder",
+      "provider": {
+        "id": "provider-claude",
+        "name": "claude"
+      },
+      "familySlug": "coder",
+      "instructions": {
+        "$file": "profiles/004-coder.md"
+      },
+      "temperature": null,
+      "maxTokens": null,
+      "providerConfigs": [
+        {
+          "name": "opus",
+          "providerName": "claude",
+          "description": "Senior software engineer: Handles ambiguous, cross-cutting, high-risk work, and complex Frontend/UI/Backend development. latest model",
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "opus",
+          "effort": "high",
+          "position": 0
+        },
+        {
+          "name": "opus46",
+          "providerName": "claude",
+          "description": "Senior software engineer: Handles ambiguous, cross-cutting, high-risk work, and complex Frontend/UI/Backend development\nModel: opus-4.6",
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "claude-opus-4-6[1m]",
+          "effort": "xhigh",
+          "position": 1
+        },
+        {
+          "name": "sonnet",
+          "providerName": "claude",
+          "description": "Mid-level software engineer, for Backend/Frontend work",
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "sonnet",
+          "effort": "xhigh",
+          "position": 2
+        },
+        {
+          "name": "gpt",
+          "providerName": "codex",
+          "description": "Senior software engineer: Handles ambiguous, cross-cutting, high-risk work, and complex development",
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "position": 3
+        },
+        {
+          "name": "gpt-med",
+          "providerName": "codex",
+          "description": "Junior/Mid-level software engineer, for Backend/Frontend work",
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-5.6-luna",
+          "effort": "xhigh",
+          "position": 4
+        },
+        {
+          "name": "glm",
+          "providerName": "claude",
+          "description": "Junior/Mid-level software engineer, for Backend/Frontend work",
+          "options": "--model opus --dangerously-skip-permissions",
+          "env": {
+            "ANTHROPIC_AUTH_TOKEN": "***",
+            "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.3[1m]",
+            "API_TIMEOUT_MS": "3000000",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000",
+            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "95"
+          },
+          "position": 5
+        },
+        {
+          "name": "opencode",
+          "providerName": "opencode",
+          "description": "Junior/Mid-level software engineer for backend and frontend work. Can serve as a fallback for senior-level tasks",
+          "options": "--auto",
+          "env": null,
+          "position": 6
+        },
+        {
+          "name": "agy",
+          "providerName": "agy",
+          "description": "Antigravity CLI coding agent",
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "Gemini 3.1 Pro (High)",
+          "position": 7
+        },
+        {
+          "name": "copilot",
+          "providerName": "copilot",
+          "description": null,
+          "options": "--yolo",
+          "env": null,
+          "position": 8
+        },
+        {
+          "name": "glm53-flash",
+          "providerName": "opencode",
+          "description": "Junior/Mid-level software engineer for backend and frontend work",
+          "options": "--auto",
+          "env": null,
+          "model": "zai-coding-plan/glm-5.3-flash",
+          "effort": "max",
+          "position": 9
+        }
+      ]
+    },
+    {
+      "id": "b5d3ef41-45c6-47ab-accc-6f99c3b19453",
+      "name": "Red-Team Architect",
+      "provider": {
+        "id": "a4c87d4f-b0ec-40df-8f9d-56e4ca678fae",
+        "name": "codex"
+      },
+      "familySlug": "t2-sub-architect",
+      "instructions": {
+        "$file": "profiles/005-red-team-architect.md"
+      },
+      "temperature": null,
+      "maxTokens": null,
+      "providerConfigs": [
+        {
+          "name": "codex",
+          "providerName": "codex",
+          "description": null,
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "position": 0
+        },
+        {
+          "name": "claude",
+          "providerName": "claude",
+          "description": null,
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "opus",
+          "effort": "xhigh",
+          "position": 1
+        },
+        {
+          "name": "fable5",
+          "providerName": "claude",
+          "description": null,
+          "options": "--dangerously-skip-permissions --disallowed-tools EnterPlanMode",
+          "env": null,
+          "model": "claude-fable-5-1[1m]",
+          "effort": "xhigh",
+          "position": 2
+        }
+      ]
+    },
+    {
+      "id": "f428c9fa-6721-4152-a3be-282e0eac6091",
+      "name": "Reviewer",
+      "provider": {
+        "id": "provider-claude",
+        "name": "claude"
+      },
+      "familySlug": "epic manager",
+      "instructions": {
+        "$file": "profiles/006-reviewer.md"
+      },
+      "temperature": null,
+      "maxTokens": null,
+      "providerConfigs": [
+        {
+          "name": "opus",
+          "providerName": "claude",
+          "description": null,
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "opus",
+          "effort": "medium",
+          "position": 0
+        },
+        {
+          "name": "gpt-medium",
+          "providerName": "codex",
+          "description": null,
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-6-astra",
+          "effort": "medium",
+          "position": 1
+        },
+        {
+          "name": "agy",
+          "providerName": "agy",
+          "description": null,
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "Gemini 3.1 Pro (High)",
+          "position": 2
+        },
+        {
+          "name": "opencode",
+          "providerName": "opencode",
+          "description": null,
+          "options": null,
+          "env": null,
+          "position": 3
+        },
+        {
+          "name": "copilot",
+          "providerName": "copilot",
+          "description": null,
+          "options": "--yolo",
+          "env": null,
+          "position": 4
+        }
+      ]
+    }
+  ],
+  "agents": [
+    {
+      "id": "497328d4-e27d-4818-86aa-d3dc22251360",
+      "name": "Brainstormer",
+      "profileId": "6c808b78-dc5a-4256-9d1a-14311bd15a2e",
+      "description": "responsible for plan decomposition and epic creation",
+      "modelOverride": null,
+      "providerConfigName": "opus",
+      "isProjectOwner": true
+    },
+    {
+      "id": "44133956-9a41-47b4-ab61-847830e58cfb",
+      "name": "Epic Manager",
+      "profileId": "f428c9fa-6721-4152-a3be-282e0eac6091",
+      "description": null,
+      "modelOverride": "sonnet",
+      "providerConfigName": "opus"
+    },
+    {
+      "id": "6f4640e7-2919-42f4-969d-8ca6cc4e4970",
+      "name": "Architect",
+      "profileId": "ae7273fe-73a9-464e-bf2d-130a943d6931",
+      "description": null,
+      "modelOverride": null,
+      "providerConfigName": "gpt"
+    },
+    {
+      "id": "1ba2db7f-5622-4fab-8362-fea03bb020df",
+      "name": "Code Reviewer",
+      "profileId": "eeabdebe-cc1e-443b-8a1a-a01095aac21a",
+      "description": "responsible for code review of completed phases",
+      "modelOverride": null,
+      "providerConfigName": "gpt"
+    }
+  ],
+  "statuses": [
+    {
+      "id": "6d8e7e5e-570b-41dd-b801-e26a6ebe8272",
+      "label": "Draft",
+      "color": "#f5f5f5",
+      "position": 0,
+      "mcpHidden": true
+    },
+    {
+      "id": "3d6a517e-e1b1-45df-b3e6-22644adb2774",
+      "label": "New",
+      "color": "#6c757d",
+      "position": 1,
+      "mcpHidden": false
+    },
+    {
+      "id": "6f333946-48a8-4df8-98a1-0fd754aae36b",
+      "label": "In Progress",
+      "color": "#007bff",
+      "position": 2,
+      "mcpHidden": false
+    },
+    {
+      "id": "89488e2a-d4d8-4236-8dd7-5c0c05d99629",
+      "label": "Review",
+      "color": "#ffc107",
+      "position": 3,
+      "mcpHidden": false
+    },
+    {
+      "id": "a0e82345-6a07-42ee-b392-6129b7097145",
+      "label": "Done",
+      "color": "#28a745",
+      "position": 4,
+      "mcpHidden": false
+    },
+    {
+      "id": "85930873-6ca0-4622-aa7a-691e408deebe",
+      "label": "Blocked",
+      "color": "#dc3545",
+      "position": 5,
+      "mcpHidden": false
+    },
+    {
+      "id": "810ff7ae-937f-4809-bb55-7ab34d3792fc",
+      "label": "Backlog",
+      "color": "#6c757d",
+      "position": 6,
+      "mcpHidden": false
+    },
+    {
+      "id": "3124064d-17ff-419e-9f07-5167dfe83c31",
+      "label": "Archive",
+      "color": "#000000",
+      "position": 7,
+      "mcpHidden": true
+    }
+  ],
+  "initialPrompt": {
+    "promptId": "c1c7b960-2b30-42b0-838f-554f32d15b65",
+    "title": "Initialize Agent"
+  },
+  "projectSettings": {
+    "initialPromptTitle": "Initialize Agent",
+    "autoCleanStatusLabels": [
+      "Draft",
+      "Archive",
+      "Backlog",
+      "Done"
+    ],
+    "epicAssignedTemplate": "[Epic Assignment]\n{epic_title} is now assigned to {agent_name} in {project_name}. (Epic ID: {epic_id})"
+  },
+  "providerSettings": [
+    {
+      "name": "claude",
+      "autoCompactThreshold": 50
+    }
+  ],
+  "providerModels": [
+    {
+      "providerName": "opencode",
+      "models": [
+        "google/gemini-3.1-pro-preview",
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-reasoner",
+        "zai-coding-plan/glm-5.3",
+        "zai-coding-plan/glm-5.3-flash"
+      ]
+    },
+    {
+      "providerName": "codex",
+      "models": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "gpt-5.6-luna",
+        "gpt-6-astra"
+      ]
+    },
+    {
+      "providerName": "agy",
+      "models": [
+        "Gemini 3.1 Pro (High)"
+      ]
+    },
+    {
+      "providerName": "claude",
+      "models": [
+        "sonnet",
+        "opus",
+        "claude-opus-4-6[1m]",
+        "claude-fable-5-1[1m]"
+      ]
+    }
+  ],
+  "providerEfforts": [
+    {
+      "providerName": "copilot",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "providerName": "opencode",
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max"
+      ]
+    },
+    {
+      "providerName": "codex",
+      "efforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "providerName": "claude",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    }
+  ],
+  "watchers": [
+    {
+      "id": "423a53e2-1d58-4c55-9bdf-5793b9f56c20",
+      "name": "GLM compact",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "claude",
+      "pollIntervalMs": 30000,
+      "viewportLines": 30,
+      "idleAfterSeconds": 0,
+      "condition": {
+        "type": "contains",
+        "pattern": "context window limit"
+      },
+      "cooldownMs": 90000,
+      "cooldownMode": "until_clear",
+      "eventName": "watcher.glm.context_limit"
+    },
+    {
+      "id": "9ecd1b71-46b8-4316-896f-e271d6c775a8",
+      "name": "Compact on idle",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "claude",
+      "pollIntervalMs": 60000,
+      "viewportLines": 20,
+      "idleAfterSeconds": 20,
+      "condition": {
+        "type": "regex",
+        "pattern": "Context low \\([0-7]% remaining\\)"
+      },
+      "cooldownMs": 180000,
+      "cooldownMode": "until_clear",
+      "eventName": "watcher.conversation.compact_request"
+    },
+    {
+      "id": "56790fa3-e741-44f6-8df1-0aaf51a9c0b2",
+      "name": "GLM Network error",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "claude",
+      "pollIntervalMs": 30000,
+      "viewportLines": 50,
+      "idleAfterSeconds": 0,
+      "condition": {
+        "type": "regex",
+        "pattern": "(?:Network error|try again later)"
+      },
+      "cooldownMs": 90000,
+      "cooldownMode": "until_clear",
+      "eventName": "watcher.glm.network_error"
+    },
+    {
+      "id": "e1114fc2-0a6c-4555-8a62-58df77e5f4f0",
+      "name": "Limit reached",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "claude",
+      "pollIntervalMs": 60000,
+      "viewportLines": 50,
+      "idleAfterSeconds": 0,
+      "condition": {
+        "type": "regex",
+        "pattern": "limit.*?·.*?resets|hit your usage limit",
+        "flags": "i"
+      },
+      "cooldownMs": 1200000,
+      "cooldownMode": "time",
+      "eventName": "watcher.claude.limit_reached"
+    },
+    {
+      "id": "69e6b586-dc6e-474e-bf4e-9c2e14b69823",
+      "name": "Compact monitor",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "claude",
+      "pollIntervalMs": 60000,
+      "viewportLines": 20,
+      "idleAfterSeconds": 0,
+      "condition": {
+        "type": "regex",
+        "pattern": "(?:Context (low|limit)[^(]*·.*\\/compact|input tokens exceeds the model)"
+      },
+      "cooldownMs": 160000,
+      "cooldownMode": "time",
+      "eventName": "watcher.conversation.compact_request"
+    },
+    {
+      "id": "3f3f54c2-febe-4edc-adda-da0e54435371",
+      "name": "Codex compacted",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "codex",
+      "pollIntervalMs": 5000,
+      "viewportLines": 50,
+      "idleAfterSeconds": 0,
+      "condition": {
+        "type": "contains",
+        "pattern": "Context compacted"
+      },
+      "cooldownMs": 30000,
+      "cooldownMode": "until_clear",
+      "eventName": "watcher.codex.context_compacted"
+    },
+    {
+      "id": "ea645ca6-c9a2-45a4-a529-31d20b10b8c7",
+      "name": "OpenCode - Compaction",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "opencode",
+      "pollIntervalMs": 50000,
+      "viewportLines": 20,
+      "idleAfterSeconds": 0,
+      "condition": {
+        "type": "contains",
+        "pattern": "Compaction"
+      },
+      "cooldownMs": 30000,
+      "cooldownMode": "until_clear",
+      "eventName": "watcher.opencode.compact"
+    }
+  ],
+  "subscribers": [
+    {
+      "id": "e20eee90-3c65-4ede-8b83-ad888973e32c",
+      "name": "Epic Status Update",
+      "description": "Acknowledge notifications to Brainstormer when Epic are done",
+      "enabled": true,
+      "eventName": "epic.updated",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "changes.statusId.currentName",
+            "operator": "equals",
+            "value": "Done"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "agentName": {
+          "source": "custom",
+          "customValue": "Brainstormer"
+        },
+        "text": {
+          "source": "custom",
+          "customValue": "{{epicId}} - {{epicTitle}} has been marked as {{changes.statusId.currentName}}\nNo action is needed unless you have pending dependencies on this Epic or SOP instructions. "
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "fc753735-6b5f-4c20-b08b-909349dcf11f",
+      "name": "Renew instructions Codex",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.codex.context_compacted",
+      "eventFilter": null,
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "Your agent session id (sessionId): {{sessionIdShort}}\nYour agent name: {{agentName}}\n{{#if is_team_lead}}You lead team \"{{team_name}}\" {{/if}}\n! Important: Re-load your agent profile by using devchain_get_agent_by_name to refresh SOP instructions and continue working !"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 3000,
+      "cooldownMs": 2000,
+      "retryOnError": true,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "1c495995-781c-4287-87ca-8b91dd66146e",
+      "name": "GLM continue on error",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.glm.network_error",
+      "eventFilter": null,
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "continue"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        },
+        "immediate": {
+          "source": "custom",
+          "customValue": "true"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "7068fa34-40e6-4ca2-8c15-f184eba73113",
+      "name": "Continue on Limit reached",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.claude.limit_reached",
+      "eventFilter": null,
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "continue"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "f672474d-12fa-4eb3-aa9f-e0535bbc15f0",
+      "name": "Trigger Compact",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.conversation.compact_request",
+      "eventFilter": null,
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "Your agent session id (sessionId): {{sessionIdShort}}\nYour agent name: {{agentName}}\n! Important: Re-load your agent profile by using devchain_get_agent_by_name to refresh SOP instructions and continue working !"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 30000,
+      "cooldownMs": 60000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 1,
+      "priority": 0
+    },
+    {
+      "id": "7073828f-fe76-4c82-9cd8-186fdb302814",
+      "name": "Opencode renew instructions",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.opencode.compact",
+      "eventFilter": null,
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "Your agent session id (sessionId): {{sessionIdShort}}\nYour agent name: {{agentName}}\n{{#if is_team_lead}}You lead team \"{{team_name}}\" {{/if}}\n! Important: Re-load your agent profile by using devchain_get_agent_by_name to refresh SOP instructions and continue working !"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        },
+        "immediate": {
+          "source": "custom",
+          "customValue": "true"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 50000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "70e56b43-b6c1-4434-8209-91068567106e",
+      "name": "GLM compact",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.glm.context_limit",
+      "eventFilter": null,
+      "actionType": "restart_agent",
+      "actionInputs": {},
+      "delayMs": 0,
+      "cooldownMs": 30000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "ab2081c6-ec1c-4a46-aed1-89fe206c92cb",
+      "name": "Continue on compact",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.conversation.compact_request",
+      "eventFilter": null,
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "/compact"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        },
+        "immediate": {
+          "source": "custom",
+          "customValue": "true"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 60000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "f1e28a80-1171-4082-a762-64e19c69a837",
+      "name": "RArchitect Cleanup on Phase",
+      "description": null,
+      "enabled": true,
+      "eventName": "epic.created",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "statusName",
+            "operator": "equals",
+            "value": "Draft"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "terminate_session",
+      "actionInputs": {
+        "familySlug": {
+          "source": "custom",
+          "customValue": "t2-sub-architect"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": "Reset",
+      "position": 4,
+      "priority": 40
+    },
+    {
+      "id": "24728580-b8a2-46ae-8d87-e68ba72c581a",
+      "name": "Architect Cleanup on Phase",
+      "description": null,
+      "enabled": true,
+      "eventName": "epic.created",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "statusName",
+            "operator": "equals",
+            "value": "Draft"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "terminate_session",
+      "actionInputs": {
+        "familySlug": {
+          "source": "custom",
+          "customValue": "sub-architect"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": "Reset",
+      "position": 3,
+      "priority": 30
+    },
+    {
+      "id": "1419021d-151e-4e1c-985c-4d8bd5e988d9",
+      "name": "Epic Manage compact on Phase",
+      "description": null,
+      "enabled": true,
+      "eventName": "epic.updated",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "changes.statusId.currentName",
+            "operator": "equals",
+            "value": "Done"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "agentName": {
+          "source": "custom",
+          "customValue": "Epic Manager"
+        },
+        "text": {
+          "source": "custom",
+          "customValue": "/compact"
+        },
+        "deliveryMode": {
+          "source": "custom",
+          "customValue": "on_idle"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 60000,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": "Reset",
+      "position": 1,
+      "priority": 10
+    },
+    {
+      "id": "229c2695-d004-46cd-b261-e0fbecacaa6b",
+      "name": "Code Reviewer compact on Phase",
+      "description": null,
+      "enabled": true,
+      "eventName": "epic.updated",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "changes.statusId.currentName",
+            "operator": "equals",
+            "value": "Done"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "agentName": {
+          "source": "custom",
+          "customValue": "Code Reviewer"
+        },
+        "text": {
+          "source": "custom",
+          "customValue": "/compact"
+        },
+        "deliveryMode": {
+          "source": "custom",
+          "customValue": "on_idle"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 60000,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": "Reset",
+      "position": 2,
+      "priority": 10
+    },
+    {
+      "id": "54296216-c25a-4a67-86c6-30c5eff2d5a8",
+      "name": "Coder reset on Phase Done",
+      "description": null,
+      "enabled": true,
+      "eventName": "epic.updated",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "changes.statusId.currentName",
+            "operator": "equals",
+            "value": "Done"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "delete_agent",
+      "actionInputs": {
+        "familySlug": {
+          "source": "custom",
+          "customValue": "coder"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": "Reset",
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "35b10fb8-4913-4fe8-b64d-7b08594823c0",
+      "name": "Renew instructions",
+      "description": null,
+      "enabled": true,
+      "eventName": "claude.hooks.session.started",
+      "eventFilter": {
+        "field": "source",
+        "operator": "regex",
+        "value": "clear|compact"
+      },
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "Your agent session id (sessionId): {{sessionIdShort}}\nYour agent name: {{agentName}}\n{{#if is_team_lead}}You lead team \"{{team_name}}\" {{/if}}\n! Important: Re-load your agent profile by using devchain_get_agent_by_name to refresh SOP instructions and continue working !"
+        },
+        "immediate": {
+          "source": "custom",
+          "customValue": "false"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 3000,
+      "cooldownMs": 2000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    }
+  ],
+  "teams": [
+    {
+      "name": "Planning",
+      "description": "Drives ideation and delivery planning. It evaluates options, shapes proposals, structures work into epics and tasks, sets priorities, and ensures execution starts with a clear, actionable plan",
+      "teamLeadAgentName": "Brainstormer",
+      "memberAgentNames": [
+        "Brainstormer",
+        "Architect"
+      ],
+      "profileNames": [
+        "Architect",
+        "Red-Team Architect"
+      ],
+      "profileSelections": [
+        {
+          "profileName": "Architect",
+          "configNames": [
+            "opus46",
+            "opus"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Builders",
+      "description": "Owns implementation of planned work, turning approved epics and tasks into tested, review-ready code",
+      "teamLeadAgentName": "Epic Manager",
+      "memberAgentNames": [
+        "Epic Manager"
+      ],
+      "maxConcurrentTasks": 2,
+      "allowTeamLeadCreateAgents": true,
+      "profileNames": [
+        "Coder"
+      ],
+      "profileSelections": [
+        {
+          "profileName": "Coder",
+          "configNames": [
+            "opus46",
+            "gpt",
+            "sonnet",
+            "gpt-med",
+            "opus"
+          ]
+        }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "name": "Tier-A[opus]",
+      "description": null,
+      "agentConfigs": [
+        {
+          "agentName": "Brainstormer",
+          "providerConfigName": "opus",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Epic Manager",
+          "providerConfigName": "opus",
+          "modelOverride": "sonnet",
+          "effortOverride": null
+        },
+        {
+          "agentName": "Code Reviewer",
+          "providerConfigName": "opus",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Architect",
+          "providerConfigName": "opus",
+          "modelOverride": null,
+          "effortOverride": null
+        }
+      ]
+    },
+    {
+      "name": "Tier-A[gpt]",
+      "description": null,
+      "agentConfigs": [
+        {
+          "agentName": "Brainstormer",
+          "providerConfigName": "gpt",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Epic Manager",
+          "providerConfigName": "gpt-medium",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Code Reviewer",
+          "providerConfigName": "gpt",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Architect",
+          "providerConfigName": "gpt",
+          "modelOverride": null,
+          "effortOverride": null
+        }
+      ]
+    },
+    {
+      "name": "Tier-S[codex:opus]",
+      "description": "Best Results , High token consumption. \nMost of the of the load is handled by ChatGPT\nRecommended for ChatGPT Pro subscriptions",
+      "agentConfigs": [
+        {
+          "agentName": "Brainstormer",
+          "providerConfigName": "gpt",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Epic Manager",
+          "providerConfigName": "gpt-medium",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Code Reviewer",
+          "providerConfigName": "opus",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Architect",
+          "providerConfigName": "opus",
+          "modelOverride": null,
+          "effortOverride": null
+        }
+      ]
+    },
+    {
+      "name": "Tier-S[opus:codex]",
+      "description": "Best Results , High token consumption. \nMost of the of the load is handled by GPT5 model\nRecommended for Claude + Codex subscriptions",
+      "agentConfigs": [
+        {
+          "agentName": "Brainstormer",
+          "providerConfigName": "opus",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Epic Manager",
+          "providerConfigName": "opus",
+          "modelOverride": "sonnet",
+          "effortOverride": null
+        },
+        {
+          "agentName": "Code Reviewer",
+          "providerConfigName": "gpt",
+          "modelOverride": null,
+          "effortOverride": null
+        },
+        {
+          "agentName": "Architect",
+          "providerConfigName": "gpt",
+          "modelOverride": null,
+          "effortOverride": null
+        }
+      ]
+    }
+  ],
+  "scheduledEpics": []
+}

@@ -217,6 +217,7 @@ export function createLaunchPipelineHarness() {
 
   const mcpEnsureService = {
     ensureMcp: jest.fn().mockResolvedValue(undefined),
+    ensureProjectProvisioning: jest.fn().mockResolvedValue({ success: true, warnings: [] }),
   };
 
   const eventsService = {

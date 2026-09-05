@@ -464,4 +464,73 @@ describe('AgentRow', () => {
       expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
     });
   });
+
+  describe('unlogged time marker', () => {
+    function marker(row: HTMLElement): HTMLElement | null {
+      return row.querySelector('[data-unlogged-time-marker]');
+    }
+
+    it('renders a non-interactive half-height amber fade over the right rail', () => {
+      renderAgentRow({ unloggedTimeMinutes: 10 });
+
+      const row = screen.getByRole('listitem');
+      const accent = marker(row);
+      expect(accent).not.toBeNull();
+      expect(accent).toHaveAttribute('aria-hidden', 'true');
+      expect(accent.className).toContain('pointer-events-none');
+      expect(accent.className).toContain('-right-0.5');
+      expect(accent.className).toContain('top-0');
+      expect(accent.className).toContain('h-1/2');
+      expect(accent.className).toContain('w-0.5');
+      expect(accent.className).toContain('bg-gradient-to-b');
+      expect(accent.className).toContain('from-amber-700');
+      expect(accent.className).toContain('to-transparent');
+      // The accent is a plain span; the row gains no nested interactive control.
+      expect(accent!.querySelector('button, [role="button"], a')).toBeNull();
+      expect(row.tagName).toBe('BUTTON');
+      expect(row.querySelectorAll('button')).toHaveLength(0);
+    });
+
+    it('extends the row aria-label with the exact unlogged phrase', () => {
+      renderAgentRow({ unloggedTimeMinutes: 90 });
+
+      expect(
+        screen.getByLabelText('Open terminal for Alpha (online), 1h 30m not logged to an Epic.'),
+      ).toBeInTheDocument();
+    });
+
+    it('hides the marker and label extension below ten minutes and when absent', () => {
+      const first = renderAgentRow({ unloggedTimeMinutes: 9 });
+      expect(marker(screen.getByRole('listitem'))).toBeNull();
+      expect(screen.getByLabelText('Open terminal for Alpha (online)')).toBeInTheDocument();
+      first.unmount();
+
+      renderAgentRow();
+      expect(marker(screen.getByRole('listitem'))).toBeNull();
+      expect(screen.getByLabelText('Open terminal for Alpha (online)')).toBeInTheDocument();
+      expect(screen.getByRole('listitem').className).not.toContain('relative');
+    });
+
+    it('overlays the selected rail without displacing the restart warning', () => {
+      renderAgentRow({ unloggedTimeMinutes: 10, pendingRestart: true, isSelected: true });
+
+      const row = screen.getByRole('listitem');
+      expect(marker(row)).not.toBeNull();
+      // The restart warning icon renders inline; its tooltip copy opens on
+      // hover, so presence is asserted through the icon itself.
+      expect(row.querySelector('svg.text-yellow-500')).not.toBeNull();
+      // The amber fade overlays the top half; the full-height selected rail
+      // remains blue underneath and visible through the transparent end.
+      expect(row.className).toContain('relative');
+      expect(row.className).toContain('border-r-primary');
+      expect(row.className).not.toContain('pr-5');
+    });
+
+    it('keeps row clicks unchanged with the marker present', () => {
+      const { onClick } = renderAgentRow({ unloggedTimeMinutes: 10 });
+
+      fireEvent.click(screen.getByRole('listitem'));
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+  });
 });

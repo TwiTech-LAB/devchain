@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Step2Agents, type Step2AgentsProps } from './Step2Agents';
 import { initialAgentRows } from './agentPlan';
+import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import type { SetupPreviewResponse } from '@/ui/pages/projects/lib/project-contracts';
 
 // Radix primitives need these in JSDOM.
@@ -81,7 +82,10 @@ function makePreview(): SetupPreviewResponse {
   };
 }
 
-function renderStep(over: Partial<Step2AgentsProps> = {}) {
+function renderStep(
+  over: Partial<Step2AgentsProps> = {},
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   const preview = over.preview ?? makePreview();
   const props: Step2AgentsProps = {
     preview,
@@ -94,13 +98,12 @@ function renderStep(over: Partial<Step2AgentsProps> = {}) {
     onClearPreset: jest.fn(),
     ...over,
   };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const utils = render(
     <QueryClientProvider client={client}>
       <Step2Agents {...props} />
     </QueryClientProvider>,
   );
-  return { ...utils, props };
+  return { ...utils, props, client };
 }
 
 describe('Step2Agents', () => {
@@ -187,5 +190,32 @@ describe('Step2Agents', () => {
     await userEvent.click(await screen.findByTestId('wizard-model-select-Captain'));
     await userEvent.click(await screen.findByRole('option', { name: /opus/i }));
     expect(onRowChange).toHaveBeenCalledWith('Captain', { modelOverride: 'claude-opus' });
+  });
+
+  it('stores object model options under the shared provider-model query key', async () => {
+    global.fetch = jest.fn(async (url: string) =>
+      String(url).includes('/models')
+        ? { ok: true, json: async () => ['claude-opus'] }
+        : { ok: false, json: async () => null },
+    ) as unknown as typeof fetch;
+    const { client } = renderStep({ selectedProviderNames: ['claude'] });
+
+    await waitFor(() =>
+      expect(client.getQueryData(providerModelQueryKeys.main('p-claude'))).toEqual([
+        { id: 'p-claude:claude-opus:0', name: 'claude-opus' },
+      ]),
+    );
+  });
+
+  it('normalizes object model options supplied by another shared-cache consumer', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(providerModelQueryKeys.main('p-claude'), [
+      { id: 'model-1', name: 'anthropic/claude-opus' },
+    ]);
+
+    renderStep({ selectedProviderNames: ['claude'] }, client);
+
+    await userEvent.click(await screen.findByTestId('wizard-model-select-Captain'));
+    expect(await screen.findByRole('option', { name: 'claude-opus' })).toBeInTheDocument();
   });
 });

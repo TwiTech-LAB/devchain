@@ -18,6 +18,8 @@ import type {
   HookEnvContext,
   TranscriptDiscoveryCapability,
   ProjectMcpSettingsCapability,
+  ProjectProvisioningCapability,
+  ProvisioningResult,
   ProviderPluginCapability,
 } from './capabilities';
 import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
@@ -41,6 +43,20 @@ interface ClaudeSettingsLocal {
   [key: string]: unknown;
 }
 
+function trustProvisioningFailure(message: string): ProvisioningResult {
+  return {
+    success: false,
+    warnings: [
+      {
+        source: 'claude_project_trust',
+        level: 'warn',
+        message,
+        code: 'CLAUDE_TRUST_PROVISION_FAILED',
+      },
+    ],
+  };
+}
+
 @Injectable()
 export class ClaudeAdapter
   implements
@@ -51,9 +67,16 @@ export class ClaudeAdapter
     HookCapability,
     TranscriptDiscoveryCapability,
     ProjectMcpSettingsCapability,
+    ProjectProvisioningCapability,
     ProviderPluginCapability
 {
   readonly providerName = 'claude';
+
+  // Claude's workspace trust lives in ~/.claude.json
+  // (projects[path].hasTrustDialogAccepted), separate from
+  // --dangerously-skip-permissions; without a pre-write the CLI stops at its
+  // trust dialog before accepting the first prompt.
+  readonly requiresProjectProvisioning = true as const;
 
   // Effort (`--effort <value>`): Claude's CLI accepts these and falls back
   // gracefully on unsupported values, so `max` is still seeded even though it is
@@ -218,6 +241,31 @@ export class ClaudeAdapter
     if (!settings.permissions.allow.includes(permission)) {
       settings.permissions.allow.push(permission);
       await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
+    }
+  }
+
+  /**
+   * ProjectProvisioningCapability — record workspace trust in ~/.claude.json so
+   * Claude skips its trust dialog. Trust-only by design: no MCP discovery,
+   * registration, or `.claude/settings.local.json` writes happen here. Never
+   * throws: a trust failure is surfaced as a fixed-code provisioning warning
+   * and Claude's own trust dialog remains the fallback.
+   */
+  async provisionProjectPath(projectPath: string): Promise<ProvisioningResult> {
+    try {
+      const { ensureClaudeProjectTrusted } = await import('../../sessions/utils/claude-config');
+      const result = await ensureClaudeProjectTrusted(projectPath);
+      if (result.success) {
+        return { success: true, warnings: [] };
+      }
+      const message =
+        result.errorType === 'invalid_config'
+          ? 'Invalid Claude config: malformed or unsupported structure'
+          : (result.error ?? 'Claude project trust provisioning failed');
+      return trustProvisioningFailure(message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return trustProvisioningFailure(message);
     }
   }
 

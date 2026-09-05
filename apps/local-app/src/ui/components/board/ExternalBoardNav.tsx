@@ -20,6 +20,7 @@ import {
   type ExternalBoardProvider,
 } from '@/ui/lib/external-board';
 import { useIntegrationConnections } from '@/ui/hooks/useIntegrationConnections';
+import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
 
 export interface ExternalBoardNavProps {
@@ -29,6 +30,10 @@ export interface ExternalBoardNavProps {
 type BoardSource = 'devchain' | ExternalBoardProvider;
 
 const LAST_BOARD_ROUTE_KEY_PREFIX = 'devchain:board:lastRoute:';
+
+function lastBoardRouteKey(projectId: string, source: BoardSource): string {
+  return `${LAST_BOARD_ROUTE_KEY_PREFIX}${projectId}:${source}`;
+}
 
 function isPathActive(pathname: string, path: string): boolean {
   return pathname === path || pathname.startsWith(`${path}/`);
@@ -57,18 +62,21 @@ function isRouteForSource(route: string, source: BoardSource): boolean {
   return isPathActive(pathname, externalBoardMyWorkPath(source));
 }
 
-function readLastBoardRoute(source: BoardSource, fallback: string): string {
+function readLastBoardRoute(projectId: string, source: BoardSource, fallback: string): string {
   try {
-    const route = window.sessionStorage.getItem(`${LAST_BOARD_ROUTE_KEY_PREFIX}${source}`);
+    const route = window.sessionStorage.getItem(lastBoardRouteKey(projectId, source));
     return route && isRouteForSource(route, source) ? route : fallback;
   } catch {
     return fallback;
   }
 }
 
-function rememberBoardRoute(source: BoardSource, route: string): void {
+function rememberBoardRoute(projectId: string, source: BoardSource, route: string): void {
   try {
-    window.sessionStorage.setItem(`${LAST_BOARD_ROUTE_KEY_PREFIX}${source}`, route);
+    window.sessionStorage.setItem(lastBoardRouteKey(projectId, source), route);
+    // Keys without a project segment predate per-project boards; they can
+    // never be read again, so drop this source's stale copy.
+    window.sessionStorage.removeItem(`${LAST_BOARD_ROUTE_KEY_PREFIX}${source}`);
   } catch {
     // Navigation still works when session storage is unavailable.
   }
@@ -76,6 +84,8 @@ function rememberBoardRoute(source: BoardSource, route: string): void {
 
 export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
   const { canUseIntegrations } = useIntegrationAvailability();
+  const { selectedProject, selectedProjectId: selectedProjectIdValue } = useSelectedProject();
+  const selectedProjectId = selectedProjectIdValue ?? null;
   const {
     connections,
     isLoading,
@@ -85,14 +95,19 @@ export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
     replacingProvider,
     disconnectingProvider,
     updatingSyncProvider,
-  } = useIntegrationConnections({ enabled: canUseIntegrations });
+  } = useIntegrationConnections({ projectId: selectedProjectId, enabled: canUseIntegrations });
   const { pathname, search } = useLocation();
   const currentSource = boardSourceForPath(pathname);
   const [settingsProvider, setSettingsProvider] = useState<ExternalBoardProvider | null>(null);
 
   useEffect(() => {
-    if (currentSource) rememberBoardRoute(currentSource, `${pathname}${search}`);
-  }, [currentSource, pathname, search]);
+    // Route memory is project-qualified: a remembered work-area URL belongs to
+    // the project whose connection produced it, so it is never written or
+    // restored while no project is selected.
+    if (currentSource && selectedProjectId !== null) {
+      rememberBoardRoute(selectedProjectId, currentSource, `${pathname}${search}`);
+    }
+  }, [currentSource, pathname, search, selectedProjectId]);
 
   const connectionFor = (provider: ExternalBoardProvider) =>
     connections.find((connection) => connection.provider === provider);
@@ -123,7 +138,11 @@ export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
         className={cn('flex items-center gap-1 border-b border-border px-4 py-2', className)}
       >
         <Link
-          to={readLastBoardRoute('devchain', '/board')}
+          to={
+            selectedProjectId !== null
+              ? readLastBoardRoute(selectedProjectId, 'devchain', '/board')
+              : '/board'
+          }
           aria-current={pathname === '/board' ? 'page' : undefined}
           className={cn(
             'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
@@ -136,7 +155,10 @@ export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
         </Link>
         {connectedProviders.map((provider) => {
           const defaultPath = externalBoardMyWorkPath(provider);
-          const path = readLastBoardRoute(provider, defaultPath);
+          const path =
+            selectedProjectId !== null
+              ? readLastBoardRoute(selectedProjectId, provider, defaultPath)
+              : defaultPath;
           const active = isPathActive(pathname, defaultPath);
           const label = externalBoardProviderLabel(provider);
 
@@ -177,6 +199,7 @@ export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
             isLoading={isLoading}
             onConnect={replaceConnection}
             replacingProvider={replacingProvider}
+            projectName={selectedProject?.name ?? null}
           />
         ) : null}
       </nav>
@@ -199,6 +222,7 @@ export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
                 </DialogDescription>
               </DialogHeader>
               <ProviderIntegrationSettings
+                projectId={selectedProjectId}
                 provider={settingsProvider}
                 connection={settingsConnection}
                 onReplace={replaceConnection}

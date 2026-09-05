@@ -19,6 +19,11 @@ import {
   verifySession,
 } from '@/ui/lib/external-rich-edit';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
+import {
+  isSameIntegrationPresentationScope,
+  validIntegrationProjectId,
+  type IntegrationPresentationScope,
+} from '@/ui/lib/integration-project-scope';
 
 export type RichEditPhase =
   | 'idle'
@@ -42,6 +47,18 @@ export interface RichEditState {
   /** The baseline revision the editor must present. */
   revision: number;
   error: string | null;
+}
+
+interface RichEditSaveVariables {
+  scope: IntegrationPresentationScope;
+  sessionId: string;
+  document: unknown;
+  revision: number;
+}
+
+interface RichEditSessionVariables {
+  scope: IntegrationPresentationScope;
+  sessionId: string;
 }
 
 function rejectedSavePhase(reason: ExternalSessionWriteRejectionReason): RichEditPhase {
@@ -89,10 +106,24 @@ export function useExternalRichDescriptionEdit(
   provider: ExternalBoardProvider,
   connectionEpoch: IntegrationConnectionEpoch | null,
   taskId: string | null,
-  { enabled }: { enabled: boolean },
+  { enabled, projectId }: { enabled: boolean; projectId: string | null },
 ) {
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
+  const scopedProjectId = validIntegrationProjectId(projectId);
+  const admitted = enabled && scopedProjectId !== null;
+  const presentationScope: IntegrationPresentationScope | null =
+    admitted && connectionEpoch !== null && taskId !== null
+      ? { projectId: scopedProjectId, provider, connectionEpoch, taskId }
+      : null;
+  const presentationScopeRef = useRef(presentationScope);
+  presentationScopeRef.current = presentationScope;
+
+  const isCurrentScope = useCallback(
+    (scope: IntegrationPresentationScope) =>
+      isSameIntegrationPresentationScope(scope, presentationScopeRef.current),
+    [],
+  );
 
   const descriptionQuery = useQuery({
     queryKey: [
@@ -100,8 +131,9 @@ export function useExternalRichDescriptionEdit(
       'rich-description',
       taskId,
     ],
-    queryFn: ({ signal }) => readRichDescription(apiFetch, provider, taskId!, signal),
-    enabled: enabled && connectionEpoch !== null && taskId !== null,
+    queryFn: ({ signal }) =>
+      readRichDescription(apiFetch, scopedProjectId!, provider, taskId!, signal),
+    enabled: admitted && connectionEpoch !== null && taskId !== null,
   });
 
   const [state, setState] = useState<RichEditState>({
@@ -135,14 +167,14 @@ export function useExternalRichDescriptionEdit(
     });
     setDraft(null);
     clearTouch();
-  }, [provider, connectionEpoch, taskId, clearTouch]);
+  }, [provider, connectionEpoch, scopedProjectId, taskId, clearTouch]);
 
   useEffect(() => clearTouch, [clearTouch]);
 
   // A dirty editor keeps its session alive without provider content calls.
   useEffect(() => {
     const dirty = state.phase === 'editing' || state.phase === 'unknown';
-    if (!dirty || state.session === null) {
+    if (!admitted || !dirty || state.session === null) {
       clearTouch();
       return;
     }
@@ -151,15 +183,20 @@ export function useExternalRichDescriptionEdit(
         if (state.session === null) {
           return;
         }
-        void touchSession(apiFetch, state.session.sessionId).catch(() => undefined);
+        void touchSession(apiFetch, scopedProjectId!, state.session.sessionId).catch(
+          () => undefined,
+        );
       }, 4 * 60_000);
     }
     return clearTouch;
-  }, [state.phase, state.session, apiFetch, clearTouch]);
+  }, [admitted, state.phase, state.session, apiFetch, clearTouch, scopedProjectId]);
 
   const openSession = useMutation({
-    mutationFn: () => createDescriptionSession(apiFetch, provider, taskId!),
-    onSuccess: (session) => {
+    mutationFn: (scope: IntegrationPresentationScope) => {
+      return createDescriptionSession(apiFetch, scope.projectId, scope.provider, scope.taskId);
+    },
+    onSuccess: (session, scope) => {
+      if (!isCurrentScope(scope)) return;
       setState({
         phase: 'editing',
         session,
@@ -169,7 +206,8 @@ export function useExternalRichDescriptionEdit(
         error: null,
       });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, scope) => {
+      if (!isCurrentScope(scope)) return;
       setState((previous) => ({
         ...previous,
         phase: previous.session === null ? 'idle' : previous.phase,
@@ -178,34 +216,41 @@ export function useExternalRichDescriptionEdit(
     },
   });
 
-  const invalidateDetailCaches = useCallback(() => {
-    if (connectionEpoch === null || taskId === null) {
-      return;
-    }
-    void queryClient.invalidateQueries({
-      queryKey: externalMyWorkQueryKeys.taskDetail(provider, connectionEpoch, taskId),
-    });
-    void queryClient.invalidateQueries({
-      queryKey: [
-        ...externalMyWorkQueryKeys.epoch(provider, connectionEpoch),
-        'rich-description',
-        taskId,
-      ],
-    });
-  }, [queryClient, provider, connectionEpoch, taskId]);
+  const invalidateDetailCaches = useCallback(
+    (scope: IntegrationPresentationScope) => {
+      if (!isCurrentScope(scope)) return;
+      void queryClient.invalidateQueries({
+        queryKey: externalMyWorkQueryKeys.taskDetail(
+          scope.provider,
+          scope.connectionEpoch,
+          scope.taskId,
+        ),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [
+          ...externalMyWorkQueryKeys.epoch(scope.provider, scope.connectionEpoch),
+          'rich-description',
+          scope.taskId,
+        ],
+      });
+    },
+    [isCurrentScope, queryClient],
+  );
 
   const save = useMutation({
-    mutationFn: ({ document, revision }: { document: unknown; revision: number }) => {
+    mutationFn: ({ scope, sessionId, document, revision }: RichEditSaveVariables) => {
       const canonical = canonicalizeRichDocument(document);
       if (canonical === null) {
         throw new Error('The edited content is outside the supported set.');
       }
-      return saveSession(apiFetch, state.session!.sessionId, canonical, revision);
+      return saveSession(apiFetch, scope.projectId, sessionId, canonical, revision);
     },
-    onMutate: () => {
+    onMutate: (variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       setState((previous) => ({ ...previous, phase: 'saving', error: null }));
     },
-    onSuccess: (outcome) => {
+    onSuccess: (outcome, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       if (outcome.outcome === 'saved') {
         setState((previous) => ({
           ...previous,
@@ -217,7 +262,7 @@ export function useExternalRichDescriptionEdit(
           error: null,
         }));
         setDraft(null);
-        invalidateDetailCaches();
+        invalidateDetailCaches(variables.scope);
         return;
       }
       if (outcome.outcome === 'saved_unverified') {
@@ -250,7 +295,8 @@ export function useExternalRichDescriptionEdit(
         error: rejectedSaveMessage(reason),
       }));
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       setState((previous) => ({
         ...previous,
         phase: previous.session !== null ? 'blocked' : 'idle',
@@ -260,8 +306,11 @@ export function useExternalRichDescriptionEdit(
   });
 
   const verify = useMutation({
-    mutationFn: () => verifySession(apiFetch, state.session!.sessionId),
-    onSuccess: (result) => {
+    mutationFn: ({ scope, sessionId }: RichEditSessionVariables) => {
+      return verifySession(apiFetch, scope.projectId, sessionId);
+    },
+    onSuccess: (result, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       if (result.remoteState === 'new_payload') {
         setState((previous) => ({
           ...previous,
@@ -272,7 +321,7 @@ export function useExternalRichDescriptionEdit(
           error: null,
         }));
         setDraft(null);
-        invalidateDetailCaches();
+        invalidateDetailCaches(variables.scope);
         return;
       }
       if (result.remoteState === 'gone') {
@@ -292,14 +341,18 @@ export function useExternalRichDescriptionEdit(
         verifyRemoteState: result.remoteState,
       }));
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       setState((previous) => ({ ...previous, error: error.message }));
     },
   });
 
   const reload = useMutation({
-    mutationFn: () => reloadSession(apiFetch, state.session!.sessionId),
-    onSuccess: (result) => {
+    mutationFn: ({ scope, sessionId }: RichEditSessionVariables) => {
+      return reloadSession(apiFetch, scope.projectId, sessionId);
+    },
+    onSuccess: (result, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       if (result.status === 'reloaded' && result.session) {
         setState((previous) => ({
           ...previous,
@@ -311,7 +364,7 @@ export function useExternalRichDescriptionEdit(
           error: null,
         }));
         setDraft(null);
-        invalidateDetailCaches();
+        invalidateDetailCaches(variables.scope);
         return;
       }
       setState((previous) => ({
@@ -321,15 +374,18 @@ export function useExternalRichDescriptionEdit(
         error: reloadFailureMessage(result.status),
       }));
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (!isCurrentScope(variables.scope)) return;
       setState((previous) => ({ ...previous, error: error.message }));
     },
   });
 
   const startEdit = useCallback(() => {
+    const scope = presentationScopeRef.current;
+    if (scope === null) return;
     setDraft(null);
     setState((previous) => ({ ...previous, phase: 'opening', error: null }));
-    openSession.mutate();
+    openSession.mutate(scope);
   }, [openSession]);
 
   const cancelEdit = useCallback(() => {
@@ -350,28 +406,55 @@ export function useExternalRichDescriptionEdit(
   }, []);
 
   const submitSave = useCallback(() => {
-    if (draft === null || state.session === null) {
+    const scope = presentationScopeRef.current;
+    if (scope === null || draft === null || state.session === null) {
       return;
     }
-    save.mutate({ document: draft.document, revision: state.revision });
+    save.mutate({
+      scope,
+      sessionId: state.session.sessionId,
+      document: draft.document,
+      revision: state.revision,
+    });
   }, [draft, state.session, state.revision, save]);
 
   const retrySamePayload = useCallback(() => {
+    const scope = presentationScopeRef.current;
     if (
+      scope === null ||
       draft === null ||
       state.session === null ||
       state.lastOutcome?.outcome !== 'outcome_unknown'
     ) {
       return;
     }
-    save.mutate({ document: draft.document, revision: state.revision });
+    save.mutate({
+      scope,
+      sessionId: state.session.sessionId,
+      document: draft.document,
+      revision: state.revision,
+    });
   }, [draft, state.session, state.lastOutcome, state.revision, save]);
 
   const refreshSession = useCallback(() => {
+    const scope = presentationScopeRef.current;
+    if (scope === null) return;
     // Keeps the browser draft; opens a fresh session from a new baseline.
     setState((previous) => ({ ...previous, phase: 'opening', error: null }));
-    openSession.mutate();
+    openSession.mutate(scope);
   }, [openSession]);
+
+  const verifyCurrentSession = useCallback(() => {
+    const scope = presentationScopeRef.current;
+    if (scope === null || state.session === null) return;
+    verify.mutate({ scope, sessionId: state.session.sessionId });
+  }, [state.session, verify]);
+
+  const reloadCurrentSession = useCallback(() => {
+    const scope = presentationScopeRef.current;
+    if (scope === null || state.session === null) return;
+    reload.mutate({ scope, sessionId: state.session.sessionId });
+  }, [state.session, reload]);
 
   return useMemo(
     () => ({
@@ -386,12 +469,22 @@ export function useExternalRichDescriptionEdit(
       submitSave,
       retrySamePayload,
       refreshSession,
-      verify,
-      reload,
-      savePending: save.isPending,
-      verifyPending: verify.isPending,
-      reloadPending: reload.isPending,
-      openPending: openSession.isPending,
+      verify: { ...verify, mutate: verifyCurrentSession },
+      reload: { ...reload, mutate: reloadCurrentSession },
+      savePending:
+        save.isPending && save.variables !== undefined && isCurrentScope(save.variables.scope),
+      verifyPending:
+        verify.isPending &&
+        verify.variables !== undefined &&
+        isCurrentScope(verify.variables.scope),
+      reloadPending:
+        reload.isPending &&
+        reload.variables !== undefined &&
+        isCurrentScope(reload.variables.scope),
+      openPending:
+        openSession.isPending &&
+        openSession.variables !== undefined &&
+        isCurrentScope(openSession.variables),
     }),
     [
       descriptionQuery.data,
@@ -407,6 +500,9 @@ export function useExternalRichDescriptionEdit(
       refreshSession,
       verify,
       reload,
+      verifyCurrentSession,
+      reloadCurrentSession,
+      isCurrentScope,
       save.isPending,
       verify.isPending,
       reload.isPending,

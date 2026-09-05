@@ -257,6 +257,65 @@ describe('Jira relevant board discovery', () => {
     expect(JSON.stringify(result)).not.toMatch(/columnConfig|private = vendor|filterId|isLast/);
   });
 
+  it('projects one issue onto every matching Board once and keeps it out of Other assigned', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-19T12:00:00.000Z'));
+    const engineering = { id: 'project-1', key: 'ENG', name: 'Engineering' };
+    const requestJson = jest.fn(async (request: SafeVendorJsonRequest) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith('/myself')) {
+        return { accountId: 'account-1', displayName: 'Grace' };
+      }
+      if (url.pathname === '/rest/api/3/configuration') {
+        return { timeTrackingEnabled: true };
+      }
+      if (url.pathname === '/rest/api/3/search/jql') {
+        return { issues: [issue('ENG-1', engineering)] };
+      }
+      if (url.pathname === '/rest/agile/1.0/board') {
+        return {
+          values: [
+            { id: 42, name: 'Engineering delivery', type: 'scrum' },
+            { id: 43, name: 'Engineering triage', type: 'kanban' },
+          ],
+          isLast: true,
+        };
+      }
+      if (url.pathname.startsWith('/rest/software/1.0/board/')) {
+        if (url.pathname.includes('/42/')) {
+          return { issues: [{ key: 'ENG-1' }] };
+        }
+        return { issues: [{ key: 'ENG-1' }, { key: 'ENG-1' }] };
+      }
+      if (url.pathname === '/rest/agile/1.0/board/42/configuration') {
+        return configuration(42, 'Engineering delivery', 'filter-42', engineering);
+      }
+      if (url.pathname === '/rest/agile/1.0/board/43/configuration') {
+        return configuration(43, 'Engineering triage', 'filter-43', engineering);
+      }
+      if (url.pathname === '/rest/api/3/filter/filter-42') {
+        return { id: 'filter-42', description: 'Delivery flow' };
+      }
+      if (url.pathname === '/rest/api/3/filter/filter-43') {
+        return { id: 'filter-43', description: 'Triage flow' };
+      }
+      throw new Error(`unexpected Jira request: ${url.toString()}`);
+    });
+
+    const result = await providerWith(requestJson).myWork!.discover(credentials, options);
+
+    expect(result.workAreas.map(({ remoteId }) => remoteId)).toEqual(['42', '43']);
+    expect(
+      result.workAreas.map(({ remoteId, assignedTaskCount }) => [remoteId, assignedTaskCount]),
+    ).toEqual([
+      ['42', 1],
+      ['43', 1],
+    ]);
+    expect(result.tasks.map(({ workArea, task }) => [workArea.remoteId, task.remoteId])).toEqual([
+      ['42', 'ENG-1'],
+      ['43', 'ENG-1'],
+    ]);
+  });
+
   it('keys successful board metadata cache entries by connection generation', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-08-19T12:00:00.000Z'));
     const engineering = { id: 'project-1', key: 'ENG', name: 'Engineering' };

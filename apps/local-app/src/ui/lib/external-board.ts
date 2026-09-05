@@ -143,16 +143,34 @@ export function externalLinkedTaskState(boardReturnUrl: string): ExternalLinkedT
 }
 
 /**
- * The only accepted close target: the native `/board` entry, optionally with
- * a query. Anything else carried in history state — absolute or
- * protocol-relative URLs, hosts, hashes, `/board` subpaths, malformed values,
- * non-strings — falls back to `/board`, so state can never steer navigation
- * off-app or into a provider route.
+ * Nullable Board-return validator: returns the exact native `/board` return
+ * URL carried in history state, or null when state carries none. Anything
+ * else — absolute or protocol-relative URLs, hosts, hashes, `/board`
+ * subpaths, malformed values, non-strings — is rejected, so history state
+ * can never steer navigation off-app or into a provider route. Callers that
+ * must distinguish "validated return target" from "no return target" use
+ * this; `parseBoardReturnUrl` stays the `/board`-fallback wrapper.
  */
-export function parseBoardReturnUrl(state: unknown): string {
-  if (typeof state !== 'object' || state === null) return '/board';
+export function boardReturnUrlFromState(state: unknown): string | null {
+  if (typeof state !== 'object' || state === null) return null;
   const candidate = (state as { boardReturnUrl?: unknown }).boardReturnUrl;
   return typeof candidate === 'string' && /^\/board(?:\?[^#]+)?$/.test(candidate)
     ? candidate
-    : '/board';
+    : null;
+}
+
+export function parseBoardReturnUrl(state: unknown): string {
+  return boardReturnUrlFromState(state) ?? '/board';
+}
+
+/**
+ * True only when this tab has an in-app history entry to return to: the
+ * production router tracks its stack index in `window.history.state.idx`,
+ * and a missing, null, zero, or malformed index means the current entry is
+ * the first in-app entry — the direct or reloaded deep-link case — so
+ * closing must fall back to `/board` instead of leaving the app.
+ */
+export function hasInAppHistoryBack(): boolean {
+  const idx = window.history.state?.idx;
+  return Number.isInteger(idx) && idx > 0;
 }

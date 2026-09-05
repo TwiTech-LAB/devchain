@@ -56,16 +56,16 @@ describe('broadcastRegistry clientReaction contract ↔ non-registry catalog', (
   // over this COMBINED set — they previously guarded the hand mirror and must not be lost.
   const combined: RegistryCatalogEntry[] = [...registryDerived, ...nonRegistryBroadcastCatalog];
 
-  it('coverage counts are stable (29 keys / 37 items / 36 static + 1 dynamic / 47 combined)', () => {
+  it('coverage counts are stable (31 keys / 39 items / 38 static + 1 dynamic / 49 combined)', () => {
     const keyCount = Object.keys(broadcastRegistry).length;
     const itemCount = Object.values(broadcastRegistry).reduce((n, arr) => n + arr.length, 0);
 
-    expect(keyCount).toBe(29);
-    expect(itemCount).toBe(37);
-    expect(registryDerived.length).toBe(36);
+    expect(keyCount).toBe(31);
+    expect(itemCount).toBe(39);
+    expect(registryDerived.length).toBe(38);
     expect(dynamicEntries.length).toBe(1);
     expect(nonRegistryBroadcastCatalog.length).toBe(11);
-    expect(combined.length).toBe(47);
+    expect(combined.length).toBe(49);
   });
 
   it('every dynamic-type registry entry declares a valid clientReaction kind', () => {

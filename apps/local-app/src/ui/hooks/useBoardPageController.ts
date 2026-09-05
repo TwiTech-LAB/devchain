@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { EpicFormData } from '@/ui/components/board/EpicFormDialog';
 import { useToast } from '@/ui/hooks/use-toast';
+import { externalLinkedTaskState } from '@/ui/lib/external-board';
 import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
@@ -11,6 +12,7 @@ import { useBoardMutations } from '@/ui/hooks/useBoardMutations';
 import { useBoardDragDrop } from '@/ui/hooks/useBoardDragDrop';
 import { useEpicExternalSourcesBatch } from '@/ui/hooks/useEpicExternalSourcesBatch';
 import { useEpicTimeSummariesBatch } from '@/ui/hooks/useEpicTimeSummariesBatch';
+import { useEpicRelationCountsBatch } from '@/ui/hooks/useEpicRelationCountsBatch';
 import { useBoardBulkEdit } from '@/ui/hooks/board/useBoardBulkEdit';
 import { useBoardRouteState } from '@/ui/hooks/board/useBoardRouteState';
 import { useBoardViewPreferences } from '@/ui/hooks/board/useBoardViewPreferences';
@@ -23,6 +25,7 @@ import type {
 
 export function useBoardPageController(): BoardPagePresentation {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
   const { activeWorktree, worktrees } = useOptionalWorktreeTab();
@@ -147,14 +150,25 @@ export function useBoardPageController(): BoardPagePresentation {
     });
   };
 
-  const handleEdit = useCallback(
-    (epic: Epic) => {
-      navigate(`/epics/${epic.id}?edit=1`);
-    },
-    [navigate],
+  // The Epic window validates this before closing, so it carries the exact
+  // native Board pathname and query — filters and pagination survive the
+  // Epic open/close round trip.
+  const boardReturnState = useMemo(
+    () => externalLinkedTaskState(`${location.pathname}${location.search}`),
+    [location.pathname, location.search],
   );
 
-  const openEpicDetails = useCallback((epic: Epic) => navigate(`/epics/${epic.id}`), [navigate]);
+  const handleEdit = useCallback(
+    (epic: Epic) => {
+      navigate(`/epics/${epic.id}?edit=1`, { state: boardReturnState });
+    },
+    [navigate, boardReturnState],
+  );
+
+  const openEpicDetails = useCallback(
+    (epic: Epic) => navigate(`/epics/${epic.id}`, { state: boardReturnState }),
+    [navigate, boardReturnState],
+  );
 
   const openStatusManagement = useCallback(() => navigate('/statuses'), [navigate]);
 
@@ -220,6 +234,11 @@ export function useBoardPageController(): BoardPagePresentation {
     enabled: integrationAvailability.canUseIntegrations,
   });
   const externalSourceMap = externalSources ?? new Map();
+
+  // Relation badges cover the same loaded Kanban set as the source batch:
+  // roots, or the parent-filtered sub-Epics. The hook returns a stable empty
+  // map while disabled, empty, or failed — the Board never blocks on it.
+  const { counts: relationCounts } = useEpicRelationCountsBatch(sourceEpicIds);
 
   // Root-only estimated-time totals: sub-Epics never badge, so a parent
   // filter issues no time request at all. Worktree and unresolved runtimes
@@ -330,6 +349,7 @@ export function useBoardPageController(): BoardPagePresentation {
       subEpicStatusCountsByEpicId,
       hasRunningWorktrees,
       timeTotals: epicTimeTotalsMap,
+      relationCounts,
       getAgentName,
       addEpic: handleAddEpic,
       editEpic: handleEdit,

@@ -7,6 +7,7 @@ import type {
 import type {
   ExternalTimeEntryCreateResult,
   ExternalTimeEntryDeleteResult,
+  ExternalTimeEntryUpdateResult,
   ExternalTimeOperationReceiptView,
   ExternalTimeOperationVerifyResult,
 } from '@/modules/external-integrations/models/external-time-mutation.models';
@@ -15,32 +16,40 @@ import type { ExternalBoardProvider } from '@/ui/lib/external-board';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import { integrationConnectionGeneration } from '@/ui/lib/external-time';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
+import {
+  validIntegrationProjectId,
+  withIntegrationProjectId,
+} from '@/ui/lib/integration-project-scope';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 
 function timeOperationId(): string {
   return window.crypto.randomUUID();
 }
 
-export type TimeEntrySubmissionOrigin = 'manual' | 'estimate';
-type TimeEntryWriteKind = 'create' | 'delete';
+type TimeEntryWriteKind = 'create' | 'update' | 'delete';
 
 interface OperationContext {
   operationId: string;
   taskScope: string;
   operationScope: string;
   provider: ExternalBoardProvider;
+  projectId: string;
   taskId: string;
+  remoteScopeKey: string;
   connectionEpoch: IntegrationConnectionEpoch;
   generation: string;
 }
 
 interface CreateRequest extends OperationContext {
   input: ExternalTaskTimeEntryInput;
-  origin: TimeEntrySubmissionOrigin;
 }
 
 interface DeleteRequest extends OperationContext {
   remoteEntryId: string;
+}
+
+interface UpdateRequest extends DeleteRequest {
+  input: ExternalTaskTimeEntryInput;
 }
 
 type ResolutionRequest = OperationContext;
@@ -48,6 +57,10 @@ type ResolutionRequest = OperationContext;
 type TaskWriteGuard = OperationContext & {
   status: 'pending' | 'unknown';
   kind: TimeEntryWriteKind;
+  /** Server-owned verify availability for the unknown receipt. */
+  canVerify: boolean;
+  /** Receipt expiry (ISO); Verify hides at this deadline, the lock stays. */
+  expiresAt: string | null;
 };
 
 function mutationHeaders(
@@ -79,12 +92,16 @@ export function useExternalTaskTimeEntries(
     enabled,
     historyOpen,
     connectionEpoch,
+    projectId,
+    remoteScopeKey,
     identityAccepted,
     timeTrackingEnabled,
   }: {
     enabled: boolean;
     historyOpen: boolean;
     connectionEpoch: IntegrationConnectionEpoch | null;
+    projectId: string | null;
+    remoteScopeKey: string | null;
     identityAccepted: boolean;
     timeTrackingEnabled: boolean;
   },
@@ -92,13 +109,33 @@ export function useExternalTaskTimeEntries(
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
   const encodedTaskId = taskId ? encodeURIComponent(taskId) : '';
+  const scopedProjectId = validIntegrationProjectId(projectId);
   const generation = integrationConnectionGeneration(connectionEpoch);
-  const accepted = enabled && generation !== null && taskId !== null && identityAccepted;
+  const normalizedScopeKey = remoteScopeKey?.trim() ?? '';
+  // Scope is authoritative mutation input, but task-detail cache eviction must
+  // not erase it mid-write. The base excludes epoch because duplicate risk
+  // survives connection replacement for the same durable remote task.
+  const identityBase = `${scopedProjectId ?? ''}\u0000${provider}\u0000${taskId ?? ''}`;
+  const rememberedIdentityRef = useRef({ base: identityBase, remoteScopeKey: '' });
+  if (rememberedIdentityRef.current.base !== identityBase) {
+    rememberedIdentityRef.current = { base: identityBase, remoteScopeKey: '' };
+  }
+  if (normalizedScopeKey.length > 0) {
+    rememberedIdentityRef.current.remoteScopeKey = normalizedScopeKey;
+  }
+  const effectiveScopeKey = normalizedScopeKey || rememberedIdentityRef.current.remoteScopeKey;
+  const accepted =
+    enabled &&
+    scopedProjectId !== null &&
+    generation !== null &&
+    taskId !== null &&
+    effectiveScopeKey.length > 0 &&
+    identityAccepted;
   const historyAccepted = accepted && timeTrackingEnabled && historyOpen;
   // Duplicate risk survives credential replacement for the same provider task;
   // pending/error/success presentation remains bound to the admitted epoch.
-  const taskScope = `${provider}\u0000${taskId ?? ''}`;
-  const operationScope = `${provider}\u0000${connectionEpoch ?? ''}\u0000${taskId ?? ''}`;
+  const taskScope = `${scopedProjectId ?? ''}\u0000${provider}\u0000${effectiveScopeKey}\u0000${taskId ?? ''}`;
+  const operationScope = `${scopedProjectId ?? ''}\u0000${provider}\u0000${connectionEpoch ?? ''}\u0000${effectiveScopeKey}\u0000${taskId ?? ''}`;
   const currentTaskScopeRef = useRef(taskScope);
   const currentOperationScopeRef = useRef(operationScope);
   currentTaskScopeRef.current = taskScope;
@@ -125,7 +162,10 @@ export function useExternalTaskTimeEntries(
     queryKey: timeEntriesKey,
     queryFn: ({ signal }) =>
       fetchJsonOrThrow<ExternalTaskTimeEntryHistory>(
-        `/api/integrations/my-work/${provider}/tasks/${encodedTaskId}/time-entries`,
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${provider}/tasks/${encodedTaskId}/time-entries`,
+          scopedProjectId,
+        ),
         { signal, headers: { 'X-DevChain-Connection-Epoch': generation ?? '' } },
         'Time entries could not be loaded.',
         '',
@@ -177,12 +217,23 @@ export function useExternalTaskTimeEntries(
   );
 
   const retainUnknownGuard = useCallback(
-    (request: OperationContext, operationId: string, kind: TimeEntryWriteKind): void => {
+    (
+      request: OperationContext,
+      kind: TimeEntryWriteKind,
+      receipt: ExternalTimeOperationReceiptView,
+    ): void => {
       if (
         currentTaskScopeRef.current === request.taskScope &&
         writeGuardRef.current?.operationId === request.operationId
       ) {
-        setWriteGuard({ ...request, operationId, kind, status: 'unknown' });
+        setWriteGuard({
+          ...request,
+          operationId: receipt.operationId,
+          kind,
+          status: 'unknown',
+          canVerify: receipt.canVerify,
+          expiresAt: receipt.expiresAt,
+        });
       }
     },
     [setWriteGuard],
@@ -191,7 +242,10 @@ export function useExternalTaskTimeEntries(
   const createMutation = useMutation({
     mutationFn: async (request: CreateRequest): Promise<ExternalTimeEntryCreateResult> =>
       fetchJsonOrThrow<ExternalTimeEntryCreateResult>(
-        `/api/integrations/my-work/${request.provider}/tasks/${encodeURIComponent(request.taskId)}/time-entries`,
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${request.provider}/tasks/${encodeURIComponent(request.taskId)}/time-entries?scopeKey=${encodeURIComponent(request.remoteScopeKey)}`,
+          request.projectId,
+        ),
         {
           method: 'POST',
           headers: mutationHeaders(request),
@@ -203,7 +257,7 @@ export function useExternalTaskTimeEntries(
       ),
     onSuccess: async (result, request) => {
       if (result.outcome === 'outcome_unknown') {
-        retainUnknownGuard(request, result.receipt.operationId, 'create');
+        retainUnknownGuard(request, 'create', result.receipt);
         return;
       }
       clearMatchingGuard(request);
@@ -215,7 +269,10 @@ export function useExternalTaskTimeEntries(
   const verifyMutation = useMutation({
     mutationFn: async (request: ResolutionRequest): Promise<ExternalTimeOperationVerifyResult> =>
       fetchJsonOrThrow<ExternalTimeOperationVerifyResult>(
-        `/api/integrations/my-work/${request.provider}/time-operations/${encodeURIComponent(request.operationId)}/verify`,
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${request.provider}/time-operations/${encodeURIComponent(request.operationId)}/verify`,
+          request.projectId,
+        ),
         {
           method: 'POST',
           headers: mutationHeaders(request, timeOperationId()),
@@ -235,7 +292,10 @@ export function useExternalTaskTimeEntries(
   const acknowledgeMutation = useMutation({
     mutationFn: async (request: ResolutionRequest): Promise<ExternalTimeOperationReceiptView> =>
       fetchJsonOrThrow<ExternalTimeOperationReceiptView>(
-        `/api/integrations/my-work/${request.provider}/time-operations/${encodeURIComponent(request.operationId)}/acknowledge`,
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${request.provider}/time-operations/${encodeURIComponent(request.operationId)}/acknowledge`,
+          request.projectId,
+        ),
         {
           method: 'POST',
           headers: mutationHeaders(request, timeOperationId()),
@@ -253,7 +313,10 @@ export function useExternalTaskTimeEntries(
   const deleteMutation = useMutation({
     mutationFn: async (request: DeleteRequest): Promise<ExternalTimeEntryDeleteResult> =>
       fetchJsonOrThrow<ExternalTimeEntryDeleteResult>(
-        `/api/integrations/my-work/${request.provider}/tasks/${encodeURIComponent(request.taskId)}/time-entries/${encodeURIComponent(request.remoteEntryId)}`,
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${request.provider}/tasks/${encodeURIComponent(request.taskId)}/time-entries/${encodeURIComponent(request.remoteEntryId)}?scopeKey=${encodeURIComponent(request.remoteScopeKey)}`,
+          request.projectId,
+        ),
         {
           method: 'DELETE',
           headers: mutationHeaders(request),
@@ -264,7 +327,34 @@ export function useExternalTaskTimeEntries(
       ),
     onSuccess: async (result, request) => {
       if (result.outcome === 'outcome_unknown') {
-        retainUnknownGuard(request, result.receipt.operationId, 'delete');
+        retainUnknownGuard(request, 'delete', result.receipt);
+        return;
+      }
+      clearMatchingGuard(request);
+      await refetchAfterWrite(request);
+    },
+    onError: (_error, request) => clearMatchingGuard(request),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (request: UpdateRequest): Promise<ExternalTimeEntryUpdateResult> =>
+      fetchJsonOrThrow<ExternalTimeEntryUpdateResult>(
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${request.provider}/tasks/${encodeURIComponent(request.taskId)}/time-entries/${encodeURIComponent(request.remoteEntryId)}?scopeKey=${encodeURIComponent(request.remoteScopeKey)}`,
+          request.projectId,
+        ),
+        {
+          method: 'PUT',
+          headers: mutationHeaders(request),
+          body: JSON.stringify(request.input),
+        },
+        'The time entry could not be updated.',
+        '',
+        apiFetch,
+      ),
+    onSuccess: async (result, request) => {
+      if (result.outcome === 'outcome_unknown') {
+        retainUnknownGuard(request, 'update', result.receipt);
         return;
       }
       clearMatchingGuard(request);
@@ -274,7 +364,13 @@ export function useExternalTaskTimeEntries(
   });
 
   const operationContext = useCallback((): OperationContext | null => {
-    if (!accepted || taskId === null || connectionEpoch === null || generation === null) {
+    if (
+      !accepted ||
+      scopedProjectId === null ||
+      taskId === null ||
+      connectionEpoch === null ||
+      generation === null
+    ) {
       return null;
     }
     return {
@@ -282,20 +378,38 @@ export function useExternalTaskTimeEntries(
       taskScope,
       operationScope,
       provider,
+      projectId: scopedProjectId,
       taskId,
+      remoteScopeKey: effectiveScopeKey,
       connectionEpoch,
       generation,
     };
-  }, [accepted, connectionEpoch, generation, operationScope, provider, taskId, taskScope]);
+  }, [
+    accepted,
+    connectionEpoch,
+    generation,
+    effectiveScopeKey,
+    operationScope,
+    provider,
+    scopedProjectId,
+    taskId,
+    taskScope,
+  ]);
 
   const submitCreate = useCallback(
-    (input: ExternalTaskTimeEntryInput, origin: TimeEntrySubmissionOrigin = 'manual'): void => {
+    (input: ExternalTaskTimeEntryInput): void => {
       const context = operationContext();
       if (!context || !timeTrackingEnabled || writeGuardRef.current?.taskScope === taskScope) {
         return;
       }
-      setWriteGuard({ ...context, kind: 'create', status: 'pending' });
-      createMutation.mutate({ ...context, input, origin });
+      setWriteGuard({
+        ...context,
+        kind: 'create',
+        status: 'pending',
+        canVerify: false,
+        expiresAt: null,
+      });
+      createMutation.mutate({ ...context, input });
     },
     [createMutation, operationContext, setWriteGuard, taskScope, timeTrackingEnabled],
   );
@@ -306,10 +420,34 @@ export function useExternalTaskTimeEntries(
       if (!context || !timeTrackingEnabled || writeGuardRef.current?.taskScope === taskScope) {
         return;
       }
-      setWriteGuard({ ...context, kind: 'delete', status: 'pending' });
+      setWriteGuard({
+        ...context,
+        kind: 'delete',
+        status: 'pending',
+        canVerify: false,
+        expiresAt: null,
+      });
       deleteMutation.mutate({ ...context, remoteEntryId });
     },
     [deleteMutation, operationContext, setWriteGuard, taskScope, timeTrackingEnabled],
+  );
+
+  const submitUpdate = useCallback(
+    (remoteEntryId: string, input: ExternalTaskTimeEntryInput): void => {
+      const context = operationContext();
+      if (!context || !timeTrackingEnabled || writeGuardRef.current?.taskScope === taskScope) {
+        return;
+      }
+      setWriteGuard({
+        ...context,
+        kind: 'update',
+        status: 'pending',
+        canVerify: false,
+        expiresAt: null,
+      });
+      updateMutation.mutate({ ...context, remoteEntryId, input });
+    },
+    [operationContext, setWriteGuard, taskScope, timeTrackingEnabled, updateMutation],
   );
 
   const verifyUnknown = useCallback(
@@ -343,13 +481,59 @@ export function useExternalTaskTimeEntries(
       ) {
         return;
       }
+      // After the receipt deadline the server store has dropped the receipt,
+      // so its acknowledgement endpoint must 404. The explicit user action
+      // then clears exactly this local guard — no provider request, no
+      // receipt request — and only on the epoch that owns the receipt: a
+      // replaced connection's guard is not this epoch's to settle.
+      const deadlineMs = guard.expiresAt !== null ? Date.parse(guard.expiresAt) : null;
+      if (deadlineMs !== null && !Number.isNaN(deadlineMs) && Date.now() >= deadlineMs) {
+        if (guard.operationScope !== operationScope) {
+          return;
+        }
+        setWriteGuard(null);
+        return;
+      }
       acknowledgeMutation.mutate({ ...context, operationId });
     },
-    [acknowledgeMutation, operationContext, taskScope, timeTrackingEnabled],
+    [
+      acknowledgeMutation,
+      operationContext,
+      operationScope,
+      setWriteGuard,
+      taskScope,
+      timeTrackingEnabled,
+    ],
   );
 
   const activeGuard = writeGuard?.taskScope === taskScope ? writeGuard : null;
+  const verifyDeadlineMs =
+    activeGuard?.status === 'unknown' && activeGuard.expiresAt !== null
+      ? Date.parse(activeGuard.expiresAt)
+      : null;
+  const [verifyClockMs, setVerifyClockMs] = useState(() => Date.now());
+
+  // Verify lives exactly as long as its receipt. A suspended tab throttles
+  // timers, so focus and visibility resume re-read the wall clock too.
+  // Expiry hides only Verify; the unknown write lock stays until resolution.
+  useEffect(() => {
+    const refreshVerifyClock = () => setVerifyClockMs(Date.now());
+    refreshVerifyClock();
+    if (verifyDeadlineMs === null) {
+      return;
+    }
+    const timer = window.setTimeout(refreshVerifyClock, Math.max(0, verifyDeadlineMs - Date.now()));
+    window.addEventListener('focus', refreshVerifyClock);
+    document.addEventListener('visibilitychange', refreshVerifyClock);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', refreshVerifyClock);
+      document.removeEventListener('visibilitychange', refreshVerifyClock);
+    };
+  }, [verifyDeadlineMs]);
+
   const createPresented = createMutation.variables?.operationScope === operationScope;
+  const updatePresented = updateMutation.variables?.operationScope === operationScope;
   const deletePresented = deleteMutation.variables?.operationScope === operationScope;
   const verifyPresented = verifyMutation.variables?.operationScope === operationScope;
   const acknowledgePresented = acknowledgeMutation.variables?.operationScope === operationScope;
@@ -366,8 +550,17 @@ export function useExternalTaskTimeEntries(
       isSuccess: createPresented && createMutation.isSuccess,
       isIdle: !createPresented || createMutation.isIdle,
     },
-    createOrigin: createPresented ? (createMutation.variables?.origin ?? null) : null,
     submitCreate,
+    update: {
+      ...updateMutation,
+      data: updatePresented ? updateMutation.data : undefined,
+      error: updatePresented ? updateMutation.error : null,
+      isPending: updatePresented && updateMutation.isPending,
+      isError: updatePresented && updateMutation.isError,
+      isSuccess: updatePresented && updateMutation.isSuccess,
+      isIdle: !updatePresented || updateMutation.isIdle,
+    },
+    submitUpdate,
     delete: {
       ...deleteMutation,
       data: deletePresented ? deleteMutation.data : undefined,
@@ -397,9 +590,18 @@ export function useExternalTaskTimeEntries(
     },
     acknowledgeUnknown,
     unknownOperationId: activeGuard?.status === 'unknown' ? activeGuard.operationId : null,
+    unknownOperationKind: activeGuard?.status === 'unknown' ? activeGuard.kind : null,
     blockedByUnknown: activeGuard?.status === 'unknown',
+    // The server receipt owns availability; the client adds only the live
+    // operation scope and the receipt's own deadline. A missing or malformed
+    // expiry fails closed.
     canVerifyUnknown:
-      activeGuard?.status === 'unknown' && activeGuard.operationScope === operationScope,
+      activeGuard?.status === 'unknown' &&
+      activeGuard.operationScope === operationScope &&
+      activeGuard.canVerify &&
+      verifyDeadlineMs !== null &&
+      !Number.isNaN(verifyDeadlineMs) &&
+      verifyClockMs < verifyDeadlineMs,
     writeBlocked: activeGuard !== null,
   };
 }

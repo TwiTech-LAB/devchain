@@ -45,7 +45,45 @@ const detail = {
   linkState: { linked: false, epicId: null },
 };
 const connectionEpoch = 'connection-jira-a:1';
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+const PROJECT_B_ID = '22222222-2222-4222-8222-222222222222';
+const connectionEpochB = 'connection-jira-b:2';
+const detailB = {
+  ...detail,
+  remoteId: 'OTHER-2',
+  remoteKey: 'OTHER-2',
+  title: 'Project B action',
+  webUrl: 'https://other.atlassian.net/browse/OTHER-2',
+  location: {
+    scopeKey: 'other.atlassian.net',
+    workAreaId: 'board-2',
+    workAreaName: 'Other board',
+  },
+};
 const emptyCommentsPage = { comments: [], nextCursor: null };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function response(payload: unknown): Response {
+  return { ok: true, json: async () => payload } as Response;
+}
+
+function actionResult(taskId: string, action: 'add_comment' | 'change_status') {
+  return {
+    remoteTaskId: taskId,
+    action,
+    succeeded: true,
+    refresh: ['my_work', 'task_detail'],
+  };
+}
 
 function comment(id: string, minutesOffset: number): ExternalTaskComment {
   return {
@@ -66,7 +104,7 @@ function page(comments: ExternalTaskComment[], nextCursor: string | null) {
 
 function commentsUrl(cursor: string | null): string {
   return `/api/integrations/my-work/jira/tasks/ENG-1/comments${
-    cursor === null ? '' : `?cursor=${cursor}`
+    cursor === null ? `?projectId=${PROJECT_ID}` : `?cursor=${cursor}&projectId=${PROJECT_ID}`
   }`;
 }
 
@@ -89,7 +127,7 @@ describe('useExternalTaskController', () => {
         return Promise.resolve({ ok: true, json: async () => emptyCommentsPage });
       }
       if (!init?.method) return Promise.resolve({ ok: true, json: async () => detail });
-      const action = url.endsWith('/status') ? 'change_status' : 'add_comment';
+      const action = url.includes('/status?') ? 'change_status' : 'add_comment';
       return Promise.resolve({
         ok: true,
         json: async () => ({
@@ -106,15 +144,21 @@ describe('useExternalTaskController', () => {
 
   it('loads detail from the canonical task-detail query key', async () => {
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
     await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/integrations/my-work/jira/tasks/ENG-1', {
-      signal: expect.any(AbortSignal),
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/integrations/my-work/jira/tasks/ENG-1?projectId=${PROJECT_ID}`,
+      { signal: expect.any(AbortSignal) },
+    );
     expect(
       queryClient.getQueryData(
         externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, 'ENG-1'),
@@ -134,7 +178,12 @@ describe('useExternalTaskController', () => {
     async (request, path, method) => {
       const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
       const { result } = renderHook(
-        () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+        () =>
+          useExternalTaskController('jira', 'ENG-1', {
+            enabled: true,
+            connectionEpoch,
+            projectId: PROJECT_ID,
+          }),
         { wrapper: wrapper(queryClient) },
       );
       await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
@@ -144,7 +193,7 @@ describe('useExternalTaskController', () => {
       });
 
       expect(fetchMock).toHaveBeenCalledWith(
-        `/api/integrations/my-work/jira/tasks/ENG-1${path}`,
+        `/api/integrations/my-work/jira/tasks/ENG-1${path}?projectId=${PROJECT_ID}`,
         expect.objectContaining({ method, body: JSON.stringify(request.input) }),
       );
       expect(invalidate).toHaveBeenCalledWith({
@@ -161,7 +210,12 @@ describe('useExternalTaskController', () => {
     'never fetches comments for %s',
     async (request) => {
       const { result } = renderHook(
-        () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+        () =>
+          useExternalTaskController('jira', 'ENG-1', {
+            enabled: true,
+            connectionEpoch,
+            projectId: PROJECT_ID,
+          }),
         { wrapper: wrapper(queryClient) },
       );
       await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
@@ -192,7 +246,12 @@ describe('useExternalTaskController', () => {
       ),
     );
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
     await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
@@ -207,6 +266,272 @@ describe('useExternalTaskController', () => {
     });
 
     expect(result.current.detail.data).toEqual(detail);
+  });
+
+  it('keeps a newer Project B comment operation intact when Project A settles late', async () => {
+    const actionA = deferred<Response>();
+    const actionB = deferred<Response>();
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method) {
+        const body = JSON.parse(String(init.body)) as { text?: string };
+        return body.text === 'Comment A' ? actionA.promise : actionB.promise;
+      }
+      if (String(url).includes('/comments')) {
+        return Promise.resolve(response(emptyCommentsPage));
+      }
+      return Promise.resolve(response(String(url).includes('OTHER-2') ? detailB : detail));
+    });
+    const cancelQueries = jest.spyOn(queryClient, 'cancelQueries');
+    const resetQueries = jest.spyOn(queryClient, 'resetQueries');
+    const invalidateQueries = jest.spyOn(queryClient, 'invalidateQueries');
+    const onASuccess = jest.fn();
+    const hook = renderHook(
+      ({ taskId, selectedProjectId, epoch }) =>
+        useExternalTaskController('jira', taskId, {
+          enabled: true,
+          connectionEpoch: epoch,
+          projectId: selectedProjectId,
+        }),
+      {
+        wrapper: wrapper(queryClient),
+        initialProps: {
+          taskId: detail.remoteId,
+          selectedProjectId: PROJECT_ID,
+          epoch: connectionEpoch,
+        },
+      },
+    );
+    await waitFor(() => expect(hook.result.current.comments.isSuccess).toBe(true));
+
+    act(() => {
+      hook.result.current.setCommentText('Draft A');
+      hook.result.current.mutation.mutate(
+        { action: 'add_comment', input: { text: 'Comment A', notifyAll: false } },
+        { onSuccess: onASuccess },
+      );
+    });
+    await waitFor(() => expect(hook.result.current.mutation.isPending).toBe(true));
+    expect(hook.result.current.mutation.capturedVariables).toEqual(
+      expect.objectContaining({
+        scope: {
+          projectId: PROJECT_ID,
+          provider: 'jira',
+          connectionEpoch,
+          taskId: detail.remoteId,
+        },
+        request: { action: 'add_comment', input: { text: 'Comment A', notifyAll: false } },
+        cacheKeys: {
+          comments: externalMyWorkQueryKeys.taskComments('jira', connectionEpoch, detail.remoteId),
+          detail: externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, detail.remoteId),
+          landing: externalMyWorkQueryKeys.landing('jira', connectionEpoch),
+        },
+        operationId: expect.any(Number),
+        apiFetch: expect.any(Function),
+      }),
+    );
+
+    hook.rerender({
+      taskId: detailB.remoteId,
+      selectedProjectId: PROJECT_B_ID,
+      epoch: connectionEpochB,
+    });
+    await waitFor(() => expect(hook.result.current.comments.isSuccess).toBe(true));
+    expect(hook.result.current.mutation).toEqual(
+      expect.objectContaining({
+        data: undefined,
+        error: null,
+        variables: undefined,
+        capturedVariables: undefined,
+        status: 'idle',
+        isPending: false,
+        isSuccess: false,
+      }),
+    );
+
+    act(() => {
+      hook.result.current.setCommentText('Draft B');
+      hook.result.current.mutation.mutate({
+        action: 'add_comment',
+        input: { text: 'Comment B', notifyAll: false },
+      });
+    });
+    await waitFor(() => expect(hook.result.current.mutation.isPending).toBe(true));
+
+    await act(async () => actionA.resolve(response(actionResult(detail.remoteId, 'add_comment'))));
+    await waitFor(() =>
+      expect(resetQueries).toHaveBeenCalledWith({
+        queryKey: externalMyWorkQueryKeys.taskComments('jira', connectionEpoch, detail.remoteId),
+        exact: true,
+      }),
+    );
+    expect(hook.result.current.commentText).toBe('Draft B');
+    expect(hook.result.current.mutation.isPending).toBe(true);
+    expect(hook.result.current.mutation.data).toBeUndefined();
+    expect(onASuccess).not.toHaveBeenCalled();
+    expect(cancelQueries).not.toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.taskComments('jira', connectionEpochB, detailB.remoteId),
+      exact: true,
+    });
+    expect(invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.taskDetail('jira', connectionEpochB, detailB.remoteId),
+      exact: true,
+    });
+
+    await act(async () => actionB.resolve(response(actionResult(detailB.remoteId, 'add_comment'))));
+    await waitFor(() => expect(hook.result.current.mutation.isSuccess).toBe(true));
+    expect(hook.result.current.commentText).toBe('');
+    expect(resetQueries).toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.taskComments('jira', connectionEpochB, detailB.remoteId),
+      exact: true,
+    });
+  });
+
+  it('hides a Project A status failure after rendering Project B', async () => {
+    const action = deferred<Response>();
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method) return action.promise;
+      if (String(url).includes('/comments')) return Promise.resolve(response(emptyCommentsPage));
+      return Promise.resolve(response(String(url).includes('OTHER-2') ? detailB : detail));
+    });
+    const onError = jest.fn();
+    const invalidateQueries = jest.spyOn(queryClient, 'invalidateQueries');
+    const hook = renderHook(
+      ({ taskId, selectedProjectId, epoch }) =>
+        useExternalTaskController('jira', taskId, {
+          enabled: true,
+          connectionEpoch: epoch,
+          projectId: selectedProjectId,
+        }),
+      {
+        wrapper: wrapper(queryClient),
+        initialProps: {
+          taskId: detail.remoteId,
+          selectedProjectId: PROJECT_ID,
+          epoch: connectionEpoch,
+        },
+      },
+    );
+    await waitFor(() => expect(hook.result.current.detail.isSuccess).toBe(true));
+    act(() =>
+      hook.result.current.mutation.mutate(
+        { action: 'change_status', input: { status: 'transition-a' } },
+        { onError },
+      ),
+    );
+    await waitFor(() => expect(hook.result.current.mutation.isPending).toBe(true));
+
+    hook.rerender({
+      taskId: detailB.remoteId,
+      selectedProjectId: PROJECT_B_ID,
+      epoch: connectionEpochB,
+    });
+    await act(async () => action.reject(new Error('Project A status failed')));
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(hook.result.current.mutation).toEqual(
+      expect.objectContaining({
+        data: undefined,
+        error: null,
+        variables: undefined,
+        status: 'idle',
+        isPending: false,
+        isError: false,
+      }),
+    );
+    expect(invalidateQueries).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryKey: externalMyWorkQueryKeys.taskDetail('jira', connectionEpochB, detailB.remoteId),
+      }),
+    );
+  });
+
+  it('keeps an epoch N+1 comment draft and caches untouched after an epoch N failure', async () => {
+    const action = deferred<Response>();
+    const nextEpoch = 'connection-jira-a:2';
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method) return action.promise;
+      if (String(url).includes('/comments')) return Promise.resolve(response(emptyCommentsPage));
+      return Promise.resolve(response(detail));
+    });
+    const resetQueries = jest.spyOn(queryClient, 'resetQueries');
+    const hook = renderHook(
+      ({ epoch }) =>
+        useExternalTaskController('jira', detail.remoteId, {
+          enabled: true,
+          connectionEpoch: epoch,
+          projectId: PROJECT_ID,
+        }),
+      { wrapper: wrapper(queryClient), initialProps: { epoch: connectionEpoch } },
+    );
+    await waitFor(() => expect(hook.result.current.comments.isSuccess).toBe(true));
+    act(() =>
+      hook.result.current.mutation.mutate({
+        action: 'add_comment',
+        input: { text: 'Old epoch comment', notifyAll: false },
+      }),
+    );
+    await waitFor(() => expect(hook.result.current.mutation.isPending).toBe(true));
+
+    hook.rerender({ epoch: nextEpoch });
+    await waitFor(() => expect(hook.result.current.comments.isSuccess).toBe(true));
+    act(() => hook.result.current.setCommentText('New epoch draft'));
+    await act(async () => action.reject(new Error('Old epoch comment failed')));
+
+    expect(hook.result.current.commentText).toBe('New epoch draft');
+    expect(hook.result.current.mutation.error).toBeNull();
+    expect(hook.result.current.mutation.isError).toBe(false);
+    expect(resetQueries).not.toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.taskComments('jira', nextEpoch, detail.remoteId),
+      exact: true,
+    });
+  });
+
+  it('invalidates only epoch N status caches after the hook advances to N+1', async () => {
+    const action = deferred<Response>();
+    const nextEpoch = 'connection-jira-a:2';
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method) return action.promise;
+      if (String(url).includes('/comments')) return Promise.resolve(response(emptyCommentsPage));
+      return Promise.resolve(response(detail));
+    });
+    const invalidateQueries = jest.spyOn(queryClient, 'invalidateQueries');
+    const hook = renderHook(
+      ({ epoch }) =>
+        useExternalTaskController('jira', detail.remoteId, {
+          enabled: true,
+          connectionEpoch: epoch,
+          projectId: PROJECT_ID,
+        }),
+      { wrapper: wrapper(queryClient), initialProps: { epoch: connectionEpoch } },
+    );
+    await waitFor(() => expect(hook.result.current.detail.isSuccess).toBe(true));
+    act(() =>
+      hook.result.current.mutation.mutate({
+        action: 'change_status',
+        input: { status: 'old-epoch-transition' },
+      }),
+    );
+    await waitFor(() => expect(hook.result.current.mutation.isPending).toBe(true));
+    hook.rerender({ epoch: nextEpoch });
+    expect(hook.result.current.mutation.isPending).toBe(false);
+
+    await act(async () => action.resolve(response(actionResult(detail.remoteId, 'change_status'))));
+    await waitFor(() =>
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, detail.remoteId),
+        exact: true,
+      }),
+    );
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.landing('jira', connectionEpoch),
+    });
+    expect(invalidateQueries).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryKey: externalMyWorkQueryKeys.taskDetail('jira', nextEpoch, detail.remoteId),
+      }),
+    );
+    expect(hook.result.current.mutation.data).toBeUndefined();
+    expect(hook.result.current.mutation.isSuccess).toBe(false);
   });
 });
 
@@ -239,7 +564,12 @@ describe('external task comments query', () => {
 
   it('stays disabled without availability, epoch, task, or dialog and requests with an AbortSignal', async () => {
     const { result: dormant } = renderHook(
-      () => useExternalTaskController('jira', null, { enabled: false, connectionEpoch: null }),
+      () =>
+        useExternalTaskController('jira', null, {
+          enabled: false,
+          connectionEpoch: null,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
 
@@ -248,7 +578,12 @@ describe('external task comments query', () => {
     expect(fetchMock).not.toHaveBeenCalled();
 
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
     await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
@@ -282,7 +617,12 @@ describe('external task comments query', () => {
       return Promise.resolve({ ok: true, json: async () => emptyCommentsPage });
     });
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
     await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
@@ -317,7 +657,12 @@ describe('external task comments query', () => {
       return Promise.resolve({ ok: true, json: async () => emptyCommentsPage });
     });
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
     await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
@@ -361,7 +706,12 @@ describe('external task comments query', () => {
       return Promise.resolve({ ok: true, json: async () => emptyCommentsPage });
     });
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
     await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
@@ -392,7 +742,12 @@ describe('external task comments query', () => {
       return Promise.resolve({ ok: true, json: async () => emptyCommentsPage });
     });
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
     await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
@@ -438,7 +793,12 @@ describe('external task comments query', () => {
     const cancelQueries = jest.spyOn(queryClient, 'cancelQueries');
     const resetQueries = jest.spyOn(queryClient, 'resetQueries');
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
     await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
@@ -549,6 +909,7 @@ describe('expected Epic identity gating', () => {
           useExternalTaskController('jira', 'ENG-1', {
             enabled: true,
             connectionEpoch,
+            projectId: PROJECT_ID,
             expectedLinkedEpicId: 'epic-1',
           }),
         { wrapper: wrapper(queryClient) },
@@ -610,6 +971,7 @@ describe('expected Epic identity gating', () => {
         useExternalTaskController('jira', 'ENG-1', {
           enabled: true,
           connectionEpoch,
+          projectId: PROJECT_ID,
           expectedLinkedEpicId: 'epic-1',
         }),
       { wrapper: wrapper(queryClient) },
@@ -630,14 +992,19 @@ describe('expected Epic identity gating', () => {
       });
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/integrations/my-work/jira/tasks/ENG-1/status',
+      `/api/integrations/my-work/jira/tasks/ENG-1/status?projectId=${PROJECT_ID}`,
       expect.objectContaining({ method: 'PUT' }),
     );
   });
 
   it('stays accepted without an expected Epic even while the task is unlinked', async () => {
     const { result } = renderHook(
-      () => useExternalTaskController('jira', 'ENG-1', { enabled: true, connectionEpoch }),
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
       { wrapper: wrapper(queryClient) },
     );
     await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));

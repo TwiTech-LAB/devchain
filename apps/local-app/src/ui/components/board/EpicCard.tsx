@@ -1,10 +1,22 @@
-import { forwardRef, useMemo, type ComponentPropsWithoutRef, type KeyboardEvent } from 'react';
+import {
+  forwardRef,
+  useMemo,
+  useRef,
+  type ComponentPropsWithoutRef,
+  type DragEvent,
+  type KeyboardEvent,
+} from 'react';
+import { Link2 } from 'lucide-react';
 import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
+import { Button } from '@/ui/components/ui/button';
 import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
 import { EpicExternalSourceNote } from '@/ui/components/board/EpicExternalSourceNote';
+import { EpicRelationBadges } from '@/ui/components/board/EpicRelationBadges';
 import { EpicTimeBadge } from '@/ui/components/board/EpicTimeBadge';
 import { cn } from '@/ui/lib/utils';
+import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
+import type { BoardRelationQuickLinkBindings } from '@/ui/hooks/useBoardRelationQuickLink';
 import type { Epic, Status } from './types';
 
 export interface EpicCardProps
@@ -29,8 +41,12 @@ export interface EpicCardProps
   subEpicCountsByStatus?: Record<string, number>;
   /** Estimated-time total in whole minutes; rendered for root epics only. */
   timeTotalMinutes?: number;
+  /** Typed relation counts for this Epic; zero types never render. */
+  relationCounts?: EpicRelationCounts;
   /** Stored external source; renders the linked-task footer beside the card. */
   source?: ExternalTaskSourceSummary;
+  /** Quick-link interaction shared by expanded Kanban cards. */
+  relationQuickLink?: BoardRelationQuickLinkBindings;
 }
 
 /**
@@ -63,12 +79,20 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
     onMoveToWorktree,
     subEpicCountsByStatus,
     timeTotalMinutes,
+    relationCounts,
     source,
+    relationQuickLink,
     ...rest
   },
   ref,
 ) {
+  const relationPointerDownRef = useRef(false);
   const showFilterToggle = epic.parentId === null;
+  const isRelationSource = relationQuickLink?.selectionSourceId === epic.id;
+  const showRelationTarget =
+    relationQuickLink?.selectionSourceId !== null &&
+    relationQuickLink?.selectionSourceId !== undefined &&
+    !isRelationSource;
 
   const subEpicSummary = useMemo(
     () =>
@@ -85,6 +109,9 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
   const totalSubEpicCount = subEpicSummary.reduce((sum, entry) => sum + entry.count, 0);
   const showTimeBadge =
     epic.parentId === null && timeTotalMinutes !== undefined && timeTotalMinutes > 0;
+  const hasRelationBadges =
+    relationCounts !== undefined &&
+    (relationCounts.related > 0 || relationCounts.blocks > 0 || relationCounts.blockedBy > 0);
   const titleClassName =
     showFilterToggle && isActiveParent
       ? 'text-primary underline decoration-2'
@@ -179,12 +206,68 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
               </EpicTooltipWrapper>
             </CardTitle>
           </div>
-          {/* Controls moved to preview meta row to free title space */}
+          {relationQuickLink ? (
+            <button
+              type="button"
+              className={cn(
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                isRelationSource && 'bg-primary/10 text-primary',
+              )}
+              aria-label={`Link ${epic.title} to another epic`}
+              aria-pressed={isRelationSource}
+              data-testid={`epic-relation-handle-${epic.id}`}
+              onPointerDown={(event) => {
+                relationPointerDownRef.current = true;
+                relationQuickLink.pointerDown(epic, event);
+              }}
+              onPointerMove={relationQuickLink.pointerMove}
+              onPointerUp={(event) => {
+                relationQuickLink.pointerUp(event);
+                relationPointerDownRef.current = false;
+              }}
+              onPointerCancel={() => {
+                relationPointerDownRef.current = false;
+                relationQuickLink.pointerCancel();
+              }}
+              onLostPointerCapture={() => {
+                relationPointerDownRef.current = false;
+                relationQuickLink.lostPointerCapture();
+              }}
+              onClick={(event) => {
+                event.stopPropagation();
+                relationQuickLink.activate(epic, event.currentTarget);
+              }}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === 'Escape') relationQuickLink.cancel();
+              }}
+            >
+              <Link2 className="h-4 w-4" aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="p-3 pt-0 space-y-2 text-sm">
+        {showRelationTarget && relationQuickLink ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 w-full"
+            onClick={(event) => {
+              event.stopPropagation();
+              relationQuickLink.selectTarget(epic);
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === 'Escape') relationQuickLink.cancel();
+            }}
+          >
+            Link here
+          </Button>
+        ) : null}
         {renderPreview(totalSubEpicCount)}
-        {showFilterToggle && (hasSubEpicSummary || showTimeBadge) && (
+        {showFilterToggle && (hasSubEpicSummary || showTimeBadge) ? (
           <div className="flex items-center justify-between gap-2 pt-1">
             <div className="flex min-w-0 flex-wrap gap-2">
               {subEpicSummary.map(({ status, count }) => (
@@ -201,13 +284,32 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
                 </div>
               ))}
             </div>
-            {showTimeBadge ? (
-              <div className="ml-auto shrink-0">
-                <EpicTimeBadge minutes={timeTotalMinutes} />
-              </div>
-            ) : null}
+            <div className="ml-auto shrink-0 flex items-center gap-1">
+              {hasRelationBadges && relationCounts ? (
+                <EpicRelationBadges
+                  counts={relationCounts}
+                  epicId={epic.id}
+                  epicTitle={epic.title}
+                  focalProjectId={epic.projectId}
+                  dragFenceRef={relationPointerDownRef}
+                  isDragging={isDragging}
+                />
+              ) : null}
+              {showTimeBadge ? <EpicTimeBadge minutes={timeTotalMinutes} /> : null}
+            </div>
           </div>
-        )}
+        ) : hasRelationBadges && relationCounts ? (
+          <div className="pt-1">
+            <EpicRelationBadges
+              counts={relationCounts}
+              epicId={epic.id}
+              epicTitle={epic.title}
+              focalProjectId={epic.projectId}
+              dragFenceRef={relationPointerDownRef}
+              isDragging={isDragging}
+            />
+          </div>
+        ) : null}
       </CardContent>
     </>
   );
@@ -220,10 +322,22 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
     source && 'rounded-b-none border-b-0',
   );
 
+  const handleNativeDragStart = (event: DragEvent<HTMLElement>): void => {
+    if (relationPointerDownRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    onDragStart(epic);
+  };
+
   const cardRootProps = {
     draggable: true,
-    onDragStart: () => onDragStart(epic),
-    onDragEnd,
+    onDragStart: handleNativeDragStart,
+    onDragEnd: () => {
+      relationPointerDownRef.current = false;
+      onDragEnd();
+    },
     tabIndex: 0,
     role: 'group' as const,
     'aria-label': ariaLabel,

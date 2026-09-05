@@ -11,8 +11,8 @@ function unwrapZodSchema(schema: ZodSchema): ZodSchema {
 
 describe('tool-descriptors', () => {
   describe('metadata', () => {
-    it('has exactly 40 tool metadata entries', () => {
-      expect(allMetadata.length).toBe(40);
+    it('has exactly 44 tool metadata entries', () => {
+      expect(allMetadata.length).toBe(44);
     });
 
     it('all entries have required shape', () => {
@@ -200,6 +200,89 @@ describe('tool-descriptors', () => {
     });
   });
 
+  describe('Epic relation descriptors', () => {
+    const relationToolNames = [
+      'devchain_epic_relations_list',
+      'devchain_epic_relations_list_candidates',
+      'devchain_epic_relations_set',
+      'devchain_epic_relations_delete',
+    ];
+
+    it('registers all four resource-first tools with strict descriptors', () => {
+      for (const name of relationToolNames) {
+        const metadata = allMetadata.find((entry) => entry.name === name);
+        expect(metadata).toBeDefined();
+        expect(metadata?.inputSchema).toMatchObject({
+          type: 'object',
+          additionalProperties: false,
+        });
+        expect(metadata?.paramsSchema).not.toBeNull();
+      }
+    });
+
+    it('describes bounded list and candidate pages', () => {
+      for (const name of relationToolNames.slice(0, 2)) {
+        const metadata = allMetadata.find((entry) => entry.name === name);
+        const schema = metadata?.inputSchema as {
+          properties?: Record<string, { minimum?: number; maximum?: number }>;
+        };
+        expect(schema.properties?.limit).toMatchObject({ minimum: 1, maximum: 100 });
+        expect(schema.properties?.offset).toMatchObject({ minimum: 0 });
+      }
+    });
+
+    it('keeps the optional create relation object strict and focal-relative', () => {
+      const metadata = allMetadata.find((entry) => entry.name === 'devchain_create_epic');
+      const schema = metadata?.inputSchema as {
+        properties?: {
+          relation?: {
+            required?: string[];
+            additionalProperties?: boolean;
+            properties?: { relation?: { enum?: string[]; description?: string } };
+          };
+        };
+      };
+      expect(schema.properties?.relation).toMatchObject({
+        required: ['relatedEpicId', 'relation'],
+        additionalProperties: false,
+      });
+      expect(schema.properties?.relation?.properties?.relation?.enum).toEqual([
+        'related',
+        'blocks',
+        'blocked_by',
+      ]);
+      expect(schema.properties?.relation?.properties?.relation?.description).toContain(
+        'relative to the new Epic',
+      );
+    });
+
+    it('documents the endpoint-order source and target rule on set with no timeRoute field', () => {
+      const set = allMetadata.find((entry) => entry.name === 'devchain_epic_relations_set');
+      const setSchema = set as { description?: string } | undefined;
+      const setInputSchema = set?.inputSchema as {
+        required?: string[];
+        additionalProperties?: boolean;
+        properties?: Record<string, { enum?: string[]; description?: string }>;
+      };
+      expect(setSchema?.description).toContain('epicId is the source');
+      expect(setSchema?.description).toContain('relatedEpicId is the target');
+      expect(setInputSchema.properties?.timeRoute).toBeUndefined();
+      expect(setInputSchema.required).not.toContain('timeRoute');
+      expect(setInputSchema.additionalProperties).toBe(false);
+
+      const list = allMetadata.find((entry) => entry.name === 'devchain_epic_relations_list');
+      expect((list as { description?: string } | undefined)?.description).toContain('sourceEpicId');
+
+      const create = allMetadata.find((entry) => entry.name === 'devchain_create_epic');
+      const createSchema = create?.inputSchema as { properties?: Record<string, unknown> };
+      expect(createSchema.properties?.timeRoute).toBeUndefined();
+      const createRelationSchema = createSchema.properties?.relation as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      expect(createRelationSchema?.properties?.timeRoute).toBeUndefined();
+    });
+  });
+
   describe('devchain_delete_epic descriptor contract', () => {
     it('exists in metadata', () => {
       const metadata = allMetadata.find((m) => m.name === 'devchain_delete_epic');
@@ -262,6 +345,10 @@ describe('tool-descriptors', () => {
         'devchain_list_assigned_epics_tasks',
         'devchain_create_epic',
         'devchain_get_epic_by_id',
+        'devchain_epic_relations_list',
+        'devchain_epic_relations_list_candidates',
+        'devchain_epic_relations_set',
+        'devchain_epic_relations_delete',
         'devchain_add_epic_comment',
         'devchain_update_epic',
         'devchain_delete_epic',
@@ -294,9 +381,9 @@ describe('tool-descriptors', () => {
       ],
     };
 
-    it('all categorized tools sum to 40', () => {
+    it('all categorized tools sum to 44', () => {
       const total = Object.values(categories).reduce((sum, tools) => sum + tools.length, 0);
-      expect(total).toBe(40);
+      expect(total).toBe(44);
     });
 
     Object.entries(categories).forEach(([category, tools]) => {

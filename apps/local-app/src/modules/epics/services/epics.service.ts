@@ -16,13 +16,15 @@ import type {
   CreateEpicWithExternalTaskLink,
   CreateEpicWithExternalTaskLinkResult,
   IntegrationProvider,
+  EpicRelationType,
 } from '../../storage/models/domain.models';
 import { EventsService } from '../../events/services/events.service';
-import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import { NotFoundError, StorageError, ValidationError } from '../../../common/errors/error-types';
 import { SettingsService } from '../../settings/services/settings.service';
 import { normalizeExternalTaskSourceUrl } from '../../external-integrations/models/external-task-source';
 import type { ExternalTaskSourceSummary } from '../../external-integrations/models/external-provider.models';
 import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
+import { resolveEpicRelationTarget } from './epic-relation-target-resolver';
 interface EpicBroadcastPayload {
   projectId: string;
   type: 'created' | 'updated' | 'deleted' | 'comment.created';
@@ -91,6 +93,13 @@ export interface ImportExternalTaskInput {
   };
 }
 
+export interface CreateEpicForProjectOperationInput extends CreateEpicForProjectInput {
+  relation?: {
+    relatedEpicId: string;
+    relation: EpicRelationType;
+  };
+}
+
 @Injectable()
 export class EpicsService {
   private readonly logger = new Logger(EpicsService.name);
@@ -142,6 +151,12 @@ export class EpicsService {
     if (result.created) {
       this.emitPreparedCreated(prepared);
     }
+    // The ordinary link row changes linked-boundary rollups for the workspace;
+    // published after the storage call commits, never inside its transaction.
+    const project = await this.storage.getProject(data.epic.projectId);
+    await this.eventsService.publish('epic.time.scope.invalidated', {
+      workspaceId: project.workspaceId,
+    });
     return result;
   }
 
@@ -152,7 +167,10 @@ export class EpicsService {
     const [project, status, connection] = await Promise.all([
       this.storage.getProject(input.projectId),
       this.storage.getStatus(input.statusId),
-      this.storage.getIntegrationConnection(input.remote.provider),
+      this.storage.getIntegrationConnection({
+        projectId: input.projectId,
+        provider: input.remote.provider,
+      }),
     ]);
     if (status.projectId !== project.id) {
       throw new ValidationError('Select a status from the chosen DevChain project.', {
@@ -272,21 +290,25 @@ export class EpicsService {
 
   async createEpicForProject(
     projectId: string,
-    input: CreateEpicForProjectInput,
+    input: CreateEpicForProjectOperationInput,
     context?: EpicOperationContext,
   ): Promise<Epic> {
+    const { relation, ...epicInput } = input;
     // Clear agentId if creating in an auto-clean status
-    this.applyAutoCleanIfNeeded(projectId, input.statusId, input);
-    const statusSnapshot = await this.resolveEpicCreatedStatusSnapshot(projectId, input.statusId);
-    let agentId = input.agentId;
+    this.applyAutoCleanIfNeeded(projectId, epicInput.statusId, epicInput);
+    const statusSnapshot = await this.resolveEpicCreatedStatusSnapshot(
+      projectId,
+      epicInput.statusId,
+    );
+    let agentId = epicInput.agentId;
     let agentName: string | undefined;
-    if (!agentId && input.agentName?.trim()) {
-      const agent = await this.storage.getAgentByName(projectId, input.agentName);
+    if (!agentId && epicInput.agentName?.trim()) {
+      const agent = await this.storage.getAgentByName(projectId, epicInput.agentName);
       agentId = agent.id;
       agentName = agent.name;
     }
     const createInput = {
-      ...input,
+      ...epicInput,
       statusId: statusSnapshot.statusId,
       agentId,
       createdBy: this.deriveCreatedBy(context),
@@ -304,13 +326,73 @@ export class EpicsService {
     );
 
     let prepared: PreparedEvent<'epic.created'> | null = null;
-    const epic = await this.storage.createEpicForProject(
-      projectId,
-      createInput,
-      (created) => (prepared = this.prepareEpicCreatedEvent(created, context, names)),
-    );
+    let relationWorkspaceId: string | null = null;
+    let epic: Epic;
+    if (relation) {
+      const relationStatusId = createInput.statusId;
+      if (!relationStatusId) {
+        throw new ValidationError('Project has no statuses configured.', { projectId });
+      }
+      const status = await this.storage.getStatus(relationStatusId);
+      if (status.projectId !== projectId) {
+        throw new ValidationError('Status must belong to the target project.', {
+          statusId: status.id,
+          projectId,
+        });
+      }
+      epic = await this.storage.runInTransaction(() =>
+        this.storage.createEpicWithinTransaction(
+          {
+            projectId,
+            title: createInput.title,
+            description: createInput.description ?? null,
+            statusId: relationStatusId,
+            parentId: createInput.parentId ?? null,
+            agentId: createInput.agentId ?? null,
+            createdBy: createInput.createdBy,
+            skillsRequired: createInput.skillsRequired ?? null,
+            tags: createInput.tags ?? [],
+            data: null,
+          },
+          (created) => (prepared = this.prepareEpicCreatedEvent(created, context, names)),
+          async (created) => {
+            const target = await resolveEpicRelationTarget(
+              this.storage,
+              created.id,
+              relation.relatedEpicId,
+              { excludeMcpHidden: true },
+            );
+            const result = await this.storage.setEpicRelation(
+              {
+                epicId: created.id,
+                relatedEpicId: target.id,
+                type: relation.relation,
+                createdBy: context?.actor?.type === 'agent' ? 'agent' : 'user',
+                createdByAgentId: context?.actor?.type === 'agent' ? context.actor.id : null,
+              },
+              context?.actor ? { actor: context.actor } : {},
+            );
+            relationWorkspaceId = result.workspaceId;
+          },
+        ),
+      );
+    } else {
+      epic = await this.storage.createEpicForProject(
+        projectId,
+        createInput,
+        (created) => (prepared = this.prepareEpicCreatedEvent(created, context, names)),
+      );
+    }
 
     this.emitPreparedCreated(prepared);
+    if (relation) {
+      if (!relationWorkspaceId) {
+        throw new StorageError('Epic relation creation did not resolve its workspace scope.');
+      }
+      await this.eventsService.publish('epic.relations.invalidated', {
+        workspaceId: relationWorkspaceId,
+      });
+    }
 
     return epic;
   }
@@ -350,8 +432,11 @@ export class EpicsService {
     );
 
     let projectName: string | undefined;
+    let projectWorkspaceId: string | undefined;
     try {
-      projectName = (await this.storage.getProject(before.projectId)).name;
+      const project = await this.storage.getProject(before.projectId);
+      projectName = project.name;
+      projectWorkspaceId = project.workspaceId;
     } catch (error) {
       this.logger.warn(
         { epicId: before.id, projectId: before.projectId, error },
@@ -395,6 +480,14 @@ export class EpicsService {
       if (autoCleanIds.includes(data.statusId)) {
         await this.cascadeClearSubEpicAgents(updated.id);
       }
+    }
+
+    // A parent change reshapes related-time rollups for both endpoint scopes;
+    // the hint rides after commit so it never lands inside the write transaction.
+    if (projectWorkspaceId && data.parentId !== undefined && before.parentId !== updated.parentId) {
+      await this.eventsService.publish('epic.time.scope.invalidated', {
+        workspaceId: projectWorkspaceId,
+      });
     }
 
     return updated;
@@ -506,7 +599,9 @@ export class EpicsService {
   async deleteEpic(id: string, context?: EpicOperationContext): Promise<void> {
     await this.storage.getEpic(id);
     const prepared: Array<PreparedEvent<'epic.deleted'>> = [];
-    await this.storage.deleteEpic(id, (deleted) => {
+    let workspaceId: string | null = null;
+    await this.storage.deleteEpic(id, (deleted, currentWorkspaceId) => {
+      workspaceId = currentWorkspaceId;
       const event = this.eventsService.prepareCommitted('epic.deleted', {
         epicId: deleted.id,
         projectId: deleted.projectId,
@@ -523,6 +618,12 @@ export class EpicsService {
         this.eventsService.emitCommitted(event);
       }
     }
+    if (!workspaceId) {
+      throw new StorageError('Epic deletion did not resolve its workspace invalidation scope.');
+    }
+    await this.eventsService.publish('epic.relations.invalidated', {
+      workspaceId,
+    });
   }
 
   /**
@@ -556,6 +657,10 @@ export class EpicsService {
       authorName = guest.name;
     }
 
+    if (authorType === 'agent') {
+      return this.addExactAgentEpicComment(epicId, projectId, content, authorId, authorName);
+    }
+
     const comment = await this.storage.createEpicComment({
       epicId,
       authorName,
@@ -582,7 +687,6 @@ export class EpicsService {
         actor: { type: authorType, id: authorId },
         projectName,
         epicTitle: epic.title,
-        agentName: authorType === 'agent' ? authorName : undefined,
         recipientIds: [],
       });
     } catch (error) {
@@ -590,6 +694,53 @@ export class EpicsService {
         { commentId: comment.id, epicId, projectId, error },
         'Failed to publish epic.comment.created event',
       );
+    }
+
+    return comment;
+  }
+
+  /**
+   * Exact-agent comments are one-time Epic-time task touches: their factual event
+   * and delivery rows commit atomically with the comment, or the comment rolls back.
+   */
+  private async addExactAgentEpicComment(
+    epicId: string,
+    projectId: string,
+    content: string,
+    agentId: string,
+    authorName: string,
+  ): Promise<EpicComment> {
+    let projectName: string | undefined;
+    try {
+      const project = await this.storage.getProject(projectId);
+      projectName = project.name;
+    } catch {
+      /* graceful */
+    }
+
+    let prepared: PreparedEvent<'epic.comment.created'> | null = null;
+    const comment = await this.storage.createEpicComment(
+      { epicId, authorName, content },
+      (stored, committedEpic) => {
+        prepared = this.eventsService.prepareCommitted('epic.comment.created', {
+          commentId: stored.id,
+          epicId: committedEpic.id,
+          projectId: committedEpic.projectId,
+          parentId: committedEpic.parentId ?? null,
+          authorName: stored.authorName,
+          content: stored.content,
+          actor: { type: 'agent', id: agentId },
+          projectName,
+          epicTitle: committedEpic.title,
+          agentName: stored.authorName,
+          recipientIds: [],
+        });
+        return prepared;
+      },
+    );
+
+    if (prepared) {
+      this.eventsService.emitCommitted(prepared);
     }
 
     return comment;

@@ -1,7 +1,9 @@
 import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
+import { EpicRelationTotalBadge } from '@/ui/components/board/EpicRelationBadges';
 import { EpicTimeBadge } from '@/ui/components/board/EpicTimeBadge';
 import { cn } from '@/ui/lib/utils';
 import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
+import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
 import type { Epic, Status } from './types';
 
 export interface CollapsedColumnProps {
@@ -11,6 +13,8 @@ export interface CollapsedColumnProps {
   subEpicCounts?: Record<string, number>;
   /** Estimated-time totals in whole minutes by Epic ID (root epics only). */
   timeTotals?: ReadonlyMap<string, number>;
+  /** Relation counts by Epic ID; rows badge the compact total. */
+  relationCounts?: ReadonlyMap<string, EpicRelationCounts>;
   onExpand: () => void;
   onAddEpic: (statusId: string) => void;
   onDragOver: () => void;
@@ -33,6 +37,7 @@ export function CollapsedColumn({
   epics,
   subEpicCounts,
   timeTotals,
+  relationCounts,
   onExpand,
   onAddEpic,
   onDragOver,
@@ -103,6 +108,7 @@ export function CollapsedColumn({
             const visibleTags = (epic.tags ?? []).filter((tag) => !isMergedTag(tag));
             const timeMinutes = epic.parentId === null ? timeTotals?.get(epic.id) : undefined;
             const hasTimeBadge = timeMinutes !== undefined && timeMinutes > 0;
+            const relations = relationCounts?.get(epic.id);
 
             return (
               <div
@@ -112,9 +118,9 @@ export function CollapsedColumn({
                 onDragStart={() => onDragStartEpic(epic)}
                 onDragEnd={onDragEndEpic}
               >
-                {/* The time badge stays on the title line so a timed root
-                    without tags or sub-epics keeps the compact one-line row
-                    height. */}
+                {/* The time and relation badges stay on the title line so a
+                    badged row without tags or sub-epics keeps the compact
+                    one-line row height. */}
                 <div className="flex items-center gap-1">
                   <div className="min-w-0 flex-1">
                     <EpicTooltipWrapper
@@ -157,6 +163,9 @@ export function CollapsedColumn({
                       </div>
                     </EpicTooltipWrapper>
                   </div>
+                  {relations && relations.total > 0 ? (
+                    <EpicRelationTotalBadge total={relations.total} />
+                  ) : null}
                   {hasTimeBadge && timeMinutes !== undefined && (
                     <EpicTimeBadge minutes={timeMinutes} />
                   )}

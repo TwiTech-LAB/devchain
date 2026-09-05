@@ -4,6 +4,8 @@ import { axe } from 'jest-axe';
 import type { ExternalTaskSubtaskSummary } from '@/modules/external-integrations/models/external-provider.models';
 import { ExternalTaskSubtasksPanel } from './ExternalTaskSubtasksPanel';
 
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+
 // Layer: UI component unit. The lazy status controller is mocked because this
 // spec owns the row-rendering contract for each controller state; the
 // controller has its own suite.
@@ -51,6 +53,7 @@ function editorValue(overrides: Record<string, unknown> = {}) {
 function renderPanel(props: Partial<React.ComponentProps<typeof ExternalTaskSubtasksPanel>> = {}) {
   return render(
     <ExternalTaskSubtasksPanel
+      projectId={PROJECT_ID}
       provider="jira"
       subtasks={[subtask()]}
       subtasksTruncated={false}
@@ -97,6 +100,7 @@ describe('ExternalTaskSubtasksPanel', () => {
     renderPanel({ identityAccepted: false });
 
     expect(useExternalSubtaskStatusEditorMock).toHaveBeenCalledWith('jira', {
+      projectId: PROJECT_ID,
       connectionEpoch: 'connection-jira-a:1',
       parentTaskId: 'ENG-1',
       enabled: false,
@@ -113,6 +117,7 @@ describe('ExternalTaskSubtasksPanel', () => {
     renderPanel();
 
     expect(useExternalSubtaskStatusEditorMock).toHaveBeenCalledWith('jira', {
+      projectId: PROJECT_ID,
       connectionEpoch: 'connection-jira-a:1',
       parentTaskId: 'ENG-1',
       enabled: true,
@@ -285,6 +290,7 @@ describe('ExternalTaskSubtasksPanel', () => {
 
     rerender(
       <ExternalTaskSubtasksPanel
+        projectId={PROJECT_ID}
         provider="jira"
         subtasks={[
           subtask({
@@ -327,6 +333,7 @@ describe('ExternalTaskSubtasksPanel', () => {
     // First refreshed summary replaces the first hold.
     rerender(
       <ExternalTaskSubtasksPanel
+        projectId={PROJECT_ID}
         provider="jira"
         subtasks={[
           subtask({
@@ -349,6 +356,7 @@ describe('ExternalTaskSubtasksPanel', () => {
     );
     rerender(
       <ExternalTaskSubtasksPanel
+        projectId={PROJECT_ID}
         provider="jira"
         subtasks={[
           subtask({
@@ -368,6 +376,7 @@ describe('ExternalTaskSubtasksPanel', () => {
     // The second refreshed summary replaces the second hold.
     rerender(
       <ExternalTaskSubtasksPanel
+        projectId={PROJECT_ID}
         provider="jira"
         subtasks={[
           subtask({
@@ -399,6 +408,7 @@ describe('ExternalTaskSubtasksPanel', () => {
 
     rerender(
       <ExternalTaskSubtasksPanel
+        projectId={PROJECT_ID}
         provider="jira"
         subtasks={[subtask()]}
         subtasksTruncated={false}
@@ -462,6 +472,7 @@ describe('ExternalTaskSubtasksPanel', () => {
 
     rerender(
       <ExternalTaskSubtasksPanel
+        projectId={PROJECT_ID}
         provider="jira"
         subtasks={[]}
         subtasksTruncated

@@ -2941,3 +2941,344 @@ describe('ChatPage context bar toggle', () => {
     expect(contextBarWrappers).toHaveLength(0);
   });
 });
+
+describe('ChatPage unlogged agent time', () => {
+  const originalFetch = global.fetch;
+  const EPIC_ID = '44444444-4444-4444-8444-444444444444';
+  const bufferItem = {
+    agentId: 'agent-2',
+    snapshotToken: 'e'.repeat(64),
+    minutes: 10,
+    durationMs: 600_000,
+    segmentCount: 2,
+    oldestActivityAt: '2026-09-01T00:00:00.000Z',
+    newestActivityAt: '2026-09-01T00:10:00.000Z',
+  };
+  let bufferItems: unknown[];
+  let assignStatus: number;
+
+  beforeEach(() => {
+    toastSpy.mockReset();
+    mockInlineTerminalHandle.focus.mockClear();
+    openTerminalWindowMock.mockReset();
+    closeWindowMock.mockReset();
+    terminalWindowsMock.splice(0, terminalWindowsMock.length);
+    bufferItems = [bufferItem];
+    assignStatus = 200;
+    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/agent-time-buffers?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ capturedAt: '2026-09-01T00:10:00.000Z', items: bufferItems }),
+        } as Response;
+      }
+      if (url === `/api/agent-time-buffers/agent-2/assign`) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          projectId: 'project-1',
+          targetEpicId: EPIC_ID,
+          capturedAt: '2026-09-01T00:10:00.000Z',
+          snapshotToken: bufferItem.snapshotToken,
+        });
+        return {
+          ok: assignStatus < 300,
+          status: assignStatus,
+          json: async () =>
+            assignStatus < 300
+              ? { workspaceId: '0defa017-0000-4000-8000-000000000001' }
+              : { code: 'conflict' },
+        } as Response;
+      }
+      if (url.startsWith('/api/epics?projectId=project-1')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: EPIC_ID,
+                title: 'Ship the API',
+                statusId: 'status-1',
+                updatedAt: '2026-09-01T00:00:00.000Z',
+              },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/statuses?')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'status-1', label: 'In Progress', color: '#3b82f6' }],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/agents?projectId=')) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              { id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' },
+              { id: 'agent-2', name: 'Beta', projectId: 'project-1', profileId: 'p1' },
+            ],
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions/agents/presence')) {
+        return {
+          ok: true,
+          json: async () => ({
+            'agent-1': { online: false, sessionId: null },
+            'agent-2': { online: true, sessionId: 'session-2' },
+          }),
+        } as Response;
+      }
+      // Summary endpoint — must come before the generic /api/sessions branches.
+      if (url.includes('/transcript/summary')) {
+        return {
+          ok: true,
+          json: async () => ({
+            sessionId: 'session-2',
+            providerName: 'claude',
+            metrics: {
+              inputTokens: 30_000,
+              outputTokens: 10_000,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+              totalTokens: 40_000,
+              totalContextConsumption: 0,
+              compactionCount: 0,
+              phaseBreakdowns: [],
+              visibleContextTokens: 0,
+              totalContextTokens: 100_000,
+              contextWindowTokens: 200_000,
+              costUsd: 0,
+              messageCount: 5,
+            },
+            messageCount: 5,
+            isOngoing: true,
+          }),
+        } as Response;
+      }
+      if (url.startsWith('/api/sessions?')) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: 'session-2',
+              agentId: 'agent-2',
+              status: 'running',
+              startedAt: '2026-09-01T00:00:00.000Z',
+              lastActivityAt: '2026-09-01T00:05:00.000Z',
+              transcriptPath: null,
+            },
+          ],
+        } as Response;
+      }
+      if (url.startsWith('/api/threads?projectId=')) {
+        return { ok: true, json: async () => ({ items: [] }) } as Response;
+      }
+      if (url.startsWith('/api/preflight')) {
+        return {
+          ok: true,
+          json: async () => ({
+            overall: 'pass',
+            checks: [],
+            providers: [],
+            supportedMcpProviders: [],
+            timestamp: new Date().toISOString(),
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({ items: [] }) } as Response;
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    }
+  });
+
+  function bufferReads(): string[] {
+    return (global.fetch as jest.Mock).mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.startsWith('/api/agent-time-buffers?'));
+  }
+
+  async function openDialogFromHeader() {
+    const action = await screen.findByRole('button', {
+      name: /Log unlogged time to an Epic \(10m\)/i,
+    });
+    fireEvent.click(action);
+    await waitFor(() => {
+      expect(screen.getByText('Log time to an Epic.')).toBeInTheDocument();
+    });
+    return action;
+  }
+
+  async function confirmAssignment() {
+    fireEvent.click(await screen.findByRole('option', { name: /Ship the API/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Log 10m.' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Log time to an Epic.')).not.toBeInTheDocument();
+    });
+  }
+
+  it('drives every row marker and the header action from one main-runtime read', async () => {
+    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+
+    await screen.findByRole('button', { name: /Log unlogged time to an Epic \(10m\)/i });
+    await screen.findByRole('listitem', {
+      name: /Open terminal for Beta \(online\), 10m not logged to an Epic\./i,
+    });
+
+    const reads = bufferReads();
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toBe('/api/agent-time-buffers?projectId=project-1');
+    // Alpha carries no buffered minutes and stays unmarked.
+    const alphaRow = await screen.findByRole('listitem', {
+      name: 'Open terminal for Alpha (offline)',
+    });
+    expect(alphaRow.querySelector('span.pointer-events-none')).toBeNull();
+  });
+
+  it('completes the frozen assignment, announces, invalidates, and refocuses the terminal', async () => {
+    const { queryClient } = renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+
+    await openDialogFromHeader();
+    expect(screen.getByText('10m from Beta.')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'DevChain assigns time automatically when it can. Use this dialog for time that remains unassigned.',
+      ),
+    ).toBeInTheDocument();
+
+    // Later polls never replace the open confirmation; the read stays frozen.
+    bufferItems = [{ ...bufferItem, minutes: 9 }];
+    expect(screen.getByText('10m from Beta.')).toBeInTheDocument();
+    // The post-success invalidation re-reads the now-empty buffer.
+    bufferItems = [];
+    await confirmAssignment();
+
+    expect(toastSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Time logged',
+        description: 'Logged 10m to Ship the API.',
+      }),
+    );
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['agent-time-buffers'],
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['epic-time-detail'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['epic-time-batch'] });
+
+    // Terminal tab + inline terminal: the terminal itself receives focus
+    // (resolved after the dialog unmount's focus restoration).
+    await waitFor(() => {
+      expect(mockInlineTerminalHandle.focus).toHaveBeenCalledTimes(1);
+    });
+
+    // The cleared buffer removes both the action and the marker after refresh.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: /Log unlogged time to an Epic/i }),
+      ).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('listitem', {
+          name: /Open terminal for Beta \(online\), 10m not logged/i,
+        }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it('focuses the stable header root when the Session tab is active', async () => {
+    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Session' }));
+    await openDialogFromHeader();
+    await confirmAssignment();
+
+    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
+    const headerRoot = document.querySelector('div[tabindex="-1"].border-b');
+    expect(headerRoot).not.toBeNull();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(headerRoot);
+    });
+  });
+
+  it('focuses the stable header root when the terminal floats in a window', async () => {
+    terminalWindowsMock.push({ id: 'session-2' });
+    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+
+    await openDialogFromHeader();
+    await confirmAssignment();
+
+    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
+    const headerRoot = document.querySelector('div[tabindex="-1"].border-b');
+    expect(headerRoot).not.toBeNull();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(headerRoot);
+    });
+  });
+
+  it('keeps the dialog open on a stale 409 and never retries the write', async () => {
+    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+
+    await openDialogFromHeader();
+    bufferItems = [{ ...bufferItem, minutes: 8, snapshotToken: 'f'.repeat(64) }];
+    assignStatus = 409;
+
+    fireEvent.click(await screen.findByRole('option', { name: /Ship the API/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Log 10m.' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('8m from Beta.')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Log 8m.' })).toBeInTheDocument();
+    expect(screen.queryByText('Log time to an Epic.')).toBeInTheDocument();
+
+    const assignCalls = (global.fetch as jest.Mock).mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.endsWith('/assign'));
+    expect(assignCalls).toHaveLength(1);
+    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
+    expect(toastSpy).not.toHaveBeenCalled();
+  });
+
+  it('shows no marker or action once a poll fails after earlier success', async () => {
+    const { queryClient } = renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+
+    await screen.findByRole('button', { name: /Log unlogged time to an Epic \(10m\)/i });
+    await screen.findByRole('listitem', {
+      name: /Open terminal for Beta \(online\), 10m not logged to an Epic\./i,
+    });
+
+    // The next read fails; retained cache data must not keep the UI alive.
+    const fetchMockRef = global.fetch as jest.Mock;
+    const originalImpl = fetchMockRef.getMockImplementation();
+    fetchMockRef.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith('/api/agent-time-buffers?')) {
+        return { ok: false, status: 503, json: async () => ({}) } as Response;
+      }
+      return originalImpl?.(input, init);
+    });
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['agent-time-buffers'] });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: /Log unlogged time to an Epic/i }),
+      ).not.toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole('listitem', {
+        name: /Open terminal for Beta \(online\), 10m not logged/i,
+      }),
+    ).not.toBeInTheDocument();
+  });
+});

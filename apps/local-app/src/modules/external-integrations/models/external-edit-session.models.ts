@@ -54,6 +54,7 @@ export interface ExternalEditSession {
   sessionId: string;
   kind: ExternalEditSessionKind;
   provider: IntegrationProvider;
+  projectId: string;
   connectionId: string;
   connectionGeneration: number;
   scopeKey: string;

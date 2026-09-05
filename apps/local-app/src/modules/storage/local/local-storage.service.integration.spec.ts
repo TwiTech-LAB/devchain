@@ -4,7 +4,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'path';
 import { LocalStorageService } from './local-storage.service';
 import { NotFoundError, ValidationError, ConflictError } from '../../../common/errors/error-types';
-import type { Project, Provider, AgentProfile, Agent, Status } from '../models/domain.models';
+import type { Epic, Project, Provider, AgentProfile, Agent, Status } from '../models/domain.models';
 
 const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
@@ -440,6 +440,237 @@ describe('LocalStorageService', () => {
       expect(epic.statusId).toBeDefined();
       expect(epic.agentId).toBe(agent.id);
       expect(epic.createdBy).toBeNull();
+    });
+  });
+
+  // ==========================================
+  // Project Epic external identifier search
+  // ==========================================
+
+  describe('Project Epic external identifier search', () => {
+    let project: Project;
+    let otherProject: Project;
+    let statusId: string;
+
+    beforeEach(async () => {
+      project = await seedProject('Search Project');
+      otherProject = await seedProject('Search Other');
+      statusId = (await getStatuses(project.id)).find((s) => s.label === 'Proposed')!.id;
+    });
+
+    async function createLinkedEpic(
+      link: {
+        provider: 'jira' | 'clickup';
+        remoteScopeKey: string;
+        remoteTaskId: string;
+        sourceSnapshot: Record<string, unknown>;
+      },
+      title = 'Imported Epic',
+    ): Promise<Epic> {
+      const epic = await service.createEpic({ projectId: project.id, title, statusId });
+      await service.createExternalTaskLink({ ...link, epicId: epic.id, connectionId: null });
+      return epic;
+    }
+
+    function insertLegacyLinkRow(input: {
+      id: string;
+      epicId: string;
+      provider: string;
+      remoteScopeKey: string;
+      remoteTaskId: string;
+      sourceSnapshot: string;
+    }): void {
+      sqlite
+        .prepare(
+          `INSERT INTO external_task_links
+            (id, epic_id, connection_id, provider, remote_scope_key, remote_task_id, source_snapshot, created_at, updated_at)
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.id,
+          input.epicId,
+          input.provider,
+          input.remoteScopeKey,
+          input.remoteTaskId,
+          input.sourceSnapshot,
+          '2026-01-01T00:00:00.000Z',
+          '2026-01-01T00:00:00.000Z',
+        );
+    }
+
+    it('finds an Epic by linked Jira remote key case-insensitively', async () => {
+      const epic = await createLinkedEpic({
+        provider: 'jira',
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: '10001',
+        sourceSnapshot: { title: 'Original Jira title', remoteKey: 'ENG-42' },
+      });
+
+      const byLowercaseKey = await service.listProjectEpics(project.id, { q: 'eng-42' });
+      expect(byLowercaseKey.items.map((item) => item.id)).toEqual([epic.id]);
+      expect(byLowercaseKey.total).toBe(1);
+
+      const byUppercaseKey = await service.listProjectEpics(project.id, { q: 'ENG-42' });
+      expect(byUppercaseKey.items.map((item) => item.id)).toEqual([epic.id]);
+    });
+
+    it('finds an Epic by linked ClickUp remote task ID case-insensitively', async () => {
+      const epic = await createLinkedEpic({
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-1',
+        remoteTaskId: '86a1b2c3d',
+        sourceSnapshot: { title: 'ClickUp task', remoteKey: 'task-9f' },
+      });
+
+      const result = await service.listProjectEpics(project.id, { q: '86A1B2C3D' });
+      expect(result.items.map((item) => item.id)).toEqual([epic.id]);
+      expect(result.total).toBe(1);
+    });
+
+    it('matches ClickUp IDs in both search branches: all-hex and non-hex terms', async () => {
+      const hexEpic = await createLinkedEpic(
+        {
+          provider: 'clickup',
+          remoteScopeKey: 'workspace-1',
+          remoteTaskId: '86a1b2c3',
+          sourceSnapshot: { title: 'Hex id task' },
+        },
+        'Hex-id Epic',
+      );
+      const nonHexEpic = await createLinkedEpic(
+        {
+          provider: 'clickup',
+          remoteScopeKey: 'workspace-1',
+          remoteTaskId: 'task-77xyz',
+          sourceSnapshot: { title: 'Non-hex id task' },
+        },
+        'Non-hex Epic',
+      );
+
+      // '86a1b2c3' is 8+ hex chars, so the search takes the UUID-prefix branch.
+      const hexResult = await service.listProjectEpics(project.id, { q: '86A1B2C3' });
+      expect(hexResult.items.map((item) => item.id)).toEqual([hexEpic.id]);
+      expect(hexResult.total).toBe(1);
+
+      // 'task-77xyz' contains non-hex characters, so the search takes the standard branch.
+      const nonHexResult = await service.listProjectEpics(project.id, { q: 'TASK-77XYZ' });
+      expect(nonHexResult.items.map((item) => item.id)).toEqual([nonHexEpic.id]);
+      expect(nonHexResult.total).toBe(1);
+    });
+
+    it('returns one Epic with a stable count when several link rows match', async () => {
+      const epic = await createLinkedEpic({
+        provider: 'jira',
+        remoteScopeKey: 'site-a.atlassian.net',
+        remoteTaskId: '20010',
+        sourceSnapshot: { title: 'Doubly linked' },
+      });
+      await service.createExternalTaskLink({
+        epicId: epic.id,
+        connectionId: null,
+        provider: 'jira',
+        remoteScopeKey: 'site-b.atlassian.net',
+        remoteTaskId: '20010',
+        sourceSnapshot: { title: 'Doubly linked' },
+      });
+
+      const result = await service.listProjectEpics(project.id, { q: '20010' });
+      expect(result.items).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.items[0].id).toBe(epic.id);
+    });
+
+    it('keeps external identifier matches inside the requested project', async () => {
+      await createLinkedEpic({
+        provider: 'jira',
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: '30011',
+        sourceSnapshot: { title: 'Scoped task', remoteKey: 'SCOPE-1' },
+      });
+
+      expect(await service.listProjectEpics(otherProject.id, { q: '30011' })).toMatchObject({
+        items: [],
+        total: 0,
+      });
+      expect(await service.listProjectEpics(otherProject.id, { q: 'scope-1' })).toMatchObject({
+        items: [],
+        total: 0,
+      });
+    });
+
+    it('does not fail when a legacy source snapshot holds malformed JSON', async () => {
+      const epic = await service.createEpic({
+        projectId: project.id,
+        title: 'Legacy snapshot Epic',
+        statusId,
+      });
+      insertLegacyLinkRow({
+        id: 'legacy-link-1',
+        epicId: epic.id,
+        provider: 'jira',
+        remoteScopeKey: 'legacy.atlassian.net',
+        remoteTaskId: '40013',
+        sourceSnapshot: 'not-json',
+      });
+
+      const byTaskId = await service.listProjectEpics(project.id, { q: '40013' });
+      expect(byTaskId.items.map((item) => item.id)).toEqual([epic.id]);
+      expect(byTaskId.total).toBe(1);
+
+      const byRemoteKey = await service.listProjectEpics(project.id, { q: 'legacy-key' });
+      expect(byRemoteKey.items).toHaveLength(0);
+    });
+
+    it('keeps title, description, and UUID-prefix matching unchanged', async () => {
+      const titled = await service.createEpic({
+        projectId: project.id,
+        title: 'Alpha planning',
+        statusId,
+      });
+      await service.createEpic({
+        projectId: project.id,
+        title: 'Unrelated',
+        description: 'covers budget review',
+        statusId,
+      });
+
+      const byTitle = await service.listProjectEpics(project.id, { q: 'alpha' });
+      expect(byTitle.items.map((item) => item.id)).toEqual([titled.id]);
+      expect((await service.listProjectEpics(project.id, { q: 'budget' })).items).toHaveLength(1);
+
+      const byPrefix = await service.listProjectEpics(project.id, { q: titled.id.slice(0, 8) });
+      expect(byPrefix.items.map((item) => item.id)).toEqual([titled.id]);
+      expect(byPrefix.total).toBe(1);
+    });
+
+    it('paginates external identifier matches with matching totals', async () => {
+      const first = await createLinkedEpic(
+        {
+          provider: 'clickup',
+          remoteScopeKey: 'workspace-1',
+          remoteTaskId: '50041',
+          sourceSnapshot: { title: 'Batched A' },
+        },
+        'Batched A',
+      );
+      const second = await createLinkedEpic(
+        {
+          provider: 'clickup',
+          remoteScopeKey: 'workspace-2',
+          remoteTaskId: '50041',
+          sourceSnapshot: { title: 'Batched B' },
+        },
+        'Batched B',
+      );
+
+      const page1 = await service.listProjectEpics(project.id, { q: '50041', limit: 1, offset: 0 });
+      const page2 = await service.listProjectEpics(project.id, { q: '50041', limit: 1, offset: 1 });
+
+      expect(page1.total).toBe(2);
+      expect(page2.total).toBe(2);
+      expect(page1.items).toHaveLength(1);
+      expect(page2.items).toHaveLength(1);
+      expect([page1.items[0].id, page2.items[0].id].sort()).toEqual([first.id, second.id].sort());
     });
   });
 

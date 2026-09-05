@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import type { ExternalTaskDetail } from '@/modules/external-integrations/models/external-provider.models';
 import { Alert, AlertDescription } from '@/ui/components/ui/alert';
 import { Button } from '@/ui/components/ui/button';
@@ -24,14 +24,10 @@ export interface ExternalTaskImportDialogProps {
   open: boolean;
   enabled: boolean;
   connectionEpoch: IntegrationConnectionEpoch | null;
+  projectId: string | null;
+  projectName?: string | null;
   onOpenChange: (open: boolean) => void;
   onImported: (epicId: string) => void;
-  /**
-   * Project preselected on each fresh open. Read through a ref so a project
-   * switch while the dialog is open never overwrites a manual choice; only a
-   * new open (or detail) re-initializes from the then-current selection.
-   */
-  initialProjectId?: string;
   /**
    * Return-focus target when the dialog closes without importing. Radix has no
    * trigger ref for this controlled, triggerless dialog, so the owner supplies
@@ -46,22 +42,20 @@ export function ExternalTaskImportDialog({
   open,
   enabled,
   connectionEpoch,
+  projectId,
+  projectName = null,
   onOpenChange,
   onImported,
-  initialProjectId,
   returnFocusTo,
 }: ExternalTaskImportDialogProps) {
-  const [projectId, setProjectId] = useState('');
   const [statusId, setStatusId] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const initialProjectIdRef = useRef(initialProjectId);
-  initialProjectIdRef.current = initialProjectId;
   const controller = useExternalTaskImport(provider, detail, projectId, {
     enabled: enabled && open,
     connectionEpoch,
+    projectName,
   });
-  const projects = controller.projects.data?.items ?? [];
   const statuses = useMemo(
     () =>
       [...(controller.statuses.data?.items ?? [])].sort(
@@ -72,36 +66,17 @@ export function ExternalTaskImportDialog({
 
   useEffect(() => {
     if (!open || !detail) return;
-    setProjectId(initialProjectIdRef.current ?? '');
     setStatusId('');
     setTitle(detail.title);
     setDescription(detail.description ?? '');
     controller.mutation.reset();
-  }, [detail, open]);
-
-  // A manual choice always comes from the rendered project list, so a value
-  // still equal to the initial id can only be the untouched preselection:
-  // clear it once the resolved list proves the project no longer exists.
-  useEffect(() => {
-    if (!open || !initialProjectIdRef.current || !projects.length) return;
-    if (
-      projectId === initialProjectIdRef.current &&
-      !projects.some((project) => project.id === initialProjectIdRef.current)
-    ) {
-      setProjectId('');
-    }
-  }, [open, projects, projectId]);
-
-  const handleProjectChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    setProjectId(event.target.value);
-    setStatusId('');
-  };
+  }, [detail, open, projectId]);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (!detail || !projectId || !statusId || !title.trim()) return;
     controller.mutation.mutate(
-      { projectId, statusId, title, description },
+      { statusId, title, description },
       { onSuccess: (result) => onImported(result.epic.id) },
     );
   };
@@ -122,26 +97,15 @@ export function ExternalTaskImportDialog({
         <DialogHeader>
           <DialogTitle>Create DevChain task</DialogTitle>
           <DialogDescription>
-            Import this remote task into a DevChain project. It will remain unassigned.
+            Import this remote task into the current Board project. It will remain unassigned.
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={handleSubmit}>
           <div className="space-y-1.5">
-            <Label htmlFor="external-import-project">Project</Label>
-            <select
-              id="external-import-project"
-              value={projectId}
-              onChange={handleProjectChange}
-              required
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-            >
-              <option value="">Select a project</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
+            <p className="text-sm font-medium">DevChain project</p>
+            <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+              {projectName ?? 'Current Board project'}
+            </p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="external-import-status">Status</Label>

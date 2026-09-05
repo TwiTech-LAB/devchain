@@ -273,6 +273,58 @@ describe('LocalStorageService project workspaces', () => {
     });
   });
 
+  it('returns the owning project and its whole workspace, ordered by project id', async () => {
+    const engineering = await createWorkspace('Engineering');
+    const product = await createWorkspace('Product');
+    const owner = await service.createProject(projectInput('Owner', engineering.id));
+    const peer = await service.createProject(projectInput('Peer', engineering.id));
+    const template = await service.createProject({
+      ...projectInput('Template', engineering.id),
+      isTemplate: true,
+    });
+    await service.createProject(projectInput('Elsewhere', product.id));
+
+    const snapshot = await service.getProjectWorkspaceSnapshot(owner.id);
+    const ids = snapshot.map((project) => project.id);
+
+    expect(new Set(ids)).toEqual(new Set([owner.id, peer.id, template.id]));
+    expect(ids).toEqual([...ids].sort());
+    expect(snapshot.every((project) => project.workspaceId === engineering.id)).toBe(true);
+    expect(snapshot.find((project) => project.id === owner.id)).toMatchObject({
+      name: 'Owner',
+      isTemplate: false,
+    });
+    expect(snapshot.find((project) => project.id === template.id)?.isTemplate).toBe(true);
+  });
+
+  it('returns templates and more than one hundred workspace projects without truncation', async () => {
+    const engineering = await createWorkspace('Engineering Bulk');
+    await service.createProject(projectInput('Default Workspace Project'));
+    const bulkIds = new Set<string>();
+    for (let index = 0; index < 105; index += 1) {
+      const project = await service.createProject(projectInput(`Bulk ${index}`, engineering.id));
+      bulkIds.add(project.id);
+    }
+    const template = await service.createProject({
+      ...projectInput('Bulk Template', engineering.id),
+      isTemplate: true,
+    });
+
+    const snapshot = await service.getProjectWorkspaceSnapshot(template.id);
+    const ids = snapshot.map((project) => project.id);
+
+    expect(ids).toHaveLength(106);
+    expect(new Set(ids)).toEqual(new Set([...bulkIds, template.id]));
+    expect(ids).toEqual([...ids].sort());
+    expect(snapshot.every((project) => project.workspaceId === engineering.id)).toBe(true);
+  });
+
+  it('throws NotFoundError when the owning project does not exist', async () => {
+    await expect(service.getProjectWorkspaceSnapshot(randomUUID())).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
   it('serializes both delete-versus-move orderings without orphaning membership or grants', async () => {
     const deleteFirstWorkspace = await createWorkspace('Delete First');
     const deleteFirstProject = await service.createProject(projectInput('Delete First Project'));

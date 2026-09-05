@@ -108,3 +108,19 @@ export class UnsupportedProviderError extends AppError {
     );
   }
 }
+
+export interface RelationRouteEffectFacts {
+  sourceEpicId: string;
+  targetEpicId: string;
+}
+
+export class RelationConfirmationRequiredError extends AppError {
+  constructor(currentEffect: RelationRouteEffectFacts) {
+    super(
+      'This change displaces an active relation time route. Confirm the current route effect and retry with the accepted facts, or delete the displaced Related pair explicitly and retry.',
+      'relation_confirmation_required',
+      409,
+      { currentEffect },
+    );
+  }
+}

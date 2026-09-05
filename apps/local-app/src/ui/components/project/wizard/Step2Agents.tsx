@@ -40,24 +40,35 @@ interface ProviderEffortsCatalog {
   requiresModelForEffort: boolean;
 }
 
+interface ProviderModelCatalogOption {
+  id: string;
+  name: string;
+}
+
 const EMPTY_EFFORTS: ProviderEffortsCatalog = {
   efforts: [],
   supportsEffort: false,
   requiresModelForEffort: false,
 };
 
-/** Parse the `/api/providers/:id/models` payload into a flat list of model names (defensive). */
-function parseModelNames(payload: unknown): string[] {
+/** Normalize the shared provider-model query to one object shape. */
+function parseModelOptions(payload: unknown, providerId: string): ProviderModelCatalogOption[] {
   if (!Array.isArray(payload)) return [];
   return payload
-    .map((raw) => {
-      if (typeof raw === 'string') return raw.trim();
-      if (raw && typeof raw === 'object' && typeof (raw as { name?: unknown }).name === 'string') {
-        return (raw as { name: string }).name.trim();
+    .map((raw, index) => {
+      if (typeof raw === 'string') {
+        const name = raw.trim();
+        return name ? { id: `${providerId}:${name}:${index}`, name } : null;
       }
-      return '';
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const item = raw as { id?: unknown; name?: unknown };
+      if (typeof item.name !== 'string' || !item.name.trim()) return null;
+      const name = item.name.trim();
+      const id =
+        typeof item.id === 'string' && item.id.trim() ? item.id : `${providerId}:${name}:${index}`;
+      return { id, name };
     })
-    .filter((name) => name.length > 0);
+    .filter((item): item is ProviderModelCatalogOption => item !== null);
 }
 
 /** Parse the `/api/providers/:id/efforts` payload (mirrors PresetDialog's shape, defensively). */
@@ -172,8 +183,8 @@ export function Step2Agents({
       queryKey: providerModelQueryKeys.main(providerId),
       queryFn: async () => {
         const res = await fetch(`/api/providers/${providerId}/models`);
-        if (!res.ok) return [] as string[];
-        return parseModelNames((await res.json().catch(() => [])) as unknown);
+        if (!res.ok) return [] as ProviderModelCatalogOption[];
+        return parseModelOptions((await res.json().catch(() => [])) as unknown, providerId);
       },
       staleTime: 5 * 60 * 1000,
     })),
@@ -195,8 +206,13 @@ export function Step2Agents({
     const map = new Map<string, string[]>();
     selectedProviderIds.forEach((id, index) => {
       const name = idToName.get(id);
-      if (name)
-        map.set(name, Array.isArray(modelQueries[index]?.data) ? modelQueries[index]!.data! : []);
+      if (name) {
+        const options = parseModelOptions(modelQueries[index]?.data, id);
+        map.set(
+          name,
+          options.map((option) => option.name),
+        );
+      }
     });
     return map;
   }, [selectedProviderIds, idToName, modelQueries]);

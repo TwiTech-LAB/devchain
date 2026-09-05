@@ -21,28 +21,21 @@ function snapshotWorkAreaKey(scopeKey: string, remoteId: string): string {
 }
 
 /**
- * Confirms that every completed-inclusive occurrence can attach to an active
- * work area whose raw count can be updated. At least one occurrence is
- * required: completed My Work is time-bounded, so an empty result cannot
- * prove that the child is unassigned.
+ * Confirms assignment proof for reopening a completed child: a supported,
+ * same-provider completed-inclusive snapshot contains at least one
+ * occurrence of the child. Completed My Work is time-bounded, so an empty
+ * result cannot prove that the child is unassigned. This is not full
+ * work-area reconstruction proof: the restore path attaches only the
+ * occurrences whose exact work areas exist in the active snapshot.
  */
-export function canRestoreExternalTaskFromInclusiveSnapshot(
+export function hasAuthoritativeExternalTaskOccurrence(
   activeOnly: ExternalMyWorkSupportedSnapshot,
   completedInclusive: ExternalMyWorkSupportedSnapshot,
   taskId: string,
 ): boolean {
-  if (activeOnly.provider !== completedInclusive.provider) return false;
-  const activeWorkAreas = new Set(
-    activeOnly.workAreas.map((workArea) =>
-      snapshotWorkAreaKey(workArea.scopeKey, workArea.remoteId),
-    ),
-  );
-  const occurrences = completedInclusive.tasks.filter((entry) => entry.task.remoteId === taskId);
   return (
-    occurrences.length > 0 &&
-    occurrences.every((entry) =>
-      activeWorkAreas.has(snapshotWorkAreaKey(entry.workArea.scopeKey, entry.workArea.remoteId)),
-    )
+    activeOnly.provider === completedInclusive.provider &&
+    completedInclusive.tasks.some((entry) => entry.task.remoteId === taskId)
   );
 }
 

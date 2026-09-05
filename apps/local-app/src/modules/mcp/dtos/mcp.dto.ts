@@ -14,6 +14,14 @@ const EpicIdPrefixSchema = z
   .max(36)
   .regex(/^[a-f0-9-]+$/, 'Epic ID prefix must contain only hex characters and hyphens');
 
+const EpicRelationTypeSchema = z.enum(['related', 'blocks', 'blocked_by']);
+const EpicRelationInputSchema = z
+  .object({
+    relatedEpicId: EpicIdPrefixSchema,
+    relation: EpicRelationTypeSchema,
+  })
+  .strict();
+
 export const PROJECT_ID_PREFIX_PATTERN =
   /^(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{8}-[a-fA-F0-9]{1,4}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{1,4}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{1,4}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{1,12})$/;
 
@@ -231,6 +239,7 @@ export const CreateEpicParamsSchema = z
     agentName: z.string().min(1).optional(), // Target agent to assign epic to
     parentId: z.string().uuid().optional(),
     skillsRequired: SkillsRequiredInputSchema.optional(),
+    relation: EpicRelationInputSchema.optional(),
   })
   .strict();
 
@@ -245,6 +254,59 @@ export const GetEpicByIdParamsSchema = z
   .strict();
 
 export type GetEpicByIdParams = z.infer<typeof GetEpicByIdParamsSchema>;
+
+// devchain_epic_relations_list
+export const EpicRelationsListParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    epicId: EpicIdPrefixSchema,
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export type EpicRelationsListParams = z.infer<typeof EpicRelationsListParamsSchema>;
+
+// devchain_epic_relations_list_candidates
+export const EpicRelationCandidatesListParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    epicId: EpicIdPrefixSchema,
+    q: z.string().trim().max(200).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export type EpicRelationCandidatesListParams = z.infer<
+  typeof EpicRelationCandidatesListParamsSchema
+>;
+
+// devchain_epic_relations_set
+// For relation=related, the write's endpoint order defines direction: epicId
+// is the source and relatedEpicId is the target. blocks and blocked_by stay
+// focal-relative to the first address.
+export const EpicRelationsSetParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    epicId: EpicIdPrefixSchema,
+    relatedEpicId: EpicIdPrefixSchema,
+    relation: EpicRelationTypeSchema,
+  })
+  .strict();
+
+export type EpicRelationsSetParams = z.infer<typeof EpicRelationsSetParamsSchema>;
+
+// devchain_epic_relations_delete
+export const EpicRelationsDeleteParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    epicId: EpicIdPrefixSchema,
+    relatedEpicId: EpicIdPrefixSchema,
+  })
+  .strict();
+
+export type EpicRelationsDeleteParams = z.infer<typeof EpicRelationsDeleteParamsSchema>;
 
 // devchain_add_epic_comment
 // Author identity is derived from sessionId (ctx.agent.name)
@@ -676,6 +738,7 @@ export interface GetEpicByIdResponse {
   comments: EpicCommentSummary[];
   subEpics: EpicChildSummary[];
   parent?: EpicParentSummary;
+  relations: EpicRelationsPageResponse & { truncated: boolean };
 }
 
 export interface CreateEpicResponse {
@@ -696,6 +759,61 @@ export interface UpdateEpicResponse {
 export interface DeleteEpicResponse {
   id: string;
   deleted: true;
+}
+
+export interface EpicRelationTargetSummary {
+  id: string;
+  shortId: string;
+  title: string;
+  status: { id: string; label: string; color: string };
+  project: { id: string; name: string };
+}
+
+export interface EpicRelationSummary {
+  relationId: string;
+  relation: 'related' | 'blocks' | 'blocked_by';
+  /**
+   * Semantic source and target derived from the stored canonical direction.
+   * Null marks a legacy neutral row (direction 'none') with no semantic
+   * direction.
+   */
+  sourceEpicId: string | null;
+  targetEpicId: string | null;
+  relatedEpic: EpicRelationTargetSummary;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EpicRelationCandidateSummary extends EpicRelationTargetSummary {
+  parentId: string | null;
+}
+
+export interface EpicRelationsPageResponse {
+  items: EpicRelationSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface EpicRelationCandidatesPageResponse {
+  items: EpicRelationCandidateSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface EpicRelationMutationResponse {
+  epicId: string;
+  relatedEpicId: string;
+  relation: 'related' | 'blocks' | 'blocked_by';
+  sourceEpicId: string | null;
+  targetEpicId: string | null;
+}
+
+export interface DeleteEpicRelationResponse {
+  epicId: string;
+  relatedEpicId: string;
+  deleted: boolean;
 }
 
 // devchain_send_message

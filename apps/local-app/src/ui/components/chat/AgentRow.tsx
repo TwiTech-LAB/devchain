@@ -26,6 +26,7 @@ import {
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
 import { cn } from '@/ui/lib/utils';
+import { formatEpicTimeMinutes, MIN_VISIBLE_AGENT_TIME_BUFFER_MINUTES } from '@/ui/lib/epic-time';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import type { AgentContextMetrics } from '@/ui/hooks/useAgentSessionMetrics';
 import type { AgentEventBusAnchorDescriptor } from './agent-event-bus';
@@ -56,6 +57,12 @@ interface AgentRowProps {
   onReleaseHeldMessages?: () => void;
   releasingHeldMessages?: boolean;
   activityBadge?: ReactNode;
+  /**
+   * Whole minutes of settled unlogged time for this main-project agent.
+   * Undefined on guest and worktree rows; values at the shared visibility
+   * threshold render a fading amber overlay on the existing right-side rail.
+   */
+  unloggedTimeMinutes?: number;
   eventBusAnchor?: AgentEventBusAnchorDescriptor;
   anchorRef?: RefCallback<HTMLElement>;
   /** Whether to show the "Overrides…" context-menu entry (hidden for guests). */
@@ -151,6 +158,7 @@ export function AgentRow({
   onReleaseHeldMessages,
   releasingHeldMessages = false,
   activityBadge,
+  unloggedTimeMinutes,
   eventBusAnchor,
   anchorRef,
   canOverride = false,
@@ -182,6 +190,12 @@ export function AgentRow({
     humanHeldMessageCount > 0
       ? `${humanHeldMessageCount} message${humanHeldMessageCount !== 1 ? 's' : ''} waiting for you to finish typing`
       : null;
+  const showsUnloggedMarker =
+    unloggedTimeMinutes !== undefined &&
+    unloggedTimeMinutes >= MIN_VISIBLE_AGENT_TIME_BUFFER_MINUTES;
+  const unloggedLabel = showsUnloggedMarker
+    ? `${formatEpicTimeMinutes(unloggedTimeMinutes)} not logged to an Epic.`
+    : null;
 
   return (
     <ContextMenu>
@@ -196,15 +210,23 @@ export function AgentRow({
               isTeamLead && 'bg-primary/5 hover:bg-primary/10',
               isSelected && 'border-border border-r-primary bg-muted hover:border-r-primary',
               isLaunchingChat && 'cursor-not-allowed opacity-50',
+              unloggedTimeMinutes !== undefined && 'relative',
             )}
             role="listitem"
-            aria-label={`Open terminal for ${agent.name}${isOnline ? ' (online)' : ' (offline)'}${heldWaitingText ? `, ${heldWaitingText}` : ''}`}
+            aria-label={`Open terminal for ${agent.name}${isOnline ? ' (online)' : ' (offline)'}${heldWaitingText ? `, ${heldWaitingText}` : ''}${unloggedLabel ? `, ${unloggedLabel}` : ''}`}
             aria-current={isSelected ? 'true' : undefined}
             data-context-metrics-key={contextTrackingEnabled ? contextMetricsKey : undefined}
             data-agent-event-bus-key={eventBusAnchor?.key}
             data-agent-event-bus-agent-id={eventBusAnchor?.agentId}
             data-agent-event-bus-team-id={eventBusAnchor?.teamId}
           >
+            {showsUnloggedMarker && (
+              <span
+                aria-hidden="true"
+                data-unlogged-time-marker=""
+                className="pointer-events-none absolute -right-0.5 top-0 h-1/2 w-0.5 bg-gradient-to-b from-amber-700 to-transparent dark:from-amber-500"
+              />
+            )}
             {providerIconUri ? (
               <span
                 className={cn(

@@ -9,6 +9,7 @@ import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connection
 import { ExternalTaskDetailDialog } from './ExternalTaskDetailDialog';
 
 const fetchMock = jest.fn();
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({
   useFetchFactory: () => fetchMock,
@@ -30,6 +31,7 @@ jest.mock('@/ui/hooks/useEpicTimeDetail', () => ({
   useEpicTimeDetail: () => ({
     admitted: false,
     summary: undefined,
+    timeZone: 'UTC',
     query: { isLoading: false, isError: false },
   }),
 }));
@@ -73,6 +75,7 @@ const history = {
       startedAt: '2026-08-23T10:00:00.000Z',
       note: 'Existing entry',
       noteTruncated: false,
+      canEdit: true,
       canDelete: true,
     },
   ],
@@ -107,6 +110,7 @@ function renderLifecycleDialog() {
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <ExternalTaskDetailDialog
+            projectId={PROJECT_ID}
             provider="jira"
             taskId="ENG-1"
             open
@@ -132,7 +136,7 @@ function renderLifecycleDialog() {
 async function openTimeAndHistory(): Promise<void> {
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: 'Expand Time tracked' }));
-  await user.click(screen.getByText('Recent time entries', { selector: 'summary' }));
+  await user.click(screen.getByLabelText('Recent time entries'));
   await screen.findByText('Existing entry');
 }
 
@@ -154,23 +158,35 @@ describe('ExternalTaskDetailDialog time-write lifecycle', () => {
   ): void {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       const path = String(url);
-      if (path.endsWith('/tasks/ENG-1')) {
+      if (path.includes('/tasks/ENG-1?')) {
         if (!initialDetailDelivered) {
           initialDetailDelivered = true;
           return Promise.resolve(jsonResponse(detail));
         }
         return replacementDetail.promise;
       }
-      if (path.endsWith('/comments')) {
+      if (path.includes('/comments?')) {
         return Promise.resolve(jsonResponse({ comments: [], nextCursor: null }));
       }
-      if (path.endsWith('/time-entries') && !init?.method) {
+      if (path.includes('/estimate-log-state?')) {
+        return Promise.resolve(
+          jsonResponse({
+            initialized: false,
+            revision: 0,
+            loggedMinutes: 0,
+            pendingDisposition: 'none',
+            canVerify: false,
+            pending: null,
+          }),
+        );
+      }
+      if (path.includes('/time-entries?') && !init?.method) {
         return Promise.resolve(jsonResponse(history));
       }
-      if (path.endsWith('/time-entries') && init?.method === 'POST') {
+      if (path.includes('/time-entries?') && init?.method === 'POST') {
         return write.promise;
       }
-      if (path.endsWith('/time-entries/entry-1') && init?.method === 'DELETE') {
+      if (path.includes('/time-entries/entry-1?') && init?.method === 'DELETE') {
         return write.promise;
       }
       if (path.includes('/acknowledge')) {
@@ -213,7 +229,7 @@ describe('ExternalTaskDetailDialog time-write lifecycle', () => {
       expect(
         fetchMock.mock.calls.filter(
           ([url, init]) =>
-            String(url).endsWith('/time-entries') &&
+            String(url).includes('/time-entries?') &&
             (init as RequestInit | undefined)?.method === 'POST',
         ),
       ).toHaveLength(1),
@@ -244,7 +260,7 @@ describe('ExternalTaskDetailDialog time-write lifecycle', () => {
     expect(
       fetchMock.mock.calls.filter(
         ([url, init]) =>
-          String(url).endsWith('/time-entries') &&
+          String(url).includes('/time-entries?') &&
           (init as RequestInit | undefined)?.method === 'POST',
       ),
     ).toHaveLength(1);
@@ -266,7 +282,7 @@ describe('ExternalTaskDetailDialog time-write lifecycle', () => {
       expect(
         fetchMock.mock.calls.filter(
           ([url, init]) =>
-            String(url).endsWith('/time-entries/entry-1') &&
+            String(url).includes('/time-entries/entry-1?') &&
             (init as RequestInit | undefined)?.method === 'DELETE',
         ),
       ).toHaveLength(1),
@@ -289,7 +305,7 @@ describe('ExternalTaskDetailDialog time-write lifecycle', () => {
     expect(
       fetchMock.mock.calls.filter(
         ([url, init]) =>
-          String(url).endsWith('/time-entries/entry-1') &&
+          String(url).includes('/time-entries/entry-1?') &&
           (init as RequestInit | undefined)?.method === 'DELETE',
       ),
     ).toHaveLength(1);

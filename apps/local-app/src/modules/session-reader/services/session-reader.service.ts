@@ -178,6 +178,22 @@ interface ParsedSessionResult {
   parseTiming: ParseTimingData;
 }
 
+interface ReadyAdapterResolution {
+  pending?: false;
+  adapter: ReturnType<SessionReaderAdapterFactory['getAdapter']> & object;
+  transcriptPath: string;
+  sourceRef: SessionSourceRef;
+  providerName: string;
+}
+
+interface PendingAdapterResolution {
+  pending: true;
+  transcriptPath: string;
+  providerName: string;
+}
+
+type AdapterResolution = ReadyAdapterResolution | PendingAdapterResolution;
+
 @Injectable()
 export class SessionReaderService implements OnModuleDestroy {
   private readonly logger = new Logger(SessionReaderService.name);
@@ -270,7 +286,14 @@ export class SessionReaderService implements OnModuleDestroy {
    * Get summary metrics for a session transcript.
    */
   async getTranscriptSummary(sessionId: string): Promise<TranscriptSummary> {
-    const { adapter, sourceRef, providerName } = await this.resolveAdapter(sessionId);
+    const resolution = await this.resolveAdapter(sessionId);
+    if (resolution.pending) {
+      return this.toTranscriptSummary(
+        sessionId,
+        this.createPendingTranscriptResult(sessionId, resolution, 0).session,
+      );
+    }
+    const { adapter, sourceRef, providerName } = resolution;
     if (this.sessionCacheService.getEntry(sessionId)) {
       const cachedSession = await this.sessionCacheService.getFreshSession(
         sessionId,
@@ -655,8 +678,12 @@ export class SessionReaderService implements OnModuleDestroy {
 
   private async loadParsedSession(sessionId: string): Promise<ParsedSessionResult> {
     const tResolve = performance.now();
-    const { adapter, sourceRef, providerName } = await this.resolveAdapter(sessionId);
+    const resolution = await this.resolveAdapter(sessionId);
     const resolveMs = performance.now() - tResolve;
+    if (resolution.pending) {
+      return this.createPendingTranscriptResult(sessionId, resolution, resolveMs);
+    }
+    const { adapter, sourceRef, providerName } = resolution;
 
     const tParse = performance.now();
     const { session, cacheHit, sourceChangeKind, lastSize, lastMtime, sourceVersion } =
@@ -695,6 +722,61 @@ export class SessionReaderService implements OnModuleDestroy {
     };
   }
 
+  /**
+   * Claude and other file-backed providers can announce a session id/path before
+   * writing the first transcript entry. Keep that live pre-file window readable
+   * as an empty generation. The result is deliberately NOT cached: every later
+   * request re-runs path validation and naturally transitions to the real source
+   * as soon as the provider materializes it.
+   */
+  private createPendingTranscriptResult(
+    sessionId: string,
+    resolution: PendingAdapterResolution,
+    resolveMs: number,
+  ): ParsedSessionResult {
+    const metrics: UnifiedMetrics = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 0,
+      totalContextConsumption: 0,
+      compactionCount: 0,
+      phaseBreakdowns: [],
+      visibleContextTokens: 0,
+      totalContextTokens: 0,
+      contextWindowTokens: 0,
+      costUsd: 0,
+      primaryModel: '',
+      durationMs: 0,
+      messageCount: 0,
+      isOngoing: true,
+    };
+    return {
+      session: {
+        id: sessionId,
+        providerName: resolution.providerName,
+        filePath: resolution.transcriptPath,
+        messages: [],
+        chunks: [],
+        metrics,
+        isOngoing: true,
+        warnings: ['Transcript is waiting for the provider to write its first entry'],
+      },
+      parseTiming: {
+        resolveMs,
+        parseOrCacheHitMs: 0,
+        buildChunksMs: 0,
+        cacheHit: false,
+        sourceChangeKind: 'unknown-full-parse',
+        fileSizeBytes: 0,
+        fileMtimeMs: 0,
+        sourceVersion: 0,
+        providerName: resolution.providerName,
+      },
+    };
+  }
+
   private toTranscriptSummary(sessionId: string, session: UnifiedSession): TranscriptSummary {
     const metrics = this.resolveMetricsContextWindow(sessionId, session.metrics);
     return {
@@ -726,8 +808,7 @@ export class SessionReaderService implements OnModuleDestroy {
       providerNameAtLaunch === 'claude' &&
       session?.providerSessionId === capture.claudeSessionId &&
       capture.modelId === metrics.primaryModel &&
-      metrics.primaryModel.startsWith('claude-') &&
-      catalogContextWindowTokens !== null
+      metrics.primaryModel.startsWith('claude-')
         ? capture
         : null;
     const resolution = resolveContextWindow({
@@ -775,27 +856,19 @@ export class SessionReaderService implements OnModuleDestroy {
   /**
    * Resolve the adapter from the provider recorded at launch, then validate the transcript path.
    */
-  private async resolveAdapter(sessionId: string): Promise<{
-    adapter: ReturnType<SessionReaderAdapterFactory['getAdapter']> & object;
-    transcriptPath: string;
-    sourceRef: SessionSourceRef;
-    providerName: string;
-  }> {
+  private async resolveAdapter(sessionId: string): Promise<AdapterResolution> {
     // 1. Look up session
     const session = this.sessionsService.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session', sessionId);
     }
 
-    // 2. Ensure transcript path is set
-    if (!session.transcriptPath) {
-      throw new ValidationError('Session does not have a transcript path', { sessionId });
-    }
-
     // Historical sessions remain readable after their live provider/config/agent rows are removed.
     const adapter = session.providerNameAtLaunch
       ? this.adapterFactory.getAdapter(session.providerNameAtLaunch)
-      : this.adapterFactory.getAdapterForPath(session.transcriptPath);
+      : session.transcriptPath
+        ? this.adapterFactory.getAdapterForPath(session.transcriptPath)
+        : undefined;
     if (!adapter) {
       const providerLabel = session.providerNameAtLaunch ?? 'unknown';
       throw new ValidationError(
@@ -805,11 +878,37 @@ export class SessionReaderService implements OnModuleDestroy {
     }
     const providerName = adapter.providerName.toLowerCase();
 
+    // A live provider may not have emitted its path hook yet. This is a normal
+    // startup state, not malformed RPC input. Historical sessions retain the
+    // existing validation error because no future provider write can repair them.
+    if (!session.transcriptPath) {
+      if (session.status === 'running') {
+        return { pending: true, transcriptPath: '', providerName };
+      }
+      throw new ValidationError('Session does not have a transcript path', { sessionId });
+    }
+
     // 3. Validate transcript path
-    const validatedPath = await this.pathValidator.validateForRead(
-      session.transcriptPath,
-      providerName,
-    );
+    let validatedPath: string;
+    try {
+      validatedPath = await this.pathValidator.validateForRead(
+        session.transcriptPath,
+        providerName,
+      );
+    } catch (error) {
+      if (
+        session.status === 'running' &&
+        (adapter.sourceKind ?? 'file') === 'file' &&
+        this.isMissingTranscriptFileError(error)
+      ) {
+        return {
+          pending: true,
+          transcriptPath: session.transcriptPath,
+          providerName,
+        };
+      }
+      throw error;
+    }
 
     // Generalized source reference threaded through the cache into the adapter so
     // DB-backed adapters can locate the session via `providerSessionId`. `kind`
@@ -832,10 +931,19 @@ export class SessionReaderService implements OnModuleDestroy {
     );
 
     return {
+      pending: false,
       adapter,
       transcriptPath: validatedPath,
       sourceRef,
       providerName,
     };
+  }
+
+  private isMissingTranscriptFileError(error: unknown): boolean {
+    return (
+      error instanceof ValidationError &&
+      error.details?.['category'] === 'file-access' &&
+      error.details?.['reason'] === 'missing'
+    );
   }
 }

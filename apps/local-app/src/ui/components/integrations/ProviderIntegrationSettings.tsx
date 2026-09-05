@@ -9,6 +9,7 @@ import type { useIntegrationConnections } from '@/ui/hooks/useIntegrationConnect
 
 export interface ProviderIntegrationSettingsProps {
   provider: IntegrationProvider;
+  projectId: string | null;
   connection: IntegrationConnectionState;
   onReplace: ReturnType<typeof useIntegrationConnections>['replaceConnection'];
   onDisconnect: ReturnType<typeof useIntegrationConnections>['disconnectConnection'];
@@ -20,6 +21,7 @@ export interface ProviderIntegrationSettingsProps {
 
 export function ProviderIntegrationSettings({
   provider,
+  projectId,
   connection,
   onReplace,
   onDisconnect,
@@ -28,7 +30,10 @@ export function ProviderIntegrationSettings({
   isDisconnecting,
   isUpdatingSync,
 }: ProviderIntegrationSettingsProps) {
-  const sync = useManagedSubtaskSyncHealth(provider, { enabled: connection.connected });
+  const sync = useManagedSubtaskSyncHealth(provider, {
+    projectId,
+    enabled: connection.connected,
+  });
   const requiresOrphanRiskAcknowledgement =
     (sync.health?.counts.outcomeUnknown ?? 0) > 0 ||
     (sync.health?.counts.orphanRisk ?? 0) > 0 ||

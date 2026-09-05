@@ -1,15 +1,24 @@
 import { Injectable } from '@nestjs/common';
 import { isTransientEvent, type EventName, type EventPayload } from '../catalog';
+import type { ReplayedEventPayload } from './committed-event-replay';
 
-export interface CommittedEvent<TName extends EventName = EventName> {
+export type CommittedEvent<TName extends EventName = EventName> = TName extends EventName
+  ? {
+      id: string;
+      name: TName;
+      payload: ReplayedEventPayload<TName>;
+      requestId: string | null;
+      publishedAt: string;
+    }
+  : never;
+
+export interface PreparedEvent<TName extends EventName = EventName> {
   id: string;
   name: TName;
   payload: EventPayload<TName>;
   requestId: string | null;
   publishedAt: string;
 }
-
-export type PreparedEvent<TName extends EventName = EventName> = CommittedEvent<TName>;
 
 export interface DurableEventSubscriber {
   deliveryKey: string;

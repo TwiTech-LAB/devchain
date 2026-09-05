@@ -5,6 +5,8 @@ import type { ExternalTaskComment } from '@/modules/external-integrations/models
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ExternalTaskCommentsPanel } from './ExternalTaskCommentsPanel';
 
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+
 type Controller = React.ComponentProps<typeof ExternalTaskCommentsPanel>['controller'];
 
 function comment(overrides: Partial<ExternalTaskComment> = {}): ExternalTaskComment {
@@ -72,6 +74,7 @@ function renderPanel(
   return render(
     <QueryClientProvider client={client}>
       <ExternalTaskCommentsPanel
+        projectId={PROJECT_ID}
         provider={provider}
         taskId="ENG-1"
         controller={controller}
@@ -160,6 +163,7 @@ describe('ExternalTaskCommentsPanel', () => {
     view.rerender(
       <QueryClientProvider client={new QueryClient()}>
         <ExternalTaskCommentsPanel
+          projectId={PROJECT_ID}
           provider="jira"
           taskId="ENG-1"
           controller={controllerValue({ chronologicalComments: [comment()] })}
@@ -173,6 +177,7 @@ describe('ExternalTaskCommentsPanel', () => {
     view.rerender(
       <QueryClientProvider client={new QueryClient()}>
         <ExternalTaskCommentsPanel
+          projectId={PROJECT_ID}
           provider="jira"
           taskId="ENG-1"
           controller={controllerValue({

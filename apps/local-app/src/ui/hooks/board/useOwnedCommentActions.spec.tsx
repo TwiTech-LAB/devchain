@@ -28,11 +28,24 @@ const saveSession = richApi.saveSession as jest.Mock;
 const verifySession = richApi.verifySession as jest.Mock;
 const executeCommentDelete = richApi.executeCommentDelete as jest.Mock;
 
-const EPOCH = { connectionId: 'connection-1', generation: 1 } as const;
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+const OTHER_PROJECT_ID = '22222222-2222-4222-8222-222222222222';
+const EPOCH = 'connection-1:1';
+const OTHER_EPOCH = 'connection-2:7';
 const DOCUMENT = {
   version: 1,
   blocks: [{ type: 'paragraph', content: [{ type: 'text', text: 'edited', marks: [] }] }],
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function page(comments: Array<Record<string, unknown>>): ExternalTaskCommentPage {
   return { comments: comments as never, nextCursor: null };
@@ -80,18 +93,33 @@ describe('useOwnedCommentActions', () => {
         pageParams: [null],
       },
     );
+    client.setQueryData(
+      ['external-my-work', 'clickup', 'connection-2:7', 'task-comments', 'task-2'],
+      {
+        pages: [page([comment('b1')])],
+        pageParams: [null],
+      },
+    );
     const resetSpy = jest.spyOn(client, 'resetQueries');
     const setDataSpy = jest.spyOn(client, 'setQueryData');
     const wrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     );
     const hook = renderHook(
-      () =>
-        useOwnedCommentActions('clickup', EPOCH, 'task-1', {
+      ({ projectId, connectionEpoch, taskId }) =>
+        useOwnedCommentActions('clickup', connectionEpoch, taskId, {
+          projectId,
           richEditEnabled: true,
           ownedDeleteEnabled: true,
         }),
-      { wrapper },
+      {
+        wrapper,
+        initialProps: {
+          projectId: PROJECT_ID,
+          connectionEpoch: EPOCH,
+          taskId: 'task-1',
+        },
+      },
     );
     return { hook, resetSpy, setDataSpy, client };
   }
@@ -117,6 +145,7 @@ describe('useOwnedCommentActions', () => {
     const { result } = renderHook(
       () =>
         useOwnedCommentActions('clickup', EPOCH, 'task-1', {
+          projectId: PROJECT_ID,
           richEditEnabled: false,
           ownedDeleteEnabled: false,
         }),
@@ -141,7 +170,13 @@ describe('useOwnedCommentActions', () => {
     act(() => hook.result.current.edit.submit());
     await waitFor(() => expect(hook.result.current.edit.state.status).toBe('saved'));
 
-    expect(saveSession).toHaveBeenCalledWith(expect.anything(), 'session-1', expect.anything(), 0);
+    expect(saveSession).toHaveBeenCalledWith(
+      expect.anything(),
+      PROJECT_ID,
+      'session-1',
+      expect.anything(),
+      0,
+    );
     // Commit patches the page in place; the comments query is never reset.
     expect(resetSpy).not.toHaveBeenCalled();
     const patchCall = setDataSpy.mock.calls.find((call) => typeof call[1] === 'function');
@@ -163,6 +198,73 @@ describe('useOwnedCommentActions', () => {
     // Submit is unavailable in refresh_required.
     act(() => hook.result.current.edit.submit());
     expect(saveSession).not.toHaveBeenCalled();
+  });
+
+  it('ignores a deferred edit-session error after switching presentation scope', async () => {
+    const opening = deferred<typeof SESSION>();
+    createCommentEditSession.mockReturnValueOnce(opening.promise);
+    const { hook } = setup();
+
+    act(() => hook.result.current.edit.start(comment('c1') as never));
+    await waitFor(() => expect(hook.result.current.edit.state.status).toBe('opening'));
+    hook.rerender({
+      projectId: OTHER_PROJECT_ID,
+      connectionEpoch: OTHER_EPOCH,
+      taskId: 'task-2',
+    });
+    await waitFor(() => expect(hook.result.current.edit.state.status).toBe('idle'));
+    expect(hook.result.current.edit.pending).toBe(false);
+
+    await act(async () => opening.reject(new Error('Project A lookup failed')));
+    await waitFor(() => expect(hook.result.current.edit.pending).toBe(false));
+    expect(hook.result.current.edit.target).toBeNull();
+    expect(hook.result.current.edit.state).toEqual({
+      status: 'idle',
+      session: null,
+      error: null,
+    });
+  });
+
+  it('does not patch Project B cache when a Project A save settles late', async () => {
+    const saved = deferred<Awaited<ReturnType<typeof richApi.saveSession>>>();
+    saveSession.mockReturnValueOnce(saved.promise);
+    const { hook, setDataSpy, client } = setup();
+
+    act(() => hook.result.current.edit.start(comment('c1') as never));
+    await waitFor(() => expect(hook.result.current.edit.state.status).toBe('editing'));
+    act(() => hook.result.current.edit.setDraft({ document: DOCUMENT }));
+    act(() => hook.result.current.edit.submit());
+    await waitFor(() => expect(hook.result.current.edit.state.status).toBe('saving'));
+    setDataSpy.mockClear();
+
+    hook.rerender({
+      projectId: OTHER_PROJECT_ID,
+      connectionEpoch: OTHER_EPOCH,
+      taskId: 'task-2',
+    });
+    await waitFor(() => expect(hook.result.current.edit.state.status).toBe('idle'));
+    expect(hook.result.current.edit.pending).toBe(false);
+    await act(async () =>
+      saved.resolve({
+        outcome: 'saved',
+        revision: 1,
+        session: { ...SESSION, revision: 1 },
+      }),
+    );
+    await waitFor(() => expect(hook.result.current.edit.pending).toBe(false));
+
+    expect(hook.result.current.edit.target).toBeNull();
+    expect(hook.result.current.edit.state.status).toBe('idle');
+    expect(setDataSpy).not.toHaveBeenCalled();
+    expect(
+      client.getQueryData([
+        'external-my-work',
+        'clickup',
+        'connection-2:7',
+        'task-comments',
+        'task-2',
+      ]),
+    ).toEqual({ pages: [page([comment('b1')])], pageParams: [null] });
   });
 
   it('an unknown edit outcome offers verify and same-payload retry', async () => {
@@ -206,6 +308,34 @@ describe('useOwnedCommentActions', () => {
     expect(resetSpy).toHaveBeenCalled();
   });
 
+  it('does not reset Project B cache when a Project A delete settles late', async () => {
+    const deletion = deferred<Awaited<ReturnType<typeof richApi.executeCommentDelete>>>();
+    executeCommentDelete.mockReturnValueOnce(deletion.promise);
+    const { hook, resetSpy } = setup();
+
+    act(() => hook.result.current.delete.confirm(comment('c1') as never));
+    await waitFor(() => expect(executeCommentDelete).toHaveBeenCalledTimes(1));
+    hook.rerender({
+      projectId: OTHER_PROJECT_ID,
+      connectionEpoch: OTHER_EPOCH,
+      taskId: 'task-2',
+    });
+    await waitFor(() => expect(hook.result.current.delete.status).toBe('idle'));
+    expect(hook.result.current.delete.pending).toBe(false);
+    resetSpy.mockClear();
+
+    await act(async () =>
+      deletion.resolve({
+        outcome: 'deleted',
+        session: { ...SESSION, kind: 'comment_delete', state: 'invalidated' },
+      }),
+    );
+    await waitFor(() => expect(hook.result.current.delete.pending).toBe(false));
+    expect(hook.result.current.delete.status).toBe('idle');
+    expect(hook.result.current.delete.target).toBeNull();
+    expect(resetSpy).not.toHaveBeenCalled();
+  });
+
   it('one comment edit does not lock another comment or the composer', async () => {
     const { hook } = setup();
     act(() => hook.result.current.edit.start(comment('c1') as never));
@@ -215,6 +345,7 @@ describe('useOwnedCommentActions', () => {
     await waitFor(() =>
       expect(createCommentEditSession).toHaveBeenCalledWith(
         expect.anything(),
+        PROJECT_ID,
         'clickup',
         'task-1',
         'c2',

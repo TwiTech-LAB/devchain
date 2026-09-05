@@ -540,6 +540,48 @@
       "when": 1787505576674,
       "tag": "0076_epic_time_accounting",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "6",
+      "when": 1787670426148,
+      "tag": "0077_familiar_morbius",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "6",
+      "when": 1787671874158,
+      "tag": "0078_preserve_legacy_connection_ownership",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "6",
+      "when": 1788030968029,
+      "tag": "0079_premium_forgotten_one",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "6",
+      "when": 1788042448821,
+      "tag": "0080_lethal_thunderbolt_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "6",
+      "when": 1788071973689,
+      "tag": "0081_early_kronos",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "6",
+      "when": 1788257771933,
+      "tag": "0082_huge_black_queen",
+      "breakpoints": true
     }
   ]
 }

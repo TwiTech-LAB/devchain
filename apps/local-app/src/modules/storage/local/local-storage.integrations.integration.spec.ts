@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { ConflictError, ValidationError } from '../../../common/errors/error-types';
+import { ConflictError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import type { Epic } from '../models/domain.models';
 import { IntegrationCredentialCipher } from './integration-credential-cipher';
 import { LocalStorageService } from './local-storage.service';
@@ -49,6 +49,16 @@ describe('LocalStorageService integrations', () => {
     });
   }
 
+  async function seedProject(name: string, rootPath: string): Promise<string> {
+    return (
+      await service.createProject({
+        name,
+        description: null,
+        rootPath,
+      })
+    ).id;
+  }
+
   it('returns safe connection projections while storing and reading credentials explicitly', async () => {
     const verify = jest.fn().mockResolvedValue(undefined);
     const credentials = {
@@ -57,25 +67,37 @@ describe('LocalStorageService integrations', () => {
       email: 'private@example.com',
       token: 'jira-token',
     };
+    const projectId = await seedProject('Jira project', '/tmp/jira-project');
 
     const connection = await service.replaceIntegrationConnection(
-      { provider: 'jira', credentials },
+      { projectId, provider: 'jira', credentials },
       verify,
     );
 
     expect(verify).toHaveBeenCalledWith(credentials);
     expect(connection).toEqual({
       id: expect.any(String),
+      projectId,
       provider: 'jira',
+      legacySourceConnectionId: null,
       generation: 1,
       subtaskSyncEnabled: false,
       syncSettingRevision: 1,
       createdAt: expect.any(String),
       updatedAt: expect.any(String),
     });
-    expect(await service.getIntegrationConnection('jira')).toEqual(connection);
+    expect(await service.getIntegrationConnection({ projectId, provider: 'jira' })).toEqual(
+      connection,
+    );
+    expect(await service.getIntegrationConnectionById(connection.id)).toEqual(connection);
     expect(await service.listIntegrationConnections()).toEqual([connection]);
-    expect(await service.getIntegrationConnectionCredentials('jira')).toEqual(credentials);
+    expect(await service.listIntegrationConnections(projectId)).toEqual([connection]);
+    expect(
+      await service.getIntegrationConnectionCredentials({ projectId, provider: 'jira' }),
+    ).toEqual(credentials);
+    expect(await service.getIntegrationConnectionCredentialsById(connection.id)).toEqual(
+      credentials,
+    );
 
     const raw = sqlite
       .prepare(
@@ -90,8 +112,13 @@ describe('LocalStorageService integrations', () => {
   });
 
   it('validates before mutation and updates the same row with a monotonic generation', async () => {
+    const projectId = await seedProject('ClickUp project', '/tmp/clickup-project');
     const original = await service.replaceIntegrationConnection(
-      { provider: 'clickup', credentials: { provider: 'clickup', token: 'original-token' } },
+      {
+        projectId,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'original-token' },
+      },
       async () => undefined,
     );
     const originalRaw = sqlite
@@ -100,7 +127,11 @@ describe('LocalStorageService integrations', () => {
 
     await expect(
       service.replaceIntegrationConnection(
-        { provider: 'clickup', credentials: { provider: 'clickup', token: 'invalid-token' } },
+        {
+          projectId,
+          provider: 'clickup',
+          credentials: { provider: 'clickup', token: 'invalid-token' },
+        },
         async () => {
           throw new ValidationError('Credential validation failed.');
         },
@@ -109,26 +140,216 @@ describe('LocalStorageService integrations', () => {
     expect(
       sqlite.prepare('SELECT * FROM integration_connections WHERE id = ?').get(original.id),
     ).toEqual(originalRaw);
-    expect(await service.getIntegrationConnectionCredentials('clickup')).toEqual({
+    expect(
+      await service.getIntegrationConnectionCredentials({ projectId, provider: 'clickup' }),
+    ).toEqual({
       provider: 'clickup',
       token: 'original-token',
     });
 
     const replaced = await service.replaceIntegrationConnection(
-      { provider: 'clickup', credentials: { provider: 'clickup', token: 'replacement-token' } },
+      {
+        projectId,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'replacement-token' },
+      },
       async () => undefined,
     );
     expect(replaced.id).toBe(original.id);
     expect(replaced.generation).toBe(2);
-    expect(await service.getIntegrationConnectionCredentials('clickup')).toEqual({
+    expect(
+      await service.getIntegrationConnectionCredentials({ connectionId: original.id }),
+    ).toEqual({
       provider: 'clickup',
       token: 'replacement-token',
     });
   });
 
+  it('isolates same-provider rows by project and exact connection identity', async () => {
+    const projectA = await seedProject('Project A', '/tmp/project-a');
+    const projectB = await seedProject('Project B', '/tmp/project-b');
+    const connectionA = await service.replaceIntegrationConnection(
+      {
+        projectId: projectA,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'token-a' },
+      },
+      async () => undefined,
+    );
+    const connectionB = await service.replaceIntegrationConnection(
+      {
+        projectId: projectB,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'token-b' },
+      },
+      async () => undefined,
+    );
+
+    expect(connectionA.id).not.toBe(connectionB.id);
+    expect(await service.listIntegrationConnections(projectA)).toEqual([connectionA]);
+    expect(await service.listIntegrationConnections(projectB)).toEqual([connectionB]);
+    expect(await service.getIntegrationConnectionCredentialsById(connectionA.id)).toEqual({
+      provider: 'clickup',
+      token: 'token-a',
+    });
+    expect(
+      await service.getIntegrationConnectionCredentials({
+        projectId: projectB,
+        provider: 'clickup',
+      }),
+    ).toEqual({ provider: 'clickup', token: 'token-b' });
+
+    const storedB = sqlite
+      .prepare('SELECT credential_ciphertext FROM integration_connections WHERE id = ?')
+      .get(connectionB.id) as { credential_ciphertext: string };
+    const now = new Date().toISOString();
+    expect(() =>
+      sqlite
+        .prepare(
+          `INSERT INTO integration_connections (
+            id, project_id, provider, legacy_source_connection_id, credential_ciphertext,
+            generation, subtask_sync_enabled, sync_setting_revision, created_at, updated_at
+          ) VALUES ('duplicate-project-provider', ?, 'clickup', NULL, ?, 1, 0, 1, ?, ?)`,
+        )
+        .run(projectB, storedB.credential_ciphertext, now, now),
+    ).toThrow();
+
+    const updatedB = await service.updateIntegrationConnectionSyncSettingById(connectionB.id, true);
+    expect(updatedB.subtaskSyncEnabled).toBe(true);
+    expect(
+      (await service.getIntegrationConnection({ projectId: projectA, provider: 'clickup' }))
+        ?.subtaskSyncEnabled,
+    ).toBe(false);
+
+    expect(
+      await service.disconnectIntegrationConnection({
+        projectId: projectA,
+        provider: 'clickup',
+      }),
+    ).toBe(true);
+    expect(await service.getIntegrationConnectionById(connectionA.id)).toBeNull();
+    expect(await service.getIntegrationConnectionById(connectionB.id)).toEqual(updatedB);
+  });
+
+  it('allows at most one unassigned legacy row per provider', async () => {
+    const projectId = await seedProject('Cipher source', '/tmp/cipher-source');
+    const source = await service.replaceIntegrationConnection(
+      {
+        projectId,
+        provider: 'jira',
+        credentials: {
+          provider: 'jira',
+          siteUrl: 'https://legacy.atlassian.net',
+          email: 'legacy@example.com',
+          token: 'legacy-token',
+        },
+      },
+      async () => undefined,
+    );
+    const raw = sqlite
+      .prepare('SELECT credential_ciphertext FROM integration_connections WHERE id = ?')
+      .get(source.id) as { credential_ciphertext: string };
+    const insertLegacy = sqlite.prepare(
+      `INSERT INTO integration_connections (
+        id, project_id, provider, legacy_source_connection_id, credential_ciphertext,
+        generation, subtask_sync_enabled, sync_setting_revision, created_at, updated_at
+      ) VALUES (?, NULL, 'jira', NULL, ?, 1, 0, 1, ?, ?)`,
+    );
+    const now = new Date().toISOString();
+
+    insertLegacy.run('legacy-jira-1', raw.credential_ciphertext, now, now);
+    expect(await service.getIntegrationConnectionById('legacy-jira-1')).toMatchObject({
+      projectId: null,
+      provider: 'jira',
+      legacySourceConnectionId: null,
+    });
+    expect(() => insertLegacy.run('legacy-jira-2', raw.credential_ciphertext, now, now)).toThrow();
+  });
+
+  it('assigns and disconnects only exact unassigned rows without changing credentials', async () => {
+    const occupiedProjectId = await seedProject('Occupied target', '/tmp/occupied-target');
+    const vacantProjectId = await seedProject('Vacant target', '/tmp/vacant-target');
+    const source = await service.replaceIntegrationConnection(
+      {
+        projectId: occupiedProjectId,
+        provider: 'jira',
+        credentials: {
+          provider: 'jira',
+          siteUrl: 'https://legacy.atlassian.net',
+          email: 'legacy@example.com',
+          token: 'legacy-token',
+        },
+      },
+      async () => undefined,
+    );
+    const raw = sqlite
+      .prepare('SELECT credential_ciphertext FROM integration_connections WHERE id = ?')
+      .get(source.id) as { credential_ciphertext: string };
+    const now = new Date().toISOString();
+    const insertLegacy = sqlite.prepare(
+      `INSERT INTO integration_connections (
+        id, project_id, provider, legacy_source_connection_id, credential_ciphertext,
+        generation, subtask_sync_enabled, sync_setting_revision, created_at, updated_at
+      ) VALUES (?, NULL, 'jira', NULL, ?, 3, 1, 2, ?, ?)`,
+    );
+    const legacyId = '11111111-1111-4111-8111-111111111111';
+    insertLegacy.run(legacyId, raw.credential_ciphertext, now, now);
+
+    await expect(
+      service.assignUnassignedIntegrationConnection(legacyId, 'missing-project'),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      service.assignUnassignedIntegrationConnection(legacyId, occupiedProjectId),
+    ).rejects.toMatchObject<ConflictError>({
+      details: { projectId: occupiedProjectId, provider: 'jira' },
+    });
+
+    const assigned = await service.assignUnassignedIntegrationConnection(legacyId, vacantProjectId);
+
+    expect(assigned).toMatchObject({
+      id: legacyId,
+      projectId: vacantProjectId,
+      provider: 'jira',
+      legacySourceConnectionId: legacyId,
+      generation: 3,
+      subtaskSyncEnabled: true,
+      syncSettingRevision: 2,
+    });
+    expect(
+      sqlite
+        .prepare('SELECT credential_ciphertext FROM integration_connections WHERE id = ?')
+        .get(legacyId),
+    ).toEqual(raw);
+    await expect(service.getIntegrationConnectionCredentialsById(legacyId)).resolves.toEqual({
+      provider: 'jira',
+      siteUrl: 'https://legacy.atlassian.net',
+      email: 'legacy@example.com',
+      token: 'legacy-token',
+    });
+    await expect(
+      service.assignUnassignedIntegrationConnection(legacyId, vacantProjectId),
+    ).rejects.toThrow('not an unassigned legacy connection');
+    await expect(service.disconnectUnassignedIntegrationConnection(legacyId)).rejects.toThrow(
+      'not an unassigned legacy connection',
+    );
+
+    const secondLegacyId = '22222222-2222-4222-8222-222222222222';
+    insertLegacy.run(secondLegacyId, raw.credential_ciphertext, now, now);
+    await expect(service.disconnectUnassignedIntegrationConnection(secondLegacyId)).resolves.toBe(
+      true,
+    );
+    expect(
+      sqlite
+        .prepare('SELECT credential_ciphertext FROM integration_connections WHERE id = ?')
+        .get(secondLegacyId),
+    ).toBeUndefined();
+  });
+
   it('preserves source links and resolves them by provider and remote scope after disconnect', async () => {
+    const connectionProjectId = await seedProject('Connection project', '/tmp/connection-project');
     const connection = await service.replaceIntegrationConnection(
       {
+        projectId: connectionProjectId,
         provider: 'jira',
         credentials: {
           provider: 'jira',
@@ -139,7 +360,12 @@ describe('LocalStorageService integrations', () => {
       },
       async () => undefined,
     );
-    const epic = await seedEpic();
+    const statuses = await service.listStatuses(connectionProjectId);
+    const epic = await service.createEpic({
+      projectId: connectionProjectId,
+      title: 'Imported source',
+      statusId: statuses.items[0].id,
+    });
     const link = await service.createExternalTaskLink({
       epicId: epic.id,
       connectionId: connection.id,
@@ -149,15 +375,45 @@ describe('LocalStorageService integrations', () => {
       sourceSnapshot: { title: 'Original Jira title', key: 'ENG-1' },
     });
 
-    expect(await service.disconnectIntegrationConnection('jira')).toBe(true);
-    expect(await service.getIntegrationConnection('jira')).toBeNull();
-    expect(await service.getIntegrationConnectionCredentials('jira')).toBeNull();
+    const identity = { projectId: connectionProjectId, provider: 'jira' as const };
+    expect(await service.disconnectIntegrationConnection(identity)).toBe(true);
+    expect(await service.getIntegrationConnection(identity)).toBeNull();
+    expect(await service.getIntegrationConnectionCredentials(identity)).toBeNull();
     expect(await service.listExternalTaskLinksByRemoteScope('jira', 'acme.atlassian.net')).toEqual([
       { ...link, connectionId: null },
     ]);
     expect(await service.findExternalTaskLink('jira', 'acme.atlassian.net', '10001')).toEqual({
       ...link,
       connectionId: null,
+    });
+  });
+
+  it('rejects a direct external link across project connection ownership', async () => {
+    const connectionProjectId = await seedProject('Connection project', '/tmp/connection-owner');
+    const epic = await seedEpic();
+    const connection = await service.replaceIntegrationConnection(
+      {
+        projectId: connectionProjectId,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'project-a-token' },
+      },
+      async () => undefined,
+    );
+
+    await expect(
+      service.createExternalTaskLink({
+        epicId: epic.id,
+        connectionId: connection.id,
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-ownership',
+        remoteTaskId: 'task-cross-project',
+        sourceSnapshot: { title: 'Cross-project task' },
+      }),
+    ).rejects.toMatchObject<ValidationError>({
+      message: 'External task link project must match its connection.',
+    });
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM external_task_links').get()).toEqual({
+      count: 0,
     });
   });
 

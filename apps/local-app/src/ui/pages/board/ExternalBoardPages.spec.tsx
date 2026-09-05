@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import { ExternalBoardMyWorkPage } from './ExternalBoardMyWorkPage';
 import { ExternalBoardKanbanPage } from './ExternalBoardKanbanPage';
 import type { ExternalMyWorkLanding } from '@/ui/hooks/board/useExternalMyWorkLanding';
+import { formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 
 // Layer: UI component unit. The connection and landing-controller hooks are mocked
 // because this spec owns the route-page composition contract (states, toolbar wiring,
@@ -29,7 +30,12 @@ jest.mock('../../hooks/useIntegrationConnections', () => ({
 }));
 
 jest.mock('../../hooks/useProjectSelection', () => ({
-  useSelectedProject: () => ({ selectedProjectId: mockSelectedProject.id }),
+  useSelectedProject: () => ({
+    selectedProjectId: mockSelectedProject.id,
+    selectedProject: mockSelectedProject.id
+      ? { id: mockSelectedProject.id, name: mockSelectedProject.name }
+      : undefined,
+  }),
 }));
 
 jest.mock('../../hooks/useFetchFactory', () => ({
@@ -55,14 +61,21 @@ jest.mock('../../hooks/board/useExternalWorkArea', () => ({
 const mockRetainedDialogFocus: { resolver: (() => HTMLElement | null) | null } = {
   resolver: null,
 };
+const mockDetailLinkProps: { globalLink: unknown } = { globalLink: null };
 
 // Mirrors the mock above for the Import dialog; also records the last props
 // the page passed so wiring assertions stay behavior-level.
 const mockRetainedImportFocus: { resolver: (() => HTMLElement | null) | null } = {
   resolver: null,
 };
-const mockImportProps: { initialProjectId: string | undefined } = { initialProjectId: undefined };
-const mockSelectedProject: { id: string | undefined } = { id: undefined };
+const mockImportProps: { projectId: string | null; projectName: string | null } = {
+  projectId: null,
+  projectName: null,
+};
+const mockSelectedProject: { id: string | undefined; name: string } = {
+  id: undefined,
+  name: 'Product',
+};
 
 jest.mock('../../components/board/ExternalTaskDetailDialog', () => ({
   ExternalTaskDetailDialog: ({
@@ -72,6 +85,7 @@ jest.mock('../../components/board/ExternalTaskDetailDialog', () => ({
     onCreateDevChainTask,
     returnFocusTo,
     onImportFocusTargetReady,
+    globalLink,
   }: {
     open: boolean;
     taskId: string | null;
@@ -79,8 +93,10 @@ jest.mock('../../components/board/ExternalTaskDetailDialog', () => ({
     onCreateDevChainTask?: (detail: unknown) => void;
     returnFocusTo?: () => HTMLElement | null;
     onImportFocusTargetReady?: (resolve: (() => HTMLElement | null) | null) => void;
+    globalLink?: unknown;
   }) => {
     mockRetainedDialogFocus.resolver = returnFocusTo ?? null;
+    mockDetailLinkProps.globalLink = globalLink ?? null;
     return open ? (
       <aside>
         Task dialog {taskId}
@@ -107,15 +123,18 @@ jest.mock('../../components/board/ExternalTaskImportDialog', () => ({
   ExternalTaskImportDialog: ({
     open,
     onOpenChange,
-    initialProjectId,
+    projectId,
+    projectName,
     returnFocusTo,
   }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    initialProjectId?: string;
+    projectId: string | null;
+    projectName?: string | null;
     returnFocusTo?: () => HTMLElement | null;
   }) => {
-    mockImportProps.initialProjectId = initialProjectId;
+    mockImportProps.projectId = projectId;
+    mockImportProps.projectName = projectName ?? null;
     mockRetainedImportFocus.resolver = returnFocusTo ?? null;
     return open ? (
       <aside>
@@ -130,6 +149,12 @@ jest.mock('../../components/board/ExternalTaskImportDialog', () => ({
 
 jest.mock('../../hooks/board/useExternalTaskLinks', () => ({
   useExternalTaskLinks: (...args: unknown[]) => useExternalTaskLinksMock(...args),
+}));
+
+const useEpicTimeSummariesBatchMock = jest.fn();
+
+jest.mock('../../hooks/useEpicTimeSummariesBatch', () => ({
+  useEpicTimeSummariesBatch: (...args: unknown[]) => useEpicTimeSummariesBatchMock(...args),
 }));
 
 const useExternalTaskMoveMock = jest.fn();
@@ -210,17 +235,31 @@ function freshPageQueryClient(): QueryClient {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   pageQueryClient = freshPageQueryClient();
-  mockSelectedProject.id = undefined;
-  mockImportProps.initialProjectId = undefined;
+  mockSelectedProject.id = '11111111-1111-4111-8111-111111111111';
+  mockImportProps.projectId = null;
+  mockImportProps.projectName = null;
   mockRetainedImportFocus.resolver = null;
+  mockDetailLinkProps.globalLink = null;
   useExternalTaskLinksMock.mockReset();
   useExternalTaskLinksMock.mockReturnValue({
     data: { items: [] },
     isFetching: false,
     isError: false,
   });
+  useEpicTimeSummariesBatchMock.mockReset();
+  useEpicTimeSummariesBatchMock.mockReturnValue({ totals: new Map(), query: {} });
   useFetchFactoryMock.mockReset();
   useFetchFactoryMock.mockImplementation(() =>
     Promise.resolve({ ok: true, json: async () => ({}) }),
@@ -240,6 +279,7 @@ const sampleCard = {
   kindLabel: 'List',
   description: 'Current sprint work',
   assignedTaskCount: 3,
+  linkedTaskCount: 1,
   locationLabel: 'Workspace / Product',
   workflowSummary: 'To do → Doing',
   refreshState: 'fresh' as const,
@@ -263,17 +303,21 @@ function renderMyWork(provider: 'clickup' | 'jira') {
   );
 }
 
-function renderKanbanAt(path: string) {
-  return render(
-    withPageQueryClient(
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/board/:provider/:workAreaId" element={<ExternalBoardKanbanPage />} />
-          <Route path="/epics/:id" element={<div data-testid="epic-route" />} />
-        </Routes>
-      </MemoryRouter>,
-    ),
+function kanbanTree(path: string) {
+  return withPageQueryClient(
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/board/:provider/:workAreaId" element={<ExternalBoardKanbanPage />} />
+        <Route path="/board/:providerName" element={<div data-testid="my-work-route" />} />
+        <Route path="/epics/:id" element={<div data-testid="epic-route" />} />
+      </Routes>
+      <LocationProbe />
+    </MemoryRouter>,
   );
+}
+
+function renderKanbanAt(path: string) {
+  return render(kanbanTree(path));
 }
 
 describe('ExternalBoardMyWorkPage', () => {
@@ -317,16 +361,14 @@ describe('ExternalBoardMyWorkPage', () => {
     );
   });
 
-  it('shows the Settings connect hint when the provider is disconnected', () => {
+  it('offers Add board on Board when the project is missing the connection', () => {
     useExternalMyWorkLandingMock.mockReturnValue(landingValue({ status: 'disconnected' }));
 
     renderMyWork('clickup');
 
-    expect(screen.getByRole('link', { name: /settings/i })).toHaveAttribute(
-      'href',
-      '/settings?section=integrations',
-    );
-    expect(screen.getByText(/connect clickup in/i)).toBeInTheDocument();
+    expect(screen.getByText(/connect clickup to this project/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add board/i })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /settings/i })).not.toBeInTheDocument();
   });
 
   it('renders the skeleton while the landing loads', () => {
@@ -334,7 +376,7 @@ describe('ExternalBoardMyWorkPage', () => {
 
     const { container } = renderMyWork('clickup');
 
-    expect(screen.queryByText(/connect clickup in/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connect clickup to this project/i)).not.toBeInTheDocument();
     const skeletons = container.querySelectorAll('.animate-pulse, [class*="animate-pulse"]');
     expect(skeletons.length).toBeGreaterThan(0);
   });
@@ -643,6 +685,49 @@ describe('ExternalBoardKanbanPage', () => {
     expect(screen.getByRole('heading', { name: 'Unknown board provider' })).toBeInTheDocument();
     const backLink = screen.getByRole('link', { name: /return to the devchain board/i });
     expect(backLink).toHaveAttribute('href', '/board');
+  });
+
+  it('opens the new project provider landing when the project changes on a work-area route', async () => {
+    const PROJECT_A = '11111111-1111-4111-8111-111111111111';
+    const PROJECT_B = '22222222-2222-4222-8222-222222222222';
+    mockSelectedProject.id = PROJECT_A;
+
+    const view = renderKanbanAt('/board/clickup/space-901?completed=1');
+    expect(screen.getByTestId('current-location')).toHaveTextContent(
+      '/board/clickup/space-901?completed=1',
+    );
+
+    mockSelectedProject.id = PROJECT_B;
+    view.rerender(kanbanTree('/board/clickup/space-901?completed=1'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('current-location')).toHaveTextContent('/board/clickup');
+    });
+    expect(screen.getByTestId('my-work-route')).toBeInTheDocument();
+  });
+
+  it('keeps a deep-linked work-area route when the project first resolves after mount', async () => {
+    mockSelectedProject.id = undefined;
+
+    const view = renderKanbanAt('/board/clickup/space-901');
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/board/clickup/space-901');
+
+    mockSelectedProject.id = '11111111-1111-4111-8111-111111111111';
+    view.rerender(kanbanTree('/board/clickup/space-901'));
+    await act(async () => {});
+
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/board/clickup/space-901');
+  });
+
+  it('keeps the work-area route when the project selection is cleared', async () => {
+    mockSelectedProject.id = '11111111-1111-4111-8111-111111111111';
+
+    const view = renderKanbanAt('/board/clickup/space-901');
+    mockSelectedProject.id = undefined;
+    view.rerender(kanbanTree('/board/clickup/space-901'));
+    await act(async () => {});
+
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/board/clickup/space-901');
   });
 });
 
@@ -1051,12 +1136,22 @@ describe('ExternalBoardKanbanPage quick import', () => {
 
   const quickFetch = jest.fn();
 
-  function renderQuickBoard() {
-    useIntegrationConnectionsMock.mockReturnValue(baseConnectionsValue());
+  function renderQuickBoard(linkItems = [unlinkedEntry, secondUnlinkedEntry]) {
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseConnectionsValue([
+        {
+          provider: 'clickup',
+          connected: true,
+          connectionId: 'connection-clickup-a',
+          generation: 1,
+          updatedAt: '2026-08-19T00:00:00.000Z',
+        },
+      ]),
+    );
     useExternalWorkAreaMock.mockReturnValue(quickBoardResult());
     useExternalTaskMoveMock.mockReturnValue(moveControllerValue());
     useExternalTaskLinksMock.mockReturnValue({
-      data: { items: [unlinkedEntry, secondUnlinkedEntry] },
+      data: { items: linkItems },
       isFetching: false,
       isError: false,
     });
@@ -1093,11 +1188,162 @@ describe('ExternalBoardKanbanPage quick import', () => {
     expect(screen.queryByText(/Task dialog/)).not.toBeInTheDocument();
     expect(quickFetch).toHaveBeenCalledTimes(1);
     expect(String(quickFetch.mock.calls[0][0])).toBe(
-      '/api/integrations/my-work/clickup/tasks/task-1',
+      '/api/integrations/my-work/clickup/tasks/task-1?projectId=11111111-1111-4111-8111-111111111111',
     );
     expect(quickFetch.mock.calls.filter(([url]) => String(url).includes('/comments'))).toHaveLength(
       0,
     );
+  });
+
+  it('passes a global existing-link attribution into task detail and offers no quick import', () => {
+    const existingLink = {
+      ...unlinkedEntry,
+      linked: true,
+      epicId: 'epic-other',
+      projectId: 'project-other',
+      projectName: 'Original project',
+    };
+    renderQuickBoard([existingLink, secondUnlinkedEntry]);
+
+    expect(
+      taskArticle('Ship exact board').queryByRole('button', { name: 'Create DevChain task' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(taskArticle('Ship exact board').getByRole('button', { name: /Open Ship/ }));
+    expect(mockDetailLinkProps.globalLink).toEqual(existingLink);
+  });
+
+  it('requests enriched link state and one deduplicated Epic-time batch for linked cards', () => {
+    const linkedEntry = {
+      ...unlinkedEntry,
+      linked: true,
+      epicId: 'epic-9',
+      projectId: 'project-1',
+      projectName: 'Product',
+      loggedMinutes: 30,
+    };
+    const linkedSameEpic = { ...linkedEntry, taskId: 'task-2', loggedMinutes: 0 };
+    useEpicTimeSummariesBatchMock.mockReturnValue({
+      totals: new Map([['epic-9', 90]]),
+      query: {},
+    });
+    renderQuickBoard([linkedEntry, linkedSameEpic]);
+
+    expect(useExternalTaskLinksMock).toHaveBeenCalledWith(
+      'clickup',
+      [
+        { scopeKey: 'workspace-1', taskId: 'task-1' },
+        { scopeKey: 'workspace-1', taskId: 'task-2' },
+      ],
+      expect.objectContaining({ includeLoggedMinutes: true }),
+    );
+    // Two cards share one linked Epic: exactly one deduplicated focal batch.
+    expect(useEpicTimeSummariesBatchMock).toHaveBeenCalledTimes(1);
+    expect(useEpicTimeSummariesBatchMock).toHaveBeenCalledWith(['epic-9'], { enabled: true });
+    expect(taskArticle('Ship exact board').getByTestId('epic-time-badge')).toHaveTextContent(
+      formatEpicTimeMinutes(90),
+    );
+    expect(taskArticle('Ship exact board').getByTestId('external-card-time')).toHaveTextContent(
+      `Logged ${formatEpicTimeMinutes(30)} · New unlogged ${formatEpicTimeMinutes(60)}`,
+    );
+  });
+
+  it.each([
+    [
+      'a changed-input placeholder',
+      {
+        data: {
+          items: [
+            {
+              ...unlinkedEntry,
+              linked: true,
+              epicId: 'epic-9',
+              projectId: 'project-1',
+              projectName: 'Product',
+              loggedMinutes: 30,
+            },
+          ],
+        },
+        isPlaceholderData: true,
+        isFetching: true,
+        isError: false,
+      },
+    ],
+    [
+      'a background refetch error retaining prior data',
+      {
+        data: {
+          items: [
+            {
+              ...unlinkedEntry,
+              linked: true,
+              epicId: 'epic-9',
+              projectId: 'project-1',
+              projectName: 'Product',
+              loggedMinutes: 30,
+            },
+          ],
+        },
+        isPlaceholderData: false,
+        isFetching: false,
+        isError: true,
+      },
+    ],
+  ])('suppresses numeric time metrics during %s', (_case, linksValue) => {
+    useEpicTimeSummariesBatchMock.mockReturnValue({
+      totals: new Map([['epic-9', 90]]),
+      query: {},
+    });
+    useExternalTaskLinksMock.mockReturnValue(linksValue);
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseConnectionsValue([
+        {
+          provider: 'clickup',
+          connected: true,
+          connectionId: 'connection-clickup-a',
+          generation: 1,
+          updatedAt: '2026-08-19T00:00:00.000Z',
+        },
+      ]),
+    );
+    useExternalWorkAreaMock.mockReturnValue(quickBoardResult());
+    useExternalTaskMoveMock.mockReturnValue(moveControllerValue());
+    useFetchFactoryMock.mockImplementation(() => quickFetch);
+    renderKanbanAt('/board/clickup/space-901');
+
+    // Stale or failed link identities never reach the Epic-time batch or the
+    // card metrics, while the existing link affordance keeps its behavior.
+    expect(useEpicTimeSummariesBatchMock).toHaveBeenCalledWith([], { enabled: true });
+    expect(screen.queryByTestId('external-card-time')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
+    expect(screen.getByText('DevChain project: Product')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open DevChain task' })).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      'a failed Epic-time batch refetch retaining prior totals',
+      { totals: new Map([['epic-9', 90]]), query: { isError: true } },
+    ],
+    ['an unresolved Current before the Epic-time batch loads', { totals: new Map(), query: {} }],
+  ])('renders Logged alone through %s', (_case, epicTimeValue) => {
+    const linkedEntry = {
+      ...unlinkedEntry,
+      linked: true,
+      epicId: 'epic-9',
+      projectId: 'project-1',
+      projectName: 'Product',
+      loggedMinutes: 30,
+    };
+    useEpicTimeSummariesBatchMock.mockReturnValue(epicTimeValue);
+    renderQuickBoard([linkedEntry]);
+
+    expect(useEpicTimeSummariesBatchMock).toHaveBeenCalledWith(['epic-9'], { enabled: true });
+    // No Current badge and no New figure from retained or absent totals;
+    // the authoritative Logged checkpoint still renders on its own.
+    expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
+    const timeRow = taskArticle('Ship exact board').getByTestId('external-card-time');
+    expect(timeRow).toHaveTextContent(`Logged ${formatEpicTimeMinutes(30)}`);
+    expect(timeRow).not.toHaveTextContent('New unlogged');
   });
 
   it('navigates to the linked Epic when the fresh detail is already linked', async () => {
@@ -1138,6 +1384,101 @@ describe('ExternalBoardKanbanPage quick import', () => {
     expect(quickFetch).toHaveBeenCalledTimes(1);
 
     resolveDetail({ ok: true, json: async () => quickDetail() });
+    expect(await screen.findByText('Import dialog')).toBeInTheDocument();
+  });
+
+  it('does not navigate when Project A detail resolves after the Project B rerender', async () => {
+    const pendingDetail = deferred<{
+      ok: boolean;
+      json: () => Promise<ExternalTaskDetail>;
+    }>();
+    quickFetch.mockImplementation(() => pendingDetail.promise);
+    const view = renderQuickBoard();
+
+    fireEvent.click(quickButton('Ship exact board'));
+    await waitFor(() => expect(quickFetch).toHaveBeenCalledTimes(1));
+
+    mockSelectedProject.id = '22222222-2222-4222-8222-222222222222';
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseConnectionsValue([
+        {
+          provider: 'clickup',
+          connected: true,
+          connectionId: 'connection-clickup-b',
+          generation: 1,
+          updatedAt: '2026-08-20T00:00:00.000Z',
+        },
+      ]),
+    );
+    view.rerender(kanbanTree('/board/clickup/space-901'));
+    await waitFor(() =>
+      expect(screen.getByTestId('current-location')).toHaveTextContent('/board/clickup'),
+    );
+
+    await act(async () => {
+      pendingDetail.resolve({
+        ok: true,
+        json: async () => quickDetail({ linkState: { linked: true, epicId: 'epic-project-a' } }),
+      });
+      await pendingDetail.promise;
+    });
+
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/board/clickup');
+    expect(screen.queryByTestId('epic-route')).not.toBeInTheDocument();
+    expect(screen.queryByText('Import dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText('Quick import unavailable')).not.toBeInTheDocument();
+  });
+
+  it('keeps the epoch N+1 task pending when the epoch N lookup settles late', async () => {
+    const oldDetail = deferred<{ ok: boolean; json: () => Promise<null> }>();
+    const newDetail = deferred<{
+      ok: boolean;
+      json: () => Promise<ExternalTaskDetail>;
+    }>();
+    quickFetch
+      .mockImplementationOnce(() => oldDetail.promise)
+      .mockImplementationOnce(() => newDetail.promise);
+    const view = renderQuickBoard();
+
+    fireEvent.click(quickButton('Ship exact board'));
+    await waitFor(() => expect(quickFetch).toHaveBeenCalledTimes(1));
+
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseConnectionsValue([
+        {
+          provider: 'clickup',
+          connected: true,
+          connectionId: 'connection-clickup-a',
+          generation: 2,
+          updatedAt: '2026-08-20T00:00:00.000Z',
+        },
+      ]),
+    );
+    view.rerender(kanbanTree('/board/clickup/space-901'));
+    fireEvent.click(quickButton('Second task'));
+    await waitFor(() => expect(quickFetch).toHaveBeenCalledTimes(2));
+
+    const boardRegion = screen.getByRole('region', { name: 'Task board' });
+    boardRegion.focus();
+    await act(async () => {
+      oldDetail.resolve({ ok: false, json: async () => null });
+      await oldDetail.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByText('Quick import unavailable')).not.toBeInTheDocument();
+    expect(quickButton('Second task')).toHaveAttribute('aria-disabled', 'true');
+    expect(boardRegion).toHaveFocus();
+    fireEvent.click(quickButton('Ship exact board'));
+    expect(quickFetch).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      newDetail.resolve({
+        ok: true,
+        json: async () => quickDetail({ remoteId: 'task-2', remoteKey: 'CU-2' }),
+      });
+      await newDetail.promise;
+    });
     expect(await screen.findByText('Import dialog')).toBeInTheDocument();
   });
 
@@ -1248,7 +1589,7 @@ describe('ExternalBoardKanbanPage quick import', () => {
   });
 
   it('passes the current selected project to the import dialog', async () => {
-    mockSelectedProject.id = 'project-7';
+    mockSelectedProject.id = '77777777-7777-4777-8777-777777777777';
     quickFetch.mockImplementation(() =>
       Promise.resolve({ ok: true, json: async () => quickDetail() }),
     );
@@ -1257,7 +1598,10 @@ describe('ExternalBoardKanbanPage quick import', () => {
     fireEvent.click(quickButton('Ship exact board'));
 
     expect(await screen.findByText('Import dialog')).toBeInTheDocument();
-    expect(mockImportProps.initialProjectId).toBe('project-7');
+    expect(mockImportProps).toEqual({
+      projectId: '77777777-7777-4777-8777-777777777777',
+      projectName: 'Product',
+    });
   });
 });
 

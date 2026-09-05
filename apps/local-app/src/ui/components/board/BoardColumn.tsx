@@ -5,6 +5,8 @@ import EpicPreview from '@/ui/components/shared/EpicPreview';
 import { EpicContextMenu } from '@/ui/components/board/EpicContextMenu';
 import { EpicCard } from '@/ui/components/board/EpicCard';
 import { cn } from '@/ui/lib/utils';
+import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
+import type { BoardRelationQuickLinkBindings } from '@/ui/hooks/useBoardRelationQuickLink';
 import type { Epic, Status } from './types';
 
 export interface BoardColumnProps {
@@ -35,6 +37,9 @@ export interface BoardColumnProps {
   externalSources?: ReadonlyMap<string, ExternalTaskSourceSummary>;
   /** Estimated-time totals in whole minutes by Epic ID (root epics only). */
   timeTotals?: ReadonlyMap<string, number>;
+  /** Relation counts by Epic ID for typed card badges. */
+  relationCounts?: ReadonlyMap<string, EpicRelationCounts>;
+  relationQuickLink?: BoardRelationQuickLinkBindings;
 }
 
 export function BoardColumn({
@@ -63,6 +68,8 @@ export function BoardColumn({
   getSubEpicCountsByStatus,
   externalSources,
   timeTotals,
+  relationCounts,
+  relationQuickLink,
 }: BoardColumnProps) {
   return (
     <div
@@ -109,7 +116,10 @@ export function BoardColumn({
           <Plus className="h-4 w-4" />
         </Button>
       </div>
-      <div className="flex-1 overflow-y-auto p-2 space-y-2 min-h-0">
+      <div
+        className="flex-1 overflow-y-auto p-2 space-y-2 min-h-0"
+        onScroll={relationQuickLink?.cancel}
+      >
         {epics.length === 0 && (
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <AlertCircle className="h-8 w-8 text-muted-foreground mb-2" />
@@ -146,6 +156,9 @@ export function BoardColumn({
               subEpicCountsByStatus={getSubEpicCountsByStatus?.(epic.id)}
               source={externalSources?.get(epic.id)}
               timeTotalMinutes={timeTotals?.get(epic.id)}
+              relationCounts={relationCounts?.get(epic.id)}
+              relationQuickLink={relationQuickLink}
+              data-relation-epic-id={epic.id}
               renderPreview={() => {
                 const agentName = getAgentName(epic.agentId);
                 const showFilterToggle = epic.parentId === null;

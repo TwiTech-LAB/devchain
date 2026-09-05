@@ -1,0 +1,4 @@
+# Template sources and compiled templates round-trip byte-for-byte; any
+# line-ending normalization on checkin/checkout would corrupt them.
+apps/local-app/templates-src/** -text
+apps/local-app/templates/** -text

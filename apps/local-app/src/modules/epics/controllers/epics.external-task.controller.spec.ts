@@ -76,6 +76,25 @@ describe('EpicsController external task routes', () => {
     },
   );
 
+  it('returns the original Epic project when the remote identity is already linked elsewhere', async () => {
+    const originalProjectId = '33333333-3333-4333-8333-333333333333';
+    service.importExternalTask.mockResolvedValue({
+      epic: {
+        id: 'epic-existing',
+        projectId: originalProjectId,
+        statusId: 'status-existing',
+        title: 'Existing Epic',
+      },
+      externalTaskLink: { id: 'internal-link-existing' },
+      created: false,
+    });
+
+    await expect(controller.importExternalTask(body)).resolves.toEqual({
+      epic: { id: 'epic-existing', projectId: originalProjectId },
+      created: false,
+    });
+  });
+
   it('rejects agent assignment and non-provider source URLs', async () => {
     await expect(controller.importExternalTask({ ...body, agentId: 'agent-1' })).rejects.toThrow();
     await expect(

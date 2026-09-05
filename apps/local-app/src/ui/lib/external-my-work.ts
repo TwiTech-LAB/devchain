@@ -55,8 +55,36 @@ export const externalMyWorkQueryKeys = {
       'task-time-entries',
       taskId,
     ] as const,
+  taskEstimateLogState: (
+    provider: string,
+    connectionEpoch: IntegrationConnectionEpoch | null,
+    projectId: string,
+    taskId: string,
+    remoteScopeKey: string,
+    runtimeScope: 'main' | 'isolated',
+  ) =>
+    [
+      ...externalMyWorkQueryKeys.epoch(provider, connectionEpoch),
+      'task-estimate-log-state',
+      projectId,
+      taskId,
+      remoteScopeKey,
+      runtimeScope,
+    ] as const,
   links: (provider: string, connectionEpoch: IntegrationConnectionEpoch | null) =>
     [...externalMyWorkQueryKeys.epoch(provider, connectionEpoch), 'links'] as const,
+  // Pure and logged-minutes-enriched link batches must never share a cache
+  // entry; the flag extends the links family so prefix invalidation still
+  // reaches both variants.
+  linksBatch: (
+    provider: string,
+    connectionEpoch: IntegrationConnectionEpoch | null,
+    includeLoggedMinutes: boolean,
+  ) =>
+    [
+      ...externalMyWorkQueryKeys.links(provider, connectionEpoch),
+      { includeLoggedMinutes },
+    ] as const,
 };
 
 export const epicExternalSourceQueryKeys = {

@@ -660,6 +660,105 @@ describe('SessionReaderService', () => {
   });
 
   describe('getTranscriptSummaryWithCursor', () => {
+    it('serves a live not-yet-created transcript as empty and transitions when the file appears', async () => {
+      setupResolveChain();
+      const missing = new ValidationError('Transcript file does not exist or is not accessible', {
+        category: 'file-access',
+        path: '/home/user/.claude/projects/-test/session.jsonl',
+        reason: 'missing',
+        fsCode: 'ENOENT',
+      });
+      mockPathValidator.validateForRead.mockRejectedValue(missing);
+
+      const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+      const lightweightSummary = await service.getTranscriptSummary('sess-1');
+      const chunks = await service.getUnifiedTranscriptChunks('sess-1');
+      const tail = await service.getTranscriptTail('sess-1', summary.cursor);
+
+      expect(summary).toMatchObject({
+        sessionId: 'sess-1',
+        providerName: 'claude',
+        messageCount: 0,
+        isOngoing: true,
+      });
+      expect(lightweightSummary).toMatchObject({ messageCount: 0, isOngoing: true });
+      expect(chunks).toEqual({
+        chunks: [],
+        nextCursor: null,
+        prevCursor: null,
+        totalCount: 0,
+      });
+      expect(tail).toMatchObject({
+        kind: 'delta',
+        cursor: summary.cursor,
+        replaceFromChunkId: null,
+        deltaChunks: [],
+        deltaMessages: [],
+        totalChunkCount: 0,
+        totalMessageCount: 0,
+      });
+      expect(mockSessionCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+
+      mockPathValidator.validateForRead.mockResolvedValue(
+        '/home/user/.claude/projects/-test/session.jsonl',
+      );
+      const materialized = makeSession();
+      mockAdapter.parseFullSession.mockResolvedValue(materialized);
+
+      const recovered = await service.getTranscriptSummaryWithCursor('sess-1');
+
+      expect(recovered.messageCount).toBe(materialized.messages.length);
+      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+    });
+
+    it('serves the live pre-hook window with no transcript path as empty', async () => {
+      setupResolveChain();
+      mockSessionsService.getSession.mockReturnValue({
+        id: 'sess-1',
+        agentId: 'agent-1',
+        providerNameAtLaunch: 'claude',
+        transcriptPath: null,
+        status: 'running',
+      });
+
+      await expect(service.getTranscriptSummaryWithCursor('sess-1')).resolves.toMatchObject({
+        sessionId: 'sess-1',
+        providerName: 'claude',
+        messageCount: 0,
+        isOngoing: true,
+      });
+      expect(mockPathValidator.validateForRead).not.toHaveBeenCalled();
+      expect(mockSessionCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+    });
+
+    it('does not hide a missing historical transcript or a live permission failure', async () => {
+      setupResolveChain();
+      const missing = new ValidationError('Transcript file does not exist or is not accessible', {
+        category: 'file-access',
+        reason: 'missing',
+        fsCode: 'ENOENT',
+      });
+      mockSessionsService.getSession.mockReturnValue({
+        id: 'sess-1',
+        agentId: 'agent-1',
+        providerNameAtLaunch: 'claude',
+        transcriptPath: '/home/user/.claude/projects/-test/session.jsonl',
+        status: 'stopped',
+      });
+      mockPathValidator.validateForRead.mockRejectedValue(missing);
+
+      await expect(service.getTranscriptSummaryWithCursor('sess-1')).rejects.toBe(missing);
+
+      setupResolveChain();
+      const inaccessible = new ValidationError(
+        'Transcript file does not exist or is not accessible',
+        { category: 'file-access', reason: 'unavailable', fsCode: 'EACCES' },
+      );
+      mockPathValidator.validateForRead.mockRejectedValue(inaccessible);
+
+      await expect(service.getTranscriptSummaryWithCursor('sess-1')).rejects.toBe(inaccessible);
+    });
+
     it('mints an opaque cursor from a single parse and the cursor round-trips into getTranscriptTail', async () => {
       setupResolveChain();
       const session = makeSession(); // 3 messages
@@ -1863,13 +1962,13 @@ describe('SessionReaderService', () => {
         expected: 1_000_000,
       },
       {
-        name: 'unsupported Claude model',
+        name: 'catalog-unknown Claude model',
         provider: 'claude',
         providerSessionId: 'claude-runtime-1',
         model: 'claude-experimental-9',
         captureModel: 'claude-experimental-9',
         catalog: null,
-        expected: 200_000,
+        expected: 900_000,
       },
       {
         name: 'non-Claude provider',
@@ -1880,7 +1979,7 @@ describe('SessionReaderService', () => {
         catalog: 400_000,
         expected: 123_000,
       },
-    ])('falls through $name capture to catalog or fallback', async (testCase) => {
+    ])('resolves $name capture through its eligible source', async (testCase) => {
       const metrics = makeMetrics({
         primaryModel: testCase.model,
         contextWindowTokens: 123_000,

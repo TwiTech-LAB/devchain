@@ -36,7 +36,7 @@ const KNOWN_EXCEPTIONS = new Set([
   'SessionMetricsHeader.tsx:172',
   'SessionMetricsHeader.tsx:182',
   // InlineSessionSummaryChip — summary overlay, not in session-reader hierarchy scope
-  'InlineSessionSummaryChip.tsx:261',
+  'InlineSessionSummaryChip.tsx:223',
   // ToolGroupItem — T5 parallel task, not yet uplifted
   'ToolGroupItem.tsx:77',
   'ToolGroupItem.tsx:90',

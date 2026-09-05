@@ -12,6 +12,12 @@ import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import { applyExternalTaskStatusSnapshot } from '@/ui/lib/external-my-work-snapshot';
 import { fetchFreshExternalTaskDetail } from '@/ui/lib/external-task-detail-query';
 import type { IntegrationConnectionEpoch } from '@/ui/lib/integration-connections';
+import {
+  isSameIntegrationPresentationScope,
+  type IntegrationPresentationScope,
+  validIntegrationProjectId,
+  withIntegrationProjectId,
+} from '@/ui/lib/integration-project-scope';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 
 type SupportedSnapshot = Extract<ExternalMyWorkResult, { supported: true }>;
@@ -55,6 +61,43 @@ export interface ExternalTaskMoveChoice {
 interface FinalizeMoveRequest {
   taskId: string;
   option: ExternalTaskStatusOption;
+}
+
+interface CurrentMoveScope {
+  provider: ExternalBoardProvider;
+  projectId: string | null;
+  connectionEpoch: IntegrationConnectionEpoch | null;
+  includeCompleted: boolean;
+}
+
+interface MoveOperation {
+  readonly token: number;
+  readonly presentationScope: IntegrationPresentationScope;
+  readonly includeCompleted: boolean;
+  readonly landingKey: ReturnType<typeof externalMyWorkQueryKeys.landingSnapshot>;
+  readonly landingScopeKey: ReturnType<typeof externalMyWorkQueryKeys.landing>;
+  readonly detailKey: ReturnType<typeof externalMyWorkQueryKeys.taskDetail>;
+}
+
+interface ActiveMoveChoice {
+  readonly operation: MoveOperation;
+  readonly choice: ExternalTaskMoveChoice;
+}
+
+function isSameMoveScope(operation: MoveOperation, current: CurrentMoveScope): boolean {
+  const currentPresentationScope =
+    current.projectId !== null && current.connectionEpoch !== null
+      ? {
+          projectId: current.projectId,
+          provider: current.provider,
+          connectionEpoch: current.connectionEpoch,
+          taskId: operation.presentationScope.taskId,
+        }
+      : null;
+  return (
+    operation.includeCompleted === current.includeCompleted &&
+    isSameIntegrationPresentationScope(operation.presentationScope, currentPresentationScope)
+  );
 }
 
 /**
@@ -123,6 +166,7 @@ export { applyExternalTaskStatusSnapshot as applyOptimisticMoveSnapshot };
 
 export interface UseExternalTaskMoveOptions {
   connectionEpoch: IntegrationConnectionEpoch | null;
+  projectId: string | null;
   includeCompleted: boolean;
 }
 
@@ -135,65 +179,101 @@ export interface UseExternalTaskMoveOptions {
  */
 export function useExternalTaskMove(
   provider: ExternalBoardProvider,
-  { connectionEpoch, includeCompleted }: UseExternalTaskMoveOptions,
+  { connectionEpoch, projectId, includeCompleted }: UseExternalTaskMoveOptions,
 ) {
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
+  const scopedProjectId = validIntegrationProjectId(projectId);
   const [dragSource, setDragSource] = useState<ExternalTaskMoveSource | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState<string | null>(null);
-  const [choice, setChoice] = useState<ExternalTaskMoveChoice | null>(null);
+  const [activeChoice, setActiveChoice] = useState<ActiveMoveChoice | null>(null);
   const [isChoiceResolving, setIsChoiceResolving] = useState(false);
   const [settledMove, setSettledMove] = useState<ExternalTaskMoveSettlement | null>(null);
   const settledNonceRef = useRef(0);
-  // Synchronous latch acquired before the detail fetch or status write so a
-  // same-tick repeated move request cannot issue a second remote write.
-  const moveInFlightRef = useRef(false);
-  // The move latch remains held while the user chooses a Jira transition.
-  // This second synchronous latch protects the choice itself from two
-  // same-tick activations before React can render the pending state.
-  const choiceResolvingRef = useRef(false);
+  const operationTokenRef = useRef(0);
+  // Ownership is token-based because an older async continuation may settle
+  // after a replacement scope has already acquired its own move latch.
+  const operationOwnerRef = useRef<MoveOperation | null>(null);
+  const choiceResolvingOwnerRef = useRef<number | null>(null);
+  const scopeRef = useRef<CurrentMoveScope>({
+    provider,
+    projectId: scopedProjectId,
+    connectionEpoch,
+    includeCompleted,
+  });
+  scopeRef.current = {
+    provider,
+    projectId: scopedProjectId,
+    connectionEpoch,
+    includeCompleted,
+  };
   const aliveRef = useRef(true);
 
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
-      moveInFlightRef.current = false;
-      choiceResolvingRef.current = false;
+      operationOwnerRef.current = null;
+      choiceResolvingOwnerRef.current = null;
     };
   }, []);
 
-  // Cache identity is epoch-scoped, so a new epoch invalidates every captured
-  // move context. Releasing state here does not protect an in-flight remote
-  // request; the backend resolves the current connection when it executes.
+  const isCurrentOperation = useCallback((operation: MoveOperation): boolean => {
+    return (
+      aliveRef.current &&
+      operationOwnerRef.current?.token === operation.token &&
+      isSameMoveScope(operation, scopeRef.current)
+    );
+  }, []);
+
+  const releaseOperation = useCallback((operation: MoveOperation): boolean => {
+    if (operationOwnerRef.current?.token !== operation.token) return false;
+    const canPublish = aliveRef.current && isSameMoveScope(operation, scopeRef.current);
+    operationOwnerRef.current = null;
+    if (choiceResolvingOwnerRef.current === operation.token) {
+      choiceResolvingOwnerRef.current = null;
+    }
+    return canPublish;
+  }, []);
+
   useEffect(() => {
-    moveInFlightRef.current = false;
-    choiceResolvingRef.current = false;
+    const operation = operationOwnerRef.current;
+    if (operation && isSameMoveScope(operation, scopeRef.current)) return;
+    if (operationOwnerRef.current?.token === operation?.token) {
+      operationOwnerRef.current = null;
+    }
+    if (choiceResolvingOwnerRef.current === operation?.token || operation === null) {
+      choiceResolvingOwnerRef.current = null;
+    }
     setDragSource(null);
     setPendingTaskId(null);
-    setChoice(null);
+    setActiveChoice(null);
     setIsChoiceResolving(false);
     setAnnouncement(null);
     setSettledMove(null);
-  }, [connectionEpoch]);
+  }, [connectionEpoch, includeCompleted, provider, scopedProjectId]);
 
   const finalizeMove = useCallback(
-    async (move: FinalizeMoveRequest): Promise<void> => {
-      const landingKey = externalMyWorkQueryKeys.landingSnapshot(
-        provider,
-        connectionEpoch,
-        includeCompleted,
-      );
-      const savedSnapshot = queryClient.getQueryData<SupportedSnapshot>(landingKey);
-      queryClient.setQueryData<SupportedSnapshot>(landingKey, (current) =>
+    async (operation: MoveOperation, move: FinalizeMoveRequest): Promise<void> => {
+      if (!isCurrentOperation(operation)) return;
+      const savedSnapshot = queryClient.getQueryData<SupportedSnapshot>(operation.landingKey);
+      queryClient.setQueryData<SupportedSnapshot>(operation.landingKey, (current) =>
         current
-          ? applyExternalTaskStatusSnapshot(current, move.taskId, move.option, !includeCompleted)
+          ? applyExternalTaskStatusSnapshot(
+              current,
+              move.taskId,
+              move.option,
+              !operation.includeCompleted,
+            )
           : current,
       );
       try {
         await fetchJsonOrThrow<ExternalTaskActionResult>(
-          `/api/integrations/my-work/${provider}/tasks/${encodeURIComponent(move.taskId)}/status`,
+          withIntegrationProjectId(
+            `/api/integrations/my-work/${operation.presentationScope.provider}/tasks/${encodeURIComponent(move.taskId)}/status`,
+            operation.presentationScope.projectId,
+          ),
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -207,53 +287,56 @@ export function useExternalTaskMove(
         // snapshot and only mark both landing scopes stale, so an immediate
         // refetch cannot move the card back to its previous column.
         await queryClient.invalidateQueries({
-          queryKey: externalMyWorkQueryKeys.landing(provider, connectionEpoch),
+          queryKey: operation.landingScopeKey,
           refetchType: 'none',
         });
         await queryClient.invalidateQueries({
-          queryKey: externalMyWorkQueryKeys.taskDetail(provider, connectionEpoch, move.taskId),
+          queryKey: operation.detailKey,
           exact: true,
         });
-        if (aliveRef.current) {
+        if (isCurrentOperation(operation)) {
           setAnnouncement(MOVE_SUCCESS_ANNOUNCEMENT);
           settledNonceRef.current += 1;
           setSettledMove({
             taskId: move.taskId,
-            removed: !includeCompleted && move.option.category === 'completed',
+            removed: !operation.includeCompleted && move.option.category === 'completed',
             nonce: settledNonceRef.current,
           });
         }
       } catch {
         if (savedSnapshot !== undefined) {
-          queryClient.setQueryData(landingKey, savedSnapshot);
+          queryClient.setQueryData(operation.landingKey, savedSnapshot);
         }
         // The write failed against current provider data: restore the exact
         // prior snapshot, then reconcile authoritatively from the provider.
         await queryClient.invalidateQueries({
-          queryKey: externalMyWorkQueryKeys.landing(provider, connectionEpoch),
+          queryKey: operation.landingScopeKey,
         });
         await queryClient.invalidateQueries({
-          queryKey: externalMyWorkQueryKeys.taskDetail(provider, connectionEpoch, move.taskId),
+          queryKey: operation.detailKey,
           exact: true,
         });
-        if (aliveRef.current) setAnnouncement(MOVE_FAILED_ANNOUNCEMENT);
+        if (isCurrentOperation(operation)) setAnnouncement(MOVE_FAILED_ANNOUNCEMENT);
       }
     },
-    [apiFetch, connectionEpoch, includeCompleted, provider, queryClient],
+    [apiFetch, isCurrentOperation, queryClient],
   );
 
   const executeMove = useCallback(
-    async ({ source, target }: ExternalTaskMoveRequest): Promise<void> => {
-      const release = () => {
-        moveInFlightRef.current = false;
-      };
+    async (
+      operation: MoveOperation,
+      { source, target }: ExternalTaskMoveRequest,
+    ): Promise<void> => {
+      if (!isCurrentOperation(operation)) {
+        releaseOperation(operation);
+        return;
+      }
       if (!target || target.synthetic) {
-        release();
-        setAnnouncement(MOVE_UNAVAILABLE_ANNOUNCEMENT);
+        if (releaseOperation(operation)) setAnnouncement(MOVE_UNAVAILABLE_ANNOUNCEMENT);
         return;
       }
       if (target.columnKey === source.columnKey) {
-        release();
+        releaseOperation(operation);
         return;
       }
       setPendingTaskId(source.taskId);
@@ -263,88 +346,148 @@ export function useExternalTaskMove(
         detail = await fetchFreshExternalTaskDetail(
           queryClient,
           apiFetch,
-          provider,
-          connectionEpoch,
+          operation.presentationScope.provider,
+          operation.presentationScope.connectionEpoch,
+          operation.presentationScope.projectId,
           source.taskId,
         );
       } catch {
-        release();
-        setPendingTaskId(null);
-        setAnnouncement(MOVE_FAILED_ANNOUNCEMENT);
+        if (releaseOperation(operation)) {
+          setPendingTaskId(null);
+          setAnnouncement(MOVE_FAILED_ANNOUNCEMENT);
+        }
         return;
       }
-      if (!aliveRef.current) {
-        release();
+      if (!isCurrentOperation(operation)) {
+        releaseOperation(operation);
         return;
       }
       const changeSupported = detail.actions.some(
         (action) => action.action === 'change_status' && action.supported,
       );
       const options = changeSupported
-        ? resolveExternalMoveOptions(provider, detail.allowedStatuses, target)
+        ? resolveExternalMoveOptions(
+            operation.presentationScope.provider,
+            detail.allowedStatuses,
+            target,
+          )
         : [];
       if (options.length === 0) {
-        release();
-        setPendingTaskId(null);
-        setAnnouncement(MOVE_UNAVAILABLE_ANNOUNCEMENT);
+        if (releaseOperation(operation)) {
+          setPendingTaskId(null);
+          setAnnouncement(MOVE_UNAVAILABLE_ANNOUNCEMENT);
+        }
         return;
       }
       if (options.length > 1) {
-        setChoice({
-          taskId: source.taskId,
-          taskTitle: detail.title,
-          target,
-          options,
+        setActiveChoice({
+          operation,
+          choice: {
+            taskId: source.taskId,
+            taskTitle: detail.title,
+            target,
+            options,
+          },
         });
         setAnnouncement(MOVE_CHOICE_ANNOUNCEMENT);
         return;
       }
-      await finalizeMove({ taskId: source.taskId, option: options[0]! });
-      release();
-      if (aliveRef.current) setPendingTaskId(null);
+      await finalizeMove(operation, { taskId: source.taskId, option: options[0]! });
+      if (releaseOperation(operation)) setPendingTaskId(null);
     },
-    [apiFetch, connectionEpoch, finalizeMove, provider, queryClient],
+    [apiFetch, finalizeMove, isCurrentOperation, queryClient, releaseOperation],
   );
 
   const requestMove = useCallback(
     (request: ExternalTaskMoveRequest): void => {
-      if (moveInFlightRef.current) return;
-      moveInFlightRef.current = true;
-      void executeMove(request);
+      if (
+        operationOwnerRef.current !== null ||
+        connectionEpoch === null ||
+        scopedProjectId === null
+      ) {
+        if (connectionEpoch === null || scopedProjectId === null) {
+          setAnnouncement(MOVE_UNAVAILABLE_ANNOUNCEMENT);
+        }
+        return;
+      }
+      const operation: MoveOperation = {
+        token: ++operationTokenRef.current,
+        presentationScope: {
+          provider,
+          projectId: scopedProjectId,
+          connectionEpoch,
+          taskId: request.source.taskId,
+        },
+        includeCompleted,
+        landingKey: externalMyWorkQueryKeys.landingSnapshot(
+          provider,
+          connectionEpoch,
+          includeCompleted,
+        ),
+        landingScopeKey: externalMyWorkQueryKeys.landing(provider, connectionEpoch),
+        detailKey: externalMyWorkQueryKeys.taskDetail(
+          provider,
+          connectionEpoch,
+          request.source.taskId,
+        ),
+      };
+      operationOwnerRef.current = operation;
+      void executeMove(operation, request);
     },
-    [executeMove],
+    [connectionEpoch, executeMove, includeCompleted, provider, scopedProjectId],
   );
 
   const resolveChoice = useCallback(
     (option: ExternalTaskStatusOption): void => {
-      const current = choice;
-      if (!current || !moveInFlightRef.current || choiceResolvingRef.current) return;
-      choiceResolvingRef.current = true;
+      if (
+        !activeChoice ||
+        !isCurrentOperation(activeChoice.operation) ||
+        choiceResolvingOwnerRef.current !== null
+      ) {
+        return;
+      }
+      const selected = activeChoice.choice.options.find(
+        (candidate) => candidate.actionValue === option.actionValue,
+      );
+      if (!selected) return;
+      choiceResolvingOwnerRef.current = activeChoice.operation.token;
       setIsChoiceResolving(true);
       setAnnouncement(MOVE_PENDING_ANNOUNCEMENT);
       void (async () => {
         try {
-          await finalizeMove({ taskId: current.taskId, option });
+          await finalizeMove(activeChoice.operation, {
+            taskId: activeChoice.choice.taskId,
+            option: selected,
+          });
         } finally {
-          choiceResolvingRef.current = false;
-          moveInFlightRef.current = false;
-          if (!aliveRef.current) return;
-          setIsChoiceResolving(false);
-          setChoice(null);
-          setPendingTaskId(null);
+          if (choiceResolvingOwnerRef.current === activeChoice.operation.token) {
+            choiceResolvingOwnerRef.current = null;
+          }
+          if (releaseOperation(activeChoice.operation)) {
+            setIsChoiceResolving(false);
+            setActiveChoice(null);
+            setPendingTaskId(null);
+          }
         }
       })();
     },
-    [choice, finalizeMove],
+    [activeChoice, finalizeMove, isCurrentOperation, releaseOperation],
   );
 
   const cancelChoice = useCallback((): void => {
-    if (choiceResolvingRef.current) return;
-    moveInFlightRef.current = false;
-    setChoice(null);
-    setPendingTaskId(null);
-    setAnnouncement(MOVE_CANCELED_ANNOUNCEMENT);
-  }, []);
+    if (
+      !activeChoice ||
+      choiceResolvingOwnerRef.current !== null ||
+      !isCurrentOperation(activeChoice.operation)
+    ) {
+      return;
+    }
+    if (releaseOperation(activeChoice.operation)) {
+      setActiveChoice(null);
+      setPendingTaskId(null);
+      setAnnouncement(MOVE_CANCELED_ANNOUNCEMENT);
+    }
+  }, [activeChoice, isCurrentOperation, releaseOperation]);
 
   const startDrag = useCallback((source: ExternalTaskMoveSource): void => {
     setDragSource(source);
@@ -365,7 +508,7 @@ export function useExternalTaskMove(
     pendingTaskId,
     isMovePending: pendingTaskId !== null,
     announcement,
-    choice,
+    choice: activeChoice?.choice ?? null,
     isChoiceResolving,
     settledMove,
     requestMove,
