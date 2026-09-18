@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
-import { SessionReaderService } from './session-reader.service';
+import { SessionReaderService, type TranscriptIndexWindow } from './session-reader.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
@@ -1401,6 +1401,7 @@ describe('SessionReaderService', () => {
       expect(result.providerName).toBe('claude');
       expect(result.isOngoing).toBe(false);
       expect(decodeCursor(result.cursor)?.fileSize).toBe(1024);
+      expect(result).not.toHaveProperty('pages');
     });
 
     it('advances the opaque index cursor when an equal-shape source revision changes', async () => {
@@ -1490,6 +1491,158 @@ describe('SessionReaderService', () => {
       const fullSize = JSON.stringify(full).length;
 
       expect(indexSize).toBeLessThan(fullSize / 2);
+    });
+  });
+
+  // Service projection is the cheapest layer that can prove page coverage and parse sharing.
+  describe('combined transcript index', () => {
+    function seedChunks(count: number) {
+      setupResolveChain();
+      const session = makeSession(
+        Array.from({ length: count }, (_, i) =>
+          makeMessage(`m${i}`, i % 2 ? 'assistant' : 'user', '2026-01-01T10:00:00.000Z'),
+        ),
+      );
+      mockAdapter.parseFullSession.mockResolvedValue(session);
+      return session;
+    }
+
+    it.each([
+      { count: 0, window: { pageSize: 10, live: true }, starts: [] },
+      { count: 7, window: { pageSize: 10, live: true }, starts: [0] },
+      { count: 103, window: { pageSize: 10 }, starts: [0, 10, 20] },
+      { count: 103, window: { pageSize: 10, live: true }, starts: [0, 10, 20, 90, 100] },
+      { count: 33, window: { pageSize: 10, live: true }, starts: [0, 10, 20, 30] },
+      {
+        count: 103,
+        window: { pageSize: 10, firstVirtualIndex: 25, lastVirtualIndex: 32, live: true },
+        starts: [10, 20, 30, 40, 90, 100],
+      },
+      {
+        count: 103,
+        window: { pageSize: 10, firstVirtualIndex: 25, lastVirtualIndex: 32, live: false },
+        starts: [10, 20, 30, 40],
+      },
+      {
+        count: 33,
+        window: { pageSize: 10, firstVirtualIndex: 90, lastVirtualIndex: 99, live: true },
+        starts: [20, 30],
+      },
+      {
+        count: 200,
+        window: { pageSize: 100, firstVirtualIndex: 0, lastVirtualIndex: 0, live: true },
+        starts: [0, 100],
+      },
+      {
+        count: 103,
+        window: { pageSize: 10, firstVirtualIndex: Number.MAX_SAFE_INTEGER },
+        starts: [90, 100],
+      },
+    ])('covers retained IDs and aligned cache keys: %j', async ({ count, window, starts }) => {
+      seedChunks(count);
+      const result = await service.getTranscriptIndex('sess-1', window);
+      expect(result.pages?.map((page) => page.cursor)).toEqual(starts.map((i) => `chunk-${i}`));
+      const ids = result.pages!.flatMap((page) => page.response.chunks.map((chunk) => chunk.id));
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids.length).toBeLessThanOrEqual(200);
+      if (count > 0) {
+        const first = Math.min(window.firstVirtualIndex ?? 0, count - 1);
+        const last = Math.max(
+          first,
+          Math.min(window.lastVirtualIndex ?? window.pageSize * 2 - 1, count - 1),
+        );
+        const retained = result.chunkIds.filter(
+          (_, i) =>
+            (i >= first - window.pageSize && i <= last + window.pageSize) ||
+            (window.live && i >= count - window.pageSize),
+        );
+        expect(ids).toEqual(expect.arrayContaining(retained));
+      }
+      for (const [i, page] of result.pages!.entries()) {
+        const start = starts[i];
+        const size = Math.min(window.pageSize, count - start);
+        expect(page.size).toBe(size);
+        expect(page.response).toMatchObject({
+          totalCount: count,
+          prevCursor: result.chunkIds[start - 1] ?? null,
+          nextCursor: result.chunkIds[start + size] ?? null,
+        });
+        expect(page.response.chunks.map((chunk) => chunk.id)).toEqual(
+          result.chunkIds.slice(start, start + size),
+        );
+      }
+      expect(mockAdapter.parseFullSession).toHaveBeenCalledTimes(1);
+      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the captured generation when the source appends before projection', async () => {
+      const captured = seedChunks(103);
+      const appended = makeSession([
+        ...captured.messages,
+        makeMessage('new', 'assistant', '2026-01-01T10:00:05.000Z'),
+      ]);
+      mockAdapter.parseFullSession.mockImplementationOnce(async () => {
+        mockAdapter.parseFullSession.mockResolvedValue(appended);
+        return captured;
+      });
+      const result = await service.getTranscriptIndex('sess-1', { pageSize: 10, live: true });
+      expect(mockAdapter.parseFullSession).toHaveBeenCalledTimes(1);
+      expect(decodeCursor(result.cursor)).toMatchObject({ messageCount: 103, chunkCount: 103 });
+      expect(result.totals).toEqual({ messageCount: 103, chunkCount: 103 });
+      expect(result.pages!.every((page) => page.response.totalCount === 103)).toBe(true);
+      expect(result.pages!.at(-1)!.response.chunks.at(-1)!.id).toBe(result.chunkIds.at(-1));
+      expect(JSON.stringify(result)).not.toContain('Message new');
+    });
+
+    it.each([
+      { pageSize: 0 },
+      { pageSize: 101 },
+      { pageSize: 1.5 },
+      { pageSize: NaN },
+      { pageSize: 10, firstVirtualIndex: -1 },
+      { pageSize: 10, lastVirtualIndex: 1.5 },
+      { pageSize: 10, firstVirtualIndex: Number.MAX_SAFE_INTEGER + 1 },
+      { pageSize: 10, firstVirtualIndex: 3, lastVirtualIndex: 2 },
+      { pageSize: 10, firstVirtualIndex: 0, lastVirtualIndex: 200 },
+      { pageSize: 10, lastVirtualIndex: Number.MAX_SAFE_INTEGER },
+      { pageSize: 10, live: 'false' },
+    ])('rejects invalid windows before source resolution: %j', async (window) => {
+      await expect(
+        service.getTranscriptIndex('sess-1', window as TranscriptIndexWindow),
+      ).rejects.toThrow(ValidationError);
+      expect(mockSessionsService.getSession).not.toHaveBeenCalled();
+      expect(mockSessionCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { pageSize: 100 },
+      { pageSize: 100, firstVirtualIndex: 0, lastVirtualIndex: 0, live: true },
+      { pageSize: 10, firstVirtualIndex: 10, lastVirtualIndex: 199 },
+    ])('rejects padding/alignment/tail overflow before projecting bodies: %j', async (window) => {
+      seedChunks(501);
+      await expect(service.getTranscriptIndex('sess-1', window)).rejects.toThrow(
+        'exceeds 200 chunk bodies',
+      );
+      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves truncation without mutating the captured session', async () => {
+      const session = seedChunks(2);
+      const content = 'x'.repeat(3000);
+      session.messages[1].toolResults = [{ toolCallId: 'tc-1', content, isError: false }];
+      session.messages[1].content = [
+        { type: 'tool_result', toolCallId: 'tc-1', content, isError: false },
+      ];
+      const result = await service.getTranscriptIndex('sess-1', { pageSize: 10 });
+      const projected = result.pages![0].response.chunks[1];
+      expect(projected.messages[0].toolResults[0]).toMatchObject({
+        content: 'x'.repeat(2000) + '…',
+        isTruncated: true,
+        fullLength: 3000,
+      });
+      expect(session.messages[1].toolResults[0].content).toBe(content);
+      const ordinary = await service.getUnifiedTranscriptChunks('sess-1', 'chunk-0', 2);
+      expect(result.pages![0].response).toEqual(ordinary);
     });
   });
 

@@ -25,6 +25,7 @@ import { SessionsReadModule } from './sessions-read.module';
 import { SessionLauncherFacade } from './services/session-launcher-facade.service';
 import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
 import { ProviderRuntimePreparationService } from './services/provider-runtime-preparation';
+import { EpicTimeStoreModule } from '../epic-time/epic-time-store.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { ProviderRuntimePreparationService } from './services/provider-runtime-p
     ProviderAdaptersModule,
     forwardRef(() => ProvidersModule),
     RuntimeContextCaptureModule,
+    EpicTimeStoreModule,
   ],
   providers: [
     SessionsService,

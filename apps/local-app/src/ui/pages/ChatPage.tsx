@@ -520,6 +520,20 @@ export function ChatPage() {
     });
   }, [agentTimeAdmitted, agentTimeBufferSnapshot, inlineTerminalAgentId, queries.agents]);
 
+  // Resolves after the dialog unmounts: its Radix focus restoration must not
+  // override the success target. The trigger action may already be gone;
+  // never focus a detached control — Terminal tab + inline terminal → the
+  // terminal itself, otherwise the stable header root.
+  const restorePostDialogFocus = useCallback(() => {
+    window.setTimeout(() => {
+      if (inlineActiveTab === 'terminal' && !isInlineSessionWindowOpen && mainTerminalHandle) {
+        mainTerminalHandle.focus();
+      } else {
+        inlineHeaderRef.current?.focus();
+      }
+    }, 0);
+  }, [inlineActiveTab, isInlineSessionWindowOpen, mainTerminalHandle]);
+
   const handleAssignTimeSuccess = useCallback(
     (target: AssignAgentTimeTarget, epic: { id: string; title: string }) => {
       setAssignTimeTarget(null);
@@ -530,20 +544,20 @@ export function ChatPage() {
         title: 'Time logged',
         description: `Logged ${formatEpicTimeMinutes(target.minutes)} to ${epic.title}.`,
       });
-      // Resolve after the dialog unmounts: its Radix focus restoration must
-      // not override the success target. The trigger action may already be
-      // gone; never focus a detached control — Terminal tab + inline
-      // terminal → the terminal itself, otherwise the stable header root.
-      window.setTimeout(() => {
-        if (inlineActiveTab === 'terminal' && !isInlineSessionWindowOpen && mainTerminalHandle) {
-          mainTerminalHandle.focus();
-        } else {
-          inlineHeaderRef.current?.focus();
-        }
-      }, 0);
+      restorePostDialogFocus();
     },
-    [inlineActiveTab, isInlineSessionWindowOpen, mainTerminalHandle, queryClient, toast],
+    [queryClient, restorePostDialogFocus, toast],
   );
+
+  // Reset discards the unlogged balance without an Epic: only the buffer
+  // family changes (Epic-bound totals are untouched) and no time-logged
+  // announcement fires — the closed dialog and refreshed markers are the
+  // whole feedback.
+  const handleResetTimeSuccess = useCallback(() => {
+    setAssignTimeTarget(null);
+    void queryClient.invalidateQueries({ queryKey: epicTimeQueryKeys.bufferRoot() });
+    restorePostDialogFocus();
+  }, [queryClient, restorePostDialogFocus]);
 
   const selectedInlineUnloggedMinutes = inlineTerminalAgentId
     ? (unloggedMinutesByAgentId[inlineTerminalAgentId] ?? 0)
@@ -1498,6 +1512,7 @@ export function ChatPage() {
         target={assignTimeTarget}
         onCancel={() => setAssignTimeTarget(null)}
         onSuccess={handleAssignTimeSuccess}
+        onReset={handleResetTimeSuccess}
       />
       {customPromptTarget && (
         <CustomPromptPicker

@@ -526,6 +526,21 @@ export interface TranscriptIndex {
   latestOutputPreview: string | null;
   providerName: string;
   isOngoing: boolean;
+  pages?: TranscriptIndexPage[];
+}
+
+export interface TranscriptIndexPage {
+  cursor: string;
+  size: number;
+  response: SerializedChunkedResponse;
+}
+
+export interface TranscriptIndexRequest {
+  pageSize?: number;
+  firstVirtualIndex?: number;
+  lastVirtualIndex?: number;
+  live?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface SerializedChunkedResponse {
@@ -539,10 +554,16 @@ export async function fetchTranscriptIndex(
   sessionId: string,
   apiBase = '',
   fetchFn: FetchFn = defaultFetch,
+  options: TranscriptIndexRequest = {},
 ): Promise<TranscriptIndex> {
+  const params = new URLSearchParams();
+  for (const key of ['pageSize', 'firstVirtualIndex', 'lastVirtualIndex', 'live'] as const) {
+    if (options[key] !== undefined) params.set(key, String(options[key]));
+  }
+  const qs = params.size > 0 ? `?${params.toString()}` : '';
   return fetchJsonOrThrow<TranscriptIndex>(
-    `/api/sessions/${sessionId}/transcript/index`,
-    {},
+    `/api/sessions/${sessionId}/transcript/index${qs}`,
+    options.signal ? { signal: options.signal } : {},
     'Failed to fetch transcript index',
     apiBase,
     fetchFn,

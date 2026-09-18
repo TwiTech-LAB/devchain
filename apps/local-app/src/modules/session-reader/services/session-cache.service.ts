@@ -99,6 +99,7 @@ export interface CompositeWeights {
 }
 
 export interface SessionCacheEntry {
+  sourceIdentity: string;
   session: UnifiedSession;
   lastOffset: number;
   lastSize: number;
@@ -153,10 +154,24 @@ export interface GetOrParseResult {
   boundaryFold: boolean;
 }
 
+interface ParseSnapshot {
+  result: GetOrParseResult;
+  freshnessToken: unknown;
+}
+
+interface ParseFlight {
+  sourceIdentity: string;
+  generation: number;
+  promise: Promise<ParseSnapshot>;
+  next?: ParseFlight;
+}
+
 @Injectable()
 export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(SessionCacheService.name);
   private readonly cache = new Map<string, SessionCacheEntry>();
+  private readonly parseFlights = new Map<string, ParseFlight>();
+  private flightGeneration = 0;
   private hits = 0;
   private misses = 0;
   private chunksHits = 0;
@@ -263,6 +278,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     if (!cached) return undefined;
 
     const ref = this.toSourceRef(source, adapter);
+    if (cached.sourceIdentity !== this.sourceIdentity(ref)) return undefined;
     const freshness = await this.computeFreshness(ref, adapter);
     return this.takeFreshCachedSession(sessionId, cached, freshness.token, Date.now());
   }
@@ -300,17 +316,100 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     source: string | SessionSourceRef,
     adapter: SessionReaderAdapter,
   ): Promise<GetOrParseResult> {
+    const sourceIdentity = this.sourceIdentity(this.toSourceRef(source, adapter));
+    const arrivalGeneration = this.flightGeneration;
+    const existing = this.parseFlights.get(sessionId);
+    if (!existing) {
+      return (await this.startParseFlight(sessionId, source, adapter).promise).result;
+    }
+    let flight: ParseFlight = existing;
+
+    for (;;) {
+      const sameSource = flight.sourceIdentity === sourceIdentity;
+      let snapshot: ParseSnapshot | undefined;
+      try {
+        snapshot = await flight.promise;
+      } catch (error) {
+        if (sameSource) throw error;
+      }
+      // A snapshot started after arrival bounds waiting even if the source keeps growing.
+      if (sameSource && snapshot && flight.generation > arrivalGeneration) {
+        return this.sharedResult(snapshot.result);
+      }
+
+      const next: ParseFlight | undefined = flight.next ?? this.parseFlights.get(sessionId);
+      if (next) {
+        flight = next;
+        continue;
+      }
+
+      // Waiters retain this link locally, including when the follow-up self-evicts
+      // and settles before a slower waiter resumes. No settled flight stays in the map.
+      const refresh = this.startParseFlight(
+        sessionId,
+        source,
+        adapter,
+        sameSource ? snapshot : undefined,
+      );
+      flight.next = refresh;
+      return (await refresh.promise).result;
+    }
+  }
+
+  private startParseFlight(
+    sessionId: string,
+    source: string | SessionSourceRef,
+    adapter: SessionReaderAdapter,
+    previous?: ParseSnapshot,
+  ): ParseFlight {
+    const sourceIdentity = this.sourceIdentity(this.toSourceRef(source, adapter));
+    const flight: ParseFlight = {
+      sourceIdentity,
+      generation: ++this.flightGeneration,
+      promise: Promise.resolve()
+        .then(() => this.parseSession(sessionId, source, adapter, sourceIdentity, previous))
+        .finally(() => {
+          if (this.parseFlights.get(sessionId) === flight) {
+            this.parseFlights.delete(sessionId);
+          }
+        }),
+    };
+    this.parseFlights.set(sessionId, flight);
+    return flight;
+  }
+
+  private sharedResult(result: GetOrParseResult): GetOrParseResult {
+    this.hits += 1;
+    return { ...result, cacheHit: true, sourceChangeKind: 'cache-hit', boundaryFold: false };
+  }
+
+  private async parseSession(
+    sessionId: string,
+    source: string | SessionSourceRef,
+    adapter: SessionReaderAdapter,
+    sourceIdentity: string,
+    previous?: ParseSnapshot,
+  ): Promise<ParseSnapshot> {
     const now = Date.now();
     const ref = this.toSourceRef(source, adapter);
     // Legacy string callers keep the original adapter call shape (filePath only);
     // ref callers thread the source-ref through to the adapter.
     const threadRef = typeof source !== 'string' ? ref : undefined;
     let freshness = await this.computeFreshness(ref, adapter);
-    const cached = this.cache.get(sessionId);
+    const retained = this.cache.get(sessionId);
+    const cached = retained?.sourceIdentity === sourceIdentity ? retained : undefined;
+
+    if (previous && JSON.stringify(previous.freshnessToken) === JSON.stringify(freshness.token)) {
+      if (cached?.session === previous.result.session) this.touchLru(sessionId, cached, now);
+      return { result: this.sharedResult(previous.result), freshnessToken: freshness.token };
+    }
 
     const freshSession = this.takeFreshCachedSession(sessionId, cached, freshness.token, now);
     if (freshSession && cached) {
-      return this.toGetOrParseResult(freshSession, cached, true, 'cache-hit');
+      return {
+        result: this.toGetOrParseResult(freshSession, cached, true, 'cache-hit'),
+        freshnessToken: freshness.token,
+      };
     }
 
     this.misses += 1;
@@ -464,6 +563,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     this.deleteEntry(sessionId);
     const sourceWeightBytes = this.estimateSourceWeight(ref, session, freshness.size);
     const entry: SessionCacheEntry = {
+      sourceIdentity,
       session,
       lastOffset,
       lastSize: freshness.size,
@@ -482,14 +582,8 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     this.enforceBudget();
 
     return {
-      session,
-      cacheHit: false,
-      sourceChangeKind,
-      lastOffset,
-      lastSize: freshness.size,
-      lastMtime: freshness.mtimeMs,
-      sourceVersion: freshness.sourceVersion,
-      boundaryFold,
+      result: this.toGetOrParseResult(session, entry, false, sourceChangeKind),
+      freshnessToken: freshness.token,
     };
   }
 
@@ -606,7 +700,11 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     freshnessToken: unknown,
     now: number,
   ): UnifiedSession | undefined {
-    if (!cached || JSON.stringify(cached.freshnessToken) !== JSON.stringify(freshnessToken)) {
+    if (
+      !cached ||
+      this.cache.get(sessionId) !== cached ||
+      JSON.stringify(cached.freshnessToken) !== JSON.stringify(freshnessToken)
+    ) {
       return undefined;
     }
 
@@ -630,12 +728,13 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       lastSize: entry.lastSize,
       lastMtime: entry.lastMtime,
       sourceVersion: entry.sourceVersion,
-      boundaryFold: entry.boundaryFold,
+      boundaryFold: cacheHit ? false : entry.boundaryFold,
     };
   }
 
   /** Move entry to end of Map insertion order (LRU touch). */
   private touchLru(sessionId: string, entry: SessionCacheEntry, now: number): void {
+    if (this.cache.get(sessionId) !== entry) return;
     entry.lastAccessedAt = now;
     this.cache.delete(sessionId);
     this.cache.set(sessionId, entry);
@@ -955,6 +1054,15 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       };
     }
     return source;
+  }
+
+  private sourceIdentity(ref: SessionSourceRef): string {
+    return JSON.stringify([
+      ref.providerName.trim().toLowerCase(),
+      ref.kind,
+      ref.filePath,
+      ref.kind === 'db' ? ref.providerSessionId : undefined,
+    ]);
   }
 
   /**

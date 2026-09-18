@@ -19,6 +19,7 @@ describe('EpicTimeService', () => {
       | 'listResolvedScope'
       | 'listAgentTimeBuffers'
       | 'assignAgentTimeBuffer'
+      | 'resetAgentTimeBuffer'
     >
   >;
   let events: { publish: jest.Mock };
@@ -33,6 +34,7 @@ describe('EpicTimeService', () => {
         .mockReturnValue({ segments: [], routedRootIdsByFocal: new Map() }),
       listAgentTimeBuffers: jest.fn(),
       assignAgentTimeBuffer: jest.fn(),
+      resetAgentTimeBuffer: jest.fn(),
     };
     events = { publish: jest.fn().mockResolvedValue(null) };
     service = new EpicTimeService(store as unknown as EpicTimeStore, events as EventsService);
@@ -711,6 +713,37 @@ describe('EpicTimeService', () => {
       };
 
       await expect(service.assignAgentTimeBuffer(input)).rejects.toThrow(ConflictError);
+      expect(events.publish).not.toHaveBeenCalled();
+    });
+
+    it('publishes the scope invalidation only after the reset commits', async () => {
+      store.resetAgentTimeBuffer.mockResolvedValue({ workspaceId: 'workspace-1' });
+      const input = {
+        projectId: '11111111-1111-4111-8111-111111111111',
+        agentId: 'agent-1',
+        capturedAt: '2026-01-02T00:00:00.000Z',
+        snapshotToken: 'a'.repeat(64),
+      };
+
+      await expect(service.resetAgentTimeBuffer(input)).resolves.toEqual({
+        workspaceId: 'workspace-1',
+      });
+      expect(events.publish).toHaveBeenCalledTimes(1);
+      expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
+        workspaceId: 'workspace-1',
+      });
+    });
+
+    it('never publishes when the reset fails closed', async () => {
+      store.resetAgentTimeBuffer.mockRejectedValue(new ConflictError('stale'));
+      const input = {
+        projectId: '11111111-1111-4111-8111-111111111111',
+        agentId: 'agent-1',
+        capturedAt: '2026-01-02T00:00:00.000Z',
+        snapshotToken: 'a'.repeat(64),
+      };
+
+      await expect(service.resetAgentTimeBuffer(input)).rejects.toThrow(ConflictError);
       expect(events.publish).not.toHaveBeenCalled();
     });
   });

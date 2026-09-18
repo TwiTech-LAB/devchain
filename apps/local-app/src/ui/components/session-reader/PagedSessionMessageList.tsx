@@ -8,7 +8,11 @@ import type {
   WsTranscriptUpdatedPayload,
 } from '@/ui/hooks/useSessionTranscript';
 import { fetchTranscriptIndex, fetchTranscriptChunks } from '@/ui/lib/sessions';
-import type { SerializedChunkedResponse, TranscriptIndex } from '@/ui/lib/sessions';
+import type {
+  TranscriptIndex,
+  TranscriptIndexPage,
+  TranscriptIndexRequest,
+} from '@/ui/lib/sessions';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAutoScrollBottom } from '@/ui/hooks/useAutoScrollBottom';
@@ -21,11 +25,13 @@ const CHUNK_GC_TIME = 5 * 60 * 1000;
 const CHUNK_RETENTION_HYSTERESIS = CHUNK_PAGE_SIZE;
 const LIVE_TAIL_RETENTION = CHUNK_PAGE_SIZE;
 const ESTIMATED_CHUNK_HEIGHT = 120;
-const MAX_CANONICAL_RECOVERY_ATTEMPTS = 2;
+// Reserve six pages for padding, alignment, and the live tail within the 200-body API limit.
+const MAX_CANONICAL_VISIBLE_CHUNKS = 200 - 6 * CHUNK_PAGE_SIZE;
 const INITIAL_CANONICAL_RETRY_MS = 1_000;
 const MAX_CANONICAL_RETRY_MS = 5_000;
 
 interface CanonicalRecoverySnapshot {
+  sessionId: string;
   index: TranscriptIndex;
   chunks: Map<string, SerializedChunk>;
 }
@@ -104,15 +110,117 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   const recoverySnapshotRef = useRef<CanonicalRecoverySnapshot | null>(null);
   const [recoverySnapshot, setRecoverySnapshot] = useState<CanonicalRecoverySnapshot | null>(null);
   const [canonicalGeneration, setCanonicalGeneration] = useState<{
+    sessionId: string;
+    epoch: number;
     index: TranscriptIndex;
     chunks: Map<string, SerializedChunk>;
-    pages: Array<{
-      cursor: string;
-      size: number;
-      response: SerializedChunkedResponse;
-    }>;
+    pages: TranscriptIndexPage[];
   } | null>(null);
+  const activeSessionRef = useRef(sessionId);
+  if (activeSessionRef.current !== sessionId) {
+    activeSessionRef.current = sessionId;
+    chunksMapRef.current = new Map();
+  }
+  const viewportRef = useRef<{
+    sessionId: string;
+    first?: number;
+    last?: number;
+  }>({ sessionId });
   const apiFetch = useFetchFactory();
+
+  const scheduleCanonicalRetry = useCallback(() => {
+    if (canonicalRetryTimerRef.current) clearTimeout(canonicalRetryTimerRef.current);
+    const retryDelayMs = canonicalRecoveryRef.current.retryDelayMs;
+    canonicalRecoveryRef.current.retryDelayMs = Math.min(retryDelayMs * 2, MAX_CANONICAL_RETRY_MS);
+    canonicalRetryTimerRef.current = setTimeout(() => {
+      canonicalRetryTimerRef.current = null;
+      canonicalRecoveryRequestRef.current();
+    }, retryDelayMs);
+  }, []);
+
+  useLayoutEffect(() => {
+    recoverySnapshotRef.current = null;
+    canonicalRecoveryRef.current = {
+      epoch: canonicalRecoveryRef.current.epoch + 1,
+      inFlight: false,
+      dirty: false,
+      retryDelayMs: INITIAL_CANONICAL_RETRY_MS,
+    };
+    setRecoverySnapshot(null);
+    setCanonicalGeneration(null);
+    setExpandedAiGroups(new Map());
+    chunksMapRef.current = new Map();
+    setDeltaSeq(0);
+    return () => {
+      canonicalRecoveryRef.current.epoch += 1;
+      canonicalRecoveryRef.current.inFlight = false;
+      recoverySnapshotRef.current = null;
+      if (canonicalRetryTimerRef.current) {
+        clearTimeout(canonicalRetryTimerRef.current);
+        canonicalRetryTimerRef.current = null;
+      }
+      void queryClient.cancelQueries({
+        queryKey: transcriptQueryKeys.index(sessionId),
+        exact: true,
+      });
+    };
+  }, [queryClient, sessionId]);
+
+  const loadCanonicalIndex = useCallback(
+    async (signal: AbortSignal): Promise<TranscriptIndex> => {
+      const epoch = ++canonicalRecoveryRef.current.epoch;
+      canonicalRecoveryRef.current.inFlight = true;
+      canonicalRecoveryRef.current.dirty = false;
+      const isStale = () =>
+        signal.aborted ||
+        activeSessionRef.current !== sessionId ||
+        canonicalRecoveryRef.current.epoch !== epoch;
+      const currentIndex = queryClient.getQueryData<TranscriptIndex>(
+        transcriptQueryKeys.index(sessionId),
+      );
+      if (currentIndex && !recoverySnapshotRef.current) {
+        const snapshot = { sessionId, index: currentIndex, chunks: new Map(chunksMapRef.current) };
+        recoverySnapshotRef.current = snapshot;
+        setRecoverySnapshot(snapshot);
+      }
+      try {
+        await queryClient.cancelQueries({
+          predicate: (query) =>
+            query.queryKey[0] === 'transcript-chunk-page' && query.queryKey[1] === sessionId,
+        });
+        if (isStale()) throw new DOMException('Transcript request cancelled', 'AbortError');
+        const viewport = viewportRef.current;
+        const window: TranscriptIndexRequest = { pageSize: CHUNK_PAGE_SIZE, live: isLive, signal };
+        if (
+          viewport.sessionId === sessionId &&
+          viewport.first !== undefined &&
+          viewport.last !== undefined
+        ) {
+          window.firstVirtualIndex = viewport.first;
+          window.lastVirtualIndex = Math.min(
+            Math.max(viewport.first, viewport.last),
+            viewport.first + MAX_CANONICAL_VISIBLE_CHUNKS - 1,
+          );
+        }
+        const { pages, ...nextIndex } = await fetchTranscriptIndex(sessionId, '', apiFetch, window);
+        if (isStale()) throw new DOMException('Transcript request cancelled', 'AbortError');
+        if (!pages) throw new Error('Combined transcript response is missing pages');
+        const chunks = new Map<string, SerializedChunk>();
+        for (const page of pages) {
+          for (const chunk of page.response.chunks) chunks.set(chunk.id, chunk);
+        }
+        setCanonicalGeneration({ sessionId, epoch, index: nextIndex, chunks, pages });
+        return nextIndex;
+      } catch (error) {
+        if (!isStale()) {
+          canonicalRecoveryRef.current.inFlight = false;
+          scheduleCanonicalRetry();
+        }
+        throw error;
+      }
+    },
+    [apiFetch, isLive, queryClient, scheduleCanonicalRetry, sessionId],
+  );
 
   const {
     scrollContainerRef: scrollRef,
@@ -130,7 +238,8 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     error: indexError,
   } = useQuery({
     queryKey: transcriptQueryKeys.index(sessionId),
-    queryFn: () => fetchTranscriptIndex(sessionId, '', apiFetch),
+    queryFn: ({ signal }) => loadCanonicalIndex(signal),
+    retry: false,
     enabled: !!sessionId && recoverySnapshot === null,
     staleTime: 5_000,
     refetchInterval: (query) => {
@@ -140,10 +249,14 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     },
   });
 
-  const exposedCanonicalGeneration = canonicalRecoveryRef.current.dirty
-    ? null
-    : canonicalGeneration;
-  const index = exposedCanonicalGeneration?.index ?? recoverySnapshot?.index ?? queriedIndex;
+  const exposedCanonicalGeneration =
+    canonicalGeneration?.sessionId === sessionId &&
+    canonicalGeneration.epoch === canonicalRecoveryRef.current.epoch
+      ? canonicalGeneration
+      : null;
+  const exposedRecoverySnapshot =
+    recoverySnapshot?.sessionId === sessionId ? recoverySnapshot : null;
+  const index = exposedCanonicalGeneration?.index ?? exposedRecoverySnapshot?.index ?? queriedIndex;
 
   const chunkCount = index?.totals.chunkCount ?? 0;
   // The index intentionally contains every chunk ID: these small routing entries let the
@@ -170,6 +283,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   const virtualItems = rowVirtualizer.getVirtualItems();
   const firstVirtualIndex = virtualItems.at(0)?.index;
   const lastVirtualIndex = virtualItems.at(-1)?.index;
+  viewportRef.current = { sessionId, first: firstVirtualIndex, last: lastVirtualIndex };
   const retainedChunkIds = useMemo(
     () => buildRetainedChunkIds(chunkIds, firstVirtualIndex, lastVirtualIndex, isLive),
     [chunkIds, firstVirtualIndex, lastVirtualIndex, isLive],
@@ -211,7 +325,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   // 5. Build chunks map from fetched data + WS delta-injected chunks
   const chunksMap = useMemo(() => {
     if (exposedCanonicalGeneration) return exposedCanonicalGeneration.chunks;
-    if (recoverySnapshot) return recoverySnapshot.chunks;
+    if (exposedRecoverySnapshot) return exposedRecoverySnapshot.chunks;
     const map = new Map<string, SerializedChunk>(chunksMapRef.current);
     for (const query of batchQueries) {
       if (query.data) {
@@ -222,7 +336,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     }
     chunksMapRef.current = map;
     return map;
-  }, [batchQueries, deltaSeq, exposedCanonicalGeneration, recoverySnapshot]);
+  }, [batchQueries, deltaSeq, exposedCanonicalGeneration, exposedRecoverySnapshot]);
 
   useEffect(() => {
     if (!retainedChunkIds) return;
@@ -349,16 +463,6 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     [queryClient, sessionId, invalidateAll],
   );
 
-  const scheduleCanonicalRetry = useCallback(() => {
-    if (canonicalRetryTimerRef.current) clearTimeout(canonicalRetryTimerRef.current);
-    const retryDelayMs = canonicalRecoveryRef.current.retryDelayMs;
-    canonicalRecoveryRef.current.retryDelayMs = Math.min(retryDelayMs * 2, MAX_CANONICAL_RETRY_MS);
-    canonicalRetryTimerRef.current = setTimeout(() => {
-      canonicalRetryTimerRef.current = null;
-      canonicalRecoveryRequestRef.current();
-    }, retryDelayMs);
-  }, []);
-
   const requestCanonicalGeneration = useCallback(() => {
     if (!sessionId) return;
     if (canonicalRecoveryRef.current.inFlight) {
@@ -369,147 +473,27 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
       clearTimeout(canonicalRetryTimerRef.current);
       canonicalRetryTimerRef.current = null;
     }
-
-    let snapshot = recoverySnapshotRef.current;
-    if (!snapshot && !index) {
-      invalidateAll();
-      return;
-    }
-    if (!snapshot) {
-      snapshot = { index: index!, chunks: new Map(chunksMapRef.current) };
-      recoverySnapshotRef.current = snapshot;
-      setRecoverySnapshot(snapshot);
-    }
-
-    const epoch = canonicalRecoveryRef.current.epoch + 1;
-    canonicalRecoveryRef.current.epoch = epoch;
-    canonicalRecoveryRef.current.inFlight = true;
-    canonicalRecoveryRef.current.dirty = false;
-
-    const indexKey = transcriptQueryKeys.index(sessionId);
-    const isStale = () =>
-      canonicalRecoveryRef.current.epoch !== epoch || !canonicalRecoveryRef.current.inFlight;
-
-    void (async () => {
-      await queryClient.cancelQueries({ queryKey: indexKey, exact: true });
-      await queryClient.cancelQueries({
-        predicate: (query) =>
-          Array.isArray(query.queryKey) &&
-          query.queryKey[0] === 'transcript-chunk-page' &&
-          query.queryKey[1] === sessionId,
-      });
-      if (isStale()) return;
-
-      for (let attempt = 0; attempt < MAX_CANONICAL_RECOVERY_ATTEMPTS; attempt += 1) {
-        canonicalRecoveryRef.current.dirty = false;
-        const nextIndex = await fetchTranscriptIndex(sessionId, '', apiFetch);
-        if (isStale()) return;
-
-        const starts = new Set<number>();
-        const nextCount = nextIndex.chunkIds.length;
-        if (nextCount > 0) {
-          const visibleStart = Math.min(firstVirtualIndex ?? 0, nextCount - 1);
-          const visibleEnd = Math.min(
-            lastVirtualIndex ?? Math.min(nextCount - 1, CHUNK_PAGE_SIZE * 2 - 1),
-            nextCount - 1,
-          );
-          const retainedStart = Math.max(0, visibleStart - CHUNK_RETENTION_HYSTERESIS);
-          const retainedEnd = Math.min(nextCount - 1, visibleEnd + CHUNK_RETENTION_HYSTERESIS);
-          for (let cursor = retainedStart; cursor <= retainedEnd; cursor += CHUNK_PAGE_SIZE) {
-            starts.add(Math.floor(cursor / CHUNK_PAGE_SIZE) * CHUNK_PAGE_SIZE);
-          }
-          if (isLive) {
-            const tailStart =
-              Math.floor(Math.max(0, nextCount - LIVE_TAIL_RETENTION) / CHUNK_PAGE_SIZE) *
-              CHUNK_PAGE_SIZE;
-            for (let cursor = tailStart; cursor < nextCount; cursor += CHUNK_PAGE_SIZE) {
-              starts.add(cursor);
-            }
-          }
-        }
-
-        const pages = await Promise.all(
-          [...starts]
-            .sort((a, b) => a - b)
-            .map(async (start) => {
-              const cursor = nextIndex.chunkIds[start];
-              const size = Math.min(CHUNK_PAGE_SIZE, nextCount - start);
-              const response = await fetchTranscriptChunks(
-                sessionId,
-                cursor,
-                size,
-                undefined,
-                '',
-                apiFetch,
-              );
-              return { cursor, size, response };
-            }),
-        );
-        if (isStale()) return;
-        if (canonicalRecoveryRef.current.dirty) continue;
-
-        const verifiedIndex = await fetchTranscriptIndex(sessionId, '', apiFetch);
-        if (isStale()) return;
-        if (
-          canonicalRecoveryRef.current.dirty ||
-          verifiedIndex.cursor !== nextIndex.cursor ||
-          JSON.stringify(verifiedIndex) !== JSON.stringify(nextIndex)
-        ) {
-          continue;
-        }
-
-        const stagedChunks = new Map<string, SerializedChunk>();
-        for (const page of pages) {
-          for (const chunk of page.response.chunks) stagedChunks.set(chunk.id, chunk);
-        }
-
-        setCanonicalGeneration({ index: nextIndex, chunks: stagedChunks, pages });
-        return;
-      }
-
-      throw new Error('Canonical transcript pages did not stabilize');
-    })().catch(() => {
-      if (canonicalRecoveryRef.current.epoch !== epoch) return;
-      const retainedSnapshot = recoverySnapshotRef.current;
-      if (!retainedSnapshot) return;
-      queryClient.setQueryData(indexKey, retainedSnapshot.index);
-      chunksMapRef.current = retainedSnapshot.chunks;
-      canonicalRecoveryRef.current.inFlight = false;
-      canonicalRecoveryRef.current.dirty = false;
-      scheduleCanonicalRetry();
-    });
-  }, [
-    apiFetch,
-    firstVirtualIndex,
-    index,
-    invalidateAll,
-    isLive,
-    lastVirtualIndex,
-    queryClient,
-    scheduleCanonicalRetry,
-    sessionId,
-  ]);
+    void queryClient
+      .fetchQuery({
+        queryKey: transcriptQueryKeys.index(sessionId),
+        queryFn: ({ signal }) => loadCanonicalIndex(signal),
+        staleTime: 0,
+      })
+      .catch(() => undefined);
+  }, [loadCanonicalIndex, queryClient, sessionId]);
   canonicalRecoveryRequestRef.current = requestCanonicalGeneration;
 
   useLayoutEffect(() => {
-    if (!canonicalGeneration) return;
-    if (canonicalRecoveryRef.current.dirty) {
-      canonicalRecoveryRef.current.inFlight = false;
-      canonicalRecoveryRef.current.dirty = false;
-      setCanonicalGeneration(null);
-      scheduleCanonicalRetry();
-      return;
-    }
-
-    chunksMapRef.current = canonicalGeneration.chunks;
-    queryClient.setQueryData(transcriptQueryKeys.index(sessionId), canonicalGeneration.index);
+    if (!exposedCanonicalGeneration) return;
+    const generation = exposedCanonicalGeneration;
+    const pendingRefresh = canonicalRecoveryRef.current.dirty;
+    chunksMapRef.current = generation.chunks;
+    queryClient.setQueryData(transcriptQueryKeys.index(sessionId), generation.index);
     queryClient.removeQueries({
       predicate: (query) =>
-        Array.isArray(query.queryKey) &&
-        query.queryKey[0] === 'transcript-chunk-page' &&
-        query.queryKey[1] === sessionId,
+        query.queryKey[0] === 'transcript-chunk-page' && query.queryKey[1] === sessionId,
     });
-    for (const page of canonicalGeneration.pages) {
+    for (const page of generation.pages) {
       queryClient.setQueryData(
         transcriptQueryKeys.chunkPage(sessionId, page.cursor, page.size),
         page.response,
@@ -526,7 +510,9 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     setRecoverySnapshot(null);
     setDeltaSeq((sequence) => sequence + 1);
     setCanonicalGeneration(null);
-  }, [canonicalGeneration, queryClient, scheduleCanonicalRetry, sessionId]);
+    // A coherent response is renderable even if an event requires another refresh.
+    if (pendingRefresh) scheduleCanonicalRetry();
+  }, [exposedCanonicalGeneration, queryClient, scheduleCanonicalRetry, sessionId]);
 
   const handleMessage = useCallback(
     (envelope: WsEnvelope) => {
@@ -581,38 +567,6 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     });
   }, []);
 
-  useEffect(() => {
-    if (canonicalRetryTimerRef.current) {
-      clearTimeout(canonicalRetryTimerRef.current);
-      canonicalRetryTimerRef.current = null;
-    }
-    recoverySnapshotRef.current = null;
-    canonicalRecoveryRef.current = {
-      epoch: canonicalRecoveryRef.current.epoch + 1,
-      inFlight: false,
-      dirty: false,
-      retryDelayMs: INITIAL_CANONICAL_RETRY_MS,
-    };
-    setRecoverySnapshot(null);
-    setCanonicalGeneration(null);
-    setExpandedAiGroups(new Map());
-    chunksMapRef.current = new Map();
-    setDeltaSeq(0);
-    return () => {
-      if (canonicalRetryTimerRef.current) {
-        clearTimeout(canonicalRetryTimerRef.current);
-        canonicalRetryTimerRef.current = null;
-      }
-      recoverySnapshotRef.current = null;
-      canonicalRecoveryRef.current = {
-        epoch: canonicalRecoveryRef.current.epoch + 1,
-        inFlight: false,
-        dirty: false,
-        retryDelayMs: INITIAL_CANONICAL_RETRY_MS,
-      };
-    };
-  }, [sessionId]);
-
   // Auto-expand latest AI chunk for live sessions
   const autoExpandedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -656,7 +610,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     );
   }
 
-  if (indexError) {
+  if (indexError && !index) {
     return (
       <div className="flex flex-1 items-center justify-center p-6 text-sm text-destructive">
         <p>Failed to load session index: {(indexError as Error).message}</p>

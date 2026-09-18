@@ -2,12 +2,16 @@
 // lifecycle publication windows and persisted row cardinality under contention.
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { join } from 'node:path';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { SessionsService } from './sessions.service';
 import { SessionLaunchPipeline } from './session-runtime/session-launch-pipeline.service';
 import { SessionRestorePipeline } from './session-runtime/session-restore-pipeline.service';
 import { SessionRuntime } from './session-runtime';
 import { SessionLifecycleFacade } from './session-lifecycle-facade.service';
+import { EpicTimeStore } from '../../epic-time/services/epic-time.store';
+import { TransactionRunner } from '../../storage/db/transaction-runner';
 import {
   fakeAgent,
   fakeProfile,
@@ -46,11 +50,13 @@ const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 const RESTORE_SESSION_ID = '33333333-3333-4333-8333-333333333333';
 const NOW = '2026-08-08T18:00:00.000Z';
 const TEST_TERMINATION = { source: 'web-api' as const, reason: 'user-requested' as const };
+const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 describe('session lifecycle race serialization', () => {
   let sqlite: Database.Database;
   let db: BetterSQLite3Database;
   let coordinator: SessionCoordinatorService;
+  let store: EpicTimeStore;
   let sessionsService: SessionsService;
   let sessionRuntime: SessionRuntime;
   let facade: SessionLifecycleFacade;
@@ -99,29 +105,10 @@ describe('session lifecycle race serialization', () => {
 
   beforeEach(() => {
     sqlite = new Database(':memory:');
-    sqlite.exec(`
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        epic_id TEXT,
-        agent_id TEXT,
-        tmux_session_id TEXT,
-        provider_session_id TEXT,
-        provider_name_at_launch TEXT,
-        status TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        ended_at TEXT,
-        last_activity_at TEXT,
-        activity_state TEXT,
-        busy_since TEXT,
-        transcript_path TEXT,
-        size_bytes INTEGER,
-        name TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
+    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
     db = drizzle(sqlite);
     coordinator = new SessionCoordinatorService();
+    store = new EpicTimeStore(db);
     createGate = null;
     nowMs = Date.parse(NOW);
     liveTmux = new Set<string>();
@@ -293,9 +280,52 @@ describe('session lifecycle race serialization', () => {
       runtimeContextCapture as never,
       claudeLaunchSettings as never,
       codexPluginProfiles as never,
+      store,
     );
     facade = new SessionLifecycleFacade(sessionRuntime, sessionsService);
+    seedAgentFixtures();
   });
+
+  /**
+   * The migrated schema enforces foreign keys, so the agent/project fixture
+   * chain behind every session row in this suite must really exist.
+   */
+  function seedAgentFixtures(): void {
+    const createdAt = '2026-01-01T00:00:00.000Z';
+    sqlite
+      .prepare(
+        `INSERT INTO projects
+           (id, workspace_id, name, root_path, is_template, is_private, created_at, updated_at)
+         VALUES (?, '0defa017-0000-4000-8000-000000000001', 'Race', '/tmp/race', 0, 0, ?, ?)`,
+      )
+      .run(PROJECT_ID, createdAt, createdAt);
+    sqlite
+      .prepare(
+        `INSERT INTO providers (id, name, mcp_configured, created_at, updated_at)
+         VALUES ('provider-race', 'test-provider', 0, ?, ?)`,
+      )
+      .run(createdAt, createdAt);
+    sqlite
+      .prepare(
+        `INSERT INTO agent_profiles (id, project_id, name, created_at, updated_at)
+         VALUES ('profile-race', ?, 'Race profile', ?, ?)`,
+      )
+      .run(PROJECT_ID, createdAt, createdAt);
+    sqlite
+      .prepare(
+        `INSERT INTO profile_provider_configs
+           (id, profile_id, provider_id, name, position, created_at, updated_at)
+         VALUES ('config-race', 'profile-race', 'provider-race', 'Race config', 0, ?, ?)`,
+      )
+      .run(createdAt, createdAt);
+    sqlite
+      .prepare(
+        `INSERT INTO agents
+           (id, project_id, profile_id, provider_config_id, name, created_at, updated_at)
+         VALUES (?, ?, 'profile-race', 'config-race', 'Coder', ?, ?)`,
+      )
+      .run(AGENT_ID, PROJECT_ID, createdAt, createdAt);
+  }
 
   afterEach(() => {
     jest.restoreAllMocks();
@@ -507,5 +537,148 @@ describe('session lifecycle race serialization', () => {
     expect(runtimeContextCapture.clear).not.toHaveBeenCalled();
     expect(claudeLaunchSettings.cleanupSessionSync).not.toHaveBeenCalled();
     expect(codexPluginProfiles.cleanupSession).not.toHaveBeenCalled();
+  });
+
+  it('blocks a same-agent restart behind the queued stop/reset transaction and preserves replacement time', async () => {
+    // A running session with tracked activity: the termination must
+    // reconcile its final activity and clear the agent's settled balance.
+    sqlite
+      .prepare(
+        `INSERT INTO sessions
+           (id, agent_id, tmux_session_id, status, started_at, last_activity_at,
+            activity_state, busy_since, created_at, updated_at)
+         VALUES ('session-race', ?, 'tmux-race', 'running', ?, ?, 'busy', ?, ?, ?)`,
+      )
+      .run(
+        AGENT_ID,
+        '2026-01-01T00:00:10.000Z',
+        '2026-01-01T00:00:12.000Z',
+        '2026-01-01T00:00:11.000Z',
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z',
+      );
+    liveTmux.add('tmux-race');
+
+    const activation = await store.activate(new Date('2026-01-01T00:00:10.000Z'));
+    await store.reconcileSession(
+      'session-race',
+      activation.trackingStartedAt,
+      activation.idleTimeoutMs,
+      new Date('2026-01-01T00:00:12.000Z'),
+    );
+    // Final activity at T2 is only reconciled by termination itself, and one
+    // settled row rounds out the balance the reset must clear.
+    sqlite
+      .prepare(`UPDATE sessions SET last_activity_at = ?, updated_at = ? WHERE id = ?`)
+      .run('2026-01-01T00:00:16.000Z', '2026-01-01T00:00:16.000Z', 'session-race');
+    sqlite
+      .prepare(
+        `INSERT INTO epic_time_segments
+           (id, project_id, epic_id, session_id_snapshot, agent_id_snapshot,
+            agent_name_snapshot, started_at, last_activity_at, closed_at,
+            duration_ms, created_at, updated_at)
+         VALUES ('race-settled', ?, NULL, 'session-race-older', ?, 'Coder',
+                 '2026-01-01T00:01:00.000Z', '2026-01-01T00:02:30.000Z',
+                 '2026-01-01T00:02:30.000Z', 90000, '2026-01-01T00:02:30.000Z',
+                 '2026-01-01T00:02:30.000Z')`,
+      )
+      .run(PROJECT_ID, AGENT_ID);
+
+    // Hold the shared per-client transaction queue so termination parks with
+    // the agent lock held, its stop/reset transaction not yet committed.
+    const queueGate = deferred();
+    const hold = new TransactionRunner(sqlite).runImmediateAsync(async () => {
+      await queueGate.promise;
+      return true;
+    });
+
+    const terminate = sessionsService.terminateSession('session-race', TEST_TERMINATION);
+    await waitFor(() => terminalIO.destroyExpectedSession.mock.calls.length === 1);
+
+    let restartSettled = false;
+    const restart = facade.restart(AGENT_ID, PROJECT_ID).then((result) => {
+      restartSettled = true;
+      return result;
+    });
+    for (let tick = 0; tick < 5; tick += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    // While the stop/reset transaction is parked, the restart replacement is
+    // blocked behind the agent lock: no replacement terminal, no durable row
+    // change, and no lifecycle event from either operation.
+    expect(restartSettled).toBe(false);
+    expect(terminalIO.createEmptySession).not.toHaveBeenCalled();
+    expect(readRows()).toEqual([
+      { id: 'session-race', tmux_session_id: 'tmux-race', status: 'running' },
+    ]);
+    expect(eventsService.publish).not.toHaveBeenCalled();
+
+    queueGate.resolve();
+    await hold;
+    await terminate;
+    const replacement = await restart;
+
+    // The parked reset committed with the stop before the replacement could
+    // start: the old row is stopped, the agent's settled unlogged rows are
+    // gone, and the replacement is running on a fresh terminal.
+    expect(replacement.id).not.toBe('session-race');
+    expect(readRows()).toEqual(
+      expect.arrayContaining([
+        { id: 'session-race', tmux_session_id: 'tmux-race', status: 'stopped' },
+        { id: replacement.id, tmux_session_id: expect.any(String), status: 'running' },
+      ]),
+    );
+    expect(sqlite.prepare(`SELECT id FROM epic_time_segments ORDER BY id`).all()).toEqual([]);
+    expect(
+      sqlite
+        .prepare(`SELECT last_activity_at FROM epic_time_session_watermarks WHERE session_id = ?`)
+        .get('session-race'),
+    ).toEqual({ last_activity_at: '2026-01-01T00:00:16.000Z' });
+    const eventNames = eventsService.publish.mock.calls.map(([name]) => name);
+    expect(eventNames.indexOf('session.stopped')).toBeLessThan(
+      eventNames.indexOf('session.started'),
+    );
+
+    // Fresh activity on the replacement accumulates normally and survives a
+    // full sweep: the completed reset can never touch the new time.
+    const T3 = '2026-01-01T00:01:20.000Z';
+    const T4 = '2026-01-01T00:01:22.000Z';
+    sqlite
+      .prepare(
+        `UPDATE sessions
+         SET started_at = ?, last_activity_at = ?, busy_since = ?, activity_state = 'busy',
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run('2026-01-01T00:00:10.000Z', T4, T3, T4, replacement.id);
+    await store.reconcileSession(
+      replacement.id,
+      activation.trackingStartedAt,
+      activation.idleTimeoutMs,
+      new Date(T4),
+    );
+    for (const sessionId of store.listReconciliationSessionIds(activation.trackingStartedAt)) {
+      await store.reconcileSession(
+        sessionId,
+        activation.trackingStartedAt,
+        activation.idleTimeoutMs,
+        new Date(T4),
+      );
+    }
+    await store.processTeamBatches('epic-time-accounting', activation.idleTimeoutMs, new Date(T4));
+
+    expect(
+      sqlite
+        .prepare(
+          `SELECT agent_id_snapshot, epic_id, closed_at, duration_ms FROM epic_time_segments`,
+        )
+        .all(),
+    ).toEqual([{ agent_id_snapshot: AGENT_ID, epic_id: null, closed_at: null, duration_ms: 2000 }]);
+    expect(
+      sqlite
+        .prepare(`SELECT last_activity_at FROM epic_time_session_watermarks WHERE session_id = ?`)
+        .get('session-race'),
+    ).toEqual({ last_activity_at: '2026-01-01T00:00:16.000Z' });
   });
 });

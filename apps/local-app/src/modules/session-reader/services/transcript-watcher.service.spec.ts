@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { TranscriptWatcherService } from './transcript-watcher.service';
-import type { SessionCacheService } from './session-cache.service';
+import type { SessionCacheService, GetOrParseResult } from './session-cache.service';
 import type { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import type { EventsService } from '../../events/services/events.service';
 import type { SessionReaderAdapter } from '../adapters/session-reader-adapter.interface';
@@ -64,6 +64,20 @@ function makeStat(size: number, ino = 12345, dev = 1): fs.Stats {
     isFile: () => true,
     isDirectory: () => false,
   } as unknown as fs.Stats;
+}
+
+function makeParseResult(overrides: Partial<GetOrParseResult> = {}): GetOrParseResult {
+  return {
+    session: makeSession(),
+    sourceVersion: 1000,
+    cacheHit: false,
+    sourceChangeKind: 'same-file-append',
+    lastOffset: 1000,
+    lastSize: 1000,
+    lastMtime: 1706000000000,
+    boundaryFold: false,
+    ...overrides,
+  };
 }
 
 type MockFsWatcher = fs.FSWatcher & {
@@ -166,6 +180,16 @@ function createMocks() {
   } as unknown as jest.Mocked<EventsService>;
 
   return { mockCacheService, mockAdapterFactory, mockEvents, mockAdapter };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +384,39 @@ describe('TranscriptWatcherService', () => {
   // -------------------------------------------------------------------------
 
   describe('debounce', () => {
+    // Module-unit fake clocks and deferred cache reads expose scheduler interleavings.
+    it('module-unit: continued events cannot postpone the first 100ms refresh', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(90);
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(10);
+      expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(1);
+    });
+
+    it('module-unit: events and polls during an active refresh coalesce into one later pass', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParse.mockClear();
+      const parse = deferred<UnifiedSession>();
+      mockCacheService.getOrParse.mockReturnValueOnce(parse.promise);
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(100);
+      for (let i = 0; i < 10; i += 1) watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(3000);
+      expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(1);
+      parse.resolve(makeSession());
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(1999);
+      expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(2);
+    });
+
     it('should debounce rapid file changes (100ms)', async () => {
       const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
       mockCacheService.getOrParse.mockResolvedValue(session);
@@ -387,6 +444,183 @@ describe('TranscriptWatcherService', () => {
   // -------------------------------------------------------------------------
   // Event-driven triggers
   // -------------------------------------------------------------------------
+
+  describe('bounded file refresh scheduling', () => {
+    // Module-unit fake time measures the actual coordinator, including awaited work.
+    it('module-unit: sustained 150ms appends stay serialized and deliver the final snapshot', async () => {
+      const watcher = createMockFsWatcher();
+      mockCacheService.getOrParse.mockResolvedValue(
+        makeSession({ metrics: makeMetrics({ messageCount: 0 }) }),
+      );
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      let count = 0;
+      let active = 0;
+      let maxActive = 0;
+      mockedFsPromisesStat.mockImplementation(async () => makeStat(1000 + count * 100));
+      mockCacheService.getOrParseWithMeta.mockClear().mockImplementation(() => {
+        const snapshotCount = count;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        return new Promise((resolve) =>
+          setTimeout(() => {
+            active -= 1;
+            resolve(
+              makeParseResult({
+                sourceVersion: snapshotCount,
+                session: makeSession({ metrics: makeMetrics({ messageCount: snapshotCount }) }),
+              }),
+            );
+          }, 50),
+        );
+      });
+      for (count = 1; count <= 30; count += 1) {
+        watcher.triggerChange('change');
+        await jest.advanceTimersByTimeAsync(150);
+        expect(jest.getTimerCount()).toBeLessThanOrEqual(2);
+      }
+      count = 30;
+      await jest.advanceTimersByTimeAsync(2300);
+      expect(maxActive).toBe(1);
+      expect(active).toBe(0);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(4);
+      expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(30);
+      expect(mockEvents.publish).toHaveBeenLastCalledWith(
+        'session.transcript.updated',
+        expect.objectContaining({
+          metrics: expect.objectContaining({ messageCount: 30 }),
+        }),
+      );
+    });
+
+    it.each([49, 50, 51])(
+      'module-unit: paces a %i ms handler from completion',
+      async (duration) => {
+        const watcher = createMockFsWatcher();
+        await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        const parse = deferred<GetOrParseResult>();
+        mockCacheService.getOrParseWithMeta.mockClear().mockReturnValueOnce(parse.promise);
+        watcher.triggerChange('change');
+        await jest.advanceTimersByTimeAsync(100);
+        for (let i = 0; i < 100; i += 1) watcher.triggerChange('change');
+        expect(jest.getTimerCount()).toBe(1);
+        await jest.advanceTimersByTimeAsync(duration);
+        parse.resolve(makeParseResult());
+        await jest.advanceTimersByTimeAsync(0);
+        expect(jest.getTimerCount()).toBe(2);
+        const delay = duration < 50 ? 100 : 2000;
+        await jest.advanceTimersByTimeAsync(delay - 1);
+        expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+        expect(jest.getTimerCount()).toBe(1);
+      },
+    );
+
+    it('module-unit: polls and cooldown events share the deadline, then a fast cycle clears pacing', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      const parse = deferred<GetOrParseResult>();
+      mockCacheService.getOrParseWithMeta.mockClear().mockReturnValueOnce(parse.promise);
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(100);
+      await jest.advanceTimersByTimeAsync(2000);
+      parse.resolve(makeParseResult());
+      await jest.advanceTimersByTimeAsync(0);
+      expect(jest.getTimerCount()).toBe(1);
+      await jest.advanceTimersByTimeAsync(900);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(2);
+      await jest.advanceTimersByTimeAsync(1050);
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(49);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(99);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(3);
+    });
+
+    it('module-unit: measures the complete handler through publication', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      const publication = deferred<string>();
+      mockEvents.publish.mockReturnValueOnce(publication.promise);
+      mockCacheService.getOrParseWithMeta.mockClear().mockResolvedValue(
+        makeParseResult({
+          sourceChangeKind: 'same-file-rewrite',
+          sourceVersion: 2000,
+        }),
+      );
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(100);
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(50);
+      publication.resolve('event-id');
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(1999);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+    });
+
+    it('module-unit: pending same-size rewrites publish after active parsing completes', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      const parse = deferred<GetOrParseResult>();
+      mockCacheService.getOrParseWithMeta
+        .mockClear()
+        .mockReturnValueOnce(parse.promise)
+        .mockResolvedValue(
+          makeParseResult({ sourceVersion: 3000, sourceChangeKind: 'same-file-rewrite' }),
+        );
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(100);
+      watcher.triggerChange('change');
+      parse.resolve(makeParseResult({ sourceVersion: 2000 }));
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(100);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.updated',
+        expect.objectContaining({
+          kind: 'full-refetch-required',
+          sourceChangeKind: 'same-file-rewrite',
+        }),
+      );
+    });
+
+    it('module-unit: cooldown changes eventually publish their latest message count', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      const parse = deferred<GetOrParseResult>();
+      mockCacheService.getOrParseWithMeta.mockReturnValueOnce(parse.promise);
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(150);
+      parse.resolve(makeParseResult());
+      await jest.advanceTimersByTimeAsync(0);
+      mockCacheService.getOrParseWithMeta.mockResolvedValue(
+        makeParseResult({
+          session: makeSession({ metrics: makeMetrics({ messageCount: 8 }) }),
+          sourceVersion: 2000,
+        }),
+      );
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(1999);
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(8);
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.updated',
+        expect.objectContaining({
+          newMessageCount: 5,
+        }),
+      );
+    });
+  });
 
   describe('event handlers', () => {
     it('should start watching on transcript.discovered event', async () => {
@@ -427,11 +661,189 @@ describe('TranscriptWatcherService', () => {
     });
   });
 
+  describe('refresh ownership and cleanup', () => {
+    // Module-unit deferred boundaries reproduce cleanup/replacement without real watchers.
+    it.each(['stop', 'destroy', 'replacement'])(
+      'module-unit: %s cancels a cooldown timer and clears pending work',
+      async (action) => {
+        const watcher = createMockFsWatcher();
+        await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        const state = (
+          service as unknown as {
+            watchers: Map<
+              string,
+              {
+                pending: boolean;
+                debounceTimer: unknown;
+              }
+            >;
+          }
+        ).watchers.get(SESSION_ID)!;
+        const parse = deferred<GetOrParseResult>();
+        mockCacheService.getOrParseWithMeta.mockReturnValueOnce(parse.promise);
+        watcher.triggerChange('change');
+        await jest.advanceTimersByTimeAsync(150);
+        watcher.triggerChange('change');
+        parse.resolve(makeParseResult());
+        await jest.advanceTimersByTimeAsync(0);
+        expect(state.pending).toBe(true);
+        expect(state.debounceTimer).not.toBeNull();
+        if (action === 'stop') {
+          mockCacheService.getOrParse.mockClear();
+          await service.stopWatching(SESSION_ID);
+          expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(1);
+          expect(mockEvents.publish).toHaveBeenCalledWith(
+            'session.transcript.ended',
+            expect.anything(),
+          );
+        } else {
+          service.onModuleDestroy();
+        }
+        expect(state.pending).toBe(false);
+        expect(state.debounceTimer).toBeNull();
+        expect(jest.getTimerCount()).toBe(0);
+        let replacement: MockFsWatcher | undefined;
+        if (action === 'replacement') {
+          replacement = createMockFsWatcher();
+          await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        }
+        mockCacheService.getOrParseWithMeta.mockClear();
+        watcher.triggerChange('change');
+        watcher.triggerError(new Error('late fs error'));
+        await jest.advanceTimersByTimeAsync(2200);
+        expect(mockCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+        if (replacement) expect(replacement.close).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['stop', 'replacement'])(
+      'module-unit: an active parse cannot publish or change state after %s',
+      async (action) => {
+        const watcher = createMockFsWatcher();
+        await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        const parse = deferred<GetOrParseResult>();
+        mockCacheService.getOrParseWithMeta.mockReturnValueOnce(parse.promise);
+        watcher.triggerChange('change');
+        await jest.advanceTimersByTimeAsync(100);
+        watcher.triggerChange('change');
+        await service.stopWatching(SESSION_ID);
+        if (action === 'replacement') {
+          createMockFsWatcher();
+          mockCacheService.getOrParse.mockResolvedValue(
+            makeSession({ metrics: makeMetrics({ messageCount: 20 }) }),
+          );
+          await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        }
+        mockEvents.publish.mockClear();
+        parse.resolve(
+          makeParseResult({ session: makeSession({ metrics: makeMetrics({ messageCount: 99 }) }) }),
+        );
+        await jest.advanceTimersByTimeAsync(2500);
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+        expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(
+          action === 'replacement' ? 20 : null,
+        );
+      },
+    );
+
+    it.each(['rotation', 'deletion'])(
+      'module-unit: obsolete poll %s cannot reopen or stop a replacement',
+      async (change) => {
+        createMockFsWatcher();
+        await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        const stat = deferred<fs.Stats>();
+        mockedFsPromisesStat.mockReturnValueOnce(stat.promise);
+        await jest.advanceTimersByTimeAsync(3000);
+        await service.stopWatching(SESSION_ID);
+        const replacement = createMockFsWatcher();
+        await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        mockedFsWatch.mockClear();
+        mockEvents.publish.mockClear();
+        if (change === 'rotation') stat.resolve(makeStat(2000, 9999));
+        else stat.reject(Object.assign(new Error('removed'), { code: 'ENOENT' }));
+        await jest.advanceTimersByTimeAsync(200);
+        expect(service.activeWatcherCount).toBe(1);
+        expect(replacement.close).not.toHaveBeenCalled();
+        expect(mockedFsWatch).not.toHaveBeenCalled();
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['stat', 'seed'])(
+      'module-unit: a stopped startup cannot regain ownership after its %s completes',
+      async (stage) => {
+        const stat = deferred<fs.Stats>();
+        const seed = deferred<GetOrParseResult>();
+        if (stage === 'stat') mockedFsPromisesStat.mockReturnValueOnce(stat.promise);
+        else mockCacheService.getOrParseWithMeta.mockReturnValueOnce(seed.promise);
+        const starting = service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        await jest.advanceTimersByTimeAsync(0);
+        await service.stopWatching(SESSION_ID);
+        createMockFsWatcher();
+        await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        mockedFsWatch.mockClear();
+        if (stage === 'stat') stat.resolve(makeStat(2000, 9999));
+        else
+          seed.resolve(
+            makeParseResult({
+              session: makeSession({ metrics: makeMetrics({ messageCount: 99 }) }),
+            }),
+          );
+        await starting;
+        expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(3);
+        expect(jest.getTimerCount()).toBe(1);
+        expect(mockedFsWatch).not.toHaveBeenCalled();
+      },
+    );
+
+    it('module-unit: a stale final metrics read cannot end a replacement watcher', async () => {
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      const final = deferred<UnifiedSession>();
+      mockCacheService.getOrParse.mockReturnValueOnce(final.promise);
+      const stopping = service.stopWatching(SESSION_ID);
+      createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      final.resolve(makeSession());
+      await stopping;
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(service.activeWatcherCount).toBe(1);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // File change detection → publish event
   // -------------------------------------------------------------------------
 
   describe('file change detection', () => {
+    it.each([1000, 2000])(
+      'module-unit: handles a file cache hit at revision %i without replaying a fold',
+      async (sourceVersion) => {
+        const watcher = createMockFsWatcher();
+        await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        mockCacheService.getEntry.mockReturnValue({ boundaryFold: true } as never);
+        mockCacheService.getOrParseWithMeta.mockResolvedValue(
+          makeParseResult({
+            sourceVersion,
+            sourceChangeKind: 'cache-hit',
+            cacheHit: true,
+            boundaryFold: false,
+          }),
+        );
+        watcher.triggerChange('change');
+        await jest.advanceTimersByTimeAsync(100);
+        if (sourceVersion === 1000) {
+          expect(mockEvents.publish).not.toHaveBeenCalled();
+        } else {
+          expect(mockEvents.publish).toHaveBeenCalledWith('session.transcript.updated', {
+            kind: 'full-refetch-required',
+            sessionId: SESSION_ID,
+            transcriptPath: FILE_PATH,
+            sourceChangeKind: 'cache-hit',
+          });
+        }
+        expect(mockCacheService.getEntry).not.toHaveBeenCalled();
+      },
+    );
     it('publishes only a cursor-free refetch action when the file generation is replaced', async () => {
       const oldSession = makeSession({ metrics: makeMetrics({ messageCount: 2 }) });
       const replacement = makeSession({ metrics: makeMetrics({ messageCount: 3 }) });
@@ -568,10 +980,15 @@ describe('TranscriptWatcherService', () => {
       mockCacheService.getOrParse
         .mockResolvedValueOnce(makeSession({ metrics: makeMetrics({ messageCount: 5 }) }))
         .mockResolvedValue(makeSession({ metrics: makeMetrics({ messageCount: 5 }) }));
-      // The cache reports the merge folded leading tool_results onto the tail.
-      (mockCacheService.getEntry as jest.Mock).mockReturnValue({ boundaryFold: true });
-
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.getOrParseWithMeta.mockResolvedValue(
+        makeParseResult({
+          session: makeSession({ metrics: makeMetrics({ messageCount: 5 }) }),
+          boundaryFold: true,
+        }),
+      );
+      // A self-evicted entry cannot supply the fold metadata.
+      mockCacheService.getEntry.mockReturnValue(undefined);
 
       // File grew (the tool_result was appended) but messageCount did not increase.
       mockedFsPromisesStat.mockResolvedValue(makeStat(1800));
@@ -850,7 +1267,7 @@ describe('TranscriptWatcherService', () => {
       expect(mockCacheService.getOrParse).toHaveBeenCalled();
     });
 
-    it('should skip parse when size has not changed in change handler', async () => {
+    it('rechecks freshness when a pending change returns to the original byte size', async () => {
       const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
       mockCacheService.getOrParse.mockResolvedValue(session);
 
@@ -865,8 +1282,7 @@ describe('TranscriptWatcherService', () => {
       mockedFsPromisesStat.mockResolvedValue(makeStat(1000));
       await jest.advanceTimersByTimeAsync(200);
 
-      // getOrParse should NOT have been called (size unchanged in handler)
-      expect(mockCacheService.getOrParse).not.toHaveBeenCalled();
+      expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(1);
     });
 
     it('should log warning when incremental delta exceeds 10MB', async () => {
@@ -1015,11 +1431,11 @@ describe('TranscriptWatcherService', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Debounce timer reset branch (line 193)
+  // Fixed coalescing deadline
   // -------------------------------------------------------------------------
 
-  describe('debounce timer reset', () => {
-    it('should clear existing debounce timer when a new change arrives', async () => {
+  describe('fixed coalescing deadline', () => {
+    it('shares the scheduled debounce timer when a new change arrives', async () => {
       const mockWatcher = createMockFsWatcher();
       const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
       mockCacheService.getOrParse.mockResolvedValue(session);
@@ -1033,7 +1449,7 @@ describe('TranscriptWatcherService', () => {
       // First change event → schedules debounce
       mockWatcher.triggerChange('change');
 
-      // Second change event BEFORE debounce fires → clears old + schedules new
+      // The second change shares the first event's deadline.
       mockWatcher.triggerChange('change');
 
       // Advance past debounce
@@ -1104,7 +1520,7 @@ describe('TranscriptWatcherService', () => {
   // -------------------------------------------------------------------------
 
   describe('race condition guards', () => {
-    it('should handle scheduleDebounce when watcher is already removed', async () => {
+    it('ignores queued filesystem callbacks when watcher ownership is removed', async () => {
       const mockWatcher = createMockFsWatcher();
 
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
@@ -1117,7 +1533,7 @@ describe('TranscriptWatcherService', () => {
 
       expect(service.activeWatcherCount).toBe(0);
 
-      // Trigger fs.watch event AFTER watcher was stopped — scheduleDebounce finds no state
+      // A queued callback from the closed handle no longer owns this watcher.
       mockWatcher.triggerChange('change');
 
       // Advance past debounce — nothing should happen
@@ -1410,6 +1826,70 @@ describe('TranscriptWatcherService', () => {
         metrics: makeMetrics({ messageCount }),
       });
     }
+
+    // Module-unit clocks exercise the DB branch without requiring a SQLite/WAL fixture.
+    it('module-unit: keeps 100ms WAL coalescing and 3s polling after a costly DB refresh', async () => {
+      const watcher = createMockFsWatcher();
+      let token = 1;
+      const freshness = jest.fn(async () => ({ maxUpdated: token }));
+      mockAdapterFactory.getAdapter.mockReturnValue(makeDbAdapter(freshness));
+      await service.startWatching(SES, DB_PATH, 'opencode', SES);
+      const parse = deferred<GetOrParseResult>();
+      mockCacheService.getOrParseWithMeta.mockClear().mockReturnValueOnce(parse.promise);
+      token = 2;
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(99);
+      expect(mockCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      await jest.advanceTimersByTimeAsync(50);
+      watcher.triggerChange('change');
+      token = 3;
+      parse.resolve(makeParseResult({ sourceVersion: 2 }));
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(99);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+      freshness.mockClear();
+      token = 4;
+      await jest.advanceTimersByTimeAsync(2749);
+      expect(freshness).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(freshness).toHaveBeenCalledTimes(1);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(100);
+      expect(mockCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(3);
+    });
+
+    it.each(['token', 'parse'])(
+      'module-unit: ignores obsolete DB %s results after replacement',
+      async (stage) => {
+        const watcher = createMockFsWatcher();
+        const freshness = jest.fn().mockResolvedValue({ maxUpdated: 1 });
+        mockAdapterFactory.getAdapter.mockReturnValue(makeDbAdapter(freshness));
+        await service.startWatching(SES, DB_PATH, 'opencode', SES);
+        const token = deferred<unknown>();
+        const parse = deferred<GetOrParseResult>();
+        if (stage === 'token') freshness.mockReturnValueOnce(token.promise);
+        else {
+          freshness.mockResolvedValue({ maxUpdated: 2 });
+          mockCacheService.getOrParseWithMeta.mockReturnValueOnce(parse.promise);
+        }
+        watcher.triggerChange('change');
+        await jest.advanceTimersByTimeAsync(100);
+        await service.stopWatching(SES);
+        createMockFsWatcher();
+        await service.startWatching(SES, DB_PATH, 'opencode', SES);
+        mockCacheService.getOrParseWithMeta.mockClear();
+        mockEvents.publish.mockClear();
+        if (stage === 'token') token.resolve({ maxUpdated: 3 });
+        else parse.resolve(makeParseResult({ session: dbSession(20) }));
+        await jest.advanceTimersByTimeAsync(200);
+        expect(mockCacheService.getOrParseWithMeta).not.toHaveBeenCalled();
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+        expect(service.getLastKnownMessageCount(SES)).toBe(3);
+      },
+    );
 
     it('skips the watcher when a DB source has no providerSessionId', async () => {
       const adapter = makeDbAdapter(jest.fn().mockResolvedValue({ count: 1, maxUpdated: 1 }));

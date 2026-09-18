@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from 
 import { z } from 'zod';
 import type {
   AgentTimeBufferAssignmentResult,
+  AgentTimeBufferResetResult,
   AgentTimeBufferSnapshot,
 } from '../models/epic-time.models';
 import { EpicTimeService } from '../services/epic-time.service';
@@ -13,6 +14,13 @@ const AssignAgentTimeBufferSchema = z
   .object({
     projectId: ProjectIdSchema,
     targetEpicId: z.string().uuid(),
+    capturedAt: z.string().datetime(),
+    snapshotToken: SnapshotTokenSchema,
+  })
+  .strict();
+const ResetAgentTimeBufferSchema = z
+  .object({
+    projectId: ProjectIdSchema,
     capturedAt: z.string().datetime(),
     snapshotToken: SnapshotTokenSchema,
   })
@@ -35,6 +43,19 @@ export class AgentTimeBufferController {
   ): Promise<AgentTimeBufferAssignmentResult> {
     const parsed = AssignAgentTimeBufferSchema.parse(body);
     return this.epicTimeService.assignAgentTimeBuffer({
+      agentId: AgentIdSchema.parse(agentId),
+      ...parsed,
+    });
+  }
+
+  @Post(':agentId/reset')
+  @HttpCode(HttpStatus.OK)
+  resetAgentTimeBuffer(
+    @Param('agentId') agentId: string,
+    @Body() body: unknown,
+  ): Promise<AgentTimeBufferResetResult> {
+    const parsed = ResetAgentTimeBufferSchema.parse(body);
+    return this.epicTimeService.resetAgentTimeBuffer({
       agentId: AgentIdSchema.parse(agentId),
       ...parsed,
     });

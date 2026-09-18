@@ -275,4 +275,84 @@ describe('Agent time buffer assignment API', () => {
     expect(foreignTarget.json()).toMatchObject({ code: 'not_found' });
     expect(events.publish).not.toHaveBeenCalled();
   });
+
+  it('completes the fenced reset over HTTP and publishes exactly once after commit', async () => {
+    const read = await app.inject({
+      method: 'GET',
+      url: `/api/agent-time-buffers?projectId=${PROJECT_ID}`,
+    });
+    const snapshot = read.json() as { capturedAt: string; items: BufferItem[] };
+    const item = snapshot.items.find((entry) => entry.agentId === AGENT_ID)!;
+
+    const reset = await app.inject({
+      method: 'POST',
+      url: `/api/agent-time-buffers/${AGENT_ID}/reset`,
+      payload: {
+        projectId: PROJECT_ID,
+        capturedAt: snapshot.capturedAt,
+        snapshotToken: item.snapshotToken,
+      },
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json()).toEqual({ workspaceId: WORKSPACE_ID });
+
+    expect(segmentRows()).toEqual([expect.objectContaining({ id: 'buf-other', epic_id: null })]);
+    expect(events.publish).toHaveBeenCalledTimes(1);
+    expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
+      workspaceId: WORKSPACE_ID,
+    });
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: `/api/agent-time-buffers/${AGENT_ID}/reset`,
+      payload: {
+        projectId: PROJECT_ID,
+        capturedAt: snapshot.capturedAt,
+        snapshotToken: item.snapshotToken,
+      },
+    });
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json()).toMatchObject({ code: 'conflict' });
+    expect(events.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps reset validation, not-found, and stale failures to typed errors', async () => {
+    const extraField = await app.inject({
+      method: 'POST',
+      url: `/api/agent-time-buffers/${AGENT_ID}/reset`,
+      payload: {
+        projectId: PROJECT_ID,
+        capturedAt: '2026-01-02T00:20:30.000Z',
+        snapshotToken: 'a'.repeat(64),
+        unexpected: true,
+      },
+    });
+    expect(extraField.statusCode).toBe(400);
+    expect(extraField.json()).toMatchObject({ code: 'validation_error' });
+
+    const unknownAgent = await app.inject({
+      method: 'POST',
+      url: `/api/agent-time-buffers/ghost-agent/reset`,
+      payload: {
+        projectId: PROJECT_ID,
+        capturedAt: '2026-01-02T00:20:30.000Z',
+        snapshotToken: 'a'.repeat(64),
+      },
+    });
+    expect(unknownAgent.statusCode).toBe(404);
+    expect(unknownAgent.json()).toMatchObject({ code: 'not_found' });
+
+    const staleToken = await app.inject({
+      method: 'POST',
+      url: `/api/agent-time-buffers/${AGENT_ID}/reset`,
+      payload: {
+        projectId: PROJECT_ID,
+        capturedAt: '2026-01-02T00:20:30.000Z',
+        snapshotToken: 'd'.repeat(64),
+      },
+    });
+    expect(staleToken.statusCode).toBe(409);
+    expect(staleToken.json()).toMatchObject({ code: 'conflict' });
+    expect(events.publish).not.toHaveBeenCalled();
+  });
 });

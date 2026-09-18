@@ -23,13 +23,18 @@ describe('AgentTimeBufferController', () => {
       },
     ],
   };
-  let service: { getAgentTimeBuffers: jest.Mock; assignAgentTimeBuffer: jest.Mock };
+  let service: {
+    getAgentTimeBuffers: jest.Mock;
+    assignAgentTimeBuffer: jest.Mock;
+    resetAgentTimeBuffer: jest.Mock;
+  };
   let controller: AgentTimeBufferController;
 
   beforeEach(() => {
     service = {
       getAgentTimeBuffers: jest.fn().mockReturnValue(snapshot),
       assignAgentTimeBuffer: jest.fn().mockResolvedValue({ workspaceId: 'workspace-1' }),
+      resetAgentTimeBuffer: jest.fn().mockResolvedValue({ workspaceId: 'workspace-1' }),
     };
     controller = new AgentTimeBufferController(service as unknown as EpicTimeService);
   });
@@ -77,6 +82,48 @@ describe('AgentTimeBufferController', () => {
   it('rejects an empty agent route parameter', () => {
     expect(() => controller.assignAgentTimeBuffer('', validBody())).toThrow(z.ZodError);
     expect(service.assignAgentTimeBuffer).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a reset with the parsed strict body', async () => {
+    const body = {
+      projectId,
+      capturedAt: '2026-01-02T00:00:00.000Z',
+      snapshotToken: 'b'.repeat(64),
+    };
+    await expect(controller.resetAgentTimeBuffer(agentId, body)).resolves.toEqual({
+      workspaceId: 'workspace-1',
+    });
+    expect(service.resetAgentTimeBuffer).toHaveBeenCalledWith({
+      agentId,
+      ...body,
+    });
+  });
+
+  it.each([
+    ['an unknown field', { projectId, capturedAt: '2026-01-02T00:00:00.000Z', extra: 1 }],
+    ['a non-ISO capture watermark', { projectId, capturedAt: 'not-a-timestamp' }],
+    [
+      'an uppercase token',
+      { projectId, capturedAt: '2026-01-02T00:00:00.000Z', snapshotToken: 'A'.repeat(64) },
+    ],
+    [
+      'a short token',
+      { projectId, capturedAt: '2026-01-02T00:00:00.000Z', snapshotToken: 'a'.repeat(63) },
+    ],
+  ])('rejects %s on the reset body', (_label, body) => {
+    expect(() => controller.resetAgentTimeBuffer(agentId, body)).toThrow(z.ZodError);
+    expect(service.resetAgentTimeBuffer).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty agent route parameter on the reset command', () => {
+    expect(() =>
+      controller.resetAgentTimeBuffer('', {
+        projectId,
+        capturedAt: '2026-01-02T00:00:00.000Z',
+        snapshotToken: 'a'.repeat(64),
+      }),
+    ).toThrow(z.ZodError);
+    expect(service.resetAgentTimeBuffer).not.toHaveBeenCalled();
   });
 
   function validBody(): Record<string, string> {

@@ -306,6 +306,52 @@ describe('EpicTimeStore', () => {
       .all() as Array<Record<string, unknown>>;
   }
 
+  function insertSegmentRow(input: {
+    id: string;
+    agentId?: string;
+    projectId?: string;
+    epicId?: string | null;
+    teamBatchId?: string | null;
+    durationMs?: number;
+    closedAt?: string | null;
+    startedAt: string;
+    lastActivityAt: string;
+    updatedAt?: string;
+  }): void {
+    sqlite
+      .prepare(
+        `INSERT INTO epic_time_segments
+           (id, project_id, epic_id, team_batch_id, session_id_snapshot,
+            agent_id_snapshot, agent_name_snapshot, started_at, last_activity_at,
+            closed_at, duration_ms, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'Coder', ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.id,
+        input.projectId ?? PROJECT_ID,
+        input.epicId ?? null,
+        input.teamBatchId ?? null,
+        `session-${input.id}`,
+        input.agentId ?? AGENT_ID,
+        input.startedAt,
+        input.lastActivityAt,
+        input.closedAt === undefined ? input.lastActivityAt : input.closedAt,
+        input.durationMs ?? 60_000,
+        input.lastActivityAt,
+        input.updatedAt ?? input.lastActivityAt,
+      );
+  }
+
+  function epicIds(ids: readonly string[]): Array<Record<string, unknown>> {
+    const placeholders = ids.map(() => '?').join(', ');
+    return sqlite
+      .prepare(
+        `SELECT id, epic_id, updated_at FROM epic_time_segments
+         WHERE id IN (${placeholders}) ORDER BY id`,
+      )
+      .all(...ids) as Array<Record<string, unknown>>;
+  }
+
   it('sets activation once and excludes historical activity from the first sweep', async () => {
     const first = await store.activate(new Date('2026-01-01T00:00:10.000Z'));
     const second = await store.activate(new Date('2026-01-01T00:00:20.000Z'));
@@ -1438,42 +1484,6 @@ describe('EpicTimeStore', () => {
   });
 
   describe('agent time buffer assignment', () => {
-    function insertSegmentRow(input: {
-      id: string;
-      agentId?: string;
-      projectId?: string;
-      epicId?: string | null;
-      teamBatchId?: string | null;
-      durationMs?: number;
-      closedAt?: string | null;
-      startedAt: string;
-      lastActivityAt: string;
-      updatedAt?: string;
-    }): void {
-      sqlite
-        .prepare(
-          `INSERT INTO epic_time_segments
-             (id, project_id, epic_id, team_batch_id, session_id_snapshot,
-              agent_id_snapshot, agent_name_snapshot, started_at, last_activity_at,
-              closed_at, duration_ms, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'Coder', ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          input.id,
-          input.projectId ?? PROJECT_ID,
-          input.epicId ?? null,
-          input.teamBatchId ?? null,
-          `session-${input.id}`,
-          input.agentId ?? AGENT_ID,
-          input.startedAt,
-          input.lastActivityAt,
-          input.closedAt === undefined ? input.lastActivityAt : input.closedAt,
-          input.durationMs ?? 60_000,
-          input.lastActivityAt,
-          input.updatedAt ?? input.lastActivityAt,
-        );
-    }
-
     function seedEligibleMatrix(): void {
       insertAgent('agent-two', 'Second Coder');
       insertEpic('bound-epic', '2026-01-01T00:00:08.000Z', false);
@@ -1556,16 +1566,6 @@ describe('EpicTimeStore', () => {
         lastActivityAt: '2026-01-01T00:27:00.000Z',
         updatedAt: '2026-01-01T00:30:00.000Z',
       });
-    }
-
-    function epicIds(ids: readonly string[]): Array<Record<string, unknown>> {
-      const placeholders = ids.map(() => '?').join(', ');
-      return sqlite
-        .prepare(
-          `SELECT id, epic_id, updated_at FROM epic_time_segments
-           WHERE id IN (${placeholders}) ORDER BY id`,
-        )
-        .all(...ids) as Array<Record<string, unknown>>;
     }
 
     it('aggregates only positive settled unlogged rows of current same-project agents', () => {
@@ -1915,6 +1915,241 @@ describe('EpicTimeStore', () => {
           projectId: PROJECT_ID,
           targetEpicId: 'foreign-epic',
         }),
+      ).rejects.toMatchObject({ code: 'not_found', statusCode: 404 });
+      expect(epicIds(['buf-a'])).toEqual([expect.objectContaining({ id: 'buf-a', epic_id: null })]);
+    });
+  });
+
+  describe('agent time buffer reset', () => {
+    function seedResetMatrix(): void {
+      insertAgent('agent-two', 'Second Coder');
+      insertEpic('bound-epic', '2026-01-01T00:00:08.000Z', false);
+      insertBatch('batch-open', '2026-01-01T00:00:10.000Z', null);
+      insertSegmentRow({
+        id: 'buf-sub',
+        startedAt: '2026-01-01T00:20:00.000Z',
+        lastActivityAt: '2026-01-01T00:20:30.000Z',
+        durationMs: 30_000,
+      });
+      insertSegmentRow({
+        id: 'buf-whole',
+        startedAt: '2026-01-01T00:10:00.000Z',
+        lastActivityAt: '2026-01-01T00:11:30.000Z',
+        durationMs: 90_000,
+      });
+      insertSegmentRow({
+        id: 'buf-other-agent',
+        agentId: 'agent-two',
+        startedAt: '2026-01-01T00:15:00.000Z',
+        lastActivityAt: '2026-01-01T00:15:00.000Z',
+        durationMs: 60_000,
+      });
+      // Every row below is ineligible and must survive the reset.
+      insertSegmentRow({
+        id: 'open-row',
+        startedAt: '2026-01-01T00:21:00.000Z',
+        lastActivityAt: '2026-01-01T00:21:30.000Z',
+        closedAt: null,
+        updatedAt: '2026-01-01T00:30:00.000Z',
+      });
+      insertSegmentRow({
+        id: 'bound-row',
+        startedAt: '2026-01-01T00:23:00.000Z',
+        lastActivityAt: '2026-01-01T00:23:00.000Z',
+        epicId: 'bound-epic',
+        updatedAt: '2026-01-01T00:30:00.000Z',
+      });
+      insertSegmentRow({
+        id: 'pending-lane-row',
+        teamBatchId: 'batch-open',
+        startedAt: '2026-01-01T00:25:00.000Z',
+        lastActivityAt: '2026-01-01T00:25:00.000Z',
+        updatedAt: '2026-01-01T00:30:00.000Z',
+      });
+      sqlite
+        .prepare(
+          `INSERT INTO projects
+             (id, name, root_path, is_template, is_private, created_at, updated_at)
+           VALUES ('project-other', 'Other', '/tmp/other', 0, 0,
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+        )
+        .run();
+      insertSegmentRow({
+        id: 'other-project-row',
+        projectId: 'project-other',
+        startedAt: '2026-01-01T00:27:00.000Z',
+        lastActivityAt: '2026-01-01T00:27:00.000Z',
+        updatedAt: '2026-01-01T00:30:00.000Z',
+      });
+      sqlite
+        .prepare(
+          `INSERT INTO epic_time_session_watermarks
+             (session_id, project_id, last_activity_at, created_at, updated_at)
+           VALUES (?, ?, '2026-01-01T00:12:00.000Z',
+                   '2026-01-01T00:12:00.000Z', '2026-01-01T00:12:00.000Z')`,
+        )
+        .run(SESSION_ID, PROJECT_ID);
+      sqlite
+        .prepare(
+          `INSERT INTO events (id, name, payload_json, request_id, published_at)
+           VALUES ('event-receipt', 'epic.updated', '{}', NULL, '2026-01-01T00:28:00.000Z')`,
+        )
+        .run();
+      sqlite
+        .prepare(
+          `INSERT INTO epic_time_buffer_claims
+             (committed_event_id, event_name, project_id, agent_id_snapshot,
+              agent_name_snapshot, target_epic_id_snapshot, target_epic_title_snapshot,
+              published_at, source_event_row_id, created_at)
+           VALUES ('event-receipt', 'epic.updated', ?, ?, 'Coder', 'bound-epic',
+                   'Bound', '2026-01-01T00:28:00.000Z', NULL, '2026-01-01T00:28:00.000Z')`,
+        )
+        .run(PROJECT_ID, AGENT_ID);
+    }
+
+    it('deletes the exact captured row set and preserves every replay guard and ineligible row', async () => {
+      seedResetMatrix();
+      const snapshot = store.listAgentTimeBuffers(PROJECT_ID);
+      const item = snapshot.items.find((entry) => entry.agentId === AGENT_ID)!;
+      const workspace = (
+        sqlite.prepare(`SELECT workspace_id FROM projects WHERE id = ?`).get(PROJECT_ID) as {
+          workspace_id: string;
+        }
+      ).workspace_id;
+
+      const result = await store.resetAgentTimeBuffer({
+        projectId: PROJECT_ID,
+        agentId: AGENT_ID,
+        capturedAt: snapshot.capturedAt!,
+        snapshotToken: item.snapshotToken,
+      });
+
+      expect(result).toEqual({ workspaceId: workspace });
+      expect(epicIds(['buf-sub', 'buf-whole', 'buf-other-agent', 'open-row', 'bound-row'])).toEqual(
+        [
+          expect.objectContaining({ id: 'bound-row', epic_id: 'bound-epic' }),
+          expect.objectContaining({ id: 'buf-other-agent', epic_id: null }),
+          expect.objectContaining({ id: 'open-row', epic_id: null }),
+        ],
+      );
+      expect(
+        sqlite
+          .prepare(
+            `SELECT epic_id, team_batch_id FROM epic_time_segments WHERE id = 'pending-lane-row'`,
+          )
+          .get(),
+      ).toEqual({ epic_id: null, team_batch_id: 'batch-open' });
+      expect(epicIds(['other-project-row'])).toEqual([
+        expect.objectContaining({ id: 'other-project-row', epic_id: null }),
+      ]);
+      // Deletion-proof replay guards: the watermark and the durable task-touch
+      // receipt both survive so deleted time can never be reconciled back.
+      expect(
+        sqlite
+          .prepare(
+            `SELECT last_activity_at FROM epic_time_session_watermarks
+             WHERE session_id = ?`,
+          )
+          .get(SESSION_ID),
+      ).toEqual({ last_activity_at: '2026-01-01T00:12:00.000Z' });
+      expect(receipts()).toHaveLength(1);
+      expect(store.listAgentTimeBuffers(PROJECT_ID).items.map((entry) => entry.agentId)).toEqual([
+        'agent-two',
+      ]);
+    });
+
+    it.each([
+      [
+        'an automatic attribution claim race',
+        () =>
+          sqlite
+            .prepare(
+              `UPDATE epic_time_segments SET epic_id = 'bound-epic',
+                       updated_at = '2026-01-01T00:35:00.000Z' WHERE id = 'buf-sub'`,
+            )
+            .run(),
+      ],
+      [
+        'a changed-row-field race',
+        () =>
+          sqlite
+            .prepare(
+              `UPDATE epic_time_segments SET duration_ms = duration_ms + 1000
+                       WHERE id = 'buf-whole'`,
+            )
+            .run(),
+      ],
+      [
+        'activity settled after the capture watermark',
+        () =>
+          sqlite
+            .prepare(
+              `UPDATE epic_time_segments SET duration_ms = duration_ms + 5000,
+                       updated_at = '2026-01-01T00:40:00.000Z' WHERE id = 'buf-sub'`,
+            )
+            .run(),
+      ],
+    ])('fails closed on %s without a partial delete', async (_label, race) => {
+      seedResetMatrix();
+      const snapshot = store.listAgentTimeBuffers(PROJECT_ID);
+      const item = snapshot.items.find((entry) => entry.agentId === AGENT_ID)!;
+      race();
+
+      await expect(
+        store.resetAgentTimeBuffer({
+          projectId: PROJECT_ID,
+          agentId: AGENT_ID,
+          capturedAt: snapshot.capturedAt!,
+          snapshotToken: item.snapshotToken,
+        }),
+      ).rejects.toMatchObject({ code: 'conflict', statusCode: 409 });
+      expect(epicIds(['buf-whole'])).toEqual([
+        expect.objectContaining({ id: 'buf-whole', epic_id: null }),
+      ]);
+    });
+
+    it('rejects a replay of an already applied reset with the stale snapshot conflict', async () => {
+      insertSegmentRow({
+        id: 'buf-a',
+        startedAt: '2026-01-01T00:10:00.000Z',
+        lastActivityAt: '2026-01-01T00:11:30.000Z',
+        durationMs: 90_000,
+      });
+      const snapshot = store.listAgentTimeBuffers(PROJECT_ID);
+      const input = {
+        projectId: PROJECT_ID,
+        agentId: AGENT_ID,
+        capturedAt: snapshot.capturedAt!,
+        snapshotToken: snapshot.items[0].snapshotToken,
+      };
+      await store.resetAgentTimeBuffer(input);
+      expect(epicIds(['buf-a'])).toEqual([]);
+
+      await expect(store.resetAgentTimeBuffer(input)).rejects.toMatchObject({
+        code: 'conflict',
+        statusCode: 409,
+      });
+    });
+
+    it('rejects missing agent and missing project without deleting anything', async () => {
+      insertSegmentRow({
+        id: 'buf-a',
+        startedAt: '2026-01-01T00:10:00.000Z',
+        lastActivityAt: '2026-01-01T00:11:30.000Z',
+        durationMs: 90_000,
+      });
+      const snapshot = store.listAgentTimeBuffers(PROJECT_ID);
+      const base = {
+        agentId: AGENT_ID,
+        capturedAt: snapshot.capturedAt!,
+        snapshotToken: snapshot.items[0].snapshotToken,
+      };
+
+      await expect(
+        store.resetAgentTimeBuffer({ ...base, projectId: PROJECT_ID, agentId: 'ghost-agent' }),
+      ).rejects.toMatchObject({ code: 'not_found', statusCode: 404 });
+      await expect(
+        store.resetAgentTimeBuffer({ ...base, projectId: 'project-missing' }),
       ).rejects.toMatchObject({ code: 'not_found', statusCode: 404 });
       expect(epicIds(['buf-a'])).toEqual([expect.objectContaining({ id: 'buf-a', epic_id: null })]);
     });

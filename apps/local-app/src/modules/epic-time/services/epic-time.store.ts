@@ -6,6 +6,8 @@ import type {
   AgentTimeBufferAssignmentInput,
   AgentTimeBufferAssignmentResult,
   AgentTimeBufferItem,
+  AgentTimeBufferResetInput,
+  AgentTimeBufferResetResult,
   AgentTimeBufferSnapshot,
   EpicTimeAttributionSource,
 } from '../models/epic-time.models';
@@ -102,6 +104,22 @@ export interface EpicTimeBatchProcessingResult {
   sealedBatches: number;
   finalizedBatches: number;
   cancelledBatches: number;
+}
+
+export interface EpicTimeTerminationResetInput {
+  sessionId: string;
+  /** Current ownership key for the reset; null only reconciles final activity. */
+  agentId: string | null;
+  trackingStartedAt: string;
+  idleTimeoutMs: number;
+  deliveryKey: string;
+  now: Date;
+}
+
+export interface EpicTimeTerminationResetResult {
+  /** Workspace of the agent's current project; null when nothing was deleted. */
+  workspaceId: string | null;
+  deletedSegments: number;
 }
 
 export interface EpicTimeScope {
@@ -275,6 +293,18 @@ export class EpicTimeStore {
     });
   }
 
+  /**
+   * Read-only activation settings. Session termination uses this to decide
+   * whether accounting ever started without creating the tracking marker:
+   * runtimes that never activated accounting must terminate lifecycle-only.
+   */
+  readActivationSettings(): { trackingStartedAt: string | null; idleTimeoutMs: number } {
+    return {
+      trackingStartedAt: this.readSetting(TRACKING_STARTED_AT_KEY),
+      idleTimeoutMs: this.readIdleTimeoutMs(),
+    };
+  }
+
   listReconciliationSessionIds(trackingStartedAt: string): string[] {
     return (
       this.rawClient
@@ -305,178 +335,192 @@ export class EpicTimeStore {
     now = new Date(),
     options: EpicTimeReconciliationOptions = {},
   ): Promise<EpicTimeReconciliationResult> {
+    return this.transactionRunner.runImmediateQueued(() =>
+      this.reconcileSessionCore(sessionId, trackingStartedAt, idleTimeoutMs, now, options),
+    );
+  }
+
+  /**
+   * Synchronous reconciliation core. Transaction-owning callers (session
+   * termination) run it inside their own queued transaction; standalone
+   * callers go through the queued wrapper above.
+   */
+  private reconcileSessionCore(
+    sessionId: string,
+    trackingStartedAt: string,
+    idleTimeoutMs: number,
+    now: Date,
+    options: EpicTimeReconciliationOptions,
+  ): EpicTimeReconciliationResult {
     const nowIso = now.toISOString();
-    return this.transactionRunner.runImmediateQueued(() => {
-      let openSegment = this.loadOpenSegment(sessionId);
-      const session = this.loadSession(sessionId);
-      if (!session) {
-        if (openSegment) {
-          this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
-          return {
-            sessionId,
-            action: 'closed',
-            watermark: null,
-            segmentId: openSegment.id,
-          };
-        }
-        return { sessionId, action: 'noop', watermark: null, segmentId: null };
-      }
-
-      const watermark = this.loadWatermark(sessionId);
-      const activityAt = session.last_activity_at;
-      const hasNewActivity =
-        activityAt !== null &&
-        this.isAfter(activityAt, trackingStartedAt) &&
-        (!watermark || this.isAfter(activityAt, watermark.last_activity_at));
-
-      if (!session.agent_id || !session.project_id || !session.agent_name) {
-        if (openSegment) {
-          this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
-        }
-        let action: EpicTimeReconciliationAction = 'noop';
-        if (hasNewActivity) {
-          action = 'discarded';
-        } else if (openSegment) {
-          action = 'closed';
-        }
-        const watermarkProjectId =
-          session.project_id ?? session.epic_project_id ?? openSegment?.project_id;
-        if (hasNewActivity && activityAt && watermarkProjectId) {
-          this.upsertWatermark(session.id, watermarkProjectId, activityAt, nowIso);
-        }
+    let openSegment = this.loadOpenSegment(sessionId);
+    const session = this.loadSession(sessionId);
+    if (!session) {
+      if (openSegment) {
+        this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
         return {
           sessionId,
-          action,
-          watermark: hasNewActivity ? activityAt : (watermark?.last_activity_at ?? null),
-          segmentId: openSegment?.id ?? null,
+          action: 'closed',
+          watermark: null,
+          segmentId: openSegment.id,
         };
       }
+      return { sessionId, action: 'noop', watermark: null, segmentId: null };
+    }
 
+    const watermark = this.loadWatermark(sessionId);
+    const activityAt = session.last_activity_at;
+    const hasNewActivity =
+      activityAt !== null &&
+      this.isAfter(activityAt, trackingStartedAt) &&
+      (!watermark || this.isAfter(activityAt, watermark.last_activity_at));
+
+    if (!session.agent_id || !session.project_id || !session.agent_name) {
+      if (openSegment) {
+        this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
+      }
       let action: EpicTimeReconciliationAction = 'noop';
-      let segmentId = openSegment?.id ?? null;
-      if (hasNewActivity && activityAt) {
-        const hadOpenSegment = openSegment !== null;
-        const epicId = this.resolveAttributionEpic(session);
-        const eligibleTeam = epicId === null ? this.resolveEligibleTeam(session) : null;
-        const openTeamBatch = eligibleTeam
-          ? this.loadOpenTeamBatch(session.project_id, eligibleTeam.team_id)
-          : null;
-        const priorActivityAt =
-          openSegment?.last_activity_at ?? watermark?.last_activity_at ?? null;
-        const busyStart =
-          session.activity_state === 'busy' && session.busy_since ? session.busy_since : activityAt;
-        const continuityStart = priorActivityAt ?? busyStart;
-        const continuityGapMs = this.elapsedMs(continuityStart, activityAt);
-        const continuous = continuityGapMs >= 0 && continuityGapMs <= idleTimeoutMs;
-        const sameSegment =
-          openSegment !== null &&
-          openSegment.project_id === session.project_id &&
-          openSegment.agent_id_snapshot === session.agent_id &&
-          openSegment.epic_id === epicId &&
-          (eligibleTeam
-            ? openTeamBatch !== null && openSegment.team_batch_id === openTeamBatch.id
-            : openSegment.team_batch_id === null) &&
-          continuous;
+      if (hasNewActivity) {
+        action = 'discarded';
+      } else if (openSegment) {
+        action = 'closed';
+      }
+      const watermarkProjectId =
+        session.project_id ?? session.epic_project_id ?? openSegment?.project_id;
+      if (hasNewActivity && activityAt && watermarkProjectId) {
+        this.upsertWatermark(session.id, watermarkProjectId, activityAt, nowIso);
+      }
+      return {
+        sessionId,
+        action,
+        watermark: hasNewActivity ? activityAt : (watermark?.last_activity_at ?? null),
+        segmentId: openSegment?.id ?? null,
+      };
+    }
 
-        if (sameSegment && openSegment) {
-          const deltaMs = this.elapsedMs(openSegment.last_activity_at, activityAt);
-          this.rawClient
-            .prepare(
-              `UPDATE epic_time_segments
+    let action: EpicTimeReconciliationAction = 'noop';
+    let segmentId = openSegment?.id ?? null;
+    if (hasNewActivity && activityAt) {
+      const hadOpenSegment = openSegment !== null;
+      const epicId = this.resolveAttributionEpic(session);
+      const eligibleTeam = epicId === null ? this.resolveEligibleTeam(session) : null;
+      const openTeamBatch = eligibleTeam
+        ? this.loadOpenTeamBatch(session.project_id, eligibleTeam.team_id)
+        : null;
+      const priorActivityAt = openSegment?.last_activity_at ?? watermark?.last_activity_at ?? null;
+      const busyStart =
+        session.activity_state === 'busy' && session.busy_since ? session.busy_since : activityAt;
+      const continuityStart = priorActivityAt ?? busyStart;
+      const continuityGapMs = this.elapsedMs(continuityStart, activityAt);
+      const continuous = continuityGapMs >= 0 && continuityGapMs <= idleTimeoutMs;
+      const sameSegment =
+        openSegment !== null &&
+        openSegment.project_id === session.project_id &&
+        openSegment.agent_id_snapshot === session.agent_id &&
+        openSegment.epic_id === epicId &&
+        (eligibleTeam
+          ? openTeamBatch !== null && openSegment.team_batch_id === openTeamBatch.id
+          : openSegment.team_batch_id === null) &&
+        continuous;
+
+      if (sameSegment && openSegment) {
+        const deltaMs = this.elapsedMs(openSegment.last_activity_at, activityAt);
+        this.rawClient
+          .prepare(
+            `UPDATE epic_time_segments
                SET last_activity_at = ?, duration_ms = duration_ms + ?, updated_at = ?
                WHERE id = ? AND closed_at IS NULL`,
-            )
-            .run(activityAt, deltaMs, nowIso, openSegment.id);
-          action = 'advanced';
-        } else {
-          if (openSegment) {
-            this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
-            openSegment = null;
-          }
-          const lowerBound = this.latestTimestamp([
-            trackingStartedAt,
-            session.started_at,
-            watermark?.last_activity_at ?? null,
-          ]);
-          const busyStartProvesNewWindow =
-            !watermark || this.isAfter(busyStart, watermark.last_activity_at);
-          const startedAt =
-            continuous && (hadOpenSegment || busyStartProvesNewWindow)
-              ? this.latestTimestamp([busyStart, lowerBound])
-              : activityAt;
-          const durationMs = Math.max(0, this.elapsedMs(startedAt, activityAt));
-          const teamBatch = eligibleTeam
-            ? (openTeamBatch ??
-              this.createOrLoadOpenTeamBatch(session.project_id, eligibleTeam, startedAt, nowIso))
-            : null;
-          segmentId = randomUUID();
-          this.rawClient
-            .prepare(
-              `INSERT INTO epic_time_segments
+          )
+          .run(activityAt, deltaMs, nowIso, openSegment.id);
+        action = 'advanced';
+      } else {
+        if (openSegment) {
+          this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
+          openSegment = null;
+        }
+        const lowerBound = this.latestTimestamp([
+          trackingStartedAt,
+          session.started_at,
+          watermark?.last_activity_at ?? null,
+        ]);
+        const busyStartProvesNewWindow =
+          !watermark || this.isAfter(busyStart, watermark.last_activity_at);
+        const startedAt =
+          continuous && (hadOpenSegment || busyStartProvesNewWindow)
+            ? this.latestTimestamp([busyStart, lowerBound])
+            : activityAt;
+        const durationMs = Math.max(0, this.elapsedMs(startedAt, activityAt));
+        const teamBatch = eligibleTeam
+          ? (openTeamBatch ??
+            this.createOrLoadOpenTeamBatch(session.project_id, eligibleTeam, startedAt, nowIso))
+          : null;
+        segmentId = randomUUID();
+        this.rawClient
+          .prepare(
+            `INSERT INTO epic_time_segments
                  (id, project_id, epic_id, team_batch_id, attribution_source,
                   team_id_snapshot, team_name_snapshot, session_id_snapshot,
                   agent_id_snapshot, agent_name_snapshot, started_at, last_activity_at,
                   closed_at, duration_ms, created_at, updated_at)
                VALUES (?, ?, ?, ?, 'direct', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
-            )
-            .run(
-              segmentId,
-              session.project_id,
-              epicId,
-              teamBatch?.id ?? null,
-              eligibleTeam?.team_id ?? null,
-              eligibleTeam?.team_name ?? null,
-              session.id,
-              session.agent_id,
-              session.agent_name,
-              startedAt,
-              activityAt,
-              durationMs,
-              nowIso,
-              nowIso,
-            );
-          action = 'created';
+          )
+          .run(
+            segmentId,
+            session.project_id,
+            epicId,
+            teamBatch?.id ?? null,
+            eligibleTeam?.team_id ?? null,
+            eligibleTeam?.team_name ?? null,
+            session.id,
+            session.agent_id,
+            session.agent_name,
+            startedAt,
+            activityAt,
+            durationMs,
+            nowIso,
+            nowIso,
+          );
+        action = 'created';
 
-          if (epicId === null) {
-            const pendingClaim = this.applyPendingBufferClaims(
-              session.project_id,
-              session.agent_id,
-              nowIso,
-            );
-            if (pendingClaim.discardedSegmentIds.has(segmentId)) {
-              action = 'discarded';
-              segmentId = null;
-            }
+        if (epicId === null) {
+          const pendingClaim = this.applyPendingBufferClaims(
+            session.project_id,
+            session.agent_id,
+            nowIso,
+          );
+          if (pendingClaim.discardedSegmentIds.has(segmentId)) {
+            action = 'discarded';
+            segmentId = null;
           }
         }
-
-        this.upsertWatermark(session.id, session.project_id, activityAt, nowIso);
-        openSegment = this.loadOpenSegment(sessionId);
       }
 
-      if (
-        openSegment &&
-        (options.forceCloseOpenSegment ||
-          this.shouldClose(session, openSegment.last_activity_at, idleTimeoutMs, now))
-      ) {
-        this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
-        if (action === 'created') {
-          action = 'created_closed';
-        } else if (action === 'advanced') {
-          action = 'advanced_closed';
-        } else {
-          action = 'closed';
-        }
-        segmentId = openSegment.id;
-      }
+      this.upsertWatermark(session.id, session.project_id, activityAt, nowIso);
+      openSegment = this.loadOpenSegment(sessionId);
+    }
 
-      return {
-        sessionId,
-        action,
-        watermark: hasNewActivity ? activityAt : (watermark?.last_activity_at ?? null),
-        segmentId,
-      };
-    });
+    if (
+      openSegment &&
+      (options.forceCloseOpenSegment ||
+        this.shouldClose(session, openSegment.last_activity_at, idleTimeoutMs, now))
+    ) {
+      this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
+      if (action === 'created') {
+        action = 'created_closed';
+      } else if (action === 'advanced') {
+        action = 'advanced_closed';
+      } else {
+        action = 'closed';
+      }
+      segmentId = openSegment.id;
+    }
+
+    return {
+      sessionId,
+      action,
+      watermark: hasNewActivity ? activityAt : (watermark?.last_activity_at ?? null),
+      segmentId,
+    };
   }
 
   async processTeamBatches(
@@ -484,34 +528,49 @@ export class EpicTimeStore {
     idleTimeoutMs: number,
     now = new Date(),
   ): Promise<EpicTimeBatchProcessingResult> {
+    return this.transactionRunner.runImmediateQueued(() =>
+      this.processTeamBatchesCore(deliveryKey, idleTimeoutMs, now),
+    );
+  }
+
+  /**
+   * Synchronous team-batch core: seals inactive batches behind their event
+   * barriers, then finalizes or cancels sealed batches. Transaction-owning
+   * callers (session termination) run it inside their own queued
+   * transaction; standalone callers go through the queued wrapper above.
+   */
+  private processTeamBatchesCore(
+    deliveryKey: string,
+    idleTimeoutMs: number,
+    now: Date,
+  ): EpicTimeBatchProcessingResult {
     const nowIso = now.toISOString();
     const activeAfter = new Date(now.getTime() - idleTimeoutMs).toISOString();
-    return this.transactionRunner.runImmediateQueued(() => {
-      let sealedBatches = 0;
-      let finalizedBatches = 0;
-      let cancelledBatches = 0;
-      const openBatches = this.loadTeamBatches(false);
-      for (const batch of openBatches) {
-        if (this.hasActiveEligibleMember(batch, activeAfter)) {
-          continue;
-        }
-        this.rawClient
-          .prepare(
-            `UPDATE epic_time_segments
+    let sealedBatches = 0;
+    let finalizedBatches = 0;
+    let cancelledBatches = 0;
+    const openBatches = this.loadTeamBatches(false);
+    for (const batch of openBatches) {
+      if (this.hasActiveEligibleMember(batch, activeAfter)) {
+        continue;
+      }
+      this.rawClient
+        .prepare(
+          `UPDATE epic_time_segments
              SET closed_at = COALESCE(closed_at, last_activity_at), updated_at = ?
              WHERE team_batch_id = ?`,
-          )
-          .run(nowIso, batch.id);
-        this.rawClient
-          .prepare(
-            `UPDATE epic_time_team_batches
+        )
+        .run(nowIso, batch.id);
+      this.rawClient
+        .prepare(
+          `UPDATE epic_time_team_batches
              SET sealed_at = ?, updated_at = ?
              WHERE id = ? AND sealed_at IS NULL`,
-          )
-          .run(nowIso, nowIso, batch.id);
-        this.rawClient
-          .prepare(
-            `INSERT OR IGNORE INTO epic_time_team_batch_event_barriers
+        )
+        .run(nowIso, nowIso, batch.id);
+      this.rawClient
+        .prepare(
+          `INSERT OR IGNORE INTO epic_time_team_batch_event_barriers
                (team_batch_id, committed_event_id, created_at)
              SELECT ?, eh.event_id, ?
              FROM event_handlers eh
@@ -519,26 +578,25 @@ export class EpicTimeStore {
              WHERE eh.delivery_key = ?
                AND eh.status IN ('pending', 'running', 'retry')
                AND e.published_at <= ?`,
-          )
-          .run(batch.id, nowIso, deliveryKey, nowIso);
-        sealedBatches += 1;
-      }
+        )
+        .run(batch.id, nowIso, deliveryKey, nowIso);
+      sealedBatches += 1;
+    }
 
-      const sealed = this.loadTeamBatches(true);
-      for (const batch of sealed) {
-        if (this.batchHasPendingBarrier(batch.id, deliveryKey)) {
-          continue;
-        }
-        if (!this.isTeamBatchIdentityCurrent(batch)) {
-          this.cancelTeamBatch(batch.id, nowIso);
-          cancelledBatches += 1;
-          continue;
-        }
-        this.finalizeTeamBatch(batch, nowIso);
-        finalizedBatches += 1;
+    const sealed = this.loadTeamBatches(true);
+    for (const batch of sealed) {
+      if (this.batchHasPendingBarrier(batch.id, deliveryKey)) {
+        continue;
       }
-      return { sealedBatches, finalizedBatches, cancelledBatches };
-    });
+      if (!this.isTeamBatchIdentityCurrent(batch)) {
+        this.cancelTeamBatch(batch.id, nowIso);
+        cancelledBatches += 1;
+        continue;
+      }
+      this.finalizeTeamBatch(batch, nowIso);
+      finalizedBatches += 1;
+    }
+    return { sealedBatches, finalizedBatches, cancelledBatches };
   }
 
   async recordTaskTouch(
@@ -680,18 +738,7 @@ export class EpicTimeStore {
         throw new NotFoundError('Epic', input.targetEpicId);
       }
 
-      const rows = this.listEligibleBufferRows(input.projectId, input.agentId);
-      const capturedAtMs = this.timestampMs(input.capturedAt);
-      if (
-        rows.length === 0 ||
-        rows.some((row) => this.timestampMs(row.updated_at) > capturedAtMs)
-      ) {
-        throw new ConflictError(STALE_SNAPSHOT_MESSAGE);
-      }
-      if (buildBufferSnapshotToken(input.projectId, input.agentId, rows) !== input.snapshotToken) {
-        throw new ConflictError(STALE_SNAPSHOT_MESSAGE);
-      }
-
+      const rows = this.requireCapturedBufferRows(input);
       const assignRow = this.rawClient.prepare(
         `UPDATE epic_time_segments
          SET epic_id = ?, updated_at = ?
@@ -707,6 +754,109 @@ export class EpicTimeStore {
       }
       return { workspaceId: project.workspace_id };
     });
+  }
+
+  /**
+   * Snapshot-fenced manual reset of one agent's complete eligible row set.
+   * The same strict fence as assignment — live agent, project, the
+   * eligibility predicate, the capturedAt watermark, and the recomputed
+   * token — runs inside the single queued transaction, so the command either
+   * deletes the exact captured rows or nothing (409). Watermarks and
+   * buffer-claim receipts survive so deleted time can never be reconciled
+   * back; open activity and pending or sealed team-batch lanes stay untouched.
+   */
+  async resetAgentTimeBuffer(
+    input: AgentTimeBufferResetInput,
+  ): Promise<AgentTimeBufferResetResult> {
+    return this.transactionRunner.runImmediateQueued(() => {
+      const project = this.rawClient
+        .prepare(`SELECT workspace_id FROM projects WHERE id = ?`)
+        .get(input.projectId) as { workspace_id: string } | undefined;
+      if (!project) {
+        throw new NotFoundError('Project', input.projectId);
+      }
+      const agent = this.rawClient
+        .prepare(`SELECT id FROM agents WHERE id = ? AND project_id = ?`)
+        .get(input.agentId, input.projectId);
+      if (!agent) {
+        throw new NotFoundError('Agent', input.agentId);
+      }
+
+      const rows = this.requireCapturedBufferRows(input);
+      const deleteRow = this.rawClient.prepare(
+        `DELETE FROM epic_time_segments
+         WHERE id = ?
+           AND epic_id IS NULL
+           AND team_batch_id IS NULL
+           AND closed_at IS NOT NULL
+           AND duration_ms > 0`,
+      );
+      for (const row of rows) {
+        if (deleteRow.run(row.id).changes !== 1) {
+          throw new ConflictError(STALE_SNAPSHOT_MESSAGE);
+        }
+      }
+      return { workspaceId: project.workspace_id };
+    });
+  }
+
+  /**
+   * Synchronous session-termination accounting core. The session lifecycle
+   * caller owns one queued transaction that also writes the stopped session
+   * row; this method must never open a transaction or await inside it.
+   *
+   * Ordering is load-bearing: team batches finalize BEFORE the deletion so
+   * lead-owned winner time whose batch row disappears in finalization is
+   * deleted as settled personal balance in this same transaction, while
+   * lanes whose barriers are still pending survive with their existing
+   * later-finalization semantics. The deletion matches current agent
+   * ownership — never session provenance — and watermarks stay untouched so
+   * no later reconcile can recreate the cleared activity.
+   */
+  runTerminationResetSync(input: EpicTimeTerminationResetInput): EpicTimeTerminationResetResult {
+    const now = input.now;
+    this.reconcileSessionCore(
+      input.sessionId,
+      input.trackingStartedAt,
+      input.idleTimeoutMs,
+      now,
+      {},
+    );
+    this.processTeamBatchesCore(input.deliveryKey, input.idleTimeoutMs, now);
+    if (!input.agentId) {
+      return { workspaceId: null, deletedSegments: 0 };
+    }
+    const deleted = this.rawClient
+      .prepare(
+        `DELETE FROM epic_time_segments
+         WHERE id IN (
+           SELECT seg.id
+           FROM epic_time_segments seg
+           INNER JOIN agents a
+             ON a.id = seg.agent_id_snapshot AND a.project_id = seg.project_id
+           WHERE seg.agent_id_snapshot = ?
+             AND seg.epic_id IS NULL
+             AND seg.team_batch_id IS NULL
+             AND seg.closed_at IS NOT NULL
+             AND seg.duration_ms > 0
+         )`,
+      )
+      .run(input.agentId);
+    if (deleted.changes === 0) {
+      return { workspaceId: null, deletedSegments: 0 };
+    }
+    const agentProject = this.rawClient
+      .prepare(
+        `SELECT p.workspace_id AS workspace_id
+         FROM agents a
+         INNER JOIN projects p ON p.id = a.project_id
+         WHERE a.id = ?`,
+      )
+      .get(input.agentId) as { workspace_id: string } | undefined;
+    return {
+      workspaceId: agentProject?.workspace_id ?? null,
+      deletedSegments: deleted.changes,
+    };
   }
 
   getEpicTimeScope(epicId: string): EpicTimeScope | null {
@@ -1348,12 +1498,26 @@ export class EpicTimeStore {
     return { claimedSegmentIds, discardedSegmentIds };
   }
 
+  /** Validate the captured rows inside the assignment or reset transaction. */
+  private requireCapturedBufferRows(input: AgentTimeBufferResetInput): EligibleBufferRow[] {
+    const rows = this.listEligibleBufferRows(input.projectId, input.agentId);
+    const capturedAtMs = this.timestampMs(input.capturedAt);
+    if (rows.length === 0 || rows.some((row) => this.timestampMs(row.updated_at) > capturedAtMs)) {
+      throw new ConflictError(STALE_SNAPSHOT_MESSAGE);
+    }
+    if (buildBufferSnapshotToken(input.projectId, input.agentId, rows) !== input.snapshotToken) {
+      throw new ConflictError(STALE_SNAPSHOT_MESSAGE);
+    }
+    return rows;
+  }
+
   /**
-   * Shared eligibility predicate for the buffer read and the assignment
-   * command: one ordered, project-scoped statement whose live-agent inner
-   * join enforces the current real agent. A null agentId widens the read to
-   * every current same-project agent; ordering by agent, start, then row ID
-   * keeps both callers and the token fingerprint deterministic.
+   * Shared eligibility predicate for the buffer read and the fenced mutation
+   * commands (assignment and reset): one ordered, project-scoped statement
+   * whose live-agent inner join enforces the current real agent. A null
+   * agentId widens the read to every current same-project agent; ordering by
+   * agent, start, then row ID keeps both callers and the token fingerprint
+   * deterministic.
    */
   private listEligibleBufferRows(projectId: string, agentId: string | null): EligibleBufferRow[] {
     return this.rawClient

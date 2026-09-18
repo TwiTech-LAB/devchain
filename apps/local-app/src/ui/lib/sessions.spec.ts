@@ -7,6 +7,7 @@ import {
   terminateSession,
   fetchJsonOrThrow,
   fetchOrThrow,
+  fetchTranscriptIndex,
 } from './sessions';
 
 describe('ui/lib/sessions helpers', () => {
@@ -331,6 +332,64 @@ describe('ui/lib/sessions helpers', () => {
     it('hasCode returns false when no payload', () => {
       const error = new SessionApiError('Error', 400);
       expect(error.hasCode('MCP_NOT_CONFIGURED')).toBe(false);
+    });
+  });
+
+  // Helper tests isolate URL construction, cancellation, and transport errors without a UI.
+  describe('fetchTranscriptIndex', () => {
+    it('keeps ordinary requests compatible', async () => {
+      const payload = { cursor: 'snapshot', chunkIds: [] };
+      const fetchFn = jest.fn().mockResolvedValue({ ok: true, json: async () => payload });
+      await expect(fetchTranscriptIndex('session-1', '', fetchFn)).resolves.toBe(payload);
+      expect(fetchFn).toHaveBeenCalledWith('/api/sessions/session-1/transcript/index', {});
+    });
+
+    it.each([true, false])(
+      'sends bounded window parameters and the abort signal with live=%s',
+      async (live) => {
+        const controller = new AbortController();
+        const payload = { cursor: 'snapshot', pages: [] };
+        const fetchFn = jest.fn().mockResolvedValue({ ok: true, json: async () => payload });
+        await expect(
+          fetchTranscriptIndex('session-1', '/worktree/test', fetchFn, {
+            pageSize: 10,
+            firstVirtualIndex: 0,
+            lastVirtualIndex: 19,
+            live,
+            signal: controller.signal,
+          }),
+        ).resolves.toBe(payload);
+        expect(fetchFn).toHaveBeenCalledWith(
+          `/worktree/test/api/sessions/session-1/transcript/index?pageSize=10&firstVirtualIndex=0&lastVirtualIndex=19&live=${live}`,
+          { signal: controller.signal },
+        );
+      },
+    );
+
+    it('omits unmeasured indices for the server initial-window defaults', async () => {
+      const fetchFn = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ pages: [] }) });
+      await fetchTranscriptIndex('session-1', '', fetchFn, { pageSize: 10, live: true });
+      expect(fetchFn).toHaveBeenCalledWith(
+        '/api/sessions/session-1/transcript/index?pageSize=10&live=true',
+        {},
+      );
+    });
+
+    it('preserves server limit errors and aborted requests', async () => {
+      const fetchFn = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({ message: 'Transcript window exceeds 200 chunk bodies' }),
+      });
+      await expect(
+        fetchTranscriptIndex('session-1', '', fetchFn, { pageSize: 100 }),
+      ).rejects.toMatchObject({
+        status: 400,
+        message: 'Transcript window exceeds 200 chunk bodies',
+      });
+      const aborted = new DOMException('Aborted', 'AbortError');
+      fetchFn.mockRejectedValueOnce(aborted);
+      await expect(fetchTranscriptIndex('session-1', '', fetchFn)).rejects.toBe(aborted);
     });
   });
 

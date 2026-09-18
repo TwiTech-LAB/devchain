@@ -23,6 +23,7 @@ import type { ProviderAdapterFactory } from '../../providers/adapters/provider-a
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { TerminalSessionRegistry } from '../../terminal/services/terminal-session/terminal-session-registry';
 import type { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
+import type { EpicTimeStore } from '../../epic-time/services/epic-time.store';
 
 const TEST_TERMINATION = { source: 'web-api' as const, reason: 'user-requested' as const };
 
@@ -160,6 +161,12 @@ describe('SessionsService', () => {
       runtimeContextCapture as unknown as RuntimeContextCaptureService,
       claudeLaunchSettings as never,
       codexPluginProfiles as never,
+      {
+        readActivationSettings: jest
+          .fn()
+          .mockReturnValue({ trackingStartedAt: null, idleTimeoutMs: 30_000 }),
+        runTerminationResetSync: jest.fn(),
+      } as unknown as EpicTimeStore,
     );
   });
 

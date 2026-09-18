@@ -2956,6 +2956,9 @@ describe('ChatPage unlogged agent time', () => {
   };
   let bufferItems: unknown[];
   let assignStatus: number;
+  let resetStatus: number;
+  let presencePayload: Record<string, unknown>;
+  let activeSessionsPayload: unknown[];
 
   beforeEach(() => {
     toastSpy.mockReset();
@@ -2965,6 +2968,21 @@ describe('ChatPage unlogged agent time', () => {
     terminalWindowsMock.splice(0, terminalWindowsMock.length);
     bufferItems = [bufferItem];
     assignStatus = 200;
+    resetStatus = 200;
+    presencePayload = {
+      'agent-1': { online: false, sessionId: null },
+      'agent-2': { online: true, sessionId: 'session-2' },
+    };
+    activeSessionsPayload = [
+      {
+        id: 'session-2',
+        agentId: 'agent-2',
+        status: 'running',
+        startedAt: '2026-09-01T00:00:00.000Z',
+        lastActivityAt: '2026-09-01T00:05:00.000Z',
+        transcriptPath: null,
+      },
+    ];
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith('/api/agent-time-buffers?')) {
@@ -2988,6 +3006,21 @@ describe('ChatPage unlogged agent time', () => {
             assignStatus < 300
               ? { workspaceId: '0defa017-0000-4000-8000-000000000001' }
               : { code: 'conflict' },
+        } as Response;
+      }
+      if (url === `/api/agent-time-buffers/agent-2/reset`) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          projectId: 'project-1',
+          capturedAt: '2026-09-01T00:10:00.000Z',
+          snapshotToken: bufferItem.snapshotToken,
+        });
+        return {
+          ok: resetStatus < 300,
+          status: resetStatus,
+          json: async () =>
+            resetStatus < 300
+              ? { workspaceId: '0defa017-0000-4000-8000-000000000001' }
+              : { code: resetStatus === 409 ? 'conflict' : 'internal_error' },
         } as Response;
       }
       if (url.startsWith('/api/epics?projectId=project-1')) {
@@ -3027,10 +3060,7 @@ describe('ChatPage unlogged agent time', () => {
       if (url.startsWith('/api/sessions/agents/presence')) {
         return {
           ok: true,
-          json: async () => ({
-            'agent-1': { online: false, sessionId: null },
-            'agent-2': { online: true, sessionId: 'session-2' },
-          }),
+          json: async () => presencePayload,
         } as Response;
       }
       // Summary endpoint — must come before the generic /api/sessions branches.
@@ -3063,16 +3093,7 @@ describe('ChatPage unlogged agent time', () => {
       if (url.startsWith('/api/sessions?')) {
         return {
           ok: true,
-          json: async () => [
-            {
-              id: 'session-2',
-              agentId: 'agent-2',
-              status: 'running',
-              startedAt: '2026-09-01T00:00:00.000Z',
-              lastActivityAt: '2026-09-01T00:05:00.000Z',
-              transcriptPath: null,
-            },
-          ],
+          json: async () => activeSessionsPayload,
         } as Response;
       }
       if (url.startsWith('/api/threads?projectId=')) {
@@ -3278,6 +3299,118 @@ describe('ChatPage unlogged agent time', () => {
     expect(
       screen.queryByRole('listitem', {
         name: /Open terminal for Beta \(online\), 10m not logged/i,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('completes a reset without an Epic selection, without an announcement, and refocuses the terminal', async () => {
+    const { queryClient } = renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+
+    await openDialogFromHeader();
+    // The post-success invalidation re-reads the now-empty buffer.
+    bufferItems = [];
+    fireEvent.click(screen.getByRole('button', { name: 'Reset time' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Log time to an Epic.')).not.toBeInTheDocument();
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['agent-time-buffers'],
+    });
+    // Reset touches no Epic-bound totals, so the detail and batch families
+    // are not invalidated and no time-logged toast fires.
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['epic-time-detail'] });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['epic-time-batch'] });
+    expect(toastSpy).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(mockInlineTerminalHandle.focus).toHaveBeenCalledTimes(1);
+    });
+
+    // The cleared buffer removes both the action and the marker after refresh.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: /Log unlogged time to an Epic/i }),
+      ).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('listitem', {
+          name: /Open terminal for Beta \(online\), 10m not logged/i,
+        }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps the dialog open on a failed reset without closing or announcing', async () => {
+    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+
+    await openDialogFromHeader();
+    resetStatus = 500;
+    fireEvent.click(screen.getByRole('button', { name: 'Reset time' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('The reset could not be completed. Try again.')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Log time to an Epic.')).toBeInTheDocument();
+    expect(toastSpy).not.toHaveBeenCalled();
+    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dialog open on a stale reset 409, refreshes, and never retries the write', async () => {
+    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+
+    await openDialogFromHeader();
+    bufferItems = [{ ...bufferItem, minutes: 8, snapshotToken: 'f'.repeat(64) }];
+    resetStatus = 409;
+    fireEvent.click(screen.getByRole('button', { name: 'Reset time' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('8m from Beta.')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Buffered time changed since this dialog opened/i)).toBeInTheDocument();
+    expect(screen.queryByText('Log time to an Epic.')).toBeInTheDocument();
+
+    const resetCalls = (global.fetch as jest.Mock).mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.endsWith('/reset'));
+    expect(resetCalls).toHaveLength(1);
+    expect(toastSpy).not.toHaveBeenCalled();
+    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
+  });
+
+  it('removes the time marker but keeps the offline row once a termination-cleared buffer arrives', async () => {
+    // Genuinely offline: the termination stopped agent-2's session, so no
+    // running session and no online presence exist while the buffered
+    // balance is still visible on the offline row.
+    presencePayload = {
+      'agent-1': { online: false, sessionId: null },
+      'agent-2': { online: false, sessionId: null },
+    };
+    activeSessionsPayload = [];
+    const { queryClient } = renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+
+    await screen.findByRole('listitem', {
+      name: /Open terminal for Beta \(offline\), 10m not logged to an Epic\./,
+    });
+
+    // Session termination resets the balance server-side; the next buffer
+    // read (poll or scope invalidation) publishes the empty snapshot.
+    bufferItems = [];
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['agent-time-buffers'] });
+    });
+
+    // The offline row itself survives with its layout; only the time
+    // marker is gone.
+    const offlineRow = await screen.findByRole('listitem', {
+      name: 'Open terminal for Beta (offline)',
+    });
+    expect(offlineRow).toBeInTheDocument();
+    expect(
+      screen.queryByRole('listitem', {
+        name: /Open terminal for Beta \(offline\), \d+m not logged/i,
       }),
     ).not.toBeInTheDocument();
   });

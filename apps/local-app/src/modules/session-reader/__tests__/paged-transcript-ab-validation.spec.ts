@@ -207,26 +207,18 @@ describe('A/B Validation: Full-transcript vs Paged-transcript', () => {
     expect(payloadBytes).toBeGreaterThan(0);
   });
 
-  it('B-run: paged transcript index + first chunk batch timing', async () => {
+  it('B-run: combined transcript index and retained pages timing', async () => {
     const t0 = performance.now();
 
-    const index = await service.getTranscriptIndex('ab-validation-session');
-    const firstChunkBatch = await service.getUnifiedTranscriptChunks(
-      'ab-validation-session',
-      undefined,
-      20,
-      'forward',
-    );
+    const index = await service.getTranscriptIndex('ab-validation-session', { pageSize: 10 });
 
     const totalMs = performance.now() - t0;
 
     const indexPayload = JSON.stringify(index);
-    const chunksPayload = JSON.stringify(firstChunkBatch);
-    const payloadBytes =
-      Buffer.byteLength(indexPayload, 'utf8') + Buffer.byteLength(chunksPayload, 'utf8');
+    const payloadBytes = Buffer.byteLength(indexPayload, 'utf8');
 
     const result: TimingResult = {
-      label: 'B: paged-transcript (GET /transcript/index + GET /transcript/chunks)',
+      label: 'B: paged-transcript (GET /transcript/index?pageSize=10)',
       totalMs: Math.round(totalMs * 100) / 100,
       payloadBytes,
       messageCount: index.totals.messageCount,
@@ -236,26 +228,24 @@ describe('A/B Validation: Full-transcript vs Paged-transcript', () => {
 
     expect(index.totals.messageCount).toBe(LARGE_SESSION_MESSAGE_COUNT);
     expect(index.chunkIds.length).toBeGreaterThan(0);
-    expect(firstChunkBatch.chunks.length).toBeGreaterThan(0);
+    expect(index.pages!.flatMap((page) => page.response.chunks).length).toBe(30);
+    expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
     expect(payloadBytes).toBeGreaterThan(0);
   });
 
   it('B-run payload should be significantly smaller than A-run payload', async () => {
-    const { session } = await service.getTranscriptWithTimings('ab-validation-session', {
-      maxToolResultLength: 2000,
-    });
+    const [{ session }, index] = await Promise.all([
+      service.getTranscriptWithTimings('ab-validation-session', { maxToolResultLength: 2000 }),
+      service.getTranscriptIndex('ab-validation-session', { pageSize: 10 }),
+    ]);
     const aPayloadBytes = Buffer.byteLength(JSON.stringify(session), 'utf8');
-
-    const index = await service.getTranscriptIndex('ab-validation-session');
-    const firstChunkBatch = await service.getUnifiedTranscriptChunks(
-      'ab-validation-session',
-      undefined,
-      20,
-      'forward',
-    );
-    const bPayloadBytes =
-      Buffer.byteLength(JSON.stringify(index), 'utf8') +
-      Buffer.byteLength(JSON.stringify(firstChunkBatch), 'utf8');
+    const bPayloadBytes = Buffer.byteLength(JSON.stringify(index), 'utf8');
+    expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+    for (const page of index.pages!) {
+      const start = index.chunkIds.indexOf(page.cursor);
+      expect(page.response.chunks).toEqual(session.chunks!.slice(start, start + page.size));
+    }
+    expect(index.chunkIds).toEqual(session.chunks!.map((chunk) => chunk.id));
 
     const ratio = aPayloadBytes / bPayloadBytes;
 

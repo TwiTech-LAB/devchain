@@ -82,6 +82,17 @@ export interface AgentTimeBufferAssignmentResult {
   workspaceId: string;
 }
 
+export interface AgentTimeBufferResetInput {
+  projectId: string;
+  agentId: string;
+  capturedAt: string;
+  snapshotToken: string;
+}
+
+export interface AgentTimeBufferResetResult {
+  workspaceId: string;
+}
+
 export interface EpicTimeBatchSummary {
   items: EpicTimeBatchSummaryItem[];
 }

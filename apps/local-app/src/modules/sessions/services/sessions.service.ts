@@ -27,6 +27,8 @@ import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapte
 import { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
 import { ClaudeLaunchSettingsMaterializerService } from '../../runtime-context-capture/claude-launch-settings-materializer.service';
 import { CodexPluginProfileMaterializerService } from '../../runtime-context-capture/codex-plugin-profile-materializer.service';
+import { EpicTimeStore } from '../../epic-time/services/epic-time.store';
+import { EPIC_TIME_DELIVERY_KEY } from '../../epic-time/services/agent-time-accounting.service';
 import type { SessionTerminationContext } from '../../events/catalog/session.stopped';
 
 const logger = createLogger('SessionsService');
@@ -92,6 +94,7 @@ export class SessionsService {
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
     private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
+    private readonly epicTimeStore: EpicTimeStore,
   ) {
     this.sqlite = getRawSqliteClient(this.db);
     this.txRunner = new TransactionRunner(this.sqlite);
@@ -184,17 +187,37 @@ export class SessionsService {
         }
       }
 
-      // Update session status; fold size_bytes into the same statement to keep stop atomic.
-      const now = new Date().toISOString();
-      this.sqlite
-        .prepare(
-          `
+      // The stopped-state write and the unlogged-time reset share one queued
+      // transaction: a database failure rolls both back together, so the
+      // durable row stays running and an explicit retry (tmux now
+      // known-absent) re-runs the whole boundary instead of reporting a
+      // termination whose reset silently failed. When tracking never started,
+      // this runtime never activated accounting and stops lifecycle-only.
+      const stoppedAt = new Date();
+      const stoppedAtIso = stoppedAt.toISOString();
+      const accounting = await this.txRunner.runImmediateQueued(() => {
+        this.sqlite
+          .prepare(
+            `
         UPDATE sessions
         SET status = ?, ended_at = ?, size_bytes = ?, updated_at = ?
         WHERE id = ?
       `,
-        )
-        .run('stopped', now, sizeBytes, now, sessionId);
+          )
+          .run('stopped', stoppedAtIso, sizeBytes, stoppedAtIso, sessionId);
+        const settings = this.epicTimeStore.readActivationSettings();
+        if (!settings.trackingStartedAt) {
+          return null;
+        }
+        return this.epicTimeStore.runTerminationResetSync({
+          sessionId,
+          agentId: session.agentId,
+          trackingStartedAt: settings.trackingStartedAt,
+          idleTimeoutMs: settings.idleTimeoutMs,
+          deliveryKey: EPIC_TIME_DELIVERY_KEY,
+          now: stoppedAt,
+        });
+      });
 
       logger.info({ sessionId }, 'Session terminated');
 
@@ -213,6 +236,19 @@ export class SessionsService {
           logger.warn(
             { error, agentId: session.agentId, sessionId },
             'Failed to broadcast presence update',
+          );
+        }
+      }
+
+      if (accounting && accounting.deletedSegments > 0 && accounting.workspaceId) {
+        try {
+          await this.eventsService.publish('epic.time.scope.invalidated', {
+            workspaceId: accounting.workspaceId,
+          });
+        } catch (error) {
+          logger.warn(
+            { error, agentId: session.agentId, sessionId },
+            'Failed to broadcast Epic-time scope invalidation after termination reset',
           );
         }
       }

@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.23.0",
+  "version": "0.23.2",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,13 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.23.2": [
+      "Performance: reduced CPU usage in long-running sessions and smoother live transcript updates in the web UI"
+    ],
+    "0.23.1": [
+      "Improved time tracking",
+      "Dev Template: clearer Architect planning instructions with more focused research and review rounds"
+    ],
     "0.23.0": [
       "Integrations: ClickUp and Jira connections, boards, and settings now belong to each project; synced subtasks hide local project paths",
       "Epics: link related and blocking work across a workspace, preview relationships on the Board, and switch between an Epic and its linked task",

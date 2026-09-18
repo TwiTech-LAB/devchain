@@ -625,6 +625,106 @@ describe('SessionReaderController', () => {
       expect(mockService.getTranscriptIndex).toHaveBeenCalledWith(VALID_UUID);
     });
 
+    // Direct controller calls isolate query validation and wire projection from parser behavior.
+    it.each(['true', 'false', undefined])(
+      'serializes combined pages with live=%s',
+      async (live) => {
+        const index: TranscriptIndex = {
+          cursor: 'opaque-cursor',
+          totals: { messageCount: 1, chunkCount: 1 },
+          chunkIds: ['chunk-0'],
+          latestOutputPreview: 'test output',
+          providerName: 'claude',
+          isOngoing: false,
+          pages: [
+            {
+              cursor: 'chunk-0',
+              size: 1,
+              response: {
+                chunks: [
+                  makeAiChunk('chunk-0', [
+                    makeMessage('m1', 'assistant', '2026-01-01T10:00:00.000Z'),
+                  ]),
+                ],
+                nextCursor: null,
+                prevCursor: null,
+                totalCount: 1,
+              },
+            },
+          ],
+        };
+        mockService.getTranscriptIndex.mockResolvedValue(index);
+        const result = await controller.getTranscriptIndex(VALID_UUID, '10', '0', '9', live);
+        expect(mockService.getTranscriptIndex).toHaveBeenCalledWith(VALID_UUID, {
+          pageSize: 10,
+          firstVirtualIndex: 0,
+          lastVirtualIndex: 9,
+          live: live === undefined ? undefined : live === 'true',
+        });
+        expect(result).toMatchObject({
+          ...index,
+          pages: [
+            {
+              cursor: 'chunk-0',
+              size: 1,
+              response: {
+                totalCount: 1,
+                nextCursor: null,
+                prevCursor: null,
+                chunks: [
+                  {
+                    id: 'chunk-0',
+                    startTime: '2026-01-01T10:00:00.000Z',
+                    endTime: '2026-01-01T10:00:00.000Z',
+                    messages: [{ timestamp: '2026-01-01T10:00:00.000Z' }],
+                    semanticSteps: [{ startTime: '2026-01-01T10:00:00.000Z' }],
+                  },
+                ],
+              },
+            },
+          ],
+        });
+        expect(index.pages![0].response.chunks[0].startTime).toBeInstanceOf(Date);
+      },
+    );
+
+    it.each([
+      ['0'],
+      ['101'],
+      ['1.5'],
+      [''],
+      ['1e2'],
+      ['-1'],
+      ['Infinity'],
+      ['abc'],
+      ['10', '-1'],
+      ['10', '0', '1.5'],
+      ['10', '9007199254740992'],
+      ['10', '4', '3'],
+      ['10', '0', '200'],
+      ['10', '0', '9', '1'],
+      ['10', '0', '9', 'FALSE'],
+      ['10', '0', '9', ''],
+      [undefined, '0'],
+      [undefined, undefined, '9'],
+      [undefined, undefined, undefined, 'true'],
+    ])('rejects invalid window query %j before calling service', async (...query) => {
+      const [pageSize, first, last, live] = query;
+      await expect(
+        controller.getTranscriptIndex(VALID_UUID, pageSize, first, last, live),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockService.getTranscriptIndex).not.toHaveBeenCalled();
+    });
+
+    it('maps the parsed body limit error to HTTP 400', async () => {
+      mockService.getTranscriptIndex.mockRejectedValue(
+        new ValidationError('Transcript window exceeds 200 chunk bodies'),
+      );
+      await expect(controller.getTranscriptIndex(VALID_UUID, '100')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
     it('should throw BadRequestException for invalid UUID', async () => {
       await expect(controller.getTranscriptIndex('bad')).rejects.toThrow(BadRequestException);
     });

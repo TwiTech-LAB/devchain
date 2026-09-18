@@ -35,6 +35,7 @@ import type { ProviderAdapterFactory } from '../../providers/adapters/provider-a
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
 import type { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
+import type { EpicTimeStore } from '../../epic-time/services/epic-time.store';
 
 const mockStat = stat as jest.MockedFunction<typeof stat>;
 
@@ -80,7 +81,7 @@ describe('SessionsService.terminateSession — size_bytes', () => {
     selectGetMock.mockReturnValue(RUNNING_SESSION_ROW);
 
     const dbMock = {
-      session: { client: { prepare: sqlitePrepare } },
+      session: { client: { prepare: sqlitePrepare, exec: jest.fn() } },
     } as unknown as BetterSQLite3Database;
 
     const storage = {
@@ -140,6 +141,12 @@ describe('SessionsService.terminateSession — size_bytes', () => {
         cleanupSession: jest.fn().mockResolvedValue(undefined),
         reconcileStartup: jest.fn().mockResolvedValue(undefined),
       } as never,
+      {
+        readActivationSettings: jest
+          .fn()
+          .mockReturnValue({ trackingStartedAt: null, idleTimeoutMs: 30_000 }),
+        runTerminationResetSync: jest.fn(),
+      } as unknown as EpicTimeStore,
     );
   });
 

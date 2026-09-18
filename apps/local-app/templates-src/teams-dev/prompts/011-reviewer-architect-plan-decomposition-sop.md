@@ -1,4 +1,4 @@
-# Architect — Plan/Research Decomposition SOP (v1.21)
+# Architect — Plan/Research Decomposition SOP (v1.22)
 
 > **Type:** agent-instructions
 > **Priority:** mandatory
@@ -61,7 +61,7 @@ After Planning Complete (normal flow): Call ExitPlanMode, DO NOT start implement
 
 ## 1.4) Pre-Draft Verification
 
-**Before drafting any plan, do your own research, planning, and code exploration. Parallelize the investigation with multiple agents. Verify user input against the codebase:**
+**Before drafting, inspect the code yourself and verify the user's assumptions.** Form a provisional approach and list uncertainties. Delegate specific questions only when independent investigation adds value. Give investigators the user's request and constraints without your preferred answer.
 
 1. **Read actual files** — Don't propose changes to files you haven't read
 2. **Verify counts** — Use Glob/Grep to get exact numbers, not estimates
@@ -89,7 +89,7 @@ After Planning Complete (normal flow): Call ExitPlanMode, DO NOT start implement
 
 4. Wait until all expected reviewers respond before presenting the plan to the user, reconcile against your own plan:
      - Blocker or constraint you missed → incorporate.
-     - Alternative design approach → evaluate trade-offs; pick the stronger or synthesize a merged plan. Note the decision explicitly.
+     - Alternative design approach → apply the decision rule in §1.5.
      - Minor differences → note and proceed with your version.
 
 5. Once your consolidated Master Plan is drafted, proceed to §1.5 Technical Validation Loop as normal. §1.4.1 informs the draft; §1.5 gates it.
@@ -107,20 +107,18 @@ After Planning Complete (normal flow): Call ExitPlanMode, DO NOT start implement
 **Trigger:** After drafting the initial Master Plan, before asking for final user approval.
 
 **Procedure:**
-1. Send draft to your team via:
+1. Send the draft to your team and request one consolidated review via:
    `devchain_send_message(sessionId, message: "Review this Draft Plan against the actual code.\n\n[INCLUDE YOUR DRAFT PLAN]")`
    No `teamName` needed — your team is resolved from your session. As team lead, this broadcasts to all OTHER team members.
 2. **HARD STOP.** Inform the user: "Draft plan sent to team for technical validation."
    Do NOT check for responses. Team responses will be pasted to you. Wait until all expected reviewers respond before presenting the plan to the user.
 3. **Reconcile all received feedback** (apply the §1.6 blocker definition first):
      - Verified blocker (fails the stated goal, or breaks under normal expected use, with file:line evidence) → incorporate before user approval.
-     - Alternative design → evaluate trade-offs and choose or synthesize.
-     - Edge case outside normal use, SUSPECTED/unverified claim, or future-proofing suggestion → verify cheaply if one read/grep settles it; otherwise triage through the §6 value gate: register only items that pass, drop the rest. Add a "Deferred: <X> — backlog" note to the plan only for registered items. Do NOT grow the plan to absorb these, and do NOT register them all.
+     - Alternative design → compare both approaches against the user's requirements. Verify the decisive facts; confidence and consensus are not evidence. The lead chooses and briefly explains consequential decisions.
+     - Unverified claim, edge case outside normal use, or future-proofing suggestion → check with one read/search if possible. Otherwise apply §6's value gate: backlog qualifying items; drop the rest. Add "Deferred: <X> — backlog" only for registered items. These findings do not expand the plan.
      - Minor suggestion → incorporate if low-risk, otherwise note as optional.
-   If verified blockers remain, refine and re-send. Up to 3 rounds.
-4. If feedback changes the plan materially, send one revised round to the team and repeat once.
-5. **⚠️ When the final plan is ready, stop team communication. Send no more team messages. If the full text of the devchain skill "asd-ste100-skill" is not in your current context read the devchain skill "devchain/asd-ste100-skill" (via devchain_get_skill). Apply its rules to the plan text. Present only the rewritten plan to the USER.
-   - Do not end with passive notes only. Always answer: "What should happen next?"
+4. Verify minor corrections yourself. For material changes to behavior, architecture or failure recovery, send the changed parts and rationale to relevant reviewers via `recipientAgentNames`. Include others only if their areas are affected. Further rounds require an unresolved or newly introduced blocker; reopen completed reviews only for new blocker evidence. The lead decides technical readiness; the user approves the final plan. Do not seek unanimous or repeated agent approval.
+5. Stop team messages when review ends, except for reopening under step 4. If the full text of `devchain/asd-ste100-skill` is absent from context, read it via `devchain_get_skill`. Apply it and present only the rewritten plan to the user, including the recommended next action.
 
 **Exception:** For requests related to Technical Review of already completed tasks, you are authorized to:
 - Do planning and convert directly into a Master Plan without the Technical Validation Loop.

@@ -1,0 +1,325 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-18T17:41:20.959Z",
+  "scope": "Isolated built production services with synthetic sources and canonical HTTP client; no scheduling/sharing/projection substitutes.",
+  "provenance": {
+    "baseGitHead": "efe951786707410e404c230e44ba6e94b4b204e9",
+    "trackedSourceDiffSha256": "b72f5c3815011a4a81eed71854a0b9ce65fe55c74c9eef7d75082ad58ceaf356",
+    "sessionReaderSource": {
+      "files": 99,
+      "sha256": "08cedcc30b0021a82a410fc46e6db1e658bff45b1592ed22e3db935ffc9e1ed3"
+    },
+    "productionDist": {
+      "files": 2367,
+      "sha256": "1340efb8f84ae2e27113eb8fffebb32b401ed836f3a2a6b85fdfd54b0845aac4"
+    },
+    "harnessSha256": "1603e1081352e98231a4646c7662adf3276d3dd71881b78b1d4441de6522d4bc",
+    "harnessTestsSha256": "e89f5c55b2599d685c3176f6a09c179da8d068b3dd540bb67507fac19311a840"
+  },
+  "validation": {
+    "focused": {
+      "suites": 11,
+      "tests": 430,
+      "passed": true,
+      "command": "pnpm --filter local-app exec cross-env NODE_ENV=test node --expose-gc ../../node_modules/jest/bin/jest.js --selectProjects backend-unit backend-integration ui --runInBand --runTestsByPath src/modules/session-reader/services/session-cache.service.spec.ts src/modules/session-reader/services/session-cache.replacement.spec.ts src/modules/session-reader/services/transcript-watcher.service.spec.ts src/modules/session-reader/services/session-reader.service.spec.ts src/modules/session-reader/services/session-reader.replacement.integration.spec.ts src/modules/session-reader/controllers/session-reader.controller.spec.ts src/modules/session-reader/__tests__/paged-transcript-ab-validation.spec.ts src/modules/session-reader/__tests__/watcher-pipeline-integration.spec.ts src/ui/components/session-reader/PagedSessionMessageList.spec.tsx src/ui/hooks/useSessionTranscript.spec.tsx src/ui/lib/sessions.spec.ts"
+    },
+    "harness": {
+      "tests": 4,
+      "passed": true,
+      "command": "node --test apps/local-app/scripts/transcript-load.test.js"
+    },
+    "build": {
+      "passed": true,
+      "command": "pnpm --filter local-app build"
+    },
+    "lint": {
+      "passed": true,
+      "command": "pnpm --filter local-app lint --fix"
+    },
+    "reportReplay": {
+      "passed": true
+    },
+    "moduleStructureChanged": false
+  },
+  "reports": [
+    {
+      "file": "65-mib.json",
+      "sha256": "491ee8fddcd583e8ce5294d9b1f1ce2b8846439af6fd2882de3441b8fbd8af34",
+      "childLog": "65-mib.json.child.log",
+      "childLogSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "pass": true,
+      "checks": {
+        "acceptanceProfile": true,
+        "completed": true,
+        "concurrency": true,
+        "independentProgress": true,
+        "exactMessages": true,
+        "coherentLiveClient": true,
+        "errors": true,
+        "accounting": true,
+        "cpuTarget": true,
+        "recoveryCpu": true,
+        "teardown": true,
+        "fixturesRemoved": true,
+        "sourceUnchanged": true
+      },
+      "heapRecovery": {
+        "appendPeakMiB": 147.13772583007812,
+        "tailMinMiB": 119.9480972290039,
+        "tailMaxMiB": 147.38629913330078
+      },
+      "summary": {
+        "baseline": {
+          "samples": 30,
+          "cpuMean": 5.37604318101403,
+          "rssPeakMiB": 342.0859375,
+          "rssMedianMiB": 342.05078125,
+          "readersPeak": 0
+        },
+        "append": {
+          "samples": 60,
+          "cpuMean": 34.153037566879576,
+          "rssPeakMiB": 402.7265625,
+          "rssMedianMiB": 397.82421875,
+          "readersPeak": 1
+        },
+        "recovery": {
+          "samples": 39,
+          "cpuMean": 10.863307591853335,
+          "rssPeakMiB": 402.8203125,
+          "rssMedianMiB": 401.60546875,
+          "readersPeak": 1
+        },
+        "baselineTail": {
+          "samples": 20,
+          "cpuMean": 7.796389532548703,
+          "rssPeakMiB": 342.0859375,
+          "rssMedianMiB": 342.05078125,
+          "readersPeak": 0
+        },
+        "recoveryTail": {
+          "samples": 20,
+          "cpuMean": 6.996479179973098,
+          "rssPeakMiB": 401.6640625,
+          "rssMedianMiB": 399.91796875,
+          "readersPeak": 0
+        },
+        "recoveryCpuDelta": -0.7999103525756057,
+        "rssReclaimedFromAppendPeakMiB": 2.80859375,
+        "requests": {
+          "summary": {
+            "completed": 13,
+            "errors": 0,
+            "p95Ms": 7.760986000000003,
+            "maxMs": 7.760986000000003,
+            "appendP95Ms": 1.2876209999994899
+          },
+          "index": {
+            "completed": 13,
+            "errors": 0,
+            "p95Ms": 230.96456800000033,
+            "maxMs": 230.96456800000033,
+            "appendP95Ms": 191.05094799999642
+          },
+          "canonical": {
+            "completed": 16,
+            "errors": 0,
+            "p95Ms": 214.85917800000004,
+            "maxMs": 214.85917800000004,
+            "appendP95Ms": 191.29578599999877
+          }
+        },
+        "canonicalCommitsDuringAppends": 14,
+        "canonicalEventToCommitP95Ms": 214.739459,
+        "parseP95Ms": 127.70395299999655
+      },
+      "drainMs": 40.64751100000285
+    },
+    {
+      "file": "200-mib.json",
+      "sha256": "d76970c4586b336439e7b3d694664828c81919f4f22618d33f863ca01e0e53dd",
+      "childLog": "200-mib.json.child.log",
+      "childLogSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "pass": true,
+      "checks": {
+        "acceptanceProfile": true,
+        "completed": true,
+        "concurrency": true,
+        "independentProgress": true,
+        "exactMessages": true,
+        "coherentLiveClient": true,
+        "errors": true,
+        "accounting": true,
+        "cpuTarget": true,
+        "recoveryCpu": true,
+        "teardown": true,
+        "fixturesRemoved": true,
+        "sourceUnchanged": true
+      },
+      "heapRecovery": {
+        "appendPeakMiB": 333.45326232910156,
+        "tailMinMiB": 266.12377166748047,
+        "tailMaxMiB": 281.4013137817383
+      },
+      "summary": {
+        "baseline": {
+          "samples": 30,
+          "cpuMean": 19.16785553296831,
+          "rssPeakMiB": 605.375,
+          "rssMedianMiB": 604.3984375,
+          "readersPeak": 1
+        },
+        "append": {
+          "samples": 60,
+          "cpuMean": 59.45206702058666,
+          "rssPeakMiB": 777.546875,
+          "rssMedianMiB": 773.00390625,
+          "readersPeak": 1
+        },
+        "recovery": {
+          "samples": 40,
+          "cpuMean": 41.434574131797426,
+          "rssPeakMiB": 790.2734375,
+          "rssMedianMiB": 775.671875,
+          "readersPeak": 1
+        },
+        "baselineTail": {
+          "samples": 20,
+          "cpuMean": 18.697705641936086,
+          "rssPeakMiB": 605.375,
+          "rssMedianMiB": 604.3984375,
+          "readersPeak": 1
+        },
+        "recoveryTail": {
+          "samples": 20,
+          "cpuMean": 17.29394740202999,
+          "rssPeakMiB": 776.578125,
+          "rssMedianMiB": 775.5078125,
+          "readersPeak": 1
+        },
+        "recoveryCpuDelta": -1.4037582399060966,
+        "rssReclaimedFromAppendPeakMiB": 2.0390625,
+        "requests": {
+          "summary": {
+            "completed": 13,
+            "errors": 0,
+            "p95Ms": 7.503999000000022,
+            "maxMs": 7.503999000000022,
+            "appendP95Ms": 1.4713300000003073
+          },
+          "index": {
+            "completed": 13,
+            "errors": 0,
+            "p95Ms": 619.3610850000005,
+            "maxMs": 619.3610850000005,
+            "appendP95Ms": 619.3610850000005
+          },
+          "canonical": {
+            "completed": 17,
+            "errors": 0,
+            "p95Ms": 612.0953030000001,
+            "maxMs": 612.0953030000001,
+            "appendP95Ms": 375.42587600000115
+          }
+        },
+        "canonicalCommitsDuringAppends": 13,
+        "canonicalEventToCommitP95Ms": 611.894315,
+        "parseP95Ms": 339.35142500000006
+      },
+      "drainMs": 77.04445800000394
+    },
+    {
+      "file": "four-65-mib.json",
+      "sha256": "50721fa885dad0145c3a87c0b7950faa8ba77536a1d856530d1060751c8e44dd",
+      "childLog": "four-65-mib.json.child.log",
+      "childLogSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "pass": true,
+      "checks": {
+        "acceptanceProfile": true,
+        "completed": true,
+        "concurrency": true,
+        "independentProgress": true,
+        "exactMessages": true,
+        "coherentLiveClient": true,
+        "errors": true,
+        "accounting": true,
+        "cpuTarget": null,
+        "recoveryCpu": true,
+        "teardown": true,
+        "fixturesRemoved": true,
+        "sourceUnchanged": true
+      },
+      "heapRecovery": {
+        "appendPeakMiB": 706.7930221557617,
+        "tailMinMiB": 156.7035369873047,
+        "tailMaxMiB": 364.1498336791992
+      },
+      "summary": {
+        "baseline": {
+          "samples": 30,
+          "cpuMean": 17.91809208914059,
+          "rssPeakMiB": 639.578125,
+          "rssMedianMiB": 636.04296875,
+          "readersPeak": 4
+        },
+        "append": {
+          "samples": 60,
+          "cpuMean": 50.52737169969576,
+          "rssPeakMiB": 947.11328125,
+          "rssMedianMiB": 940.01171875,
+          "readersPeak": 4
+        },
+        "recovery": {
+          "samples": 40,
+          "cpuMean": 25.587729805898945,
+          "rssPeakMiB": 947.58984375,
+          "rssMedianMiB": 947.55859375,
+          "readersPeak": 4
+        },
+        "baselineTail": {
+          "samples": 20,
+          "cpuMean": 21.48402171216443,
+          "rssPeakMiB": 639.578125,
+          "rssMedianMiB": 636.38671875,
+          "readersPeak": 4
+        },
+        "recoveryTail": {
+          "samples": 20,
+          "cpuMean": 20.28972016458329,
+          "rssPeakMiB": 947.58984375,
+          "rssMedianMiB": 947.58984375,
+          "readersPeak": 4
+        },
+        "recoveryCpuDelta": -1.1943015475811407,
+        "rssReclaimedFromAppendPeakMiB": -0.4765625,
+        "requests": {
+          "summary": {
+            "completed": 52,
+            "errors": 0,
+            "p95Ms": 7.215250999999853,
+            "maxMs": 8.931340000000091,
+            "appendP95Ms": 5.630232000003161
+          },
+          "index": {
+            "completed": 52,
+            "errors": 0,
+            "p95Ms": 702.3976340000008,
+            "maxMs": 724.9610129999999,
+            "appendP95Ms": 449.41639399999985
+          },
+          "canonical": {
+            "completed": 15,
+            "errors": 0,
+            "p95Ms": 682.9483659999999,
+            "maxMs": 682.9483659999999,
+            "appendP95Ms": 199.9785039999988
+          }
+        },
+        "canonicalCommitsDuringAppends": 12,
+        "canonicalEventToCommitP95Ms": 682.8140470000003,
+        "parseP95Ms": 423.67489699999715
+      },
+      "drainMs": 82.86023400000704
+    }
+  ]
+}

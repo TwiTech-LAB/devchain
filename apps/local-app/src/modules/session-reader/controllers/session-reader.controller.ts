@@ -55,6 +55,38 @@ const ChunksQuerySchema = z.object({
 
 const ChunkIdParamSchema = z.string().regex(/^chunk-\d+$/, 'chunkId must match format "chunk-N"');
 
+const IndexIntegerSchema = z
+  .string()
+  .regex(/^\d+$/, 'Window values must be nonnegative integers')
+  .transform(Number)
+  .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER));
+
+const IndexQuerySchema = z
+  .object({
+    pageSize: IndexIntegerSchema.pipe(z.number().min(1).max(100)).optional(),
+    firstVirtualIndex: IndexIntegerSchema.optional(),
+    lastVirtualIndex: IndexIntegerSchema.optional(),
+    live: z
+      .enum(['true', 'false'])
+      .transform((value) => value === 'true')
+      .optional(),
+  })
+  .refine(
+    (query) =>
+      query.pageSize !== undefined ||
+      (query.firstVirtualIndex === undefined &&
+        query.lastVirtualIndex === undefined &&
+        query.live === undefined),
+    'pageSize is required for transcript windows',
+  )
+  .refine(
+    (query) =>
+      query.lastVirtualIndex === undefined ||
+      (query.lastVirtualIndex >= (query.firstVirtualIndex ?? 0) &&
+        query.lastVirtualIndex - (query.firstVirtualIndex ?? 0) < 200),
+    'Visible window must contain 1 to 200 chunks',
+  );
+
 const TranscriptQuerySchema = z.object({
   maxToolResultLength: z
     .union([
@@ -226,17 +258,43 @@ export class SessionReaderController implements OnModuleInit {
 
   /**
    * GET /api/sessions/:id/transcript/index
-   * Returns lightweight metadata for initial-load summary + virtualizer total count.
+   * Returns metadata and optional pages from one parsed session.
    */
   @Get(':id/transcript/index')
-  async getTranscriptIndex(@Param('id') id: string) {
+  async getTranscriptIndex(
+    @Param('id') id: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('firstVirtualIndex') firstVirtualIndex?: string,
+    @Query('lastVirtualIndex') lastVirtualIndex?: string,
+    @Query('live') live?: string,
+  ) {
     logger.info({ sessionId: id }, 'GET /api/sessions/:id/transcript/index');
 
     const sessionId = this.validateSessionId(id);
 
     try {
-      return await this.sessionReaderService.getTranscriptIndex(sessionId);
+      const query = IndexQuerySchema.parse({ pageSize, firstVirtualIndex, lastVirtualIndex, live });
+      if (query.pageSize === undefined) {
+        return await this.sessionReaderService.getTranscriptIndex(sessionId);
+      }
+      const index = await this.sessionReaderService.getTranscriptIndex(sessionId, {
+        ...query,
+        pageSize: query.pageSize,
+      });
+      return {
+        ...index,
+        pages: index.pages?.map((page) => ({
+          ...page,
+          response: {
+            ...page.response,
+            chunks: page.response.chunks.map(serializeChunkToWire),
+          },
+        })),
+      };
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        throw new BadRequestException(error.errors.map((e) => e.message).join(', '));
+      }
       this.handleServiceError(error);
     }
   }

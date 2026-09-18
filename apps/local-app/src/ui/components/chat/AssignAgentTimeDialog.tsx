@@ -55,6 +55,8 @@ export interface AssignAgentTimeDialogProps {
   onCancel: () => void;
   /** Carries the frozen target and the chosen Epic for announcement + focus. */
   onSuccess: (target: AssignAgentTimeTarget, epic: { id: string; title: string }) => void;
+  /** Discard path: the frozen balance was reset; the caller closes the dialog. */
+  onReset: (target: AssignAgentTimeTarget) => void;
 }
 
 function shortDevChainId(id: string): string {
@@ -67,11 +69,13 @@ export function AssignAgentTimeDialog({
   target,
   onCancel,
   onSuccess,
+  onReset,
 }: AssignAgentTimeDialogProps) {
   const apiFetch = useFetchFactory();
   const [search, setSearch] = useState('');
   const [selectedEpicId, setSelectedEpicId] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  /** Which mutation owns the shared in-flight guard; null when idle. */
+  const [pendingAction, setPendingAction] = useState<'assign' | 'reset' | null>(null);
   const [staleNotice, setStaleNotice] = useState(false);
   /** The 409 refresh found nothing left to assign; resubmission is blocked. */
   const [depleted, setDepleted] = useState(false);
@@ -81,6 +85,9 @@ export function AssignAgentTimeDialog({
   const [frozen, setFrozen] = useState<AssignAgentTimeTarget | null>(target);
   const frozenIdentity = target ? `${target.agentId}\u0000${target.capturedAt}` : null;
   const lastIdentityRef = useRef<string | null>(null);
+  // One guard spans Log and Reset, including the awaited 409 snapshot
+  // refresh, so the two writes can never overlap or double-submit.
+  const submitting = pendingAction !== null;
 
   useEffect(() => {
     if (lastIdentityRef.current !== frozenIdentity) {
@@ -90,7 +97,7 @@ export function AssignAgentTimeDialog({
       setStaleNotice(false);
       setDepleted(false);
       setErrorMessage(null);
-      setSubmitting(false);
+      setPendingAction(null);
       setSearch('');
     }
   }, [frozenIdentity, target]);
@@ -228,7 +235,7 @@ export function AssignAgentTimeDialog({
       return;
     }
     const selectedEpic = epicsQuery.data?.find((epic) => epic.id === selectedEpicId);
-    setSubmitting(true);
+    setPendingAction('assign');
     setErrorMessage(null);
     try {
       const response = await apiFetch(
@@ -245,18 +252,20 @@ export function AssignAgentTimeDialog({
         },
       );
       if (response.status === 409) {
-        setSubmitting(false);
+        // The shared guard stays held until the explicit snapshot refresh
+        // settles: neither Log nor Reset may fire while it is in flight.
         await refreshFrozenSnapshot();
+        setPendingAction(null);
         return;
       }
       if (!response.ok) {
-        setSubmitting(false);
+        setPendingAction(null);
         setErrorMessage('The assignment could not be completed. Try again.');
         return;
       }
       onSuccess(frozen, { id: selectedEpicId, title: selectedEpic?.title ?? selectedEpicId });
     } catch {
-      setSubmitting(false);
+      setPendingAction(null);
       setErrorMessage('The assignment could not be completed. Try again.');
     }
   }, [
@@ -271,14 +280,62 @@ export function AssignAgentTimeDialog({
     submitting,
   ]);
 
+  // Discard path: no Epic selection and no whole-minute gate — any positive
+  // frozen balance, including one whose minutes round down to zero after a
+  // refresh, is resettable. The same shared guard and 409 refresh-and-click
+  // contract as the assignment apply; the write never retries itself.
+  const reset = useCallback(async () => {
+    if (!projectId || !frozen || submitting || depleted || frozen.durationMs <= 0) {
+      return;
+    }
+    setPendingAction('reset');
+    setErrorMessage(null);
+    try {
+      const response = await apiFetch(
+        `/api/agent-time-buffers/${encodeURIComponent(frozen.agentId)}/reset`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId,
+            capturedAt: frozen.capturedAt,
+            snapshotToken: frozen.snapshotToken,
+          }),
+        },
+      );
+      if (response.status === 409) {
+        await refreshFrozenSnapshot();
+        setPendingAction(null);
+        return;
+      }
+      if (!response.ok) {
+        setPendingAction(null);
+        setErrorMessage('The reset could not be completed. Try again.');
+        return;
+      }
+      onReset(frozen);
+    } catch {
+      setPendingAction(null);
+      setErrorMessage('The reset could not be completed. Try again.');
+    }
+  }, [apiFetch, depleted, frozen, onReset, projectId, refreshFrozenSnapshot, submitting]);
+
   const durationLabel = frozen ? formatEpicTimeMinutes(frozen.minutes) : '';
   const confirmDisabled =
     submitting || depleted || !frozen || frozen.minutes < 1 || selectedEpicId === null;
+  const resetDisabled = submitting || depleted || !frozen || frozen.durationMs <= 0;
 
   return (
     <Dialog
       open={open && frozen !== null}
       onOpenChange={(next) => {
+        // A held mutation (or its awaited 409 refresh) owns the dialog:
+        // Escape, the Close control, and outside dismissal are ignored until
+        // it settles, so a close-and-reopen can never race the running write
+        // or let its eventual callback land on a fresh confirmation.
+        if (!next && submitting) {
+          return;
+        }
         if (!next) onCancel();
       }}
     >
@@ -300,8 +357,8 @@ export function AssignAgentTimeDialog({
         )}
         {depleted && (
           <p className="text-xs text-muted-foreground" role="status">
-            That time was already assigned elsewhere. Nothing is left to log for {frozen?.agentName}
-            .
+            That time was already assigned or reset elsewhere. Nothing is left to change for{' '}
+            {frozen?.agentName}.
           </p>
         )}
         {errorMessage && <p className="text-xs text-destructive">{errorMessage}</p>}
@@ -380,8 +437,18 @@ export function AssignAgentTimeDialog({
           <Button type="button" variant="outline" onClick={onCancel} disabled={submitting}>
             Cancel
           </Button>
+          <Button type="button" variant="outline" onClick={reset} disabled={resetDisabled}>
+            {submitting && pendingAction === 'reset' ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Resetting…
+              </>
+            ) : (
+              'Reset time'
+            )}
+          </Button>
           <Button type="button" onClick={submit} disabled={confirmDisabled}>
-            {submitting ? (
+            {submitting && pendingAction === 'assign' ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
                 Logging…

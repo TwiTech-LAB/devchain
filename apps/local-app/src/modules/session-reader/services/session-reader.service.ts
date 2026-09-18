@@ -58,6 +58,14 @@ export interface TranscriptIndex {
   latestOutputPreview: string | null;
   providerName: string;
   isOngoing: boolean;
+  pages?: { cursor: string; size: number; response: UnifiedChunkedResponse }[];
+}
+
+export interface TranscriptIndexWindow {
+  pageSize: number;
+  firstVirtualIndex?: number;
+  lastVirtualIndex?: number;
+  live?: boolean;
 }
 
 /** @deprecated Use UnifiedChunkedResponse. Retained for backward compatibility during migration. */
@@ -135,6 +143,7 @@ export type TranscriptTailResponse =
 
 const DEFAULT_CHUNK_SIZE = 20;
 const MAX_CHUNK_SIZE = 100;
+const MAX_INDEX_CHUNK_BODIES = 200;
 
 function requiresFullRefetch(
   sourceChangeKind: SourceChangeKind,
@@ -494,6 +503,14 @@ export class SessionReaderService implements OnModuleDestroy {
       }
     }
 
+    return this.projectChunkPage(allChunks, startIndex, chunkSize);
+  }
+
+  private projectChunkPage(
+    allChunks: UnifiedChunk[],
+    startIndex: number,
+    chunkSize: number,
+  ): UnifiedChunkedResponse {
     const endIndex = Math.min(startIndex + chunkSize, allChunks.length);
     const windowChunks = allChunks.slice(startIndex, endIndex);
 
@@ -525,12 +542,16 @@ export class SessionReaderService implements OnModuleDestroy {
   }
 
   /**
-   * Get lightweight transcript index for initial-load summary.
-   * Returns chunk IDs and metadata without semantic-step content.
+   * Get transcript metadata and optional bounded pages from the same parsed session.
    */
-  async getTranscriptIndex(sessionId: string): Promise<TranscriptIndex> {
+  async getTranscriptIndex(
+    sessionId: string,
+    window?: TranscriptIndexWindow,
+  ): Promise<TranscriptIndex> {
+    if (window) this.validateIndexWindow(window);
     const { session, parseTiming } = await this.getParsedSession(sessionId);
     const chunks = session.chunks ?? buildChunks(session.messages);
+    const pages = window ? this.projectIndexPages(chunks, window) : undefined;
 
     let latestOutputPreview: string | null = null;
     for (let i = chunks.length - 1; i >= 0; i--) {
@@ -554,7 +575,79 @@ export class SessionReaderService implements OnModuleDestroy {
       latestOutputPreview,
       providerName: session.providerName,
       isOngoing: session.metrics.isOngoing,
+      ...(pages ? { pages } : {}),
     };
+  }
+
+  private validateIndexWindow(window: TranscriptIndexWindow): void {
+    const { pageSize, firstVirtualIndex, lastVirtualIndex, live } = window;
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > MAX_CHUNK_SIZE) {
+      throw new ValidationError(`pageSize must be an integer between 1 and ${MAX_CHUNK_SIZE}`);
+    }
+    for (const value of [firstVirtualIndex, lastVirtualIndex]) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new ValidationError('Virtual indices must be nonnegative safe integers');
+      }
+    }
+    if (live !== undefined && typeof live !== 'boolean') {
+      throw new ValidationError('live must be a boolean');
+    }
+    if (lastVirtualIndex !== undefined) {
+      const width = lastVirtualIndex - (firstVirtualIndex ?? 0) + 1;
+      if (width < 1 || width > MAX_INDEX_CHUNK_BODIES) {
+        throw new ValidationError(
+          `Visible window must contain 1 to ${MAX_INDEX_CHUNK_BODIES} chunks`,
+        );
+      }
+    }
+  }
+
+  private projectIndexPages(
+    chunks: UnifiedChunk[],
+    window: TranscriptIndexWindow,
+  ): NonNullable<TranscriptIndex['pages']> {
+    if (chunks.length === 0) return [];
+    const { pageSize } = window;
+    const lastIndex = chunks.length - 1;
+    const visibleStart = Math.min(window.firstVirtualIndex ?? 0, lastIndex);
+    const visibleEnd = Math.max(
+      visibleStart,
+      Math.min(window.lastVirtualIndex ?? pageSize * 2 - 1, lastIndex),
+    );
+    const retainedStart = Math.max(0, visibleStart - pageSize);
+    const retainedEnd = Math.min(lastIndex, visibleEnd + pageSize);
+    const alignPageStart = (index: number) => Math.floor(index / pageSize) * pageSize;
+    const viewportRange = {
+      start: alignPageStart(retainedStart),
+      end: Math.min(chunks.length, alignPageStart(retainedEnd) + pageSize),
+    };
+    const ranges = [viewportRange];
+    if (window.live) {
+      const tailStart = alignPageStart(Math.max(0, chunks.length - pageSize));
+      if (tailStart <= viewportRange.end) {
+        viewportRange.end = chunks.length;
+      } else {
+        ranges.push({ start: tailStart, end: chunks.length });
+      }
+    }
+
+    // Count aligned bodies before enumerating pages; alignment can exceed the visible window.
+    const bodyCount = ranges.reduce((count, range) => count + range.end - range.start, 0);
+    if (bodyCount > MAX_INDEX_CHUNK_BODIES) {
+      throw new ValidationError(`Transcript window exceeds ${MAX_INDEX_CHUNK_BODIES} chunk bodies`);
+    }
+    const pages: NonNullable<TranscriptIndex['pages']> = [];
+    for (const range of ranges) {
+      for (let offset = range.start; offset < range.end; offset += pageSize) {
+        const size = Math.min(pageSize, chunks.length - offset);
+        pages.push({
+          cursor: chunks[offset].id,
+          size,
+          response: this.projectChunkPage(chunks, offset, size),
+        });
+      }
+    }
+    return pages;
   }
 
   /**

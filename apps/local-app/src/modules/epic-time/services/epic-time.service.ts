@@ -3,6 +3,8 @@ import { NotFoundError, ValidationError } from '../../../common/errors/error-typ
 import type {
   AgentTimeBufferAssignmentInput,
   AgentTimeBufferAssignmentResult,
+  AgentTimeBufferResetInput,
+  AgentTimeBufferResetResult,
   AgentTimeBufferSnapshot,
   EpicTimeAttributionSource,
   EpicTimeBatchSummary,
@@ -77,6 +79,22 @@ export class EpicTimeService {
     input: AgentTimeBufferAssignmentInput,
   ): Promise<AgentTimeBufferAssignmentResult> {
     const result = await this.store.assignAgentTimeBuffer(input);
+    await this.eventsService.publish('epic.time.scope.invalidated', {
+      workspaceId: result.workspaceId,
+    });
+    return result;
+  }
+
+  /**
+   * Manual buffer reset. The store transaction commits or rolls back
+   * atomically before this resolves; only a commit that deleted rows
+   * resolves, so the transient scope invalidation hint never fires for a
+   * write that did not land.
+   */
+  async resetAgentTimeBuffer(
+    input: AgentTimeBufferResetInput,
+  ): Promise<AgentTimeBufferResetResult> {
+    const result = await this.store.resetAgentTimeBuffer(input);
     await this.eventsService.publish('epic.time.scope.invalidated', {
       workspaceId: result.workspaceId,
     });

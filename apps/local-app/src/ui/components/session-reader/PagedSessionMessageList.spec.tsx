@@ -5,7 +5,7 @@
  * extension behavior without requiring full backend integration.
  */
 import React from 'react';
-import { render, act, waitFor } from '@testing-library/react';
+import { render, act, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   PagedSessionMessageList,
@@ -116,6 +116,35 @@ function makeIndex(overrides: Partial<TranscriptIndex> = {}): TranscriptIndex {
   };
 }
 
+function combinedIndex(index = makeIndex(), generation = 'combined'): TranscriptIndex {
+  return {
+    ...index,
+    pages: index.chunkIds.length
+      ? [
+          {
+            cursor: index.chunkIds[0],
+            size: index.chunkIds.length,
+            response: {
+              chunks: index.chunkIds.map((id) => makeChunk(id, generation)),
+              nextCursor: null,
+              prevCursor: null,
+              totalCount: index.chunkIds.length,
+            },
+          },
+        ]
+      : [],
+  };
+}
+
+function requireCanonicalRefresh(sessionId = 'session-1') {
+  captureWsHandler()({
+    topic: `session/${sessionId}/transcript`,
+    type: 'updated',
+    ts: Date.now(),
+    payload: { kind: 'full-refetch-required', sessionId, sourceChangeKind: 'file-replacement' },
+  });
+}
+
 function makeChunk(id: string, generation = id): SerializedChunk {
   return {
     id,
@@ -179,7 +208,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     mockVirtualStart = 0;
     mockVirtualEnd = 2;
     mockVirtualizerScrolling = false;
-    fetchTranscriptIndexMock.mockResolvedValue(makeIndex());
+    fetchTranscriptIndexMock.mockReset().mockResolvedValue(combinedIndex());
     fetchTranscriptChunksMock.mockImplementation(async (_sessionId, cursor, limit = 10) => {
       const start = Number(cursor?.match(/(\d+)$/)?.[1] ?? 0);
       return {
@@ -192,8 +221,11 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     queryClient = createQueryClient();
   });
 
-  afterEach(() => {
-    queryClient.clear();
+  afterEach(async () => {
+    await act(async () => {
+      await queryClient.cancelQueries();
+      queryClient.clear();
+    });
   });
 
   it('extends paged index via setQueryData on WS updated with newChunkIds (no full refetch)', () => {
@@ -253,406 +285,397 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     expect(indexInvalidations).toHaveLength(0);
   });
 
-  it('rejects dirty identical-shape pages and atomically commits only the latest cursor generation', async () => {
-    const index = makeIndex();
-    const candidateIndex = makeIndex({ cursor: 'candidate-cursor' });
-    const latestIndex = makeIndex({ cursor: 'latest-cursor' });
-    queryClient.setQueryData(transcriptQueryKeys.index('session-1'), index);
-    let recovery = false;
-    let recoveryPageCalls = 0;
-    const page = deferred<Awaited<ReturnType<typeof fetchTranscriptChunks>>>();
-    fetchTranscriptChunksMock.mockImplementation(async (_sessionId, cursor, limit = 10) => {
-      if (recovery) {
-        recoveryPageCalls += 1;
-        if (recoveryPageCalls === 1) return page.promise;
-        return {
-          chunks: latestIndex.chunkIds.map((id) => makeChunk(id, 'latest')),
-          nextCursor: null,
-          prevCursor: null,
-          totalCount: 3,
-        };
-      }
-      const start = Number(cursor?.match(/(\d+)$/)?.[1] ?? 0);
-      return {
-        chunks: Array.from({ length: limit }, (_, offset) =>
-          makeChunk(`chunk-${start + offset}`, 'old'),
-        ),
-        nextCursor: null,
-        prevCursor: null,
-        totalCount: 3,
-      };
-    });
-    fetchTranscriptIndexMock
-      .mockResolvedValueOnce(candidateIndex)
-      .mockResolvedValueOnce(latestIndex)
-      .mockResolvedValueOnce(latestIndex);
+  it('loads index and initial bodies with one combined request and keeps the index cache body-free', async () => {
     const view = renderPagedList(queryClient);
-    await waitFor(() => {
-      expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-generation="combined"]')).toHaveLength(3),
+    );
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1);
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledWith('session-1', '', expect.any(Function), {
+      pageSize: 10,
+      live: true,
+      signal: expect.any(AbortSignal),
     });
-
-    const observed: string[] = [];
-    const observer = new MutationObserver(() => {
-      observed.push(
-        [...view.container.querySelectorAll('[data-generation]')]
-          .map((node) => node.getAttribute('data-generation'))
-          .join(','),
-      );
-    });
-    observer.observe(view.container, { childList: true, subtree: true, attributes: true });
-
-    const handler = captureWsHandler();
-    recovery = true;
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'updated',
-        ts: Date.now(),
-        payload: {
-          kind: 'full-refetch-required',
-          sessionId: 'session-1',
-          sourceChangeKind: 'file-replacement',
-        },
-      });
-    });
-
-    await waitFor(() => expect(fetchTranscriptIndexMock).toHaveBeenCalled());
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'updated',
-        ts: Date.now(),
-        payload: {
-          kind: 'full-refetch-required',
-          sessionId: 'session-1',
-          sourceChangeKind: 'same-file-rewrite',
-        },
-      });
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'updated',
-        ts: Date.now(),
-        payload: {
-          kind: 'delta',
-          sessionId: 'session-1',
-          cursor: 'ignored-cursor',
-          prevCursor: 'old-cursor',
-          replaceFromChunkIndex: 0,
-          newChunkIds: index.chunkIds,
-          totalChunkCount: 3,
-          deltaChunks: index.chunkIds.map((id) => makeChunk(id, 'delta')),
-          deltaMessages: [],
-          metrics: {
-            totalTokens: 3,
-            inputTokens: 3,
-            outputTokens: 0,
-            costUsd: 0,
-            messageCount: 3,
-          },
-          newMessageCount: 0,
-        },
-      });
-    });
-    expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
-
-    await act(async () => {
-      page.resolve({
-        chunks: candidateIndex.chunkIds.map((id) => makeChunk(id, 'stale')),
-        nextCursor: null,
-        prevCursor: null,
-        totalCount: 3,
-      });
-    });
-    await waitFor(() => {
-      expect(view.container.querySelectorAll('[data-generation="latest"]')).toHaveLength(3);
-    });
-    observer.disconnect();
-    expect(view.container.querySelectorAll('[data-generation="stale"]')).toHaveLength(0);
-    expect(view.container.querySelectorAll('[data-generation="delta"]')).toHaveLength(0);
+    expect(fetchTranscriptChunksMock).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).not.toHaveProperty(
+      'pages',
+    );
     expect(
-      queryClient.getQueryData<TranscriptIndex>(transcriptQueryKeys.index('session-1'))?.cursor,
-    ).toBe('latest-cursor');
-    expect(
-      observed.every(
-        (value) =>
-          !value.includes('stale') &&
-          !value.includes('delta') &&
-          !value.includes('old,latest') &&
-          !value.includes('latest,old'),
-      ),
-    ).toBe(true);
+      queryClient.getQueryData(transcriptQueryKeys.chunkPage('session-1', 'chunk-0', 3)),
+    ).toMatchObject({ totalCount: 3 });
   });
 
-  it('stages a count-growing replacement before exposing its new index and pages', async () => {
+  it('renders coherent snapshots during continuous updates and coalesces one follow-up even with equal cursors', async () => {
+    jest.useFakeTimers();
+    queryClient.setQueryData(transcriptQueryKeys.index('session-1'), makeIndex());
+    const first = deferred<TranscriptIndex>();
+    const second = deferred<TranscriptIndex>();
+    const third = deferred<TranscriptIndex>();
+    fetchTranscriptIndexMock
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+      .mockReturnValueOnce(third.promise);
+    const view = renderPagedList(queryClient);
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-testid="chunk"]')).toHaveLength(3),
+    );
+    const pageReads = fetchTranscriptChunksMock.mock.calls.length;
+    act(() => requireCanonicalRefresh());
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    act(() => {
+      for (let i = 0; i < 5; i++) requireCanonicalRefresh();
+    });
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      first.resolve(combinedIndex(makeIndex(), 'first'));
+    });
+    expect(view.container.querySelectorAll('[data-generation="first"]')).toHaveLength(3);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(2);
+    act(() => {
+      for (let i = 0; i < 5; i++) requireCanonicalRefresh();
+    });
+    await act(async () => {
+      second.resolve(combinedIndex(makeIndex(), 'second'));
+    });
+    expect(view.container.querySelectorAll('[data-generation="second"]')).toHaveLength(3);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      third.resolve(combinedIndex(makeIndex(), 'third'));
+    });
+    expect(view.container.querySelectorAll('[data-generation="third"]')).toHaveLength(3);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(3);
+    expect(fetchTranscriptChunksMock).toHaveBeenCalledTimes(pageReads);
+    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).not.toHaveProperty(
+      'pages',
+    );
+    view.unmount();
+  });
+
+  it('coalesces events during initial loading without cancelling the coherent response', async () => {
+    jest.useFakeTimers();
+    const initial = deferred<TranscriptIndex>();
+    fetchTranscriptIndexMock
+      .mockReturnValueOnce(initial.promise)
+      .mockResolvedValueOnce(combinedIndex(makeIndex(), 'updated'));
+    const view = renderPagedList(queryClient);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    act(() => {
+      requireCanonicalRefresh();
+      requireCanonicalRefresh();
+    });
+    await act(async () => {
+      initial.resolve(combinedIndex(makeIndex(), 'initial'));
+    });
+    expect(view.container.querySelectorAll('[data-generation="initial"]')).toHaveLength(3);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    expect(view.container.querySelectorAll('[data-generation="updated"]')).toHaveLength(3);
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(2);
+    expect(fetchTranscriptChunksMock).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('commits a count-growing replacement atomically with one combined read', async () => {
     const oldIndex = makeIndex();
     const nextIndex = makeIndex({
-      cursor: 'growing-cursor',
+      cursor: 'new',
       totals: { messageCount: 4, chunkCount: 4 },
       chunkIds: ['chunk-0', 'chunk-1', 'chunk-2', 'chunk-3'],
     });
     queryClient.setQueryData(transcriptQueryKeys.index('session-1'), oldIndex);
-    let recovery = false;
-    const page = deferred<Awaited<ReturnType<typeof fetchTranscriptChunks>>>();
-    fetchTranscriptChunksMock.mockImplementation(async (_sessionId, cursor, limit = 10) => {
-      if (recovery) return page.promise;
-      const start = Number(cursor?.match(/(\d+)$/)?.[1] ?? 0);
-      return {
-        chunks: Array.from({ length: limit }, (_, offset) =>
-          makeChunk(`chunk-${start + offset}`, 'old'),
-        ),
-        nextCursor: null,
-        prevCursor: null,
-        totalCount: 3,
-      };
-    });
-    fetchTranscriptIndexMock.mockResolvedValue(nextIndex);
-    const view = renderPagedList(queryClient);
-    await waitFor(() => {
-      expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
-    });
-
-    recovery = true;
-    mockVirtualEnd = 3;
-    const handler = captureWsHandler();
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'updated',
-        ts: Date.now(),
-        payload: {
-          kind: 'full-refetch-required',
-          sessionId: 'session-1',
-          sourceChangeKind: 'same-file-rewrite',
-        },
-      });
-    });
-
-    expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
-    await act(async () => {
-      page.resolve({
-        chunks: nextIndex.chunkIds.map((id) => makeChunk(id, 'new-growing')),
-        nextCursor: null,
-        prevCursor: null,
-        totalCount: 4,
-      });
-    });
-    await waitFor(() => {
-      expect(view.container.querySelectorAll('[data-generation="new-growing"]')).toHaveLength(4);
-    });
-  });
-
-  it('keeps the old paged index and map when canonical page staging fails', async () => {
-    const index = makeIndex();
-    queryClient.setQueryData(transcriptQueryKeys.index('session-1'), index);
-    let recovery = false;
-    const page = deferred<Awaited<ReturnType<typeof fetchTranscriptChunks>>>();
-    fetchTranscriptChunksMock.mockImplementation(async (_sessionId, cursor, limit = 10) => {
-      if (recovery) return page.promise;
-      const start = Number(cursor?.match(/(\d+)$/)?.[1] ?? 0);
-      return {
-        chunks: Array.from({ length: limit }, (_, offset) =>
-          makeChunk(`chunk-${start + offset}`, 'old'),
-        ),
-        nextCursor: null,
-        prevCursor: null,
-        totalCount: 3,
-      };
-    });
-    fetchTranscriptIndexMock.mockResolvedValue(index);
-    const view = renderPagedList(queryClient);
-    await waitFor(() => {
-      expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
-    });
-
-    recovery = true;
-    const handler = captureWsHandler();
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'updated',
-        ts: Date.now(),
-        payload: {
-          kind: 'full-refetch-required',
-          sessionId: 'session-1',
-          sourceChangeKind: 'file-replacement',
-        },
-      });
-    });
-    await act(async () => {
-      page.reject(new Error('page failed'));
-    });
-    await waitFor(() => {
-      expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
-    });
-    expect(queryClient.getQueryData<TranscriptIndex>(transcriptQueryKeys.index('session-1'))).toBe(
-      index,
+    queryClient.setQueryData(
+      transcriptQueryKeys.chunkPage('session-1', 'chunk-0', 3),
+      combinedIndex(oldIndex, 'old').pages![0].response,
     );
-  });
-
-  it('keeps the old generation shielded across failed attempts and a bounded retry', async () => {
-    jest.useFakeTimers();
-    const oldIndex = makeIndex({ cursor: 'old-cursor' });
-    const candidateOne = makeIndex({ cursor: 'candidate-one' });
-    const candidateTwo = makeIndex({ cursor: 'candidate-two' });
-    const latestIndex = makeIndex({ cursor: 'latest-cursor' });
-    queryClient.setQueryData(transcriptQueryKeys.index('session-1'), oldIndex);
-
-    let recovery = false;
-    let recoveryPageCalls = 0;
-    const firstPage = deferred<Awaited<ReturnType<typeof fetchTranscriptChunks>>>();
-    const secondPage = deferred<Awaited<ReturnType<typeof fetchTranscriptChunks>>>();
-    const retryIndex = deferred<TranscriptIndex>();
-    fetchTranscriptChunksMock.mockImplementation(async (_sessionId, cursor, limit = 10) => {
-      if (recovery) {
-        recoveryPageCalls += 1;
-        if (recoveryPageCalls === 1) return firstPage.promise;
-        if (recoveryPageCalls === 2) return secondPage.promise;
-        return {
-          chunks: latestIndex.chunkIds.map((id) => makeChunk(id, 'latest')),
-          nextCursor: null,
-          prevCursor: null,
-          totalCount: latestIndex.chunkIds.length,
-        };
-      }
-      const start = Number(cursor?.match(/(\d+)$/)?.[1] ?? 0);
-      return {
-        chunks: Array.from({ length: limit }, (_, offset) =>
-          makeChunk(`chunk-${start + offset}`, 'old'),
-        ),
-        nextCursor: null,
-        prevCursor: null,
-        totalCount: oldIndex.chunkIds.length,
-      };
-    });
-    fetchTranscriptIndexMock
-      .mockResolvedValueOnce(candidateOne)
-      .mockResolvedValueOnce(candidateTwo)
-      .mockImplementationOnce(() => retryIndex.promise)
-      .mockResolvedValueOnce(latestIndex);
-
+    const response = deferred<TranscriptIndex>();
+    fetchTranscriptIndexMock.mockReturnValueOnce(response.promise);
     const view = renderPagedList(queryClient);
-    await waitFor(() => {
-      expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
-    });
-
-    const observed: string[] = [];
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-testid="chunk"]')).toHaveLength(3),
+    );
+    const observed: string[][] = [];
     const observer = new MutationObserver(() => {
       observed.push(
-        [...view.container.querySelectorAll('[data-generation]')]
-          .map((node) => node.getAttribute('data-generation'))
-          .join(','),
+        [...view.container.querySelectorAll('[data-generation]')].map(
+          (node) => node.getAttribute('data-generation')!,
+        ),
       );
     });
     observer.observe(view.container, { childList: true, subtree: true, attributes: true });
-
-    recovery = true;
-    const handler = captureWsHandler();
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'updated',
-        ts: Date.now(),
-        payload: {
-          kind: 'full-refetch-required',
-          sessionId: 'session-1',
-          sourceChangeKind: 'file-replacement',
-        },
-      });
-    });
-    await waitFor(() => expect(recoveryPageCalls).toBe(1));
-
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'discovered',
-        ts: Date.now(),
-        payload: { sessionId: 'session-1' },
-      });
-    });
-    await act(async () => {
-      firstPage.resolve({
-        chunks: candidateOne.chunkIds.map((id) => makeChunk(id, 'candidate-one')),
-        nextCursor: null,
-        prevCursor: null,
-        totalCount: candidateOne.chunkIds.length,
-      });
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(recoveryPageCalls).toBe(2));
-
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'ended',
-        ts: Date.now(),
-        payload: { sessionId: 'session-1' },
-      });
-    });
-    await act(async () => {
-      secondPage.resolve({
-        chunks: candidateTwo.chunkIds.map((id) => makeChunk(id, 'candidate-two')),
-        nextCursor: null,
-        prevCursor: null,
-        totalCount: candidateTwo.chunkIds.length,
-      });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(2);
-    expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
+    const pageReads = fetchTranscriptChunksMock.mock.calls.length;
+    mockVirtualEnd = 3;
+    act(() => requireCanonicalRefresh());
+    await waitFor(() => expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1));
     expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).toBe(oldIndex);
-
+    expect(view.container.querySelectorAll('[data-testid="chunk"]')).toHaveLength(3);
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(1_000);
+      response.resolve(combinedIndex(nextIndex, 'new'));
+    });
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-generation="new"]')).toHaveLength(4),
+    );
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1);
+    expect(fetchTranscriptChunksMock).toHaveBeenCalledTimes(pageReads);
+    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).toEqual(nextIndex);
+    observer.disconnect();
+    expect(observed.length).toBeGreaterThan(0);
+    expect(
+      observed.every((generations) => generations.length > 0 && new Set(generations).size === 1),
+    ).toBe(true);
+  });
+
+  it('preserves the prior generation across transport failures and retries with bounded backoff', async () => {
+    jest.useFakeTimers();
+    const oldIndex = makeIndex();
+    queryClient.setQueryData(transcriptQueryKeys.index('session-1'), oldIndex);
+    fetchTranscriptIndexMock
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(combinedIndex(makeIndex(), 'recovered'));
+    const view = renderPagedList(queryClient);
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-testid="chunk"]')).toHaveLength(3),
+    );
+    act(() => requireCanonicalRefresh());
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(999);
+    });
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).toBe(oldIndex);
+    expect(view.container.querySelectorAll('[data-testid="chunk"]')).toHaveLength(3);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
+    });
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1999);
+    });
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).toBe(oldIndex);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
     });
     expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(3);
-
-    await act(async () => {
-      await jest.advanceTimersByTimeAsync(4_100);
-    });
-    expect(view.container.querySelectorAll('[data-generation="old"]')).toHaveLength(3);
-    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).toBe(oldIndex);
-    expect(
-      queryClient
-        .getQueryData<
-          Awaited<ReturnType<typeof fetchTranscriptChunks>>
-        >(transcriptQueryKeys.chunkPage('session-1', 'chunk-0', 3))
-        ?.chunks.map((chunk) => (chunk as SerializedChunk & { generation?: string }).generation),
-    ).toEqual(['old', 'old', 'old']);
-
-    await act(async () => {
-      retryIndex.resolve(latestIndex);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await waitFor(() => {
-      expect(view.container.querySelectorAll('[data-generation="latest"]')).toHaveLength(3);
-    });
-
-    observer.disconnect();
-    expect(
-      observed.every(
-        (value) =>
-          !value.includes('candidate-one') &&
-          !value.includes('candidate-two') &&
-          !value.includes('old,latest') &&
-          !value.includes('latest,old'),
-      ),
-    ).toBe(true);
-    expect(
-      queryClient.getQueryData<TranscriptIndex>(transcriptQueryKeys.index('session-1'))?.cursor,
-    ).toBe('latest-cursor');
-    expect(
-      queryClient
-        .getQueryData<
-          Awaited<ReturnType<typeof fetchTranscriptChunks>>
-        >(transcriptQueryKeys.chunkPage('session-1', 'chunk-0', 3))
-        ?.chunks.map((chunk) => (chunk as SerializedChunk & { generation?: string }).generation),
-    ).toEqual(['latest', 'latest', 'latest']);
-
+    expect(view.container.querySelectorAll('[data-generation="recovered"]')).toHaveLength(3);
     view.unmount();
-    jest.useRealTimers();
+  });
+
+  it('aborts a disposed request and ignores its late response', async () => {
+    const response = deferred<TranscriptIndex>();
+    fetchTranscriptIndexMock.mockReturnValueOnce(response.promise);
+    const view = renderPagedList(queryClient);
+    await waitFor(() => expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1));
+    const signal = fetchTranscriptIndexMock.mock.calls[0][3]!.signal!;
+    view.unmount();
+    expect(signal.aborted).toBe(true);
+    await act(async () => {
+      response.resolve(combinedIndex());
+    });
+    expect(
+      queryClient.getQueryData(transcriptQueryKeys.chunkPage('session-1', 'chunk-0', 3)),
+    ).toBeUndefined();
+    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).toBeUndefined();
+  });
+
+  it('ignores an old-session response after switching sessions', async () => {
+    const old = deferred<TranscriptIndex>();
+    fetchTranscriptIndexMock
+      .mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce(combinedIndex(makeIndex(), 'new-session'));
+    const view = renderPagedList(queryClient);
+    await waitFor(() => expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1));
+    const signal = fetchTranscriptIndexMock.mock.calls[0][3]!.signal!;
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <PagedSessionMessageList
+          sessionId="session-2"
+          isLive={true}
+          ChunkRenderer={DummyChunkRenderer}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-generation="new-session"]')).toHaveLength(3),
+    );
+    await act(async () => {
+      old.resolve(combinedIndex(makeIndex(), 'old-session'));
+    });
+    expect(signal.aborted).toBe(true);
+    expect(view.container.querySelectorAll('[data-generation="old-session"]')).toHaveLength(0);
+    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-1'))).toBeUndefined();
+    expect(queryClient.getQueryData(transcriptQueryKeys.index('session-2'))).not.toHaveProperty(
+      'pages',
+    );
+  });
+
+  it('bounds oversized visible windows and preserves lazy paging beyond the combined response', async () => {
+    mockVirtualEnd = 179;
+    const index = makeIndex({
+      totals: { messageCount: 303, chunkCount: 303 },
+      chunkIds: Array.from({ length: 303 }, (_, i) => `chunk-${i}`),
+    });
+    queryClient.setQueryData(transcriptQueryKeys.index('session-1'), index);
+    const starts = [...Array.from({ length: 15 }, (_, i) => i * 10), 290, 300];
+    fetchTranscriptIndexMock.mockResolvedValueOnce({
+      ...index,
+      pages: starts.map((start) => ({
+        cursor: index.chunkIds[start],
+        size: Math.min(10, 303 - start),
+        response: {
+          chunks: index.chunkIds.slice(start, start + 10).map((id) => makeChunk(id, 'combined')),
+          nextCursor: index.chunkIds[start + 10] ?? null,
+          prevCursor: index.chunkIds[start - 1] ?? null,
+          totalCount: 303,
+        },
+      })),
+    });
+    const view = renderPagedList(queryClient);
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-testid="chunk"]')).toHaveLength(180),
+    );
+    fetchTranscriptChunksMock.mockClear();
+    await act(async () => requireCanonicalRefresh());
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-generation="combined"]')).toHaveLength(150),
+    );
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1);
+    expect(fetchTranscriptIndexMock.mock.calls[0][3]).toMatchObject({
+      pageSize: 10,
+      firstVirtualIndex: 0,
+      lastVirtualIndex: 139,
+      live: true,
+    });
+    await waitFor(() =>
+      expect(fetchTranscriptChunksMock.mock.calls.map((call) => call[1])).toEqual([
+        'chunk-150',
+        'chunk-160',
+        'chunk-170',
+      ]),
+    );
+    expect(view.container.querySelectorAll('[data-testid="chunk"]')).toHaveLength(180);
+  });
+
+  it('sends the measured viewport and preserves scroll position and expansion across replacement', async () => {
+    mockVirtualStart = 25;
+    mockVirtualEnd = 32;
+    const index = makeIndex({
+      totals: { messageCount: 50, chunkCount: 50 },
+      chunkIds: Array.from({ length: 50 }, (_, i) => `chunk-${i}`),
+    });
+    queryClient.setQueryData(transcriptQueryKeys.index('session-1'), index);
+    const response = {
+      ...index,
+      pages: [10, 20, 30, 40].map((start) => ({
+        cursor: index.chunkIds[start],
+        size: 10,
+        response: {
+          chunks: index.chunkIds.slice(start, start + 10).map((id) => makeChunk(id, 'new')),
+          nextCursor: index.chunkIds[start + 10] ?? null,
+          prevCursor: index.chunkIds[start - 1] ?? null,
+          totalCount: 50,
+        },
+      })),
+    };
+    fetchTranscriptIndexMock.mockResolvedValueOnce(response);
+    const Renderer = ({
+      chunk,
+      isAiGroupExpanded,
+      onAiGroupToggle,
+    }: {
+      chunk: SerializedChunk;
+      isAiGroupExpanded?: boolean;
+      onAiGroupToggle?: (id: string) => void;
+    }) => (
+      <button
+        data-testid={chunk.id}
+        aria-expanded={isAiGroupExpanded}
+        onClick={() => onAiGroupToggle?.(chunk.id)}
+      >
+        {chunk.id}
+      </button>
+    );
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <PagedSessionMessageList sessionId="session-1" isLive={false} ChunkRenderer={Renderer} />
+      </QueryClientProvider>,
+    );
+    const chunk = await view.findByTestId('chunk-25');
+    fireEvent.click(chunk);
+    const scroll = view.getByTestId('paged-session-viewer-scroll');
+    scroll.scrollTop = 3000;
+    await act(async () => requireCanonicalRefresh());
+    expect(fetchTranscriptIndexMock.mock.calls[0][3]).toMatchObject({
+      pageSize: 10,
+      firstVirtualIndex: 25,
+      lastVirtualIndex: 32,
+      live: false,
+    });
+    expect(view.getByTestId('chunk-25')).toBe(chunk);
+    expect(chunk).toHaveAttribute('aria-expanded', 'true');
+    expect(scroll.scrollTop).toBe(3000);
+  });
+
+  it('caps retry backoff at five seconds and cancels it on session switch', async () => {
+    jest.useFakeTimers();
+    queryClient.setQueryData(transcriptQueryKeys.index('session-1'), makeIndex());
+    fetchTranscriptIndexMock.mockRejectedValue(new Error('offline'));
+    const view = renderPagedList(queryClient);
+    await waitFor(() =>
+      expect(view.container.querySelectorAll('[data-testid="chunk"]')).toHaveLength(3),
+    );
+    await act(async () => requireCanonicalRefresh());
+    let requests = 1;
+    for (const delay of [1000, 2000, 4000, 5000, 5000]) {
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(delay - 1);
+      });
+      expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(requests);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1);
+      });
+      expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(++requests);
+    }
+    fetchTranscriptIndexMock.mockResolvedValueOnce(combinedIndex(makeIndex({ isOngoing: false })));
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <PagedSessionMessageList
+          sessionId="session-2"
+          isLive={false}
+          ChunkRenderer={DummyChunkRenderer}
+        />
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10000);
+    });
+    expect(
+      fetchTranscriptIndexMock.mock.calls.filter((call) => call[0] === 'session-1'),
+    ).toHaveLength(requests);
+    expect(
+      fetchTranscriptIndexMock.mock.calls.filter((call) => call[0] === 'session-2'),
+    ).toHaveLength(1);
+    view.unmount();
   });
 
   it('cancels a scheduled canonical retry when the paged session is disposed', async () => {
@@ -692,7 +715,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     jest.useRealTimers();
   });
 
-  it('falls back to full refetch on gap detection (replaceFromChunkIndex > current length)', () => {
+  it('falls back to full refetch on gap detection (replaceFromChunkIndex > current length)', async () => {
     const index = makeIndex({
       totals: { messageCount: 2, chunkCount: 2 },
       chunkIds: ['chunk-0', 'chunk-1'],
@@ -704,7 +727,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     const handler = captureWsHandler();
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
 
-    act(() => {
+    await act(async () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'updated',
@@ -741,7 +764,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     expect(indexInvalidations.length).toBeGreaterThan(0);
   });
 
-  it('falls back to full refetch when no newChunkIds in payload (legacy server)', () => {
+  it('falls back to full refetch when no newChunkIds in payload (legacy server)', async () => {
     const index = makeIndex();
     queryClient.setQueryData(transcriptQueryKeys.index('session-1'), index);
 
@@ -750,7 +773,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     const handler = captureWsHandler();
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
 
-    act(() => {
+    await act(async () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'updated',
@@ -785,7 +808,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     expect(indexInvalidations.length).toBeGreaterThan(0);
   });
 
-  it('does full invalidation on discovered and ended events (no change to these)', () => {
+  it('does full invalidation on discovered and ended events (no change to these)', async () => {
     const index = makeIndex();
     queryClient.setQueryData(transcriptQueryKeys.index('session-1'), index);
 
@@ -794,7 +817,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     const handler = captureWsHandler();
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
 
-    act(() => {
+    await act(async () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'discovered',
@@ -861,12 +884,15 @@ describe('paged transcript chunk retention', () => {
     mockVirtualStart = 0;
     mockVirtualEnd = 4;
     mockVirtualizerScrolling = false;
-    fetchTranscriptIndexMock.mockResolvedValue(makeIndex());
+    fetchTranscriptIndexMock.mockReset().mockResolvedValue(combinedIndex());
     queryClient = createQueryClient();
   });
 
-  afterEach(() => {
-    queryClient.clear();
+  afterEach(async () => {
+    await act(async () => {
+      await queryClient.cancelQueries();
+      queryClient.clear();
+    });
   });
 
   it('keeps delta bodies bounded across long-running scroll-window cycles', () => {
