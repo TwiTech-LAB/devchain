@@ -2,6 +2,13 @@ import type { Agent } from '../../storage/models/domain.models';
 import type { SessionDto } from '../../sessions/dtos/sessions.dto';
 import type { ActionContext, ActionDefinition, ActionResult } from './action.interface';
 import { resolveFamilyAgentTargets } from './family-agent-targets';
+import {
+  STATUS_GUARD_INPUT_NAME,
+  describeUnknownLabels,
+  resolveStatusGuard,
+  skippedResult,
+  statusGuardInput,
+} from './epic-status-guard';
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -181,6 +188,7 @@ export const terminateSessionAction: ActionDefinition = {
         'Optional: terminate active sessions for every matching profile-family agent in the current project. Inactive agents are reported, not failed. Agent Name takes priority. Family failures are not automatically retried, even when Retry on error is enabled.',
       placeholder: 'e.g., engineering',
     },
+    statusGuardInput,
   ],
 
   execute: async (
@@ -194,6 +202,18 @@ export const terminateSessionAction: ActionDefinition = {
     let targetSession: SessionDto;
 
     try {
+      const guard = await resolveStatusGuard(storage, projectId, inputs[STATUS_GUARD_INPUT_NAME]);
+      if (!guard.ok) {
+        return {
+          success: false,
+          error: describeUnknownLabels(projectId, guard.unknownLabels),
+          retryable: false,
+        };
+      }
+      if (guard.blocking.length > 0) {
+        return skippedResult(guard.blocking);
+      }
+
       if (targetMode === 'agentName') {
         let agent: Agent;
         try {

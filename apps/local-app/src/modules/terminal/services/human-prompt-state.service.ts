@@ -29,6 +29,12 @@ export interface HumanPromptQuietSnapshot {
   readonly meaningfulOutputEpoch: number;
 }
 
+export interface ForcePromptSnapshot {
+  readonly phase: 'awaiting_stable_idle' | 'inactive';
+  readonly generation: number;
+  readonly executedInputEpoch: number;
+}
+
 export type PromptAwaitingTransitionResult =
   | { readonly accepted: true; readonly state: AwaitingStableIdleHumanPromptState }
   | { readonly accepted: false; readonly state: HumanPromptState };
@@ -235,6 +241,36 @@ export class HumanPromptStateService {
     const next: InactiveHumanPromptState = { ...current, phase: 'inactive' };
     this.states.set(key, next);
     this.draftTracking.delete(key);
+    return true;
+  }
+
+  getForceSnapshot(tmuxSessionName: string): ForcePromptSnapshot | null {
+    const current = this.getState(tmuxSessionName);
+    if (current.phase === 'draft_active') return null;
+    return {
+      phase: current.phase,
+      generation: current.generation,
+      executedInputEpoch: current.executedInputEpoch,
+    };
+  }
+
+  applyForceDelivery(tmuxSessionName: string, snapshot: ForcePromptSnapshot): boolean {
+    const key = this.keyFor(tmuxSessionName);
+    const current = this.states.get(key) ?? INITIAL_STATE;
+    if (
+      current.phase === 'draft_active' ||
+      current.phase !== snapshot.phase ||
+      current.generation !== snapshot.generation ||
+      current.executedInputEpoch !== snapshot.executedInputEpoch
+    ) {
+      return false;
+    }
+
+    if (current.phase === 'awaiting_stable_idle') {
+      const next: InactiveHumanPromptState = { ...current, phase: 'inactive' };
+      this.states.set(key, next);
+      this.draftTracking.delete(key);
+    }
     return true;
   }
 

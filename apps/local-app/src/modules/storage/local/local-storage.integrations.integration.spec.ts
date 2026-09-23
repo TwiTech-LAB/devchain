@@ -382,7 +382,14 @@ describe('LocalStorageService integrations', () => {
     expect(await service.listExternalTaskLinksByRemoteScope('jira', 'acme.atlassian.net')).toEqual([
       { ...link, connectionId: null },
     ]);
-    expect(await service.findExternalTaskLink('jira', 'acme.atlassian.net', '10001')).toEqual({
+    expect(
+      await service.findExternalTaskLink(
+        connectionProjectId,
+        'jira',
+        'acme.atlassian.net',
+        '10001',
+      ),
+    ).toEqual({
       ...link,
       connectionId: null,
     });
@@ -417,7 +424,7 @@ describe('LocalStorageService integrations', () => {
     });
   });
 
-  it('enforces remote identity uniqueness and external-link foreign keys', async () => {
+  it('enforces remote identity uniqueness per project and external-link foreign keys', async () => {
     const firstEpic = await seedEpic();
     const projectId = firstEpic.projectId;
     const statuses = await service.listStatuses(projectId);
@@ -435,13 +442,37 @@ describe('LocalStorageService integrations', () => {
       sourceSnapshot: { title: 'Remote task' },
     };
 
-    await service.createExternalTaskLink(input);
+    const created = await service.createExternalTaskLink(input);
+    expect(created.projectId).toBe(projectId);
     await expect(
       service.createExternalTaskLink({ ...input, epicId: secondEpic.id }),
     ).rejects.toThrow(ConflictError);
     await expect(
       service.createExternalTaskLink({ ...input, epicId: 'missing-epic', remoteTaskId: 'task-2' }),
     ).rejects.toThrow();
+    expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+
+    // The same remote identity links independently in another project, and
+    // each project-scoped lookup resolves only its own link.
+    const otherProjectId = await seedProject('Other project', '/tmp/other-project');
+    const otherStatuses = await service.listStatuses(otherProjectId);
+    const otherEpic = await service.createEpic({
+      projectId: otherProjectId,
+      title: 'Other project import',
+      statusId: otherStatuses.items[0].id,
+    });
+    const otherLink = await service.createExternalTaskLink({
+      ...input,
+      epicId: otherEpic.id,
+    });
+    expect(otherLink.projectId).toBe(otherProjectId);
+    expect(otherLink.id).not.toBe(created.id);
+    await expect(
+      service.findExternalTaskLink(projectId, 'clickup', 'workspace-1', 'task-1'),
+    ).resolves.toMatchObject({ id: created.id, projectId });
+    await expect(
+      service.findExternalTaskLink(otherProjectId, 'clickup', 'workspace-1', 'task-1'),
+    ).resolves.toMatchObject({ id: otherLink.id, projectId: otherProjectId });
     expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 

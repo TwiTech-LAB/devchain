@@ -14,6 +14,8 @@ jest.mock('@radix-ui/react-dialog', () => {
   };
 });
 
+const CURRENT_PROJECT = { id: '00000000-0000-0000-0000-0000000000aa', name: 'DevChain' };
+
 describe('AddCommunitySourceDialog', () => {
   it('submits community source payload in GitHub mode', async () => {
     const onSubmit = jest.fn(async (_input: AddCommunitySourceDialogSubmit) => undefined);
@@ -23,6 +25,7 @@ describe('AddCommunitySourceDialog', () => {
       <AddCommunitySourceDialog
         open
         isSubmitting={false}
+        currentProject={CURRENT_PROJECT}
         onOpenChange={onOpenChange}
         onSubmit={onSubmit}
       />,
@@ -46,6 +49,7 @@ describe('AddCommunitySourceDialog', () => {
         name: 'repo-name',
         url: 'https://github.com/example/repo-name',
         branch: 'develop',
+        existingProjects: { mode: 'none' },
       });
     });
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -59,6 +63,7 @@ describe('AddCommunitySourceDialog', () => {
       <AddCommunitySourceDialog
         open
         isSubmitting={false}
+        currentProject={CURRENT_PROJECT}
         onOpenChange={onOpenChange}
         onSubmit={onSubmit}
       />,
@@ -80,6 +85,7 @@ describe('AddCommunitySourceDialog', () => {
         type: 'local',
         name: 'my-local-source',
         folderPath: '/tmp/My Local_Source',
+        existingProjects: { mode: 'none' },
       });
     });
   });
@@ -93,6 +99,7 @@ describe('AddCommunitySourceDialog', () => {
       <AddCommunitySourceDialog
         open
         isSubmitting={false}
+        currentProject={null}
         onOpenChange={jest.fn()}
         onSubmit={onSubmit}
       />,
@@ -110,5 +117,92 @@ describe('AddCommunitySourceDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^add source$/i }));
 
     expect(await screen.findByText('folderPath does not exist.')).toBeInTheDocument();
+  });
+
+  describe('existing projects choice', () => {
+    const submitChoice = async (
+      currentProject: { id: string; name: string } | null,
+      radioLabel: RegExp,
+    ): Promise<AddCommunitySourceDialogSubmit | null> => {
+      const onSubmit = jest.fn(async (input: AddCommunitySourceDialogSubmit) => input);
+
+      render(
+        <AddCommunitySourceDialog
+          open
+          isSubmitting={false}
+          currentProject={currentProject}
+          onOpenChange={jest.fn()}
+          onSubmit={onSubmit}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText(/github url/i), {
+        target: { value: 'https://github.com/example/repo-name' },
+      });
+      fireEvent.change(screen.getByLabelText(/source name/i), {
+        target: { value: 'repo-name' },
+      });
+
+      fireEvent.click(screen.getByRole('radio', { name: radioLabel }));
+
+      fireEvent.click(screen.getByRole('button', { name: /^add source$/i }));
+
+      await waitFor(() => {
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+      });
+      return onSubmit.mock.calls[0][0];
+    };
+
+    it('defaults to keep disabled and shows the current-project option with a project', async () => {
+      render(
+        <AddCommunitySourceDialog
+          open
+          isSubmitting={false}
+          currentProject={CURRENT_PROJECT}
+          onOpenChange={jest.fn()}
+          onSubmit={jest.fn(async () => undefined)}
+        />,
+      );
+
+      expect(screen.getByRole('radio', { name: /keep disabled/i })).toBeChecked();
+      expect(
+        screen.getByRole('radio', { name: `Enable in ${CURRENT_PROJECT.name}` }),
+      ).not.toBeChecked();
+      expect(
+        screen.getByRole('radio', { name: /enable in all existing projects/i }),
+      ).not.toBeChecked();
+    });
+
+    it('omits the current-project option when no project is selected', () => {
+      render(
+        <AddCommunitySourceDialog
+          open
+          isSubmitting={false}
+          currentProject={null}
+          onOpenChange={jest.fn()}
+          onSubmit={jest.fn(async () => undefined)}
+        />,
+      );
+
+      expect(screen.queryByRole('radio', { name: `Enable in ${CURRENT_PROJECT.name}` })).toBeNull();
+      expect(screen.getByRole('radio', { name: /keep disabled/i })).toBeChecked();
+      expect(
+        screen.getByRole('radio', { name: /enable in all existing projects/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('submits the selected choice with the current project id', async () => {
+      const submitted = await submitChoice(CURRENT_PROJECT, /enable in devchain/i);
+
+      expect(submitted).toMatchObject({
+        existingProjects: { mode: 'selected', projectIds: [CURRENT_PROJECT.id] },
+      });
+    });
+
+    it('submits the all choice', async () => {
+      const submitted = await submitChoice(CURRENT_PROJECT, /enable in all existing projects/i);
+
+      expect(submitted).toMatchObject({ existingProjects: { mode: 'all' } });
+    });
   });
 });

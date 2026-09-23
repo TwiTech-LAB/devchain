@@ -1,6 +1,6 @@
 import type { ActionContext } from './action.interface';
 import { deleteAgentAction, type DeleteAgentResultData } from './delete-agent.action';
-import type { Agent, Team } from '../../storage/models/domain.models';
+import type { Agent, Status, Team } from '../../storage/models/domain.models';
 
 const PROJECT_ID = 'project-1';
 
@@ -36,6 +36,19 @@ function makeTeam(id: string, name: string, teamLeadAgentId: string | null): Tea
   };
 }
 
+function makeStatus(id: string, label: string): Status {
+  return {
+    id,
+    projectId: PROJECT_ID,
+    label,
+    color: '#123456',
+    position: 1,
+    mcpHidden: false,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+}
+
 describe('DeleteAgentAction', () => {
   let context: ActionContext;
   let storage: {
@@ -43,6 +56,8 @@ describe('DeleteAgentAction', () => {
     getAgent: jest.Mock;
     listAgentProfiles: jest.Mock;
     listAgents: jest.Mock;
+    listStatuses: jest.Mock;
+    listProjectEpics: jest.Mock;
   };
   let teamsService: {
     listTeamsByAgent: jest.Mock;
@@ -71,6 +86,8 @@ describe('DeleteAgentAction', () => {
         limit: 10_000,
         offset: 0,
       }),
+      listStatuses: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+      listProjectEpics: jest.fn().mockResolvedValue({ items: [], total: 0 }),
     };
     teamsService = {
       listTeamsByAgent: jest.fn().mockResolvedValue([]),
@@ -117,6 +134,15 @@ describe('DeleteAgentAction', () => {
     expect(deleteAgentAction.inputs).toEqual([
       expect.objectContaining({ name: 'agentName', type: 'string', required: false }),
       expect.objectContaining({ name: 'familySlug', type: 'string', required: false }),
+      expect.objectContaining({
+        name: 'skipWhileEpicsInStatuses',
+        label: 'Skip while epics are in statuses',
+        type: 'select',
+        multiple: true,
+        optionsSource: 'project_statuses',
+        allowedSources: ['custom'],
+        required: false,
+      }),
     ]);
     expect(deleteAgentAction.inputs[0].description).toMatch(/priority over Family Slug/i);
   });
@@ -425,5 +451,82 @@ describe('DeleteAgentAction', () => {
     expect(result.message).toBe(
       'Matched (1): "Target Name" [target-id]; Deleted (1): "Target Name" [target-id]; Failed (0): none',
     );
+  });
+
+  it('skips with success and deletes nothing while epics remain in selected statuses', async () => {
+    storage.listStatuses.mockResolvedValue({
+      items: [makeStatus('status-ip', 'In Progress'), makeStatus('status-review', 'Review')],
+      total: 2,
+    });
+    storage.listProjectEpics.mockImplementation(
+      (_projectId: string, options: { statusId: string }) =>
+        Promise.resolve({
+          items: [],
+          total: options.statusId === 'status-ip' ? 2 : 1,
+        }),
+    );
+
+    const result = await deleteAgentAction.execute(context, {
+      agentName: 'Target Name',
+      skipWhileEpicsInStatuses: 'In Progress, Review',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.retryable).toBe(false);
+    expect(result.message).toBe('Skipped: 3 epic(s) still in In Progress, Review');
+    expect(result.data).toEqual({
+      skipped: true,
+      blocking: [
+        { statusId: 'status-ip', label: 'In Progress', count: 2 },
+        { statusId: 'status-review', label: 'Review', count: 1 },
+      ],
+    });
+    expect(storage.getAgentByName).not.toHaveBeenCalled();
+    expect(sessionsService.listActiveSessions).not.toHaveBeenCalled();
+    expect(sessionsService.terminateSession).not.toHaveBeenCalled();
+    expect(teamsService.deleteAgentForAutomation).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without mutation when a selected label matches no status', async () => {
+    storage.listStatuses.mockResolvedValue({
+      items: [makeStatus('status-review', 'Review')],
+      total: 1,
+    });
+
+    const result = await deleteAgentAction.execute(context, {
+      agentName: 'Target Name',
+      skipWhileEpicsInStatuses: 'Review, Missing',
+    });
+
+    expect(result).toMatchObject({ success: false, retryable: false });
+    expect(result.error).toContain(
+      `Unknown status label(s) in project ${PROJECT_ID}: Missing. Nothing changed.`,
+    );
+    expect(storage.listProjectEpics).not.toHaveBeenCalled();
+    expect(storage.getAgentByName).not.toHaveBeenCalled();
+    expect(teamsService.deleteAgentForAutomation).not.toHaveBeenCalled();
+  });
+
+  it('ignores the guard when the input is absent or empty', async () => {
+    const target = makeAgent('target-id', 'Target Name');
+    storage.getAgentByName.mockResolvedValue(target);
+    const inputVariants = [
+      { agentName: 'Target Name' },
+      { agentName: 'Target Name', skipWhileEpicsInStatuses: '' },
+      { agentName: 'Target Name', skipWhileEpicsInStatuses: ' , ' },
+    ];
+
+    for (const inputs of inputVariants) {
+      const result = await deleteAgentAction.execute(context, inputs);
+
+      expect(result).toMatchObject({ success: true, retryable: false });
+      expect(teamsService.deleteAgentForAutomation).toHaveBeenCalledWith({
+        projectId: PROJECT_ID,
+        agentId: 'target-id',
+      });
+    }
+    expect(storage.listStatuses).not.toHaveBeenCalled();
+    expect(storage.listProjectEpics).not.toHaveBeenCalled();
+    expect(storage.getAgentByName).toHaveBeenCalledTimes(3);
   });
 });

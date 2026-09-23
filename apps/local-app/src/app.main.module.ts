@@ -22,7 +22,6 @@ import { StatusesModule } from './modules/statuses/statuses.module';
 import { EpicsModule } from './modules/epics/epics.module';
 import { ScheduledEpicsModule } from './modules/scheduled-epics/scheduled-epics.module';
 import { RecordsModule } from './modules/records/records.module';
-import { DocumentsModule } from './modules/documents/documents.module';
 import { FsModule } from './modules/fs/fs.module';
 import { WatchersModule } from './modules/watchers/watchers.module';
 import { SubscribersModule } from './modules/subscribers/subscribers.module';
@@ -42,7 +41,6 @@ import { OrchestratorGitModule } from './modules/orchestrator/git/git.module';
 import { OrchestratorWorktreesModule } from './modules/orchestrator/worktrees/worktrees.module';
 import { OrchestratorSyncModule } from './modules/orchestrator/sync/sync.module';
 import { OrchestratorProxyModule } from './modules/orchestrator/proxy/orchestrator-proxy.module';
-import { CodebaseOverviewAnalyzerModule } from './modules/codebase-overview-analyzer/codebase-overview-analyzer.module';
 import { CloudModule } from './modules/cloud/cloud.module';
 import { CloudTunnelModule } from './modules/cloud-tunnel/cloud-tunnel.module';
 import { E2eeModule } from './modules/e2ee/e2ee.module';
@@ -76,7 +74,6 @@ import { EpicTimeModule } from './modules/epic-time/epic-time.module';
     EpicsModule,
     ScheduledEpicsModule,
     RecordsModule,
-    DocumentsModule,
     FsModule,
     WatchersModule,
     DataSeederModule,
@@ -92,7 +89,6 @@ import { EpicTimeModule } from './modules/epic-time/epic-time.module';
     OrchestratorWorktreesModule,
     OrchestratorSyncModule,
     OrchestratorProxyModule,
-    CodebaseOverviewAnalyzerModule,
     CloudModule,
     CloudTunnelModule,
     E2eeModule,

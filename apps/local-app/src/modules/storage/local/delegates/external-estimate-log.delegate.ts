@@ -12,19 +12,22 @@ import {
   externalTaskLinks,
   integrationConnections,
 } from '../../db/schema';
-import type {
-  ExternalEstimateDailyTotal,
-  ExternalEstimateLoggedMinutesEntry,
-  ExternalEstimateLogDailyCheckpoint,
-  ExternalEstimateLogDay,
-  ExternalEstimateLogIdentity,
-  ExternalEstimateLogOperationMutation,
-  ExternalEstimateLogState,
-  IntegrationProvider,
-  PrepareExternalEstimateLogOperation,
-  SetExternalEstimateLoggedMinutes,
-  StoreExternalEstimateLogResolution,
+import {
+  LEGACY_UNASSIGNED_PROJECT_ID,
+  type AssignUnassignedExternalEstimateLogCheckpoint,
+  type ExternalEstimateDailyTotal,
+  type ExternalEstimateLoggedMinutesEntry,
+  type ExternalEstimateLogDailyCheckpoint,
+  type ExternalEstimateLogDay,
+  type ExternalEstimateLogIdentity,
+  type ExternalEstimateLogOperationMutation,
+  type ExternalEstimateLogState,
+  type IntegrationProvider,
+  type PrepareExternalEstimateLogOperation,
+  type SetExternalEstimateLoggedMinutes,
+  type StoreExternalEstimateLogResolution,
 } from '../../models/domain.models';
+import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const MAX_TIME_ENTRY_DURATION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -38,22 +41,25 @@ const MAX_ZONE_LENGTH = 128;
 
 // One set-based read. The materialized input CTE stays the non-reorderable
 // outer side of the CROSS JOIN, so each requested identity resolves through
-// exactly one full remote-identity index probe (provider, remote_scope_key,
-// remote_task_id) — never a provider-wide scan compared against every input.
+// exactly one project-qualified index probe — never a provider-wide scan
+// compared against every input.
 const LIST_LOGGED_MINUTES_SQL = `
-  WITH input(remote_scope_key, remote_task_id) AS MATERIALIZED (
+  WITH input(project_id, remote_scope_key, remote_task_id) AS MATERIALIZED (
     SELECT
+      json_extract(value, '$.projectId'),
       json_extract(value, '$.remoteScopeKey'),
       json_extract(value, '$.remoteTaskId')
     FROM json_each(?)
   )
   SELECT
+    states.project_id AS "projectId",
     states.remote_scope_key AS "remoteScopeKey",
     states.remote_task_id AS "remoteTaskId",
     states.logged_minutes AS "loggedMinutes"
   FROM input
   CROSS JOIN external_estimate_log_states AS states
     ON states.provider = ?
+   AND states.project_id = input.project_id
    AND states.remote_scope_key = input.remote_scope_key
    AND states.remote_task_id = input.remote_task_id
   ORDER BY states.remote_scope_key, states.remote_task_id`;
@@ -66,10 +72,10 @@ type PendingEstimateStateRow = EstimateStateRow & { pendingOperationId: string }
 // the queued transaction serializes it with the scalar checkpoint write.
 const UPSERT_DAY_SQL = `
   INSERT INTO external_estimate_log_days
-    (provider, remote_scope_key, remote_task_id, activity_date,
+    (project_id, provider, remote_scope_key, remote_task_id, activity_date,
      logged_minutes, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(provider, remote_scope_key, remote_task_id, activity_date) DO UPDATE SET
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(project_id, provider, remote_scope_key, remote_task_id, activity_date) DO UPDATE SET
     logged_minutes = logged_minutes + excluded.logged_minutes,
     updated_at = excluded.updated_at`;
 
@@ -79,6 +85,7 @@ const UPSERT_DAY_SQL = `
 // ledger's composite primary-key prefix once per state row.
 const LIST_BY_REMOTE_TASK_SQL = `
   SELECT
+    states.project_id AS "projectId",
     states.provider AS "provider",
     states.remote_scope_key AS "remoteScopeKey",
     states.remote_task_id AS "remoteTaskId",
@@ -99,7 +106,8 @@ const LIST_BY_REMOTE_TASK_SQL = `
     COALESCE((
       SELECT SUM(days.logged_minutes)
       FROM external_estimate_log_days AS days
-      WHERE days.provider = states.provider
+      WHERE days.project_id = states.project_id
+        AND days.provider = states.provider
         AND days.remote_scope_key = states.remote_scope_key
         AND days.remote_task_id = states.remote_task_id
     ), 0) AS "daySum"
@@ -130,21 +138,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     if (!row) {
       return null;
     }
-    const days = this.listDayRows(normalized);
-    if (days.length > MAX_DAILY_LEDGER_ROWS) {
-      throw new StorageError(
-        `External estimate log dated ledger exceeds ${MAX_DAILY_LEDGER_ROWS} rows.`,
-      );
-    }
-    const daySum = days.reduce((total, day) => total + day.loggedMinutes, 0);
-    if (daySum > row.loggedMinutes) {
-      throw this.ledgerExceedsScalar();
-    }
-    return {
-      state: this.mapState(row),
-      days,
-      unallocatedLoggedMinutes: row.loggedMinutes - daySum,
-    };
+    return this.buildDailyCheckpoint(row, normalized);
   }
 
   async listByRemoteTask(
@@ -166,17 +160,29 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
 
   listLoggedMinutes(
     provider: ExternalEstimateLogIdentity['provider'],
-    identities: ReadonlyArray<{ remoteScopeKey: string; remoteTaskId: string }>,
+    identities: ReadonlyArray<{
+      projectId: string;
+      remoteScopeKey: string;
+      remoteTaskId: string;
+    }>,
   ): ExternalEstimateLoggedMinutesEntry[] {
     if (identities.length === 0) {
       return [];
     }
     const normalizedProvider = this.requireProvider(provider);
-    const unique = new Map<string, { remoteScopeKey: string; remoteTaskId: string }>();
+    const unique = new Map<
+      string,
+      { projectId: string; remoteScopeKey: string; remoteTaskId: string }
+    >();
     for (const identity of identities) {
+      const projectId = this.requireIdentifier(identity.projectId, 'Project');
       const remoteScopeKey = this.requireIdentifier(identity.remoteScopeKey, 'Remote scope');
       const remoteTaskId = this.requireIdentifier(identity.remoteTaskId, 'Remote task');
-      unique.set(`${remoteScopeKey}\u0000${remoteTaskId}`, { remoteScopeKey, remoteTaskId });
+      unique.set(`${projectId}\u0000${remoteScopeKey}\u0000${remoteTaskId}`, {
+        projectId,
+        remoteScopeKey,
+        remoteTaskId,
+      });
     }
     if (unique.size > MAX_BATCH_IDENTITIES) {
       throw new ValidationError(
@@ -187,6 +193,168 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     return this.rawClient
       .prepare(LIST_LOGGED_MINUTES_SQL)
       .all(seed, normalizedProvider) as ExternalEstimateLoggedMinutesEntry[];
+  }
+
+  /**
+   * Exact-identity read of unassigned legacy history. It deliberately
+   * targets only the reserved legacy owner; callers authorize the requesting
+   * project, current connection, and local link before acting on it.
+   */
+  async findUnassigned(
+    provider: ExternalEstimateLogIdentity['provider'],
+    remoteScopeKey: string,
+    remoteTaskId: string,
+  ): Promise<ExternalEstimateLogState | null> {
+    const identity = this.normalizeUnassignedIdentity(provider, remoteScopeKey, remoteTaskId);
+    const row = this.getRow(identity);
+    return row ? this.mapState(row) : null;
+  }
+
+  /**
+   * One-time ownership claim: moves the complete legacy scalar state and
+   * every dated row to the claiming project inside one transaction. The
+   * revision predicate on the legacy row plus the project-qualified unique
+   * indexes guarantee exactly one winner among concurrent claims.
+   */
+  async assignUnassigned(
+    data: AssignUnassignedExternalEstimateLogCheckpoint,
+  ): Promise<ExternalEstimateLogDailyCheckpoint> {
+    const target = this.normalizeIdentity({
+      projectId: data.projectId,
+      provider: data.provider,
+      remoteScopeKey: data.remoteScopeKey,
+      remoteTaskId: data.remoteTaskId,
+    });
+    const legacy = this.normalizeUnassignedIdentity(
+      data.provider,
+      data.remoteScopeKey,
+      data.remoteTaskId,
+    );
+    const connectionId = this.requireIdentifier(data.connectionId, 'Connection');
+    this.requirePositiveInteger(data.connectionGeneration, 'Connection generation');
+    this.requireExpectedRevision(data.expectedRevision);
+
+    return this.txRunner.runImmediateQueuedOrJoin(() => {
+      // Assignment is admitted only through the project's currently
+      // connected link: a disconnected snapshot or a link bound to another
+      // connection must never claim legacy accounting.
+      const link = this.db
+        .select({ connectionId: externalTaskLinks.connectionId })
+        .from(externalTaskLinks)
+        .where(
+          and(
+            eq(externalTaskLinks.projectId, target.projectId),
+            eq(externalTaskLinks.provider, target.provider),
+            eq(externalTaskLinks.remoteScopeKey, target.remoteScopeKey),
+            eq(externalTaskLinks.remoteTaskId, target.remoteTaskId),
+          ),
+        )
+        .limit(1)
+        .get();
+      if (!link) {
+        throw new NotFoundError('Current external task link');
+      }
+      if (link.connectionId !== connectionId) {
+        throw new ConflictError(
+          'The external task link does not belong to the current connection.',
+          {
+            reason: 'link_connection_mismatch',
+          },
+        );
+      }
+      this.assertConnectionEpoch(target.provider, connectionId, data.connectionGeneration, {
+        projectId: target.projectId,
+      });
+      const legacyRow = this.getRow(legacy);
+      if (!legacyRow) {
+        // A concurrent winner may have moved the row between the caller's
+        // discovery read and this transaction; that loss is a conflict,
+        // not a missing-history corruption.
+        const claimedElsewhere = this.db
+          .select({ id: externalEstimateLogStates.provider })
+          .from(externalEstimateLogStates)
+          .where(
+            and(
+              eq(externalEstimateLogStates.provider, target.provider),
+              eq(externalEstimateLogStates.remoteScopeKey, target.remoteScopeKey),
+              eq(externalEstimateLogStates.remoteTaskId, target.remoteTaskId),
+            ),
+          )
+          .limit(1)
+          .get();
+        if (claimedElsewhere) {
+          throw new ConflictError(
+            'The legacy estimate history was already assigned to a project.',
+            {
+              provider: target.provider,
+              remoteScopeKey: target.remoteScopeKey,
+              remoteTaskId: target.remoteTaskId,
+            },
+          );
+        }
+        throw new NotFoundError('Unassigned external estimate log state');
+      }
+      this.assertExpectedRevision(legacyRow, data.expectedRevision, legacy);
+      if (this.getRow(target)) {
+        throw new ConflictError(
+          'The project already has an estimate checkpoint for this remote task.',
+          {
+            projectId: target.projectId,
+            provider: target.provider,
+            remoteScopeKey: target.remoteScopeKey,
+            remoteTaskId: target.remoteTaskId,
+          },
+        );
+      }
+      const now = new Date().toISOString();
+      try {
+        // The revision predicate is the race fence: a concurrent winner
+        // leaves zero matching rows and this claim fails closed below.
+        const moved = this.db
+          .update(externalEstimateLogStates)
+          .set({ projectId: target.projectId, updatedAt: now })
+          .where(
+            and(
+              this.identityPredicate(legacy),
+              eq(externalEstimateLogStates.revision, data.expectedRevision),
+            ),
+          )
+          .run();
+        if (moved.changes !== 1) {
+          throw new ConflictError(
+            'The legacy estimate history was already assigned to a project.',
+            {
+              provider: target.provider,
+              remoteScopeKey: target.remoteScopeKey,
+              remoteTaskId: target.remoteTaskId,
+            },
+          );
+        }
+        this.db
+          .update(externalEstimateLogDays)
+          .set({ projectId: target.projectId, updatedAt: now })
+          .where(this.dayPredicate(legacy))
+          .run();
+      } catch (error) {
+        if (isSqliteUniqueConstraint(error)) {
+          throw new ConflictError(
+            'The project already has estimate history for this remote task.',
+            {
+              projectId: target.projectId,
+              provider: target.provider,
+              remoteScopeKey: target.remoteScopeKey,
+              remoteTaskId: target.remoteTaskId,
+            },
+          );
+        }
+        throw error;
+      }
+      const moved = this.getRow(target);
+      if (!moved) {
+        throw new StorageError('Legacy estimate ownership assignment lost its state row.');
+      }
+      return this.buildDailyCheckpoint(moved, target);
+    });
   }
 
   async setLoggedMinutes(
@@ -483,6 +651,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
   private listDayRows(identity: ExternalEstimateLogIdentity): ExternalEstimateLogDay[] {
     return this.db
       .select({
+        projectId: externalEstimateLogDays.projectId,
         provider: externalEstimateLogDays.provider,
         remoteScopeKey: externalEstimateLogDays.remoteScopeKey,
         remoteTaskId: externalEstimateLogDays.remoteTaskId,
@@ -495,14 +664,41 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
       .all();
   }
 
+  /** Sync core shared by reads and the synchronous assignment transaction. */
+  private buildDailyCheckpoint(
+    row: EstimateStateRow,
+    identity: ExternalEstimateLogIdentity,
+  ): ExternalEstimateLogDailyCheckpoint {
+    const days = this.listDayRows(identity);
+    if (days.length > MAX_DAILY_LEDGER_ROWS) {
+      throw new StorageError(
+        `External estimate log dated ledger exceeds ${MAX_DAILY_LEDGER_ROWS} rows.`,
+      );
+    }
+    const daySum = days.reduce((total, day) => total + day.loggedMinutes, 0);
+    if (daySum > row.loggedMinutes) {
+      throw this.ledgerExceedsScalar();
+    }
+    return {
+      state: this.mapState(row),
+      days,
+      unallocatedLoggedMinutes: row.loggedMinutes - daySum,
+    };
+  }
+
   private sumDayMinutes(identity: ExternalEstimateLogIdentity): number {
     const row = this.rawClient
       .prepare(
         `SELECT COALESCE(SUM(logged_minutes), 0) AS total
          FROM external_estimate_log_days
-         WHERE provider = ? AND remote_scope_key = ? AND remote_task_id = ?`,
+         WHERE project_id = ? AND provider = ? AND remote_scope_key = ? AND remote_task_id = ?`,
       )
-      .get(identity.provider, identity.remoteScopeKey, identity.remoteTaskId) as {
+      .get(
+        identity.projectId,
+        identity.provider,
+        identity.remoteScopeKey,
+        identity.remoteTaskId,
+      ) as {
       total: number;
     };
     return row.total;
@@ -534,6 +730,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     this.rawClient
       .prepare(UPSERT_DAY_SQL)
       .run(
+        identity.projectId,
         identity.provider,
         identity.remoteScopeKey,
         identity.remoteTaskId,
@@ -584,6 +781,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
 
   private dayPredicate(identity: ExternalEstimateLogIdentity) {
     return and(
+      eq(externalEstimateLogDays.projectId, identity.projectId),
       eq(externalEstimateLogDays.provider, identity.provider),
       eq(externalEstimateLogDays.remoteScopeKey, identity.remoteScopeKey),
       eq(externalEstimateLogDays.remoteTaskId, identity.remoteTaskId),
@@ -697,6 +895,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
       .from(externalTaskLinks)
       .where(
         and(
+          eq(externalTaskLinks.projectId, identity.projectId),
           eq(externalTaskLinks.provider, identity.provider),
           eq(externalTaskLinks.remoteScopeKey, identity.remoteScopeKey),
           eq(externalTaskLinks.remoteTaskId, identity.remoteTaskId),
@@ -713,17 +912,18 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     provider: ExternalEstimateLogIdentity['provider'],
     connectionId: string,
     generation: number,
+    options?: { projectId?: string },
   ): void {
+    const epochPredicate = and(
+      eq(integrationConnections.id, connectionId),
+      eq(integrationConnections.provider, provider),
+      eq(integrationConnections.generation, generation),
+      ...(options?.projectId ? [eq(integrationConnections.projectId, options.projectId)] : []),
+    );
     const connection = this.db
       .select({ id: integrationConnections.id })
       .from(integrationConnections)
-      .where(
-        and(
-          eq(integrationConnections.id, connectionId),
-          eq(integrationConnections.provider, provider),
-          eq(integrationConnections.generation, generation),
-        ),
-      )
+      .where(epochPredicate)
       .limit(1)
       .get();
     if (!connection) {
@@ -733,6 +933,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
 
   private identityPredicate(identity: ExternalEstimateLogIdentity) {
     return and(
+      eq(externalEstimateLogStates.projectId, identity.projectId),
       eq(externalEstimateLogStates.provider, identity.provider),
       eq(externalEstimateLogStates.remoteScopeKey, identity.remoteScopeKey),
       eq(externalEstimateLogStates.remoteTaskId, identity.remoteTaskId),
@@ -757,16 +958,39 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
   ): OptimisticLockError {
     return new OptimisticLockError(
       'External estimate log state',
-      `${identity.provider}:${identity.remoteScopeKey}:${identity.remoteTaskId}`,
+      `${identity.projectId}:${identity.provider}:${identity.remoteScopeKey}:${identity.remoteTaskId}`,
       { expectedRevision, ...(actualRevision === undefined ? {} : { actualRevision }) },
     );
   }
 
   private normalizeIdentity(identity: ExternalEstimateLogIdentity): ExternalEstimateLogIdentity {
-    const remoteScopeKey = this.requireIdentifier(identity.remoteScopeKey, 'Remote scope');
-    const remoteTaskId = this.requireIdentifier(identity.remoteTaskId, 'Remote task');
-    const provider = this.requireProvider(identity.provider);
-    return { provider, remoteScopeKey, remoteTaskId };
+    const projectId = this.requireIdentifier(identity.projectId, 'Project');
+    if (projectId === LEGACY_UNASSIGNED_PROJECT_ID) {
+      throw new ValidationError(
+        'The reserved legacy project identity cannot be used for ordinary checkpoint access.',
+      );
+    }
+    return {
+      projectId,
+      provider: this.requireProvider(identity.provider),
+      remoteScopeKey: this.requireIdentifier(identity.remoteScopeKey, 'Remote scope'),
+      remoteTaskId: this.requireIdentifier(identity.remoteTaskId, 'Remote task'),
+    };
+  }
+
+  /** Reserved-owner variant used only by the dedicated unassigned read and assignment. */
+  private normalizeUnassignedIdentity(
+    provider: ExternalEstimateLogIdentity['provider'],
+    remoteScopeKey: string,
+    remoteTaskId: string,
+  ): ExternalEstimateLogIdentity {
+    const normalizedProvider = this.requireProvider(provider);
+    return {
+      projectId: LEGACY_UNASSIGNED_PROJECT_ID,
+      provider: normalizedProvider,
+      remoteScopeKey: this.requireIdentifier(remoteScopeKey, 'Remote scope'),
+      remoteTaskId: this.requireIdentifier(remoteTaskId, 'Remote task'),
+    };
   }
 
   private requireProvider(provider: ExternalEstimateLogIdentity['provider']): IntegrationProvider {
@@ -830,6 +1054,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
 
   private mapState(row: EstimateStateRow): ExternalEstimateLogState {
     const common = {
+      projectId: row.projectId,
       provider: row.provider,
       remoteScopeKey: row.remoteScopeKey,
       remoteTaskId: row.remoteTaskId,

@@ -233,6 +233,7 @@ describe('ExternalMyWorkService', () => {
     await expect(
       service.getMyWork(projectId, 'clickup', { includeCompleted: false }),
     ).rejects.toMatchObject<BusyError>({
+      message: 'Integration connection changed during My Work refresh.',
       code: 'busy',
       details: { provider: 'clickup', reason: 'connection_changed' },
     });
@@ -246,6 +247,7 @@ describe('ExternalMyWorkService', () => {
     await expect(
       service.getMyWork(projectId, 'clickup', { includeCompleted: false }),
     ).rejects.toMatchObject<ValidationError>({
+      message: 'Connect the integration before loading My Work.',
       code: 'validation_error',
       details: { provider: 'clickup', reason: 'not_connected' },
     });

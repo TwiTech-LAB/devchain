@@ -149,20 +149,29 @@ function createMockAdapter(): SessionReaderAdapter {
 function createMocks() {
   const mockAdapter = createMockAdapter();
   const getOrParse = jest.fn().mockResolvedValue(makeSession());
+  const getOrParseWithMeta = jest.fn(async (...args: unknown[]) => ({
+    session: await getOrParse(...args),
+    sourceVersion: 1000,
+    cacheHit: false,
+    sourceChangeKind: 'same-file-append',
+    lastOffset: 1000,
+    lastSize: 1000,
+    lastMtime: 1706000000000,
+    boundaryFold: false,
+  }));
+  // Default: a cache entry is present, so file+delta sessions take the body path (the lane is
+  // exercised by dedicated tests that make this report `present: false`).
+  const refreshIfPresent = jest.fn(async (...args: unknown[]) => ({
+    present: true,
+    preParse: { sourceVersion: 1000, messageCount: 0, chunkCount: 0 },
+    result: await getOrParseWithMeta(...args),
+  }));
 
   const mockCacheService = {
     getOrParse,
-    getOrParseWithMeta: jest.fn(async (...args: unknown[]) => ({
-      session: await getOrParse(...args),
-      sourceVersion: 1000,
-      cacheHit: false,
-      sourceChangeKind: 'same-file-append',
-      lastOffset: 1000,
-      lastSize: 1000,
-      lastMtime: 1706000000000,
-      boundaryFold: false,
-    })),
-    getEntry: jest.fn(),
+    getOrParseWithMeta,
+    refreshIfPresent,
+    getEntry: jest.fn().mockReturnValue({}),
     invalidate: jest.fn(),
     clear: jest.fn(),
     onModuleDestroy: jest.fn(),
@@ -820,6 +829,9 @@ describe('TranscriptWatcherService', () => {
       async (sourceVersion) => {
         const watcher = createMockFsWatcher();
         await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+        // Ignore the lane-seed presence check during startWatching; the assertion below is that
+        // the CHANGE handler resolves the fold from the parse result, never from getEntry.
+        mockCacheService.getEntry.mockClear();
         mockCacheService.getEntry.mockReturnValue({ boundaryFold: true } as never);
         mockCacheService.getOrParseWithMeta.mockResolvedValue(
           makeParseResult({
@@ -2109,6 +2121,140 @@ describe('TranscriptWatcherService', () => {
       await jest.advanceTimersByTimeAsync(200);
 
       expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(6);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Lane cost cooldown
+  //
+  // A viewed session whose parsed weight exceeds the byte budget self-evicts, so
+  // every refresh serves it through the cheap metrics-only lane. That lane pass
+  // never trips the >= COSTLY_REFRESH_MS cost cooldown on its own, so the refresh
+  // throttle (present before the lane existed) would stop engaging and the reader
+  // would pay a full parse on every change. These tests pin the re-arm rule: a
+  // publishing lane pass that answered a reader's NEW costly full parse re-arms the
+  // 2 s file-refresh cooldown; nothing else does.
+  //
+  // Service constants: DEBOUNCE_MS = 100, COSTLY_REFRESH_MS = 50,
+  // FILE_REFRESH_COOLDOWN_MS = 2000.
+  // -------------------------------------------------------------------------
+  describe('module-unit: lane pass re-arms the costly-refresh cooldown', () => {
+    let adapter: SessionReaderAdapter & { getSummary: jest.Mock };
+
+    function laneSummary(endOffset = 1000) {
+      return {
+        metrics: makeMetrics(),
+        exactFields: [],
+        laneSeed: {
+          endOffset,
+          visibleContextTokens: 100,
+          messageCount: 3,
+          firstMessageTimestamp: 1706000000000,
+          lastMessageTimestamp: 1706000000000,
+        },
+      };
+    }
+
+    beforeEach(() => {
+      adapter = mockAdapterFactory.getAdapter(PROVIDER_NAME) as typeof adapter;
+      adapter.getSummary = jest.fn().mockResolvedValue(laneSummary());
+      // No cache entry: the change handler stays on the metrics-only lane path.
+      mockCacheService.getEntry.mockReturnValue(undefined);
+    });
+
+    it('holds the next refresh for the cooldown after a publishing pass answers a NEW costly full parse', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.refreshIfPresent.mockClear().mockResolvedValue({
+        present: false,
+        lastFullParse: { seq: 7, durationMs: 60 },
+      });
+      mockEvents.publish.mockClear();
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(100);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(1);
+      expect(mockEvents.publish).toHaveBeenCalledTimes(1);
+
+      // The reader paid a new full parse >= 50 ms; the cheap lane pass inherits that cost.
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(1999);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not re-arm the cooldown for a pass with no NEW full parse since the previous one', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      // Same {seq} on every pass: only the first pass observes a new full parse.
+      mockCacheService.refreshIfPresent.mockClear().mockResolvedValue({
+        present: false,
+        lastFullParse: { seq: 7, durationMs: 60 },
+      });
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(100); // pass 1: new seq -> costly -> 2 s cooldown
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(1);
+
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(2000); // pass 2 after the cooldown: same seq -> not costly
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(2);
+
+      // Pass 2 armed no cooldown, so the next change is only debounced, not throttled.
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(99);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not re-arm the cooldown when the reader full parse was below the costly threshold', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockCacheService.refreshIfPresent.mockClear().mockResolvedValue({
+        present: false,
+        lastFullParse: { seq: 7, durationMs: 20 }, // < COSTLY_REFRESH_MS
+      });
+      mockEvents.publish.mockClear();
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(100);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(1);
+      expect(mockEvents.publish).toHaveBeenCalledTimes(1);
+
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(99);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not re-arm the cooldown when a costly reader parse meets a pass that publishes nothing', async () => {
+      const watcher = createMockFsWatcher();
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      // A costly reader parse, but the pass cannot advance or reseed -> it publishes nothing.
+      adapter.getSummary.mockResolvedValue(null);
+      mockCacheService.refreshIfPresent.mockClear().mockResolvedValue({
+        present: false,
+        lastFullParse: { seq: 7, durationMs: 60 },
+      });
+      mockEvents.publish.mockClear();
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(100);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(1);
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+
+      watcher.triggerChange('change');
+      await jest.advanceTimersByTimeAsync(99);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCacheService.refreshIfPresent).toHaveBeenCalledTimes(2);
     });
   });
 });

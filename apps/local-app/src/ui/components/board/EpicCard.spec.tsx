@@ -13,8 +13,10 @@ import type { BoardRelationQuickLinkBindings } from '@/ui/hooks/useBoardRelation
 // are stubbed because this spec owns card-level intent wiring and drag fences;
 // the preview's own suites own navigation and focus behavior.
 const useEpicRelationsMock = jest.fn();
+const useDeleteEpicRelationMock = jest.fn();
 jest.mock('@/ui/hooks/useEpicRelations', () => ({
   useEpicRelations: (...args: unknown[]) => useEpicRelationsMock(...args),
+  useDeleteEpicRelation: (...args: unknown[]) => useDeleteEpicRelationMock(...args),
 }));
 
 const mockProjectSelection = {
@@ -50,6 +52,13 @@ jest.mock('@/ui/components/shared/EpicTooltipWrapper', () => ({
 beforeEach(() => {
   useEpicRelationsMock.mockReset();
   useEpicRelationsMock.mockReturnValue({ data: undefined, isLoading: false, isError: false });
+  useDeleteEpicRelationMock.mockReset();
+  useDeleteEpicRelationMock.mockReturnValue({
+    mutate: jest.fn(),
+    reset: jest.fn(),
+    isPending: false,
+    error: null,
+  });
   mockProjectSelection.activateProject.mockClear();
   mockProjectSelection.selectedWorkspace = { id: 'workspace-1', name: 'Workspace One' };
 });

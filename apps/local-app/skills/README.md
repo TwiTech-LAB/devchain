@@ -47,6 +47,6 @@ Use a separate local source named `devchain-dev` while authoring. The built-in n
 4. Run a skill sync. The unpublished test slug is
    `devchain-dev/<skill-name>`; use that slug until the change is published on `main`.
 
-Local-source freshness is keyed to each skill's `SKILL.md` modification time. If only a
-supporting resource changed, edit or touch `SKILL.md` before syncing so the local test copy
-is refreshed.
+Local-source freshness hashes every non-hidden file under each skill directory (path,
+modification time, and size), so editing any supporting resource is enough to mark the skill
+changed; the next sync refreshes the local test copy.

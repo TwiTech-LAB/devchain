@@ -2159,7 +2159,7 @@ describe('SessionReaderService', () => {
       expect(summary.metrics.contextWindowTokens).toBe(testCase.expected);
     });
 
-    it('invalidates backend metrics caches before publishing the content-free event', async () => {
+    it('invalidates the DTO cache but keeps watcher metrics before the content-free event', async () => {
       const watcher = {
         getLastKnownSummaryMetrics: jest.fn().mockReturnValue(null),
         invalidateLastKnownSummaryMetrics: jest.fn(),
@@ -2167,7 +2167,6 @@ describe('SessionReaderService', () => {
       const events = {
         publish: jest.fn().mockImplementation(async () => {
           expect(mockSessionCacheService.invalidateDto).toHaveBeenCalledWith('sess-1');
-          expect(watcher.invalidateLastKnownSummaryMetrics).toHaveBeenCalledWith('sess-1');
           return 'event-1';
         }),
       };
@@ -2179,6 +2178,9 @@ describe('SessionReaderService', () => {
       expect(events.publish).toHaveBeenCalledWith('session.runtime-context.updated', {
         sessionId: 'sess-1',
       });
+      // A lane session has no cache entry to fall back to, so the watcher's last summary metrics
+      // must survive a runtime-context change (the context window is resolved at read time).
+      expect(watcher.invalidateLastKnownSummaryMetrics).not.toHaveBeenCalled();
     });
   });
 

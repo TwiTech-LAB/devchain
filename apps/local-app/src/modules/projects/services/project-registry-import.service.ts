@@ -3,8 +3,7 @@ import { createLogger } from '../../../common/logging/logger';
 import type { PromptTransferCounts } from '../../../common/prompt-transfer';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { SettingsService } from '../../settings/services/settings.service';
-import { RegistryClientService } from '../../registry/services/registry-client.service';
-import { TemplateCacheService } from '../../registry/services/template-cache.service';
+import { RegistryOrchestrationService } from '../../registry/services/registry-orchestration.service';
 import { ProjectsService } from './projects.service';
 
 const logger = createLogger('ProjectRegistryImportService');
@@ -43,8 +42,7 @@ export interface CreateFromRegistryResult {
 @Injectable()
 export class ProjectRegistryImportService {
   constructor(
-    private readonly registryClient: RegistryClientService,
-    private readonly cacheService: TemplateCacheService,
+    private readonly registryOrchestration: RegistryOrchestrationService,
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly projectsService: ProjectsService,
     private readonly settingsService: SettingsService,
@@ -57,9 +55,7 @@ export class ProjectRegistryImportService {
 
     logger.info({ slug, version, projectName, rootPath }, 'Creating project from registry');
 
-    await this.downloadToCache(slug, version);
-
-    const cached = await this.cacheService.getTemplate(slug, version);
+    const cached = await this.registryOrchestration.getOrDownloadTemplate(slug, version);
     if (!cached) {
       throw new BadRequestException({
         message: 'Template not found in cache after download',
@@ -199,26 +195,5 @@ export class ProjectRegistryImportService {
       imported: importResult,
       promptTransfer,
     };
-  }
-
-  private async downloadToCache(slug: string, version: string): Promise<void> {
-    if (this.cacheService.isCached(slug, version)) {
-      logger.debug({ slug, version }, 'Template already cached');
-      return;
-    }
-
-    logger.info({ slug, version }, 'Downloading template from registry');
-
-    const result = await this.registryClient.downloadTemplate(slug, version);
-    const contentStr = JSON.stringify(result.content);
-    const size = Buffer.byteLength(contentStr, 'utf-8');
-
-    await this.cacheService.saveTemplate(slug, version, result.content, {
-      cachedAt: new Date().toISOString(),
-      checksum: result.checksum,
-      size,
-    });
-
-    logger.info({ slug, version, checksum: result.checksum }, 'Template cached');
   }
 }

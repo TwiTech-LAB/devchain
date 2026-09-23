@@ -17,11 +17,17 @@ describe('RegistryController', () => {
     mockRegistryClient = {
       isAvailable: jest.fn(),
       getRegistryUrl: jest.fn(),
+      downloadTemplate: jest.fn(),
     };
 
-    mockCacheService = {};
+    mockCacheService = {
+      isCached: jest.fn(),
+      saveTemplate: jest.fn(),
+    };
 
-    mockOrchestrationService = {};
+    mockOrchestrationService = {
+      downloadToCache: jest.fn(),
+    };
 
     mockSettingsService = {
       getAllTrackedProjects: jest.fn(),
@@ -40,6 +46,55 @@ describe('RegistryController', () => {
       mockSettingsService as SettingsService,
       mockStorageService as StorageService,
     );
+  });
+
+  describe('downloadTemplate', () => {
+    it('should return the existing cache-hit response from orchestration', async () => {
+      mockOrchestrationService.downloadToCache!.mockResolvedValue({ cached: true });
+
+      await expect(controller.downloadTemplate('test-template', '1.0.0')).resolves.toEqual({
+        success: true,
+        cached: true,
+        message: 'Already cached',
+      });
+
+      expect(mockOrchestrationService.downloadToCache).toHaveBeenCalledWith(
+        'test-template',
+        '1.0.0',
+      );
+      expect(mockRegistryClient.downloadTemplate).not.toHaveBeenCalled();
+      expect(mockCacheService.isCached).not.toHaveBeenCalled();
+      expect(mockCacheService.saveTemplate).not.toHaveBeenCalled();
+    });
+
+    it('should map the orchestration miss result to the existing response', async () => {
+      mockOrchestrationService.downloadToCache!.mockResolvedValue({
+        cached: false,
+        checksum: 'abc123',
+        size: 42,
+      });
+
+      await expect(controller.downloadTemplate('test-template', '1.0.0')).resolves.toEqual({
+        success: true,
+        cached: false,
+        checksum: 'abc123',
+        size: 42,
+      });
+
+      expect(mockOrchestrationService.downloadToCache).toHaveBeenCalledWith(
+        'test-template',
+        '1.0.0',
+      );
+      expect(mockRegistryClient.downloadTemplate).not.toHaveBeenCalled();
+      expect(mockCacheService.saveTemplate).not.toHaveBeenCalled();
+    });
+
+    it('should propagate orchestration failures unchanged', async () => {
+      const error = new Error('Registry unavailable');
+      mockOrchestrationService.downloadToCache!.mockRejectedValue(error);
+
+      await expect(controller.downloadTemplate('test-template', '1.0.0')).rejects.toBe(error);
+    });
   });
 
   describe('getProjectsUsingTemplate', () => {

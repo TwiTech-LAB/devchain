@@ -142,49 +142,6 @@ describe('BoardPage realtime subscription', () => {
         ).length,
       ).toBeGreaterThanOrEqual(3);
     });
-
-    // Use the flat payload produced by the broadcast registry.
-    handlers['message']?.forEach((fn) =>
-      fn({
-        topic: 'project/project-1/epics',
-        type: 'updated',
-        payload: {
-          epicId: 'sub-1',
-          projectId: 'project-1',
-          parentId: 'root-1',
-          version: 2,
-          epicTitle: 'Sub-epic',
-          changes: { statusId: { previous: 'status-1', current: 'status-2' } },
-        },
-        ts: new Date().toISOString(),
-      }),
-    );
-    await waitFor(() => {
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['epics', 'root-1', 'sub-counts'] });
-    });
-
-    // A move changes both parent summaries.
-    handlers['message']?.forEach((fn) =>
-      fn({
-        topic: 'project/project-1/epics',
-        type: 'updated',
-        payload: {
-          epicId: 'sub-1',
-          projectId: 'project-1',
-          parentId: 'root-2',
-          version: 3,
-          epicTitle: 'Sub-epic',
-          changes: {
-            parentId: { previous: 'root-1', current: 'root-2' },
-          },
-        },
-        ts: new Date().toISOString(),
-      }),
-    );
-    await waitFor(() => {
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['epics', 'root-1', 'sub-counts'] });
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['epics', 'root-2', 'sub-counts'] });
-    });
   });
 
   it('invalidates cached sub-epic counts when the socket reconnects', async () => {

@@ -175,11 +175,26 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
       }
       this.assertExactOwnershipProof(managed, data.sourceSnapshot);
 
+      const ownedEpic = this.db
+        .select({ projectId: epics.projectId })
+        .from(epics)
+        .where(eq(epics.id, managed.epicIdSnapshot))
+        .limit(1)
+        .get();
+      if (!ownedEpic) {
+        throw new NotFoundError('Epic', managed.epicIdSnapshot);
+      }
+
+      // The ordinary link is scoped to the managed subtask's local project:
+      // another project linking the same remote child never blocks this
+      // confirmation, and only a same-project link to a different Epic is a
+      // conflict.
       let externalTaskLink = this.db
         .select()
         .from(externalTaskLinks)
         .where(
           and(
+            eq(externalTaskLinks.projectId, ownedEpic.projectId),
             eq(externalTaskLinks.provider, managed.provider),
             eq(externalTaskLinks.remoteScopeKey, managed.remoteScopeKey),
             eq(externalTaskLinks.remoteTaskId, remoteTaskId),
@@ -199,6 +214,7 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
         externalTaskLink = {
           id: randomUUID(),
           epicId: managed.epicIdSnapshot,
+          projectId: ownedEpic.projectId,
           connectionId: managed.connectionIdSnapshot,
           provider: managed.provider,
           remoteScopeKey: managed.remoteScopeKey,

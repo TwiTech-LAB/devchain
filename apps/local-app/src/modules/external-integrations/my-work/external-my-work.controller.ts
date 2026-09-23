@@ -687,9 +687,9 @@ export class ExternalMyWorkController {
 
   @Post('edit-sessions/:sessionId/reload')
   @ApiOperation({
-    summary: 'Reload the editable session baseline from a fresh provider read',
+    summary: 'Reload an editable or diverged session baseline from a fresh provider read',
     description:
-      'Discards the local baseline in favor of the current remote content and advances the revision. Available only from the editable state; a session with an unknown pending write must Verify or retry its exact payload instead.',
+      'Reads the current remote content and replaces the baseline for an editable or diverged session. A successful reload clears a pending write, sets the session to editable, and advances the revision once. The service checks the project, provider, connection ID, and connection generation before and after the provider read. A changed connection invalidates the old session and rejects the reload with connection_superseded; the provider request is not canceled. Sessions with outcome_unknown or saved_unverified must Verify or retry the exact payload instead. The related delete-verification path returns diverged when the same connection check detects replacement. Neither provider offers compare-and-swap, so a remote edit can still land between reads.',
   })
   @ApiParam({ name: 'sessionId', type: String, format: 'uuid' })
   @ApiResponse({ status: 200, schema: EDIT_SESSION_RELOAD_RESPONSE_SCHEMA })

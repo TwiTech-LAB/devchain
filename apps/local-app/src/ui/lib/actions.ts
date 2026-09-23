@@ -18,6 +18,16 @@ export interface ActionInput {
   defaultValue?: string | number | boolean;
   options?: { value: string; label: string }[];
   /**
+   * When true, this input holds several values stored as one comma-separated
+   * string in the subscriber's customValue.
+   */
+  multiple?: boolean;
+  /**
+   * When set, the dialog hydrates `options` from this project-scoped source
+   * before rendering; stored values stay labels, not IDs.
+   */
+  optionsSource?: 'project_statuses';
+  /**
    * Allowed source types for this input.
    * If not specified, defaults to ['custom', 'event_field'] (both allowed).
    */

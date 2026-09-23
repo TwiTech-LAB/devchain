@@ -47,6 +47,7 @@ const connection = {
 const link = {
   id: 'link-1',
   epicId: 'epic-1',
+  projectId: context.projectId,
   connectionId: connection.id,
   provider: context.provider,
   remoteScopeKey: context.remoteScopeKey,
@@ -59,6 +60,7 @@ const epic = { id: link.epicId, projectId: context.projectId };
 const startedAt = '2026-08-30T10:30:00.000Z';
 
 const ready = (loggedMinutes: number, revision: number): ExternalEstimateLogState => ({
+  projectId: context.projectId,
   provider: context.provider,
   remoteScopeKey: context.remoteScopeKey,
   remoteTaskId: context.remoteTaskId,
@@ -81,6 +83,7 @@ const ready = (loggedMinutes: number, revision: number): ExternalEstimateLogStat
 const pending = (
   overrides: Partial<Extract<ExternalEstimateLogState, { pendingOperationId: string }>> = {},
 ): Extract<ExternalEstimateLogState, { pendingOperationId: string }> => ({
+  projectId: context.projectId,
   provider: context.provider,
   remoteScopeKey: context.remoteScopeKey,
   remoteTaskId: context.remoteTaskId,
@@ -156,6 +159,8 @@ describe('EpicEstimateLoggingService', () => {
       | 'clearExternalEstimateLogOperation'
       | 'storeExternalEstimateLogResolution'
       | 'applyExternalEstimateLogResolution'
+      | 'findUnassignedExternalEstimateLogCheckpoint'
+      | 'assignUnassignedExternalEstimateLogCheckpoint'
     >
   >;
   let epicTime: jest.Mocked<Pick<EpicTimeService, 'getDailyProjection'>>;
@@ -181,6 +186,8 @@ describe('EpicEstimateLoggingService', () => {
       clearExternalEstimateLogOperation: jest.fn(),
       storeExternalEstimateLogResolution: jest.fn(),
       applyExternalEstimateLogResolution: jest.fn(),
+      findUnassignedExternalEstimateLogCheckpoint: jest.fn().mockResolvedValue(null),
+      assignUnassignedExternalEstimateLogCheckpoint: jest.fn(),
     };
     epicTime = { getDailyProjection: jest.fn() };
     timeMutations = {
@@ -753,6 +760,7 @@ describe('EpicEstimateLoggingService', () => {
 
     await expect(service.createTimeEntry(createInput())).rejects.toThrow('baseline failed');
     expect(storage.clearExternalEstimateLogOperation).toHaveBeenCalledWith({
+      projectId: context.projectId,
       provider: context.provider,
       remoteScopeKey: context.remoteScopeKey,
       remoteTaskId: context.remoteTaskId,
@@ -1231,6 +1239,7 @@ describe('EpicEstimateLoggingService', () => {
       pendingDisposition: 'none',
       canVerify: false,
       verifyExpiresAt: null,
+      legacyCheckpoint: null,
     });
     expect(storage.getExternalEstimateLogDailyCheckpoint).not.toHaveBeenCalled();
   });
@@ -1757,4 +1766,182 @@ describe('EpicEstimateLoggingService', () => {
       expect(storage.applyExternalEstimateLogResolution).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('EpicEstimateLoggingService legacy ownership signal and recovery', () => {
+  const legacyProjectId = '00000000-0000-0000-0000-000000000000';
+  const legacySettled: ExternalEstimateLogState = {
+    ...ready(90, 4),
+    projectId: legacyProjectId,
+  };
+  const legacyPending: ExternalEstimateLogState = {
+    ...pending(),
+    projectId: legacyProjectId,
+  };
+
+  let storage: jest.Mocked<
+    Pick<
+      StorageService,
+      | 'findExternalTaskLink'
+      | 'getIntegrationConnection'
+      | 'getEpic'
+      | 'getExternalEstimateLogState'
+      | 'getExternalEstimateLogDailyCheckpoint'
+      | 'setExternalEstimateLoggedMinutes'
+      | 'prepareExternalEstimateLogOperation'
+      | 'findUnassignedExternalEstimateLogCheckpoint'
+      | 'assignUnassignedExternalEstimateLogCheckpoint'
+    >
+  >;
+  let epicTime: jest.Mocked<Pick<EpicTimeService, 'getDailyProjection'>>;
+  let timeMutations: jest.Mocked<
+    Pick<ExternalTimeMutationService, 'inspectOperation' | 'createEstimateTimeEntry'>
+  >;
+  let service: EpicEstimateLoggingService;
+
+  const context = {
+    projectId: 'project-1',
+    provider: 'jira' as const,
+    remoteScopeKey: 'acme.atlassian.net',
+    remoteTaskId: 'ENG-1',
+    expectedEpoch: 4,
+  };
+  const connection = {
+    id: 'connection-1',
+    projectId: context.projectId,
+    provider: context.provider,
+    legacySourceConnectionId: null,
+    generation: 4,
+    subtaskSyncEnabled: false,
+    syncSettingRevision: 1,
+    createdAt: '2026-08-30T08:00:00.000Z',
+    updatedAt: '2026-08-30T08:00:00.000Z',
+  };
+  const link = {
+    id: 'link-1',
+    epicId: 'epic-1',
+    projectId: context.projectId,
+    connectionId: connection.id,
+    provider: context.provider,
+    remoteScopeKey: context.remoteScopeKey,
+    remoteTaskId: context.remoteTaskId,
+    sourceSnapshot: {},
+    createdAt: '2026-08-30T08:00:00.000Z',
+    updatedAt: '2026-08-30T08:00:00.000Z',
+  };
+  const epic = { id: link.epicId, projectId: context.projectId };
+
+  beforeEach(() => {
+    storage = {
+      findExternalTaskLink: jest.fn().mockResolvedValue(link),
+      getIntegrationConnection: jest.fn().mockResolvedValue(connection),
+      getEpic: jest.fn().mockResolvedValue(epic),
+      getExternalEstimateLogState: jest.fn(),
+      getExternalEstimateLogDailyCheckpoint: jest.fn(),
+      setExternalEstimateLoggedMinutes: jest.fn(),
+      prepareExternalEstimateLogOperation: jest.fn(),
+      findUnassignedExternalEstimateLogCheckpoint: jest.fn().mockResolvedValue(null),
+      assignUnassignedExternalEstimateLogCheckpoint: jest.fn(),
+    };
+    epicTime = { getDailyProjection: jest.fn() };
+    timeMutations = { inspectOperation: jest.fn(), createEstimateTimeEntry: jest.fn() };
+    service = new EpicEstimateLoggingService(
+      storage as unknown as StorageService,
+      epicTime as unknown as EpicTimeService,
+      timeMutations as unknown as ExternalTimeMutationService,
+    );
+  });
+
+  it('exposes the unassigned legacy signal without claiming or mixing figures', async () => {
+    storage.getExternalEstimateLogState.mockResolvedValue(null);
+    storage.findUnassignedExternalEstimateLogCheckpoint.mockResolvedValue(legacySettled);
+
+    await expect(service.getState(context)).resolves.toMatchObject({
+      initialized: false,
+      loggedMinutes: 0,
+      legacyCheckpoint: { revision: 4, loggedMinutes: 90, hasPendingOperation: false },
+    });
+
+    storage.findUnassignedExternalEstimateLogCheckpoint.mockResolvedValue(legacyPending);
+    await expect(service.getState(context)).resolves.toMatchObject({
+      legacyCheckpoint: { revision: 1, loggedMinutes: 0, hasPendingOperation: true },
+    });
+
+    storage.findUnassignedExternalEstimateLogCheckpoint.mockResolvedValue(null);
+    await expect(service.getState(context)).resolves.toMatchObject({
+      legacyCheckpoint: null,
+    });
+  });
+
+  it('closes estimate creation and ordinary Set logged while unassigned history remains', async () => {
+    storage.findUnassignedExternalEstimateLogCheckpoint.mockResolvedValue(legacySettled);
+
+    await expect(
+      service.createTimeEntry({
+        ...context,
+        requestKey: '11111111-1111-4111-8111-111111111111',
+        timeZone: 'UTC',
+        estimateTotalMinutes: 30,
+        expectedRevision: 0,
+        dailySnapshot: [{ activityDate: '2026-08-30', minutes: 30 }],
+      }),
+    ).rejects.toMatchObject<ConflictError>({
+      details: { reason: 'legacy_ownership_unresolved' },
+    });
+    await expect(
+      service.setLoggedMinutes({
+        ...context,
+        loggedMinutes: 0,
+        expectedRevision: 0,
+        timeZone: 'UTC',
+      }),
+    ).rejects.toMatchObject<ConflictError>({
+      details: { reason: 'legacy_ownership_unresolved' },
+    });
+
+    // No silent zero checkpoint, no admission reads beyond the gate, and no
+    // provider dispatch ever run.
+    expect(storage.setExternalEstimateLoggedMinutes).not.toHaveBeenCalled();
+    expect(storage.prepareExternalEstimateLogOperation).not.toHaveBeenCalled();
+    expect(storage.getExternalEstimateLogDailyCheckpoint).not.toHaveBeenCalled();
+    expect(timeMutations.createEstimateTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('delegates the atomic legacy assignment with the current connection epoch', async () => {
+    const moved = {
+      state: { ...ready(90, 4) },
+      days: [{ ...context, activityDate: '2026-08-30', loggedMinutes: 50 }],
+      unallocatedLoggedMinutes: 40,
+    };
+    storage.assignUnassignedExternalEstimateLogCheckpoint.mockResolvedValue(moved);
+    storage.getExternalEstimateLogDailyCheckpoint.mockResolvedValue(moved);
+
+    await expect(
+      service.assignLegacyCheckpoint({ ...context, expectedLegacyRevision: 4 }),
+    ).resolves.toMatchObject({
+      initialized: true,
+      loggedMinutes: 90,
+      revision: 4,
+      legacyCheckpoint: null,
+      unallocatedLoggedMinutes: 40,
+    });
+    expect(storage.assignUnassignedExternalEstimateLogCheckpoint).toHaveBeenCalledWith({
+      projectId: context.projectId,
+      provider: context.provider,
+      remoteScopeKey: context.remoteScopeKey,
+      remoteTaskId: context.remoteTaskId,
+      expectedRevision: 4,
+      connectionId: connection.id,
+      connectionGeneration: connection.generation,
+    });
+  });
+
+  it('rejects a legacy claim through a stale connection epoch before any assignment', async () => {
+    await expect(
+      service.assignLegacyCheckpoint({ ...context, expectedEpoch: 3, expectedLegacyRevision: 4 }),
+    ).rejects.toMatchObject<ConflictError>({
+      details: { reason: 'connection_epoch_mismatch' },
+    });
+    expect(storage.assignUnassignedExternalEstimateLogCheckpoint).not.toHaveBeenCalled();
+  });
 });

@@ -20,6 +20,7 @@ import {
   type EnqueueOptions,
   type EnqueueResult,
   type FlushResult,
+  type ForceDeferredResult,
   type DeliveryFailureCode,
   type FailureDisclosurePolicy,
   type MessageLogEntry,
@@ -35,6 +36,7 @@ import {
 import {
   HumanPromptStateService,
   type HumanPromptQuietSnapshot,
+  type ForcePromptSnapshot,
 } from '../../terminal/services/human-prompt-state.service';
 import {
   classifyDeliveryFailure,
@@ -49,10 +51,12 @@ export {
   type EnqueueOptions,
   type EnqueueResult,
   type FlushResult,
+  type ForceDeferredResult,
   type DeliveryFailureCode,
   type FailureDisclosurePolicy,
   type MessageLogEntry,
   type PoolDetails,
+  type DeferredHoldReason,
 } from './message-pool.types';
 
 const logger = createLogger('SessionsMessagePoolService');
@@ -113,6 +117,7 @@ interface DeferredLaneClaim {
   readonly messages: PooledMessage[];
   readonly separator: string;
   readonly quietSnapshot: HumanPromptQuietSnapshot | null;
+  readonly forceSnapshot: ForcePromptSnapshot | null;
   state: DeferredClaimState;
   detachReason?: string;
   readonly completion: Promise<AgentDeferredLane | null>;
@@ -131,6 +136,7 @@ export type ManualHumanHoldReleaseResult =
   | { readonly status: 'not_ready'; readonly eligibleAt: number | null };
 
 export const HUMAN_DRAFT_IDLE_GRACE_MS = 2_000;
+export const FORCE_ELIGIBLE_DELAY_MS = 30_000;
 
 function canStartDeferredClaimMutation(claim: DeferredLaneClaim): boolean {
   return claim.state.phase === 'preparing' && !claim.state.cancellationReason;
@@ -1026,6 +1032,20 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       if (humanReleaseEligibleAt !== null) {
         detail.humanReleaseEligibleAt = humanReleaseEligibleAt;
       }
+      if (deferredLane && deferredLane.messages.length > 0) {
+        const promptState = this.humanPromptState.getState(deferredLane.tmuxSessionName);
+        detail.activeSessionId = deferredLane.sessionId;
+        detail.deferredMessageIds = deferredLane.messages.map((m) => m.logEntryId);
+        if (promptState.phase === 'draft_active') {
+          detail.holdReason = 'human_draft';
+        } else {
+          detail.holdReason = deferredLane.messages.some((m) => m.requiresProviderIdle)
+            ? 'awaiting_idle'
+            : 'awaiting_quiet';
+          // Force delivery is never offered over an active human draft.
+          detail.forceEligibleAt = deferredLane.messages[0].timestamp + FORCE_ELIGIBLE_DELAY_MS;
+        }
+      }
       details.push(detail);
     }
 
@@ -1077,6 +1097,71 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       });
       return { status: 'released' };
     });
+  }
+
+  async forceDeferredDelivery(
+    agentId: string,
+    projectId: string,
+    sessionId: string,
+    messageIds: string[],
+  ): Promise<ForceDeferredResult> {
+    let forceClaim: DeferredLaneClaim | null = null;
+    const rejection = await this.coordinator.withAgentLock(
+      agentId,
+      async (): Promise<ForceDeferredResult | null> => {
+        const lane = this.deferredLanes.get(agentId);
+        const activeSession = this.sessions.getActiveSessionForAgent(agentId);
+        const session = this.sessions.getSession(sessionId);
+        if (
+          !lane ||
+          lane.projectId !== projectId ||
+          lane.sessionId !== sessionId ||
+          !session ||
+          session.status !== 'running' ||
+          session.tmuxSessionId !== lane.tmuxSessionName ||
+          activeSession?.id !== sessionId
+        ) {
+          return { status: 'not_found' };
+        }
+        if (lane.activeClaim) {
+          return { status: 'conflict', reason: 'Delivery already in progress' };
+        }
+        const laneIds = lane.messages.map((m) => m.logEntryId);
+        if (
+          messageIds.length !== laneIds.length ||
+          !messageIds.every((id, i) => id === laneIds[i])
+        ) {
+          return { status: 'conflict', reason: 'Message batch has changed' };
+        }
+        const oldest = lane.messages[0];
+        if (!oldest || Date.now() - oldest.timestamp < FORCE_ELIGIBLE_DELAY_MS) {
+          return { status: 'conflict', reason: 'Messages not yet eligible for force send' };
+        }
+        const forceSnapshot = this.humanPromptState.getForceSnapshot(lane.tmuxSessionName);
+        if (!forceSnapshot) {
+          return { status: 'conflict', reason: 'Active human draft prevents force send' };
+        }
+
+        forceClaim = this.startDeferredClaimUnderAgentLock(agentId, lane, {
+          quietSnapshot: null,
+          forceSnapshot,
+        });
+        return null;
+      },
+    );
+    if (rejection) return rejection;
+
+    const result = await this.deliverDeferredClaim(forceClaim!);
+    if (result.outcome === 'delivered') {
+      return { status: 'delivered', deliveredCount: result.deliveredCount ?? 0 };
+    }
+    if (result.outcome === 'unconfirmed') {
+      return { status: 'unconfirmed', deliveredCount: result.deliveredCount ?? 0 };
+    }
+    if (result.outcome === 'deferred') {
+      return { status: 'deferred', reason: 'Input changed before paste' };
+    }
+    return { status: 'failed', reason: result.reason ?? 'Delivery failed' };
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -1389,6 +1474,17 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       return null;
     }
 
+    return this.startDeferredClaimUnderAgentLock(agentId, lane, {
+      quietSnapshot: lane.requiredGeneration !== null ? quietSnapshot : null,
+      forceSnapshot: null,
+    });
+  }
+
+  private startDeferredClaimUnderAgentLock(
+    agentId: string,
+    lane: AgentDeferredLane,
+    snapshots: Pick<DeferredLaneClaim, 'quietSnapshot' | 'forceSnapshot'>,
+  ): DeferredLaneClaim {
     this.clearDeferredLaneTimer(lane);
     let resolveCompletion!: (failureLane: AgentDeferredLane | null) => void;
     const completion = new Promise<AgentDeferredLane | null>((resolve) => {
@@ -1401,7 +1497,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       projectId: lane.projectId,
       messages: [...lane.messages],
       separator: lane.separator,
-      quietSnapshot: lane.requiredGeneration !== null ? quietSnapshot : null,
+      ...snapshots,
       state: { phase: 'preparing' },
       completion,
       resolveCompletion,
@@ -1784,9 +1880,16 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
             { name: target.tmuxSessionName },
             baseText,
             { agentId, submitKeys, postPasteDelayMs },
-            quietSnapshot,
+            claim.forceSnapshot ? undefined : quietSnapshot,
             {
-              canStartMutation: () => canStartDeferredClaimMutation(claim),
+              canStartMutation: () => {
+                if (!canStartDeferredClaimMutation(claim)) return false;
+                if (!claim.forceSnapshot) return true;
+                return this.humanPromptState.applyForceDelivery(
+                  target.tmuxSessionName,
+                  claim.forceSnapshot,
+                );
+              },
               markMutationStarted: () => {
                 if (canStartDeferredClaimMutation(claim)) {
                   claim.state = { phase: 'mutating' };

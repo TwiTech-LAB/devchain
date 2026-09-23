@@ -56,6 +56,10 @@ interface ResolveRequest extends EstimateRequestContext {
   expectedRevision: number;
 }
 
+interface AssignLegacyRequest extends EstimateRequestContext {
+  expectedLegacyRevision: number;
+}
+
 /** One fresh browser UUID per click; never a stable Epic or task id. */
 function estimateRequestKey(): string {
   return window.crypto.randomUUID();
@@ -366,6 +370,31 @@ export function useExternalEstimateTimeLog(
     },
   });
 
+  // One-time ownership recovery for unassigned legacy history. The request
+  // captures the immutable project/remote-identity/epoch context plus the
+  // legacy revision the caller saw; success returns the moved checkpoint.
+  const assignLegacyMutation = useMutation({
+    mutationFn: (request: AssignLegacyRequest): Promise<ExternalEstimateLogStateView> =>
+      fetchJsonOrThrow<ExternalEstimateLogStateView>(
+        withIntegrationProjectId(
+          `/api/integrations/my-work/${request.provider}/tasks/${encodeURIComponent(request.taskId)}/estimate-log-legacy-assignment`,
+          request.projectId,
+        ),
+        {
+          method: 'POST',
+          headers: mutationHeaders(request),
+          body: JSON.stringify({
+            scopeKey: request.remoteScopeKey,
+            expectedLegacyRevision: request.expectedLegacyRevision,
+          }),
+        },
+        'The previous logged time could not be assigned.',
+        '',
+        apiFetch,
+      ),
+    onSuccess: (state, request) => invalidateCheckpoint(request, state),
+  });
+
   const submitCreate = useCallback(
     (snapshot: ExternalEstimateCreateSnapshot): void => {
       const request = requestContext();
@@ -440,6 +469,31 @@ export function useExternalEstimateTimeLog(
     ],
   );
 
+  /** Claims the unassigned legacy history for this project; available only
+   * while the checkpoint reports it and no other estimate write is running. */
+  const assignLegacy = useCallback((): void => {
+    const request = requestContext();
+    const legacyRevision = stateQuery.data?.legacyCheckpoint?.revision;
+    if (
+      !request ||
+      legacyRevision === undefined ||
+      createMutation.isPending ||
+      setMutation.isPending ||
+      resolveMutation.isPending ||
+      assignLegacyMutation.isPending
+    ) {
+      return;
+    }
+    assignLegacyMutation.mutate({ ...request, expectedLegacyRevision: legacyRevision });
+  }, [
+    assignLegacyMutation,
+    createMutation.isPending,
+    requestContext,
+    resolveMutation.isPending,
+    setMutation.isPending,
+    stateQuery.data,
+  ]);
+
   const rawState = admitted ? stateQuery.data : undefined;
   const currentVerifyDeadline = rawState?.verifyExpiresAt ?? null;
   const verifyExpiredLocally =
@@ -453,10 +507,12 @@ export function useExternalEstimateTimeLog(
   const createPresented = createMutation.variables?.scopeId === scopeId;
   const setPresented = setMutation.variables?.scopeId === scopeId;
   const resolvePresented = resolveMutation.variables?.scopeId === scopeId;
+  const assignLegacyPresented = assignLegacyMutation.variables?.scopeId === scopeId;
   const mutationPending =
     (createPresented && createMutation.isPending) ||
     (setPresented && setMutation.isPending) ||
-    (resolvePresented && resolveMutation.isPending);
+    (resolvePresented && resolveMutation.isPending) ||
+    (assignLegacyPresented && assignLegacyMutation.isPending);
   const writeBlocked =
     admitted && (state === undefined || state.pending !== null || mutationPending);
 
@@ -498,6 +554,16 @@ export function useExternalEstimateTimeLog(
       isSuccess: resolvePresented && resolveMutation.isSuccess,
     },
     resolveOperation: resolve,
+    assignLegacy: {
+      ...assignLegacyMutation,
+      data: assignLegacyPresented ? assignLegacyMutation.data : undefined,
+      error: assignLegacyPresented ? assignLegacyMutation.error : null,
+      isPending: assignLegacyPresented && assignLegacyMutation.isPending,
+      isError: assignLegacyPresented && assignLegacyMutation.isError,
+      isSuccess: assignLegacyPresented && assignLegacyMutation.isSuccess,
+    },
+    submitAssignLegacy: assignLegacy,
+    legacyCheckpoint: state?.legacyCheckpoint ?? null,
     mutationPending,
     durablePending: state?.pending !== null && state?.pending !== undefined,
     writeBlocked,

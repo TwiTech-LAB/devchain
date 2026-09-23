@@ -83,4 +83,34 @@ describe('SyncButton', () => {
       );
     });
   });
+
+  it('adds each distinct error once with the sources that hit it', async () => {
+    const rateLimit = 'GitHub API rate limit reached (60 requests per hour without a token).';
+    triggerSyncMock.mockResolvedValue({
+      status: 'completed',
+      added: 0,
+      updated: 0,
+      removed: 0,
+      failed: 3,
+      unchanged: 5,
+      errors: [
+        { sourceName: 'anthropic', message: rateLimit },
+        { sourceName: 'openai', message: rateLimit },
+        { sourceName: 'vercel', skillSlug: 'vercel/x', message: 'Download timed out.' },
+      ],
+    });
+
+    renderWithQueryClient(<SyncButton />);
+
+    fireEvent.click(screen.getByRole('button', { name: /sync skills now/i }));
+
+    await waitFor(() => {
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Skills sync complete',
+          description: `Added: 0, Updated: 0, Removed: 0, Failed: 3. anthropic, openai: ${rateLimit} vercel: Download timed out.`,
+        }),
+      );
+    });
+  });
 });

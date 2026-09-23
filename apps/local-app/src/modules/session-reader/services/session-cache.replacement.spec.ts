@@ -304,4 +304,72 @@ describe('SessionCacheService file replacement classification', () => {
     expect(observedMarkers(current.session)).toEqual(['GEN:1337:0:2']);
     expect(adapter.parseIncremental).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { label: 'medium', rows: 10_000 },
+    { label: 'large', rows: 20_000 },
+  ])(
+    'bounds append proof hashing to the anchor windows for a $label transcript',
+    async ({ rows }) => {
+      await writeFile(filePath, transcript(1, rows));
+      await service.getOrParse(SESSION_ID, filePath, adapter); // full parse stores the anchors
+      const fileSize = (await stat(filePath)).size;
+
+      // Sum the bytes the append proof hashes by wrapping the fs handle it reads through. The
+      // proof is the only `fs/promises` open on this path, so the read lengths are its windows.
+      // `import * as fs` in the proof module delegates to this real singleton at call time.
+      const realFsp = jest.requireActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const originalOpen = realFsp.open;
+      let hashedBytes = 0;
+      realFsp.open = (async (...openArgs: Parameters<typeof originalOpen>) => {
+        const handle = await originalOpen(...openArgs);
+        const originalRead = handle.read.bind(handle) as (...a: unknown[]) => Promise<unknown>;
+        (handle as { read: (...a: unknown[]) => Promise<unknown> }).read = (...readArgs) => {
+          const length = readArgs[2];
+          if (typeof length === 'number') hashedBytes += Math.max(0, length);
+          return originalRead(...readArgs);
+        };
+        return handle;
+      }) as typeof originalOpen;
+
+      let result;
+      try {
+        await appendFile(filePath, transcript(1, 6, rows));
+        result = await service.getOrParseWithMeta(SESSION_ID, filePath, adapter);
+      } finally {
+        realFsp.open = originalOpen;
+      }
+
+      expect(result.sourceChangeKind).toBe('same-file-append');
+      // Six 64 KiB windows (pre-parse, post-parse re-check, and store — each a head + tail),
+      // independent of file size and far below the whole file.
+      expect(hashedBytes).toBeGreaterThan(0);
+      expect(hashedBytes).toBeLessThanOrEqual(6 * 64 * 1024);
+      expect(hashedBytes).toBeLessThan(fileSize);
+    },
+  );
+
+  it('stores no append proof when the file grows during a full parse (no later duplicates)', async () => {
+    await writeFile(filePath, transcript(1, 70));
+    const fullSession = adapter.parseFullSession as jest.Mock;
+    const baseImpl = fullSession.getMockImplementation()!;
+    // Grow the file mid-parse so the post-parse anchor snapshot no longer matches → no anchors.
+    fullSession.mockImplementationOnce(async (...args: unknown[]) => {
+      await appendFile(filePath, transcript(1, 6, 70));
+      return baseImpl(...args);
+    });
+
+    await service.getOrParse(SESSION_ID, filePath, adapter);
+    expect(service.getEntry(SESSION_ID)?.fileContentAnchors).toBeUndefined();
+
+    // The next growth cannot be proven as an append (no stored anchors) → canonical reparse,
+    // so the messages the mid-parse growth already folded in are never re-read as a delta.
+    await appendFile(filePath, transcript(1, 3, 76));
+    const result = await service.getOrParseWithMeta(SESSION_ID, filePath, adapter);
+
+    expect(result.sourceChangeKind).toBe('same-file-rewrite');
+    expect(adapter.parseIncremental).not.toHaveBeenCalled();
+    const ids = result.session.messages.map((message) => message.id);
+    expect(new Set(ids).size).toBe(ids.length); // every row exactly once
+  });
 });

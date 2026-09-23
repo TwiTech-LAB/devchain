@@ -254,4 +254,72 @@ describe('GitHubDirectorySkillSourceAdapter', () => {
     ]);
     await context.dispose();
   });
+
+  describe('failed GitHub requests', () => {
+    const originalToken = process.env.GITHUB_TOKEN;
+
+    beforeEach(() => {
+      delete process.env.GITHUB_TOKEN;
+    });
+
+    afterEach(() => {
+      if (originalToken === undefined) {
+        delete process.env.GITHUB_TOKEN;
+      } else {
+        process.env.GITHUB_TOKEN = originalToken;
+      }
+    });
+
+    function mockResponse(status: number, headers: Record<string, string>): void {
+      jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue(new Response(JSON.stringify({ message: 'x' }), { status, headers }));
+    }
+
+    it('names an exhausted unauthenticated rate limit and its reset time', async () => {
+      mockResponse(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1790170658' });
+
+      const error = await makeAdapter()
+        .getLatestCommit()
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(StorageError);
+      expect((error as StorageError).message).toContain(
+        'GitHub API rate limit reached (60 requests per hour without a token).',
+      );
+      expect((error as StorageError).message).toContain('It resets at');
+      expect((error as StorageError).message).toContain('The stored skills stay available.');
+      expect((error as StorageError).details).toMatchObject({
+        status: 403,
+        rateLimited: true,
+        resetAt: new Date(1790170658 * 1000).toISOString(),
+      });
+    });
+
+    it('names the token limit when a token is configured', async () => {
+      mockResponse(429, { 'x-ratelimit-remaining': '0' });
+
+      const error = await makeAdapter({ githubToken: 'token' })
+        .getLatestCommit()
+        .catch((caught: unknown) => caught);
+
+      expect((error as StorageError).message).toBe(
+        'GitHub API rate limit reached for this token. The stored skills stay available.',
+      );
+      expect((error as StorageError).details).toMatchObject({ rateLimited: true, resetAt: null });
+    });
+
+    it('keeps the generic message for a 403 with rate limit remaining', async () => {
+      mockResponse(403, { 'x-ratelimit-remaining': '12' });
+
+      const error = await makeAdapter()
+        .getLatestCommit()
+        .catch((caught: unknown) => caught);
+
+      expect((error as StorageError).message).toBe(
+        'Failed to fetch latest GitHub commit for skill source.',
+      );
+      expect((error as StorageError).details).not.toHaveProperty('rateLimited');
+    });
+  });
 });

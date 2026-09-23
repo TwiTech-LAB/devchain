@@ -119,6 +119,7 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
     const result = await parseClaudeJsonl(filePath, {
       maxMessages: options.maxMessages,
       byteOffset,
+      endByteOffset: options.endByteOffset,
       includeToolCalls: options.includeToolCalls ?? true,
       pricingService: this.pricingService,
     });
@@ -196,6 +197,15 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
       metrics: result.metrics,
       warnings: result.warnings,
       exactFields: EXACT_SUMMARY_FIELDS,
+      // Seed for the watcher's metrics-only lane (file+delta). Claude carries no continuation state.
+      laneSeed: {
+        endOffset: result.bytesRead,
+        tail: result.tail,
+        firstMessageTimestamp: result.firstMessageTimestamp,
+        lastMessageTimestamp: result.lastMessageTimestamp,
+        visibleContextTokens: result.visibleContextTokensMerge,
+        messageCount: result.metrics.messageCount,
+      },
     };
   }
 

@@ -185,12 +185,14 @@ export function ExternalEstimateTimePanel({
   timeZone,
 }: ExternalEstimateTimePanelProps) {
   const [confirmation, setConfirmation] = useState<ExternalEstimateLogConfirmation | null>(null);
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [setDialogOpen, setSetDialogOpen] = useState(false);
   const [loggedInput, setLoggedInput] = useState('');
   const [loggedInputError, setLoggedInputError] = useState<string | null>(null);
   const [restoreSetFocus, setRestoreSetFocus] = useState(false);
   const setTriggerRef = useRef<HTMLButtonElement | null>(null);
   const state = estimateLog.state;
+  const legacyCheckpoint = estimateLog.legacyCheckpoint;
   const currentMinutes = summary.totalMinutes;
   const loggedMinutes = state?.loggedMinutes ?? 0;
   const deltaMinutes = Math.max(0, currentMinutes - loggedMinutes);
@@ -201,7 +203,9 @@ export function ExternalEstimateTimePanel({
   // confirmation shows exactly the entries the captured POST would write.
   // Canonicalization stays on the detail query's mounted zone.
   const preview: EpicTimeDailyExportAllocation | null = useMemo(() => {
-    if (!state) return null;
+    // Unassigned legacy history gates every export projection: no preview,
+    // no derived delta, and no Review & log until ownership is recovered.
+    if (!state || legacyCheckpoint !== null) return null;
     const canonicalZone = canonicalizeEpicTimeZone(timeZone);
     if (!canonicalZone) return null;
     return allocateDailyEstimateExport({
@@ -217,7 +221,7 @@ export function ExternalEstimateTimePanel({
     });
     // Identity-stable inputs keep the capture immutable between checkpoint
     // or detail changes; TanStack structural sharing avoids recompute noise.
-  }, [capturedDailyTotals, state, timeZone]);
+  }, [capturedDailyTotals, legacyCheckpoint, state, timeZone]);
   const rebaselineRequired =
     preview !== null &&
     (preview.status === 'real_shrink' || preview.status === 'zone_rebind_required');
@@ -270,6 +274,19 @@ export function ExternalEstimateTimePanel({
     }
   }, [estimateLog.resolve.data, estimateLog.resolve.isSuccess, onAnnounce]);
 
+  useEffect(() => {
+    if (estimateLog.assignLegacy.isSuccess) {
+      setAssignDialogOpen(false);
+      onAnnounce('Previous logged time assigned to this project.');
+    }
+  }, [estimateLog.assignLegacy.isSuccess, onAnnounce]);
+
+  const openAssignDialog = () => {
+    if (legacyCheckpoint === null || estimateLog.mutationPending) return;
+    estimateLog.assignLegacy.reset();
+    setAssignDialogOpen(true);
+  };
+
   const openConfirmation = () => {
     if (!state || !preview || preview.status !== 'ok' || writeBlocked) return;
     const deltaMinutesByDate = new Map(
@@ -301,7 +318,13 @@ export function ExternalEstimateTimePanel({
   };
 
   const openSetDialog = () => {
-    if (!state || state.pending !== null || estimateLog.mutationPending) return;
+    if (
+      !state ||
+      legacyCheckpoint !== null ||
+      state.pending !== null ||
+      estimateLog.mutationPending
+    )
+      return;
     setLoggedInput(String(state.initialized ? state.loggedMinutes : currentMinutes));
     setLoggedInputError(null);
     estimateLog.setLogged.reset();
@@ -320,7 +343,11 @@ export function ExternalEstimateTimePanel({
   };
 
   let estimateAction: ReactNode;
-  if (rebaselineRequired) {
+  if (legacyCheckpoint !== null) {
+    // Ordinary reconciliation and Review & log stay suppressed while
+    // previous-history ownership is unresolved.
+    estimateAction = null;
+  } else if (rebaselineRequired) {
     estimateAction = (
       <p className="text-xs text-destructive" role="alert">
         The dated ledger no longer matches this estimate. Use Reconcile logged time to rebuild the
@@ -354,6 +381,8 @@ export function ExternalEstimateTimePanel({
         </h4>
         <p className="text-xs text-muted-foreground">
           DevChain derives the current estimate from agent activity and logs only new minutes.
+          Figures count this project&rsquo;s contribution; the provider total includes every
+          contributor.
         </p>
       </div>
 
@@ -380,17 +409,26 @@ export function ExternalEstimateTimePanel({
                   </dd>
                 </div>
                 <div className="border-b p-3 sm:border-b-0">
-                  <dt className="text-xs text-muted-foreground">Already logged</dt>
+                  <dt className="text-xs text-muted-foreground">Logged by this project</dt>
                   <dd className="mt-1 text-lg font-semibold tabular-nums">
                     {formatEpicTimeMinutes(loggedMinutes)}
                   </dd>
                 </div>
-                <div className="bg-primary/10 p-3">
-                  <dt className="text-xs text-primary">Ready to log</dt>
-                  <dd className="mt-1 text-lg font-semibold tabular-nums">
-                    {formatEpicTimeMinutes(deltaMinutes)}
-                  </dd>
-                </div>
+                {legacyCheckpoint !== null ? (
+                  <div className="bg-muted p-3">
+                    <dt className="text-xs text-muted-foreground">Previous logged time</dt>
+                    <dd className="mt-1 text-lg font-semibold tabular-nums">
+                      {formatEpicTimeMinutes(legacyCheckpoint.loggedMinutes)}
+                    </dd>
+                  </div>
+                ) : (
+                  <div className="bg-primary/10 p-3">
+                    <dt className="text-xs text-primary">Ready to log</dt>
+                    <dd className="mt-1 text-lg font-semibold tabular-nums">
+                      {formatEpicTimeMinutes(deltaMinutes)}
+                    </dd>
+                  </div>
+                )}
               </dl>
 
               <div className="space-y-2">
@@ -409,9 +447,37 @@ export function ExternalEstimateTimePanel({
             <div className="space-y-4 rounded-md border border-primary/70 bg-background/40 p-4">
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <CalendarDays className="h-4 w-4 text-primary" aria-hidden="true" />
-                <h5>Next provider update</h5>
+                <h5>
+                  {legacyCheckpoint !== null ? 'Previous logged time' : 'Next provider update'}
+                </h5>
               </div>
-              {nextProviderChunks.length > 0 ? (
+              {legacyCheckpoint !== null ? (
+                <>
+                  <p className="text-2xl font-semibold tabular-nums">
+                    {formatEpicTimeMinutes(legacyCheckpoint.loggedMinutes)}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Logged time from before this project was linked is waiting for an owner.
+                  </p>
+                  {legacyCheckpoint.hasPendingOperation ? (
+                    <p className="text-xs text-muted-foreground">
+                      It includes an unresolved estimate submission. After assigning, use Verify,
+                      Mark logged, or Mark not logged to settle it.
+                    </p>
+                  ) : null}
+                  <p className="text-xs text-muted-foreground">
+                    Export and reconciliation stay locked until this project takes ownership.
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={openAssignDialog}
+                    disabled={estimateLog.mutationPending}
+                  >
+                    Assign previous logged time to this project
+                  </Button>
+                </>
+              ) : nextProviderChunks.length > 0 ? (
                 <>
                   <p className="text-2xl font-semibold tabular-nums">
                     {formatEpicTimeMinutes(deltaMinutes)}
@@ -434,7 +500,7 @@ export function ExternalEstimateTimePanel({
                 </>
               ) : null}
               <div className="grid gap-2">
-                {rebaselineRequired ? (
+                {legacyCheckpoint === null && rebaselineRequired ? (
                   <Button
                     ref={setTriggerRef}
                     type="button"
@@ -670,6 +736,65 @@ export function ExternalEstimateTimePanel({
               disabled={estimateLog.setLogged.isPending}
             >
               {estimateLog.setLogged.isPending ? 'Saving…' : 'Save reconciliation'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={assignDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && estimateLog.assignLegacy.isPending) return;
+          setAssignDialogOpen(open);
+        }}
+      >
+        <DialogContent
+          className="max-w-md"
+          showCloseButton={!estimateLog.assignLegacy.isPending}
+          onEscapeKeyDown={(event) => {
+            if (estimateLog.assignLegacy.isPending) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (estimateLog.assignLegacy.isPending) event.preventDefault();
+          }}
+          onInteractOutside={(event) => {
+            if (estimateLog.assignLegacy.isPending) event.preventDefault();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Assign previous logged time</DialogTitle>
+            <DialogDescription>
+              This assigns the previous logged time
+              {legacyCheckpoint
+                ? ` (${formatEpicTimeMinutes(legacyCheckpoint.loggedMinutes)})`
+                : ''}
+              to this project as its own contribution. It sends no request to the provider and keeps
+              every stored date. An unresolved estimate submission is preserved: use Verify, Mark
+              logged, or Mark not logged afterwards to settle it. Other projects are not affected.
+            </DialogDescription>
+          </DialogHeader>
+          {estimateLog.assignLegacy.isError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {getErrorMessage(
+                estimateLog.assignLegacy.error,
+                'The previous logged time could not be assigned.',
+              )}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setAssignDialogOpen(false)}
+              disabled={estimateLog.assignLegacy.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => estimateLog.submitAssignLegacy()}
+              disabled={estimateLog.assignLegacy.isPending || legacyCheckpoint === null}
+            >
+              {estimateLog.assignLegacy.isPending ? 'Assigning…' : 'Assign to this project'}
             </Button>
           </DialogFooter>
         </DialogContent>

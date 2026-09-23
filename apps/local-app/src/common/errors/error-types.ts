@@ -109,6 +109,28 @@ export class UnsupportedProviderError extends AppError {
   }
 }
 
+export class DescriptionEditNotFoundError extends AppError {
+  constructor(index: number, find: string, matchCount: number) {
+    super(
+      `Description edit ${index} did not match: the "find" text does not occur in the current description.`,
+      'description_edit_not_found',
+      409,
+      { index, find, matchCount },
+    );
+  }
+}
+
+export class DescriptionEditAmbiguousError extends AppError {
+  constructor(index: number, find: string, matchCount: number) {
+    super(
+      `Description edit ${index} is ambiguous: the "find" text occurs ${matchCount} times. Add surrounding context to make it unique.`,
+      'description_edit_ambiguous',
+      409,
+      { index, find, matchCount },
+    );
+  }
+}
+
 export interface RelationRouteEffectFacts {
   sourceEpicId: string;
   targetEpicId: string;
@@ -121,6 +143,43 @@ export class RelationConfirmationRequiredError extends AppError {
       'relation_confirmation_required',
       409,
       { currentEffect },
+    );
+  }
+}
+
+/**
+ * Wraps a relation error from composite Epic creation so the failing input
+ * index travels with it. The wrapped error keeps its own code, status, and
+ * details; surfaces should project the cause and merge in `relationIndex`.
+ */
+export class IndexedRelationError extends AppError {
+  constructor(
+    public readonly relationIndex: number,
+    public readonly cause: AppError,
+  ) {
+    super(cause.message, cause.code, cause.statusCode, cause.details);
+  }
+}
+
+/**
+ * Two relations in one Epic-creation list would both create an eligible
+ * Related time route from the new Epic; one source may hold only one. The
+ * whole create rolls back, so the remedy is to fix the list, not to delete
+ * any stored pair.
+ */
+export class RelationRouteConflictError extends AppError {
+  constructor(
+    relationIndex: number,
+    conflictingRelationIndex: number | null,
+    currentEffect: RelationRouteEffectFacts,
+  ) {
+    super(
+      conflictingRelationIndex !== null
+        ? `Relations ${conflictingRelationIndex} and ${relationIndex} both create an eligible Related time route from the new epic. Remove or change one of them and retry.`
+        : `Relation ${relationIndex} conflicts with an existing eligible Related time route from the new epic. Remove or change it and retry.`,
+      'relation_route_conflict',
+      409,
+      { relationIndex, conflictingRelationIndex, currentEffect },
     );
   }
 }

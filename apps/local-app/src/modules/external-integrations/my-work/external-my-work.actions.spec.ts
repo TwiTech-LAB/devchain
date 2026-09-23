@@ -1,6 +1,7 @@
 import { ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { ExternalTaskLink } from '../../storage/models/domain.models';
+import { LEGACY_UNASSIGNED_PROJECT_ID } from '../../storage/models/domain.models';
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
 import type { ExternalTaskProvider } from '../ports/external-task-provider';
 import { ExternalMyWorkService } from './external-my-work.service';
@@ -107,6 +108,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       | 'findExternalTaskLink'
       | 'listExternalTaskLinksByRemoteScope'
       | 'listExternalEstimateLoggedMinutes'
+      | 'findUnassignedExternalEstimateLogCheckpoint'
       | 'getEpic'
       | 'getProject'
     >
@@ -121,6 +123,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       findExternalTaskLink: jest.fn().mockResolvedValue(null),
       listExternalTaskLinksByRemoteScope: jest.fn().mockResolvedValue([]),
       listExternalEstimateLoggedMinutes: jest.fn().mockResolvedValue([]),
+      findUnassignedExternalEstimateLogCheckpoint: jest.fn().mockResolvedValue(null),
       getEpic: jest.fn(),
       getProject: jest.fn().mockResolvedValue({ id: projectId, name: 'Product' }),
     };
@@ -134,6 +137,7 @@ describe('ExternalMyWorkService task details and actions', () => {
     const link: ExternalTaskLink = {
       id: 'link-1',
       epicId: 'epic-1',
+      projectId,
       connectionId: 'connection-clickup',
       provider: 'clickup',
       remoteScopeKey: 'workspace-1',
@@ -155,7 +159,12 @@ describe('ExternalMyWorkService task details and actions', () => {
       { connectionId: 'connection-clickup', connectionGeneration: 4 },
       'task-1',
     );
-    expect(storage.findExternalTaskLink).toHaveBeenCalledWith('clickup', 'workspace-1', 'task-1');
+    expect(storage.findExternalTaskLink).toHaveBeenCalledWith(
+      projectId,
+      'clickup',
+      'workspace-1',
+      'task-1',
+    );
   });
 
   it('returns an unlinked state without exposing storage or vendor extras', async () => {
@@ -245,6 +254,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       {
         id: 'link-1',
         epicId: 'epic-1',
+        projectId,
         connectionId: connection.id,
         provider: 'clickup',
         remoteScopeKey: 'workspace-1',
@@ -292,6 +302,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       {
         id: 'link-1',
         epicId: 'epic-1',
+        projectId,
         connectionId: connection.id,
         provider: 'clickup',
         remoteScopeKey: 'workspace-1',
@@ -303,6 +314,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       {
         id: 'link-2',
         epicId: 'epic-2',
+        projectId,
         connectionId: connection.id,
         provider: 'clickup',
         remoteScopeKey: 'workspace-1',
@@ -316,7 +328,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       epicId === 'epic-1' ? { id: 'epic-1', projectId } : { id: 'epic-2', projectId },
     );
     storage.listExternalEstimateLoggedMinutes.mockResolvedValue([
-      { remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1', loggedMinutes: 75 },
+      { projectId, remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1', loggedMinutes: 75 },
     ]);
 
     await expect(
@@ -364,15 +376,121 @@ describe('ExternalMyWorkService task details and actions', () => {
     // Only the authorized linked identities reach the checkpoint read.
     expect(storage.listExternalEstimateLoggedMinutes).toHaveBeenCalledTimes(1);
     expect(storage.listExternalEstimateLoggedMinutes).toHaveBeenCalledWith('clickup', [
-      { remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1' },
-      { remoteScopeKey: 'workspace-1', remoteTaskId: 'task-2' },
+      { projectId, remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1' },
+      { projectId, remoteScopeKey: 'workspace-1', remoteTaskId: 'task-2' },
     ]);
+    // The unassigned marker is never zero and never falls through to 0: the
+    // absent checkpoint stays absent until ownership recovery resolves it.
+    expect(storage.findUnassignedExternalEstimateLogCheckpoint).toHaveBeenCalledTimes(2);
+    expect(storage.findUnassignedExternalEstimateLogCheckpoint).toHaveBeenCalledWith(
+      'clickup',
+      'workspace-1',
+      'task-1',
+    );
+  });
+
+  it('marks linked identities with unassigned legacy history as unavailable', async () => {
+    storage.listExternalTaskLinksByRemoteScope.mockResolvedValue([
+      {
+        id: 'link-legacy',
+        epicId: 'epic-1',
+        projectId,
+        connectionId: connection.id,
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-1',
+        remoteTaskId: 'task-legacy',
+        sourceSnapshot: {},
+        createdAt: '2026-08-19T10:00:00.000Z',
+        updatedAt: '2026-08-19T10:00:00.000Z',
+      },
+      {
+        id: 'link-own',
+        epicId: 'epic-2',
+        projectId,
+        connectionId: connection.id,
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-1',
+        remoteTaskId: 'task-own',
+        sourceSnapshot: {},
+        createdAt: '2026-08-19T10:00:00.000Z',
+        updatedAt: '2026-08-19T10:00:00.000Z',
+      },
+    ]);
+    storage.getEpic.mockImplementation(async (epicId: string) =>
+      epicId === 'epic-1' ? { id: 'epic-1', projectId } : { id: 'epic-2', projectId },
+    );
+    // The project owns its own checkpoint for task-own but nothing for
+    // task-legacy; the unassigned legacy row for task-legacy must surface as
+    // null — unavailable pending ownership recovery — not as zero.
+    storage.listExternalEstimateLoggedMinutes.mockResolvedValue([
+      { projectId, remoteScopeKey: 'workspace-1', remoteTaskId: 'task-own', loggedMinutes: 25 },
+    ]);
+    storage.findUnassignedExternalEstimateLogCheckpoint.mockImplementation(
+      async (_provider: 'clickup' | 'jira', _scopeKey: string, remoteTaskId: string) =>
+        remoteTaskId === 'task-legacy'
+          ? ({
+              projectId: LEGACY_UNASSIGNED_PROJECT_ID,
+              provider: 'clickup',
+              remoteScopeKey: 'workspace-1',
+              remoteTaskId: 'task-legacy',
+              loggedMinutes: 90,
+              revision: 3,
+              aggregationTimeZone: 'UTC',
+              pendingOperationId: null,
+              pendingDeltaMinutes: null,
+              pendingEstimateTotalMinutes: null,
+              pendingStartedAt: null,
+              pendingConnectionId: null,
+              pendingConnectionGeneration: null,
+              pendingPhase: null,
+              pendingResolution: null,
+              pendingActivityDate: null,
+              createdAt: '2026-08-01T00:00:00.000Z',
+              updatedAt: '2026-08-01T00:00:00.000Z',
+            } as const)
+          : null,
+    );
+
+    await expect(
+      service.getTaskLinkStates(
+        projectId,
+        'clickup',
+        [
+          { scopeKey: 'workspace-1', taskId: 'task-legacy' },
+          { scopeKey: 'workspace-1', taskId: 'task-own' },
+        ],
+        { includeLoggedMinutes: true },
+      ),
+    ).resolves.toEqual({
+      items: [
+        {
+          scopeKey: 'workspace-1',
+          taskId: 'task-legacy',
+          linked: true,
+          epicId: 'epic-1',
+          projectId: 'project-1',
+          projectName: 'Product',
+          loggedMinutes: null,
+        },
+        {
+          scopeKey: 'workspace-1',
+          taskId: 'task-own',
+          linked: true,
+          epicId: 'epic-2',
+          projectId: 'project-1',
+          projectName: 'Product',
+          loggedMinutes: 25,
+        },
+      ],
+    });
+    // The legacy probe ran only for the two authorized linked identities.
+    expect(storage.findUnassignedExternalEstimateLogCheckpoint).toHaveBeenCalledTimes(2);
   });
 
   it('never lets an orphan checkpoint row establish linkage or leak minutes', async () => {
     storage.getEpic.mockResolvedValue({ id: 'epic-1', projectId });
     storage.listExternalEstimateLoggedMinutes.mockResolvedValue([
-      { remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1', loggedMinutes: 55 },
+      { projectId, remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1', loggedMinutes: 55 },
     ]);
 
     const result = await service.getTaskLinkStates(
@@ -521,6 +639,26 @@ describe('ExternalMyWorkService task details and actions', () => {
       projectId,
       provider: 'clickup',
     });
+    expect(getTimeEntryHistory).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale epoch before loading credentials or dispatching time history', async () => {
+    storage.getIntegrationConnection.mockResolvedValue({ ...connection, generation: 5 });
+
+    await expect(
+      service.getTimeEntryHistory(projectId, 'clickup', 'task-1', 4),
+    ).rejects.toMatchObject({
+      code: 'conflict',
+      details: {
+        projectId,
+        provider: 'clickup',
+        reason: 'connection_epoch_mismatch',
+        expectedEpoch: 4,
+        currentEpoch: 5,
+      },
+    });
+
+    expect(storage.getIntegrationConnectionCredentials).not.toHaveBeenCalled();
     expect(getTimeEntryHistory).not.toHaveBeenCalled();
   });
 

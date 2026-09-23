@@ -1,81 +1,25 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { type QueryClient, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from './useAppSocket';
+import { createBoardInvalidationRegistry, refreshBoardCache } from '@/ui/lib/board-cache';
 import {
   type RealtimeInvalidationRegistry,
   dispatchRealtimeEnvelope,
 } from '@/ui/lib/realtime-invalidation-registry';
-
-type EpicEventPayload = {
-  epic?: { parentId?: string | null } | null;
-  parentId?: string | null;
-  changes?: {
-    parentId?: {
-      previous?: string | null;
-      current?: string | null;
-    };
-  };
-};
 
 export interface UseBoardSyncArgs {
   selectedProjectId: string | null | undefined;
   parentFilter: string | undefined;
 }
 
-function extractAffectedParentIds(payload: Record<string, unknown>): string[] {
-  const typed = payload as unknown as EpicEventPayload;
-  const parentIds = new Set<string>();
-  const currentParentId = typed.epic?.parentId ?? typed.parentId ?? null;
-  if (currentParentId) {
-    parentIds.add(currentParentId);
-  }
-  const parentChange = typed.changes?.parentId;
-  if (parentChange?.previous) {
-    parentIds.add(parentChange.previous);
-  }
-  if (parentChange?.current) {
-    parentIds.add(parentChange.current);
-  }
-  return [...parentIds];
-}
-
-function invalidateSubEpicCounts(queryClient: QueryClient): void {
-  void queryClient.invalidateQueries({
-    predicate: (query) => query.queryKey[0] === 'epics' && query.queryKey[2] === 'sub-counts',
-  });
-}
-
 export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncArgs): void {
   const queryClient = useQueryClient();
 
-  const registry: RealtimeInvalidationRegistry = useMemo(() => {
-    if (!selectedProjectId) return [];
-    const topic = `project/${selectedProjectId}/epics`;
-    const entries = [
-      { kind: 'invalidate' as const, queryKey: ['epics', selectedProjectId] },
-      {
-        kind: 'custom-handler' as const,
-        handler: (
-          payload: Record<string, unknown>,
-          qc: import('@tanstack/react-query').QueryClient,
-        ) => {
-          const parentIds = extractAffectedParentIds(payload);
-          for (const parentId of parentIds) {
-            qc.invalidateQueries({ queryKey: ['epics', parentId, 'sub-counts'] });
-          }
-          if (parentFilter && (parentIds.length === 0 || parentIds.includes(parentFilter))) {
-            qc.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
-          }
-        },
-      },
-    ];
-    return ['created', 'updated', 'deleted'].map((type) => ({
-      match: (t: string) => t === topic,
-      type,
-      entries,
-    }));
-  }, [selectedProjectId, parentFilter]);
+  const registry: RealtimeInvalidationRegistry = useMemo(
+    () => createBoardInvalidationRegistry({ projectId: selectedProjectId, parentFilter }),
+    [selectedProjectId, parentFilter],
+  );
 
   const handleBoardEnvelope = useCallback(
     (envelope: WsEnvelope) => {
@@ -86,12 +30,7 @@ export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncAr
   );
 
   const handleSocketConnect = useCallback(() => {
-    if (!selectedProjectId) return;
-    queryClient.invalidateQueries({ queryKey: ['epics', selectedProjectId] });
-    invalidateSubEpicCounts(queryClient);
-    if (parentFilter) {
-      queryClient.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
-    }
+    refreshBoardCache(queryClient, { projectId: selectedProjectId, parentFilter });
   }, [queryClient, selectedProjectId, parentFilter]);
 
   useAppSocket({ message: handleBoardEnvelope, connect: handleSocketConnect }, [
@@ -102,11 +41,7 @@ export function useBoardSync({ selectedProjectId, parentFilter }: UseBoardSyncAr
   useEffect(() => {
     if (!selectedProjectId) return;
     const interval = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: ['epics', selectedProjectId] });
-      invalidateSubEpicCounts(queryClient);
-      if (parentFilter) {
-        queryClient.invalidateQueries({ queryKey: ['epics', 'parent', parentFilter] });
-      }
+      refreshBoardCache(queryClient, { projectId: selectedProjectId, parentFilter });
     }, 60000);
     return () => clearInterval(interval);
   }, [queryClient, selectedProjectId, parentFilter]);

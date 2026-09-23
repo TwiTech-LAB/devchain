@@ -21,6 +21,7 @@ describe('EpicAssignmentNotifierSubscriber', () => {
   let getAgentMock: jest.Mock;
   let getProjectMock: jest.Mock;
   let getEpicMock: jest.Mock;
+  let getStatusMock: jest.Mock;
   let storageService: StorageService;
   let subscriber: EpicAssignmentNotifierSubscriber;
 
@@ -58,10 +59,12 @@ describe('EpicAssignmentNotifierSubscriber', () => {
     getAgentMock = jest.fn();
     getProjectMock = jest.fn();
     getEpicMock = jest.fn();
+    getStatusMock = jest.fn();
     storageService = {
       getAgent: getAgentMock,
       getProject: getProjectMock,
       getEpic: getEpicMock,
+      getStatus: getStatusMock,
     } as unknown as StorageService;
     getEventMetadataMock.mockReturnValue({ id: 'event-1' });
 
@@ -403,12 +406,40 @@ describe('EpicAssignmentNotifierSubscriber', () => {
   describe('team variables', () => {
     it('default template renders without stray team text for teamless agent', async () => {
       settingsService.getSetting.mockReturnValue(null);
+      getEpicMock.mockResolvedValue({ title: 'Add Feature', statusId: 'status-1' });
+      getStatusMock.mockResolvedValue({ label: 'In Progress' });
 
       await subscriber.handleEpicUpdated(basePayload);
 
+      expect(getStatusMock).toHaveBeenCalledWith('status-1');
       expect(deliverMock.mock.calls[0][1].body).toBe(
-        '[Epic Assignment]\nAdd Feature is now assigned to Helper Agent in Demo Project. (Epic ID: epic-1)',
+        '[Epic Assignment]\nAdd Feature is now assigned to Helper Agent in Demo Project. Status: In Progress. (Epic ID: epic-1)',
       );
+    });
+
+    it('uses the status name from the payload when the status changed with the assignment', async () => {
+      settingsService.getSetting.mockReturnValue('{epic_title}: {epic_status}');
+
+      await subscriber.handleEpicUpdated({
+        ...basePayload,
+        changes: {
+          ...basePayload.changes,
+          statusId: { previous: 'status-1', current: 'status-2', currentName: 'Review' },
+        },
+      });
+
+      expect(getEpicMock).not.toHaveBeenCalled();
+      expect(getStatusMock).not.toHaveBeenCalled();
+      expect(deliverMock.mock.calls[0][1].body).toBe('Add Feature: Review');
+    });
+
+    it('renders Unknown when the status lookup fails', async () => {
+      settingsService.getSetting.mockReturnValue('{epic_title}: {epic_status}');
+      getEpicMock.mockRejectedValue(new Error('not found'));
+
+      await subscriber.handleEpicUpdated(basePayload);
+
+      expect(deliverMock.mock.calls[0][1].body).toBe('Add Feature: Unknown');
     });
 
     it('custom template resolves team variables from TeamsService.getRecipientContext', async () => {

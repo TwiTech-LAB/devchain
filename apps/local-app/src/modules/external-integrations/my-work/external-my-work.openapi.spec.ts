@@ -1,4 +1,5 @@
 import {
+  ESTIMATE_LEGACY_ASSIGN_INPUT_BODY_SCHEMA,
   ESTIMATE_LOG_STATE_RESPONSE_SCHEMA,
   ESTIMATE_LOG_STATE_SET_INPUT_BODY_SCHEMA,
   ESTIMATE_TIME_ENTRY_CREATE_INPUT_BODY_SCHEMA,
@@ -128,6 +129,7 @@ describe('external My Work OpenAPI estimate-log schemas', () => {
       'canVerify',
       'verifyExpiresAt',
       'pending',
+      'legacyCheckpoint',
     ]);
     expect(ESTIMATE_LOG_STATE_RESPONSE_SCHEMA.properties).toMatchObject({
       aggregationTimeZone: { type: 'string', nullable: true },
@@ -159,6 +161,29 @@ describe('external My Work OpenAPI estimate-log schemas', () => {
           { type: 'null' },
         ],
       },
+      legacyCheckpoint: {
+        nullable: true,
+        oneOf: [
+          {
+            type: 'object',
+            required: ['revision', 'loggedMinutes', 'hasPendingOperation'],
+          },
+          { type: 'null' },
+        ],
+      },
+    });
+    expect(ESTIMATE_LOG_STATE_RESPONSE_SCHEMA.example).toMatchObject({ legacyCheckpoint: null });
+  });
+
+  it('documents the dedicated legacy ownership assignment request', () => {
+    expect(ESTIMATE_LEGACY_ASSIGN_INPUT_BODY_SCHEMA.required).toEqual([
+      'scopeKey',
+      'expectedLegacyRevision',
+    ]);
+    expect(ESTIMATE_LEGACY_ASSIGN_INPUT_BODY_SCHEMA.additionalProperties).toBe(false);
+    expect(ESTIMATE_LEGACY_ASSIGN_INPUT_BODY_SCHEMA.properties).toMatchObject({
+      scopeKey: { type: 'string', minLength: 1, maxLength: 256 },
+      expectedLegacyRevision: { type: 'integer', minimum: 0 },
     });
   });
 
@@ -209,6 +234,7 @@ describe('external My Work OpenAPI estimate-log schemas', () => {
 
   it('keeps receipt tuple identity and credentials out of every estimate schema', () => {
     for (const schema of [
+      ESTIMATE_LEGACY_ASSIGN_INPUT_BODY_SCHEMA,
       ESTIMATE_LOG_STATE_RESPONSE_SCHEMA,
       ESTIMATE_TIME_ENTRY_CREATE_INPUT_BODY_SCHEMA,
       ESTIMATE_TIME_OPERATION_RESOLVE_INPUT_BODY_SCHEMA,

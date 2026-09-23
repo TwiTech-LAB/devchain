@@ -1,19 +1,6 @@
 import type { StorageService } from '../../../storage/interfaces/storage.interface';
-import type { Document, Project, Prompt } from '../../../storage/models/domain.models';
+import type { Prompt } from '../../../storage/models/domain.models';
 import { ResourceResolver } from './resource-resolver';
-
-const DOCUMENT: Document = {
-  id: 'document-1',
-  projectId: null,
-  title: 'Readme',
-  slug: 'readme',
-  contentMd: '# Readme',
-  archived: false,
-  version: 1,
-  tags: [],
-  createdAt: '2024-01-01T00:00:00Z',
-  updatedAt: '2024-01-01T00:00:00Z',
-};
 
 const PROMPT: Prompt = {
   id: 'prompt-1',
@@ -28,8 +15,6 @@ const PROMPT: Prompt = {
 
 function createStorage(): jest.Mocked<StorageService> {
   return {
-    getDocument: jest.fn().mockResolvedValue(DOCUMENT),
-    listProjects: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 }),
     listPrompts: jest.fn().mockResolvedValue({
       items: [
         {
@@ -46,71 +31,19 @@ function createStorage(): jest.Mocked<StorageService> {
 }
 
 describe('ResourceResolver', () => {
-  it('returns mapped global document content', async () => {
-    const storage = createStorage();
-    const resolver = new ResourceResolver(storage);
-
-    await expect(resolver.resolve('doc://global/readme')).resolves.toMatchObject({
-      success: true,
-      data: {
-        uri: 'doc://global/readme',
-        mimeType: 'text/markdown',
-        content: '# Readme',
-        document: { id: 'document-1' },
-      },
-    });
-    expect(storage.getDocument).toHaveBeenCalledWith({ projectId: null, slug: 'readme' });
-  });
-
-  it('resolves a normalized project slug before loading a document', async () => {
-    const storage = createStorage();
-    storage.listProjects.mockResolvedValue({
-      items: [{ id: 'project-1', name: 'My Project' } as Project],
-      total: 1,
-      limit: 1000,
-      offset: 0,
-    });
-    const resolver = new ResourceResolver(storage);
-
-    await resolver.resolve('doc://my-project/readme');
-
-    expect(storage.getDocument).toHaveBeenCalledWith({ projectId: 'project-1', slug: 'readme' });
-  });
-
-  it('returns PROJECT_NOT_FOUND for an unknown project slug', async () => {
-    const resolver = new ResourceResolver(createStorage());
-
-    await expect(resolver.resolve('doc://missing/readme')).resolves.toMatchObject({
-      success: false,
-      error: { code: 'PROJECT_NOT_FOUND' },
-    });
-  });
-
-  it('maps document lookup failures to DOCUMENT_NOT_FOUND', async () => {
-    const storage = createStorage();
-    storage.getDocument.mockRejectedValue(new Error('missing'));
-    const resolver = new ResourceResolver(storage);
-
-    await expect(resolver.resolve('doc://global/readme')).resolves.toMatchObject({
-      success: false,
-      error: { code: 'DOCUMENT_NOT_FOUND' },
-    });
-  });
-
-  it('rejects malformed document resource URIs', async () => {
-    const resolver = new ResourceResolver(createStorage());
-
-    await expect(resolver.resolve('doc://readme')).rejects.toThrow('Invalid document resource URI');
-  });
-
   it('returns a versioned prompt resource', async () => {
     const storage = createStorage();
     const resolver = new ResourceResolver(storage);
 
-    await expect(resolver.resolve('prompt://Welcome%20Prompt@2')).resolves.toMatchObject({
+    const result = await resolver.resolve('prompt://Welcome%20Prompt@2');
+
+    expect(result).toMatchObject({
       success: true,
       data: { content: 'Hello world', prompt: { id: 'prompt-1' } },
     });
+    expect((result.data as { prompt: Record<string, unknown> }).prompt).not.toHaveProperty(
+      'contentPreview',
+    );
     expect(storage.getPrompt).toHaveBeenCalledWith('prompt-1');
   });
 
@@ -149,6 +82,21 @@ describe('ResourceResolver', () => {
       const resolver = new ResourceResolver(createStorage());
 
       await expect(resolver.resolve(uri)).rejects.toThrow();
+    },
+  );
+
+  it.each(['doc://global/readme', 'doc://readme'])(
+    'returns UNKNOWN_RESOURCE for retired document URI %s',
+    async (uri) => {
+      const storage = createStorage();
+      const resolver = new ResourceResolver(storage);
+
+      await expect(resolver.resolve(uri)).resolves.toEqual({
+        success: false,
+        error: { code: 'UNKNOWN_RESOURCE', message: `Unknown resource: ${uri}` },
+      });
+      expect(storage.listPrompts).not.toHaveBeenCalled();
+      expect(storage.getPrompt).not.toHaveBeenCalled();
     },
   );
 

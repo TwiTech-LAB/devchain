@@ -44,9 +44,6 @@ import {
   EpicRecord,
   CreateEpicRecord,
   UpdateEpicRecord,
-  Document,
-  CreateDocument,
-  UpdateDocument,
   EpicComment,
   CreateEpicComment,
   Guest,
@@ -100,6 +97,7 @@ import {
   SetEpicRelationResult,
   DeleteEpicRelationResult,
   SetEpicRelation,
+  AssignUnassignedExternalEstimateLogCheckpoint,
   ExternalEstimateLoggedMinutesEntry,
   ExternalEstimateLogDailyCheckpoint,
   ExternalEstimateLogIdentity,
@@ -137,15 +135,6 @@ export interface ProfileListOptions extends ListOptions {
   projectId?: string | null;
 }
 
-export interface DocumentListFilters {
-  projectId?: string | null;
-  tags?: string[];
-  tagKeys?: string[];
-  q?: string;
-  limit?: number;
-  offset?: number;
-}
-
 export interface PromptListFilters {
   projectId?: string | null;
   q?: string;
@@ -166,12 +155,6 @@ export interface PromptSummary {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-}
-
-export interface DocumentIdentifier {
-  id?: string;
-  projectId?: string | null;
-  slug?: string;
 }
 
 export type EpicListType = 'active' | 'archived' | 'all';
@@ -280,8 +263,13 @@ export interface CreateProjectWithTemplateOptions {
   projectId?: string;
 }
 
+export type ExistingProjectsEnablement =
+  | { mode: 'none' }
+  | { mode: 'all' }
+  | { mode: 'selected'; projectIds: string[] };
+
 export interface CreateSkillSourceOptions {
-  seedExistingProjectsDisabled?: boolean;
+  existingProjects?: ExistingProjectsEnablement;
 }
 
 export type FactualEventFactory<TCurrent, TPrevious = never> = (
@@ -629,14 +617,6 @@ export interface RecordStorage {
   deleteRecord(id: string): Promise<void>;
 }
 
-export interface DocumentStorage {
-  listDocuments(filters?: DocumentListFilters): Promise<ListResult<Document>>;
-  getDocument(identifier: DocumentIdentifier): Promise<Document>;
-  createDocument(data: CreateDocument): Promise<Document>;
-  updateDocument(id: string, data: UpdateDocument): Promise<Document>;
-  deleteDocument(id: string): Promise<void>;
-}
-
 export interface GuestStorage {
   createGuest(data: CreateGuest): Promise<Guest>;
   getGuest(id: string): Promise<Guest>;
@@ -801,7 +781,9 @@ export interface IntegrationStorage {
     data: CreateEpicWithExternalTaskLink,
     eventFactory?: (result: CreateEpicWithExternalTaskLinkResult) => PreparedEvent | null,
   ): Promise<CreateEpicWithExternalTaskLinkResult>;
+  /** Single-link lookup scoped to one project's durable task identity. */
   findExternalTaskLink(
+    projectId: string,
     provider: IntegrationProvider,
     remoteScopeKey: string,
     remoteTaskId: string,
@@ -852,13 +834,41 @@ export interface ExternalEstimateLogStorage {
   getExternalEstimateLogDailyCheckpoint(
     identity: ExternalEstimateLogIdentity,
   ): Promise<ExternalEstimateLogDailyCheckpoint | null>;
+  /**
+   * Explicitly remote-global internal probe for pending protection and
+   * attribution inspection; never a public listing. Callers apply
+   * project-aware predicates to the results.
+   */
   listExternalEstimateLogStatesByRemoteTask(
     provider: IntegrationProvider,
     remoteTaskId: string,
   ): Promise<ExternalEstimateLogState[]>;
+  /**
+   * Exact-identity read of history still owned by the reserved legacy
+   * identity. Deliberately ignores the requesting project's id; services
+   * authorize project, connection, and link before exposing the result.
+   */
+  findUnassignedExternalEstimateLogCheckpoint(
+    provider: IntegrationProvider,
+    remoteScopeKey: string,
+    remoteTaskId: string,
+  ): Promise<ExternalEstimateLogState | null>;
+  /**
+   * Atomic one-time ownership recovery: moves the complete legacy scalar
+   * state and every dated row to the claiming project under link,
+   * connection-epoch, and revision revalidation. Concurrent claims produce
+   * exactly one winner.
+   */
+  assignUnassignedExternalEstimateLogCheckpoint(
+    data: AssignUnassignedExternalEstimateLogCheckpoint,
+  ): Promise<ExternalEstimateLogDailyCheckpoint>;
   listExternalEstimateLoggedMinutes(
     provider: IntegrationProvider,
-    identities: ReadonlyArray<{ remoteScopeKey: string; remoteTaskId: string }>,
+    identities: ReadonlyArray<{
+      projectId: string;
+      remoteScopeKey: string;
+      remoteTaskId: string;
+    }>,
   ): Promise<ExternalEstimateLoggedMinutesEntry[]>;
   setExternalEstimateLoggedMinutes(
     data: SetExternalEstimateLoggedMinutes,
@@ -897,7 +907,6 @@ export interface StorageService
     ProfileProviderConfigStorage,
     AgentStorage,
     RecordStorage,
-    DocumentStorage,
     GuestStorage,
     WatcherStorage,
     SubscriberStorage,

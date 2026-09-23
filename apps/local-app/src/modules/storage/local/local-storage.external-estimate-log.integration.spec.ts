@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -67,6 +68,7 @@ describe('LocalStorageService external estimate log states', () => {
       statusId: statuses.items[0]!.id,
     });
     identity = {
+      projectId: project.id,
       provider: 'jira',
       remoteScopeKey: 'acme.atlassian.net',
       remoteTaskId: 'ENG-1',
@@ -148,6 +150,7 @@ describe('LocalStorageService external estimate log states', () => {
     // insertion accident. The zeta scope keeps an empty dated ledger, so its
     // missing day rows must read as a zero sum.
     await storage.setExternalEstimateLoggedMinutes({
+      projectId: epic.projectId,
       provider: 'jira',
       remoteScopeKey: 'zeta.atlassian.net',
       remoteTaskId: 'ENG-1',
@@ -157,6 +160,7 @@ describe('LocalStorageService external estimate log states', () => {
       currentDailyTotals: [],
     });
     await storage.setExternalEstimateLoggedMinutes({
+      projectId: epic.projectId,
       provider: 'jira',
       remoteScopeKey: 'acme.atlassian.net',
       remoteTaskId: 'ENG-9',
@@ -175,11 +179,11 @@ describe('LocalStorageService external estimate log states', () => {
     sqlite
       .prepare(
         `INSERT INTO external_estimate_log_states
-           (provider, remote_scope_key, remote_task_id, logged_minutes, revision,
+           (project_id, provider, remote_scope_key, remote_task_id, logged_minutes, revision,
             pending_operation_id, created_at, updated_at)
-         VALUES ('clickup', 'acme.atlassian.net', 'ENG-1', 10, 1, NULL, 'created', 'updated')`,
+         VALUES (?, 'clickup', 'acme.atlassian.net', 'ENG-1', 10, 1, NULL, 'created', 'updated')`,
       )
-      .run();
+      .run(epic.projectId);
 
     await expect(
       storage.listExternalEstimateLogStatesByRemoteTask('jira', 'ENG-1'),
@@ -494,6 +498,7 @@ describe('LocalStorageService external estimate log states', () => {
         sourceSnapshot: {},
       });
       await storage.setExternalEstimateLoggedMinutes({
+        projectId: epic.projectId,
         provider: 'jira',
         remoteScopeKey: scope,
         remoteTaskId,
@@ -510,6 +515,7 @@ describe('LocalStorageService external estimate log states', () => {
     // JSON seed only behave together against the actual database.
     it('returns every requested checkpoint row for a full 1,000-identity batch', async () => {
       const identities = Array.from({ length: 1_000 }, (_, index) => ({
+        projectId: epic.projectId,
         remoteScopeKey: scope,
         remoteTaskId: `BATCH-${index}`,
       }));
@@ -520,6 +526,7 @@ describe('LocalStorageService external estimate log states', () => {
       await expect(storage.listExternalEstimateLoggedMinutes('jira', identities)).resolves.toEqual(
         identities
           .map(({ remoteTaskId }, index) => ({
+            projectId: epic.projectId,
             remoteScopeKey: scope,
             remoteTaskId,
             loggedMinutes: index,
@@ -533,14 +540,20 @@ describe('LocalStorageService external estimate log states', () => {
 
       await expect(
         storage.listExternalEstimateLoggedMinutes('jira', [
-          { remoteScopeKey: scope, remoteTaskId: 'ENG-stored' },
-          { remoteScopeKey: scope, remoteTaskId: 'ENG-absent' },
+          { projectId: epic.projectId, remoteScopeKey: scope, remoteTaskId: 'ENG-stored' },
+          { projectId: epic.projectId, remoteScopeKey: scope, remoteTaskId: 'ENG-absent' },
         ]),
       ).resolves.toEqual([
-        { remoteScopeKey: scope, remoteTaskId: 'ENG-stored', loggedMinutes: 42 },
+        {
+          projectId: epic.projectId,
+          remoteScopeKey: scope,
+          remoteTaskId: 'ENG-stored',
+          loggedMinutes: 42,
+        },
       ]);
 
       const oversized = Array.from({ length: 1_001 }, (_, index) => ({
+        projectId: epic.projectId,
         remoteScopeKey: scope,
         remoteTaskId: `ENG-${index}`,
       }));
@@ -569,6 +582,7 @@ describe('LocalStorageService external estimate log states', () => {
         sourceSnapshot: {},
       });
       await storage.setExternalEstimateLoggedMinutes({
+        projectId: epic.projectId,
         provider: 'clickup',
         remoteScopeKey: scope,
         remoteTaskId: 'ENG-duplicate',
@@ -581,18 +595,28 @@ describe('LocalStorageService external estimate log states', () => {
 
       await expect(
         storage.listExternalEstimateLoggedMinutes('jira', [
-          { remoteScopeKey: scope, remoteTaskId: 'ENG-duplicate' },
-          { remoteScopeKey: scope, remoteTaskId: 'ENG-duplicate' },
+          { projectId: epic.projectId, remoteScopeKey: scope, remoteTaskId: 'ENG-duplicate' },
+          { projectId: epic.projectId, remoteScopeKey: scope, remoteTaskId: 'ENG-duplicate' },
         ]),
       ).resolves.toEqual([
-        { remoteScopeKey: scope, remoteTaskId: 'ENG-duplicate', loggedMinutes: 15 },
+        {
+          projectId: epic.projectId,
+          remoteScopeKey: scope,
+          remoteTaskId: 'ENG-duplicate',
+          loggedMinutes: 15,
+        },
       ]);
       await expect(
         storage.listExternalEstimateLoggedMinutes('clickup', [
-          { remoteScopeKey: scope, remoteTaskId: 'ENG-duplicate' },
+          { projectId: epic.projectId, remoteScopeKey: scope, remoteTaskId: 'ENG-duplicate' },
         ]),
       ).resolves.toEqual([
-        { remoteScopeKey: scope, remoteTaskId: 'ENG-duplicate', loggedMinutes: 99 },
+        {
+          projectId: epic.projectId,
+          remoteScopeKey: scope,
+          remoteTaskId: 'ENG-duplicate',
+          loggedMinutes: 99,
+        },
       ]);
     });
 
@@ -600,7 +624,7 @@ describe('LocalStorageService external estimate log states', () => {
       await seedCheckpoint('ENG-plan', 12);
       const prepareSpy = jest.spyOn(sqlite, 'prepare');
       await storage.listExternalEstimateLoggedMinutes('jira', [
-        { remoteScopeKey: scope, remoteTaskId: 'ENG-plan' },
+        { projectId: epic.projectId, remoteScopeKey: scope, remoteTaskId: 'ENG-plan' },
       ]);
       const statement = prepareSpy.mock.calls
         .map(([sql]) => String(sql))
@@ -612,12 +636,16 @@ describe('LocalStorageService external estimate log states', () => {
       const plan = sqlite
         .prepare(`EXPLAIN QUERY PLAN ${statement}`)
         .all(
-          JSON.stringify([{ remoteScopeKey: scope, remoteTaskId: 'ENG-plan' }]),
+          JSON.stringify([
+            { projectId: epic.projectId, remoteScopeKey: scope, remoteTaskId: 'ENG-plan' },
+          ]),
           'jira',
         ) as Array<{ detail: string }>;
       const detail = plan.map((row) => row.detail).join('\n');
-      expect(detail).toContain('external_estimate_log_states_remote_identity_idx');
-      expect(detail).toContain('provider=? AND remote_scope_key=? AND remote_task_id=?');
+      expect(detail).toContain('external_estimate_log_states_project_remote_identity_idx');
+      expect(detail).toContain(
+        'project_id=? AND provider=? AND remote_scope_key=? AND remote_task_id=?',
+      );
       // The checkpoint table must never be scanned: the reviewed defect
       // compared every provider row against every JSON input.
       expect(detail).not.toMatch(/SCAN external_estimate_log_states/);
@@ -950,11 +978,11 @@ describe('LocalStorageService external estimate log states', () => {
       sqlite
         .prepare(
           `INSERT INTO external_estimate_log_days
-            (provider, remote_scope_key, remote_task_id, activity_date,
+            (project_id, provider, remote_scope_key, remote_task_id, activity_date,
              logged_minutes, created_at, updated_at)
-           VALUES (?, ?, ?, '2026-01-01', 500, 'created', 'updated')`,
+           VALUES (?, ?, ?, ?, '2026-01-01', 500, 'created', 'updated')`,
         )
-        .run(identity.provider, identity.remoteScopeKey, identity.remoteTaskId);
+        .run(identity.projectId, identity.provider, identity.remoteScopeKey, identity.remoteTaskId);
       await expect(storage.getExternalEstimateLogState(identity)).rejects.toBeInstanceOf(
         StorageError,
       );
@@ -971,11 +999,11 @@ describe('LocalStorageService external estimate log states', () => {
       sqlite
         .prepare(
           `INSERT INTO external_estimate_log_days
-            (provider, remote_scope_key, remote_task_id, activity_date,
+            (project_id, provider, remote_scope_key, remote_task_id, activity_date,
              logged_minutes, created_at, updated_at)
-           VALUES (?, ?, ?, '2026-01-01', 500, 'created', 'updated')`,
+           VALUES (?, ?, ?, ?, '2026-01-01', 500, 'created', 'updated')`,
         )
-        .run(identity.provider, identity.remoteScopeKey, identity.remoteTaskId);
+        .run(identity.projectId, identity.provider, identity.remoteScopeKey, identity.remoteTaskId);
 
       await expect(
         setLogged(200, 1, {
@@ -990,9 +1018,14 @@ describe('LocalStorageService external estimate log states', () => {
       const rawState = sqlite
         .prepare(
           `SELECT logged_minutes, revision, aggregation_time_zone FROM external_estimate_log_states
-           WHERE provider = ? AND remote_scope_key = ? AND remote_task_id = ?`,
+           WHERE project_id = ? AND provider = ? AND remote_scope_key = ? AND remote_task_id = ?`,
         )
-        .get(identity.provider, identity.remoteScopeKey, identity.remoteTaskId) as {
+        .get(
+          identity.projectId,
+          identity.provider,
+          identity.remoteScopeKey,
+          identity.remoteTaskId,
+        ) as {
         logged_minutes: number;
         revision: number;
         aggregation_time_zone: string | null;
@@ -1014,20 +1047,30 @@ describe('LocalStorageService external estimate log states', () => {
         sqlite
           .prepare(
             `INSERT INTO external_estimate_log_days
-              (provider, remote_scope_key, remote_task_id, activity_date,
+              (project_id, provider, remote_scope_key, remote_task_id, activity_date,
                logged_minutes, created_at, updated_at)
-             VALUES (?, ?, ?, '2026-01-01', 500, 'created', 'updated')
-             ON CONFLICT(provider, remote_scope_key, remote_task_id, activity_date)
+             VALUES (?, ?, ?, ?, '2026-01-01', 500, 'created', 'updated')
+             ON CONFLICT(project_id, provider, remote_scope_key, remote_task_id, activity_date)
              DO UPDATE SET logged_minutes = 500`,
           )
-          .run(identity.provider, identity.remoteScopeKey, identity.remoteTaskId);
+          .run(
+            identity.projectId,
+            identity.provider,
+            identity.remoteScopeKey,
+            identity.remoteTaskId,
+          );
       const rawState = () =>
         sqlite
           .prepare(
             `SELECT logged_minutes, revision, pending_operation_id FROM external_estimate_log_states
-             WHERE provider = ? AND remote_scope_key = ? AND remote_task_id = ?`,
+             WHERE project_id = ? AND provider = ? AND remote_scope_key = ? AND remote_task_id = ?`,
           )
-          .get(identity.provider, identity.remoteScopeKey, identity.remoteTaskId) as {
+          .get(
+            identity.projectId,
+            identity.provider,
+            identity.remoteScopeKey,
+            identity.remoteTaskId,
+          ) as {
           logged_minutes: number;
           revision: number;
           pending_operation_id: string | null;
@@ -1048,13 +1091,13 @@ describe('LocalStorageService external estimate log states', () => {
       sqlite
         .prepare(
           `INSERT INTO external_estimate_log_days
-            (provider, remote_scope_key, remote_task_id, activity_date,
+            (project_id, provider, remote_scope_key, remote_task_id, activity_date,
              logged_minutes, created_at, updated_at)
-           VALUES (?, ?, ?, '2026-01-01', 60, 'created', 'updated')
-           ON CONFLICT(provider, remote_scope_key, remote_task_id, activity_date)
+           VALUES (?, ?, ?, ?, '2026-01-01', 60, 'created', 'updated')
+           ON CONFLICT(project_id, provider, remote_scope_key, remote_task_id, activity_date)
            DO UPDATE SET logged_minutes = 60`,
         )
-        .run(identity.provider, identity.remoteScopeKey, identity.remoteTaskId);
+        .run(identity.projectId, identity.provider, identity.remoteScopeKey, identity.remoteTaskId);
       await datedPrepare('operation-corrupt-confirm', 1, {
         activityDate: '2026-01-02',
         capturedDailyTotals: [{ activityDate: '2026-01-01', minutes: 60 }],
@@ -1079,15 +1122,16 @@ describe('LocalStorageService external estimate log states', () => {
       await setLogged(4_000, 0);
       const seed = sqlite.prepare(
         `INSERT INTO external_estimate_log_days
-          (provider, remote_scope_key, remote_task_id, activity_date,
+          (project_id, provider, remote_scope_key, remote_task_id, activity_date,
            logged_minutes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 1, 'created', 'updated')`,
+         VALUES (?, ?, ?, ?, ?, 1, 'created', 'updated')`,
       );
       sqlite.transaction(() => {
         for (let index = 0; index <= 3_660; index += 1) {
           const month = String(Math.floor(index / 200) + 1).padStart(2, '0');
           const day = String((index % 200) + 1).padStart(2, '0');
           seed.run(
+            identity.projectId,
             identity.provider,
             identity.remoteScopeKey,
             identity.remoteTaskId,
@@ -1133,6 +1177,481 @@ describe('LocalStorageService external estimate log states', () => {
       await expect(storage.getExternalEstimateLogState(identity)).resolves.toBeNull();
     });
   });
+
+  describe('legacy ownership recovery', () => {
+    const LEGACY_PROJECT = '00000000-0000-0000-0000-000000000000';
+    let targetProjectId: string;
+    let targetConnection: IntegrationConnection;
+    let targetEpic: Epic;
+
+    const legacyIdentity = {
+      projectId: LEGACY_PROJECT,
+      provider: 'jira' as const,
+      remoteScopeKey: 'acme.atlassian.net',
+      remoteTaskId: 'ENG-1',
+    };
+
+    const seedLegacyState = (options: { pending?: boolean } = {}) => {
+      sqlite
+        .prepare(
+          `INSERT INTO external_estimate_log_states
+            (project_id, provider, remote_scope_key, remote_task_id, logged_minutes, revision,
+             pending_operation_id, pending_delta_minutes, pending_estimate_total_minutes,
+             pending_started_at, pending_connection_id, pending_connection_generation,
+             pending_phase, pending_resolution, aggregation_time_zone, pending_activity_date,
+             created_at, updated_at)
+           VALUES (?, 'jira', 'acme.atlassian.net', 'ENG-1', 90, 4, ?, ?, ?, ?, ?, ?, ?, NULL,
+             'Europe/Berlin', ?, 'created', 'updated')`,
+        )
+        .run(
+          LEGACY_PROJECT,
+          options.pending ? 'legacy-operation' : null,
+          options.pending ? 30 : null,
+          options.pending ? 120 : null,
+          options.pending ? '2026-09-01T10:00:00.000Z' : null,
+          options.pending ? connection.id : null,
+          options.pending ? 2 : null,
+          options.pending ? 'prepared' : null,
+          options.pending ? '2026-09-01' : null,
+        );
+      sqlite
+        .prepare(
+          `INSERT INTO external_estimate_log_days
+            (project_id, provider, remote_scope_key, remote_task_id, activity_date,
+             logged_minutes, created_at, updated_at)
+           VALUES (?, 'jira', 'acme.atlassian.net', 'ENG-1', '2026-08-30', 50,
+             'created', 'updated')`,
+        )
+        .run(LEGACY_PROJECT);
+    };
+
+    const assign = (
+      overrides: Partial<
+        Parameters<LocalStorageService['assignUnassignedExternalEstimateLogCheckpoint']>[0]
+      > = {},
+    ) =>
+      storage.assignUnassignedExternalEstimateLogCheckpoint({
+        projectId: targetProjectId,
+        provider: 'jira',
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: 'ENG-1',
+        expectedRevision: 4,
+        connectionId: targetConnection.id,
+        connectionGeneration: targetConnection.generation,
+        ...overrides,
+      });
+
+    beforeEach(async () => {
+      targetProjectId = await storage
+        .createProject({
+          name: 'Legacy recovery project',
+          description: null,
+          rootPath: '/tmp/legacy-recovery-project',
+        })
+        .then((project) => project.id);
+      targetConnection = await storage.replaceIntegrationConnection(
+        {
+          projectId: targetProjectId,
+          provider: 'jira',
+          credentials: {
+            provider: 'jira',
+            siteUrl: 'https://acme.atlassian.net',
+            email: 'recovery@example.com',
+            token: 'recovery-token',
+          },
+        },
+        async () => undefined,
+      );
+      const statuses = await storage.listStatuses(targetProjectId);
+      targetEpic = await storage.createEpic({
+        projectId: targetProjectId,
+        title: 'Recovery target',
+        statusId: statuses.items[0]!.id,
+      });
+      await storage.createExternalTaskLink({
+        epicId: targetEpic.id,
+        connectionId: targetConnection.id,
+        provider: 'jira',
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: 'ENG-1',
+        sourceSnapshot: { title: 'Recovery link' },
+      });
+    });
+
+    it('reads exactly the reserved legacy identity and rejects it for ordinary access', async () => {
+      seedLegacyState();
+      await expect(
+        storage.findUnassignedExternalEstimateLogCheckpoint('jira', 'acme.atlassian.net', 'ENG-1'),
+      ).resolves.toMatchObject({
+        projectId: LEGACY_PROJECT,
+        loggedMinutes: 90,
+        revision: 4,
+        pendingOperationId: null,
+      });
+      await expect(
+        storage.findUnassignedExternalEstimateLogCheckpoint('jira', 'acme.atlassian.net', 'ENG-2'),
+      ).resolves.toBeNull();
+
+      await expect(storage.getExternalEstimateLogState(legacyIdentity)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+      await expect(
+        storage.setExternalEstimateLoggedMinutes({
+          ...legacyIdentity,
+          loggedMinutes: 10,
+          expectedRevision: 4,
+          aggregationTimeZone: null,
+          currentDailyTotals: [],
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('uses a sentinel no generated UUID can produce', () => {
+      expect(LEGACY_PROJECT).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+      // Generated ids are UUIDv4: version nibble 4 and variant 8/9/a/b.
+      // The sentinel keeps both fields zero, so randomUUID can never emit it.
+      expect(LEGACY_PROJECT[14]).toBe('0');
+      expect('89ab').not.toContain(LEGACY_PROJECT[19]);
+      for (let index = 0; index < 200; index += 1) {
+        const generated = randomUUID();
+        expect(generated).not.toBe(LEGACY_PROJECT);
+        expect(generated[14]).toBe('4');
+        expect('89ab').toContain(generated[19]);
+      }
+    });
+
+    it('moves the complete scalar state and dated ledger to the claiming project', async () => {
+      seedLegacyState({ pending: true });
+
+      const moved = await assign();
+
+      expect(moved).toMatchObject({
+        state: {
+          projectId: targetProjectId,
+          loggedMinutes: 90,
+          revision: 4,
+          pendingOperationId: 'legacy-operation',
+          pendingDeltaMinutes: 30,
+          pendingPhase: 'prepared',
+          aggregationTimeZone: 'Europe/Berlin',
+        },
+        days: [
+          {
+            projectId: targetProjectId,
+            activityDate: '2026-08-30',
+            loggedMinutes: 50,
+          },
+        ],
+        unallocatedLoggedMinutes: 40,
+      });
+      await expect(
+        storage.findUnassignedExternalEstimateLogCheckpoint('jira', 'acme.atlassian.net', 'ENG-1'),
+      ).resolves.toBeNull();
+      expect(
+        sqlite
+          .prepare(
+            `SELECT COUNT(*) AS count FROM external_estimate_log_states WHERE project_id = ?`,
+          )
+          .get(LEGACY_PROJECT),
+      ).toEqual({ count: 0 });
+      expect(
+        sqlite
+          .prepare(`SELECT COUNT(*) AS count FROM external_estimate_log_days WHERE project_id = ?`)
+          .get(LEGACY_PROJECT),
+      ).toEqual({ count: 0 });
+      // The moved pending operation remains resolvable by the new owner.
+      await expect(
+        storage.confirmExternalEstimateLogOperation({
+          projectId: targetProjectId,
+          provider: 'jira',
+          remoteScopeKey: 'acme.atlassian.net',
+          remoteTaskId: 'ENG-1',
+          operationId: 'legacy-operation',
+          expectedRevision: 4,
+        }),
+      ).resolves.toMatchObject({ loggedMinutes: 120, revision: 5 });
+    });
+
+    it('rejects an existing target checkpoint and conflicting target dated rows', async () => {
+      seedLegacyState();
+      await storage.setExternalEstimateLoggedMinutes({
+        projectId: targetProjectId,
+        provider: 'jira',
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: 'ENG-1',
+        loggedMinutes: 10,
+        expectedRevision: 0,
+        aggregationTimeZone: null,
+        currentDailyTotals: [],
+      });
+
+      await expect(assign()).rejects.toBeInstanceOf(ConflictError);
+      // The legacy history stays intact for a retry after the conflict is
+      // resolved.
+      await expect(
+        storage.findUnassignedExternalEstimateLogCheckpoint('jira', 'acme.atlassian.net', 'ENG-1'),
+      ).resolves.toMatchObject({ projectId: LEGACY_PROJECT, loggedMinutes: 90 });
+    });
+
+    it('rejects conflicting target day rows and rolls the whole move back', async () => {
+      seedLegacyState();
+      sqlite
+        .prepare(
+          `INSERT INTO external_estimate_log_days
+            (project_id, provider, remote_scope_key, remote_task_id, activity_date,
+             logged_minutes, created_at, updated_at)
+           VALUES (?, 'jira', 'acme.atlassian.net', 'ENG-1', '2026-08-30', 5,
+             'created', 'updated')`,
+        )
+        .run(targetProjectId);
+
+      await expect(assign()).rejects.toBeInstanceOf(ConflictError);
+      expect(
+        sqlite
+          .prepare(
+            `SELECT COUNT(*) AS count FROM external_estimate_log_states WHERE project_id = ?`,
+          )
+          .get(LEGACY_PROJECT),
+      ).toEqual({ count: 1 });
+      expect(
+        sqlite
+          .prepare(`SELECT COUNT(*) AS count FROM external_estimate_log_days WHERE project_id = ?`)
+          .get(LEGACY_PROJECT),
+      ).toEqual({ count: 1 });
+      expect(
+        sqlite
+          .prepare(
+            `SELECT logged_minutes FROM external_estimate_log_days
+             WHERE project_id = ? AND activity_date = '2026-08-30'`,
+          )
+          .get(targetProjectId),
+      ).toEqual({ logged_minutes: 5 });
+    });
+
+    it('revalidates the current link, connection epoch, and legacy revision', async () => {
+      seedLegacyState();
+      const sameScopeOtherTask = {
+        provider: 'jira' as const,
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: 'ENG-no-link',
+      };
+      await expect(
+        assign({ ...sameScopeOtherTask, connectionId: targetConnection.id }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+
+      await expect(
+        assign({ connectionGeneration: targetConnection.generation + 1 }),
+      ).rejects.toBeInstanceOf(ConflictError);
+      // A live connection of a different project cannot claim for this one.
+      await expect(assign({ connectionId: connection.id })).rejects.toBeInstanceOf(ConflictError);
+      await expect(assign({ expectedRevision: 3 })).rejects.toBeInstanceOf(OptimisticLockError);
+      await expect(assign({ expectedRevision: 5 })).rejects.toBeInstanceOf(OptimisticLockError);
+      // Nothing moved after the failed attempts.
+      await expect(
+        storage.findUnassignedExternalEstimateLogCheckpoint('jira', 'acme.atlassian.net', 'ENG-1'),
+      ).resolves.toMatchObject({ projectId: LEGACY_PROJECT });
+    });
+
+    it('rejects ownership claims through a disconnected or foreign link connection', async () => {
+      seedLegacyState();
+
+      // Disconnected snapshot: the project's link has a null connection id,
+      // so a valid current connection alone must not move legacy accounting.
+      sqlite
+        .prepare('UPDATE external_task_links SET connection_id = NULL WHERE epic_id = ?')
+        .run(targetEpic.id);
+      await expect(assign()).rejects.toMatchObject<ConflictError>({
+        details: { reason: 'link_connection_mismatch' },
+      });
+
+      // The link is live again but bound to another project's connection.
+      sqlite
+        .prepare('UPDATE external_task_links SET connection_id = ? WHERE epic_id = ?')
+        .run(connection.id, targetEpic.id);
+      await expect(assign()).rejects.toMatchObject<ConflictError>({
+        details: { reason: 'link_connection_mismatch' },
+      });
+
+      // Both rejections left the complete legacy scalar and dated history
+      // untouched for a later claim through the correct connection.
+      expect(
+        sqlite
+          .prepare(
+            `SELECT logged_minutes, revision, pending_operation_id, aggregation_time_zone
+             FROM external_estimate_log_states WHERE project_id = ?`,
+          )
+          .get(LEGACY_PROJECT),
+      ).toEqual({
+        logged_minutes: 90,
+        revision: 4,
+        pending_operation_id: null,
+        aggregation_time_zone: 'Europe/Berlin',
+      });
+      expect(
+        sqlite
+          .prepare(
+            `SELECT activity_date, logged_minutes FROM external_estimate_log_days
+             WHERE project_id = ?`,
+          )
+          .all(LEGACY_PROJECT),
+      ).toEqual([{ activity_date: '2026-08-30', logged_minutes: 50 }]);
+      expect(
+        sqlite
+          .prepare(
+            `SELECT COUNT(*) AS count FROM external_estimate_log_states WHERE project_id = ?`,
+          )
+          .get(targetProjectId),
+      ).toEqual({ count: 0 });
+
+      // Rebinding to the actual current connection admits the claim.
+      sqlite
+        .prepare('UPDATE external_task_links SET connection_id = ? WHERE epic_id = ?')
+        .run(targetConnection.id, targetEpic.id);
+      await expect(assign()).resolves.toMatchObject({
+        state: { projectId: targetProjectId, loggedMinutes: 90 },
+      });
+    });
+
+    it('produces exactly one winner among concurrent claims', async () => {
+      seedLegacyState();
+      const otherProject = await storage.createProject({
+        name: 'Rival recovery project',
+        description: null,
+        rootPath: '/tmp/rival-recovery-project',
+      });
+      const otherConnection = await storage.replaceIntegrationConnection(
+        {
+          projectId: otherProject.id,
+          provider: 'jira',
+          credentials: {
+            provider: 'jira',
+            siteUrl: 'https://acme.atlassian.net',
+            email: 'rival@example.com',
+            token: 'rival-token',
+          },
+        },
+        async () => undefined,
+      );
+      const otherStatuses = await storage.listStatuses(otherProject.id);
+      const otherEpic = await storage.createEpic({
+        projectId: otherProject.id,
+        title: 'Rival target',
+        statusId: otherStatuses.items[0]!.id,
+      });
+      await storage.createExternalTaskLink({
+        epicId: otherEpic.id,
+        connectionId: otherConnection.id,
+        provider: 'jira',
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: 'ENG-1',
+        sourceSnapshot: { title: 'Rival link' },
+      });
+
+      const results = await Promise.allSettled([
+        assign(),
+        assign({
+          projectId: otherProject.id,
+          connectionId: otherConnection.id,
+          connectionGeneration: otherConnection.generation,
+        }),
+      ]);
+      const winners = results.filter((result) => result.status === 'fulfilled');
+      const losers = results.filter((result) => result.status === 'rejected');
+      expect(winners).toHaveLength(1);
+      expect(losers).toHaveLength(1);
+      expect((losers[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictError);
+
+      const winner = (
+        winners[0] as PromiseFulfilledResult<
+          Awaited<ReturnType<LocalStorageService['assignUnassignedExternalEstimateLogCheckpoint']>>
+        >
+      ).value;
+      expect(winner.state.projectId).toBe(targetProjectId);
+      expect(
+        sqlite
+          .prepare(
+            `SELECT COUNT(*) AS count FROM external_estimate_log_states
+             WHERE remote_task_id = 'ENG-1'`,
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+      expect(
+        sqlite
+          .prepare(
+            `SELECT COUNT(*) AS count FROM external_estimate_log_days
+             WHERE remote_task_id = 'ENG-1'`,
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+    });
+
+    it('keeps per-project contributions independent for one remote identity', async () => {
+      // Two projects each log the same remote identity and date; both
+      // checkpoints survive as separate contributions.
+      await storage.setExternalEstimateLoggedMinutes({
+        ...identity,
+        loggedMinutes: 30,
+        expectedRevision: 0,
+        aggregationTimeZone: 'UTC',
+        currentDailyTotals: [{ activityDate: '2026-08-30', minutes: 30 }],
+      });
+      await storage.setExternalEstimateLoggedMinutes({
+        projectId: targetProjectId,
+        provider: 'jira',
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: 'ENG-1',
+        loggedMinutes: 20,
+        expectedRevision: 0,
+        aggregationTimeZone: 'UTC',
+        currentDailyTotals: [{ activityDate: '2026-08-30', minutes: 20 }],
+      });
+
+      const first = await storage.getExternalEstimateLogDailyCheckpoint(identity);
+      const second = await storage.getExternalEstimateLogDailyCheckpoint({
+        projectId: targetProjectId,
+        provider: 'jira',
+        remoteScopeKey: 'acme.atlassian.net',
+        remoteTaskId: 'ENG-1',
+      });
+      expect(first).toMatchObject({
+        state: { loggedMinutes: 30 },
+        days: [{ activityDate: '2026-08-30', loggedMinutes: 30 }],
+      });
+      expect(second).toMatchObject({
+        state: { loggedMinutes: 20 },
+        days: [{ activityDate: '2026-08-30', loggedMinutes: 20 }],
+      });
+      expect(
+        await storage.listExternalEstimateLoggedMinutes('jira', [
+          {
+            projectId: epic.projectId,
+            remoteScopeKey: identity.remoteScopeKey,
+            remoteTaskId: 'ENG-1',
+          },
+          {
+            projectId: targetProjectId,
+            remoteScopeKey: identity.remoteScopeKey,
+            remoteTaskId: 'ENG-1',
+          },
+        ]),
+      ).toEqual([
+        {
+          projectId: epic.projectId,
+          remoteScopeKey: identity.remoteScopeKey,
+          remoteTaskId: 'ENG-1',
+          loggedMinutes: 30,
+        },
+        {
+          projectId: targetProjectId,
+          remoteScopeKey: identity.remoteScopeKey,
+          remoteTaskId: 'ENG-1',
+          loggedMinutes: 20,
+        },
+      ]);
+    });
+  });
 });
 
 describe('LocalStorageService external estimate log restart durability', () => {
@@ -1168,17 +1687,18 @@ describe('LocalStorageService external estimate log restart durability', () => {
   // durability is a property of persisted SQLite state, so reopening the
   // file is the cheapest reliable oracle.
   it('preserves the dated ledger, zone binding, and pending date across a restart', async () => {
-    const identity = {
-      provider: 'jira' as const,
-      remoteScopeKey: 'acme.atlassian.net',
-      remoteTaskId: 'ENG-1',
-    };
     const first = openStorage();
     const project = await first.storage.createProject({
       name: 'Restart project',
       description: null,
       rootPath: '/tmp/estimate-restart-project',
     });
+    const identity = {
+      projectId: project.id,
+      provider: 'jira' as const,
+      remoteScopeKey: 'acme.atlassian.net',
+      remoteTaskId: 'ENG-1',
+    };
     const connection = await first.storage.replaceIntegrationConnection(
       {
         projectId: project.id,

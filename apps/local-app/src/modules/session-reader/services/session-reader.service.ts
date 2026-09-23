@@ -231,7 +231,10 @@ export class SessionReaderService implements OnModuleDestroy {
   @OnEvent(RUNTIME_CONTEXT_CAPTURE_TUPLE_CHANGED_EVENT)
   handleRuntimeContextTupleChanged(payload: RuntimeContextCaptureTupleChangedPayload): void {
     this.sessionCacheService.invalidateDto(payload.sessionId);
-    this.transcriptWatcherService?.invalidateLastKnownSummaryMetrics(payload.sessionId);
+    // Do NOT clear the watcher's last summary metrics: a lane session (no cache entry) has
+    // nothing to fall back to, so every sidebar read would trigger an O(file) getSummary. The
+    // context window is resolved at read time (resolveMetricsContextWindow), so the retained
+    // metrics stay correct without re-parsing.
 
     if (!this.events) return;
     const publication = this.events

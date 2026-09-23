@@ -31,7 +31,7 @@ export const agentMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_get_agent_by_name',
     description:
-      'Returns a directory card for any agent in the project: description, profile name, provider config, team memberships with isLead, live presence with busy/idle since-when, and open assigned epics with status. Profile instructions are self-only; they are returned only when looking up yourself. Teams are an empty array when team data is unavailable.',
+      'Returns a directory card for any agent in the project: description, profile name, provider config, team memberships with isLead, live presence with busy/idle since-when, and open assigned epics with status. Profile instructions are self-only: on a self lookup the resolved instructions (instructionsResolved) replace the raw text; the raw instructions are also returned only when a [[prompt:...]] reference dropped surrounding prose or the resolution was truncated. Teams are an empty array when team data is unavailable.',
     inputSchema: {
       type: 'object',
       required: ['sessionId', 'name'],

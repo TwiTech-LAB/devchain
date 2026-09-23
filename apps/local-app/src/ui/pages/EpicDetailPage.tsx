@@ -16,6 +16,7 @@ import {
 } from '@/ui/lib/external-board';
 import { useTerminalWindowManager } from '@/ui/terminal-windows';
 import { useEpicTimeDetail } from '@/ui/hooks/useEpicTimeDetail';
+import { boardCacheKeys } from '@/ui/lib/board-cache';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
 import { Input } from '@/ui/components/ui/input';
@@ -686,7 +687,7 @@ export function EpicDetailPage() {
     mutationFn: (data: Partial<Epic>) => updateEpicRequest(id!, data, apiFetch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['epic', id] });
-      queryClient.invalidateQueries({ queryKey: ['epics'] });
+      queryClient.invalidateQueries({ queryKey: boardCacheKeys.all });
       toast({
         title: 'Epic updated',
         description: 'Changes saved successfully.',
@@ -743,7 +744,7 @@ export function EpicDetailPage() {
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sub-epics', epic?.id] });
-      queryClient.invalidateQueries({ queryKey: ['epics'] });
+      queryClient.invalidateQueries({ queryKey: boardCacheKeys.all });
       toast({
         title: 'Sub-epic created',
         description: 'The sub-epic was added successfully.',
@@ -762,7 +763,7 @@ export function EpicDetailPage() {
     mutationFn: (subEpicId: string) => deleteEpic(subEpicId, apiFetch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sub-epics', epic?.id] });
-      queryClient.invalidateQueries({ queryKey: ['epics'] });
+      queryClient.invalidateQueries({ queryKey: boardCacheKeys.all });
       toast({
         title: 'Sub-epic deleted',
         description: 'The sub-epic was removed.',
@@ -785,7 +786,7 @@ export function EpicDetailPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sub-epics', epic?.id] });
-      queryClient.invalidateQueries({ queryKey: ['epics'] });
+      queryClient.invalidateQueries({ queryKey: boardCacheKeys.all });
     },
     onError: (error: Error) => {
       toast({
@@ -799,7 +800,7 @@ export function EpicDetailPage() {
   const deleteThisEpicMutation = useMutation({
     mutationFn: () => deleteEpic(id!, apiFetch),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['epics'] });
+      queryClient.invalidateQueries({ queryKey: boardCacheKeys.all });
       toast({
         title: 'Epic deleted',
         description: 'The epic has been removed.',

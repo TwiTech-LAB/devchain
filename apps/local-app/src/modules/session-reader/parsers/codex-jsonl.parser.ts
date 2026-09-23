@@ -11,7 +11,9 @@ import type {
   TokenUsage,
 } from '../dtos/unified-session.types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
+import type { TailDescriptor } from '../adapters/session-reader-adapter.interface';
 import { estimateMessageTokens } from '../adapters/utils/estimate-content-tokens';
+import { lastCompleteLineEnd, noLines } from './bounded-line-read';
 
 const logger = createLogger('CodexJsonlParser');
 
@@ -43,7 +45,13 @@ interface RawContentItem {
   text?: string;
 }
 
-interface TokenSnapshot {
+/**
+ * Cumulative token/turn state at a byte offset. Built by scanning the prefix
+ * ({@link readTokenSnapshotBeforeOffset}) OR carried forward as the end state of the previous
+ * parse (the cache's opaque Codex continuation state) to skip that rescan on the next append.
+ * The two are deep-equal only when the offset is a line boundary (guaranteed by the cache).
+ */
+export interface TokenSnapshot {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -83,6 +91,21 @@ export interface CodexParseResult {
   bytesRead: number;
   sessionId?: string;
   warnings?: string[];
+  /**
+   * Cumulative token/turn state at `bytesRead` — the cache carries this back in as
+   * {@link CodexParseOptions.baseline} on the next append so the prefix is not rescanned.
+   */
+  endTokenSnapshot: TokenSnapshot;
+  /**
+   * Metrics-only lane seed extras (populated regardless of `retainMessages`). `tail` and the
+   * timestamps are absent when the parse produced no messages. `visibleContextTokensMerge` is
+   * the MERGE-term visible-context sum (content after the last compact-summary message,
+   * excluding it), which the incremental merge uses in place of `metrics.visibleContextTokens`.
+   */
+  tail?: TailDescriptor;
+  firstMessageTimestamp?: number;
+  lastMessageTimestamp?: number;
+  visibleContextTokensMerge: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,10 +115,17 @@ export interface CodexParseResult {
 export interface CodexParseOptions {
   maxMessages?: number;
   byteOffset?: number;
+  /** Exclusive upper byte bound; an unterminated final line inside it is held back. */
+  endByteOffset?: number;
   includeToolCalls?: boolean;
   pricingService?: PricingServiceInterface;
   /** Metrics-only scan: preserve turn state without retaining the full message array. */
   retainMessages?: boolean;
+  /**
+   * Cumulative token/turn state at `byteOffset` from the previous parse. When present with
+   * `byteOffset > 0`, the parser uses it directly instead of rescanning the prefix.
+   */
+  baseline?: TokenSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,20 +153,24 @@ export async function parseCodexJsonl(
   options?: CodexParseOptions,
 ): Promise<CodexParseResult> {
   const byteOffset = options?.byteOffset ?? 0;
+  const endByteOffset = options?.endByteOffset;
   const maxMessages = options?.maxMessages;
   const includeToolCalls = options?.includeToolCalls ?? true;
   const pricing = options?.pricingService;
   const retainMessages = options?.retainMessages ?? true;
+  const baseline = options?.baseline;
 
   const messages: UnifiedMessage[] = [];
   let messageIndex = 0;
   let messageCount = 0;
   let lastMessageId: string | null = null;
 
-  // For incremental parses, establish baseline cumulative totals before byteOffset.
-  const baselineSnapshot =
+  // For incremental parses, establish baseline cumulative totals before byteOffset. A carried
+  // baseline (the previous parse's end state) is used verbatim, skipping the prefix rescan;
+  // otherwise the prefix is scanned once (the first append after each full parse).
+  const baselineSnapshot: TokenSnapshot =
     byteOffset > 0
-      ? await readTokenSnapshotBeforeOffset(filePath, byteOffset)
+      ? (baseline ?? (await readTokenSnapshotBeforeOffset(filePath, byteOffset)))
       : {
           inputTokens: 0,
           outputTokens: 0,
@@ -223,24 +257,55 @@ export async function parseCodexJsonl(
   // Cost
   let costUsd = 0;
   let visibleContextTokens = 0;
+  // MERGE-term visible sum (mirrors estimateVisibleFromMessages): mirrors every add to
+  // `visibleContextTokens` EXCEPT the compact-summary message's own tokens, and resets only at
+  // a `compacted` summary message — NOT at a `context_compacted` event, which pushes no message
+  // and so is invisible to estimateVisibleFromMessages. This is the value the lane carries.
+  let visibleContextTokensMerge = 0;
+
+  // Metrics-only lane seed: the POSITIONAL first message timestamp and the last pushed message
+  // (its descriptor + timestamp), tracked in pushMessage even when messages are not retained.
+  let firstMessageTimestamp: Date | undefined;
+  let lastMessage: UnifiedMessage | undefined;
 
   // Warning accumulation
   let oversizedLineCount = 0;
 
-  const stream = fs.createReadStream(filePath, {
-    start: byteOffset,
-    encoding: 'utf8',
-  });
+  // Bounded read: stream only whole lines within [byteOffset, endByteOffset). streamEnd is
+  // the last newline boundary in that window; an unterminated final line is excluded and
+  // bytesRead stays on its start. When the window has no complete line, skip the stream
+  // entirely (an empty range would make createReadStream throw).
+  const streamEnd =
+    endByteOffset === undefined
+      ? undefined
+      : await lastCompleteLineEnd(filePath, byteOffset, endByteOffset);
+  const stream =
+    streamEnd !== undefined && streamEnd <= byteOffset
+      ? null
+      : fs.createReadStream(filePath, {
+          start: byteOffset,
+          ...(streamEnd === undefined ? {} : { end: streamEnd - 1 }),
+          encoding: 'utf8',
+        });
 
-  const rl = readline.createInterface({
-    input: stream,
-    crlfDelay: Infinity,
-  });
+  const rl =
+    stream === null ? null : readline.createInterface({ input: stream, crlfDelay: Infinity });
 
   function pushMessage(message: UnifiedMessage): void {
     messageCount++;
     lastMessageId = message.id;
     if (retainMessages) messages.push(message);
+    // Lane seed: first/last POSITIONAL message. Later tool-result folds mutate this object in
+    // place (content grows) but never change its timestamp, so the descriptor stays valid.
+    if (!firstMessageTimestamp) firstMessageTimestamp = message.timestamp;
+    lastMessage = message;
+  }
+
+  /** Count ordinary content in BOTH visible sums (the compact-summary message is handled apart). */
+  function addVisibleContent(content: UnifiedMessage['content']): void {
+    const tokens = estimateMessageTokens(content);
+    visibleContextTokens += tokens;
+    visibleContextTokensMerge += tokens;
   }
 
   function flushAssistantBuffer(): void {
@@ -274,7 +339,7 @@ export async function parseCodexJsonl(
         ? messages.length - 1
         : -1;
     }
-    visibleContextTokens += estimateMessageTokens(msg.content);
+    addVisibleContent(msg.content);
     assistantBuffer = null;
   }
 
@@ -301,7 +366,7 @@ export async function parseCodexJsonl(
       lastAssistantMessage.toolResults.push(...pendingToolResults);
       // The fold target was ALREADY flushed (its content counted at flush time), so the
       // newly-appended tool-result blocks must be counted now or they go untracked.
-      visibleContextTokens += estimateMessageTokens(pendingToolResultContent);
+      addVisibleContent(pendingToolResultContent);
     } else {
       // Edge case: tool results with no preceding assistant (malformed transcript or an
       // incremental slice that started mid-turn). Preserve the data in a fallback
@@ -319,7 +384,7 @@ export async function parseCodexJsonl(
       };
 
       pushMessage(msg);
-      visibleContextTokens += estimateMessageTokens(msg.content);
+      addVisibleContent(msg.content);
     }
 
     pendingToolResults = [];
@@ -358,7 +423,7 @@ export async function parseCodexJsonl(
   }
 
   try {
-    for await (const line of rl) {
+    for await (const line of rl ?? noLines()) {
       const lineBytes = Buffer.byteLength(line, 'utf8') + 1;
       bytesRead += lineBytes;
 
@@ -446,7 +511,7 @@ export async function parseCodexJsonl(
                     isSidechain: false,
                   };
                   pushMessage(msg);
-                  visibleContextTokens += estimateMessageTokens(msg.content);
+                  addVisibleContent(msg.content);
                 }
               } else if (role === 'assistant') {
                 // Flush pending tool results before assistant message
@@ -659,6 +724,9 @@ export async function parseCodexJsonl(
           lastAssistantMessage = null; // compaction is a turn boundary
           compactionCount++;
           visibleContextTokens = 0;
+          // A `compacted` marker pushes an isCompactSummary message, so the merge meaning resets
+          // here too (and, unlike `context_compacted`, this is visible to estimateVisibleFromMessages).
+          visibleContextTokensMerge = 0;
 
           const compactionText = (payload.message as string) ?? 'Context compacted';
           const msg: UnifiedMessage = {
@@ -688,8 +756,8 @@ export async function parseCodexJsonl(
       if (maxMessages && messageCount >= maxMessages) break;
     }
   } finally {
-    rl.close();
-    stream.destroy();
+    rl?.close();
+    stream?.destroy();
   }
 
   // Flush any remaining buffers
@@ -775,12 +843,43 @@ export async function parseCodexJsonl(
     );
   }
 
+  // End-of-parse cumulative state, deep-equal to readTokenSnapshotBeforeOffset(bytesRead) for a
+  // line-boundary offset. Carried forward as the next append's baseline.
+  const endTokenSnapshot: TokenSnapshot = {
+    inputTokens: totalInput,
+    outputTokens: totalOutput,
+    cacheReadTokens: totalCacheRead,
+    prevInputTokens: prevTokenSnapshot.inputTokens,
+    prevOutputTokens: prevTokenSnapshot.outputTokens,
+    prevCacheReadTokens: prevTokenSnapshot.cacheReadTokens,
+    tokenCountEvents,
+    contextWindowTokens,
+    primaryModel,
+    modelsUsed: Array.from(modelsSet),
+    lastTurnComplete,
+    openTurns,
+  };
+
+  const tail: TailDescriptor | undefined = lastMessage
+    ? {
+        role: lastMessage.role,
+        isSidechain: lastMessage.isSidechain,
+        stopReason: lastMessage.stopReason ?? null,
+        isCompactSummary: lastMessage.isCompactSummary ?? false,
+      }
+    : undefined;
+
   return {
     messages,
     metrics,
     bytesRead,
     sessionId,
     warnings: warnings.length > 0 ? warnings : undefined,
+    endTokenSnapshot,
+    tail,
+    firstMessageTimestamp: firstMessageTimestamp?.getTime(),
+    lastMessageTimestamp: lastMessage?.timestamp.getTime(),
+    visibleContextTokensMerge,
   };
 }
 

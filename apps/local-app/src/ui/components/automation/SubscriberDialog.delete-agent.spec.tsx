@@ -44,6 +44,17 @@ const deleteAgentAction: ActionMetadata = {
       type: 'string',
       required: false,
     },
+    {
+      name: 'skipWhileEpicsInStatuses',
+      label: 'Skip while epics are in statuses',
+      description:
+        'Optional: select statuses. When any visible epic in this project is in one of these statuses, the action skips and changes nothing. A label that matches no status in this project fails the action and changes nothing.',
+      type: 'select',
+      required: false,
+      multiple: true,
+      optionsSource: 'project_statuses',
+      allowedSources: ['custom'],
+    },
   ],
 };
 
@@ -66,6 +77,31 @@ const restartAgentAction: ActionMetadata = {
 function jsonResponse(body: unknown): Response {
   return { ok: true, json: async () => body } as Response;
 }
+
+const projectStatuses = {
+  items: [
+    {
+      id: 'status-review',
+      projectId: 'proj-1',
+      label: 'Review',
+      color: '#0000ff',
+      position: 2,
+      mcpHidden: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'status-ip',
+      projectId: 'proj-1',
+      label: 'In Progress',
+      color: '#ffaa00',
+      position: 1,
+      mcpHidden: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+  ],
+};
 
 interface CapturedRequest {
   body: Record<string, unknown> | null;
@@ -97,6 +133,10 @@ function installApiMock(subscriber: Subscriber): CapturedRequest {
 
       if (url.startsWith('/api/watchers?')) {
         return jsonResponse([]);
+      }
+
+      if (url === '/api/statuses?projectId=proj-1') {
+        return jsonResponse(projectStatuses);
       }
 
       if (url === '/api/subscribers/sub-1' && init?.method === 'PUT') {
@@ -270,6 +310,127 @@ describe('SubscriberDialog - Delete Agent', () => {
       expect.objectContaining({
         actionType: 'restart_agent',
         retryOnError: true,
+      }),
+    );
+  });
+
+  it('fetches project statuses and lists them in position order in the status picker', async () => {
+    installApiMock(makeSubscriber());
+
+    renderWithQuery(<SubscriberDialog open={true} onOpenChange={jest.fn()} />);
+
+    fireEvent.change(screen.getByPlaceholderText('Or enter custom event name...'), {
+      target: { value: 'terminal.watcher.triggered' },
+    });
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Action type' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Delete Agent' }));
+
+    fireEvent.click(
+      await screen.findByRole('combobox', { name: 'Skip while epics are in statuses' }),
+    );
+
+    const inProgress = await screen.findByRole('checkbox', { name: 'In Progress' });
+    const review = screen.getByRole('checkbox', { name: 'Review' });
+    expect(inProgress).not.toBeChecked();
+    expect(review).not.toBeChecked();
+    // Position order (In Progress=1, Review=2), not API row order (Review listed first).
+    expect(
+      inProgress.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('round-trips a stored value through save and shows the selected badges', async () => {
+    const subscriber = makeSubscriber({
+      actionInputs: {
+        agentName: { source: 'custom', customValue: 'Coder' },
+        skipWhileEpicsInStatuses: { source: 'custom', customValue: 'In Progress, Review' },
+      },
+    });
+    const captured = installApiMock(subscriber);
+
+    renderWithQuery(
+      <SubscriberDialog open={true} onOpenChange={jest.fn()} subscriber={subscriber} />,
+    );
+
+    await screen.findByText('Skip while epics are in statuses');
+    expect(screen.getByText('In Progress')).toBeInTheDocument();
+    expect(screen.getByText('Review')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(captured.body).not.toBeNull());
+    expect(captured.body).toEqual(
+      expect.objectContaining({
+        actionType: 'delete_agent',
+        actionInputs: {
+          agentName: { source: 'custom', customValue: 'Coder' },
+          skipWhileEpicsInStatuses: { source: 'custom', customValue: 'In Progress, Review' },
+        },
+      }),
+    );
+  });
+
+  it('blocks save with an Unknown status error while a stored label is missing from the project', async () => {
+    const subscriber = makeSubscriber({
+      actionInputs: {
+        agentName: { source: 'custom', customValue: 'Coder' },
+        skipWhileEpicsInStatuses: { source: 'custom', customValue: 'In Progress, Gone' },
+      },
+    });
+    const captured = installApiMock(subscriber);
+
+    renderWithQuery(
+      <SubscriberDialog open={true} onOpenChange={jest.fn()} subscriber={subscriber} />,
+    );
+
+    await screen.findByText('Gone');
+    expect(screen.getByRole('button', { name: 'Remove Gone' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    expect(await screen.findByText('Unknown status: Gone')).toBeInTheDocument();
+    expect(captured.body).toBeNull();
+
+    // Removing the stale label clears the error and lets the save through.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Gone' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(captured.body).not.toBeNull());
+    expect(captured.body).toEqual(
+      expect.objectContaining({
+        actionInputs: {
+          agentName: { source: 'custom', customValue: 'Coder' },
+          skipWhileEpicsInStatuses: { source: 'custom', customValue: 'In Progress' },
+        },
+      }),
+    );
+  });
+
+  it('saves without error when the status selection is empty', async () => {
+    const subscriber = makeSubscriber({
+      actionInputs: {
+        agentName: { source: 'custom', customValue: 'Coder' },
+        skipWhileEpicsInStatuses: { source: 'custom', customValue: '' },
+      },
+    });
+    const captured = installApiMock(subscriber);
+
+    renderWithQuery(
+      <SubscriberDialog open={true} onOpenChange={jest.fn()} subscriber={subscriber} />,
+    );
+
+    await screen.findByText('Skip while epics are in statuses');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(captured.body).not.toBeNull());
+    expect(captured.body).toEqual(
+      expect.objectContaining({
+        actionType: 'delete_agent',
+        actionInputs: {
+          agentName: { source: 'custom', customValue: 'Coder' },
+          skipWhileEpicsInStatuses: { source: 'custom', customValue: '' },
+        },
       }),
     );
   });

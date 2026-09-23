@@ -9,6 +9,7 @@ import {
 } from '@/ui/pages/board/lib/board-api';
 import type { Epic } from '@/ui/types/domain';
 import type { BoardBulkEditController, BoardBulkEditRow } from '@/ui/types/board-bulk-edit';
+import { boardCacheKeys } from '@/ui/lib/board-cache';
 
 interface UseBoardBulkEditOptions {
   selectedProjectId: string | null | undefined;
@@ -143,12 +144,12 @@ export function useBoardBulkEdit({
       bulkUpdateEpicsApi({ parentId, updates }, apiFetch),
     onSuccess: async (_result, variables) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['epics'] }),
+        queryClient.invalidateQueries({ queryKey: boardCacheKeys.all }),
         queryClient.invalidateQueries({
-          queryKey: ['epics', variables.parentId, 'sub-counts'],
+          queryKey: boardCacheKeys.subCounts(variables.parentId),
         }),
         queryClient.invalidateQueries({
-          queryKey: ['epics', 'parent', variables.parentId],
+          queryKey: boardCacheKeys.children(variables.parentId),
         }),
       ]);
 

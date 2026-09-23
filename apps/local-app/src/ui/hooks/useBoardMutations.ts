@@ -1,13 +1,9 @@
 import { useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  createEpic,
-  deleteEpic,
-  type BoardArchivedFilter,
-  updateEpic,
-} from '@/ui/pages/board/lib/board-api';
+import { createEpic, deleteEpic, updateEpic } from '@/ui/pages/board/lib/board-api';
 import type { Epic, EpicsQueryData } from '@/ui/types';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { boardCacheKeys } from '@/ui/lib/board-cache';
 
 type ToastFn = (args: { title: string; description: string; variant?: 'destructive' }) => void;
 
@@ -18,7 +14,7 @@ type UpdateEpicMutationVars = {
 };
 
 export interface UseBoardMutationsArgs {
-  epicsKey: readonly ['epics', string | null | undefined, BoardArchivedFilter];
+  epicsKey: ReturnType<typeof boardCacheKeys.list>;
   toast: ToastFn;
   onCreateSuccess: () => void;
   onDeleteSettled: () => void;
@@ -65,7 +61,7 @@ export function useBoardMutations({
   const createMutation = useMutation({
     mutationFn: (data: Partial<Epic>) => createEpic(data, apiFetch),
     onMutate: async (newEpic) => {
-      await queryClient.cancelQueries({ queryKey: ['epics'] });
+      await queryClient.cancelQueries({ queryKey: boardCacheKeys.all });
       const previousData = queryClient.getQueryData(epicsKey);
 
       queryClient.setQueryData(epicsKey, (old: EpicsQueryData | undefined) => ({
@@ -85,7 +81,7 @@ export function useBoardMutations({
       return { previousData };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['epics'] });
+      queryClient.invalidateQueries({ queryKey: boardCacheKeys.all });
       onCreateSuccess();
       toast({
         title: 'Success',
@@ -107,7 +103,7 @@ export function useBoardMutations({
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: UpdateEpicMutationVars) => updateEpic(id, data, apiFetch),
     onMutate: async ({ id, data }) => {
-      await queryClient.cancelQueries({ queryKey: ['epics'] });
+      await queryClient.cancelQueries({ queryKey: boardCacheKeys.all });
       const previousData = queryClient.getQueryData(epicsKey);
 
       queryClient.setQueryData(epicsKey, (old: EpicsQueryData | undefined) => ({
@@ -120,7 +116,7 @@ export function useBoardMutations({
       return { previousData };
     },
     onSuccess: (_result, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['epics'] });
+      queryClient.invalidateQueries({ queryKey: boardCacheKeys.all });
       if (!variables?.skipSuccessToast) {
         toast({
           title: 'Success',
@@ -143,7 +139,7 @@ export function useBoardMutations({
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteEpic(id, apiFetch),
     onMutate: async (id) => {
-      await queryClient.cancelQueries({ queryKey: ['epics'] });
+      await queryClient.cancelQueries({ queryKey: boardCacheKeys.all });
       const previousData = queryClient.getQueryData(epicsKey);
 
       queryClient.setQueryData(epicsKey, (old: EpicsQueryData | undefined) => ({
@@ -154,7 +150,7 @@ export function useBoardMutations({
       return { previousData };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['epics'] });
+      queryClient.invalidateQueries({ queryKey: boardCacheKeys.all });
       onDeleteSettled();
       toast({
         title: 'Success',

@@ -36,7 +36,6 @@ const MCP_SERVICE_PATH = join(MCP_ROOT, 'services', 'mcp.service.ts');
 const MCP_BINDING_FILES = [
   'agent.bindings.ts',
   'chat.bindings.ts',
-  'document.bindings.ts',
   'epic.bindings.ts',
   'project.bindings.ts',
   'prompt.bindings.ts',
@@ -526,7 +525,7 @@ describe('MCP binding ownership boundaries', () => {
     expect(allowed.filter(isForbiddenMcpServiceImport)).toEqual([]);
   });
 
-  it('keeps all eleven binding groups free of double-cast escapes', () => {
+  it('keeps all ten binding groups free of double-cast escapes', () => {
     const bindingRoot = join(MCP_ROOT, 'tool-descriptors');
     const discovered = readdirSync(bindingRoot)
       .filter((file) => file.endsWith('.bindings.ts'))

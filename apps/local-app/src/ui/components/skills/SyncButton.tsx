@@ -2,13 +2,32 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/ui/components/ui/button';
 import { useToast } from '@/ui/hooks/use-toast';
-import { triggerSync, type SkillSyncResult } from '@/ui/lib/skills';
+import { triggerSync, type SkillSyncError, type SkillSyncResult } from '@/ui/lib/skills';
 import { cn } from '@/ui/lib/utils';
 
 export interface SyncButtonProps {
   sourceName?: string;
   className?: string;
   onSynced?: (result: SkillSyncResult) => void;
+}
+
+const MAX_REPORTED_ERRORS = 3;
+
+/**
+ * One line per distinct error message with the sources that hit it, so a
+ * shared cause such as a GitHub rate limit reads once instead of per source.
+ */
+function describeSyncErrors(errors: SkillSyncError[]): string {
+  const sourcesByMessage = new Map<string, Set<string>>();
+  for (const error of errors) {
+    const sources = sourcesByMessage.get(error.message) ?? new Set<string>();
+    sources.add(error.sourceName);
+    sourcesByMessage.set(error.message, sources);
+  }
+  const lines = [...sourcesByMessage.entries()]
+    .slice(0, MAX_REPORTED_ERRORS)
+    .map(([message, sources]) => `${[...sources].join(', ')}: ${message}`);
+  return lines.join(' ');
 }
 
 export function SyncButton({ sourceName, className, onSynced }: SyncButtonProps) {
@@ -26,9 +45,11 @@ export function SyncButton({ sourceName, className, onSynced }: SyncButtonProps)
       } else {
         await queryClient.invalidateQueries({ queryKey: ['skills'] });
 
+        const summary = `Added: ${result.added}, Updated: ${result.updated}, Removed: ${result.removed}, Failed: ${result.failed}`;
         toast({
           title: 'Skills sync complete',
-          description: `Added: ${result.added}, Updated: ${result.updated}, Removed: ${result.removed}, Failed: ${result.failed}`,
+          description:
+            result.errors.length > 0 ? `${summary}. ${describeSyncErrors(result.errors)}` : summary,
         });
       }
 

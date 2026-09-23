@@ -24,7 +24,11 @@ describe('ActionsController', () => {
         category: 'session',
         supportsRetry: false,
       });
-      expect(deleteAgent?.inputs.map((input) => input.name)).toEqual(['agentName', 'familySlug']);
+      expect(deleteAgent?.inputs.map((input) => input.name)).toEqual([
+        'agentName',
+        'familySlug',
+        'skipWhileEpicsInStatuses',
+      ]);
       expect(deleteAgent).not.toHaveProperty('execute');
     });
 

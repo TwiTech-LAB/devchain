@@ -223,6 +223,11 @@ export type IntegrationConnectionLookup = IntegrationConnectionIdentity | Integr
 export interface ExternalTaskLink {
   id: string;
   epicId: string;
+  /**
+   * Owning project, always derived from the linked Epic. Part of the durable
+   * task identity: one remote task may be linked once per project.
+   */
+  projectId: string;
   connectionId: string | null;
   provider: IntegrationProvider;
   remoteScopeKey: string;
@@ -232,9 +237,27 @@ export interface ExternalTaskLink {
   updatedAt: string;
 }
 
-export type CreateExternalTaskLink = Omit<ExternalTaskLink, 'id' | 'createdAt' | 'updatedAt'>;
+/**
+ * The project id is derived from the owning Epic inside storage; callers
+ * never supply it.
+ */
+export type CreateExternalTaskLink = Omit<
+  ExternalTaskLink,
+  'id' | 'projectId' | 'createdAt' | 'updatedAt'
+>;
+
+/**
+ * Reserved owner for migrated checkpoint history whose owner cannot be
+ * proven. Not a generatable UUID (version nibble 0, reserved variant bits),
+ * so it can never collide with a real project id. Normal project-scoped
+ * reads and writes reject it; only the dedicated unassigned read and the
+ * one-time ownership assignment may target it.
+ */
+export const LEGACY_UNASSIGNED_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
 
 export interface ExternalEstimateLogIdentity {
+  /** Owning project of the checkpoint; the reserved legacy id only for the dedicated unassigned read. */
+  projectId: string;
   provider: IntegrationProvider;
   remoteScopeKey: string;
   remoteTaskId: string;
@@ -246,6 +269,7 @@ export interface ExternalEstimateLogIdentity {
  * requested; absent rows mean "no checkpoint yet", not "unlinked".
  */
 export interface ExternalEstimateLoggedMinutesEntry {
+  projectId: string;
   remoteScopeKey: string;
   remoteTaskId: string;
   loggedMinutes: number;
@@ -353,6 +377,24 @@ export interface ExternalEstimateLogOperationMutation extends ExternalEstimateLo
 
 export interface StoreExternalEstimateLogResolution extends ExternalEstimateLogOperationMutation {
   resolution: ExternalEstimateLogPendingResolution;
+}
+
+/**
+ * One-time claim of unassigned legacy checkpoint history: moves the complete
+ * scalar state and every dated row of the reserved legacy identity to the
+ * requesting project. The connection epoch is revalidated inside the same
+ * transaction; the expected legacy revision fences concurrent claims so
+ * exactly one winner exists.
+ */
+export interface AssignUnassignedExternalEstimateLogCheckpoint {
+  /** Project claiming the legacy history; must be a real project id. */
+  projectId: string;
+  provider: IntegrationProvider;
+  remoteScopeKey: string;
+  remoteTaskId: string;
+  expectedRevision: number;
+  connectionId: string;
+  connectionGeneration: number;
 }
 
 export interface CreateEpicWithExternalTaskLink {
@@ -634,19 +676,6 @@ export interface ProfileProviderConfig {
   updatedAt: string;
 }
 
-export interface Document {
-  id: string;
-  projectId: string | null;
-  title: string;
-  slug: string;
-  contentMd: string;
-  archived: boolean;
-  version: number;
-  tags: string[];
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface Agent {
   id: string;
   projectId: string;
@@ -779,17 +808,6 @@ export type CreateProfileProviderConfig = {
 export type UpdateProfileProviderConfig = Partial<
   Omit<ProfileProviderConfig, 'id' | 'profileId' | 'createdAt' | 'updatedAt'>
 >;
-
-export type CreateDocument = Omit<
-  Document,
-  'id' | 'slug' | 'version' | 'archived' | 'tags' | 'createdAt' | 'updatedAt'
-> & {
-  slug?: string;
-  tags?: string[];
-};
-export type UpdateDocument = Partial<Omit<Document, 'id' | 'createdAt' | 'updatedAt' | 'tags'>> & {
-  tags?: string[];
-};
 
 export type CreateAgent = Omit<
   Agent,

@@ -56,6 +56,10 @@ interface AgentRowProps {
   canReleaseHeldMessages?: boolean;
   onReleaseHeldMessages?: () => void;
   releasingHeldMessages?: boolean;
+  canForceSend?: boolean;
+  onForceSend?: () => void;
+  forceSending?: boolean;
+  holdReasonLabel?: string;
   activityBadge?: ReactNode;
   /**
    * Whole minutes of settled unlogged time for this main-project agent.
@@ -157,6 +161,10 @@ export function AgentRow({
   canReleaseHeldMessages = false,
   onReleaseHeldMessages,
   releasingHeldMessages = false,
+  canForceSend = false,
+  onForceSend,
+  forceSending = false,
+  holdReasonLabel,
   activityBadge,
   unloggedTimeMinutes,
   eventBusAnchor,
@@ -303,11 +311,34 @@ export function AgentRow({
               `${humanHeldMessageCount} waiting`
             )}
           </button>
-        ) : heldWaitingText ? (
+        ) : heldWaitingText && !canForceSend ? (
           <span className={HELD_BADGE_CLASS} title={heldWaitingText}>
             {humanHeldMessageCount}
           </span>
         ) : null}
+        {canForceSend && onForceSend && (
+          <button
+            type="button"
+            onClick={onForceSend}
+            disabled={forceSending}
+            className={cn(
+              HELD_BADGE_CLASS,
+              'transition-colors hover:bg-blue-500/20 disabled:cursor-wait disabled:opacity-60',
+            )}
+            aria-label={`Send now for ${agent.name}`}
+          >
+            {forceSending ? (
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+            ) : (
+              'Send now'
+            )}
+          </button>
+        )}
+        {!heldWaitingText && !canForceSend && holdReasonLabel && (
+          <span className={HELD_BADGE_CLASS} title={holdReasonLabel}>
+            {holdReasonLabel}
+          </span>
+        )}
       </div>
       {sessionMetrics && contextTrackingEnabled && (
         <div className="px-3 -mt-0.5 pb-1">

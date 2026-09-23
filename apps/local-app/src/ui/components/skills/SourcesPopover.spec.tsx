@@ -61,6 +61,13 @@ jest.mock('@/ui/components/shared/ConfirmDialog', () => ({
     ) : null,
 }));
 
+let dialogSubmitPayload: {
+  type: 'local';
+  name: string;
+  folderPath: string;
+  existingProjects: { mode: 'none' } | { mode: 'all' } | { mode: 'selected'; projectIds: string[] };
+};
+
 jest.mock('./AddCommunitySourceDialog', () => ({
   AddCommunitySourceDialog: ({
     open,
@@ -73,11 +80,7 @@ jest.mock('./AddCommunitySourceDialog', () => ({
       <button
         type="button"
         onClick={() => {
-          void onSubmit({
-            type: 'local',
-            name: 'local-source',
-            folderPath: '/tmp/local-source',
-          });
+          void onSubmit(dialogSubmitPayload);
         }}
       >
         Submit Local Source
@@ -117,6 +120,12 @@ function renderWithQueryClient(ui: ReactElement) {
 describe('SourcesPopover', () => {
   beforeEach(() => {
     toastSpy.mockReset();
+    dialogSubmitPayload = {
+      type: 'local',
+      name: 'local-source',
+      folderPath: '/tmp/local-source',
+      existingProjects: { mode: 'none' },
+    };
     fetchSourcesMock.mockReset();
     fetchCommunitySourcesMock.mockReset();
     fetchLocalSourcesMock.mockReset();
@@ -256,12 +265,56 @@ describe('SourcesPopover', () => {
       expect(addLocalSourceMock).toHaveBeenCalledWith({
         name: 'local-source',
         folderPath: '/tmp/local-source',
+        existingProjects: { mode: 'none' },
       });
     });
 
     expect(toastSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'Local source added',
+        description: expect.stringContaining('Disabled in existing projects'),
+      }),
+    );
+  });
+
+  it('names the chosen project in the add-source toast for a selected choice', async () => {
+    useSelectedProjectMock.mockReturnValue({
+      selectedProjectId: '00000000-0000-0000-0000-0000000000bb',
+      selectedProject: { id: '00000000-0000-0000-0000-0000000000bb', name: 'DevChain' },
+    });
+    dialogSubmitPayload = {
+      type: 'local',
+      name: 'local-source',
+      folderPath: '/tmp/local-source',
+      existingProjects: {
+        mode: 'selected',
+        projectIds: ['00000000-0000-0000-0000-0000000000bb'],
+      },
+    };
+
+    renderWithQueryClient(<SourcesPopover />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^add source$/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^add source$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /submit local source/i }));
+
+    await waitFor(() => {
+      expect(addLocalSourceMock).toHaveBeenCalledWith({
+        name: 'local-source',
+        folderPath: '/tmp/local-source',
+        existingProjects: {
+          mode: 'selected',
+          projectIds: ['00000000-0000-0000-0000-0000000000bb'],
+        },
+      });
+    });
+
+    expect(toastSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining('Enabled in DevChain'),
       }),
     );
   });

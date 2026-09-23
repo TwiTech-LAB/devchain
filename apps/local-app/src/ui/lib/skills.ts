@@ -96,17 +96,24 @@ export interface LocalSource {
   updatedAt: string;
 }
 
+export type ExistingProjectsChoice =
+  | { mode: 'none' }
+  | { mode: 'all' }
+  | { mode: 'selected'; projectIds: string[] };
+
 export interface AddCommunitySourceInput {
   name: string;
   url?: string;
   repoOwner?: string;
   repoName?: string;
   branch?: string;
+  existingProjects?: ExistingProjectsChoice;
 }
 
 export interface AddLocalSourceInput {
   name: string;
   folderPath: string;
+  existingProjects?: ExistingProjectsChoice;
 }
 
 export interface SkillUsageStat {

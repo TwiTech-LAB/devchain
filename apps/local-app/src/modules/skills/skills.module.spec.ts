@@ -25,7 +25,7 @@ function providers(): FactoryProvider[] {
 }
 
 describe('SkillsModule', () => {
-  it('registers one lifecycle owner and keeps the sync executor private', () => {
+  it('registers one lifecycle owner, exports it for the MCP registry, and keeps the sync executor private', () => {
     const moduleProviders =
       (Reflect.getMetadata(MODULE_METADATA.PROVIDERS, SkillsModule) as unknown[]) ?? [];
     const moduleExports =
@@ -36,7 +36,7 @@ describe('SkillsModule', () => {
     ).toHaveLength(1);
     expect(moduleProviders).toContain(SkillSyncService);
     expect(moduleExports).not.toContain(SkillSyncService);
-    expect(moduleExports).not.toContain(SkillSourceLifecycleService);
+    expect(moduleExports).toContain(SkillSourceLifecycleService);
   });
 
   it('registers exactly one configured native devchain adapter in the built-in list', () => {

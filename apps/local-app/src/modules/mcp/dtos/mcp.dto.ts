@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { SkillsRequiredInputSchema } from '../../skills/dtos/skill.dto';
+import { SkillSlugSchema, SkillsRequiredInputSchema } from '../../skills/dtos/skill.dto';
+import type { SyncResult } from '../../skills/services/skill-sync.types';
 
 /**
  * MCP Tool Request schemas
@@ -99,68 +100,6 @@ export const RemoveTagsParamsSchema = z
 
 export type RemoveTagsParams = z.infer<typeof RemoveTagsParamsSchema>;
 
-// devchain.list_documents
-export const ListDocumentsParamsSchema = z
-  .object({
-    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-    tags: z.array(z.string()).optional(),
-    q: z.string().optional(),
-    limit: z.number().int().positive().optional(),
-    offset: z.number().int().nonnegative().optional(),
-  })
-  .strict();
-
-export type ListDocumentsParams = z.infer<typeof ListDocumentsParamsSchema>;
-
-// devchain.get_document
-export const GetDocumentParamsSchema = z
-  .object({
-    id: z.string().uuid().optional(),
-    projectId: z.string().optional(),
-    slug: z.string().optional(),
-    includeLinks: z.enum(['none', 'meta', 'inline']).optional(),
-    maxDepth: z.number().int().nonnegative().optional(),
-    maxBytes: z.number().int().positive().optional(),
-  })
-  .strict()
-  .refine((data) => data.id || data.slug, {
-    message: 'Either id or slug must be provided',
-    path: ['id'],
-  })
-  .refine((data) => !data.slug || data.projectId !== undefined, {
-    message: 'projectId is required when querying by slug',
-    path: ['projectId'],
-  });
-
-export type GetDocumentParams = z.infer<typeof GetDocumentParamsSchema>;
-
-// devchain.create_document
-export const CreateDocumentParamsSchema = z
-  .object({
-    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-    title: z.string().min(1),
-    contentMd: z.string(),
-    tags: z.array(z.string()).optional(),
-  })
-  .strict();
-
-export type CreateDocumentParams = z.infer<typeof CreateDocumentParamsSchema>;
-
-// devchain.update_document
-export const UpdateDocumentParamsSchema = z
-  .object({
-    id: z.string().uuid(),
-    title: z.string().min(1).optional(),
-    slug: z.string().min(1).optional(),
-    contentMd: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    archived: z.boolean().optional(),
-    version: z.number().int().positive().optional(),
-  })
-  .strict();
-
-export type UpdateDocumentParams = z.infer<typeof UpdateDocumentParamsSchema>;
-
 // devchain.list_prompts
 export const ListPromptsParamsSchema = z
   .object({
@@ -211,6 +150,7 @@ export const ListEpicsParamsSchema = z
     limit: z.number().int().positive().optional(),
     offset: z.number().int().nonnegative().optional(),
     q: z.string().optional(),
+    includeDescription: z.boolean().optional(),
   })
   .strict();
 
@@ -240,8 +180,13 @@ export const CreateEpicParamsSchema = z
     parentId: z.string().uuid().optional(),
     skillsRequired: SkillsRequiredInputSchema.optional(),
     relation: EpicRelationInputSchema.optional(),
+    relations: z.array(EpicRelationInputSchema).min(1).max(20).optional(),
   })
-  .strict();
+  .strict()
+  .refine((data) => !(data.relation && data.relations), {
+    message: 'Cannot specify both relation and relations',
+    path: ['relation'],
+  });
 
 export type CreateEpicParams = z.infer<typeof CreateEpicParamsSchema>;
 
@@ -250,6 +195,7 @@ export const GetEpicByIdParamsSchema = z
   .object({
     sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
     id: EpicIdPrefixSchema, // Epic UUID or 8+ char hex prefix
+    includeParentDescription: z.boolean().optional(),
   })
   .strict();
 
@@ -321,6 +267,17 @@ export const AddEpicCommentParamsSchema = z
 export type AddEpicCommentParams = z.infer<typeof AddEpicCommentParamsSchema>;
 
 // devchain_update_epic
+// Literal find/replace edit for patch-style description changes; `find` must
+// occur exactly once in the current description when the edit is applied.
+export const EpicDescriptionEditInputSchema = z
+  .object({
+    find: z.string().min(1),
+    replace: z.string(),
+  })
+  .strict();
+
+export type EpicDescriptionEditInput = z.infer<typeof EpicDescriptionEditInputSchema>;
+
 export const UpdateEpicParamsSchema = z
   .object({
     sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
@@ -328,6 +285,8 @@ export const UpdateEpicParamsSchema = z
     version: z.number().int().positive(),
     title: z.string().min(1).optional(),
     description: z.string().optional(),
+    descriptionEdits: z.array(EpicDescriptionEditInputSchema).min(1).max(50).optional(),
+    appendDescription: z.string().min(1).optional(),
     statusName: z.string().min(1).optional(),
     assignment: z
       .preprocess(
@@ -362,7 +321,18 @@ export const UpdateEpicParamsSchema = z
   .refine((data) => !(data.setTags && (data.addTags || data.removeTags)), {
     message: 'Cannot use setTags together with addTags or removeTags',
     path: ['setTags'],
-  });
+  })
+  .refine(
+    (data) =>
+      !(
+        data.description !== undefined &&
+        (data.descriptionEdits !== undefined || data.appendDescription !== undefined)
+      ),
+    {
+      message: 'Cannot specify description together with descriptionEdits or appendDescription',
+      path: ['description'],
+    },
+  );
 
 export type UpdateEpicParams = z.infer<typeof UpdateEpicParamsSchema>;
 
@@ -402,6 +372,7 @@ export const listSkillsSchema = z
   .object({
     sessionId: z.string(),
     q: z.string().optional(),
+    includeDisabled: z.boolean().optional(),
   })
   .strict();
 
@@ -418,6 +389,53 @@ export const getSkillSchema = z
 
 export const GetSkillParamsSchema = getSkillSchema;
 export type GetSkillParams = z.infer<typeof getSkillSchema>;
+
+// devchain_skills_usage_stats
+export const skillsUsageStatsSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    from: z.string().datetime().optional(),
+    to: z.string().datetime().optional(),
+  })
+  .strict();
+
+export const SkillsUsageStatsParamsSchema = skillsUsageStatsSchema;
+export type SkillsUsageStatsParams = z.infer<typeof skillsUsageStatsSchema>;
+
+// devchain_skills_set_enabled
+export const skillsSetEnabledSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    slugs: z.array(SkillSlugSchema).min(1).max(200),
+    enabled: z.boolean(),
+  })
+  .strict();
+
+export const SkillsSetEnabledParamsSchema = skillsSetEnabledSchema;
+export type SkillsSetEnabledParams = z.infer<typeof skillsSetEnabledSchema>;
+
+// devchain_skills_set_source_enabled
+export const skillsSetSourceEnabledSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    sourceName: z.string().min(1),
+    enabled: z.boolean(),
+  })
+  .strict();
+
+export const SkillsSetSourceEnabledParamsSchema = skillsSetSourceEnabledSchema;
+export type SkillsSetSourceEnabledParams = z.infer<typeof skillsSetSourceEnabledSchema>;
+
+// devchain_skills_sync
+export const skillsSyncSchema = z
+  .object({
+    sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
+    sourceName: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const SkillsSyncParamsSchema = skillsSyncSchema;
+export type SkillsSyncParams = z.infer<typeof skillsSyncSchema>;
 
 /**
  * MCP Tool Call envelope (terminal marker format)
@@ -493,60 +511,6 @@ export interface RemoveTagsResponse {
   version: number;
 }
 
-export interface DocumentSummary {
-  id: string;
-  projectId: string | null;
-  title: string;
-  slug: string;
-  tags: string[];
-  archived: boolean;
-  version: number;
-  updatedAt: string;
-}
-
-export interface DocumentDetail extends DocumentSummary {
-  contentMd: string;
-  createdAt: string;
-}
-
-export interface DocumentLinkMeta {
-  slug: string;
-  title?: string;
-  id?: string;
-  projectId?: string | null;
-  exists: boolean;
-}
-
-export interface DocumentInlineResolution {
-  contentMd: string;
-  depthUsed: number;
-  bytes: number;
-  truncated: boolean;
-}
-
-export interface ListDocumentsResponse {
-  documents: DocumentSummary[];
-  total: number;
-  limit: number;
-  offset: number;
-}
-
-export interface GetDocumentResponse {
-  document: DocumentDetail;
-  links: DocumentLinkMeta[];
-  resolved?: DocumentInlineResolution;
-}
-
-export interface CreateDocumentResponse {
-  id: string;
-  version: number;
-}
-
-export interface UpdateDocumentResponse {
-  id: string;
-  version: number;
-}
-
 /**
  * Summary of a prompt with content preview (for list operations).
  */
@@ -562,9 +526,9 @@ export interface PromptSummary {
 }
 
 /**
- * Full prompt details including content.
+ * Full prompt details including content; no preview — the full text is here.
  */
-export interface PromptDetail extends PromptSummary {
+export interface PromptDetail extends Omit<PromptSummary, 'contentPreview'> {
   content: string;
 }
 
@@ -580,6 +544,14 @@ export interface GetPromptResponse {
 export interface SkillListItem {
   slug: string;
   description: string;
+  /** Present only when listing with includeDisabled: true. Effective state: any of the three blocks below applies. */
+  disabled?: boolean;
+  /** Present only when listing with includeDisabled: true. The project disabled this skill. */
+  skillDisabled?: boolean;
+  /** Present only when listing with includeDisabled: true. The project enables the skill's source (default true). */
+  sourceProjectEnabled?: boolean;
+  /** Present only when listing with includeDisabled: true. Settings enable the skill's source (default true). */
+  sourceGloballyEnabled?: boolean;
 }
 
 export interface ListSkillsResponse {
@@ -600,6 +572,62 @@ export interface GetSkillResponse {
   status: 'available' | 'outdated' | 'sync_error';
   frontmatter: Record<string, unknown> | null;
 }
+
+export interface SkillsUsageStatsSummaryDto {
+  totalEvents: number;
+  distinctSkills: number;
+  firstEventAt: string | null;
+  lastEventAt: string | null;
+}
+
+export interface SkillUsageStatItem {
+  slug: string;
+  name: string | null;
+  displayName: string | null;
+  usageCount: number;
+  firstAccessedAt: string | null;
+  lastAccessedAt: string | null;
+}
+
+export interface SkillEpicReferenceItem {
+  slug: string;
+  total: number;
+  byStatus: Record<string, number>;
+}
+
+export interface SkillsUsageStatsResponse {
+  summary: SkillsUsageStatsSummaryDto;
+  /** Always true: every used skill of the project is present; a missing slug means zero use. */
+  complete: true;
+  skills: SkillUsageStatItem[];
+  /** Current epic requirements; never filtered by from/to. */
+  epicReferences: SkillEpicReferenceItem[];
+}
+
+/**
+ * Changed slugs are not echoed: they are the requested slugs minus
+ * `unchanged` and `notFound`, so a large batch returns only its exceptions.
+ */
+export interface SkillsSetEnabledResponse {
+  /** Number of slugs whose skill-level enablement state changed. */
+  updatedCount: number;
+  /** Normalized slugs already in the requested skill-level state. */
+  unchanged: string[];
+  /** Normalized slugs that do not exist or whose source is disabled globally. */
+  notFound: string[];
+}
+
+export interface SkillsSetSourceEnabledResponse {
+  name: string;
+  projectId: string;
+  projectEnabled: boolean;
+}
+
+/**
+ * Mirrors SkillSourceLifecycleService's SyncResult so devchain_skills_sync
+ * returns the lifecycle result unchanged.
+ */
+export type SkillsSyncResponse = SyncResult;
 
 export interface AgentSummary {
   id: string;
@@ -623,11 +651,6 @@ export interface InstructionsResolved {
   contentMd: string;
   bytes: number;
   truncated: boolean;
-  docs: {
-    id: string;
-    slug: string;
-    title: string;
-  }[];
   prompts: {
     id: string;
     title: string;
@@ -700,14 +723,32 @@ export interface EpicSummary {
   subEpics?: EpicChildSummary[];
 }
 
+/**
+ * Item of devchain_list_epics. By default the description ships as a bounded
+ * preview plus the full length; `includeDescription: true` returns the full
+ * `description` instead of the preview fields.
+ */
+export type EpicListItem = Omit<EpicSummary, 'description'> & {
+  description?: string | null;
+  descriptionPreview?: string | null;
+  /** Length of the full description. */
+  descriptionLength?: number;
+};
+
 export interface ListEpicsResponse {
-  epics: EpicSummary[];
+  epics: EpicListItem[];
   total: number;
   limit: number;
   offset: number;
 }
 
-export type ListAssignedEpicsTasksResponse = ListEpicsResponse;
+/** devchain_list_assigned_epics_tasks keeps full descriptions per item. */
+export interface ListAssignedEpicsTasksResponse {
+  epics: EpicSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
 
 export interface EpicChildSummary {
   id: string;
@@ -716,10 +757,17 @@ export interface EpicChildSummary {
   status?: string;
 }
 
+/**
+ * Parent projection of devchain_get_epic_by_id: a summary by default; the
+ * full `description` ships only with `includeParentDescription: true`.
+ */
 export interface EpicParentSummary {
   id: string;
   title: string;
-  description: string | null;
+  /** Present only with includeParentDescription: true. */
+  description?: string | null;
+  /** Resolved status label. */
+  status?: string;
   agentName?: string | null;
 }
 
@@ -754,6 +802,15 @@ export interface UpdateEpicResponse {
   id: string;
   version: number;
   hint?: string;
+  /**
+   * Present only when descriptionEdits ran: context around each replacement,
+   * taken from the final description, so no re-read is needed.
+   */
+  descriptionEdits?: Array<{ index: number; context: string }>;
+  /** Present only when appendDescription ran: junction context of the append. */
+  appended?: { context: string };
+  /** Length of the final description; present when edits or an append ran. */
+  descriptionLength?: number;
 }
 
 export interface DeleteEpicResponse {

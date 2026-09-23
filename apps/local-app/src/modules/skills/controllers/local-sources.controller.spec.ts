@@ -56,6 +56,7 @@ describe('LocalSourcesController', () => {
     expect(skillSourceLifecycle.createLocalSource).toHaveBeenCalledWith({
       name: 'local-source',
       folderPath: '/tmp/local-source/../local-source',
+      existingProjects: { mode: 'none' },
     });
     expect(result).toEqual(sampleSource);
   });

@@ -172,16 +172,45 @@ describe('SkillSourceLifecycleService', () => {
 
     expect(storage.createCommunitySkillSource).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'community-source' }),
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: { mode: 'none' } },
     );
     expect(storage.createLocalSkillSource).toHaveBeenCalledWith(
       { name: 'local-source', folderPath: '/tmp/local-source' },
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: { mode: 'none' } },
     );
     expect(syncExecutor.syncSource.mock.calls.map(([name]) => name)).toEqual([
       'community-source',
       'local-source',
     ]);
+  });
+
+  it('passes the existingProjects choice through to storage for both source kinds', async () => {
+    const choice = {
+      mode: 'selected' as const,
+      projectIds: ['00000000-0000-0000-0000-000000000003'],
+    };
+
+    await service.createCommunitySource({
+      name: 'choice-community',
+      repoOwner: 'owner',
+      repoName: 'repo',
+      branch: 'main',
+      existingProjects: choice,
+    });
+    await service.createLocalSource({
+      name: 'choice-local',
+      folderPath: '/tmp/choice-local',
+      existingProjects: choice,
+    });
+
+    expect(storage.createCommunitySkillSource).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'choice-community' }),
+      { existingProjects: choice },
+    );
+    expect(storage.createLocalSkillSource).toHaveBeenCalledWith(
+      { name: 'choice-local', folderPath: '/tmp/choice-local' },
+      { existingProjects: choice },
+    );
   });
 
   it('retains a created source when idle initial sync throws', async () => {

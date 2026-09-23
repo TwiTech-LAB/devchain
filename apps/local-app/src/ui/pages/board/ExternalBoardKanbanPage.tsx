@@ -567,7 +567,7 @@ function ValidExternalBoardKanbanPage({ provider, workAreaId }: ValidExternalBoa
         connectionEpoch={connectionEpoch}
         returnFocusTo={resolveDialogFocusTarget}
         onImportFocusTargetReady={handleImportFocusTargetReady}
-        globalLink={selectedTaskLink}
+        projectLink={selectedTaskLink}
       />
       <ExternalTaskImportDialog
         provider={provider}

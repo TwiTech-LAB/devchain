@@ -113,6 +113,7 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
   let filePath: string;
   let service: TranscriptWatcherService;
   let cacheService: SessionCacheService;
+  let adapter: ClaudeSessionReaderAdapter;
 
   beforeEach(async () => {
     jest.useFakeTimers({ advanceTimers: false, doNotFake: ['setImmediate'] });
@@ -136,7 +137,7 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
     } as never);
 
     const adapterFactory = new SessionReaderAdapterFactory();
-    const adapter = new ClaudeSessionReaderAdapter(mockPricing);
+    adapter = new ClaudeSessionReaderAdapter(mockPricing);
     adapterFactory.registerAdapter(adapter);
 
     service = new TranscriptWatcherService(cacheService, adapterFactory, mockEvents);
@@ -155,11 +156,13 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
     }
   });
 
-  it('should detect file growth and publish transcript.updated with parsed metrics', async () => {
+  it('lane: file growth publishes full-refetch-required and never populates the cache', async () => {
+    // Unviewed Claude session (no reader created an entry): the watcher runs the metrics-only
+    // lane. It signals the change with the existing full-refetch-required kind and advances its
+    // O(1) summary WITHOUT retaining bodies or creating a cache entry.
     await service.startWatching('test-session', filePath, 'claude');
     expect(service.activeWatcherCount).toBe(1);
 
-    // Append new messages to the file
     const newContent =
       [
         userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'List files please'),
@@ -172,26 +175,23 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
     expect(mockEvents.publish).toHaveBeenCalledWith(
       'session.transcript.updated',
       expect.objectContaining({
+        kind: 'full-refetch-required',
         sessionId: 'test-session',
         transcriptPath: filePath,
-        newMessageCount: 2,
-        metrics: expect.objectContaining({
-          messageCount: 4,
-          inputTokens: expect.any(Number),
-          outputTokens: expect.any(Number),
-        }),
-        cursor: expect.any(String),
-        prevCursor: expect.any(String),
-        deltaChunks: expect.any(Array),
-        deltaMessages: expect.any(Array),
+        sourceChangeKind: 'unknown-full-parse',
       }),
     );
+    // No cache entry, no retained bytes.
+    expect(cacheService.size).toBe(0);
+    expect(cacheService.getCacheStats().budgetUsedBytes).toBe(0);
+    // Lane summary reflects the appended content (initial 2 + appended 2 = 4).
+    expect(service.getLastKnownMessageCount('test-session')).toBe(4);
+    expect(service.getLastKnownSummaryMetrics('test-session')?.messageCount).toBe(4);
   }, 15_000);
 
-  it('should process multiple file changes over successive poll cycles', async () => {
+  it('lane: successive appends advance the lane summary with the cache empty', async () => {
     await service.startWatching('test-session', filePath, 'claude');
 
-    // Append ALL new messages in one go (both user + assistant)
     const newContent =
       [
         userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'First append'),
@@ -202,22 +202,17 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
 
     await advancePollCycle();
 
-    // Should publish transcript.updated with delta message count (3 appended) and full metrics (5 total)
     expect(mockEvents.publish).toHaveBeenCalledWith(
       'session.transcript.updated',
       expect.objectContaining({
+        kind: 'full-refetch-required',
         sessionId: 'test-session',
-        newMessageCount: 3,
-        metrics: expect.objectContaining({ messageCount: 5 }),
-        cursor: expect.any(String),
-        prevCursor: expect.any(String),
-        deltaChunks: expect.any(Array),
-        deltaMessages: expect.any(Array),
+        sourceChangeKind: 'unknown-full-parse',
       }),
     );
-
-    // Verify cache was populated (subsequent parse should use cache)
-    expect(cacheService.size).toBe(1);
+    // The lane never populates the cache (initial 2 + appended 3 = 5 messages tracked in O(1)).
+    expect(cacheService.size).toBe(0);
+    expect(service.getLastKnownMessageCount('test-session')).toBe(5);
   }, 15_000);
 
   it('should emit transcript.ended with final metrics on stopWatching', async () => {
@@ -239,7 +234,103 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
         }),
       }),
     );
+    // A lane session ends without ever creating a 2x-size cache entry.
+    expect(cacheService.size).toBe(0);
   });
+
+  it('lane→body switch: a reader that creates an entry gets a delta, not a full-refetch', async () => {
+    // Unviewed session starts in the lane.
+    await service.startWatching('test-session', filePath, 'claude');
+    await flush();
+    expect(cacheService.size).toBe(0);
+
+    // A reader opens the session, creating a cache entry (the body path from here on).
+    await cacheService.getOrParseWithMeta('test-session', filePath, adapter);
+    expect(cacheService.size).toBe(1);
+
+    // The agent appends: the watcher finds the entry and switches to the body path, publishing a
+    // normal delta (never full-refetch-required, which would force a second canonical load).
+    const newContent =
+      [
+        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'More please'),
+        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Sure'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, newContent, 'utf8');
+    await advancePollCycle();
+
+    const updates = mockEvents.publish.mock.calls.filter(
+      ([name]) => name === 'session.transcript.updated',
+    );
+    const kinds = updates.map(([, payload]) => (payload as { kind: string }).kind);
+    expect(kinds).toContain('delta');
+    expect(kinds).not.toContain('full-refetch-required');
+  }, 15_000);
+
+  it('lane→body switch: sharing a reader full-parse successor never forces a second canonical load', async () => {
+    // Unviewed session starts in the lane.
+    await service.startWatching('test-session', filePath, 'claude');
+    await flush();
+    expect(cacheService.size).toBe(0);
+
+    // Hold reader full parse A AFTER it has read the initial file, and count overlap.
+    let releaseA: () => void = () => {};
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let active = 0;
+    let maxActive = 0;
+    let fullCalls = 0;
+    const realParseFull = adapter.parseFullSession.bind(adapter);
+    jest.spyOn(adapter, 'parseFullSession').mockImplementation(async (fp) => {
+      fullCalls += 1;
+      const isA = fullCalls === 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        const session = await realParseFull(fp);
+        if (isA) await gateA;
+        return session;
+      } finally {
+        active -= 1;
+      }
+    });
+
+    const readerA = cacheService.getOrParseWithMeta('test-session', filePath, adapter);
+    await flush();
+    expect(active).toBe(1);
+
+    // B: a second reader joins behind A. C: the watcher's refreshIfPresent pass for the append.
+    const readerB = cacheService.getOrParseWithMeta('test-session', filePath, adapter);
+    const appended =
+      [
+        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'More please'),
+        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Sure'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, appended, 'utf8');
+    jest.advanceTimersByTime(3000);
+    await flush();
+    jest.advanceTimersByTime(200);
+    await flush();
+
+    // The file grew while A ran, so A stores no proof and B's successor is a full parse
+    // classified same-file-rewrite. C shares that successor instead of racing it.
+    releaseA();
+    await readerA;
+    const resultB = await readerB;
+    await flush();
+
+    expect(maxActive).toBe(1);
+    expect(fullCalls).toBe(2);
+    expect(resultB.sourceChangeKind).toBe('same-file-rewrite');
+    expect(resultB.session.metrics.messageCount).toBe(4);
+
+    // The reader already holds B's generation: the watcher adopts it and publishes no refetch.
+    const kinds = mockEvents.publish.mock.calls
+      .filter(([name]) => name === 'session.transcript.updated')
+      .map(([, payload]) => (payload as { kind: string }).kind);
+    expect(kinds).not.toContain('full-refetch-required');
+    expect(service.getLastKnownMessageCount('test-session')).toBe(4);
+  }, 15_000);
 
   it('should not publish when file size has not changed between polls', async () => {
     await service.startWatching('test-session', filePath, 'claude');
@@ -270,5 +361,304 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
         endReason: 'file.deleted',
       }),
     );
+  }, 15_000);
+
+  interface FinalMetrics {
+    messageCount: number;
+    totalTokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  }
+
+  function endedFinalMetrics(): FinalMetrics {
+    const ended = mockEvents.publish.mock.calls.find(
+      ([name]) => name === 'session.transcript.ended',
+    );
+    expect(ended).toBeDefined();
+    return (ended![1] as { finalMetrics: FinalMetrics }).finalMetrics;
+  }
+
+  it('stop before the debounce fires: ended metrics count the pending append, cache stays empty', async () => {
+    await service.startWatching('test-session', filePath, 'claude');
+    // The lane seeded from the initial two messages; the append below is not yet observed.
+    expect(service.getLastKnownMessageCount('test-session')).toBe(2);
+
+    const appended =
+      [
+        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'List files please'),
+        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Here are the files'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, appended, 'utf8');
+
+    // Stop WITHOUT advancing timers: the debounce/poll never fired, so no live pass saw the append.
+    await service.stopWatching('test-session', 'session.stopped');
+
+    const full = await adapter.parseFullSession(filePath);
+    const finalMetrics = endedFinalMetrics();
+    expect(finalMetrics.messageCount).toBe(4);
+    expect(finalMetrics.messageCount).toBe(full.metrics.messageCount);
+    expect(finalMetrics.totalTokens).toBe(full.metrics.totalTokens);
+    expect(finalMetrics.inputTokens).toBe(full.metrics.inputTokens);
+    expect(finalMetrics.outputTokens).toBe(full.metrics.outputTokens);
+    expect(finalMetrics.costUsd).toBe(full.metrics.costUsd);
+    // No cache entry created for the ending unviewed session.
+    expect(cacheService.size).toBe(0);
+    expect(cacheService.getCacheStats().budgetUsedBytes).toBe(0);
+  }, 15_000);
+
+  it('stop inside the costly-refresh cooldown: ended metrics still count the latest append', async () => {
+    await service.startWatching('test-session', filePath, 'claude');
+
+    const first =
+      [
+        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'First'),
+        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Reply one'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, first, 'utf8');
+    await advancePollCycle();
+    expect(service.getLastKnownMessageCount('test-session')).toBe(4);
+
+    // Represent the 2 s cooldown window: the next eligible refresh is in the future.
+    const watched = (
+      service as unknown as { watchers: Map<string, { nextEligibleAt: number }> }
+    ).watchers.get('test-session')!;
+    watched.nextEligibleAt = performance.now() + 5_000;
+
+    const second =
+      [
+        userLine('u-003', 'a-002', '2026-01-15T10:00:40.000Z', 'Second'),
+        assistantLine('a-003', 'u-003', '2026-01-15T10:00:45.000Z', 'Reply two'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, second, 'utf8');
+    // Stop immediately: still inside the cooldown, before any new pass observed the second append.
+    await service.stopWatching('test-session', 'session.stopped');
+
+    const full = await adapter.parseFullSession(filePath);
+    const finalMetrics = endedFinalMetrics();
+    expect(finalMetrics.messageCount).toBe(6);
+    expect(finalMetrics.messageCount).toBe(full.metrics.messageCount);
+    expect(finalMetrics.totalTokens).toBe(full.metrics.totalTokens);
+    expect(cacheService.size).toBe(0);
+  }, 15_000);
+
+  it('stop while a lane pass is active: one ended event, correct totals, no overlap, no late update', async () => {
+    await service.startWatching('test-session', filePath, 'claude');
+
+    const appended =
+      [
+        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'List files'),
+        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Here'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, appended, 'utf8');
+
+    // Gate parseIncremental so the triggered lane pass is still in flight when we stop.
+    let releaseParse: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseParse = resolve;
+    });
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const realParseIncremental = adapter.parseIncremental.bind(adapter);
+    jest.spyOn(adapter, 'parseIncremental').mockImplementation(async (fp, options) => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      try {
+        await gate;
+        return await realParseIncremental(fp, options);
+      } finally {
+        concurrent -= 1;
+      }
+    });
+
+    // Fire poll → debounce → lane pass; it blocks inside parseIncremental.
+    jest.advanceTimersByTime(3000);
+    await flush();
+    jest.advanceTimersByTime(200);
+    await flush();
+    expect(concurrent).toBe(1);
+
+    // Stop while that pass runs: stopWatching waits for it instead of racing a second pass.
+    const stopPromise = service.stopWatching('test-session', 'session.stopped');
+    await flush();
+    releaseParse();
+    await stopPromise;
+    await flush();
+
+    expect(maxConcurrent).toBe(1); // never two lane passes on the same state at once
+
+    const endedCalls = mockEvents.publish.mock.calls.filter(
+      ([name]) => name === 'session.transcript.ended',
+    );
+    expect(endedCalls).toHaveLength(1);
+    const full = await adapter.parseFullSession(filePath);
+    const finalMetrics = (endedCalls[0][1] as { finalMetrics: FinalMetrics }).finalMetrics;
+    expect(finalMetrics.messageCount).toBe(full.metrics.messageCount);
+    expect(finalMetrics.totalTokens).toBe(full.metrics.totalTokens);
+
+    // The stop superseded the append's own live update: no transcript.updated after the stop.
+    const updateCalls = mockEvents.publish.mock.calls.filter(
+      ([name]) => name === 'session.transcript.updated',
+    );
+    expect(updateCalls).toHaveLength(0);
+    expect(cacheService.size).toBe(0);
+  }, 15_000);
+
+  it('stop then immediate restart: the stale final pass never touches the new watcher', async () => {
+    await service.startWatching('test-session', filePath, 'claude');
+
+    const appended =
+      [
+        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'List'),
+        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Here'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, appended, 'utf8');
+
+    // Keep the triggered pass in flight across the restart.
+    let releaseParse: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseParse = resolve;
+    });
+    const realParseIncremental = adapter.parseIncremental.bind(adapter);
+    jest.spyOn(adapter, 'parseIncremental').mockImplementation(async (fp, options) => {
+      await gate;
+      return realParseIncremental(fp, options);
+    });
+
+    jest.advanceTimersByTime(3000);
+    await flush();
+    jest.advanceTimersByTime(200);
+    await flush();
+
+    // Stop waits on the in-flight pass; a new watcher for the same session starts meanwhile.
+    const stopPromise = service.stopWatching('test-session', 'session.stopped');
+    await flush();
+    await service.startWatching('test-session', filePath, 'claude');
+    expect(service.activeWatcherCount).toBe(1);
+
+    releaseParse();
+    await stopPromise;
+    await flush();
+
+    // The new watcher owns the session and reports the full file; the stale stop changed nothing
+    // and published no ended event (the restart revoked its ownership).
+    expect(service.activeWatcherCount).toBe(1);
+    expect(service.getLastKnownMessageCount('test-session')).toBe(4);
+    const endedCalls = mockEvents.publish.mock.calls.filter(
+      ([name]) => name === 'session.transcript.ended',
+    );
+    expect(endedCalls).toHaveLength(0);
+  }, 15_000);
+
+  it('final lane pass failure: logs a warning and reports the last known metrics', async () => {
+    await service.startWatching('test-session', filePath, 'claude');
+    expect(service.getLastKnownMessageCount('test-session')).toBe(2);
+
+    const appended =
+      [
+        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'List'),
+        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Here'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, appended, 'utf8');
+
+    const warnSpy = jest
+      .spyOn(
+        (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger,
+        'warn',
+      )
+      .mockImplementation(() => {});
+    // Both the append-proof path and the metrics-only rescan fall back to failing.
+    jest.spyOn(adapter, 'parseIncremental').mockRejectedValue(new Error('boom'));
+    jest.spyOn(adapter, 'getSummary').mockRejectedValue(new Error('boom'));
+
+    await expect(service.stopWatching('test-session', 'session.stopped')).resolves.not.toThrow();
+
+    const finalMetrics = endedFinalMetrics();
+    // Reports the last known lane metrics (the seed of two messages); never throws.
+    expect(finalMetrics.messageCount).toBe(2);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(cacheService.size).toBe(0);
+  }, 15_000);
+
+  it('same-length in-place rewrite with a changed mtime refreshes the lane to match a full parse', async () => {
+    await service.startWatching('test-session', filePath, 'claude');
+    expect(service.getLastKnownSummaryMetrics('test-session')?.inputTokens).toBe(100);
+
+    // Rewrite a-001 in place, input_tokens 100 -> 900: three digits either way, so the byte length
+    // (and file size) is identical. This is a same-length rewrite, outside the accepted middle-
+    // overwrite-plus-growth limit; the lane must refresh, not treat it as a redundant signal.
+    const rewritten =
+      [
+        userLine('u-001', null, '2026-01-15T10:00:00.000Z', 'Hello'),
+        assistantLine('a-001', 'u-001', '2026-01-15T10:00:05.000Z', 'Hi there!', {
+          input: 900,
+          output: 50,
+        }),
+      ].join('\n') + '\n';
+    const sizeBefore = (await fsp.stat(filePath)).size;
+    await fsp.writeFile(filePath, rewritten, 'utf8');
+    expect((await fsp.stat(filePath)).size).toBe(sizeBefore); // genuinely same-length
+    // Force a distinct mtime (filesystem granularity could otherwise coincide with the seed's).
+    const bump = new Date(Date.now() + 2000);
+    await fsp.utimes(filePath, bump, bump);
+
+    // Run the normal file-change handler (as fs.watch would fire it for an in-place rewrite).
+    const state = (service as unknown as { watchers: Map<string, unknown> }).watchers.get(
+      'test-session',
+    );
+    await (
+      service as unknown as { runRefresh: (s: unknown, poll: boolean) => Promise<void> }
+    ).runRefresh(state, false);
+    await flush();
+
+    const full = await adapter.parseFullSession(filePath);
+    const refreshed = service.getLastKnownSummaryMetrics('test-session');
+    expect(refreshed?.inputTokens).toBe(900);
+    expect(refreshed?.inputTokens).toBe(full.metrics.inputTokens);
+    expect(mockEvents.publish).toHaveBeenCalledWith(
+      'session.transcript.updated',
+      expect.objectContaining({
+        kind: 'full-refetch-required',
+        sourceChangeKind: 'unknown-full-parse',
+      }),
+    );
+    expect(cacheService.size).toBe(0);
+  }, 15_000);
+
+  it('a redundant signal (same identity, size and revision) stays a no-op: no rescan, no event, running metrics unchanged', async () => {
+    await service.startWatching('test-session', filePath, 'claude');
+    const appended =
+      [
+        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'More'),
+        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Reply'),
+      ].join('\n') + '\n';
+    await fsp.appendFile(filePath, appended, 'utf8');
+    await advancePollCycle(); // consume the append; the lane is now fully current
+
+    const updatesBefore = mockEvents.publish.mock.calls.filter(
+      ([name]) => name === 'session.transcript.updated',
+    ).length;
+    const before = { ...service.getLastKnownSummaryMetrics('test-session')! };
+    const getSummarySpy = jest.spyOn(adapter, 'getSummary');
+
+    // Re-fire the change handler with no file change: a redundant signal for bytes already proved.
+    const state = (service as unknown as { watchers: Map<string, unknown> }).watchers.get(
+      'test-session',
+    );
+    await (
+      service as unknown as { runRefresh: (s: unknown, poll: boolean) => Promise<void> }
+    ).runRefresh(state, false);
+    await flush();
+
+    expect(getSummarySpy).not.toHaveBeenCalled(); // no rescan
+    const updatesAfter = mockEvents.publish.mock.calls.filter(
+      ([name]) => name === 'session.transcript.updated',
+    ).length;
+    expect(updatesAfter).toBe(updatesBefore); // no new event
+    const after = service.getLastKnownSummaryMetrics('test-session')!;
+    expect(after.durationMs).toBe(before.durationMs); // merge-derived running metrics preserved
+    expect(after.costUsd).toBe(before.costUsd);
+    expect(after.inputTokens).toBe(before.inputTokens);
+    getSummarySpy.mockRestore();
   }, 15_000);
 });

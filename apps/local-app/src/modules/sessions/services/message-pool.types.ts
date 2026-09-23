@@ -113,6 +113,8 @@ export interface MessageLogEntry {
   failureCode?: DeliveryFailureCode;
 }
 
+export type DeferredHoldReason = 'human_draft' | 'awaiting_quiet' | 'awaiting_idle';
+
 export interface PoolDetails {
   agentId: string;
   agentName: string;
@@ -121,6 +123,14 @@ export interface PoolDetails {
   humanHeldMessageCount: number;
   /** When the delayed explicit-release affordance may be shown. */
   humanReleaseEligibleAt?: number;
+  /** Why the deferred lane is held. */
+  holdReason?: DeferredHoldReason;
+  /** Earliest time force delivery becomes eligible. */
+  forceEligibleAt?: number;
+  /** Active session that owns the deferred lane. */
+  activeSessionId?: string;
+  /** Ordered deferred message log-entry IDs for force confirmation. */
+  deferredMessageIds?: string[];
   waitingMs: number;
   messages: Array<{
     id: string;
@@ -129,3 +139,11 @@ export interface PoolDetails {
     timestamp: number;
   }>;
 }
+
+export type ForceDeferredResult =
+  | { readonly status: 'delivered'; readonly deliveredCount: number }
+  | { readonly status: 'unconfirmed'; readonly deliveredCount: number }
+  | { readonly status: 'deferred'; readonly reason: string }
+  | { readonly status: 'failed'; readonly reason: string }
+  | { readonly status: 'not_found' }
+  | { readonly status: 'conflict'; readonly reason: string };

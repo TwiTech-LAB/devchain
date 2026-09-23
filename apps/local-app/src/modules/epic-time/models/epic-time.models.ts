@@ -138,6 +138,18 @@ export interface ExternalEstimateLoggedDay {
   loggedMinutes: number;
 }
 
+/**
+ * Previous checkpoint history still awaiting ownership attribution. It never
+ * represents the selected project's own logged amount; a non-null value
+ * gates estimate export and reconciliation until the one-time assignment
+ * resolves ownership.
+ */
+export interface ExternalEstimateLegacyCheckpoint {
+  revision: number;
+  loggedMinutes: number;
+  hasPendingOperation: boolean;
+}
+
 export interface ExternalEstimateLogSnapshot {
   state: ExternalEstimateLogState | null;
   initialized: boolean;
@@ -155,6 +167,8 @@ export interface ExternalEstimateLogSnapshot {
    * Clients schedule one deadline transition from it — never a TTL of
    * their own. */
   verifyExpiresAt: string | null;
+  /** Unassigned legacy history for this remote identity; null once ownership is resolved. */
+  legacyCheckpoint: ExternalEstimateLegacyCheckpoint | null;
 }
 
 export interface CreateExternalEstimateTimeEntryInput extends ExternalEstimateTaskContext {
@@ -203,6 +217,15 @@ export interface ResolveExternalEstimateOperationInput extends ExternalEstimateT
   expectedRevision: number;
 }
 
+/**
+ * One-time legacy ownership claim: the current project, its connection
+ * epoch, the remote identity, and the legacy revision the caller saw. The
+ * assignment sends no provider request and preserves pending state.
+ */
+export interface AssignExternalEstimateLegacyCheckpointInput extends ExternalEstimateTaskContext {
+  expectedLegacyRevision: number;
+}
+
 export type ResolveExternalEstimateOperationResult =
   | { outcome: 'logged' | 'not_logged'; snapshot: ExternalEstimateLogSnapshot }
   | { outcome: 'unresolved'; snapshot: ExternalEstimateLogSnapshot };
@@ -231,6 +254,8 @@ export interface ExternalEstimateLogStateView {
   canVerify: boolean;
   verifyExpiresAt: string | null;
   pending: ExternalEstimatePendingOperationView | null;
+  /** Unassigned legacy history awaiting ownership recovery; null once resolved. */
+  legacyCheckpoint: ExternalEstimateLegacyCheckpoint | null;
 }
 
 export interface ExternalEstimateCreateTimeEntryResponse {

@@ -6,6 +6,7 @@ import type {
   IntegrationCredentials,
   IntegrationProvider,
 } from '../../storage/models/domain.models';
+import { loadStableIntegrationConnection } from '../connections/stable-integration-connection';
 import { ExternalProviderError } from '../errors/external-provider.errors';
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
 import {
@@ -45,6 +46,9 @@ import {
   type StoreFailure,
 } from '../sessions/external-edit-session.store';
 import { ProviderOperationGate } from '../sessions/provider-operation-gate';
+
+const RICH_NOT_CONNECTED_MESSAGE = 'Connect the integration before editing.';
+const RICH_CONNECTION_CHANGED_MESSAGE = 'Integration connection changed during the operation.';
 
 export interface ExternalRichDescriptionRead {
   document: ExternalRichDocumentV1 | null;
@@ -581,7 +585,7 @@ export class ExternalEditSessionService {
     return { ok: fingerprint !== null, fingerprint, generationChanged: false };
   }
 
-  /** Explicit reload: re-baselines an editable session from a fresh read. */
+  /** Explicit reload: restores editable from an editable or diverged session with a fresh baseline. */
   async reloadSession(projectId: string, sessionId: string): Promise<ExternalSessionReloadResult> {
     await this.storage.getProject(projectId);
     const session = this.store.get(sessionId);
@@ -599,12 +603,14 @@ export class ExternalEditSessionService {
     this.requireRichEditCapability();
     const provider = session.value.provider;
     const { connection, credentials } = await this.loadStableConnection(projectId, provider);
-    if (connection.id !== session.value.connectionId) {
+    if (!this.connectionMatchesSession(connection, session.value)) {
       this.store.invalidate(sessionId);
       throw new ValidationError('The connection was replaced; the session is invalid.', {
         reason: 'connection_superseded',
       });
     }
+
+    this.requireReloadableSession(sessionId);
 
     if (session.value.kind === 'description_edit') {
       const adapter = this.providers.get(provider);
@@ -616,6 +622,14 @@ export class ExternalEditSessionService {
         this.context(connection),
         session.value.remoteTaskId,
       );
+      const after = await this.storage.getIntegrationConnection({ projectId, provider });
+      if (!this.connectionMatchesSession(after, session.value)) {
+        this.store.invalidate(sessionId);
+        throw new ValidationError('The connection was replaced; the session is invalid.', {
+          reason: 'connection_superseded',
+        });
+      }
+      this.requireReloadableSession(sessionId);
       const parsed = this.parseProviderDescription(provider, raw);
       if (!parsed.supported) {
         this.store.applyVerifyOutcome(sessionId, 'diverged');
@@ -647,6 +661,14 @@ export class ExternalEditSessionService {
       session.value.remoteCommentId!,
       token.pageProof,
     );
+    const after = await this.storage.getIntegrationConnection({ projectId, provider });
+    if (!this.connectionMatchesSession(after, session.value)) {
+      this.store.invalidate(sessionId);
+      throw new ValidationError('The connection was replaced; the session is invalid.', {
+        reason: 'connection_superseded',
+      });
+    }
+    this.requireReloadableSession(sessionId);
     if (snapshot === null) {
       const gone = this.store.markDeleted(sessionId);
       return { status: 'gone', session: gone.ok ? this.store.view(gone.value) : null };
@@ -968,40 +990,42 @@ export class ExternalEditSessionService {
     }
   }
 
-  private async loadStableConnection(
+  private loadStableConnection(
     projectId: string,
     provider: IntegrationProvider,
   ): Promise<{
     connection: IntegrationConnection;
     credentials: IntegrationCredentials;
   }> {
-    await this.storage.getProject(projectId);
-    const identity = { projectId, provider } as const;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const before = await this.storage.getIntegrationConnection(identity);
-      if (before?.projectId !== projectId || before.provider !== provider) {
-        throw this.notConnected(projectId, provider);
-      }
-      const credentials = await this.storage.getIntegrationConnectionCredentials(identity);
-      const after = await this.storage.getIntegrationConnection(identity);
-      if (
-        !credentials ||
-        credentials.provider !== provider ||
-        !after ||
-        after.projectId !== projectId ||
-        after.provider !== provider
-      ) {
-        throw this.notConnected(projectId, provider);
-      }
-      if (before.id === after.id && before.generation === after.generation) {
-        return { connection: after, credentials };
-      }
-    }
-    throw new BusyError('Integration connection changed during the operation.', {
-      provider,
+    return loadStableIntegrationConnection(this.storage, {
       projectId,
-      reason: 'connection_changed',
+      provider,
+      notConnectedMessage: RICH_NOT_CONNECTED_MESSAGE,
+      connectionChangedMessage: RICH_CONNECTION_CHANGED_MESSAGE,
     });
+  }
+
+  private connectionMatchesSession(
+    connection: IntegrationConnection | null,
+    session: ExternalEditSession,
+  ): boolean {
+    return (
+      connection !== null &&
+      connection.projectId === session.projectId &&
+      connection.provider === session.provider &&
+      connection.id === session.connectionId &&
+      connection.generation === session.connectionGeneration
+    );
+  }
+
+  private requireReloadableSession(sessionId: string): void {
+    const session = this.store.get(sessionId);
+    if (!session.ok) {
+      throw this.sessionFailure(session.reason);
+    }
+    if (session.value.state !== 'editable' && session.value.state !== 'diverged') {
+      throw this.sessionFailure('session_not_editable');
+    }
   }
 
   private currentView(sessionId: string): ExternalEditSessionView | null {
@@ -1038,7 +1062,7 @@ export class ExternalEditSessionService {
       projectId,
       session.provider,
     );
-    if (connection.id !== session.connectionId) {
+    if (!this.connectionMatchesSession(connection, session)) {
       this.store.invalidate(session.sessionId);
       return this.verifyResult(session.sessionId, 'diverged');
     }
@@ -1049,6 +1073,14 @@ export class ExternalEditSessionService {
       session.remoteCommentId!,
       token.pageProof,
     );
+    const after = await this.storage.getIntegrationConnection({
+      projectId,
+      provider: session.provider,
+    });
+    if (!this.connectionMatchesSession(after, session)) {
+      this.store.invalidate(session.sessionId);
+      return this.verifyResult(session.sessionId, 'diverged');
+    }
     if (snapshot === null) {
       const deleted = this.store.markDeleted(session.sessionId);
       return this.verifyResult(deleted.ok ? deleted.value.sessionId : session.sessionId, 'gone');
@@ -1113,14 +1145,6 @@ export class ExternalEditSessionService {
   private storeFailure(reason: StoreFailure): ValidationError {
     return new ValidationError('The edit session could not be created.', {
       reason: reason === 'baseline_too_large' ? 'baseline_too_large' : 'store_limit_exceeded',
-    });
-  }
-
-  private notConnected(projectId: string, provider: IntegrationProvider): ValidationError {
-    return new ValidationError('Connect the integration before editing.', {
-      provider,
-      projectId,
-      reason: 'not_connected',
     });
   }
 

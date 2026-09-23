@@ -85,6 +85,19 @@ export interface ActionInputDefinition {
   /** Options for 'select' type inputs */
   options?: Array<{ value: string; label: string }>;
 
+  /**
+   * When true, this input holds several values stored as one comma-separated
+   * string in the subscriber's customValue.
+   */
+  multiple?: boolean;
+
+  /**
+   * When set, the UI hydrates `options` from this project-scoped source before
+   * rendering; stored values stay labels, so a value the project no longer has
+   * must surface as an error in the dialog, not silently vanish.
+   */
+  optionsSource?: 'project_statuses';
+
   /** Minimum length for string inputs */
   minLength?: number;
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ExistingProjectsEnablementSchema } from './skill.dto';
 
 const LOCAL_SOURCE_NAME_PATTERN = /^[a-z0-9-]+$/;
 
@@ -17,6 +18,7 @@ export const LocalSourceFolderPathSchema = z.string().trim().min(1).max(4096);
 export const CreateLocalSourceSchema = z.object({
   name: LocalSourceNameSchema,
   folderPath: LocalSourceFolderPathSchema,
+  existingProjects: ExistingProjectsEnablementSchema,
 });
 
 export const LocalSourceResponseSchema = z.object({

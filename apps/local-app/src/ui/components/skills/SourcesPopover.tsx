@@ -26,6 +26,7 @@ import {
   fetchSources,
   removeLocalSource,
   removeCommunitySource,
+  type ExistingProjectsChoice,
   type LocalSource,
   type SkillSource,
 } from '@/ui/lib/skills';
@@ -59,6 +60,20 @@ interface SourcePendingRemoval {
   id: string;
   name: string;
   kind: 'community' | 'local';
+}
+
+function describeExistingProjectsChoice(
+  choice: ExistingProjectsChoice,
+  selectedProjectName: string,
+): string {
+  switch (choice.mode) {
+    case 'all':
+      return 'Enabled in all existing projects';
+    case 'selected':
+      return `Enabled in ${selectedProjectName}`;
+    case 'none':
+      return 'Disabled in existing projects';
+  }
 }
 
 export function SourcesPopover() {
@@ -173,15 +188,17 @@ export function SourcesPopover() {
           name: payload.name,
           url: payload.url,
           branch: payload.branch,
+          existingProjects: payload.existingProjects,
         });
-        return { kind: 'community' as const, source };
+        return { kind: 'community' as const, source, existingProjects: payload.existingProjects };
       }
 
       const source = await addLocalSource({
         name: payload.name,
         folderPath: payload.folderPath,
+        existingProjects: payload.existingProjects,
       });
-      return { kind: 'local' as const, source };
+      return { kind: 'local' as const, source, existingProjects: payload.existingProjects };
     },
     onSuccess: async (result) => {
       await Promise.all([
@@ -191,9 +208,14 @@ export function SourcesPopover() {
         queryClient.invalidateQueries({ queryKey: ['skills'] }),
       ]);
 
+      const choice = describeExistingProjectsChoice(
+        result.existingProjects,
+        selectedProject?.name ?? 'selected project',
+      );
+
       toast({
         title: result.kind === 'community' ? 'Community source added' : 'Local source added',
-        description: `${formatSourceName(result.source.name)} is now available as a skill source.`,
+        description: `${formatSourceName(result.source.name)} is now available as a skill source. ${choice}.`,
       });
     },
     onError: (error) => {
@@ -598,6 +620,11 @@ export function SourcesPopover() {
       <AddCommunitySourceDialog
         open={isAddDialogOpen}
         isSubmitting={addSourceMutation.isPending}
+        currentProject={
+          selectedProjectId && selectedProject
+            ? { id: selectedProjectId, name: selectedProject.name }
+            : null
+        }
         onOpenChange={setIsAddDialogOpen}
         onSubmit={async (input) => {
           await addSourceMutation.mutateAsync(input);

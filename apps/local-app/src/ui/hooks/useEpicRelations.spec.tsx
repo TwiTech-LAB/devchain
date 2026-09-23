@@ -295,7 +295,9 @@ describe('relation mutations', () => {
   });
 
   it('DELETEs the pair without confirmation parameters and invalidates caches', async () => {
-    const { Wrapper } = createWrapper();
+    const { Wrapper, queryClient } = createWrapper();
+    const batchKey = epicRelationQueryKeys.batch([EPIC_ID, RELATED_ID]);
+    queryClient.setQueryData(batchKey, new Map());
     const { result } = renderHook(
       () => ({
         list: useEpicRelations(EPIC_ID),
@@ -331,6 +333,9 @@ describe('relation mutations', () => {
       );
       expect(candidateReads.length).toBeGreaterThan(1);
     });
+    // The board badge counts refresh from the mutation's own batch-family
+    // invalidation — no realtime event is involved in this contract.
+    expect(queryClient.getQueryState(batchKey)?.isInvalidated).toBe(true);
   });
 
   it('preserves the typed 409 facts and echoes them exactly on the retry', async () => {

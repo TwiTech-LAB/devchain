@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { axe } from 'jest-axe';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -13,11 +13,18 @@ import type { EpicRelation } from '@/ui/lib/epic-relations';
 // Layer: component unit. The data hook, worktree runtime, and project
 // selection are stubbed because this spec owns resting-badge presentation, the
 // hover/keyboard/touch mode machine, the card drag fence, the preview's
-// rendering states over the first detail page, and the title navigation and
-// focus contract.
+// rendering states over the first detail page, the title navigation and focus
+// contract, and the shared removal flow from the preview rows.
 const useEpicRelationsMock = jest.fn();
+const useDeleteEpicRelationMock = jest.fn();
 jest.mock('@/ui/hooks/useEpicRelations', () => ({
   useEpicRelations: (...args: unknown[]) => useEpicRelationsMock(...args),
+  useDeleteEpicRelation: (...args: unknown[]) => useDeleteEpicRelationMock(...args),
+}));
+
+const fetchMock = jest.fn();
+jest.mock('@/ui/hooks/useFetchFactory', () => ({
+  useFetchFactory: () => fetchMock,
 }));
 
 const mockProjectSelection = {
@@ -122,6 +129,7 @@ interface RenderOptions {
   epicId?: string;
   epicTitle?: string;
   focalProjectId?: string;
+  focalIsRoot?: boolean;
   dragFenceRef?: { current: boolean };
   isDragging?: boolean;
 }
@@ -136,6 +144,7 @@ function badgesTree({
   epicId,
   epicTitle,
   focalProjectId = 'project-1',
+  focalIsRoot = true,
   dragFenceRef,
   isDragging,
 }: Required<Pick<RenderOptions, 'epicId' | 'epicTitle'>> & RenderOptions) {
@@ -152,6 +161,7 @@ function badgesTree({
                   epicId={epicId}
                   epicTitle={epicTitle}
                   focalProjectId={focalProjectId}
+                  focalIsRoot={focalIsRoot}
                   dragFenceRef={dragFenceRef}
                   isDragging={isDragging}
                 />
@@ -171,11 +181,20 @@ function renderBadges({
   epicId = FOCAL_ID,
   epicTitle = 'Focal Epic',
   focalProjectId = 'project-1',
+  focalIsRoot = true,
   dragFenceRef,
   isDragging,
 }: RenderOptions = {}) {
   return render(
-    badgesTree({ counts, epicId, epicTitle, focalProjectId, dragFenceRef, isDragging }),
+    badgesTree({
+      counts,
+      epicId,
+      epicTitle,
+      focalProjectId,
+      focalIsRoot,
+      dragFenceRef,
+      isDragging,
+    }),
   );
 }
 
@@ -249,12 +268,32 @@ function enterPreview() {
   fireEvent.keyDown(trigger(), { key: 'Enter' });
 }
 
+const deleteMutateMock = jest.fn();
+const deleteResetMock = jest.fn();
+
+function mockDeleteRelation() {
+  useDeleteEpicRelationMock.mockReturnValue({
+    mutate: deleteMutateMock,
+    reset: deleteResetMock,
+    isPending: false,
+    error: null,
+  });
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockQuery();
   worktreeRuntime.runtimeResolved = true;
   worktreeRuntime.apiBase = '';
+  mockDeleteRelation();
   mockProjectSelection.selectedWorkspace = { id: 'workspace-1', name: 'Workspace One' };
+  // The removal dialog resolves target eligibility through the shared
+  // target-facts query; the default answer marks a same-project root target.
+  fetchMock.mockReset();
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: async () => ({ parentId: null, projectId: 'project-1' }),
+  } as Response);
 });
 
 describe('EpicRelationBadges resting badge', () => {
@@ -610,12 +649,14 @@ describe('EpicRelationBadges interaction modes', () => {
             epicId="epic-a"
             epicTitle="Epic A"
             focalProjectId="project-1"
+            focalIsRoot
           />
           <EpicRelationBadges
             counts={counts}
             epicId="epic-b"
             epicTitle="Epic B"
             focalProjectId="project-1"
+            focalIsRoot
           />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1036,24 +1077,25 @@ describe('EpicRelationBadges keyboard entry and focus', () => {
     expect(trigger()).toHaveFocus();
   });
 
-  it('cycles Tab and Shift+Tab through the loaded title links after explicit entry', () => {
+  it('cycles Tab and Shift+Tab through the loaded rows after explicit entry', () => {
     mockQuery(firstPage([sourceRow, targetRow]));
     renderBadges({ counts: relatedCounts(2) });
     openKeyboardPreview();
 
     enterPreview();
     const firstLink = screen.getByRole('link', { name: 'Design API' });
-    const secondLink = screen.getByRole('link', { name: 'Ship CLI' });
+    const lastRemove = screen.getByRole('button', { name: 'Remove relation with Ship CLI' });
     expect(firstLink).toHaveFocus();
 
-    // Tab from the last link wraps to the first through the Radix focus loop.
-    secondLink.focus();
-    fireEvent.keyDown(secondLink, { key: 'Tab' });
+    // Tab from the last focusable row control (the final row's remove button)
+    // wraps to the first link through the Radix focus loop.
+    lastRemove.focus();
+    fireEvent.keyDown(lastRemove, { key: 'Tab' });
     expect(firstLink).toHaveFocus();
 
     // Shift+Tab from the first link wraps back to the last.
     fireEvent.keyDown(firstLink, { key: 'Tab', shiftKey: true });
-    expect(secondLink).toHaveFocus();
+    expect(lastRemove).toHaveFocus();
   });
 });
 
@@ -1118,5 +1160,208 @@ describe('EpicRelationBadges Escape restore', () => {
 
     expect(trigger()).toHaveAttribute('aria-expanded', 'true');
     expect(previewHeading()).toBeInTheDocument();
+  });
+});
+
+describe('EpicRelationBadges remove relation', () => {
+  function removeDialog(): HTMLElement {
+    return screen.getByRole('dialog', { name: 'Remove this relation?' });
+  }
+
+  function removeIcon(title: string): HTMLElement {
+    return screen.getByRole('button', { name: `Remove relation with ${title}` });
+  }
+
+  function confirmRemoveButton(): HTMLElement {
+    return screen.getByRole('button', { name: 'Remove', exact: true });
+  }
+
+  // Renders the badges inside a minimal Epic-card shell whose click and drag
+  // handlers stand in for the card's editor activation and status drag.
+  function renderBadgesInCardShell() {
+    const cardIntents = { onClick: jest.fn(), onDragStart: jest.fn() };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/board']}>
+          <div draggable onClick={cardIntents.onClick} onDragStart={cardIntents.onDragStart}>
+            <EpicRelationBadges
+              counts={countsFixture({ related: 1, total: 1 })}
+              epicId={FOCAL_ID}
+              epicTitle="Focal Epic"
+              focalProjectId="project-1"
+              focalIsRoot
+            />
+          </div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return cardIntents;
+  }
+
+  it('renders a labeled remove icon on every loaded row', () => {
+    mockQuery(firstPage([sourceRow, targetRow, blocksRow, blockedByRow]));
+    renderBadges({
+      counts: countsFixture({ related: 2, blocks: 1, blockedBy: 1, total: 4 }),
+    });
+    openKeyboardPreview();
+
+    expect(removeIcon('Design API')).toBeInTheDocument();
+    expect(removeIcon('Ship CLI')).toBeInTheDocument();
+    expect(removeIcon('QA suite')).toBeInTheDocument();
+    expect(removeIcon('Ops')).toBeInTheDocument();
+  });
+
+  it('keeps the icon click and dialog clicks off the card click and drag handlers', () => {
+    mockQuery(firstPage([sourceRow]));
+    const cardIntents = renderBadgesInCardShell();
+    openKeyboardPreview();
+
+    const icon = removeIcon('Design API');
+    fireEvent.dragStart(icon);
+    fireEvent.click(icon);
+    expect(cardIntents.onClick).not.toHaveBeenCalled();
+    expect(cardIntents.onDragStart).not.toHaveBeenCalled();
+
+    // The portaled dialog still bubbles through the card's React tree; its
+    // fence keeps clicks and drags inside it off the card handlers.
+    const dialog = removeDialog();
+    fireEvent.click(dialog);
+    fireEvent.dragStart(dialog);
+    expect(cardIntents.onClick).not.toHaveBeenCalled();
+    expect(cardIntents.onDragStart).not.toHaveBeenCalled();
+    expect(deleteMutateMock).not.toHaveBeenCalled();
+  });
+
+  it('opens the shared confirmation and cancels without any request', () => {
+    mockQuery(firstPage([sourceRow]));
+    renderBadges({ counts: relatedCounts(1) });
+    openKeyboardPreview();
+
+    fireEvent.click(removeIcon('Design API'));
+    const dialog = removeDialog();
+    expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
+    expect(deleteMutateMock).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
+    expect(deleteMutateMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the detail page route warning for an eligible directed pair', async () => {
+    mockQuery(firstPage([sourceRow]));
+    renderBadges({ counts: relatedCounts(1) });
+    openKeyboardPreview();
+
+    fireEvent.click(removeIcon('Design API'));
+    const dialog = removeDialog();
+    await waitFor(() =>
+      expect(dialog).toHaveTextContent('Current route: “Focal Epic” logs time with “Design API”.'),
+    );
+    expect(dialog).toHaveTextContent('Removing this relation deletes the pair and its time route.');
+    expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
+  });
+
+  it('deletes on confirm with the focal epic address and stays open until the delete succeeds', async () => {
+    mockQuery(firstPage([sourceRow]));
+    renderBadges({ counts: relatedCounts(1) });
+    openKeyboardPreview();
+
+    fireEvent.click(removeIcon('Design API'));
+    await waitFor(() => expect(confirmRemoveButton()).toBeEnabled());
+    fireEvent.click(confirmRemoveButton());
+
+    expect(useDeleteEpicRelationMock).toHaveBeenCalledWith(FOCAL_ID);
+    expect(deleteMutateMock).toHaveBeenCalledTimes(1);
+    expect(deleteMutateMock).toHaveBeenCalledWith(
+      { relatedEpicId: 'epic-design' },
+      expect.anything(),
+    );
+    // The unresolved delete keeps the dialog open: only a success closes it.
+    expect(removeDialog()).toBeInTheDocument();
+  });
+
+  it('closes the dialog after a successful delete', async () => {
+    deleteMutateMock.mockImplementation((_input, opts) => {
+      opts?.onSuccess?.();
+    });
+    mockQuery(firstPage([sourceRow]));
+    renderBadges({ counts: relatedCounts(1) });
+    openKeyboardPreview();
+
+    fireEvent.click(removeIcon('Design API'));
+    await waitFor(() => expect(confirmRemoveButton()).toBeEnabled());
+    fireEvent.click(confirmRemoveButton());
+
+    expect(deleteMutateMock).toHaveBeenCalledWith(
+      { relatedEpicId: 'epic-design' },
+      expect.anything(),
+    );
+    expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the dialog open with the error after a failed delete', async () => {
+    const failure = new Error('Server rejected the delete.');
+    let failed = false;
+    useDeleteEpicRelationMock.mockImplementation(() => ({
+      // Mutations settle asynchronously, so the failure arrives after the
+      // click that started the delete — the guard the dialog must survive.
+      mutate: (_input: unknown, opts?: { onError?: (error: Error) => void }) => {
+        failed = true;
+        Promise.resolve().then(() => opts?.onError?.(failure));
+      },
+      reset: () => {
+        failed = false;
+      },
+      isPending: false,
+      error: failed ? failure : null,
+    }));
+    mockQuery(firstPage([sourceRow]));
+    renderBadges({ counts: relatedCounts(1) });
+    openKeyboardPreview();
+
+    fireEvent.click(removeIcon('Design API'));
+    await waitFor(() => expect(confirmRemoveButton()).toBeEnabled());
+    fireEvent.click(confirmRemoveButton());
+
+    // The failure settles asynchronously, after the click that armed the
+    // close guard; flushing it inside act commits the error state.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const dialog = removeDialog();
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('Server rejected the delete.');
+
+    // Cancel after the failure still closes the dialog.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the dialog open after the hover preview closes', () => {
+    jest.useFakeTimers();
+    try {
+      mockQuery(firstPage([sourceRow]));
+      renderBadges({ counts: relatedCounts(1) });
+
+      hoverOpen();
+      fireEvent.click(removeIcon('Design API'));
+      expect(removeDialog()).toBeInTheDocument();
+
+      // The pointer leaves the preview: the preview closes on its delay
+      // while the removal dialog stays open.
+      firePointer(trigger(), 'pointerout', { pointerType: 'mouse', relatedTarget: document.body });
+      act(() => {
+        jest.advanceTimersByTime(RELATION_PREVIEW_CLOSE_DELAY_MS);
+      });
+      expect(trigger()).toHaveAttribute('aria-expanded', 'false');
+      expect(removeDialog()).toBeInTheDocument();
+
+      fireEvent.click(within(removeDialog()).getByRole('button', { name: 'Cancel' }));
+      expect(
+        screen.queryByRole('dialog', { name: 'Remove this relation?' }),
+      ).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

@@ -153,6 +153,10 @@ describe('tool-descriptors', () => {
       'devchain_chat_list_members',
       'devchain_activity_start',
       'devchain_activity_finish',
+      'devchain_list_documents',
+      'devchain_get_document',
+      'devchain_create_document',
+      'devchain_update_document',
     ];
 
     it.each(retiredNames)('%s is absent from metadata', (name) => {
@@ -197,6 +201,81 @@ describe('tool-descriptors', () => {
       expect(metadata!.description).toContain('{ sessionId, id, version, setTags: [...] }');
       expect(metadata!.description).toContain('{ sessionId, id, version, addTags: [...] }');
       expect(metadata!.description).toContain('{ sessionId, id, version, removeTags: [...] }');
+    });
+  });
+
+  describe('devchain_list_epics description diet', () => {
+    it('documents previews and the includeDescription opt-in', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_list_epics');
+      const schema = metadata?.inputSchema as {
+        properties?: { includeDescription?: { type?: string } };
+      };
+
+      expect(metadata!.description).toContain('descriptionPreview');
+      expect(metadata!.description).toContain('devchain_get_epic_by_id');
+      expect(metadata!.description).toContain('includeDescription: true');
+      expect(schema.properties?.includeDescription?.type).toBe('boolean');
+    });
+  });
+
+  describe('devchain_get_epic_by_id parent summary', () => {
+    it('documents the summary parent and the includeParentDescription opt-in', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_get_epic_by_id');
+      const schema = metadata?.inputSchema as {
+        properties?: { includeParentDescription?: { type?: string } };
+      };
+
+      expect(metadata!.description).toContain('parent is a summary');
+      expect(metadata!.description).toContain('includeParentDescription: true');
+      expect(schema.properties?.includeParentDescription?.type).toBe('boolean');
+    });
+  });
+
+  describe('devchain_update_epic description edits', () => {
+    it('keeps the nested edit object strict with array bounds', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_update_epic');
+      const schema = metadata?.inputSchema as {
+        properties?: {
+          descriptionEdits?: {
+            minItems?: number;
+            maxItems?: number;
+            items?: {
+              required?: string[];
+              additionalProperties?: boolean;
+              properties?: Record<string, { minLength?: number; type?: string }>;
+            };
+          };
+          appendDescription?: { minLength?: number; type?: string };
+        };
+      };
+
+      const edits = schema.properties?.descriptionEdits;
+      expect(edits).toMatchObject({ minItems: 1, maxItems: 50 });
+      expect(edits?.items).toMatchObject({ required: ['find', 'replace'] });
+      expect(edits?.items?.additionalProperties).toBe(false);
+      expect(edits?.items?.properties?.find).toMatchObject({ type: 'string', minLength: 1 });
+      expect(edits?.items?.properties?.replace?.type).toBe('string');
+      expect(schema.properties?.appendDescription).toMatchObject({ type: 'string', minLength: 1 });
+    });
+
+    it('documents the mutual exclusion with the full description field', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_update_epic');
+      const schema = metadata?.inputSchema as {
+        properties?: Record<string, { description?: string }>;
+      };
+
+      expect(schema.properties?.description?.description).toContain('mutually exclusive');
+      expect(schema.properties?.descriptionEdits?.description).toContain('mutually exclusive');
+      expect(schema.properties?.appendDescription?.description).toContain('mutually exclusive');
+    });
+
+    it('coaches agents on unique find text, edit preference, response contexts, and conflict recovery', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_update_epic');
+
+      expect(metadata!.description).toContain('prefer descriptionEdits');
+      expect(metadata!.description).toContain('exactly once');
+      expect(metadata!.description).toContain('re-read is not needed');
+      expect(metadata!.description).toContain('VERSION_CONFLICT');
     });
   });
 
@@ -256,6 +335,43 @@ describe('tool-descriptors', () => {
       );
     });
 
+    it('keeps the create relations list strict, bounded, and mutually exclusive with relation', () => {
+      const metadata = allMetadata.find((entry) => entry.name === 'devchain_create_epic');
+      const schema = metadata?.inputSchema as {
+        properties?: {
+          relations?: {
+            minItems?: number;
+            maxItems?: number;
+            description?: string;
+            items?: {
+              required?: string[];
+              additionalProperties?: boolean;
+              properties?: Record<string, { pattern?: string; enum?: string[] }>;
+            };
+          };
+          relation?: { description?: string };
+        };
+      };
+
+      const relations = schema.properties?.relations;
+      expect(relations).toMatchObject({ minItems: 1, maxItems: 20 });
+      expect(relations?.items).toMatchObject({
+        required: ['relatedEpicId', 'relation'],
+        additionalProperties: false,
+      });
+      expect(relations?.items?.properties?.relatedEpicId?.pattern).toBe('^[a-f0-9-]{8,36}$');
+      expect(relations?.items?.properties?.relation?.enum).toEqual([
+        'related',
+        'blocks',
+        'blocked_by',
+      ]);
+      expect(relations?.description).toContain('mutually exclusive with relation');
+      expect(relations?.description).toContain('RELATION_ROUTE_CONFLICT');
+      expect(schema.properties?.relation?.description).toContain(
+        'mutually exclusive with relations',
+      );
+    });
+
     it('documents the endpoint-order source and target rule on set with no timeRoute field', () => {
       const set = allMetadata.find((entry) => entry.name === 'devchain_epic_relations_set');
       const setSchema = set as { description?: string } | undefined;
@@ -310,6 +426,139 @@ describe('tool-descriptors', () => {
     });
   });
 
+  describe('devchain_get_skill descriptor contract', () => {
+    it('states enabled-only resolution and describes both slug input forms', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_get_skill');
+      expect(metadata).toBeDefined();
+
+      expect(metadata!.description).toContain('enabled for the project');
+      expect(metadata!.description).not.toContain('Works even when the skill is disabled');
+
+      const schema = metadata!.inputSchema as {
+        properties?: Record<string, { description?: string }>;
+      };
+      expect(schema.properties?.slug?.description).toContain('source/name');
+      expect(schema.properties?.slug?.description).toContain('bare slug name');
+    });
+  });
+
+  describe('devchain_skills_usage_stats descriptor contract', () => {
+    it('uses a strict schema with sessionId required and no paging fields', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_usage_stats');
+      const schema = metadata!.inputSchema as {
+        required?: string[];
+        properties?: Record<string, unknown>;
+        additionalProperties?: boolean;
+      };
+
+      expect(schema.required).toEqual(['sessionId']);
+      expect(Object.keys(schema.properties ?? {}).sort()).toEqual(['from', 'sessionId', 'to']);
+      expect(schema.additionalProperties).toBe(false);
+      expect(metadata?.paramsSchema).not.toBeNull();
+    });
+
+    it('documents usage semantics, the epicReferences window exemption, and status labels', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_usage_stats');
+
+      expect(metadata?.description).toContain('successful devchain_get_skill loads only');
+      expect(metadata?.description).toContain('ignores the from/to window');
+      expect(metadata?.description).toContain('no closed flag');
+      expect(metadata?.description).toContain('complete is always true');
+    });
+  });
+
+  describe('devchain_skills_set_enabled descriptor contract', () => {
+    it('uses a strict schema with sessionId, slugs, and enabled required', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_set_enabled');
+      const schema = metadata!.inputSchema as {
+        required?: string[];
+        properties?: Record<string, { minItems?: number; maxItems?: number }>;
+        additionalProperties?: boolean;
+      };
+
+      expect(schema.required).toEqual(['sessionId', 'slugs', 'enabled']);
+      expect(schema.properties?.slugs).toMatchObject({ minItems: 1, maxItems: 200 });
+      expect(schema.additionalProperties).toBe(false);
+      expect(metadata?.paramsSchema).not.toBeNull();
+    });
+
+    it('documents the project-wide effect, approval exemption, and resolution limits', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_set_enabled');
+
+      expect(metadata?.description).toContain('Project-wide effect');
+      expect(metadata?.description).toContain('does not check for human approval');
+      expect(metadata?.description).toContain(
+        'including sources that are disabled for this project',
+      );
+      expect(metadata?.description).toContain('skill-level disable');
+      expect(metadata?.description).toContain('disabled globally');
+    });
+
+    it('documents the count-only response and how to derive the changed slugs', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_set_enabled');
+
+      expect(metadata?.description).toContain('{ updatedCount, unchanged, notFound }');
+      expect(metadata?.description).toContain('request minus unchanged and notFound');
+    });
+
+    it('documents devchain_skills_set_source_enabled with project scope and refusal cases', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_set_source_enabled');
+      const schema = metadata!.inputSchema as {
+        required?: string[];
+        properties?: Record<string, unknown>;
+        additionalProperties?: boolean;
+      };
+
+      expect(metadata).toBeDefined();
+      expect(metadata?.description).toContain('Project-wide effect');
+      expect(metadata?.description).toContain('does not check for human approval');
+      expect(metadata?.description).toContain('global source state');
+      expect(metadata?.description).toContain('SOURCE_NOT_FOUND');
+      expect(metadata?.description).toContain('SOURCE_DISABLED_GLOBALLY');
+      expect(metadata?.paramsSchema).not.toBeNull();
+      expect(schema.required).toEqual(['sessionId', 'sourceName', 'enabled']);
+      expect(schema.additionalProperties).toBe(false);
+    });
+
+    it('documents devchain_skills_sync with global effect, duration, and freshness caveats', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_sync');
+      const schema = metadata!.inputSchema as {
+        required?: string[];
+        properties?: Record<string, unknown>;
+        additionalProperties?: boolean;
+      };
+
+      expect(metadata).toBeDefined();
+      expect(metadata?.description).toContain('global (all projects)');
+      expect(metadata?.description).toContain('download over the network');
+      expect(metadata?.description).toContain('can take long');
+      expect(metadata?.description).toContain('disabled source is skipped');
+      expect(metadata?.description).toContain('do not confirm a fresh catalog');
+      expect(metadata?.description).toContain('authoritative local source folder');
+      expect(metadata?.description).toContain('does not check for human approval');
+      expect(metadata?.description).toContain('SOURCE_NOT_FOUND');
+      expect(metadata?.paramsSchema).not.toBeNull();
+      expect(schema.required).toEqual(['sessionId']);
+      expect(schema.additionalProperties).toBe(false);
+    });
+
+    it('documents includeDisabled on devchain_list_skills with all-sources flags and stale-source caveats', () => {
+      const metadata = allMetadata.find((m) => m.name === 'devchain_list_skills');
+      const schema = metadata!.inputSchema as {
+        properties?: Record<string, unknown>;
+      };
+
+      expect(metadata?.description).toContain('every stored skill');
+      expect(metadata?.description).toContain('skillDisabled');
+      expect(metadata?.description).toContain('sourceProjectEnabled');
+      expect(metadata?.description).toContain('sourceGloballyEnabled');
+      expect(metadata?.description).toContain('read-only for MCP');
+      expect(metadata?.description).toContain('stale');
+      expect(metadata?.description).toContain('last stored catalog');
+      expect(schema.properties?.includeDisabled).toBeDefined();
+    });
+  });
+
   describe('code review tools', () => {
     const reviewToolNames = [
       'devchain_list_reviews',
@@ -331,14 +580,15 @@ describe('tool-descriptors', () => {
   describe('domain categorization', () => {
     const categories: Record<string, string[]> = {
       session: ['devchain_list_sessions', 'devchain_register_guest'],
-      document: [
-        'devchain_list_documents',
-        'devchain_get_document',
-        'devchain_create_document',
-        'devchain_update_document',
-      ],
       prompt: ['devchain_list_prompts', 'devchain_get_prompt'],
-      skill: ['devchain_list_skills', 'devchain_get_skill'],
+      skill: [
+        'devchain_list_skills',
+        'devchain_get_skill',
+        'devchain_skills_usage_stats',
+        'devchain_skills_set_enabled',
+        'devchain_skills_set_source_enabled',
+        'devchain_skills_sync',
+      ],
       agent: ['devchain_list_agents', 'devchain_get_agent_by_name', 'devchain_list_statuses'],
       epic: [
         'devchain_list_epics',

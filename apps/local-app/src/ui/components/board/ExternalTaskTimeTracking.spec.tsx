@@ -241,6 +241,7 @@ describe('ExternalTaskTimeTracking', () => {
       canVerify: false,
       verifyExpiresAt: null,
       pending: null,
+      legacyCheckpoint: null,
       ...overrides,
     };
   }
@@ -304,6 +305,90 @@ describe('ExternalTaskTimeTracking', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('gates the estimate panel on unassigned legacy history and recovers ownership', async () => {
+    const assignedState = estimateState({
+      initialized: true,
+      revision: 4,
+      loggedMinutes: 90,
+      days: [{ activityDate: '2026-08-29', loggedMinutes: 90 }],
+      unallocatedLoggedMinutes: 0,
+    });
+    const assignCalls: Array<[string, RequestInit | undefined]> = [];
+    let assigned = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/api/epics/') && String(url).includes('/time-logs')) {
+        return Promise.resolve(jsonResponse(estimateSummary()));
+      }
+      if (String(url).includes('/estimate-log-legacy-assignment?') && init?.method === 'POST') {
+        assignCalls.push([String(url), init]);
+        assigned = true;
+        return Promise.resolve(jsonResponse(assignedState));
+      }
+      if (String(url).includes('/estimate-log-state?') && !init?.method) {
+        return Promise.resolve(
+          jsonResponse(
+            assigned
+              ? assignedState
+              : estimateState({
+                  legacyCheckpoint: { revision: 4, loggedMinutes: 90, hasPendingOperation: true },
+                }),
+          ),
+        );
+      }
+      return Promise.resolve(jsonResponse(historyPayload([])));
+    });
+    renderBlock({ linkedEpicId: 'epic-root' });
+    await openTimeBlock();
+
+    const heading = await screen.findByRole('heading', {
+      name: 'DevChain estimated time tracked',
+    });
+    const panel = heading.closest('section')!;
+    // The previous history shows as its own figures with the recovery action.
+    const previousTimeLabels = within(panel).getAllByText('Previous logged time');
+    expect(previousTimeLabels.length).toBe(2);
+    expect(previousTimeLabels[0]!.nextElementSibling).toHaveTextContent('1h 30m');
+    expect(
+      screen.getByRole('button', { name: 'Assign previous logged time to this project' }),
+    ).toBeVisible();
+    expect(
+      within(panel).getByText(
+        'It includes an unresolved estimate submission. After assigning, use Verify, Mark logged, or Mark not logged to settle it.',
+      ),
+    ).toBeVisible();
+    // Export preview, derived delta, Review & log, and reconciliation stay
+    // suppressed while ownership is unresolved.
+    expect(within(panel).queryByText('Ready to log')).toBeNull();
+    expect(within(panel).queryByRole('button', { name: /Review & log/ })).toBeNull();
+    expect(within(panel).queryByRole('button', { name: 'Reconcile logged time' })).toBeNull();
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Assign previous logged time to this project' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Assign previous logged time')).toBeVisible();
+    expect(within(dialog).getByText(/sends no request to the provider/)).toBeVisible();
+    expect(within(dialog).getByText(/preserved/i)).toBeVisible();
+    await user.click(within(dialog).getByRole('button', { name: 'Assign to this project' }));
+
+    await waitFor(() => expect(assignCalls).toHaveLength(1));
+    expect(assignCalls[0]![0]).toBe(
+      `/api/integrations/my-work/jira/tasks/ENG-1/estimate-log-legacy-assignment?projectId=${PROJECT_ID}`,
+    );
+    expect(JSON.parse(String(assignCalls[0]![1]!.body))).toEqual({
+      scopeKey: 'acme.atlassian.net',
+      expectedLegacyRevision: 4,
+    });
+    expect(await screen.findByText('Previous logged time assigned to this project.')).toBeVisible();
+    // After recovery the panel returns to the ordinary up-to-date view.
+    await waitFor(() =>
+      expect(within(panel).queryAllByText('Previous logged time')).toHaveLength(0),
+    );
+    expect(within(panel).getByText('Logged by this project')).toBeVisible();
+    expect(within(panel).getByText('Estimate is up to date.')).toBeVisible();
+  });
+
   it('loads linked estimate metrics in the collapsed header and reuses them in the panel', async () => {
     serveEstimate(estimateSummary());
     const { container } = renderBlock({ linkedEpicId: 'epic-root' });
@@ -331,7 +416,7 @@ describe('ExternalTaskTimeTracking', () => {
     const form = screen.getByRole('form', { name: 'Log time' });
     expect(panel.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(panel).toHaveTextContent('Current estimate');
-    expect(panel).toHaveTextContent('Already logged');
+    expect(panel).toHaveTextContent('Logged by this project');
     expect(panel).toHaveTextContent('Ready to log');
     expect(panel).toHaveTextContent('1h 30m');
     expect(within(panel).getByText('Root task')).toBeVisible();

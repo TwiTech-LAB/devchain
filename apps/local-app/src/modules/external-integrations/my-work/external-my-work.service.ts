@@ -1,11 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { BusyError, ConflictError, ValidationError } from '../../../common/errors/error-types';
+import { ValidationError } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type {
   IntegrationConnection,
   IntegrationCredentials,
   IntegrationProvider,
 } from '../../storage/models/domain.models';
+import { loadStableIntegrationConnection } from '../connections/stable-integration-connection';
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
 import type {
   ExternalMyWorkCapability,
@@ -28,6 +29,9 @@ import type {
   ExternalTaskTimeEntryHistory,
   ExternalWorkAreaColumn,
 } from '../models/external-provider.models';
+
+const MY_WORK_NOT_CONNECTED_MESSAGE = 'Connect the integration before loading My Work.';
+const MY_WORK_CONNECTION_CHANGED_MESSAGE = 'Integration connection changed during My Work refresh.';
 
 @Injectable()
 export class ExternalMyWorkService {
@@ -85,6 +89,7 @@ export class ExternalMyWorkService {
     );
     const detail = this.projectTaskDetail(operation.value);
     const link = await this.storage.findExternalTaskLink(
+      projectId,
       provider,
       detail.location.scopeKey,
       detail.remoteId,
@@ -254,11 +259,16 @@ export class ExternalMyWorkService {
           loggedMinutes: null,
         };
       }
-      // No checkpoint row means a confirmed link with nothing logged yet.
+      // Unassigned legacy history makes the durable figure unavailable —
+      // null until ownership recovery, never a fallback zero. Otherwise no
+      // checkpoint row means a confirmed link with nothing logged yet.
+      const identityKey = `${input.scopeKey}\u0000${input.taskId}`;
       const loggedMinutes =
         loggedByIdentity === null
           ? null
-          : (loggedByIdentity.get(`${input.scopeKey}\u0000${input.taskId}`) ?? 0);
+          : loggedByIdentity.unassigned.has(identityKey)
+            ? null
+            : (loggedByIdentity.minutes.get(identityKey) ?? 0);
       return {
         ...input,
         linked: true,
@@ -274,6 +284,9 @@ export class ExternalMyWorkService {
   /**
    * One set-based checkpoint read covering only the linked identities that
    * passed every authority check; absent rows surface as caller-side zero.
+   * Identities whose pre-project history is still unassigned surface as an
+   * explicit marker instead — their accounting is unavailable until the
+   * one-time ownership recovery assigns it.
    */
   private async readAuthorizedLoggedMinutes(
     provider: IntegrationProvider,
@@ -283,27 +296,62 @@ export class ExternalMyWorkService {
     }>,
     epics: Map<string, Awaited<ReturnType<StorageService['getEpic']>>>,
     projectId: string,
-  ): Promise<Map<string, number>> {
-    const authorized = new Map<string, { remoteScopeKey: string; remoteTaskId: string }>();
+  ): Promise<{ minutes: Map<string, number>; unassigned: Set<string> }> {
+    const authorized = new Map<
+      string,
+      { projectId: string; remoteScopeKey: string; remoteTaskId: string }
+    >();
     for (const { input, link } of matches) {
       if (!link || epics.get(link.epicId)!.projectId !== projectId) {
         continue;
       }
       const key = `${input.scopeKey}\u0000${input.taskId}`;
-      authorized.set(key, { remoteScopeKey: input.scopeKey, remoteTaskId: input.taskId });
+      authorized.set(key, {
+        projectId,
+        remoteScopeKey: input.scopeKey,
+        remoteTaskId: input.taskId,
+      });
     }
     if (authorized.size === 0) {
-      return new Map();
+      return { minutes: new Map(), unassigned: new Set() };
     }
-    const entries = await this.storage.listExternalEstimateLoggedMinutes(provider, [
-      ...authorized.values(),
+    const [entries, unassigned] = await Promise.all([
+      this.storage.listExternalEstimateLoggedMinutes(provider, [...authorized.values()]),
+      this.readUnassignedMarkers(provider, [...authorized.values()]),
     ]);
-    return new Map(
-      entries.map((entry) => [
-        `${entry.remoteScopeKey}\u0000${entry.remoteTaskId}`,
-        entry.loggedMinutes,
-      ]),
-    );
+    return {
+      minutes: new Map(
+        entries.map((entry) => [
+          `${entry.remoteScopeKey}\u0000${entry.remoteTaskId}`,
+          entry.loggedMinutes,
+        ]),
+      ),
+      unassigned,
+    };
+  }
+
+  /**
+   * Exact legacy-identity probe for authorized linked identities. The
+   * requesting project, current connection, and local link were all checked
+   * before this read; the marker only reports that pre-project history
+   * awaits ownership recovery, never a minute figure.
+   */
+  private async readUnassignedMarkers(
+    provider: IntegrationProvider,
+    identities: ReadonlyArray<{ remoteScopeKey: string; remoteTaskId: string }>,
+  ): Promise<Set<string>> {
+    const unassigned = new Set<string>();
+    for (const identity of identities) {
+      const legacy = await this.storage.findUnassignedExternalEstimateLogCheckpoint(
+        provider,
+        identity.remoteScopeKey,
+        identity.remoteTaskId,
+      );
+      if (legacy) {
+        unassigned.add(`${identity.remoteScopeKey}\u0000${identity.remoteTaskId}`);
+      }
+    }
+    return unassigned;
   }
 
   private async runTaskOperation<T>(
@@ -362,7 +410,7 @@ export class ExternalMyWorkService {
     }
   }
 
-  private async loadStableConnection(
+  private loadStableConnection(
     projectId: string,
     provider: IntegrationProvider,
     expectedEpoch?: number,
@@ -370,59 +418,20 @@ export class ExternalMyWorkService {
     connection: IntegrationConnection;
     credentials: IntegrationCredentials;
   }> {
-    await this.storage.getProject(projectId);
-    const identity = { projectId, provider } as const;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const before = await this.storage.getIntegrationConnection(identity);
-      if (!this.matchesScope(before, projectId, provider)) {
-        throw this.notConnected(projectId, provider);
-      }
-      if (expectedEpoch !== undefined && before.generation !== expectedEpoch) {
-        throw this.epochMismatch(projectId, provider, expectedEpoch, before.generation);
-      }
-      const credentials = await this.storage.getIntegrationConnectionCredentials(identity);
-      const after = await this.storage.getIntegrationConnection(identity);
-      if (
-        !credentials ||
-        credentials.provider !== provider ||
-        !this.matchesScope(after, projectId, provider)
-      ) {
-        throw this.notConnected(projectId, provider);
-      }
-      if (expectedEpoch !== undefined && after.generation !== expectedEpoch) {
-        throw this.epochMismatch(projectId, provider, expectedEpoch, after.generation);
-      }
-      if (before.id === after.id && before.generation === after.generation) {
-        return { connection: after, credentials };
-      }
-    }
-    throw new BusyError('Integration connection changed during My Work refresh.', {
-      provider,
+    return loadStableIntegrationConnection(this.storage, {
       projectId,
-      reason: 'connection_changed',
+      provider,
+      expectedEpoch,
+      notConnectedMessage: MY_WORK_NOT_CONNECTED_MESSAGE,
+      connectionChangedMessage: MY_WORK_CONNECTION_CHANGED_MESSAGE,
     });
   }
 
   private notConnected(projectId: string, provider: IntegrationProvider): ValidationError {
-    return new ValidationError('Connect the integration before loading My Work.', {
+    return new ValidationError(MY_WORK_NOT_CONNECTED_MESSAGE, {
       provider,
       projectId,
       reason: 'not_connected',
-    });
-  }
-
-  private epochMismatch(
-    projectId: string,
-    provider: IntegrationProvider,
-    expectedEpoch: number,
-    currentEpoch: number,
-  ): ConflictError {
-    return new ConflictError('The connection changed; reload and retry with the current epoch.', {
-      provider,
-      projectId,
-      reason: 'connection_epoch_mismatch',
-      expectedEpoch,
-      currentEpoch,
     });
   }
 

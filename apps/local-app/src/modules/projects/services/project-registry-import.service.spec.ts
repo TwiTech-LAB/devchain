@@ -1,7 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { ProjectRegistryImportService } from './project-registry-import.service';
-import { RegistryClientService } from '../../registry/services/registry-client.service';
-import { TemplateCacheService } from '../../registry/services/template-cache.service';
+import { RegistryOrchestrationService } from '../../registry/services/registry-orchestration.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { StorageService } from '../../storage/interfaces/storage.interface';
 import { ProjectsService } from './projects.service';
@@ -48,17 +47,9 @@ function createImportResult() {
 
 describe('ProjectRegistryImportService', () => {
   function createHarness() {
-    const registryClient = {
-      downloadTemplate: jest.fn().mockResolvedValue({
-        content: cachedTemplate.content,
-        checksum: 'checksum',
-      }),
-    } as unknown as jest.Mocked<RegistryClientService>;
-    const cache = {
-      isCached: jest.fn().mockReturnValue(true),
-      saveTemplate: jest.fn().mockResolvedValue(undefined),
-      getTemplate: jest.fn().mockResolvedValue(cachedTemplate),
-    } as unknown as jest.Mocked<TemplateCacheService>;
+    const registryOrchestration = {
+      getOrDownloadTemplate: jest.fn().mockResolvedValue(cachedTemplate),
+    } as unknown as jest.Mocked<RegistryOrchestrationService>;
     const storage = {
       createProject: jest.fn().mockResolvedValue({
         id: 'project-1',
@@ -80,17 +71,16 @@ describe('ProjectRegistryImportService', () => {
       getRegistryConfig: jest.fn().mockReturnValue({ url: 'https://registry.example' }),
     } as unknown as jest.Mocked<SettingsService>;
     const service = new ProjectRegistryImportService(
-      registryClient,
-      cache,
+      registryOrchestration,
       storage,
       projects,
       settings,
     );
-    return { service, registryClient, cache, storage, projects, settings };
+    return { service, registryOrchestration, storage, projects, settings };
   }
 
   it('creates a bare project, imports template content, and records registry metadata', async () => {
-    const { service, registryClient, storage, projects, settings } = createHarness();
+    const { service, registryOrchestration, storage, projects, settings } = createHarness();
 
     const result = await service.createProjectFromRegistry({
       slug: 'template-1',
@@ -99,7 +89,7 @@ describe('ProjectRegistryImportService', () => {
       rootPath: '/tmp/project-1',
     });
 
-    expect(registryClient.downloadTemplate).not.toHaveBeenCalled();
+    expect(registryOrchestration.getOrDownloadTemplate).toHaveBeenCalledWith('template-1', '1.0.0');
     expect(storage.createProject).toHaveBeenCalledWith({
       name: 'Project 1',
       description: null,
@@ -148,24 +138,71 @@ describe('ProjectRegistryImportService', () => {
     expect(result.project.workspaceId).toBe('0defa017-0000-4000-8000-000000000001');
   });
 
-  it('downloads before import when the template is not already cached', async () => {
-    const { service, registryClient, cache } = createHarness();
-    cache.isCached.mockReturnValue(false);
+  it('waits for shared acquisition before the first project mutation', async () => {
+    const { service, registryOrchestration, storage, projects } = createHarness();
+    let resolveAcquisition!: (value: typeof cachedTemplate) => void;
+    const acquisition = new Promise<typeof cachedTemplate>((resolve) => {
+      resolveAcquisition = resolve;
+    });
+    registryOrchestration.getOrDownloadTemplate.mockReturnValueOnce(acquisition);
 
-    await service.createProjectFromRegistry({
+    const resultPromise = service.createProjectFromRegistry({
       slug: 'template-1',
       version: '1.0.0',
       projectName: 'Project 1',
       rootPath: '/tmp/project-1',
     });
 
-    expect(registryClient.downloadTemplate).toHaveBeenCalledWith('template-1', '1.0.0');
-    expect(cache.saveTemplate).toHaveBeenCalledWith(
-      'template-1',
-      '1.0.0',
-      cachedTemplate.content,
-      expect.objectContaining({ checksum: 'checksum' }),
-    );
+    expect(registryOrchestration.getOrDownloadTemplate).toHaveBeenCalledWith('template-1', '1.0.0');
+    expect(storage.createProject).not.toHaveBeenCalled();
+    expect(projects.importProject).not.toHaveBeenCalled();
+
+    resolveAcquisition(cachedTemplate);
+    await expect(resultPromise).resolves.toEqual(expect.objectContaining({ fromRegistry: true }));
+    expect(storage.createProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not mutate when shared acquisition fails', async () => {
+    const { service, registryOrchestration, storage, settings } = createHarness();
+    const error = new Error('Registry unavailable');
+    registryOrchestration.getOrDownloadTemplate.mockRejectedValueOnce(error);
+
+    await expect(
+      service.createProjectFromRegistry({
+        slug: 'template-1',
+        version: '1.0.0',
+        projectName: 'Project 1',
+        rootPath: '/tmp/project-1',
+      }),
+    ).rejects.toBe(error);
+
+    expect(storage.createProject).not.toHaveBeenCalled();
+    expect(settings.setProjectTemplateMetadata).not.toHaveBeenCalled();
+    expect(settings.setProjectPresets).not.toHaveBeenCalled();
+  });
+
+  it('preserves the missing-cache error and does not mutate when acquisition returns null', async () => {
+    const { service, registryOrchestration, storage, settings } = createHarness();
+    registryOrchestration.getOrDownloadTemplate.mockResolvedValueOnce(null);
+
+    await expect(
+      service.createProjectFromRegistry({
+        slug: 'template-1',
+        version: '1.0.0',
+        projectName: 'Project 1',
+        rootPath: '/tmp/project-1',
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        message: 'Template not found in cache after download',
+        slug: 'template-1',
+        version: '1.0.0',
+      },
+    });
+
+    expect(storage.createProject).not.toHaveBeenCalled();
+    expect(settings.setProjectTemplateMetadata).not.toHaveBeenCalled();
+    expect(settings.setProjectPresets).not.toHaveBeenCalled();
   });
 
   it('rethrows provider mapping import failures but swallows generic import failures', async () => {

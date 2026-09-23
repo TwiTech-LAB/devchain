@@ -391,6 +391,94 @@ describe('LocalStorageService managed subtasks', () => {
     ).resolves.toMatchObject({ id: managed.id });
   });
 
+  it('scopes managed confirmation to its local project when another project links the same child', async () => {
+    const managed = await createProjection();
+
+    // Project B independently links the same remote child identity; that
+    // link must neither block A's managed confirmation nor be reused by it.
+    const otherProject = await storage.createProject({
+      name: 'Other managed project',
+      rootPath: '/tmp/other-managed-project',
+      description: null,
+    });
+    const otherStatusId = (await storage.listStatuses(otherProject.id)).items[0]!.id;
+    const otherEpic = await storage.createEpic({
+      projectId: otherProject.id,
+      statusId: otherStatusId,
+      title: 'Other project child',
+    });
+    const otherConnection = await storage.replaceIntegrationConnection(
+      {
+        projectId: otherProject.id,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'other-project-token' },
+      },
+      async () => undefined,
+    );
+    const otherLink = await storage.createExternalTaskLink({
+      epicId: otherEpic.id,
+      connectionId: otherConnection.id,
+      provider: 'clickup',
+      remoteScopeKey: 'workspace-1',
+      remoteTaskId: 'managed-task',
+      sourceSnapshot: { remoteKey: 'MANAGED-1', workAreaId: 'list-1' },
+    });
+
+    const confirmed = await storage.confirmExternalManagedSubtaskLink({
+      managedLinkId: managed.id,
+      remoteTaskId: 'managed-task',
+      remoteKey: 'MANAGED-1',
+      confirmedVersion: child.version,
+      confirmedFingerprint: 'confirmed-fingerprint-1',
+      sourceSnapshot: {
+        ownershipToken: 'ownership-token-1',
+        parentRemoteTaskId: 'parent-task',
+        workAreaRemoteId: 'list-1',
+      },
+    });
+    expect(confirmed.externalTaskLink).toMatchObject({
+      id: expect.not.stringMatching(otherLink.id),
+      epicId: child.id,
+      projectId: child.projectId,
+      remoteTaskId: 'managed-task',
+    });
+
+    // Both projects keep their own ordinary link for the same remote child.
+    const links = await storage.listExternalTaskLinksByRemoteTask('clickup', 'managed-task');
+    expect(links).toHaveLength(2);
+    expect(new Set(links.map((link) => link.projectId))).toEqual(
+      new Set([child.projectId, otherProject.id]),
+    );
+
+    // A same-project ordinary link to a different Epic still conflicts.
+    const sibling = await storage.createEpic({
+      projectId: child.projectId,
+      statusId: (await storage.listStatuses(child.projectId)).items[0]!.id,
+      title: 'Sibling child',
+      parentId: parent.id,
+    });
+    const siblingManaged = await createProjection({
+      epicId: sibling.id,
+      epicIdSnapshot: sibling.id,
+      ownershipToken: 'ownership-token-2',
+      desiredVersion: sibling.version,
+    });
+    await expect(
+      storage.confirmExternalManagedSubtaskLink({
+        managedLinkId: siblingManaged.id,
+        remoteTaskId: 'managed-task',
+        remoteKey: 'MANAGED-1',
+        confirmedVersion: sibling.version,
+        confirmedFingerprint: 'confirmed-fingerprint-2',
+        sourceSnapshot: {
+          ownershipToken: 'ownership-token-2',
+          parentRemoteTaskId: 'parent-task',
+          workAreaRemoteId: 'list-1',
+        },
+      }),
+    ).rejects.toMatchObject<ConflictError>({ details: { linkedEpicId: child.id } });
+  });
+
   it('rolls back managed confirmation when ordinary recognition insertion fails', async () => {
     const managed = await createProjection();
     sqlite.exec(`

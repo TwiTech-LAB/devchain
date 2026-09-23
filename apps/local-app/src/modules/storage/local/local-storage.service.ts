@@ -6,8 +6,6 @@ import {
   ListOptions,
   ListResult,
   ProjectListOptions,
-  DocumentListFilters,
-  DocumentIdentifier,
   ListProjectEpicsOptions,
   ListAssignedEpicsOptions,
   ListEpicRelationCandidatesOptions,
@@ -77,9 +75,6 @@ import {
   UpdateEpicRecord,
   EpicComment,
   CreateEpicComment,
-  Document,
-  CreateDocument,
-  UpdateDocument,
   Guest,
   CreateGuest,
   Watcher,
@@ -133,6 +128,7 @@ import {
   ExternalEstimateLogIdentity,
   ExternalEstimateLogOperationMutation,
   ExternalEstimateLogState,
+  AssignUnassignedExternalEstimateLogCheckpoint,
   PrepareExternalEstimateLogOperation,
   SetExternalEstimateLoggedMinutes,
   StoreExternalEstimateLogResolution,
@@ -145,7 +141,6 @@ import {
 import { createStorageDelegateContext } from './delegates/base-storage.delegate';
 import { AgentStorageDelegate } from './delegates/agent.delegate';
 import { AgentProfileStorageDelegate } from './delegates/agent-profile.delegate';
-import { DocumentStorageDelegate } from './delegates/document.delegate';
 import { EpicStorageDelegate } from './delegates/epic.delegate';
 import { GuestStorageDelegate } from './delegates/guest.delegate';
 import { ProfileProviderConfigStorageDelegate } from './delegates/profile-provider-config.delegate';
@@ -192,7 +187,6 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   private readonly epicDelegate: EpicStorageDelegate;
   private readonly tagDelegate: TagStorageDelegate;
   private readonly promptDelegate: PromptStorageDelegate;
-  private readonly documentDelegate: DocumentStorageDelegate;
   private readonly providerDelegate: ProviderStorageDelegate;
   private readonly skillSourceDelegate: SkillSourceStorageDelegate;
   private readonly agentProfileDelegate: AgentProfileStorageDelegate;
@@ -226,9 +220,6 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     this.tagDelegate = new TagStorageDelegate(context);
     const createTag = (data: CreateTag): Tag => this.tagDelegate.createTagSync(data);
     this.promptDelegate = new PromptStorageDelegate(context, {
-      createTag,
-    });
-    this.documentDelegate = new DocumentStorageDelegate(context, {
       createTag,
     });
     this.epicDelegate = new EpicStorageDelegate(context, {
@@ -584,27 +575,6 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
 
   async getInitialSessionPrompt(projectId: string | null): Promise<Prompt | null> {
     return this.promptDelegate.getInitialSessionPrompt(projectId);
-  }
-
-  // Documents
-  async listDocuments(filters: DocumentListFilters = {}): Promise<ListResult<Document>> {
-    return this.documentDelegate.listDocuments(filters);
-  }
-
-  async getDocument(identifier: DocumentIdentifier): Promise<Document> {
-    return this.documentDelegate.getDocument(identifier);
-  }
-
-  async createDocument(data: CreateDocument): Promise<Document> {
-    return this.documentDelegate.createDocument(data);
-  }
-
-  async updateDocument(id: string, data: UpdateDocument): Promise<Document> {
-    return this.documentDelegate.updateDocument(id, data);
-  }
-
-  async deleteDocument(id: string): Promise<void> {
-    return this.documentDelegate.deleteDocument(id);
   }
 
   // Tags
@@ -1402,11 +1372,17 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
   }
 
   async findExternalTaskLink(
+    projectId: string,
     provider: IntegrationProvider,
     remoteScopeKey: string,
     remoteTaskId: string,
   ): Promise<ExternalTaskLink | null> {
-    return this.integrationDelegate.findExternalTaskLink(provider, remoteScopeKey, remoteTaskId);
+    return this.integrationDelegate.findExternalTaskLink(
+      projectId,
+      provider,
+      remoteScopeKey,
+      remoteTaskId,
+    );
   }
 
   async listExternalTaskLinksByRemoteScope(
@@ -1509,9 +1485,27 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     return this.externalEstimateLogDelegate.listByRemoteTask(provider, remoteTaskId);
   }
 
+  async findUnassignedExternalEstimateLogCheckpoint(
+    provider: IntegrationProvider,
+    remoteScopeKey: string,
+    remoteTaskId: string,
+  ): Promise<ExternalEstimateLogState | null> {
+    return this.externalEstimateLogDelegate.findUnassigned(provider, remoteScopeKey, remoteTaskId);
+  }
+
+  async assignUnassignedExternalEstimateLogCheckpoint(
+    data: AssignUnassignedExternalEstimateLogCheckpoint,
+  ): Promise<ExternalEstimateLogDailyCheckpoint> {
+    return this.externalEstimateLogDelegate.assignUnassigned(data);
+  }
+
   async listExternalEstimateLoggedMinutes(
     provider: IntegrationProvider,
-    identities: ReadonlyArray<{ remoteScopeKey: string; remoteTaskId: string }>,
+    identities: ReadonlyArray<{
+      projectId: string;
+      remoteScopeKey: string;
+      remoteTaskId: string;
+    }>,
   ): Promise<ExternalEstimateLoggedMinutesEntry[]> {
     return this.externalEstimateLogDelegate.listLoggedMinutes(provider, identities);
   }

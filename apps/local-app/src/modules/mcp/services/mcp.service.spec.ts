@@ -22,9 +22,9 @@ describe('McpService interface', () => {
   });
 
   it.each([
-    ['devchain.get.document', 'devchain_get_document'],
-    ['devchain/get/document', 'devchain_get_document'],
-    ['devchain-get-document', 'devchain_get_document'],
+    ['devchain.get.prompt', 'devchain_get_prompt'],
+    ['devchain/get/prompt', 'devchain_get_prompt'],
+    ['devchain-get-prompt', 'devchain_get_prompt'],
   ])('normalizes %s before registry lookup', async (input, normalized) => {
     resolve.mockReturnValue(undefined);
 
@@ -114,11 +114,13 @@ describe('McpService interface', () => {
   });
 
   it('delegates resource requests to ResourceResolver', async () => {
-    const response = { success: true as const, data: { uri: 'doc://global/readme' } };
+    const response = { success: true as const, data: { uri: 'prompt://Welcome%20Prompt@2' } };
     const resolver = jest.spyOn(ResourceResolver.prototype, 'resolve').mockResolvedValue(response);
 
-    await expect(service.handleResourceRequest('doc://global/readme')).resolves.toEqual(response);
-    expect(resolver).toHaveBeenCalledWith('doc://global/readme');
+    await expect(service.handleResourceRequest('prompt://Welcome%20Prompt@2')).resolves.toEqual(
+      response,
+    );
+    expect(resolver).toHaveBeenCalledWith('prompt://Welcome%20Prompt@2');
   });
 
   it('maps unexpected resource errors to INTERNAL_ERROR', async () => {
@@ -126,7 +128,7 @@ describe('McpService interface', () => {
       .spyOn(ResourceResolver.prototype, 'resolve')
       .mockRejectedValue(new Error('storage failed'));
 
-    await expect(service.handleResourceRequest('doc://global/readme')).resolves.toEqual({
+    await expect(service.handleResourceRequest('prompt://Welcome%20Prompt@2')).resolves.toEqual({
       success: false,
       error: { code: 'INTERNAL_ERROR', message: 'storage failed' },
     });

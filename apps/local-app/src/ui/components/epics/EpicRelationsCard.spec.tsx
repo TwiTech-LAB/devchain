@@ -244,6 +244,11 @@ describe('EpicRelationsCard', () => {
     jest.clearAllMocks();
     selectedProjectFixture = null;
     mockDataHooks();
+    // The shared removal dialog closes only after the delete succeeds, so the
+    // delete double plays a successful server response.
+    deleteMutateMock.mockImplementation((_input, opts) => {
+      opts?.onSuccess?.();
+    });
     fetchMock.mockReset();
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -341,7 +346,7 @@ describe('EpicRelationsCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove', exact: true }));
     expect(deleteMutateMock).toHaveBeenCalledTimes(1);
-    expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: DESIGN_ID });
+    expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: DESIGN_ID }, expect.anything());
     expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
   });
 
@@ -380,7 +385,7 @@ describe('EpicRelationsCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove', exact: true }));
     expect(deleteMutateMock).toHaveBeenCalledTimes(1);
-    expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: DESIGN_ID });
+    expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: DESIGN_ID }, expect.anything());
   });
 
   it('keeps blocks and cross-project removal copy free of time-routing claims', () => {
@@ -393,7 +398,7 @@ describe('EpicRelationsCard', () => {
     expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove', exact: true }));
-    expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: SHIP_ID });
+    expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: SHIP_ID }, expect.anything());
   });
 
   it('shows replacement wording before a type change and cancels without writing', async () => {

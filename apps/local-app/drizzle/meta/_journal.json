@@ -582,6 +582,27 @@
       "when": 1788257771933,
       "tag": "0082_huge_black_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "6",
+      "when": 1788623643509,
+      "tag": "0083_retire_documents",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "6",
+      "when": 1788812708686,
+      "tag": "0084_retire_codebase_overview",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "6",
+      "when": 1789655972024,
+      "tag": "0085_clumsy_zodiak",
+      "breakpoints": true
     }
   ]
 }

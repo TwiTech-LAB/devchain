@@ -1009,6 +1009,7 @@ export const ESTIMATE_LOG_STATE_RESPONSE_SCHEMA: SchemaObject = {
     'canVerify',
     'verifyExpiresAt',
     'pending',
+    'legacyCheckpoint',
   ],
   properties: {
     initialized: {
@@ -1059,6 +1060,23 @@ export const ESTIMATE_LOG_STATE_RESPONSE_SCHEMA: SchemaObject = {
     pending: {
       oneOf: [ESTIMATE_PENDING_OPERATION_SCHEMA, { type: 'null' }],
     },
+    legacyCheckpoint: {
+      nullable: true,
+      oneOf: [
+        {
+          type: 'object',
+          required: ['revision', 'loggedMinutes', 'hasPendingOperation'],
+          properties: {
+            revision: { type: 'integer', minimum: 1 },
+            loggedMinutes: { type: 'integer', minimum: 0 },
+            hasPendingOperation: { type: 'boolean' },
+          },
+        },
+        { type: 'null' },
+      ],
+      description:
+        'Previous logged-time history of this remote task still awaiting ownership attribution. Never the selected project\u2019s own amount: while present, estimate export, reconciliation, and Set logged stay closed until the one-time legacy assignment resolves ownership; null once resolved.',
+    },
   },
   example: {
     initialized: true,
@@ -1071,7 +1089,25 @@ export const ESTIMATE_LOG_STATE_RESPONSE_SCHEMA: SchemaObject = {
     canVerify: false,
     verifyExpiresAt: null,
     pending: null,
+    legacyCheckpoint: null,
   },
+};
+
+/** Dedicated strict request for the one-time legacy ownership assignment. */
+export const ESTIMATE_LEGACY_ASSIGN_INPUT_BODY_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['scopeKey', 'expectedLegacyRevision'],
+  properties: {
+    scopeKey: { type: 'string', minLength: 1, maxLength: 256 },
+    expectedLegacyRevision: {
+      type: 'integer',
+      minimum: 0,
+      description:
+        'Legacy checkpoint revision the caller saw; the assignment fails closed against a concurrent claim or stale view.',
+    },
+  },
+  additionalProperties: false,
+  example: { scopeKey: 'acme.atlassian.net', expectedLegacyRevision: 4 },
 };
 
 export const ESTIMATE_TIME_ENTRY_CREATE_INPUT_BODY_SCHEMA: SchemaObject = {

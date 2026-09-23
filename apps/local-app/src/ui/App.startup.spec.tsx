@@ -116,10 +116,6 @@ jest.mock('./pages/ChatPage', () => ({
   ChatPage: () => <h1>Chat Page</h1>,
 }));
 
-jest.mock('./pages/CodebaseOverviewDisabledPage', () => ({
-  CodebaseOverviewDisabledPage: () => <h1>Overview Disabled Page</h1>,
-}));
-
 const boardPageMock = jest.fn(() => <h1>Native Board Page</h1>);
 
 jest.mock('./pages/BoardPage', () => ({
@@ -410,8 +406,8 @@ describe('App startup routing', () => {
     });
   });
 
-  it('should render /overview route with the Overview page', async () => {
-    render(
+  it('should render the not-found page for the retired /overview routes', async () => {
+    const overviewRender = render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/overview']}>
           <App />
@@ -420,7 +416,20 @@ describe('App startup routing', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Overview Disabled Page' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Page Not Found' })).toBeInTheDocument();
+    });
+
+    overviewRender.unmount();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/overview?section=scope']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Page Not Found' })).toBeInTheDocument();
     });
   });
 

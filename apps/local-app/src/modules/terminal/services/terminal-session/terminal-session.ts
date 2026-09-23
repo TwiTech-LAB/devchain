@@ -262,11 +262,12 @@ export class TerminalSession {
   pushFrame(data: string): void {
     if (this.disposed) return;
 
-    if (this.hasMeaningfulOutput(data)) {
+    const meaningful = this.hasMeaningfulOutput(data);
+    if (meaningful) {
       this.humanPromptState?.recordMeaningfulOutput(this.tmuxSessionName);
     }
 
-    if (Date.now() >= this.suppressActivityUntil) {
+    if (meaningful && Date.now() >= this.suppressActivityUntil) {
       this.lastDataAt = Date.now();
       this.markBusy();
     }

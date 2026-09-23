@@ -205,11 +205,10 @@ describe('useExternalTaskImport', () => {
     client.clear();
   });
 
-  it('keeps a globally existing link attributed by fetching only its exact project', async () => {
+  it('attributes a repeat import to the selected project and never another project', async () => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
-    const existingProjectId = '33333333-3333-4333-8333-333333333333';
     const linkKey = [
       ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, false),
       [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }],
@@ -239,13 +238,10 @@ describe('useExternalTaskImport', () => {
         return Promise.resolve({
           ok: true,
           json: async () => ({
-            epic: { id: 'epic-existing', projectId: existingProjectId },
+            epic: { id: 'epic-existing', projectId },
             created: false,
           }),
         });
-      }
-      if (url === `/api/projects/${existingProjectId}`) {
-        return Promise.resolve({ ok: true, json: async () => ({ name: 'Original project' }) });
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -267,15 +263,16 @@ describe('useExternalTaskImport', () => {
       });
     });
 
-    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/projects\?/));
-    expect(fetchMock).toHaveBeenCalledWith(`/api/projects/${existingProjectId}`);
+    // No cross-project attribution fetch runs: the selected project's own
+    // Epic is the only possible result, and decoration uses only it.
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/projects/));
     expect(client.getQueryData(linkKey)).toEqual({
       items: [
         expect.objectContaining({
           linked: true,
           epicId: 'epic-existing',
-          projectId: existingProjectId,
-          projectName: 'Original project',
+          projectId,
+          projectName: 'Current project',
         }),
       ],
     });
@@ -287,15 +284,11 @@ describe('useExternalTaskImport', () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     const importResponse = deferred<Response>();
-    const linkedOwnerId = '55555555-5555-4555-8555-555555555555';
     fetchMock.mockImplementation((url: string) => {
       if (url.startsWith('/api/statuses')) {
         return Promise.resolve(response({ items: [] }));
       }
       if (url === '/api/epics/import-external-task') return importResponse.promise;
-      if (url === `/api/projects/${linkedOwnerId}`) {
-        return Promise.resolve(response({ name: 'Original owner' }));
-      }
       throw new Error(`Unexpected request: ${url}`);
     });
     const aInputs = [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }];
@@ -375,9 +368,7 @@ describe('useExternalTaskImport', () => {
     );
 
     await act(async () =>
-      importResponse.resolve(
-        response({ epic: { id: 'epic-from-a', projectId: linkedOwnerId }, created: false }),
-      ),
+      importResponse.resolve(response({ epic: { id: 'epic-from-a', projectId }, created: false })),
     );
     await waitFor(() =>
       expect(client.getQueryData(aLinkKey)).toEqual({
@@ -385,8 +376,8 @@ describe('useExternalTaskImport', () => {
           expect.objectContaining({
             linked: true,
             epicId: 'epic-from-a',
-            projectId: linkedOwnerId,
-            projectName: 'Original owner',
+            projectId,
+            projectName: 'Project A',
           }),
         ],
       }),

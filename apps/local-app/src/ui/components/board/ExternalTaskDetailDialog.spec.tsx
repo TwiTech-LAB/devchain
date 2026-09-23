@@ -681,7 +681,7 @@ describe('ExternalTaskDetailDialog', () => {
 
   it('shows global link attribution and never offers a duplicate import', () => {
     renderDialog({
-      globalLink: {
+      projectLink: {
         scopeKey: 'acme.atlassian.net',
         taskId: 'ENG-1',
         linked: true,

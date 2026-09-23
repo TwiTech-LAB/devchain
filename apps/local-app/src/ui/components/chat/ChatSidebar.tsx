@@ -124,6 +124,10 @@ export interface ChatSidebarData {
   humanHeldMessageCounts?: Record<string, number>;
   /** Agents whose informational waiting badge may now release the held lane. */
   humanHeldReleaseEligibleAgentIds?: Record<string, true>;
+  /** Agents whose deferred lane is eligible for force delivery. */
+  forceEligibleAgentIds?: Record<string, true>;
+  /** Hold-reason labels for non-draft deferred lanes before force threshold. */
+  holdReasonLabels?: Record<string, string>;
   /**
    * Whole settled-but-unlogged minutes keyed by main-project agent id. Only
    * whole minutes appear; worktree rows and guests never read this map —
@@ -159,6 +163,8 @@ export interface ChatSidebarSessionController {
   onTerminateConfirm: (agentId: string, sessionId: string) => void;
   onReleaseHeldMessages: (agentId: string) => void;
   releasingHeldAgentId: string | null;
+  onForceDelivery: (agentId: string) => void;
+  forcingAgentId: string | null;
   pendingRestartAgentIds: Set<string>;
   onMarkForRestart: (agentIds: string[]) => void;
   worktreeSessionActionsByAgentKey: Record<
@@ -288,6 +294,8 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     projectProfiles,
     humanHeldMessageCounts,
     humanHeldReleaseEligibleAgentIds,
+    forceEligibleAgentIds,
+    holdReasonLabels,
     unloggedTimeMinutes,
   } = data;
   const {
@@ -307,6 +315,8 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     onTerminateConfirm,
     onReleaseHeldMessages,
     releasingHeldAgentId,
+    onForceDelivery,
+    forcingAgentId,
     pendingRestartAgentIds,
     onMarkForRestart,
     worktreeSessionActionsByAgentKey,
@@ -849,6 +859,10 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         canReleaseHeldMessages={humanHeldReleaseEligibleAgentIds?.[agent.id] === true}
         onReleaseHeldMessages={() => onReleaseHeldMessages(agent.id)}
         releasingHeldMessages={releasingHeldAgentId === agent.id}
+        canForceSend={forceEligibleAgentIds?.[agent.id] === true}
+        onForceSend={() => onForceDelivery(agent.id)}
+        forceSending={forcingAgentId === agent.id}
+        holdReasonLabel={holdReasonLabels?.[agent.id]}
         activityBadge={renderActivityBadge(agent.id)}
         unloggedTimeMinutes={unloggedTimeMinutes?.[agent.id]}
         isTeamLead={options?.isTeamLead ?? false}

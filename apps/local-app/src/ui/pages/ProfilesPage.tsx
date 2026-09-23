@@ -1560,8 +1560,7 @@ export function ProfilesPage() {
               <div className="space-y-2">
                 <Label htmlFor="instructions">Instructions</Label>
                 <p className="text-sm text-muted-foreground">
-                  Use <span className="font-mono">#</span> for grouped references and{' '}
-                  <span className="font-mono">@</span> to search documents while you type.
+                  Use <span className="font-mono">@</span> to search prompts while you type.
                 </p>
                 <MarkdownReferenceInput
                   id="instructions"

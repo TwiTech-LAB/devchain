@@ -1,4 +1,8 @@
-import type { EpicOperationContext } from '../../../epics/services/epics.service';
+import type {
+  EpicOperationContext,
+  UpdateEpicOperationInput,
+  UpdateEpicOutcome,
+} from '../../../epics/services/epics.service';
 import type {
   Status,
   Epic,
@@ -12,6 +16,10 @@ import {
   RelationConfirmationRequiredError,
   ValidationError,
   ForbiddenError,
+  DescriptionEditNotFoundError,
+  DescriptionEditAmbiguousError,
+  IndexedRelationError,
+  RelationRouteConflictError,
 } from '../../../../common/errors/error-types';
 import {
   McpResponse,
@@ -46,6 +54,7 @@ import {
 } from '../../dtos/mcp.dto';
 import {
   mapEpicSummary,
+  mapEpicListItem,
   mapEpicChild,
   mapEpicParent,
   mapEpicComment,
@@ -248,7 +257,7 @@ export async function handleListEpics(ctx: EpicToolContext, params: unknown): Pr
   });
 
   const epicsWithStatus = result.items.map((epic) => {
-    const summary = mapEpicSummary(epic, agentNameById);
+    const summary = mapEpicListItem(epic, agentNameById, validated.includeDescription === true);
     const status = statusById.get(epic.statusId);
     if (status) {
       summary.status = status.label;
@@ -414,6 +423,7 @@ export async function handleCreateEpic(
         parentId: validated.parentId ?? null,
         skillsRequired: validated.skillsRequired ?? null,
         relation: validated.relation,
+        relations: validated.relations,
       },
       context,
     );
@@ -434,8 +444,38 @@ export async function handleCreateEpic(
         },
       };
     }
+    // A route conflict inside one create rolled the whole Epic back, so the
+    // fix is in the request list; never hint at deleting a stored pair here.
+    if (error instanceof RelationRouteConflictError) {
+      return {
+        success: false,
+        error: {
+          code: 'RELATION_ROUTE_CONFLICT',
+          message: error.message,
+          data: error.details,
+        },
+      };
+    }
+    if (error instanceof IndexedRelationError) {
+      const mapped = mapRelationError(error.cause);
+      if (!mapped.success && mapped.error) {
+        return {
+          ...mapped,
+          error: {
+            ...mapped.error,
+            data: {
+              ...(mapped.error.data as Record<string, unknown> | undefined),
+              relationIndex: error.relationIndex,
+            },
+          },
+        };
+      }
+      return mapped;
+    }
     if (error instanceof NotFoundError) {
-      if (validated.relation && error.message.startsWith('Related Epic')) {
+      const carriesRelations =
+        validated.relation !== undefined || validated.relations !== undefined;
+      if (carriesRelations && error.message.startsWith('Related Epic')) {
         return mapRelationError(error);
       }
       return {
@@ -554,7 +594,13 @@ export async function handleGetEpicById(
 
   let parentSummary: EpicParentSummary | undefined;
   if (parentEpic) {
-    parentSummary = mapEpicParent(parentEpic, agentNameById);
+    const parentStatus = statusById.get(parentEpic.statusId);
+    parentSummary = mapEpicParent(
+      parentEpic,
+      agentNameById,
+      parentStatus?.label,
+      validated.includeParentDescription === true,
+    );
   }
 
   const epicSummary = mapEpicSummary(epic, agentNameById);
@@ -877,15 +923,7 @@ export async function handleUpdateEpic(
     };
   }
 
-  const updateData: {
-    title?: string;
-    description?: string;
-    statusId?: string;
-    agentId?: string | null;
-    parentId?: string | null;
-    tags?: string[];
-    skillsRequired?: string[] | null;
-  } = {};
+  const updateData: UpdateEpicOperationInput = {};
 
   if (validated.title !== undefined) {
     updateData.title = validated.title;
@@ -893,6 +931,14 @@ export async function handleUpdateEpic(
 
   if (validated.description !== undefined) {
     updateData.description = validated.description;
+  }
+
+  if (validated.descriptionEdits !== undefined) {
+    updateData.descriptionEdits = validated.descriptionEdits;
+  }
+
+  if (validated.appendDescription !== undefined) {
+    updateData.appendDescription = validated.appendDescription;
   }
 
   if (validated.skillsRequired !== undefined) {
@@ -1008,7 +1054,7 @@ export async function handleUpdateEpic(
   }
 
   let updatedEpic: Epic;
-  let outcome: import('../../../epics/services/epics.service').UpdateEpicOutcome | undefined;
+  let outcome: UpdateEpicOutcome | undefined;
   try {
     const actor =
       sessionCtx.type === 'agent'
@@ -1050,6 +1096,18 @@ export async function handleUpdateEpic(
         },
       };
     }
+    if (error instanceof DescriptionEditNotFoundError) {
+      return {
+        success: false,
+        error: { code: 'DESCRIPTION_EDIT_NOT_FOUND', message: error.message, data: error.details },
+      };
+    }
+    if (error instanceof DescriptionEditAmbiguousError) {
+      return {
+        success: false,
+        error: { code: 'DESCRIPTION_EDIT_AMBIGUOUS', message: error.message, data: error.details },
+      };
+    }
     if (error instanceof ValidationError) {
       return {
         success: false,
@@ -1066,6 +1124,17 @@ export async function handleUpdateEpic(
     id: updatedEpic.id,
     version: updatedEpic.version,
   };
+
+  if (outcome?.descriptionEdit) {
+    const descriptionEdit = outcome.descriptionEdit;
+    if (descriptionEdit.descriptionEdits) {
+      response.descriptionEdits = descriptionEdit.descriptionEdits;
+    }
+    if (descriptionEdit.appended) {
+      response.appended = descriptionEdit.appended;
+    }
+    response.descriptionLength = descriptionEdit.descriptionLength;
+  }
 
   if (
     sessionCtx.type === 'agent' &&

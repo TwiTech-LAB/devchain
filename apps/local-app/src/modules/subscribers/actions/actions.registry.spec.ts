@@ -123,6 +123,13 @@ describe('ActionsRegistry', () => {
       expect(deleteAgent?.inputs).toEqual([
         expect.objectContaining({ name: 'agentName', required: false }),
         expect.objectContaining({ name: 'familySlug', required: false }),
+        expect.objectContaining({
+          name: 'skipWhileEpicsInStatuses',
+          type: 'select',
+          multiple: true,
+          optionsSource: 'project_statuses',
+          required: false,
+        }),
       ]);
     });
 
@@ -147,6 +154,14 @@ describe('ActionsRegistry', () => {
           name: 'familySlug',
           label: 'Profile Family Slug',
           type: 'string',
+          required: false,
+        }),
+        expect.objectContaining({
+          name: 'skipWhileEpicsInStatuses',
+          label: 'Skip while epics are in statuses',
+          type: 'select',
+          multiple: true,
+          optionsSource: 'project_statuses',
           required: false,
         }),
       ]);

@@ -56,7 +56,7 @@ function makeStorageMock() {
       profileId: 'p1',
       providerConfigId: 'config-1',
       description: null,
-      profile: { id: 'p1', name: 'Profile', instructions: '' },
+      profile: { id: 'p1', name: 'Profile', instructions: 'Run tasks step by step.' },
     }),
     getProfileProviderConfig: jest.fn().mockResolvedValue({
       id: 'config-1',
@@ -84,9 +84,12 @@ function makeAgentTestCtx(overrides: Partial<AgentToolContext> = {}): AgentToolC
       listAllSessionNames: jest.fn().mockResolvedValue(new Set()),
     } as never,
     instructionsResolver: {
-      resolve: jest
-        .fn()
-        .mockResolvedValue({ contentMd: '', bytes: 0, truncated: false, docs: [], prompts: [] }),
+      resolve: jest.fn().mockResolvedValue({
+        contentMd: 'Run tasks step by step.',
+        bytes: 21,
+        truncated: false,
+        prompts: [],
+      }),
     } as never,
     teamsService: {
       listTeamsByAgent: jest.fn().mockResolvedValue([]),
@@ -207,17 +210,88 @@ describe('agent-tools handlers', () => {
       expect(result.data.agent.profile).toEqual({
         id: 'p1',
         name: 'Profile',
-        instructions: '',
         instructionsResolved: {
-          contentMd: '',
-          bytes: 0,
+          contentMd: 'Run tasks step by step.',
+          bytes: 21,
           truncated: false,
-          docs: [],
           prompts: [],
         },
       });
+      expect(result.data.agent.profile).not.toHaveProperty('instructions');
       expect(result.data.agent.assignedEpics).toEqual({ items: [], total: 0 });
       expect(ctx.instructionsResolver.resolve).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits the redundant raw instructions for a plain-text profile', async () => {
+      const ctx = makeAgentTestCtx();
+
+      const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
+
+      expect(result.success).toBe(true);
+      expect(result.data.agent.profile).not.toHaveProperty('instructions');
+      expect(result.data.agent.profile?.instructionsResolved).toMatchObject({
+        contentMd: 'Run tasks step by step.',
+        truncated: false,
+      });
+    });
+
+    it('keeps the raw instructions when the resolution is truncated', async () => {
+      const ctx = makeAgentTestCtx();
+      (ctx.instructionsResolver.resolve as jest.Mock).mockResolvedValue({
+        contentMd: 'Run tasks step…',
+        bytes: 13,
+        truncated: true,
+        prompts: [],
+      });
+
+      const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
+
+      expect(result.data.agent.profile?.instructions).toBe('Run tasks step by step.');
+      expect(result.data.agent.profile?.instructionsResolved).toMatchObject({ truncated: true });
+    });
+
+    it('keeps the raw instructions when a prompt reference drops surrounding prose', async () => {
+      const ctx = makeAgentTestCtx();
+      const instructions = 'Intro prose [[prompt:Worker SOP]] tail prose';
+      (ctx.storage.getAgentByName as jest.Mock).mockResolvedValue({
+        id: AGENT_ID,
+        name: AGENT_NAME,
+        projectId: PROJECT_ID,
+        profileId: 'p1',
+        providerConfigId: 'config-1',
+        description: null,
+        profile: { id: 'p1', name: 'Profile', instructions },
+      });
+      (ctx.instructionsResolver.resolve as jest.Mock).mockResolvedValue({
+        contentMd: '## Prompt: Worker SOP\n\nSOP body\n',
+        bytes: 27,
+        truncated: false,
+        prompts: [{ id: 'prompt-1', title: 'Worker SOP' }],
+      });
+
+      const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
+
+      expect(result.data.agent.profile?.instructions).toBe(instructions);
+      expect(result.data.agent.profile?.instructionsResolved).toMatchObject({ truncated: false });
+    });
+
+    it('returns null instructions and no resolved text for a profile without instructions', async () => {
+      const ctx = makeAgentTestCtx();
+      (ctx.storage.getAgentByName as jest.Mock).mockResolvedValue({
+        id: AGENT_ID,
+        name: AGENT_NAME,
+        projectId: PROJECT_ID,
+        profileId: 'p1',
+        providerConfigId: 'config-1',
+        description: null,
+        profile: { id: 'p1', name: 'Profile', instructions: null },
+      });
+      (ctx.instructionsResolver.resolve as jest.Mock).mockResolvedValue(null);
+
+      const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
+
+      expect(result.data.agent.profile?.instructions).toBeNull();
+      expect(result.data.agent.profile?.instructionsResolved).toBeUndefined();
     });
 
     it('returns newest open assigned epics with status and a pre-cap total', async () => {
@@ -492,7 +566,7 @@ describe('agent-tools handlers', () => {
       expect(result.data.agent.providerConfigName).toBe('Claude Sonnet');
       expect(result.data.agent.teams).toEqual([]);
       expect(result.data.agent.presence).toBeNull();
-      expect(result.data.agent.profile).toHaveProperty('instructions');
+      expect(result.data.agent.profile).toHaveProperty('instructionsResolved');
       expect(ctx.instructionsResolver.resolve).toHaveBeenCalledTimes(1);
     });
 

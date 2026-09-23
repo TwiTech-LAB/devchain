@@ -11,6 +11,7 @@ export type McpToolBindingRegistryFixtureDependencies = Partial<
     | 'settingsService'
     | 'guestsService'
     | 'skillsService'
+    | 'skillSourceLifecycleService'
     | 'reviewsService'
     | 'reviewSuggestionApplier'
     | 'teamsService'
@@ -32,6 +33,7 @@ export function createMcpToolBindingRegistryFixture(
     dependencies.settingsService,
     dependencies.guestsService,
     dependencies.skillsService,
+    dependencies.skillSourceLifecycleService,
     dependencies.reviewsService,
     dependencies.reviewSuggestionApplier,
     dependencies.teamsService,

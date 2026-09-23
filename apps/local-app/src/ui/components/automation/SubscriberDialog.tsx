@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/ui/components/ui/button';
@@ -23,6 +23,8 @@ import {
 } from '@/ui/components/ui/select';
 import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { fetchStatuses } from '@/ui/pages/board/lib/board-api';
 import {
   createSubscriber,
   updateSubscriber,
@@ -42,6 +44,10 @@ import {
   isMessageDeliveryMode,
 } from '@/modules/sessions/services/message-pool.types';
 import { ActionInputsForm } from './ActionInputsForm';
+import {
+  findUnknownLabels,
+  parseStatusLabels,
+} from '@/modules/subscribers/actions/epic-status-guard';
 
 type FilterOperator = EventFilterCondition['operator'];
 type FilterCombinator = 'and' | 'or';
@@ -262,6 +268,7 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
+  const apiFetch = useFetchFactory();
   const isEditMode = !!subscriber;
 
   const [formData, setFormData] = useState<SubscriberFormData>(defaultFormData);
@@ -292,6 +299,29 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
 
   // Get selected action metadata
   const selectedAction = actions?.find((a) => a.type === formData.actionType) || null;
+
+  // Fetched on open (not on action selection) so an edit-mode save never races
+  // the options it validates against. Shares the board's query key.
+  const { data: statusesData } = useQuery({
+    queryKey: ['statuses', selectedProjectId],
+    queryFn: () => fetchStatuses(selectedProjectId as string, apiFetch),
+    enabled: !!selectedProjectId && open,
+  });
+
+  // Hydrate project-sourced options before the inputs form renders; stored
+  // values stay labels so they survive a template copy into another project.
+  const hydratedAction = useMemo(() => {
+    if (!selectedAction) return null;
+    const statusOptions = [...(statusesData?.items ?? [])]
+      .sort((left, right) => left.position - right.position)
+      .map((status) => ({ value: status.label, label: status.label }));
+    return {
+      ...selectedAction,
+      inputs: selectedAction.inputs.map((input) =>
+        input.optionsSource === 'project_statuses' ? { ...input, options: statusOptions } : input,
+      ),
+    };
+  }, [selectedAction, statusesData]);
 
   // Deletion must never persist an enabled retry. The action-type check covers the window
   // before metadata hydrates; supportsRetry=false covers any non-retryable action.
@@ -478,8 +508,8 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
     }
 
     // Validate required action inputs
-    if (selectedAction) {
-      for (const input of selectedAction.inputs) {
+    if (hydratedAction) {
+      for (const input of hydratedAction.inputs) {
         const inputValue = formData.actionInputs[input.name];
         if (input.required) {
           if (!inputValue) {
@@ -497,6 +527,14 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
           !input.allowedSources.includes(inputValue.source)
         ) {
           newInputErrors[input.name] = `${input.label} must use a custom value`;
+        } else if (inputValue?.source === 'custom' && input.type === 'select' && input.multiple) {
+          const unknownLabels = findUnknownLabels(
+            parseStatusLabels(inputValue.customValue),
+            input.options ?? [],
+          );
+          if (unknownLabels.length > 0) {
+            newInputErrors[input.name] = `Unknown status: ${unknownLabels.join(', ')}`;
+          }
         } else if (
           inputValue?.source === 'custom' &&
           input.type === 'select' &&
@@ -956,7 +994,7 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
 
             {formData.actionType && (
               <ActionInputsForm
-                action={selectedAction}
+                action={hydratedAction}
                 values={formData.actionInputs}
                 onChange={(values) => updateField('actionInputs', values)}
                 availableEventFields={selectedEventFields}

@@ -209,7 +209,7 @@ describe('ExternalEditSessionStore', () => {
       expect(committed.value.revision).toBe(1);
     });
 
-    it('divergence is terminal and never issues a writable revision', () => {
+    it('divergence blocks dispatch until explicit reload', () => {
       const store = smallStore({}, clock);
       const id = (store.create(baseInput()) as { value: { sessionId: string } }).value.sessionId;
       store.beginDispatch(id, 'fp-1', 0);
@@ -234,6 +234,104 @@ describe('ExternalEditSessionStore', () => {
         reason: 'invalid_state_for_operation',
       });
     });
+  });
+
+  describe('explicit reload', () => {
+    it.each(['editable', 'diverged'] as const)(
+      'recovers %s with a fresh baseline and one revision',
+      (state) => {
+        const store = smallStore({ maxEntries: 2 }, clock);
+        const created = store.create(baseInput());
+        if (!created.ok) throw new Error(created.reason);
+        const id = created.value.sessionId;
+        const other = store.create(baseInput());
+        if (!other.ok) throw new Error(other.reason);
+        if (state === 'diverged') store.applyVerifyOutcome(id, 'diverged');
+        const before = store.get(id);
+        if (!before.ok) throw new Error(before.reason);
+        store.touch(other.value.sessionId);
+        const bytes = store.totalSerializedBytes();
+        const baseline = { document: 'a longer fresh baseline', fingerprint: 'fp-new' };
+        nowMs += 100;
+
+        const result = store.commitReload(id, baseline);
+        expect(result).toMatchObject({
+          ok: true,
+          value: {
+            state: 'editable',
+            baseline,
+            revision: 1,
+            pendingWrite: null,
+            lastActivityAt: nowMs,
+          },
+        });
+        if (!result.ok) throw new Error(result.reason);
+        expect(store.totalSerializedBytes() - bytes).toBe(
+          JSON.stringify(result.value).length - JSON.stringify(before.value).length,
+        );
+        store.create(baseInput());
+        expect(store.get(other.value.sessionId)).toEqual({
+          ok: false,
+          reason: 'session_not_found',
+        });
+        expect(store.get(id).ok).toBe(true);
+      },
+    );
+
+    it.each(['outcome_unknown', 'saved_unverified', 'invalidated'] as const)(
+      'rejects a live %s entry without mutation',
+      (state) => {
+        const store = smallStore({}, clock);
+        const created = store.create(baseInput());
+        if (!created.ok) throw new Error(created.reason);
+        const id = created.value.sessionId;
+        store.beginDispatch(id, 'pending', 0);
+        if (state === 'saved_unverified') store.markSavedUnverified(id);
+        if (state === 'invalidated') store.invalidate(id);
+        const before = store.get(id);
+        expect(store.commitReload(id, { document: 'new', fingerprint: 'new' })).toEqual({
+          ok: false,
+          reason: 'session_not_editable',
+        });
+        expect(store.get(id)).toEqual(before);
+      },
+    );
+
+    it('drops expired entries and rejects expired or missing sessions', () => {
+      const store = smallStore({ idleLimitMs: 100 }, clock);
+      const created = store.create(baseInput());
+      if (!created.ok) throw new Error(created.reason);
+      nowMs += 101;
+      expect(store.commitReload(created.value.sessionId, baseInput().baseline)).toEqual({
+        ok: false,
+        reason: 'session_not_found',
+      });
+      expect(store.size()).toBe(0);
+      expect(store.commitReload('missing', baseInput().baseline)).toEqual({
+        ok: false,
+        reason: 'session_not_found',
+      });
+    });
+
+    it.each(['editable', 'diverged'] as const)(
+      'rejects an oversized baseline without changing the %s entry',
+      (state) => {
+        const store = smallStore({ maxBaselineBytes: 100 }, clock);
+        const created = store.create(baseInput());
+        if (!created.ok) throw new Error(created.reason);
+        const id = created.value.sessionId;
+        if (state === 'diverged') store.applyVerifyOutcome(id, 'diverged');
+        const before = store.get(id);
+        const bytes = store.totalSerializedBytes();
+        nowMs += 100;
+        expect(store.commitReload(id, { document: 'x'.repeat(500), fingerprint: 'new' })).toEqual({
+          ok: false,
+          reason: 'baseline_too_large',
+        });
+        expect(store.get(id)).toEqual(before);
+        expect(store.totalSerializedBytes()).toBe(bytes);
+      },
+    );
   });
 
   it('invalidates sessions for only the replaced project connection', () => {

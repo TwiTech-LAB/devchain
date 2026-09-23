@@ -18,6 +18,7 @@ import { SessionsService } from '../services/sessions.service';
 import { SessionRuntime } from '../services/session-runtime';
 import {
   SessionsMessagePoolService,
+  type ForceDeferredResult,
   type MessageLogEntry,
   type PoolDetails,
 } from '../services/sessions-message-pool.service';
@@ -58,6 +59,12 @@ const PoolsQuerySchema = z.object({
 
 const ReleaseHumanHoldSchema = z.object({
   projectId: z.string().uuid('projectId must be a valid UUID'),
+});
+
+const ForceDeferredSchema = z.object({
+  projectId: z.string().uuid('projectId must be a valid UUID'),
+  sessionId: z.string().uuid('sessionId must be a valid UUID'),
+  messageIds: z.array(z.string().uuid('Each messageId must be a valid UUID')).min(1),
 });
 
 /** Query params for GET /sessions and GET /sessions/agents/presence */
@@ -391,6 +398,36 @@ export class SessionsController {
       throw new ConflictException('Human input must remain idle for 30 seconds before release');
     }
     return { released: true };
+  }
+
+  @Post('pools/:agentId/force-deferred')
+  async forceDeferred(
+    @Param('agentId') agentId: string,
+    @Body() body: unknown,
+  ): Promise<Exclude<ForceDeferredResult, { status: 'not_found' | 'conflict' }>> {
+    const parsedAgentId = z.string().uuid('agentId must be a valid UUID').safeParse(agentId);
+    const parsedBody = ForceDeferredSchema.safeParse(body);
+    if (!parsedAgentId.success || !parsedBody.success) {
+      const errors = [
+        ...(parsedAgentId.success ? [] : parsedAgentId.error.errors),
+        ...(parsedBody.success ? [] : parsedBody.error.errors),
+      ];
+      throw new BadRequestException(errors.map((error) => error.message).join(', '));
+    }
+
+    const result = await this.messagePoolService.forceDeferredDelivery(
+      parsedAgentId.data,
+      parsedBody.data.projectId,
+      parsedBody.data.sessionId,
+      parsedBody.data.messageIds,
+    );
+    if (result.status === 'not_found') {
+      throw new NotFoundException('No eligible deferred messages found for this agent and session');
+    }
+    if (result.status === 'conflict') {
+      throw new ConflictException(result.reason);
+    }
+    return result;
   }
 
   /**

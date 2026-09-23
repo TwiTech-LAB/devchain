@@ -21,17 +21,19 @@ import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { useEpicExternalSourcesBatch } from '@/ui/hooks/useEpicExternalSourcesBatch';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import {
-  useDeleteEpicRelation,
   useEpicRelationCandidates,
   useEpicRelations,
   useSetEpicRelation,
 } from '@/ui/hooks/useEpicRelations';
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
 import { EpicRelationDirectionPicker } from '@/ui/components/epics/EpicRelationDirectionPicker';
+import {
+  EpicRelationRemoveDialog,
+  useRelationTargetFacts,
+} from '@/ui/components/epics/EpicRelationRemoveDialog';
 import { RelationRouteWarning } from '@/ui/components/epics/RelationRouteWarning';
 import {
   EPIC_RELATION_TYPE_OPTIONS,
-  RELATION_ROUTE_HISTORY_WARNING,
   flattenEpicRelationCandidatePages,
   flattenEpicRelationPages,
   getRelatedRouteEligibility,
@@ -62,10 +64,6 @@ interface PendingCrossProjectOpen {
   target: EpicRelationTarget;
 }
 
-interface PendingRemove {
-  relation: EpicRelation;
-}
-
 /** Draft endpoint ids resolved from the arrow state: [sourceId, targetId]. */
 function draftEndpoints(
   epicId: string,
@@ -91,20 +89,6 @@ function relationSaveLabel(
   if (isPending) return pendingLabel;
   if (confirmationRequired) return 'Accept route and save';
   return idleLabel;
-}
-
-function useRelationTargetFacts(targetId: string | null) {
-  const apiFetch = useFetchFactory();
-  return useQuery({
-    queryKey: ['epic', 'relation-target', targetId],
-    queryFn: async ({ signal }): Promise<{ parentId: string | null; projectId: string }> => {
-      const res = await apiFetch(`/api/epics/${encodeURIComponent(targetId!)}`, { signal });
-      if (!res.ok) throw new Error('The linked Epic could not be loaded.');
-      return res.json();
-    },
-    enabled: targetId !== null,
-    staleTime: 60_000,
-  });
 }
 
 interface AddRelationDialogProps {
@@ -400,14 +384,12 @@ function RelationRow({
   onTypeChange,
   onEdit,
   onRemove,
-  removePending,
 }: {
   relation: EpicRelation;
   onNavigate: (target: EpicRelationTarget) => void;
   onTypeChange: (relation: EpicRelation, nextType: EpicRelationType) => void;
   onEdit: (relation: EpicRelation) => void;
   onRemove: (relatedEpicId: string) => void;
-  removePending: boolean;
 }) {
   const { relatedEpic } = relation;
   // Row-level direction facts: legacy neutral rows render without error and
@@ -463,7 +445,6 @@ function RelationRow({
             variant="ghost"
             size="sm"
             onClick={() => onRemove(relatedEpic.id)}
-            disabled={removePending}
             aria-label={`Remove relation with ${relatedEpic.title}`}
           >
             <Trash2 className="h-4 w-4 text-muted-foreground" />
@@ -482,7 +463,6 @@ function RelationGroup({
   onTypeChange,
   onEdit,
   onRemove,
-  removePending,
 }: {
   title: string;
   ariaLabel: string;
@@ -491,7 +471,6 @@ function RelationGroup({
   onTypeChange: (relation: EpicRelation, nextType: EpicRelationType) => void;
   onEdit: (relation: EpicRelation) => void;
   onRemove: (relatedEpicId: string) => void;
-  removePending: boolean;
 }) {
   if (relations.length === 0) return null;
 
@@ -509,7 +488,6 @@ function RelationGroup({
             onTypeChange={onTypeChange}
             onEdit={onEdit}
             onRemove={onRemove}
-            removePending={removePending}
           />
         ))}
       </ul>
@@ -703,19 +681,12 @@ export function EpicRelationsCard({
   const { selectedProject, activateProject } = useSelectedProject();
   const relationsQuery = useEpicRelations(epicId);
   const setRelation = useSetEpicRelation();
-  const deleteRelation = useDeleteEpicRelation(epicId);
   const [addOpen, setAddOpen] = useState(false);
   const [pendingTypeChange, setPendingTypeChange] = useState<PendingTypeChange | null>(null);
   const [pendingCrossProjectOpen, setPendingCrossProjectOpen] =
     useState<PendingCrossProjectOpen | null>(null);
   const [editRelation, setEditRelation] = useState<EpicRelation | null>(null);
-  const [pendingRemove, setPendingRemove] = useState<PendingRemove | null>(null);
-
-  // The removal confirmation resolves the target's eligibility from the Epic
-  // row so the warning names source and target only when the pair actually
-  // routes time.
-  const pendingRemoveTargetId = pendingRemove?.relation.relatedEpic.id ?? null;
-  const pendingRemoveTargetQuery = useRelationTargetFacts(pendingRemoveTargetId);
+  const [removeRelation, setRemoveRelation] = useState<EpicRelation | null>(null);
 
   const focalProjectQuery = useQuery({
     queryKey: projectsQueryKeys.detail({ id: focalProjectId }),
@@ -837,19 +808,12 @@ export function EpicRelationsCard({
     (relatedEpicId: string) => {
       const relation = relations.find((item) => item.relatedEpic.id === relatedEpicId);
       if (!relation) return;
-      // Deletion is destructive: the themed confirmation states the effect
-      // the user approves before any request leaves.
-      setPendingRemove({ relation });
+      // Deletion is destructive: the shared themed confirmation states the
+      // effect the user approves before any request leaves.
+      setRemoveRelation(relation);
     },
     [relations],
   );
-
-  const confirmRemove = useCallback(() => {
-    const pending = pendingRemove;
-    if (!pending) return;
-    deleteRelation.mutate({ relatedEpicId: pending.relation.relatedEpic.id });
-    setPendingRemove(null);
-  }, [deleteRelation, pendingRemove]);
 
   const confirmTypeChange = useCallback(() => {
     const pending = pendingTypeChange;
@@ -874,60 +838,7 @@ export function EpicRelationsCard({
   const setConfirmationError = isEpicRelationConfirmationError(setRelation.error)
     ? setRelation.error
     : null;
-  const mutationError = setRelation.error?.message ?? deleteRelation.error?.message ?? null;
-
-  // A directed Related removal's warning depends on the target Epic row: the
-  // confirm action stays blocked until those facts settle so the user can
-  // never approve a generic warning in place of the route context.
-  const removalContextLoading = Boolean(
-    pendingRemove &&
-      pendingRemove.relation.type === 'related' &&
-      pendingRemove.relation.sourceEpicId !== null &&
-      pendingRemoveTargetQuery.isLoading,
-  );
-
-  // Removal warning lines: every variant states that historical provider time
-  // never moves, and an eligible directed Related pair names the exact source
-  // and target whose time flow the deletion ends.
-  const removeWarningLines = useMemo(() => {
-    const pending = pendingRemove;
-    if (!pending) return [];
-    const { relation } = pending;
-    const endpoints = [
-      { id: epicId, title: epicTitle },
-      { id: relation.relatedEpic.id, title: relation.relatedEpic.title },
-    ];
-    if (relation.type !== 'related') {
-      return ['Deleting removes this Blocks relation.', RELATION_ROUTE_HISTORY_WARNING];
-    }
-    if (relation.sourceEpicId === null) {
-      const lines = ['Deleting removes this Related pair. It carries no direction yet.'];
-      if (relation.relatedEpic.project.id !== focalProjectId) {
-        lines.push('A cross-project Related link never affects Epic time.');
-      }
-      lines.push(RELATION_ROUTE_HISTORY_WARNING);
-      return lines;
-    }
-    const eligible =
-      focalIsRoot &&
-      pendingRemoveTargetQuery.data?.parentId === null &&
-      pendingRemoveTargetQuery.data?.projectId === focalProjectId;
-    if (!eligible) {
-      return ['Deleting removes this Related pair.', RELATION_ROUTE_HISTORY_WARNING];
-    }
-    return relationRouteChangeWarning(
-      'delete',
-      { sourceEpicId: relation.sourceEpicId, targetEpicId: relation.targetEpicId! },
-      endpoints,
-    );
-  }, [
-    epicId,
-    epicTitle,
-    focalIsRoot,
-    focalProjectId,
-    pendingRemove,
-    pendingRemoveTargetQuery.data,
-  ]);
+  const mutationError = setRelation.error?.message ?? null;
 
   return (
     <Card>
@@ -1024,7 +935,6 @@ export function EpicRelationsCard({
               onTypeChange={handleTypeChange}
               onEdit={handleEdit}
               onRemove={handleRemove}
-              removePending={deleteRelation.isPending}
             />
             <RelationGroup
               title="Blocks"
@@ -1034,7 +944,6 @@ export function EpicRelationsCard({
               onTypeChange={handleTypeChange}
               onEdit={handleEdit}
               onRemove={handleRemove}
-              removePending={deleteRelation.isPending}
             />
             <RelationGroup
               title="Blocked by"
@@ -1044,7 +953,6 @@ export function EpicRelationsCard({
               onTypeChange={handleTypeChange}
               onEdit={handleEdit}
               onRemove={handleRemove}
-              removePending={deleteRelation.isPending}
             />
             {relationsQuery.hasNextPage && (
               <Button
@@ -1101,18 +1009,13 @@ export function EpicRelationsCard({
         isPending={setRelation.isPending}
         confirmationError={editRelation !== null ? setConfirmationError : null}
       />
-      <ConfirmDialog
-        open={pendingRemove !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingRemove(null);
-        }}
-        title="Remove this relation?"
-        description={removeWarningLines.join(' ')}
-        confirmText="Remove"
-        cancelText="Cancel"
-        loading={deleteRelation.isPending}
-        confirmDisabled={removalContextLoading}
-        onConfirm={confirmRemove}
+      <EpicRelationRemoveDialog
+        epicId={epicId}
+        epicTitle={epicTitle}
+        focalProjectId={focalProjectId}
+        focalIsRoot={focalIsRoot}
+        relation={removeRelation}
+        onClose={() => setRemoveRelation(null)}
       />
       <ConfirmDialog
         open={pendingTypeChange !== null}

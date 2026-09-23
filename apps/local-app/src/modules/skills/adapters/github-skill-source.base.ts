@@ -90,13 +90,7 @@ export abstract class GitHubSkillSourceBase {
     const endpoint = `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/commits/${encodeURIComponent(this.branch)}`;
     const response = await this.fetchWithTimeout(endpoint);
     if (!response.ok) {
-      throw new StorageError('Failed to fetch latest GitHub commit for skill source.', {
-        sourceName: this.sourceName,
-        repoOwner: this.repoOwner,
-        repoName: this.repoName,
-        branch: this.branch,
-        status: response.status,
-      });
+      throw this.requestFailure('Failed to fetch latest GitHub commit for skill source.', response);
     }
 
     const payload = (await response.json()) as { sha?: unknown };
@@ -300,19 +294,49 @@ export abstract class GitHubSkillSourceBase {
   private async downloadTarball(destinationPath: string): Promise<void> {
     const response = await this.fetchWithTimeout(this.getTarballUrl());
     if (!response.ok || !response.body) {
-      throw new StorageError('Failed to download GitHub tarball for skill source.', {
-        sourceName: this.sourceName,
-        repoOwner: this.repoOwner,
-        repoName: this.repoName,
-        branch: this.branch,
-        status: response.status,
-      });
+      throw this.requestFailure('Failed to download GitHub tarball for skill source.', response);
     }
 
     await fs.mkdir(dirname(destinationPath), { recursive: true });
     const writeStream = createWriteStream(destinationPath);
     const bodyStream = Readable.fromWeb(response.body as unknown as WebReadableStream<Uint8Array>);
     await pipeline(bodyStream, writeStream);
+  }
+
+  /**
+   * Error for a failed GitHub request. An exhausted primary rate limit gets
+   * its own message with the reset time: the generic message hides that the
+   * source is fine and a later sync will succeed on its own.
+   */
+  private requestFailure(message: string, response: Response): StorageError {
+    const details = {
+      sourceName: this.sourceName,
+      repoOwner: this.repoOwner,
+      repoName: this.repoName,
+      branch: this.branch,
+      status: response.status,
+    };
+    const rateLimited =
+      (response.status === 403 || response.status === 429) &&
+      response.headers.get('x-ratelimit-remaining') === '0';
+    if (!rateLimited) {
+      return new StorageError(message, details);
+    }
+
+    const resetSeconds = Number(response.headers.get('x-ratelimit-reset'));
+    const resetAt =
+      Number.isFinite(resetSeconds) && resetSeconds > 0 ? new Date(resetSeconds * 1000) : null;
+    const resetText = resetAt
+      ? ` It resets at ${resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+      : '';
+    const limitText = this.githubToken
+      ? 'GitHub API rate limit reached for this token.'
+      : 'GitHub API rate limit reached (60 requests per hour without a token).';
+    return new StorageError(`${limitText}${resetText} The stored skills stay available.`, {
+      ...details,
+      rateLimited: true,
+      resetAt: resetAt?.toISOString() ?? null,
+    });
   }
 
   private async fetchWithTimeout(url: string): Promise<Response> {

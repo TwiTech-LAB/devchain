@@ -118,7 +118,7 @@ After Planning Complete (normal flow): Call ExitPlanMode, DO NOT start implement
      - Unverified claim, edge case outside normal use, or future-proofing suggestion → check with one read/search if possible. Otherwise apply §6's value gate: backlog qualifying items; drop the rest. Add "Deferred: <X> — backlog" only for registered items. These findings do not expand the plan.
      - Minor suggestion → incorporate if low-risk, otherwise note as optional.
 4. Verify minor corrections yourself. For material changes to behavior, architecture or failure recovery, send the changed parts and rationale to relevant reviewers via `recipientAgentNames`. Include others only if their areas are affected. Further rounds require an unresolved or newly introduced blocker; reopen completed reviews only for new blocker evidence. The lead decides technical readiness; the user approves the final plan. Do not seek unanimous or repeated agent approval.
-5. Stop team messages when review ends, except for reopening under step 4. If the full text of `devchain/asd-ste100-skill` is absent from context, read it via `devchain_get_skill`. Apply it and present only the rewritten plan to the user, including the recommended next action.
+5. Stop team messages when review ends, except for reopening under step 4. If the full text of `asd-ste100-skill` is absent from context, read it via `devchain_get_skill`. Apply it and present only the rewritten plan to the user, including the recommended next action.
 
 **Exception:** For requests related to Technical Review of already completed tasks, you are authorized to:
 - Do planning and convert directly into a Master Plan without the Technical Validation Loop.

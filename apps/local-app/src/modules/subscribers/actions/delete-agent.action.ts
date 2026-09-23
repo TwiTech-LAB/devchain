@@ -1,6 +1,13 @@
 import type { Agent } from '../../storage/models/domain.models';
 import type { ActionContext, ActionDefinition, ActionResult } from './action.interface';
 import { resolveFamilyAgentTargets } from './family-agent-targets';
+import {
+  STATUS_GUARD_INPUT_NAME,
+  describeUnknownLabels,
+  resolveStatusGuard,
+  skippedResult,
+  statusGuardInput,
+} from './epic-status-guard';
 
 export interface DeleteAgentTargetResult {
   id: string;
@@ -85,6 +92,7 @@ export const deleteAgentAction: ActionDefinition = {
         'Optional: delete every agent in matching profile families in the current project. Matching is case-insensitive; Agent Name takes priority. Leave both selectors empty to use the agent that caused the event.',
       placeholder: 'e.g., engineering',
     },
+    statusGuardInput,
   ],
 
   execute: async (
@@ -98,6 +106,17 @@ export const deleteAgentAction: ActionDefinition = {
     let targets: Agent[] = [];
 
     try {
+      const guard = await resolveStatusGuard(storage, projectId, inputs[STATUS_GUARD_INPUT_NAME]);
+      if (!guard.ok) {
+        return failedResult(
+          { resolvedBy, matched: [], deleted: [], failed: [] },
+          describeUnknownLabels(projectId, guard.unknownLabels),
+        );
+      }
+      if (guard.blocking.length > 0) {
+        return skippedResult(guard.blocking);
+      }
+
       if (agentName) {
         resolvedBy = 'agentName';
         const target = await storage.getAgentByName(projectId, agentName);

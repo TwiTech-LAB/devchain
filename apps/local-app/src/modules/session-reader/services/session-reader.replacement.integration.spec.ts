@@ -303,4 +303,29 @@ describe('SessionReaderService file replacement cursor integration', () => {
       }),
     );
   });
+
+  it('accepts a same-file append while a later append lands during the incremental read', async () => {
+    await writeFile(filePath, transcript('ORIGINAL'));
+    const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
+
+    // The proven follow-up grows the file; the cache bounds the delta read to this snapshot.
+    await appendFile(filePath, appendedUser(2, 'Proven append'));
+
+    // A LATE append lands during the adapter read — past the proven bound. Same inode, larger
+    // file: the post-parse proof must still accept, and the bounded read must not consume it.
+    const realIncremental = adapter.parseIncremental.bind(adapter);
+    jest.spyOn(adapter, 'parseIncremental').mockImplementationOnce(async (...args) => {
+      await appendFile(filePath, appendedUser(3, 'Late append past the bound'));
+      return realIncremental(...args);
+    });
+
+    const changed = await service.getTranscriptTail(SESSION_ID, summary.cursor);
+    expect(changed).toMatchObject({ kind: 'delta', deltaMessages: [{ id: 'u-002' }] });
+    expect(changed).toHaveProperty('cursor');
+
+    // The withheld u-003 arrives on the next tail, read exactly once (no duplicate of u-002).
+    const nextCursor = (changed as { cursor: string }).cursor;
+    const followUp = await service.getTranscriptTail(SESSION_ID, nextCursor);
+    expect(followUp).toMatchObject({ kind: 'delta', deltaMessages: [{ id: 'u-003' }] });
+  });
 });

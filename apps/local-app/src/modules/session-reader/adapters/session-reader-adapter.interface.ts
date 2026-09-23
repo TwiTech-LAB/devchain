@@ -7,7 +7,7 @@
  */
 
 import * as fs from 'node:fs/promises';
-import type { UnifiedSession, UnifiedMetrics } from '../dtos/unified-session.types';
+import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
 
 /**
  * A resolved reference to the source of a session's transcript data.
@@ -102,8 +102,22 @@ export interface ParseOptions {
   maxMessages?: number;
   /** Byte offset to start reading from (for pagination) */
   byteOffset?: number;
+  /**
+   * Exclusive upper byte bound for the read (undefined = read to EOF). Delta adapters
+   * pass the proven snapshot size so a file that grows mid-parse yields no bytes beyond
+   * it, and an unterminated final line inside the bound is held back rather than consumed
+   * (`nextByteOffset` then lands on that line's start). `byteOffset` must be a line
+   * boundary; the bound need not be.
+   */
+  endByteOffset?: number;
   /** Whether to include tool call/result messages */
   includeToolCalls?: boolean;
+  /**
+   * Opaque per-adapter continuation state carried from the previous incremental result so the
+   * adapter can resume without rescanning earlier bytes (Codex token baseline). Adapters that
+   * do not use it ignore it.
+   */
+  continuationState?: unknown;
 }
 
 /**
@@ -122,6 +136,12 @@ export interface IncrementalResult {
   metrics?: UnifiedMetrics;
   /** Degradation warnings from the incremental parse (merged by cache service) */
   warnings?: string[];
+  /**
+   * Opaque per-adapter continuation state to carry into the next incremental parse (see
+   * {@link ParseOptions.continuationState}). The cache stores it on the entry and threads it
+   * back; a full parse clears it. Absent for adapters that do not use it.
+   */
+  continuationState?: unknown;
 }
 
 /**
@@ -142,6 +162,43 @@ export interface TranscriptCandidateMetadata {
   timestamp?: string;
 }
 
+/**
+ * Minimal projection of the merged TAIL message that the incremental boundary fold reads.
+ * The watcher's metrics-only lane keeps this instead of the whole tail message so it can
+ * decide folds without retaining bodies.
+ */
+export interface TailDescriptor {
+  role: UnifiedMessage['role'];
+  isSidechain: boolean;
+  /** Persisted turn-completion signal; `end_turn` blocks a further assistant fold. */
+  stopReason: string | null;
+  isCompactSummary: boolean;
+}
+
+/**
+ * O(1) state a metrics-only scan yields so the watcher lane can resume incremental merges
+ * from a line boundary without retaining messages. Timestamps are epoch ms of the POSITIONAL
+ * first/last message (what `mergeMetrics` uses for `durationMs`), not min/max entry times.
+ */
+export interface LaneSeed {
+  /** Exclusive end byte offset of the scanned prefix (a line boundary). */
+  endOffset: number;
+  /** Descriptor of the last merged message; absent when the scan produced no messages. */
+  tail?: TailDescriptor;
+  /** Epoch ms of the first message; absent when there are none. */
+  firstMessageTimestamp?: number;
+  /** Epoch ms of the last message; absent when there are none. */
+  lastMessageTimestamp?: number;
+  /**
+   * Visible-context tokens in MERGE terms: content after the last compact summary, which is
+   * itself excluded (mirrors `estimateVisibleFromMessages`, not the parser's own counter).
+   */
+  visibleContextTokens: number;
+  messageCount: number;
+  /** Opaque continuation state to carry into the next incremental parse (Codex token baseline). */
+  continuationState?: unknown;
+}
+
 export interface AdapterSummaryResult {
   /** Complete wire-compatible metrics; fields named in approximateFields are best-effort. */
   metrics: UnifiedMetrics;
@@ -151,6 +208,11 @@ export interface AdapterSummaryResult {
   exactFields: readonly (keyof UnifiedMetrics)[];
   /** Fields that may lag or use a documented proxy until the next full parse. */
   approximateFields?: readonly (keyof UnifiedMetrics)[];
+  /**
+   * O(1) seed state for the watcher's metrics-only lane (file+delta adapters only). Absent for
+   * adapters that do not support the lane (snapshot/db); the watcher then keeps its body path.
+   */
+  laneSeed?: LaneSeed;
 }
 
 export const EXACT_SUMMARY_FIELDS = [

@@ -51,6 +51,20 @@ export const SkillsRequiredInputSchema = z
   .array(SkillSlugSchema)
   .transform((slugs) => Array.from(new Set(slugs)));
 
+/** Existing-project enablement for a new managed source; absent means none. */
+export const ExistingProjectsEnablementSchema = z
+  .union([
+    z.object({ mode: z.literal('none') }).strict(),
+    z.object({ mode: z.literal('all') }).strict(),
+    z
+      .object({
+        mode: z.literal('selected'),
+        projectIds: z.array(z.string().uuid()).min(1),
+      })
+      .strict(),
+  ])
+  .default({ mode: 'none' });
+
 export const SkillSyncRequestSchema = z
   .object({
     sourceName: z.string().trim().min(1).optional(),

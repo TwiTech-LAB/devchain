@@ -229,3 +229,121 @@ test('limits and shortened smoke runs cannot masquerade as acceptance scenarios'
   );
   assert.throws(() => parseArgs(['--sessions', '5', '--report', '/tmp/too-many.json']));
 });
+
+test('the many-unviewed profile presets a mixed-format, one-viewed scenario', () => {
+  const profile = parseArgs(['--profile', 'many-unviewed', '--report', '/tmp/many.json']);
+  assert.equal(profile.sessions, 20);
+  assert.equal(profile.fileMiB, 5);
+  assert.equal(profile.viewedOnly, true);
+  assert.deepEqual(profile.formats, ['codex', 'claude']);
+  assert.equal(profile.acceptanceProfile, false); // never masquerades as a CPU-target acceptance run
+  // Explicit flags still override the preset, within a bounded cap that lifts the four-session limit.
+  assert.equal(
+    parseArgs(['--profile', 'many-unviewed', '--sessions', '24', '--report', '/tmp/m.json'])
+      .sessions,
+    24,
+  );
+  assert.throws(() =>
+    parseArgs(['--profile', 'many-unviewed', '--sessions', '41', '--report', '/tmp/m.json']),
+  );
+  assert.throws(() => parseArgs(['--profile', 'nope', '--report', '/tmp/m.json']));
+});
+
+function validManyUnviewedReport() {
+  const counter = (full, incremental) => ({
+    peakParses: 1,
+    peakHandlers: 1,
+    updates: 10,
+    completedHandlers: 10,
+    activeParses: 0,
+    activeHandlers: 0,
+    full,
+    incremental,
+  });
+  return {
+    config: {
+      profile: 'many-unviewed',
+      sessions: 3,
+      fileMiB: 5,
+      drainMs: 5000,
+      acceptanceProfile: false,
+    },
+    fixtures: [
+      { id: 'viewed', provider: 'codex', appends: 10, expectedFinalMessages: 100 },
+      { id: 'unviewed-claude', provider: 'claude', appends: 10, expectedFinalMessages: 100 },
+      { id: 'unviewed-codex', provider: 'codex', appends: 10, expectedFinalMessages: 100 },
+    ],
+    lastSummaryCounts: { viewed: 100, 'unviewed-claude': 100, 'unviewed-codex': 100 },
+    lastCanonicalCount: 100,
+    safetyAbort: null,
+    exit: { code: 0 },
+    drainMs: 100,
+    pendingRequestsAtExit: 0,
+    fixturesRemoved: true,
+    sourceUnchanged: true,
+    requests: [{ kind: 'canonical' }],
+    telemetry: [
+      { phase: 'baseline', cacheEntries: 1, hashedBytes: 500, cache: { budgetUsedBytes: 500 } },
+      { phase: 'append', cacheEntries: 1, hashedBytes: 1500, cache: { budgetUsedBytes: 1200 } },
+      { phase: 'append', cacheEntries: 1, hashedBytes: 2500, cache: { budgetUsedBytes: 1200 } },
+    ],
+    final: {
+      counters: {
+        viewed: counter(1, 9),
+        'unviewed-claude': counter(0, 9),
+        'unviewed-codex': counter(0, 9),
+      },
+      lastWatcherCounts: { viewed: 100, 'unviewed-claude': 100, 'unviewed-codex': 100 },
+      errors: [],
+      accountingFailures: [],
+      cache: { budgetUsedBytes: 0 },
+      transcriptReaders: 0,
+      watchers: 0,
+      queuedRefreshes: 0,
+      httpActive: 0,
+      cacheFlights: 0,
+      readerFlights: 0,
+    },
+    summary: {
+      append: { cpuMean: 30 },
+      baselineTail: { samples: 20 },
+      recoveryTail: { samples: 20 },
+      recoveryCpuDelta: 2,
+      canonicalCommitsDuringAppends: 10,
+      requests: { canonical: { errors: 0 } },
+    },
+  };
+}
+
+test('many-unviewed gates reject entry growth, unviewed full parses, and a skipped viewed parse', () => {
+  const base = evaluate(validManyUnviewedReport());
+  // A passing run: cpuTarget is null for multi-session profiles, so allow the pass semantics.
+  assert(Object.values(base).every((value) => value === true || value === null));
+  assert.equal(base.unviewedHoldNoEntries, true);
+  assert.equal(base.viewedIsBodyPath, true);
+  assert.equal(base.fullParsesOnlyViewed, true);
+  for (const [change, failedGate] of [
+    [
+      (r) => {
+        r.telemetry[1].cacheEntries = 2;
+      },
+      'unviewedHoldNoEntries',
+    ],
+    [
+      (r) => {
+        r.final.counters['unviewed-claude'].full = 1;
+      },
+      'fullParsesOnlyViewed',
+    ],
+    [
+      (r) => {
+        r.final.counters.viewed.full = 0;
+      },
+      'viewedIsBodyPath',
+    ],
+  ]) {
+    const report = validManyUnviewedReport();
+    change(report);
+    assert.equal(evaluate(report)[failedGate], false, failedGate);
+  }
+});

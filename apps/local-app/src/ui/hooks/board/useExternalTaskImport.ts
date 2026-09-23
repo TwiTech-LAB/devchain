@@ -17,6 +17,7 @@ import {
 } from '@/ui/lib/integration-project-scope';
 import { fetchJsonOrThrow, type FetchFn } from '@/ui/lib/sessions';
 import { fetchStatuses } from '@/ui/pages/board/lib/board-api';
+import { boardCacheKeys } from '@/ui/lib/board-cache';
 
 export interface ExternalImportStatus {
   id: string;
@@ -41,7 +42,7 @@ export interface ExternalTaskImportMutationVariables {
     name: string | null;
   };
   cacheKeys: {
-    epics: readonly ['epics', string];
+    epics: ReturnType<typeof boardCacheKeys.project>;
     links: ReturnType<typeof externalMyWorkQueryKeys.links>;
     taskDetail: ReturnType<typeof externalMyWorkQueryKeys.taskDetail>;
     epicSources: typeof epicExternalSourceQueryKeys.all;
@@ -147,21 +148,9 @@ export function useExternalTaskImport(
     },
     onSuccess: async (result, variables) => {
       const { scope, detail: capturedDetail, projectAttribution, cacheKeys } = variables;
-      let linkedProjectName =
-        result.epic.projectId === projectAttribution.id ? projectAttribution.name : null;
-      if (linkedProjectName === null) {
-        try {
-          const response = await variables.apiFetch(
-            `/api/projects/${encodeURIComponent(result.epic.projectId)}`,
-          );
-          if (response.ok) {
-            const project = (await response.json()) as { name?: unknown };
-            linkedProjectName = typeof project.name === 'string' ? project.name : null;
-          }
-        } catch {
-          // Link attribution still retains the owning project ID and is refetched below.
-        }
-      }
+      // A project-scoped import always returns the submitting project's own
+      // Epic and link. Decoration attributes only that project — another
+      // project's task is never presented as this import's result.
       // The import response carries no checkpoint knowledge: each patched item
       // keeps its prior loggedMinutes, and an authoritative refetch supplies
       // the confirmed figure later.
@@ -170,8 +159,8 @@ export function useExternalTaskImport(
         taskId: capturedDetail.remoteId,
         linked: true,
         epicId: result.epic.id,
-        projectId: result.epic.projectId,
-        projectName: linkedProjectName,
+        projectId: projectAttribution.id,
+        projectName: projectAttribution.name,
         loggedMinutes: null,
       };
       queryClient.setQueriesData<{ items: ExternalTaskLinkStateSummary[] }>(
@@ -213,7 +202,7 @@ export function useExternalTaskImport(
         form: { ...form },
         projectAttribution: { id: scope.projectId, name: submission.projectName },
         cacheKeys: {
-          epics: ['epics', scope.projectId],
+          epics: boardCacheKeys.project(scope.projectId),
           links: externalMyWorkQueryKeys.links(scope.provider, scope.connectionEpoch),
           taskDetail: externalMyWorkQueryKeys.taskDetail(
             scope.provider,

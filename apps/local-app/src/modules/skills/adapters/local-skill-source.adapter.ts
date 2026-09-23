@@ -26,6 +26,12 @@ const logger = createLogger('LocalSkillSourceAdapter');
 const SKILLS_DIRECTORY = 'skills';
 const DEFAULT_SKILLS_ROOT = join(homedir(), '.devchain', 'skills');
 
+interface SkillFileEntry {
+  relativePath: string;
+  mtimeMs: number;
+  size: number;
+}
+
 export class LocalSkillSourceAdapter implements SkillSourceAdapter {
   readonly sourceName: string;
   readonly repoUrl: string;
@@ -160,26 +166,81 @@ export class LocalSkillSourceAdapter implements SkillSourceAdapter {
 
     for (const skillName of skillNames) {
       hashParts.push(`dir:${skillName}`);
-      const skillMdPath = join(skillsRoot, skillName, 'SKILL.md');
-      try {
-        const skillMdStats = await fs.stat(skillMdPath);
-        hashParts.push(`skill:${skillName}:${skillMdStats.mtimeMs}`);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          hashParts.push(`skill:${skillName}:missing`);
-          continue;
-        }
-
-        throw this.wrapStorageError('Failed to read local skill metadata for commit hash.', error, {
-          sourceName: this.sourceName,
-          skillsRoot,
-          skillName,
-          skillMdPath,
-        });
+      const files = await this.collectSkillFileEntries(skillsRoot, skillName);
+      if (!files.some((file) => file.relativePath === 'SKILL.md')) {
+        hashParts.push(`skill:${skillName}:missing`);
+      }
+      for (const file of files) {
+        hashParts.push(`file:${skillName}/${file.relativePath}:${file.mtimeMs}:${file.size}`);
       }
     }
 
     return createHash('sha1').update(hashParts.join('|')).digest('hex');
+  }
+
+  private async collectSkillFileEntries(
+    skillsRoot: string,
+    skillName: string,
+  ): Promise<SkillFileEntry[]> {
+    const entries: SkillFileEntry[] = [];
+
+    const walk = async (directory: string, prefix: string): Promise<void> => {
+      let dirents: Dirent[];
+      try {
+        dirents = await fs.readdir(directory, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return;
+        }
+        throw this.wrapStorageError(
+          'Failed to read local skill directory for commit hash.',
+          error,
+          {
+            sourceName: this.sourceName,
+            skillsRoot,
+            skillName,
+            directory,
+          },
+        );
+      }
+
+      for (const dirent of dirents) {
+        if (dirent.name.startsWith('.')) {
+          continue;
+        }
+
+        const relativePath = prefix ? `${prefix}/${dirent.name}` : dirent.name;
+        if (dirent.isDirectory()) {
+          await walk(join(directory, dirent.name), relativePath);
+          continue;
+        }
+        if (!dirent.isFile()) {
+          continue;
+        }
+
+        try {
+          // Size backs the mtime: filesystem timestamp granularity can hide a
+          // rewrite that lands within the same tick.
+          const stats = await fs.stat(join(directory, dirent.name));
+          entries.push({ relativePath, mtimeMs: stats.mtimeMs, size: stats.size });
+        } catch (error) {
+          throw this.wrapStorageError(
+            'Failed to read local skill file metadata for commit hash.',
+            error,
+            {
+              sourceName: this.sourceName,
+              skillsRoot,
+              skillName,
+              file: relativePath,
+            },
+          );
+        }
+      }
+    };
+
+    await walk(join(skillsRoot, skillName), '');
+    entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+    return entries;
   }
 
   private async listSkillNamesFromLocalFolder(): Promise<string[]> {

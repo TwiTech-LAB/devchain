@@ -61,7 +61,7 @@ jest.mock('../../hooks/board/useExternalWorkArea', () => ({
 const mockRetainedDialogFocus: { resolver: (() => HTMLElement | null) | null } = {
   resolver: null,
 };
-const mockDetailLinkProps: { globalLink: unknown } = { globalLink: null };
+const mockDetailLinkProps: { projectLink: unknown } = { projectLink: null };
 
 // Mirrors the mock above for the Import dialog; also records the last props
 // the page passed so wiring assertions stay behavior-level.
@@ -85,7 +85,7 @@ jest.mock('../../components/board/ExternalTaskDetailDialog', () => ({
     onCreateDevChainTask,
     returnFocusTo,
     onImportFocusTargetReady,
-    globalLink,
+    projectLink,
   }: {
     open: boolean;
     taskId: string | null;
@@ -93,10 +93,10 @@ jest.mock('../../components/board/ExternalTaskDetailDialog', () => ({
     onCreateDevChainTask?: (detail: unknown) => void;
     returnFocusTo?: () => HTMLElement | null;
     onImportFocusTargetReady?: (resolve: (() => HTMLElement | null) | null) => void;
-    globalLink?: unknown;
+    projectLink?: unknown;
   }) => {
     mockRetainedDialogFocus.resolver = returnFocusTo ?? null;
-    mockDetailLinkProps.globalLink = globalLink ?? null;
+    mockDetailLinkProps.projectLink = projectLink ?? null;
     return open ? (
       <aside>
         Task dialog {taskId}
@@ -251,7 +251,7 @@ beforeEach(() => {
   mockImportProps.projectId = null;
   mockImportProps.projectName = null;
   mockRetainedImportFocus.resolver = null;
-  mockDetailLinkProps.globalLink = null;
+  mockDetailLinkProps.projectLink = null;
   useExternalTaskLinksMock.mockReset();
   useExternalTaskLinksMock.mockReturnValue({
     data: { items: [] },
@@ -1209,7 +1209,7 @@ describe('ExternalBoardKanbanPage quick import', () => {
       taskArticle('Ship exact board').queryByRole('button', { name: 'Create DevChain task' }),
     ).not.toBeInTheDocument();
     fireEvent.click(taskArticle('Ship exact board').getByRole('button', { name: /Open Ship/ }));
-    expect(mockDetailLinkProps.globalLink).toEqual(existingLink);
+    expect(mockDetailLinkProps.projectLink).toEqual(existingLink);
   });
 
   it('requests enriched link state and one deduplicated Epic-time batch for linked cards', () => {

@@ -479,6 +479,114 @@ describe('InputSourceSelector', () => {
     });
   });
 
+  describe('multi-select input (multiple)', () => {
+    const multiSelectDef: ActionInputDef = {
+      name: 'skipWhileEpicsInStatuses',
+      label: 'Skip while epics are in statuses',
+      description: 'Select statuses',
+      type: 'select',
+      required: false,
+      multiple: true,
+      allowedSources: ['custom'],
+      options: [
+        { value: 'In Progress', label: 'In Progress' },
+        { value: 'Review', label: 'Review' },
+        { value: 'Done', label: 'Done' },
+      ],
+    };
+
+    it('shows the placeholder when nothing is stored and no toggle buttons', async () => {
+      render(
+        <InputSourceSelector
+          inputDef={multiSelectDef}
+          value={{ source: 'custom', customValue: '' }}
+          onChange={jest.fn()}
+          availableEventFields={[]}
+        />,
+      );
+
+      expect(screen.queryByRole('button', { name: 'Custom' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Event Field' })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('combobox', { name: 'Skip while epics are in statuses' }));
+      expect(await screen.findByRole('checkbox', { name: 'In Progress' })).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'Review' })).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'Done' })).toBeInTheDocument();
+    });
+
+    it('toggling options serializes the stored value in option order', async () => {
+      const onChange = jest.fn();
+      render(
+        <InputSourceSelector
+          inputDef={multiSelectDef}
+          value={{ source: 'custom', customValue: 'Review' }}
+          onChange={onChange}
+          availableEventFields={[]}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('combobox', { name: 'Skip while epics are in statuses' }));
+
+      expect(await screen.findByRole('checkbox', { name: 'Review' })).toBeChecked();
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Done' }));
+
+      // Done is the later option, so the stored value keeps option order, not click order.
+      expect(onChange).toHaveBeenCalledWith({
+        source: 'custom',
+        customValue: 'Review, Done',
+        eventField: undefined,
+      });
+    });
+
+    it('unchecking an option removes it from the stored value', async () => {
+      const onChange = jest.fn();
+      render(
+        <InputSourceSelector
+          inputDef={multiSelectDef}
+          value={{ source: 'custom', customValue: 'In Progress, Review' }}
+          onChange={onChange}
+          availableEventFields={[]}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('combobox', { name: 'Skip while epics are in statuses' }));
+
+      expect(await screen.findByRole('checkbox', { name: 'In Progress' })).toBeChecked();
+      fireEvent.click(screen.getByRole('checkbox', { name: 'In Progress' }));
+
+      expect(onChange).toHaveBeenCalledWith({
+        source: 'custom',
+        customValue: 'Review',
+        eventField: undefined,
+      });
+    });
+
+    it('renders an unknown stored label as a destructive badge and removes it on demand', () => {
+      const onChange = jest.fn();
+      render(
+        <InputSourceSelector
+          inputDef={multiSelectDef}
+          value={{ source: 'custom', customValue: 'In Progress, Ghost' }}
+          onChange={onChange}
+          availableEventFields={[]}
+        />,
+      );
+
+      expect(screen.getByText('In Progress')).toBeInTheDocument();
+      expect(screen.getByText('Ghost')).toBeInTheDocument();
+
+      // Known labels have no remove control; the unknown one does.
+      expect(screen.queryByRole('button', { name: 'Remove In Progress' })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Ghost' }));
+
+      expect(onChange).toHaveBeenCalledWith({
+        source: 'custom',
+        customValue: 'In Progress',
+        eventField: undefined,
+      });
+    });
+  });
+
   describe('scoped editor capabilities', () => {
     const textInputDef: ActionInputDef = {
       name: 'text',

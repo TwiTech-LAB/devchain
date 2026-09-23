@@ -152,11 +152,22 @@ describe('SessionCacheService', () => {
     jest
       .spyOn(
         SessionCacheService.prototype as unknown as {
-          tryHashFileContent: () => Promise<{ prefixDigest: string; fullDigest: string }>;
+          tryHashFileAnchors: () => Promise<{ headDigest: string; tailDigest: string }>;
         },
-        'tryHashFileContent',
+        'tryHashFileAnchors',
       )
-      .mockResolvedValue({ prefixDigest: 'stable-prefix', fullDigest: 'stable-prefix' });
+      .mockResolvedValue({ headDigest: 'stable-anchor', tailDigest: 'stable-anchor' });
+    // These mocked-FS unit tests never touch a real file, so treat every full-parse snapshot as
+    // ending on a line boundary; the unterminated-line rule is exercised on real files in the
+    // replacement spec.
+    jest
+      .spyOn(
+        SessionCacheService.prototype as unknown as {
+          snapshotEndsOnLineBoundary: () => Promise<boolean>;
+        },
+        'snapshotEndsOnLineBoundary',
+      )
+      .mockResolvedValue(true);
     service = new SessionCacheService(mockMetricsService);
     adapter = makeAdapter();
     dateSpy = jest.spyOn(Date, 'now').mockReturnValue(1706000000000);
@@ -432,14 +443,14 @@ describe('SessionCacheService', () => {
       mockedFsStat.mockClear();
       const stat = deferred<fsPromises.FileHandle>();
       const hashStarted = deferred<void>();
-      const finishHash = deferred<{ prefixDigest: string; fullDigest: string }>();
+      const finishHash = deferred<{ headDigest: string; tailDigest: string }>();
       mockedFsStat.mockReturnValueOnce(stat.promise);
       jest
         .spyOn(
           service as unknown as {
-            tryHashFileContent: () => Promise<{ prefixDigest: string; fullDigest: string }>;
+            tryHashFileAnchors: () => Promise<{ headDigest: string; tailDigest: string }>;
           },
-          'tryHashFileContent',
+          'tryHashFileAnchors',
         )
         .mockImplementationOnce(() => {
           hashStarted.resolve();
@@ -456,7 +467,7 @@ describe('SessionCacheService', () => {
       await hashStarted.promise;
       expect(mockedFsStat).toHaveBeenCalledTimes(1);
       expect(service.size).toBe(0);
-      finishHash.resolve({ prefixDigest: 'stable-prefix', fullDigest: 'stable-prefix' });
+      finishHash.resolve({ headDigest: 'stable-anchor', tailDigest: 'stable-anchor' });
       await first;
       await Promise.all(followers);
       expect(mockedFsStat).toHaveBeenCalledTimes(2);
@@ -619,6 +630,7 @@ describe('SessionCacheService', () => {
 
     expect(adapter.parseIncremental).toHaveBeenCalledWith(FILE_PATH, {
       byteOffset: 1000, // lastOffset from full parse = file size
+      endByteOffset: 1500, // bounded to the proven snapshot size (delta mode)
       includeToolCalls: true,
     });
     expect(adapter.parseFullSession).toHaveBeenCalledTimes(1); // Not called again
@@ -1564,8 +1576,11 @@ describe('SessionCacheService', () => {
     expect(result.metrics.contextWindowTokens).toBe(0);
   });
 
-  it('should preserve empty-string primaryModel from incremental parse', async () => {
-    const existingMetrics = makeMetrics({ primaryModel: 'claude-opus-4-6' });
+  it('should keep the known model and window when the incremental slice has no model', async () => {
+    const existingMetrics = makeMetrics({
+      primaryModel: 'claude-opus-4-6',
+      contextWindowTokens: 1_000_000,
+    });
     const session1 = makeSession({ metrics: existingMetrics });
     (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
 
@@ -1577,13 +1592,39 @@ describe('SessionCacheService', () => {
       nextByteOffset: 1500,
       messageCount: 1,
       entries: [makeMessage('m3', 1706000010000)],
-      metrics: makeMetrics({ primaryModel: '' }),
+      metrics: makeMetrics({ primaryModel: '', contextWindowTokens: 200_000 }),
     } satisfies IncrementalResult);
 
     const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
 
-    // Must be '' (from incremental), NOT 'claude-opus-4-6' (stale existing)
-    expect(result.metrics.primaryModel).toBe('');
+    // A slice without an assistant model must not erase the known model or window
+    expect(result.metrics.primaryModel).toBe('claude-opus-4-6');
+    expect(result.metrics.contextWindowTokens).toBe(1_000_000);
+  });
+
+  it('should take a new non-empty model and its window from the incremental slice', async () => {
+    const existingMetrics = makeMetrics({
+      primaryModel: 'claude-opus-4-6',
+      contextWindowTokens: 1_000_000,
+    });
+    const session1 = makeSession({ metrics: existingMetrics });
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
+
+    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+
+    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
+    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
+      hasMore: false,
+      nextByteOffset: 1500,
+      messageCount: 1,
+      entries: [makeMessage('m3', 1706000010000)],
+      metrics: makeMetrics({ primaryModel: 'claude-sonnet-4-6', contextWindowTokens: 200_000 }),
+    } satisfies IncrementalResult);
+
+    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+
+    expect(result.metrics.primaryModel).toBe('claude-sonnet-4-6');
+    expect(result.metrics.contextWindowTokens).toBe(200_000);
   });
 
   // -------------------------------------------------------------------------
@@ -1778,29 +1819,25 @@ describe('SessionCacheService', () => {
         postParseProof: undefined,
       },
       {
-        label: 'post-parse digest differs from the proven revision',
-        postParseProof: { prefixDigest: 'rotated-generation', fullDigest: 'rotated-generation' },
+        label: 'post-parse anchors differ from the proven prefix',
+        postParseProof: { headDigest: 'rotated-generation', tailDigest: 'rotated-generation' },
       },
     ])('discards a tentative incremental result when the $label', async ({ postParseProof }) => {
-      const hashFileContent = (
+      const hashFileAnchors = (
         service as unknown as {
-          tryHashFileContent: jest.MockedFunction<
-            () => Promise<{ prefixDigest: string; fullDigest: string } | undefined>
+          tryHashFileAnchors: jest.MockedFunction<
+            () => Promise<{ headDigest: string; tailDigest: string } | undefined>
           >;
         }
-      ).tryHashFileContent;
-      hashFileContent
+      ).tryHashFileAnchors;
+      // 1: full-parse store (stored anchors). 2: pre-parse proof (matches → proven append).
+      // 3: post-parse prefix re-check (drifted → discard). Fallthrough: store after full reparse.
+      hashFileAnchors
         .mockReset()
-        .mockResolvedValueOnce({ prefixDigest: 'cached-prefix', fullDigest: 'cached-prefix' })
-        .mockResolvedValueOnce({
-          prefixDigest: 'cached-prefix',
-          fullDigest: 'proven-appended-revision',
-        })
+        .mockResolvedValueOnce({ headDigest: 'cached-anchor', tailDigest: 'cached-anchor' })
+        .mockResolvedValueOnce({ headDigest: 'cached-anchor', tailDigest: 'cached-anchor' })
         .mockResolvedValueOnce(postParseProof)
-        .mockResolvedValue({
-          prefixDigest: 'canonical-current-revision',
-          fullDigest: 'canonical-current-revision',
-        });
+        .mockResolvedValue({ headDigest: 'canonical-anchor', tailDigest: 'canonical-anchor' });
 
       const tentativeMessage = makeMessage('tentative-mixed-suffix', 1706000010000);
       (adapter.parseIncremental as jest.Mock).mockResolvedValue({
@@ -1835,22 +1872,23 @@ describe('SessionCacheService', () => {
     it.each([
       {
         label: 'prefix mismatch',
-        growthProof: { prefixDigest: 'changed-prefix', fullDigest: 'new-generation' },
+        growthProof: { headDigest: 'changed-anchor', tailDigest: 'changed-anchor' },
       },
       { label: 'proof unavailable', growthProof: undefined },
     ])('fails closed on growing same-inode content when the $label', async ({ growthProof }) => {
-      const hashFileContent = (
+      const hashFileAnchors = (
         service as unknown as {
-          tryHashFileContent: jest.MockedFunction<
-            () => Promise<{ prefixDigest: string; fullDigest: string } | undefined>
+          tryHashFileAnchors: jest.MockedFunction<
+            () => Promise<{ headDigest: string; tailDigest: string } | undefined>
           >;
         }
-      ).tryHashFileContent;
-      hashFileContent
+      ).tryHashFileAnchors;
+      // 1: full-parse store. 2: pre-parse proof drifts/absent → no incremental, full reparse.
+      hashFileAnchors
         .mockReset()
-        .mockResolvedValueOnce({ prefixDigest: 'cached-prefix', fullDigest: 'cached-prefix' })
+        .mockResolvedValueOnce({ headDigest: 'cached-anchor', tailDigest: 'cached-anchor' })
         .mockResolvedValueOnce(growthProof)
-        .mockResolvedValue({ prefixDigest: 'new-generation', fullDigest: 'new-generation' });
+        .mockResolvedValue({ headDigest: 'new-anchor', tailDigest: 'new-anchor' });
 
       await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
       mockedFsStat.mockResolvedValue(makeStat(1500, 1706000005000));
@@ -2000,7 +2038,7 @@ describe('SessionCacheService', () => {
 
       expect(adapter.parseIncremental).toHaveBeenCalledWith(
         FILE_PATH,
-        { byteOffset: 1000, includeToolCalls: true },
+        { byteOffset: 1000, endByteOffset: 1500, includeToolCalls: true },
         sourceRef,
       );
     });
@@ -2111,6 +2149,339 @@ describe('SessionCacheService', () => {
       expect(entry!.lastSize).toBe(1000);
       expect(entry!.lastMtime).toBe(1706000000000);
       expect(entry!.lastOffset).toBe(1000);
+    });
+  });
+
+  describe('continuation state (Codex token baseline)', () => {
+    it('stores incremental continuation state, threads it into the next parse, and clears it on full parse', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+
+      // Cold full parse: no continuation state stored.
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      expect(service.getEntry(SESSION_ID)?.continuationState).toBeUndefined();
+
+      // First append returns continuation state → stored + exposed on the result, never on the session.
+      mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
+      (adapter.parseIncremental as jest.Mock).mockResolvedValueOnce({
+        hasMore: false,
+        nextByteOffset: 1500,
+        messageCount: 1,
+        entries: [makeMessage('m3', 1706000010000)],
+        metrics: makeMetrics(),
+        continuationState: { baseline: 'A' },
+      } satisfies IncrementalResult);
+
+      const afterFirst = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      expect(afterFirst.continuationState).toEqual({ baseline: 'A' });
+      expect(service.getEntry(SESSION_ID)?.continuationState).toEqual({ baseline: 'A' });
+      expect((afterFirst.session as Record<string, unknown>).continuationState).toBeUndefined();
+
+      // Second append receives the stored state as options.continuationState.
+      mockedFsStat.mockResolvedValue(makeStat(1700, 1706000020000));
+      (adapter.parseIncremental as jest.Mock).mockResolvedValueOnce({
+        hasMore: false,
+        nextByteOffset: 1700,
+        messageCount: 1,
+        entries: [makeMessage('m4', 1706000020000)],
+        metrics: makeMetrics(),
+        continuationState: { baseline: 'B' },
+      } satisfies IncrementalResult);
+
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      expect(adapter.parseIncremental).toHaveBeenLastCalledWith(
+        FILE_PATH,
+        expect.objectContaining({ byteOffset: 1500, continuationState: { baseline: 'A' } }),
+      );
+      expect(service.getEntry(SESSION_ID)?.continuationState).toEqual({ baseline: 'B' });
+
+      // A full reparse (truncation) clears the carried state.
+      mockedFsStat.mockResolvedValue(makeStat(1200, 1706000030000));
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      expect(service.getEntry(SESSION_ID)?.continuationState).toBeUndefined();
+    });
+
+    it('threads no continuation state on the first append after a full parse (rescan fallback)', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+
+      mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
+      (adapter.parseIncremental as jest.Mock).mockResolvedValue({
+        hasMore: false,
+        nextByteOffset: 1500,
+        messageCount: 1,
+        entries: [makeMessage('m3', 1706000010000)],
+        metrics: makeMetrics(),
+      } satisfies IncrementalResult);
+
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      const [, options] = (adapter.parseIncremental as jest.Mock).mock.calls[0];
+      expect(options).not.toHaveProperty('continuationState');
+    });
+  });
+
+  describe('refreshIfPresent (atomic lane gate)', () => {
+    it('reports absent and creates no entry when none exists', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+
+      const outcome = await service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+
+      expect(outcome).toEqual({ present: false });
+      expect(adapter.parseFullSession).not.toHaveBeenCalled();
+      expect(adapter.parseIncremental).not.toHaveBeenCalled();
+      expect(service.getEntry(SESSION_ID)).toBeUndefined();
+      expect(service.size).toBe(0);
+    });
+
+    it('refreshes an existing entry and reports its pre-parse generation', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter); // create the entry
+      const before = service.getEntry(SESSION_ID)!;
+
+      // Grow the file so the refresh is a proven append.
+      mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
+      (adapter.parseIncremental as jest.Mock).mockResolvedValueOnce({
+        hasMore: false,
+        nextByteOffset: 1500,
+        messageCount: 1,
+        entries: [makeMessage('m3', 1706000010000)],
+        metrics: makeMetrics(),
+      } satisfies IncrementalResult);
+
+      const outcome = await service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+
+      expect(outcome.present).toBe(true);
+      if (!outcome.present) throw new Error('expected present');
+      expect(outcome.preParse.sourceVersion).toBe(before.sourceVersion);
+      expect(outcome.preParse.messageCount).toBe(before.session.messages.length);
+      expect(outcome.result.session.metrics.messageCount).toBeGreaterThanOrEqual(
+        before.session.messages.length,
+      );
+    });
+
+    it('never recreates an entry that was evicted/invalidated (no thrash path)', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      service.invalidate(SESSION_ID);
+      expect(service.getEntry(SESSION_ID)).toBeUndefined();
+      (adapter.parseFullSession as jest.Mock).mockClear();
+      (adapter.parseIncremental as jest.Mock).mockClear();
+
+      const outcome = await service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+
+      // Absent (never recreated); it now also carries the recorded full-parse cost so the
+      // watcher lane can re-arm its cooldown for this session, but still parses nothing.
+      expect(outcome.present).toBe(false);
+      expect(adapter.parseFullSession).not.toHaveBeenCalled();
+      expect(adapter.parseIncremental).not.toHaveBeenCalled();
+      expect(service.getEntry(SESSION_ID)).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Full-parse cost accounting
+  //
+  // The watcher's lane re-arms its refresh cooldown when a reader paid a costly
+  // full parse for a session whose entry cannot stay resident (weight > budget).
+  // That signal must outlive the entry: it is read after the entry is gone, via
+  // refreshIfPresent's absent result, so it is kept in a small map beside — not
+  // inside — the byte-budgeted entry cache.
+  // -------------------------------------------------------------------------
+  describe('full-parse cost accounting (lane cooldown signal)', () => {
+    it('records each full parse and surfaces it via refreshIfPresent after invalidate()', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      service.invalidate(SESSION_ID);
+      expect(service.getEntry(SESSION_ID)).toBeUndefined();
+
+      const outcome = await service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+
+      expect(outcome.present).toBe(false);
+      if (outcome.present) throw new Error('expected absent');
+      expect(outcome.lastFullParse).toEqual({
+        seq: expect.any(Number),
+        durationMs: expect.any(Number),
+      });
+      expect(outcome.lastFullParse!.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('advances the sequence per full parse so the watcher can tell a new parse from a repeat', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      service.invalidate(SESSION_ID);
+      const first = await service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+
+      await service.getOrParse('other', FILE_PATH, adapter);
+      service.invalidate('other');
+      const second = await service.refreshIfPresent('other', FILE_PATH, adapter);
+
+      if (first.present || second.present) throw new Error('expected absent');
+      expect(second.lastFullParse!.seq).toBeGreaterThan(first.lastFullParse!.seq);
+    });
+
+    it('omits lastFullParse for a session that never had a full parse', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      await service.getOrParse('other', FILE_PATH, adapter);
+      service.invalidate('other');
+
+      const outcome = await service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+
+      expect(outcome).toEqual({ present: false });
+    });
+
+    it('keeps the full-parse record after the entry is evicted for budget', async () => {
+      service = new SessionCacheService(mockMetricsService, {
+        budgetBytes: 4_000,
+        idleTtlMs: 600_000,
+        sweepIntervalMs: 60_000,
+      });
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      // Each entry weighs 2x its 1000-byte source, so two more sessions evict SESSION_ID (LRU).
+      await service.getOrParse('s2', FILE_PATH, adapter);
+      await service.getOrParse('s3', FILE_PATH, adapter);
+      expect(service.getEntry(SESSION_ID)).toBeUndefined();
+
+      const outcome = await service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+
+      expect(outcome.present).toBe(false);
+      if (outcome.present) throw new Error('expected absent');
+      expect(outcome.lastFullParse).toBeDefined();
+    });
+
+    it('caps the cost map, dropping the oldest record first', async () => {
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
+      const CAP = 256; // mirrors FULL_PARSE_COST_CAP in session-cache.service.ts
+      for (let i = 0; i <= CAP; i += 1) {
+        await service.getOrParse(`s${i}`, FILE_PATH, adapter);
+      }
+      // Recording the (CAP+1)-th session dropped the oldest record (s0); the newest (sCAP) stays.
+      service.invalidate('s0');
+      service.invalidate(`s${CAP}`);
+
+      const oldest = await service.refreshIfPresent('s0', FILE_PATH, adapter);
+      const newest = await service.refreshIfPresent(`s${CAP}`, FILE_PATH, adapter);
+
+      expect(oldest).toEqual({ present: false });
+      if (newest.present) throw new Error('expected absent');
+      expect(newest.lastFullParse).toBeDefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // refreshIfPresent flight coordination
+  //
+  // refreshIfPresent must join the SAME successor-aware per-key flight chain that getOrParseResult
+  // walks. If it started its own flight after merely awaiting one predecessor, a getOrParse waiter
+  // that already chained a follow-up would run a SECOND full parse for the same key at the same
+  // time. These reproduce the reviewer's race with deferred promises and assert one follow-up parse
+  // and at most one active parse per key, across all three waiter orderings.
+  // -------------------------------------------------------------------------
+  describe('refreshIfPresent flight coordination (successor-aware)', () => {
+    // A held full parse A, an append made while A is held, and an instrumented follow-up. Callers
+    // registered before `aStarted` resolves are all waiting on A; releasing A lets them resume.
+    function raceHarness() {
+      let size = 1_000;
+      let active = 0;
+      let maxActive = 0;
+      const aStarted = deferred<void>();
+      const releaseA = deferred<UnifiedSession>();
+      mockedFsStat.mockImplementation(async () => makeStat(size, 1706000000000 + size));
+      (adapter.parseFullSession as jest.Mock).mockImplementationOnce(async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        aStarted.resolve();
+        const session = await releaseA.promise;
+        active -= 1;
+        return session;
+      });
+      (adapter.parseIncremental as jest.Mock).mockImplementation(async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await Promise.resolve();
+        active -= 1;
+        return {
+          hasMore: false,
+          nextByteOffset: size,
+          messageCount: 1,
+          entries: [makeMessage('m3', 1706000010000)],
+          metrics: makeMetrics({ messageCount: 3 }),
+        } satisfies IncrementalResult;
+      });
+      return {
+        aStarted: aStarted.promise,
+        appendAndReleaseA: () => {
+          size = 1_100; // the append arrives while A is held; the follow-up must pick it up
+          releaseA.resolve(makeSession({ id: 'A' }));
+        },
+        parses: () => ({
+          full: (adapter.parseFullSession as jest.Mock).mock.calls.length,
+          incremental: (adapter.parseIncremental as jest.Mock).mock.calls.length,
+        }),
+        maxActive: () => maxActive,
+      };
+    }
+
+    function assertParseFlightsDrained(): void {
+      expect((service as unknown as { parseFlights: Map<string, unknown> }).parseFlights.size).toBe(
+        0,
+      );
+    }
+
+    it('shares a getOrParse successor instead of racing a second parse (getOrParse then refreshIfPresent)', async () => {
+      const h = raceHarness();
+      const a = service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      const b = service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      const c = service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+      await h.aStarted;
+      h.appendAndReleaseA();
+      const [, bRes, cRes] = await Promise.all([a, b, c]);
+
+      expect(h.parses()).toEqual({ full: 1, incremental: 1 }); // exactly one follow-up parse
+      expect(h.maxActive()).toBe(1);
+      if (!cRes.present) throw new Error('expected present');
+      // C observed B's follow-up rather than running its own.
+      expect(cRes.result.session).toBe(bRes.session);
+      expect(cRes.result.session.messages).toHaveLength(3);
+      expect(cRes.preParse.messageCount).toBe(3);
+      assertParseFlightsDrained();
+      expectExactBudget(service);
+    });
+
+    it('does not start a competing flight when it reaches the tail first (refreshIfPresent then getOrParse)', async () => {
+      const h = raceHarness();
+      const a = service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      const c = service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+      const b = service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+      await h.aStarted;
+      h.appendAndReleaseA();
+      const [, cRes, bRes] = await Promise.all([a, c, b]);
+
+      expect(h.parses()).toEqual({ full: 1, incremental: 1 });
+      expect(h.maxActive()).toBe(1);
+      if (!cRes.present) throw new Error('expected present');
+      // B shared C's ifPresent follow-up (same session object, cache-hit wrapper).
+      expect(bRes.session).toBe(cRes.result.session);
+      expect(cRes.result.session.messages).toHaveLength(3);
+      assertParseFlightsDrained();
+      expectExactBudget(service);
+    });
+
+    it('serializes two refreshIfPresent waiters onto one follow-up parse (refreshIfPresent then refreshIfPresent)', async () => {
+      const h = raceHarness();
+      const a = service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+      const c1 = service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+      const c2 = service.refreshIfPresent(SESSION_ID, FILE_PATH, adapter);
+      await h.aStarted;
+      h.appendAndReleaseA();
+      const [, c1Res, c2Res] = await Promise.all([a, c1, c2]);
+
+      expect(h.parses()).toEqual({ full: 1, incremental: 1 });
+      expect(h.maxActive()).toBe(1);
+      if (!c1Res.present || !c2Res.present) throw new Error('expected present');
+      expect(c1Res.result.session).toBe(c2Res.result.session);
+      expect(c1Res.result.session.messages).toHaveLength(3);
+      assertParseFlightsDrained();
+      expectExactBudget(service);
     });
   });
 });

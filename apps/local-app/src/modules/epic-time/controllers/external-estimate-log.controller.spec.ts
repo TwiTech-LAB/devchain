@@ -80,6 +80,7 @@ describe('ExternalEstimateLogController', () => {
       stored === null || stored.pendingOperationId === null ? 'none' : 'outcome_unknown',
     canVerify: stored?.pendingOperationId != null,
     verifyExpiresAt: null,
+    legacyCheckpoint: null,
     ...overrides,
   });
 
@@ -137,6 +138,7 @@ describe('ExternalEstimateLogController', () => {
         resolution: null,
         activityDate: null,
       },
+      legacyCheckpoint: null,
     });
   });
 
@@ -159,6 +161,7 @@ describe('ExternalEstimateLogController', () => {
       canVerify: false,
       verifyExpiresAt: null,
       pending: null,
+      legacyCheckpoint: null,
     });
   });
 
@@ -569,5 +572,119 @@ describe('ExternalEstimateLogController', () => {
       ),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(service.resolveOperation).not.toHaveBeenCalled();
+  });
+});
+
+describe('ExternalEstimateLogController legacy ownership assignment', () => {
+  const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+  const SCOPE_KEY = 'acme.atlassian.net';
+  const TASK_ID = 'ENG-1';
+  const state = (): ExternalEstimateLogState => ({
+    projectId: PROJECT_ID,
+    provider: 'jira',
+    remoteScopeKey: SCOPE_KEY,
+    remoteTaskId: TASK_ID,
+    loggedMinutes: 90,
+    revision: 4,
+    aggregationTimeZone: 'UTC',
+    pendingOperationId: null,
+    pendingDeltaMinutes: null,
+    pendingEstimateTotalMinutes: null,
+    pendingStartedAt: null,
+    pendingConnectionId: null,
+    pendingConnectionGeneration: null,
+    pendingPhase: null,
+    pendingResolution: null,
+    pendingActivityDate: null,
+    createdAt: '2026-08-30T08:00:00.000Z',
+    updatedAt: '2026-08-30T08:00:00.000Z',
+  });
+  const snapshot = (stored: ExternalEstimateLogState | null): ExternalEstimateLogSnapshot => ({
+    state: stored,
+    initialized: stored !== null,
+    revision: stored?.revision ?? 0,
+    loggedMinutes: stored?.loggedMinutes ?? 0,
+    aggregationTimeZone: stored?.aggregationTimeZone ?? null,
+    days: [],
+    unallocatedLoggedMinutes: 0,
+    pendingDisposition: 'none',
+    canVerify: false,
+    verifyExpiresAt: null,
+    legacyCheckpoint: null,
+  });
+
+  const service = {
+    assignLegacyCheckpoint: jest.fn(),
+  };
+  const controller = new ExternalEstimateLogController(
+    service as unknown as EpicEstimateLoggingService,
+  );
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('dispatches the strict assignment request with the epoch precondition', async () => {
+    service.assignLegacyCheckpoint.mockResolvedValue(snapshot(state()));
+
+    await expect(
+      controller.assignLegacyCheckpoint(
+        'jira',
+        TASK_ID,
+        '4',
+        { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4 },
+        PROJECT_ID,
+      ),
+    ).resolves.toEqual({
+      initialized: true,
+      revision: 4,
+      loggedMinutes: 90,
+      aggregationTimeZone: 'UTC',
+      days: [],
+      unallocatedLoggedMinutes: 0,
+      pendingDisposition: 'none',
+      canVerify: false,
+      verifyExpiresAt: null,
+      pending: null,
+      legacyCheckpoint: null,
+    });
+    expect(service.assignLegacyCheckpoint).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      provider: 'jira',
+      remoteScopeKey: SCOPE_KEY,
+      remoteTaskId: TASK_ID,
+      expectedEpoch: 4,
+      expectedLegacyRevision: 4,
+    });
+  });
+
+  it('projects the unassigned legacy signal on the assignment response', async () => {
+    service.assignLegacyCheckpoint.mockResolvedValue({
+      ...snapshot(null),
+      legacyCheckpoint: { revision: 3, loggedMinutes: 45, hasPendingOperation: false },
+    });
+
+    await expect(
+      controller.assignLegacyCheckpoint(
+        'jira',
+        TASK_ID,
+        '4',
+        { scopeKey: SCOPE_KEY, expectedLegacyRevision: 3 },
+        PROJECT_ID,
+      ),
+    ).resolves.toMatchObject({
+      legacyCheckpoint: { revision: 3, loggedMinutes: 45, hasPendingOperation: false },
+    });
+  });
+
+  it.each([
+    ['missing epoch', '', { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4 }],
+    ['non-numeric epoch', 'four', { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4 }],
+    ['negative revision', '', { scopeKey: SCOPE_KEY, expectedLegacyRevision: -1 }],
+    ['missing scope key', '', { expectedLegacyRevision: 4 }],
+    ['unknown body field', '', { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4, force: true }],
+  ])('rejects an assignment request with a %s before dispatch', async (_case, epoch, body) => {
+    await expect(
+      controller.assignLegacyCheckpoint('jira', TASK_ID, epoch, body, PROJECT_ID),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(service.assignLegacyCheckpoint).not.toHaveBeenCalled();
   });
 });

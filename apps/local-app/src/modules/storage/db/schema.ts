@@ -405,6 +405,10 @@ export const externalTaskLinks = sqliteTable(
     epicId: text('epic_id')
       .notNull()
       .references(() => epics.id, { onDelete: 'cascade' }),
+    // Owning project derived from the Epic; part of the durable task
+    // identity so one remote task links once per project. No FK: the Epic
+    // cascade already governs the link's lifetime.
+    projectId: text('project_id').notNull(),
     connectionId: text('connection_id').references(() => integrationConnections.id, {
       onDelete: 'set null',
     }),
@@ -416,7 +420,8 @@ export const externalTaskLinks = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => ({
-    remoteIdentityUnique: unique('external_task_links_remote_identity_unique').on(
+    projectRemoteIdentityUnique: unique('external_task_links_project_remote_identity_unique').on(
+      table.projectId,
       table.provider,
       table.remoteScopeKey,
       table.remoteTaskId,
@@ -429,6 +434,9 @@ export const externalTaskLinks = sqliteTable(
 export const externalEstimateLogStates = sqliteTable(
   'external_estimate_log_states',
   {
+    // Historical attribution owner. No FK on purpose: deleting the project,
+    // Epic, link, or connection must never erase or transfer this history.
+    projectId: text('project_id').notNull(),
     provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
     remoteScopeKey: text('remote_scope_key').notNull(),
     remoteTaskId: text('remote_task_id').notNull(),
@@ -453,11 +461,9 @@ export const externalEstimateLogStates = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => ({
-    remoteIdentityUnique: uniqueIndex('external_estimate_log_states_remote_identity_idx').on(
-      table.provider,
-      table.remoteScopeKey,
-      table.remoteTaskId,
-    ),
+    projectRemoteIdentityUnique: uniqueIndex(
+      'external_estimate_log_states_project_remote_identity_idx',
+    ).on(table.projectId, table.provider, table.remoteScopeKey, table.remoteTaskId),
     pendingOperationUnique: uniqueIndex('external_estimate_log_states_pending_operation_idx')
       .on(table.pendingOperationId)
       .where(sql`${table.pendingOperationId} IS NOT NULL`),
@@ -502,14 +508,15 @@ export const externalEstimateLogStates = sqliteTable(
   }),
 );
 
-// Dated estimate ledger. One row per remote identity and local activity
-// date under the state row's canonical zone. The composite primary key is
-// the only key: identity prefix probes ride it, so a separate identity
-// index would be redundant. No foreign key — the ledger must survive link
-// and state deletion like the scalar checkpoint it accompanies.
+// Dated estimate ledger. One row per owning project, remote identity, and
+// local activity date under the state row's canonical zone. The composite
+// primary key is the only key: identity prefix probes ride it, so a separate
+// identity index would be redundant. No foreign key — the ledger must survive
+// link and state deletion like the scalar checkpoint it accompanies.
 export const externalEstimateLogDays = sqliteTable(
   'external_estimate_log_days',
   {
+    projectId: text('project_id').notNull(),
     provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
     remoteScopeKey: text('remote_scope_key').notNull(),
     remoteTaskId: text('remote_task_id').notNull(),
@@ -520,8 +527,14 @@ export const externalEstimateLogDays = sqliteTable(
   },
   (table) => ({
     identityDatePrimary: primaryKey({
-      name: 'external_estimate_log_days_identity_date_pk',
-      columns: [table.provider, table.remoteScopeKey, table.remoteTaskId, table.activityDate],
+      name: 'external_estimate_log_days_project_identity_date_pk',
+      columns: [
+        table.projectId,
+        table.provider,
+        table.remoteScopeKey,
+        table.remoteTaskId,
+        table.activityDate,
+      ],
     }),
     nonnegativeLoggedMinutes: check(
       'external_estimate_log_days_logged_minutes_check',
@@ -893,33 +906,6 @@ export const tags = sqliteTable('tags', {
   name: text('name').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
-
-export const documents = sqliteTable(
-  'documents',
-  {
-    id: text('id').primaryKey(),
-    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }), // null = global
-    title: text('title').notNull(),
-    slug: text('slug').notNull(),
-    contentMd: text('content_md').notNull(),
-    version: integer('version').notNull().default(1),
-    archived: integer('archived', { mode: 'boolean' }).notNull().default(false),
-    createdAt: text('created_at').notNull(),
-    updatedAt: text('updated_at').notNull(),
-  },
-  (table) => ({
-    projectSlugUnique: uniqueIndex('documents_project_slug_unique').on(table.projectId, table.slug),
-  }),
-);
-
-export const documentTags = sqliteTable('document_tags', {
-  documentId: text('document_id')
-    .notNull()
-    .references(() => documents.id, { onDelete: 'cascade' }),
-  tagId: text('tag_id')
-    .notNull()
-    .references(() => tags.id, { onDelete: 'cascade' }),
 });
 
 // Epic-Tag junction

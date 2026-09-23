@@ -10,6 +10,7 @@ import { ReviewSuggestionApplier } from '../../reviews/services/review-suggestio
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { SkillsService } from '../../skills/services/skills.service';
+import { SkillSourceLifecycleService } from '../../skills/services/skill-source-lifecycle.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../../teams/services/teams.service';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
@@ -17,7 +18,6 @@ import { allMetadata } from '../tool-descriptors';
 import type { BoundMcpToolHandler, McpBindingRuntime } from '../tool-descriptors/binding-types';
 import { allBindingDefinitions } from '../tool-descriptors/runtime-bindings';
 import { InstructionsResolver } from './instructions-resolver';
-import { buildInlineResolution } from './utils/document-link-resolver';
 import { SessionContextResolver } from './utils/session-context-resolver';
 
 export interface ResolvedMcpToolBinding {
@@ -50,6 +50,9 @@ export class McpToolBindingRegistry {
     @Inject(forwardRef(() => SkillsService))
     skillsService?: SkillsService,
     @Optional()
+    @Inject(SkillSourceLifecycleService)
+    skillSourceLifecycleService?: SkillSourceLifecycleService,
+    @Optional()
     @Inject(forwardRef(() => ReviewsService))
     reviewsService?: ReviewsService,
     @Optional()
@@ -64,11 +67,7 @@ export class McpToolBindingRegistry {
     agentMessageDelivery?: AgentMessageDeliveryService,
     @Optional() projectCommunicationService?: ProjectCommunicationService,
   ) {
-    const instructionsResolver = new InstructionsResolver(
-      storage,
-      (document, cache, maxDepth, maxBytes) =>
-        buildInlineResolution(storage, document, cache, maxDepth, maxBytes),
-    );
+    const instructionsResolver = new InstructionsResolver(storage);
     const sessionContextResolver = new SessionContextResolver(
       storage,
       sessionsService,
@@ -83,6 +82,7 @@ export class McpToolBindingRegistry {
       settingsService,
       guestsService,
       skillsService,
+      skillSourceLifecycleService,
       reviewsService,
       reviewSuggestionApplier,
       teamsService,

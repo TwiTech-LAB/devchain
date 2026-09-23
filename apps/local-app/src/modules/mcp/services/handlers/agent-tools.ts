@@ -18,6 +18,7 @@ import { ServiceUnavailableError } from '../../../../common/errors/service-unava
 import type { InstructionsResolver } from '../instructions-resolver';
 import { resolveSessionContext } from '../utils/session-context-helpers';
 import { requireProject } from '../utils/require-project';
+import { extractPromptReferenceTitles } from '../../../../common/prompt-references';
 
 const logger = createLogger('McpService');
 
@@ -276,6 +277,18 @@ export async function handleGetAgentByName(
     }
   }
 
+  // The raw text is redundant when the resolution carries it unchanged: no
+  // [[prompt:…]] reference dropped surrounding prose (see
+  // docs/profiles-prompt-assignments.md) and nothing was truncated.
+  // Otherwise the raw instructions stay so the caller can still see them.
+  const rawInstructionsRedundant =
+    profile !== undefined &&
+    isSelfLookup &&
+    resolvedInstructions !== null &&
+    resolvedInstructions.truncated === false &&
+    !!profile.instructions &&
+    extractPromptReferenceTitles(profile.instructions).length === 0;
+
   const response: GetAgentByNameResponse = {
     agent: {
       id: agentWithProfile.id,
@@ -292,7 +305,7 @@ export async function handleGetAgentByName(
           ? {
               id: profile.id,
               name: profile.name,
-              instructions: profile.instructions ?? null,
+              ...(rawInstructionsRedundant ? {} : { instructions: profile.instructions ?? null }),
               instructionsResolved: resolvedInstructions ?? undefined,
             }
           : { id: profile.id, name: profile.name }

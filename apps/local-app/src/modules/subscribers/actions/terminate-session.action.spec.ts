@@ -6,6 +6,22 @@ import {
 } from './terminate-session.action';
 import type { ActionContext } from './action.interface';
 import type { SessionDto } from '../../sessions/dtos/sessions.dto';
+import type { Status } from '../../storage/models/domain.models';
+
+const PROJECT_ID = 'project-789';
+
+function makeStatus(id: string, label: string): Status {
+  return {
+    id,
+    projectId: PROJECT_ID,
+    label,
+    color: '#123456',
+    position: 1,
+    mcpHidden: false,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+}
 
 function makeSession(overrides: Partial<SessionDto> = {}): SessionDto {
   return {
@@ -34,6 +50,8 @@ describe('TerminateSessionAction', () => {
     getAgentByName: jest.Mock;
     listAgentProfiles: jest.Mock;
     listAgents: jest.Mock;
+    listStatuses: jest.Mock;
+    listProjectEpics: jest.Mock;
   };
   let mockLogger: {
     info: jest.Mock;
@@ -61,6 +79,8 @@ describe('TerminateSessionAction', () => {
       }),
       listAgentProfiles: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       listAgents: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+      listStatuses: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+      listProjectEpics: jest.fn().mockResolvedValue({ items: [], total: 0 }),
     };
 
     mockLogger = {
@@ -123,9 +143,12 @@ describe('TerminateSessionAction', () => {
     });
 
     it('should expose Agent Name before Profile Family Slug with family policy copy', () => {
-      expect(terminateSessionAction.inputs).toHaveLength(2);
+      expect(terminateSessionAction.inputs).toHaveLength(3);
       const agentNameInput = terminateSessionAction.inputs.find((i) => i.name === 'agentName');
       const familySlugInput = terminateSessionAction.inputs.find((i) => i.name === 'familySlug');
+      const guardInput = terminateSessionAction.inputs.find(
+        (i) => i.name === 'skipWhileEpicsInStatuses',
+      );
       expect(agentNameInput).toBeDefined();
       expect(agentNameInput?.type).toBe('string');
       expect(agentNameInput?.required).toBe(false);
@@ -133,6 +156,7 @@ describe('TerminateSessionAction', () => {
       expect(terminateSessionAction.inputs.map((input) => input.name)).toEqual([
         'agentName',
         'familySlug',
+        'skipWhileEpicsInStatuses',
       ]);
       expect(familySlugInput).toMatchObject({
         label: 'Profile Family Slug',
@@ -143,10 +167,120 @@ describe('TerminateSessionAction', () => {
       expect(familySlugInput?.description).toContain(
         'Family failures are not automatically retried, even when Retry on error is enabled.',
       );
+      expect(guardInput).toMatchObject({
+        label: 'Skip while epics are in statuses',
+        type: 'select',
+        multiple: true,
+        optionsSource: 'project_statuses',
+        allowedSources: ['custom'],
+        required: false,
+      });
     });
 
     it('should not disable subscriber retry', () => {
       expect(terminateSessionAction.supportsRetry).toBeUndefined();
+    });
+  });
+
+  describe('execute - status guard', () => {
+    function mockBlockingGuard(): void {
+      mockStorage.listStatuses.mockResolvedValue({
+        items: [makeStatus('status-ip', 'In Progress'), makeStatus('status-review', 'Review')],
+        total: 2,
+      });
+      mockStorage.listProjectEpics.mockImplementation(
+        (_projectId: string, options: { statusId: string }) =>
+          Promise.resolve({ items: [], total: options.statusId === 'status-ip' ? 2 : 1 }),
+      );
+    }
+
+    it('skips with success before resolving the agentName path', async () => {
+      mockBlockingGuard();
+
+      const result = await terminateSessionAction.execute(mockContext, {
+        agentName: 'MyAgent',
+        skipWhileEpicsInStatuses: 'In Progress, Review',
+      });
+
+      expect(result).toMatchObject({
+        success: true,
+        retryable: false,
+        message: 'Skipped: 3 epic(s) still in In Progress, Review',
+        data: {
+          skipped: true,
+          blocking: [
+            { statusId: 'status-ip', label: 'In Progress', count: 2 },
+            { statusId: 'status-review', label: 'Review', count: 1 },
+          ],
+        },
+      });
+      expect(mockStorage.getAgentByName).not.toHaveBeenCalled();
+      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it('skips with success before resolving the familySlug path', async () => {
+      mockBlockingGuard();
+
+      const result = await terminateSessionAction.execute(mockContext, {
+        familySlug: 'engineering',
+        skipWhileEpicsInStatuses: 'In Progress',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toBe('Skipped: 2 epic(s) still in In Progress');
+      expect(mockStorage.listAgentProfiles).not.toHaveBeenCalled();
+      expect(mockStorage.listAgents).not.toHaveBeenCalled();
+      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it('skips with success before resolving the event path', async () => {
+      mockBlockingGuard();
+
+      const result = await terminateSessionAction.execute(mockContext, {
+        skipWhileEpicsInStatuses: 'Review',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toBe('Skipped: 1 epic(s) still in Review');
+      expect(mockSessionsService.validateSessionInProject).not.toHaveBeenCalled();
+      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it('fails closed without mutation when a label matches no status', async () => {
+      mockStorage.listStatuses.mockResolvedValue({
+        items: [makeStatus('status-review', 'Review')],
+        total: 1,
+      });
+
+      const result = await terminateSessionAction.execute(mockContext, {
+        agentName: 'MyAgent',
+        skipWhileEpicsInStatuses: 'Review, Missing',
+      });
+
+      expect(result).toMatchObject({ success: false, retryable: false });
+      expect(result.error).toContain(
+        `Unknown status label(s) in project ${PROJECT_ID}: Missing. Nothing changed.`,
+      );
+      expect(mockStorage.listProjectEpics).not.toHaveBeenCalled();
+      expect(mockStorage.getAgentByName).not.toHaveBeenCalled();
+      expect(mockSessionsService.validateSessionInProject).not.toHaveBeenCalled();
+      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it('ignores the guard when the input is absent or empty', async () => {
+      for (const inputs of [
+        {},
+        { skipWhileEpicsInStatuses: '' },
+        { skipWhileEpicsInStatuses: ' ' },
+      ]) {
+        const result = await terminateSessionAction.execute(mockContext, inputs);
+
+        expect(result.success).toBe(true);
+        expect((result.data as TerminateSessionResultData).resolvedBy).toBe('event');
+      }
+      expect(mockStorage.listStatuses).not.toHaveBeenCalled();
+      expect(mockStorage.listProjectEpics).not.toHaveBeenCalled();
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledTimes(3);
     });
   });
 

@@ -1,123 +1,140 @@
 import { InstructionsResolver } from './instructions-resolver';
-import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
-import type { Document, Prompt } from '../../storage/models/domain.models';
+import type { Prompt } from '../../storage/models/domain.models';
+
+// Retired document lookups stay observable as explicit spies even though the
+// production StorageService no longer exposes a document API.
+type DocumentLookupSpies = {
+  getDocument: jest.Mock;
+  listDocuments: jest.Mock;
+};
+
+function promptSummary(prompt: Prompt) {
+  return {
+    id: prompt.id,
+    title: prompt.title,
+    projectId: prompt.projectId,
+    tags: prompt.tags,
+    version: prompt.version,
+    createdAt: prompt.createdAt,
+    updatedAt: prompt.updatedAt,
+  };
+}
 
 describe('InstructionsResolver', () => {
-  const inlineStub = jest.fn(async (document: Document) => ({
-    contentMd: document.contentMd,
-    bytes: Buffer.byteLength(document.contentMd, 'utf8'),
-    truncated: false,
-    depthUsed: 0,
-  }));
-
   afterEach(() => {
     jest.clearAllMocks();
   });
 
-  it('expands slug references into inline content', async () => {
-    const storage = {
+  function createStorage(
+    items: Array<{ prompt: Prompt }> = [],
+  ): jest.Mocked<StorageService> & DocumentLookupSpies {
+    return {
       getDocument: jest.fn(),
       listDocuments: jest.fn(),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
+      listPrompts: jest.fn().mockResolvedValue({
+        items: items.map(({ prompt }) => promptSummary(prompt)),
+        total: items.length,
+        limit: 10,
+        offset: 0,
+      }),
+      getPrompt: jest
+        .fn()
+        .mockImplementation(
+          async (id: string) => items.find(({ prompt }) => prompt.id === id)?.prompt ?? null,
+        ),
+    } as unknown as jest.Mocked<StorageService> & DocumentLookupSpies;
+  }
 
-    const document: Document = {
-      id: 'doc-1',
-      projectId: 'project-1',
-      title: 'Design Guide',
-      slug: 'design-guide',
-      contentMd: '# Design',
-      archived: false,
-      version: 1,
-      tags: ['guide'],
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-02T00:00:00Z',
-    };
+  const PROMPT: Prompt = {
+    id: 'prompt-1',
+    projectId: 'project-1',
+    title: 'Initialize Agent',
+    content: 'You are an agent that initializes systems.',
+    version: 1,
+    tags: ['setup'],
+    createdAt: '2024-01-01T00:00:00Z',
+    updatedAt: '2024-01-02T00:00:00Z',
+  };
 
-    storage.getDocument.mockResolvedValue(document);
+  it('expands prompt references into inline content', async () => {
+    const storage = createStorage([{ prompt: PROMPT }]);
 
-    const resolver = new InstructionsResolver(storage, inlineStub);
-    const result = await resolver.resolve('project-1', 'See [[design-guide]].');
+    const resolver = new InstructionsResolver(storage);
+    const result = await resolver.resolve('project-1', 'See [[prompt:Initialize Agent]].');
 
     expect(result).not.toBeNull();
-    expect(result?.docs).toHaveLength(1);
-    expect(result?.docs?.[0]).toMatchObject({ id: 'doc-1', slug: 'design-guide' });
-    expect(result?.contentMd).toContain('Design Guide');
-    expect(result?.contentMd).toContain('# Design');
-    expect(storage.getDocument).toHaveBeenCalledWith({
+    expect(result?.prompts).toHaveLength(1);
+    expect(result?.prompts?.[0]).toMatchObject({ id: 'prompt-1', title: 'Initialize Agent' });
+    expect(result?.contentMd).toContain('## Prompt: Initialize Agent');
+    expect(result?.contentMd).toContain('You are an agent that initializes systems.');
+    expect(storage.listPrompts).toHaveBeenCalledWith({
       projectId: 'project-1',
-      slug: 'design-guide',
+      q: 'Initialize Agent',
+      limit: 10000,
+      offset: 0,
     });
+    expect(storage.getPrompt).toHaveBeenCalledWith('prompt-1');
   });
 
-  it('expands tag key references using tagKey filtering', async () => {
-    const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
+  it('performs no document lookup for legacy slug and tag references and keeps original text', async () => {
+    const storage = createStorage();
+    const resolver = new InstructionsResolver(storage);
+    const instructions = 'See [[some-slug]] and [[#role:worker]].';
 
-    const taggedDocument: Document = {
-      id: 'doc-2',
-      projectId: 'project-1',
-      title: 'Role Playbook',
-      slug: 'role-playbook',
-      contentMd: 'Playbook content',
-      archived: false,
-      version: 1,
-      tags: ['role:worker'],
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-03T00:00:00Z',
-    };
-
-    storage.listDocuments.mockResolvedValue({
-      items: [taggedDocument],
-      total: 1,
-      limit: 1,
-      offset: 0,
-    });
-
-    const resolver = new InstructionsResolver(storage, inlineStub);
-    const result = await resolver.resolve('project-1', 'See [[#role]].');
+    const result = await resolver.resolve('project-1', instructions);
 
     expect(result).not.toBeNull();
-    expect(storage.listDocuments).toHaveBeenCalledWith({
-      projectId: 'project-1',
-      tagKeys: ['role'],
-      limit: 10,
-      offset: 0,
-    });
-    expect(result?.docs).toHaveLength(1);
-    expect(result?.docs?.[0]).toMatchObject({ id: 'doc-2', slug: 'role-playbook' });
-    expect(result?.contentMd).toContain('Role Playbook');
-    expect(result?.contentMd).toContain('Playbook content');
+    expect(result?.contentMd).toBe(instructions);
+    expect(result?.prompts).toHaveLength(0);
+    expect(result?.truncated).toBe(false);
+    expect(storage.getDocument).not.toHaveBeenCalled();
+    expect(storage.listDocuments).not.toHaveBeenCalled();
+    expect(storage.listPrompts).not.toHaveBeenCalled();
+  });
+
+  it('caps expanded prompts at maxPrompts and marks the result truncated', async () => {
+    const prompts = [1, 2, 3].map(
+      (n): Prompt => ({
+        id: `prompt-${n}`,
+        projectId: 'project-1',
+        title: `SOP ${n}`,
+        content: `Content ${n}`,
+        version: 1,
+        tags: [],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      }),
+    );
+    const storage = createStorage(prompts.map((prompt) => ({ prompt })));
+
+    const resolver = new InstructionsResolver(storage);
+    const result = await resolver.resolve(
+      'project-1',
+      '[[prompt:SOP 1]] [[prompt:SOP 2]] [[prompt:SOP 3]]',
+      { maxPrompts: 2 },
+    );
+
+    expect(result?.prompts).toHaveLength(2);
+    expect(result?.contentMd).toContain('## Prompt: SOP 1');
+    expect(result?.contentMd).toContain('## Prompt: SOP 2');
+    expect(result?.contentMd).not.toContain('## Prompt: SOP 3');
+    expect(result?.truncated).toBe(true);
   });
 
   it('enforces byte limits for expanded instructions content', async () => {
-    const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
-
-    const document: Document = {
-      id: 'doc-3',
-      projectId: 'project-1',
+    const longPrompt: Prompt = {
+      ...PROMPT,
+      id: 'prompt-long',
       title: 'Very Long Content',
-      slug: 'long',
-      contentMd: 'A'.repeat(500),
-      archived: false,
-      version: 1,
-      tags: [],
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-01T00:00:00Z',
+      content: 'A'.repeat(500),
     };
+    const storage = createStorage([{ prompt: longPrompt }]);
 
-    storage.getDocument.mockResolvedValue(document);
-
-    const resolver = new InstructionsResolver(storage, inlineStub);
-    const result = await resolver.resolve('project-1', '[[long]]', { maxBytes: 64 });
+    const resolver = new InstructionsResolver(storage);
+    const result = await resolver.resolve('project-1', '[[prompt:Very Long Content]]', {
+      maxBytes: 64,
+    });
 
     expect(result).not.toBeNull();
     expect(result?.truncated).toBe(true);
@@ -138,31 +155,9 @@ describe('InstructionsResolver', () => {
         createdAt: '2024-01-01T00:00:00Z',
         updatedAt: '2024-01-01T00:00:00Z',
       };
+      const storage = createStorage([{ prompt }]);
 
-      const storage = {
-        getDocument: jest.fn(),
-        listDocuments: jest.fn(),
-        listPrompts: jest.fn().mockResolvedValue({
-          items: [
-            {
-              id: prompt.id,
-              title: prompt.title,
-              projectId: prompt.projectId,
-              tags: [],
-              version: 1,
-              createdAt: prompt.createdAt,
-              updatedAt: prompt.updatedAt,
-            },
-          ],
-          total: 1,
-          limit: 10,
-          offset: 0,
-        }),
-        getPrompt: jest.fn().mockResolvedValue(prompt),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
-
-      const resolver = new InstructionsResolver(storage, inlineStub);
+      const resolver = new InstructionsResolver(storage);
       const result = await resolver.resolve('project-1', '[[prompt:Accented]]', { maxBytes: 14 });
 
       expect(result).not.toBeNull();
@@ -171,56 +166,42 @@ describe('InstructionsResolver', () => {
       expect(result!.bytes).toBeLessThanOrEqual(14);
     });
 
-    it('referenced document with 4-byte boundary cut (emoji)', async () => {
-      const document: Document = {
-        id: 'doc-emoji',
+    it('referenced prompt with 4-byte boundary cut (emoji)', async () => {
+      const prompt: Prompt = {
+        id: 'prompt-emoji',
         projectId: 'project-1',
         title: 'Emoji',
-        slug: 'emoji-doc',
-        contentMd: 'A'.repeat(14) + '🎉',
-        archived: false,
+        content: 'A'.repeat(14) + '🎉',
         version: 1,
         tags: [],
         createdAt: '2024-01-01T00:00:00Z',
         updatedAt: '2024-01-01T00:00:00Z',
       };
+      const storage = createStorage([{ prompt }]);
 
-      const storage = {
-        getDocument: jest.fn().mockResolvedValue(document),
-        listDocuments: jest.fn(),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
-
-      const resolver = new InstructionsResolver(storage, inlineStub);
-      const result = await resolver.resolve('project-1', '[[emoji-doc]]', { maxBytes: 17 });
+      const resolver = new InstructionsResolver(storage);
+      const result = await resolver.resolve('project-1', '[[prompt:Emoji]]', { maxBytes: 17 });
 
       expect(result).not.toBeNull();
       expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(17);
       expect(result!.contentMd).not.toContain('\uFFFD');
     });
 
-    it('referenced document with 3-byte boundary cut (CJK)', async () => {
-      const document: Document = {
-        id: 'doc-cjk',
+    it('referenced prompt with 3-byte boundary cut (CJK)', async () => {
+      const prompt: Prompt = {
+        id: 'prompt-cjk',
         projectId: 'project-1',
         title: 'CJK',
-        slug: 'cjk-doc',
-        contentMd: 'AB' + '中'.repeat(20),
-        archived: false,
+        content: 'AB' + '中'.repeat(20),
         version: 1,
         tags: [],
         createdAt: '2024-01-01T00:00:00Z',
         updatedAt: '2024-01-01T00:00:00Z',
       };
+      const storage = createStorage([{ prompt }]);
 
-      const storage = {
-        getDocument: jest.fn().mockResolvedValue(document),
-        listDocuments: jest.fn(),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
-
-      const resolver = new InstructionsResolver(storage, inlineStub);
-      const result = await resolver.resolve('project-1', '[[cjk-doc]]', { maxBytes: 10 });
+      const resolver = new InstructionsResolver(storage);
+      const result = await resolver.resolve('project-1', '[[prompt:CJK]]', { maxBytes: 10 });
 
       expect(result).not.toBeNull();
       expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(10);
@@ -228,92 +209,25 @@ describe('InstructionsResolver', () => {
     });
 
     it('exact fit on multi-byte boundary: no truncation', async () => {
-      const document: Document = {
-        id: 'doc-exact',
+      const prompt: Prompt = {
+        id: 'prompt-exact',
         projectId: 'project-1',
         title: 'X',
-        slug: 'exact',
-        contentMd: 'éé',
-        archived: false,
+        content: 'éé',
         version: 1,
         tags: [],
         createdAt: '2024-01-01T00:00:00Z',
         updatedAt: '2024-01-01T00:00:00Z',
       };
+      const storage = createStorage([{ prompt }]);
 
-      const storage = {
-        getDocument: jest.fn().mockResolvedValue(document),
-        listDocuments: jest.fn(),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
-
-      const inlineExact = jest.fn(async (doc: Document) => ({
-        contentMd: doc.contentMd,
-        bytes: Buffer.byteLength(doc.contentMd, 'utf8'),
-        truncated: false,
-        depthUsed: 0,
-      }));
-
-      const resolver = new InstructionsResolver(storage, inlineExact);
-      // snippet wrapping adds ~20 chars overhead; set maxBytes high enough for content but verify no FFFD
-      const result = await resolver.resolve('project-1', '[[exact]]', { maxBytes: 200 });
+      const resolver = new InstructionsResolver(storage);
+      const result = await resolver.resolve('project-1', '[[prompt:X]]', { maxBytes: 200 });
 
       expect(result).not.toBeNull();
       expect(result!.contentMd).not.toContain('\uFFFD');
       expect(result!.truncated).toBe(false);
     });
-  });
-
-  it('expands prompt references into inline content', async () => {
-    const prompt: Prompt = {
-      id: 'prompt-1',
-      projectId: 'project-1',
-      title: 'Initialize Agent',
-      content: 'You are an agent that initializes systems.',
-      version: 1,
-      tags: ['setup'],
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-02T00:00:00Z',
-    };
-
-    const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
-      listPrompts: jest.fn().mockResolvedValue({
-        items: [
-          {
-            id: prompt.id,
-            title: prompt.title,
-            projectId: prompt.projectId,
-            tags: prompt.tags,
-            version: prompt.version,
-            createdAt: prompt.createdAt,
-            updatedAt: prompt.updatedAt,
-          },
-        ],
-        total: 1,
-        limit: 10,
-        offset: 0,
-      }),
-      getPrompt: jest.fn().mockResolvedValue(prompt),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
-
-    const resolver = new InstructionsResolver(storage, inlineStub);
-    const result = await resolver.resolve('project-1', 'See [[prompt:Initialize Agent]].');
-
-    expect(result).not.toBeNull();
-    expect(result?.prompts).toHaveLength(1);
-    expect(result?.prompts?.[0]).toMatchObject({ id: 'prompt-1', title: 'Initialize Agent' });
-    expect(result?.contentMd).toContain('## Prompt: Initialize Agent');
-    expect(result?.contentMd).toContain('You are an agent that initializes systems.');
-    expect(storage.listPrompts).toHaveBeenCalledWith({
-      projectId: 'project-1',
-      q: 'Initialize Agent',
-      limit: 10000,
-      offset: 0,
-    });
-    expect(storage.getPrompt).toHaveBeenCalledWith('prompt-1');
   });
 
   it('falls back to global scope for prompt references', async () => {
@@ -327,34 +241,19 @@ describe('InstructionsResolver', () => {
       createdAt: '2024-01-01T00:00:00Z',
       updatedAt: '2024-01-01T00:00:00Z',
     };
+    const storage = createStorage();
+    storage.listPrompts = jest
+      .fn()
+      .mockResolvedValueOnce({ items: [], total: 0, limit: 10, offset: 0 })
+      .mockResolvedValueOnce({
+        items: [promptSummary(globalPrompt)],
+        total: 1,
+        limit: 10,
+        offset: 0,
+      });
+    storage.getPrompt = jest.fn().mockResolvedValue(globalPrompt);
 
-    const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
-      listPrompts: jest
-        .fn()
-        .mockResolvedValueOnce({ items: [], total: 0, limit: 10, offset: 0 })
-        .mockResolvedValueOnce({
-          items: [
-            {
-              id: globalPrompt.id,
-              title: globalPrompt.title,
-              projectId: globalPrompt.projectId,
-              tags: globalPrompt.tags,
-              version: globalPrompt.version,
-              createdAt: globalPrompt.createdAt,
-              updatedAt: globalPrompt.updatedAt,
-            },
-          ],
-          total: 1,
-          limit: 10,
-          offset: 0,
-        }),
-      getPrompt: jest.fn().mockResolvedValue(globalPrompt),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
-
-    const resolver = new InstructionsResolver(storage, inlineStub);
+    const resolver = new InstructionsResolver(storage);
     const result = await resolver.resolve('project-1', '[[prompt:Global Helper]]');
 
     expect(result).not.toBeNull();
@@ -376,70 +275,33 @@ describe('InstructionsResolver', () => {
   });
 
   it('handles missing prompt gracefully — returns raw instructions', async () => {
-    const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
-      listPrompts: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 }),
-      getPrompt: jest.fn(),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
+    const storage = createStorage();
 
-    const resolver = new InstructionsResolver(storage, inlineStub);
+    const resolver = new InstructionsResolver(storage);
     const result = await resolver.resolve('project-1', '[[prompt:Missing Prompt]]');
 
     expect(result).not.toBeNull();
     expect(result?.contentMd).toBe('[[prompt:Missing Prompt]]');
-    expect(result?.docs).toHaveLength(0);
     expect(result?.prompts).toHaveLength(0);
     expect(storage.listPrompts).toHaveBeenCalledTimes(2);
     expect(storage.getPrompt).not.toHaveBeenCalled();
   });
 
   it('uses exact case-insensitive title match for prompts', async () => {
-    const prompt: Prompt = {
+    const distractor: Prompt = {
+      ...PROMPT,
+      id: 'other',
+      title: 'Setup',
+    };
+    const target: Prompt = {
+      ...PROMPT,
       id: 'prompt-2',
-      projectId: 'project-1',
       title: 'Setup Guide',
       content: 'Setup instructions here.',
-      version: 1,
-      tags: [],
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-01T00:00:00Z',
     };
+    const storage = createStorage([{ prompt: distractor }, { prompt: target }]);
 
-    const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
-      listPrompts: jest.fn().mockResolvedValue({
-        items: [
-          {
-            id: 'other',
-            title: 'Setup',
-            projectId: 'project-1',
-            tags: [],
-            version: 1,
-            createdAt: '2024-01-01T00:00:00Z',
-            updatedAt: '2024-01-01T00:00:00Z',
-          },
-          {
-            id: prompt.id,
-            title: prompt.title,
-            projectId: prompt.projectId,
-            tags: prompt.tags,
-            version: prompt.version,
-            createdAt: prompt.createdAt,
-            updatedAt: prompt.updatedAt,
-          },
-        ],
-        total: 2,
-        limit: 10,
-        offset: 0,
-      }),
-      getPrompt: jest.fn().mockResolvedValue(prompt),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
-
-    const resolver = new InstructionsResolver(storage, inlineStub);
+    const resolver = new InstructionsResolver(storage);
     const result = await resolver.resolve('project-1', '[[prompt:setup guide]]');
 
     expect(result).not.toBeNull();
@@ -450,49 +312,22 @@ describe('InstructionsResolver', () => {
 
   it('uses first match and logs warning when multiple prompts have same title', async () => {
     const firstPrompt: Prompt = {
+      ...PROMPT,
       id: 'prompt-first',
-      projectId: 'project-1',
       title: 'Duplicate Title',
       content: 'First prompt content.',
-      version: 1,
-      tags: [],
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-01T00:00:00Z',
     };
+    const secondPrompt: Prompt = {
+      ...PROMPT,
+      id: 'prompt-second',
+      title: 'Duplicate Title',
+      content: 'Second prompt content.',
+      createdAt: '2024-01-02T00:00:00Z',
+      updatedAt: '2024-01-02T00:00:00Z',
+    };
+    const storage = createStorage([{ prompt: firstPrompt }, { prompt: secondPrompt }]);
 
-    const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
-      listPrompts: jest.fn().mockResolvedValue({
-        items: [
-          {
-            id: 'prompt-first',
-            title: 'Duplicate Title',
-            projectId: 'project-1',
-            tags: [],
-            version: 1,
-            createdAt: '2024-01-01T00:00:00Z',
-            updatedAt: '2024-01-01T00:00:00Z',
-          },
-          {
-            id: 'prompt-second',
-            title: 'Duplicate Title',
-            projectId: 'project-1',
-            tags: [],
-            version: 1,
-            createdAt: '2024-01-02T00:00:00Z',
-            updatedAt: '2024-01-02T00:00:00Z',
-          },
-        ],
-        total: 2,
-        limit: 10,
-        offset: 0,
-      }),
-      getPrompt: jest.fn().mockResolvedValue(firstPrompt),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
-
-    const resolver = new InstructionsResolver(storage, inlineStub);
+    const resolver = new InstructionsResolver(storage);
     const result = await resolver.resolve('project-1', '[[prompt:Duplicate Title]]');
 
     expect(result).not.toBeNull();
@@ -543,8 +378,6 @@ describe('InstructionsResolver', () => {
       updatedAt: '',
     };
     const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
       listPrompts: jest.fn().mockResolvedValue({
         items: summaries,
         total: summaries.length,
@@ -552,10 +385,9 @@ describe('InstructionsResolver', () => {
         offset: 0,
       }),
       getPrompt: jest.fn().mockResolvedValue(systemPrompt),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
+    } as unknown as jest.Mocked<StorageService> & DocumentLookupSpies;
 
-    const resolver = new InstructionsResolver(storage, inlineStub);
+    const resolver = new InstructionsResolver(storage);
     const result = await resolver.resolve('project-1', '[[prompt:shared sop]]');
 
     expect(result?.prompts).toEqual([{ id: 'prompt-system', title: 'SHARED SOP' }]);
@@ -580,29 +412,16 @@ describe('InstructionsResolver', () => {
       updatedAt: '',
     };
     const storage = {
-      getDocument: jest.fn(),
-      listDocuments: jest.fn(),
       listPrompts: jest.fn().mockResolvedValue({
-        items: [
-          {
-            id: projectPrompt.id,
-            projectId: projectPrompt.projectId,
-            title: projectPrompt.title,
-            tags: projectPrompt.tags,
-            version: 1,
-            createdAt: '',
-            updatedAt: '',
-          },
-        ],
+        items: [promptSummary(projectPrompt)],
         total: 1,
         limit: 10000,
         offset: 0,
       }),
       getPrompt: jest.fn().mockResolvedValue(projectPrompt),
-      getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-    } as unknown as jest.Mocked<StorageService>;
+    } as unknown as jest.Mocked<StorageService> & DocumentLookupSpies;
 
-    const resolver = new InstructionsResolver(storage, inlineStub);
+    const resolver = new InstructionsResolver(storage);
     const result = await resolver.resolve('project-1', '[[prompt:SCOPED]]');
 
     expect(result?.prompts).toEqual([{ id: 'project-custom', title: 'Scoped' }]);
@@ -611,13 +430,9 @@ describe('InstructionsResolver', () => {
 
   describe('render option', () => {
     it('instructions with ONLY variables (no refs) returns rendered content', async () => {
-      const storage = {
-        getDocument: jest.fn(),
-        listDocuments: jest.fn(),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
+      const storage = createStorage();
 
-      const resolver = new InstructionsResolver(storage, inlineStub);
+      const resolver = new InstructionsResolver(storage);
       const result = await resolver.resolve('project-1', 'Hello {{name}}, team: {{team_name}}', {
         render: {
           vars: { name: 'Alice', team_name: 'Backend' },
@@ -626,46 +441,18 @@ describe('InstructionsResolver', () => {
 
       expect(result).not.toBeNull();
       expect(result?.contentMd).toBe('Hello Alice, team: Backend');
-      expect(result?.docs).toHaveLength(0);
       expect(result?.prompts).toHaveLength(0);
     });
 
     it('instructions with refs + variables: refs resolved first, then Handlebars', async () => {
       const prompt: Prompt = {
-        id: 'prompt-1',
-        projectId: 'project-1',
+        ...PROMPT,
         title: 'SOP',
         content: 'Do the work for {{team_name}}.',
-        version: 1,
-        tags: [],
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
       };
+      const storage = createStorage([{ prompt }]);
 
-      const storage = {
-        getDocument: jest.fn(),
-        listDocuments: jest.fn(),
-        listPrompts: jest.fn().mockResolvedValue({
-          items: [
-            {
-              id: prompt.id,
-              title: prompt.title,
-              projectId: prompt.projectId,
-              tags: prompt.tags,
-              version: prompt.version,
-              createdAt: prompt.createdAt,
-              updatedAt: prompt.updatedAt,
-            },
-          ],
-          total: 1,
-          limit: 10,
-          offset: 0,
-        }),
-        getPrompt: jest.fn().mockResolvedValue(prompt),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
-
-      const resolver = new InstructionsResolver(storage, inlineStub);
+      const resolver = new InstructionsResolver(storage);
       const result = await resolver.resolve('project-1', '[[prompt:SOP]]', {
         render: {
           vars: { team_name: 'Backend' },
@@ -678,13 +465,9 @@ describe('InstructionsResolver', () => {
     });
 
     it('render option omitted returns raw content without substitution', async () => {
-      const storage = {
-        getDocument: jest.fn(),
-        listDocuments: jest.fn(),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
+      const storage = createStorage();
 
-      const resolver = new InstructionsResolver(storage, inlineStub);
+      const resolver = new InstructionsResolver(storage);
       const result = await resolver.resolve('project-1', 'Hello {{name}}');
 
       expect(result).not.toBeNull();
@@ -692,13 +475,9 @@ describe('InstructionsResolver', () => {
     });
 
     it('maxBytes truncates contentMd after render and sets truncated=true', async () => {
-      const storage = {
-        getDocument: jest.fn(),
-        listDocuments: jest.fn(),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
+      const storage = createStorage();
 
-      const resolver = new InstructionsResolver(storage, inlineStub);
+      const resolver = new InstructionsResolver(storage);
       const longName = 'x'.repeat(10000);
       const result = await resolver.resolve('project-1', 'Hello {{name}}', {
         maxBytes: 100,
@@ -712,13 +491,9 @@ describe('InstructionsResolver', () => {
     });
 
     it('content within cap returns truncated=false with actual byte length', async () => {
-      const storage = {
-        getDocument: jest.fn(),
-        listDocuments: jest.fn(),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
+      const storage = createStorage();
 
-      const resolver = new InstructionsResolver(storage, inlineStub);
+      const resolver = new InstructionsResolver(storage);
       const result = await resolver.resolve('project-1', 'Hello {{name}}', {
         maxBytes: 1000,
         render: { vars: { name: 'Alice' } },
@@ -732,40 +507,13 @@ describe('InstructionsResolver', () => {
 
     it('refs + render combined exceeding cap truncates after render', async () => {
       const prompt: Prompt = {
-        id: 'prompt-1',
-        projectId: 'project-1',
+        ...PROMPT,
         title: 'SOP',
         content: 'A'.repeat(200),
-        version: 1,
-        tags: [],
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
       };
+      const storage = createStorage([{ prompt }]);
 
-      const storage = {
-        getDocument: jest.fn(),
-        listDocuments: jest.fn(),
-        listPrompts: jest.fn().mockResolvedValue({
-          items: [
-            {
-              id: prompt.id,
-              title: prompt.title,
-              projectId: prompt.projectId,
-              tags: prompt.tags,
-              version: prompt.version,
-              createdAt: prompt.createdAt,
-              updatedAt: prompt.updatedAt,
-            },
-          ],
-          total: 1,
-          limit: 10,
-          offset: 0,
-        }),
-        getPrompt: jest.fn().mockResolvedValue(prompt),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
-
-      const resolver = new InstructionsResolver(storage, inlineStub);
+      const resolver = new InstructionsResolver(storage);
       const result = await resolver.resolve('project-1', '[[prompt:SOP]]', {
         maxBytes: 100,
         render: { vars: { team_name: 'Backend' } },
@@ -777,13 +525,9 @@ describe('InstructionsResolver', () => {
     });
 
     it('no maxBytes configured does not truncate', async () => {
-      const storage = {
-        getDocument: jest.fn(),
-        listDocuments: jest.fn(),
-        getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-      } as unknown as jest.Mocked<StorageService>;
+      const storage = createStorage();
 
-      const resolver = new InstructionsResolver(storage, inlineStub);
+      const resolver = new InstructionsResolver(storage);
       const longName = 'x'.repeat(1000);
       const result = await resolver.resolve('project-1', 'Hello {{name}}', {
         render: { vars: { name: longName } },
@@ -795,15 +539,10 @@ describe('InstructionsResolver', () => {
     });
 
     describe('UTF-8 safe truncation', () => {
-      const makeStorage = () =>
-        ({
-          getDocument: jest.fn(),
-          listDocuments: jest.fn(),
-          getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
-        }) as unknown as jest.Mocked<StorageService>;
+      const makeStorage = () => createStorage();
 
       it('2-byte boundary (accented Latin): no replacement chars', async () => {
-        const resolver = new InstructionsResolver(makeStorage(), inlineStub);
+        const resolver = new InstructionsResolver(makeStorage());
         const result = await resolver.resolve('project-1', '{{name}}', {
           maxBytes: 7,
           render: { vars: { name: 'é'.repeat(50) } },
@@ -817,7 +556,7 @@ describe('InstructionsResolver', () => {
       });
 
       it('3-byte boundary (CJK)', async () => {
-        const resolver = new InstructionsResolver(makeStorage(), inlineStub);
+        const resolver = new InstructionsResolver(makeStorage());
         const result = await resolver.resolve('project-1', '{{name}}', {
           maxBytes: 5,
           render: { vars: { name: '中'.repeat(50) } },
@@ -830,7 +569,7 @@ describe('InstructionsResolver', () => {
       });
 
       it('4-byte boundary (emoji / astral plane)', async () => {
-        const resolver = new InstructionsResolver(makeStorage(), inlineStub);
+        const resolver = new InstructionsResolver(makeStorage());
         const result = await resolver.resolve('project-1', '{{name}}', {
           maxBytes: 7,
           render: { vars: { name: '🎉'.repeat(50) } },
@@ -843,7 +582,7 @@ describe('InstructionsResolver', () => {
       });
 
       it('mixed content: ASCII + accented + emoji', async () => {
-        const resolver = new InstructionsResolver(makeStorage(), inlineStub);
+        const resolver = new InstructionsResolver(makeStorage());
         const result = await resolver.resolve('project-1', '{{name}}', {
           maxBytes: 10,
           render: { vars: { name: 'Aé中🎉Bñ' } },
@@ -856,7 +595,7 @@ describe('InstructionsResolver', () => {
       });
 
       it('maxBytes = 0 returns empty content', async () => {
-        const resolver = new InstructionsResolver(makeStorage(), inlineStub);
+        const resolver = new InstructionsResolver(makeStorage());
         const result = await resolver.resolve('project-1', 'Hello', { maxBytes: 0 });
 
         expect(result).not.toBeNull();
@@ -866,7 +605,7 @@ describe('InstructionsResolver', () => {
       });
 
       it('single character exceeds maxBytes', async () => {
-        const resolver = new InstructionsResolver(makeStorage(), inlineStub);
+        const resolver = new InstructionsResolver(makeStorage());
         const result = await resolver.resolve('project-1', '{{name}}', {
           maxBytes: 1,
           render: { vars: { name: '🎉' } },

@@ -19,7 +19,17 @@ import { usePresetApply } from '@/ui/hooks/chat/usePresetApply';
 import { useAgentConfigSwitch } from '@/ui/hooks/chat/useAgentConfigSwitch';
 import { useAgentAdminActions } from '@/ui/hooks/chat/useAgentAdminActions';
 import { useWorktreeSocket } from '@/ui/hooks/useWorktreeSocket';
-import { useMessagePools } from '@/ui/hooks/chat/useMessagePools';
+import {
+  useMessagePools,
+  isForceEligible,
+  ForceConflictError,
+  HOLD_REASON_LABELS,
+  type ForceDeliveryResult,
+} from '@/ui/hooks/chat/useMessagePools';
+import {
+  useForceDeliveryConfirm,
+  type ForceDeliveryTarget,
+} from '@/ui/hooks/chat/useForceDeliveryConfirm';
 
 // Inline terminal components
 import { InlineTerminalPanel } from '@/ui/components/chat/InlineTerminalPanel';
@@ -115,7 +125,7 @@ function recordsEqual<T>(left: Readonly<Record<string, T>>, right: Readonly<Reco
 function describeHumanRelease(target: HumanReleaseTarget | null): string {
   if (!target) return '';
   const noun = target.messageCount === 1 ? 'message' : 'messages';
-  return `${target.messageCount} queued ${noun} will be delivered to ${target.agentName}.`;
+  return `${target.messageCount} queued ${noun} for ${target.agentName} will send when the terminal is quiet.`;
 }
 
 interface WorktreeInlineTerminalProps {
@@ -202,6 +212,8 @@ export function ChatPage() {
     pools: messagePools,
     releaseHumanHeldMessages,
     releasingAgentId,
+    forceDeferredDelivery,
+    forcingAgentId,
   } = useMessagePools(projectId);
 
   // The endpoint recomputes waitingMs on every poll, so the pools array is a
@@ -240,6 +252,36 @@ export function ChatPage() {
     prevReleaseEligibleRef.current = eligible;
     return eligible;
   }, [messagePools, nowTick]);
+
+  const prevForceEligibleRef = useRef<Record<string, true>>({});
+  const forceEligibleAgentIds = useMemo(() => {
+    const eligible: Record<string, true> = {};
+    for (const pool of messagePools ?? []) {
+      if (isForceEligible(pool, nowTick)) eligible[pool.agentId] = true;
+    }
+    const previous = prevForceEligibleRef.current;
+    if (recordsEqual(previous, eligible)) return previous;
+    prevForceEligibleRef.current = eligible;
+    return eligible;
+  }, [messagePools, nowTick]);
+
+  const prevHoldReasonLabelsRef = useRef<Record<string, string>>({});
+  const holdReasonLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    for (const pool of messagePools ?? []) {
+      if (
+        pool.holdReason &&
+        pool.holdReason !== 'human_draft' &&
+        !forceEligibleAgentIds[pool.agentId]
+      ) {
+        labels[pool.agentId] = HOLD_REASON_LABELS[pool.holdReason];
+      }
+    }
+    const previous = prevHoldReasonLabelsRef.current;
+    if (recordsEqual(previous, labels)) return previous;
+    prevHoldReasonLabelsRef.current = labels;
+    return labels;
+  }, [messagePools, forceEligibleAgentIds]);
 
   const agentUiState = useAgentConsoleUiState({
     projectId,
@@ -629,6 +671,70 @@ export function ChatPage() {
         });
       });
   }, [humanReleaseTarget, releaseHumanHeldMessages, toast]);
+
+  const handleForceDeliveryResult = useCallback(
+    (result: ForceDeliveryResult, target: ForceDeliveryTarget) => {
+      const resultMessages: Record<
+        string,
+        { title: string; description: string; variant?: 'destructive' }
+      > = {
+        delivered: {
+          title: 'Messages sent',
+          description: `${target.messageCount} message${target.messageCount === 1 ? '' : 's'} delivered to the terminal.`,
+        },
+        unconfirmed: {
+          title: 'Delivery unconfirmed',
+          description: 'Messages were pasted but terminal confirmation timed out.',
+        },
+        deferred: {
+          title: 'Messages still queued',
+          description: 'Input or context changed before delivery could start.',
+        },
+        failed: {
+          title: 'Delivery failed',
+          description: result.reason ?? 'An error occurred during delivery.',
+          variant: 'destructive',
+        },
+      };
+      toast(resultMessages[result.status] ?? resultMessages.failed);
+    },
+    [toast],
+  );
+
+  const handleForceDeliveryError = useCallback(
+    (error: unknown) => {
+      if (error instanceof ForceConflictError) {
+        toast({
+          title: 'Queue changed',
+          description: 'Review and confirm again.',
+        });
+        return;
+      }
+      toast({
+        title: 'Send now failed',
+        description: error instanceof Error ? error.message : 'Request failed.',
+        variant: 'destructive',
+      });
+    },
+    [toast],
+  );
+
+  const forceDeliveryConfirm = useForceDeliveryConfirm({
+    pools: messagePools,
+    now: nowTick,
+    forceDeferredDelivery,
+    forcingAgentId,
+    onResult: handleForceDeliveryResult,
+    onError: handleForceDeliveryError,
+  });
+  const openForceDeliveryConfirm = forceDeliveryConfirm.open;
+
+  const handleOpenForceDelivery = useCallback(
+    (agentId: string) => {
+      openForceDeliveryConfirm(messagePools?.find((p) => p.agentId === agentId));
+    },
+    [messagePools, openForceDeliveryConfirm],
+  );
 
   const handleSelectMainAgent = useCallback(
     (agentId: string) => {
@@ -1052,6 +1158,8 @@ export function ChatPage() {
       projectProfiles: queries.profiles,
       humanHeldMessageCounts,
       humanHeldReleaseEligibleAgentIds,
+      forceEligibleAgentIds,
+      holdReasonLabels,
       unloggedTimeMinutes: unloggedMinutesByAgentId,
     }),
     [
@@ -1075,6 +1183,8 @@ export function ChatPage() {
       queries.profiles,
       humanHeldMessageCounts,
       humanHeldReleaseEligibleAgentIds,
+      forceEligibleAgentIds,
+      holdReasonLabels,
       unloggedMinutesByAgentId,
     ],
   );
@@ -1097,6 +1207,8 @@ export function ChatPage() {
       onTerminateConfirm: (agentId, sessionId) =>
         sessionControls.setTerminateConfirm({ agentId, sessionId }),
       onReleaseHeldMessages: handleOpenHumanRelease,
+      onForceDelivery: handleOpenForceDelivery,
+      forcingAgentId,
       releasingHeldAgentId: releasingAgentId,
       pendingRestartAgentIds,
       onMarkForRestart: markAgentsForRestart,
@@ -1125,7 +1237,9 @@ export function ChatPage() {
       handleRestartSessionWithClear,
       sessionControls.setTerminateConfirm,
       handleOpenHumanRelease,
+      handleOpenForceDelivery,
       releasingAgentId,
+      forcingAgentId,
       pendingRestartAgentIds,
       markAgentsForRestart,
       worktreeSessionActionsByAgentKey,
@@ -1533,6 +1647,7 @@ export function ChatPage() {
         cancelText="No"
         loading={releasingAgentId === humanReleaseTarget?.agentId}
       />
+      <ConfirmDialog {...forceDeliveryConfirm.dialogProps} />
       <ConfirmDialog {...activeSessionDialogProps} />
     </div>
   );

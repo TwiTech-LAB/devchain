@@ -419,7 +419,8 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
       await this.db.insert(externalTaskLinks).values(link);
     } catch (error) {
       if (isSqliteUniqueConstraint(error)) {
-        throw new ConflictError('External task is already linked.', {
+        throw new ConflictError('External task is already linked to this project.', {
+          projectId: link.projectId,
           provider: link.provider,
           remoteScopeKey: link.remoteScopeKey,
           remoteTaskId: link.remoteTaskId,
@@ -439,8 +440,13 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
     if (!remoteScopeKey || !remoteTaskId) {
       throw new ValidationError('Remote scope and remote task identifiers are required.');
     }
+    const projectId = data.epic.projectId.trim();
+    if (!projectId) {
+      throw new ValidationError('Project identity is required to link an external task.');
+    }
 
     const existing = await this.findExternalTaskLink(
+      projectId,
       data.externalTaskLink.provider,
       remoteScopeKey,
       remoteTaskId,
@@ -470,6 +476,7 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
       if (
         !this.isMatchingExternalTaskLinkConflict(
           error,
+          projectId,
           data.externalTaskLink.provider,
           remoteScopeKey,
           remoteTaskId,
@@ -481,6 +488,7 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
     }
 
     const winner = await this.findExternalTaskLink(
+      projectId,
       data.externalTaskLink.provider,
       remoteScopeKey,
       remoteTaskId,
@@ -492,6 +500,7 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
   }
 
   async findExternalTaskLink(
+    projectId: string,
     provider: IntegrationProvider,
     remoteScopeKey: string,
     remoteTaskId: string,
@@ -501,6 +510,7 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
       .from(externalTaskLinks)
       .where(
         and(
+          eq(externalTaskLinks.projectId, projectId),
           eq(externalTaskLinks.provider, provider),
           eq(externalTaskLinks.remoteScopeKey, remoteScopeKey),
           eq(externalTaskLinks.remoteTaskId, remoteTaskId),
@@ -642,7 +652,9 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
     }
   }
 
-  private async normalizeLinkInput(data: CreateExternalTaskLink): Promise<CreateExternalTaskLink> {
+  private async normalizeLinkInput(
+    data: CreateExternalTaskLink,
+  ): Promise<CreateExternalTaskLink & { projectId: string }> {
     const remoteScopeKey = data.remoteScopeKey.trim();
     const remoteTaskId = data.remoteTaskId.trim();
     if (!data.epicId.trim() || !remoteScopeKey || !remoteTaskId) {
@@ -655,11 +667,9 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
     ) {
       throw new ValidationError('External task source snapshot must be an object.');
     }
+    const epic = await this.dependencies.getEpic(data.epicId);
     if (data.connectionId) {
-      const [connection, epic] = await Promise.all([
-        this.getIntegrationConnectionById(data.connectionId),
-        this.dependencies.getEpic(data.epicId),
-      ]);
+      const connection = await this.getIntegrationConnectionById(data.connectionId);
       if (!connection) {
         throw new NotFoundError('Integration connection', data.connectionId);
       }
@@ -670,7 +680,9 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
         throw new ValidationError('External task link project must match its connection.');
       }
     }
-    return { ...data, remoteScopeKey, remoteTaskId };
+    // Project ownership is derived from the owning Epic — never trusted
+    // from the caller — and rides the link as durable task identity.
+    return { ...data, projectId: epic.projectId, remoteScopeKey, remoteTaskId };
   }
 
   private async loadExistingImport(
@@ -685,6 +697,7 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
 
   private isMatchingExternalTaskLinkConflict(
     error: unknown,
+    projectId: string,
     provider: IntegrationProvider,
     remoteScopeKey: string,
     remoteTaskId: string,
@@ -693,6 +706,7 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
       return false;
     }
     return (
+      error.details?.projectId === projectId &&
       error.details?.provider === provider &&
       error.details.remoteScopeKey === remoteScopeKey &&
       error.details.remoteTaskId === remoteTaskId

@@ -475,6 +475,7 @@ describe('LocalStorageService', () => {
     function insertLegacyLinkRow(input: {
       id: string;
       epicId: string;
+      projectId: string;
       provider: string;
       remoteScopeKey: string;
       remoteTaskId: string;
@@ -483,12 +484,13 @@ describe('LocalStorageService', () => {
       sqlite
         .prepare(
           `INSERT INTO external_task_links
-            (id, epic_id, connection_id, provider, remote_scope_key, remote_task_id, source_snapshot, created_at, updated_at)
-           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+            (id, epic_id, project_id, connection_id, provider, remote_scope_key, remote_task_id, source_snapshot, created_at, updated_at)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.id,
           input.epicId,
+          input.projectId,
           input.provider,
           input.remoteScopeKey,
           input.remoteTaskId,
@@ -607,6 +609,7 @@ describe('LocalStorageService', () => {
       insertLegacyLinkRow({
         id: 'legacy-link-1',
         epicId: epic.id,
+        projectId: project.id,
         provider: 'jira',
         remoteScopeKey: 'legacy.atlassian.net',
         remoteTaskId: '40013',
@@ -847,78 +850,6 @@ describe('LocalStorageService', () => {
       expect(record.version).toBe(1);
       expect(record.type).toBe('note');
       expect(record.epicId).toBe(epic.id);
-    });
-  });
-
-  // ==========================================
-  // Documents
-  // ==========================================
-
-  describe('Documents', () => {
-    it('creates a document with generated slug and sanitized tags', async () => {
-      const project = await seedProject();
-
-      const doc = await service.createDocument({
-        projectId: project.id,
-        title: 'Test Document',
-        contentMd: '# Hello',
-        tags: ['tag-one', 'TAG-ONE', 'tag-two'],
-      });
-
-      expect(doc.id).toBeDefined();
-      expect(doc.slug).toBeDefined();
-      expect(doc.title).toBe('Test Document');
-      expect(doc.tags.map((t) => t.toLowerCase()).sort()).toContain('tag-one');
-      expect(doc.tags.map((t) => t.toLowerCase()).sort()).toContain('tag-two');
-    });
-
-    it('updates document with optimistic locking', async () => {
-      const project = await seedProject();
-      const doc = await service.createDocument({
-        projectId: project.id,
-        title: 'Original',
-        contentMd: '# Original',
-      });
-
-      const updated = await service.updateDocument(doc.id, {
-        title: 'Updated Title',
-        version: doc.version,
-      });
-
-      expect(updated.title).toBe('Updated Title');
-      expect(updated.version).toBe(doc.version + 1);
-    });
-
-    it('filters documents by tags and paginates', async () => {
-      const project = await seedProject();
-      await service.createDocument({
-        projectId: project.id,
-        title: 'Tagged Doc',
-        contentMd: 'content',
-        tags: ['important'],
-      });
-      await service.createDocument({
-        projectId: project.id,
-        title: 'Other Doc',
-        contentMd: 'content',
-        tags: ['misc'],
-      });
-
-      const result = await service.listDocuments({
-        projectId: project.id,
-        tags: ['important'],
-      });
-
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0].title).toBe('Tagged Doc');
-    });
-
-    it('throws ValidationError when neither id nor slug provided', async () => {
-      await expect(service.getDocument({})).rejects.toThrow(ValidationError);
-    });
-
-    it('requires projectId when querying by slug', async () => {
-      await expect(service.getDocument({ slug: 'test' })).rejects.toThrow(ValidationError);
     });
   });
 

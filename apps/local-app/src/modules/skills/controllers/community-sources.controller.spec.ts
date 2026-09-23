@@ -62,6 +62,7 @@ describe('CommunitySourcesController', () => {
       repoOwner: 'JeffAllan',
       repoName: 'Claude-Skills',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
     expect(result).toEqual(sampleSource);
   });
@@ -77,6 +78,7 @@ describe('CommunitySourcesController', () => {
       repoOwner: 'JeffAllan',
       repoName: 'claude-skills',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
   });
 

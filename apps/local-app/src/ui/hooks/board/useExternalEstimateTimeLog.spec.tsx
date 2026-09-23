@@ -204,6 +204,99 @@ describe('useExternalEstimateTimeLog', () => {
     expect(invalidate.mock.calls.length).toBeGreaterThanOrEqual(4);
   });
 
+  it('assigns unassigned legacy history with the captured project, scope, epoch, and revision', async () => {
+    const invalidate = jest.spyOn(client, 'invalidateQueries');
+    const legacyState = {
+      ...readyState,
+      initialized: false,
+      revision: 0,
+      loggedMinutes: 0,
+      legacyCheckpoint: { revision: 4, loggedMinutes: 90, hasPendingOperation: false },
+    };
+    const assignedState = {
+      ...readyState,
+      initialized: true,
+      revision: 4,
+      loggedMinutes: 90,
+      legacyCheckpoint: null,
+    };
+    let assigned = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('estimate-log-legacy-assignment') && init?.method === 'POST') {
+        assigned = true;
+        return Promise.resolve(jsonResponse(assignedState));
+      }
+      return Promise.resolve(jsonResponse(assigned ? assignedState : legacyState));
+    });
+    const { result } = renderEstimateLog(client);
+    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+    expect(result.current.legacyCheckpoint).toEqual({
+      revision: 4,
+      loggedMinutes: 90,
+      hasPendingOperation: false,
+    });
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
+      }),
+    );
+    invalidate.mockClear();
+
+    act(() => result.current.submitAssignLegacy());
+    await waitFor(() => expect(result.current.assignLegacy.isSuccess).toBe(true));
+
+    const assignCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes('/estimate-log-legacy-assignment?') && init?.method === 'POST',
+    )!;
+    expect(assignCall[0]).toBe(
+      `/api/integrations/my-work/jira/tasks/ENG-1/estimate-log-legacy-assignment?projectId=${PROJECT_ID}`,
+    );
+    expect((assignCall[1] as RequestInit).headers).toEqual({
+      'X-DevChain-Connection-Epoch': '4',
+      'Content-Type': 'application/json',
+    });
+    expect((assignCall[1] as RequestInit).body).toBe(
+      JSON.stringify({ scopeKey, expectedLegacyRevision: 4 }),
+    );
+    // Success seeds the moved checkpoint and refreshes the exact scoped
+    // state plus link decoration.
+    expect(result.current.state).toMatchObject({
+      initialized: true,
+      loggedMinutes: 90,
+      revision: 4,
+      legacyCheckpoint: null,
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.taskEstimateLogState(
+        'jira',
+        connectionEpoch,
+        PROJECT_ID,
+        'ENG-1',
+        scopeKey,
+        'main',
+      ),
+      exact: true,
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
+    });
+  });
+
+  it('never assigns legacy history without the server-reported signal', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(readyState));
+    const { result } = renderEstimateLog(client);
+    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
+    expect(result.current.legacyCheckpoint).toBeNull();
+
+    act(() => result.current.submitAssignLegacy());
+
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes('legacy-assignment')),
+    ).toEqual([]);
+    expect(result.current.assignLegacy.isIdle).toBe(true);
+  });
+
   it('sets logged minutes locally and resolves the exact durable operation', async () => {
     const pendingState = {
       ...readyState,

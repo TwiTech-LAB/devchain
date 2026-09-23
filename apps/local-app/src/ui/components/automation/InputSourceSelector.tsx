@@ -1,9 +1,17 @@
 import { useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import { Label } from '@/ui/components/ui/label';
 import { Input } from '@/ui/components/ui/input';
 import { Textarea } from '@/ui/components/ui/textarea';
 import { Checkbox } from '@/ui/components/ui/checkbox';
 import { Button } from '@/ui/components/ui/button';
+import { Badge } from '@/ui/components/ui/badge';
+import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
+import { cn } from '@/ui/lib/utils';
+import {
+  findUnknownLabels,
+  parseStatusLabels,
+} from '@/modules/subscribers/actions/epic-status-guard';
 import {
   Select,
   SelectContent,
@@ -437,6 +445,11 @@ function NonTextValueInput({ inputDef, value, onChange, error }: NonTextValueInp
       );
 
     case 'select':
+      if (inputDef.multiple) {
+        return (
+          <MultiSelectInput inputDef={inputDef} value={value} onChange={onChange} error={error} />
+        );
+      }
       return (
         <Select value={value} onValueChange={onChange}>
           <SelectTrigger className={error ? 'border-destructive' : ''}>
@@ -509,5 +522,106 @@ function EventFieldSelector({
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+/**
+ * Multi-select for `type: 'select'` + `multiple: true` inputs. Toggling an
+ * option rewrites the stored comma-separated value in option order, so an
+ * unknown stored label must survive until the user removes its badge
+ * explicitly — that label may belong to another project this subscriber was
+ * copied from, and silently dropping it would change what the action guards.
+ */
+function MultiSelectInput({ inputDef, value, onChange, error }: NonTextValueInputProps) {
+  const options = inputDef.options ?? [];
+  const storedLabels = parseStatusLabels(value);
+  const selectedKeys = new Set(storedLabels.map((label) => label.toLowerCase()));
+  const unknownLabels = findUnknownLabels(storedLabels, options);
+  const unknownKeys = new Set(unknownLabels.map((label) => label.toLowerCase()));
+
+  const toggleOption = (optionValue: string, checked: boolean) => {
+    const nextKeys = new Set(selectedKeys);
+    const key = optionValue.toLowerCase();
+    if (checked) {
+      nextKeys.add(key);
+    } else {
+      nextKeys.delete(key);
+    }
+    const selectedValues = options
+      .filter((option) => nextKeys.has(option.value.toLowerCase()))
+      .map((option) => option.value);
+    onChange([...unknownLabels, ...selectedValues].join(', '));
+  };
+
+  const removeLabel = (label: string) => {
+    onChange(
+      storedLabels.filter((stored) => stored.toLowerCase() !== label.toLowerCase()).join(', '),
+    );
+  };
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <div
+          role="combobox"
+          aria-label={inputDef.label}
+          tabIndex={0}
+          className={cn(
+            'flex min-h-10 w-full cursor-pointer flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+            error && 'border-destructive',
+          )}
+        >
+          {storedLabels.length === 0 && (
+            <span className="text-muted-foreground">
+              {`Select ${inputDef.label.toLowerCase()}...`}
+            </span>
+          )}
+          {storedLabels.map((label) => {
+            const isUnknown = unknownKeys.has(label.toLowerCase());
+            return (
+              <Badge key={label.toLowerCase()} variant={isUnknown ? 'destructive' : 'secondary'}>
+                {label}
+                {isUnknown && (
+                  <button
+                    type="button"
+                    aria-label={`Remove ${label}`}
+                    className="ml-1 rounded-full hover:opacity-80"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeLabel(label);
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </Badge>
+            );
+          })}
+        </div>
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-2" align="start">
+        {options.length === 0 && (
+          <p className="px-2 py-1 text-xs text-muted-foreground">No options available.</p>
+        )}
+        {options.map((option, index) => {
+          const checkboxId = `${inputDef.name}-option-${index}`;
+          return (
+            <div
+              key={`${option.value}-${index}`}
+              className="flex items-center space-x-2 px-2 py-1.5"
+            >
+              <Checkbox
+                id={checkboxId}
+                checked={selectedKeys.has(option.value.toLowerCase())}
+                onCheckedChange={(checked) => toggleOption(option.value, checked === true)}
+              />
+              <Label htmlFor={checkboxId} className="cursor-pointer font-normal">
+                {option.label}
+              </Label>
+            </div>
+          );
+        })}
+      </PopoverContent>
+    </Popover>
   );
 }

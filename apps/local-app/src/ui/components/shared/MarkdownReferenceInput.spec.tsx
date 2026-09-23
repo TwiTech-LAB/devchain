@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MarkdownReferenceInput } from './MarkdownReferenceInput';
 
@@ -15,11 +16,33 @@ function renderWithQuery(ui: React.ReactElement) {
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
-function ReferenceInputHarness() {
+function Harness({ projectId }: { projectId?: string }) {
   const [value, setValue] = useState('');
   return (
-    <MarkdownReferenceInput value={value} onChange={setValue} placeholder="Write instructions..." />
+    <MarkdownReferenceInput
+      value={value}
+      onChange={setValue}
+      projectId={projectId}
+      placeholder="Write instructions..."
+    />
   );
+}
+
+function requestUrls(call: unknown[]): string {
+  const input = call[0] as RequestInfo | URL;
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.toString();
+  }
+  return (input as Request).url;
+}
+
+async function settleDebounce() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  });
 }
 
 describe('MarkdownReferenceInput', () => {
@@ -51,94 +74,9 @@ describe('MarkdownReferenceInput', () => {
     rafSpy.mockRestore();
   });
 
-  it('suggests grouped tag references and inserts [[#key]] when selected', async () => {
-    fetchSpy.mockImplementation((input: RequestInfo) => {
-      const url = typeof input === 'string' ? input : input.url;
-      if (url.includes('tagKey=role')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            items: [
-              {
-                id: 'doc-1',
-                title: 'Role Playbook',
-                slug: 'role-playbook',
-                tags: ['role:worker'],
-                projectId: null,
-              },
-            ],
-          }),
-        } as Response);
-      }
-      return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
-    });
-
-    renderWithQuery(<ReferenceInputHarness />);
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.focus(textarea);
-    fireEvent.input(textarea, { target: { value: '#role' } });
-    textarea.setSelectionRange('#role'.length, '#role'.length);
-    fireEvent.keyUp(textarea, { key: 'e' });
-
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
-
-    const allOption = await screen.findByRole('option', { name: /All role:\*/i });
-    expect(allOption).toBeInTheDocument();
-    const docOption = screen.getByRole('option', { name: /Role Playbook/i });
-    expect(docOption).toBeInTheDocument();
-
-    fireEvent.mouseDown(allOption);
-
-    await waitFor(() => expect(textarea).toHaveValue('[[#role]]'));
-  });
-
-  it('suggests documents for @ search tokens and inserts slug references', async () => {
-    fetchSpy.mockImplementation((input: RequestInfo) => {
-      const url = typeof input === 'string' ? input : input.url;
-      if (url.includes('/api/documents') && url.includes('q=read')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            items: [
-              {
-                id: 'doc-2',
-                title: 'Readme',
-                slug: 'readme',
-                tags: ['guide'],
-                projectId: null,
-              },
-            ],
-          }),
-        } as Response);
-      }
-      // Return empty for prompts (no projectId)
-      return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
-    });
-
-    renderWithQuery(<ReferenceInputHarness />);
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.focus(textarea);
-    fireEvent.input(textarea, { target: { value: '@read' } });
-    textarea.setSelectionRange('@read'.length, '@read'.length);
-    fireEvent.keyUp(textarea, { key: 'd' });
-
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
-
-    const docOption = await screen.findByRole('option', { name: /Readme/i });
-    fireEvent.mouseDown(docOption);
-
-    await waitFor(() => expect(textarea).toHaveValue('[[readme]]'));
-  });
-
-  it('suggests prompts for @ search and inserts [[prompt:title]] references', async () => {
-    fetchSpy.mockImplementation((input: RequestInfo) => {
-      const url = typeof input === 'string' ? input : input.url;
-      if (url.includes('/api/documents') && url.includes('q=init')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ items: [] }),
-        } as Response);
-      }
+  it('suggests prompts for @ search, requests only /api/prompts, and inserts [[prompt:title]]', async () => {
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
       if (url.includes('/api/prompts') && url.includes('q=init')) {
         return Promise.resolve({
           ok: true,
@@ -157,32 +95,97 @@ describe('MarkdownReferenceInput', () => {
       return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
     });
 
-    function HarnessWithProject() {
-      const [value, setValue] = useState('');
-      return (
-        <MarkdownReferenceInput
-          value={value}
-          onChange={setValue}
-          projectId="project-1"
-          placeholder="Write instructions..."
-        />
-      );
-    }
+    const user = userEvent.setup();
 
-    renderWithQuery(<HarnessWithProject />);
+    renderWithQuery(<Harness projectId="project-1" />);
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.focus(textarea);
-    fireEvent.input(textarea, { target: { value: '@init' } });
-    textarea.setSelectionRange('@init'.length, '@init'.length);
-    fireEvent.keyUp(textarea, { key: 't' });
+    await user.type(textarea, '@init');
+    await settleDebounce();
 
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    expect(fetchSpy).toHaveBeenCalled();
+    for (const call of fetchSpy.mock.calls) {
+      expect(requestUrls(call)).not.toContain('/api/documents');
+    }
 
     const promptOption = await screen.findByRole('option', { name: /Initialize Agent/i });
     expect(promptOption).toBeInTheDocument();
 
-    fireEvent.mouseDown(promptOption);
+    await user.click(promptOption);
 
     await waitFor(() => expect(textarea).toHaveValue('[[prompt:Initialize Agent]]'));
+  });
+
+  it('treats # as ordinary text without triggering suggestion requests', async () => {
+    const user = userEvent.setup();
+
+    renderWithQuery(<Harness projectId="project-1" />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    await user.type(textarea, '#role');
+    await settleDebounce();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole('option')).toBeNull();
+    expect(textarea).toHaveValue('#role');
+  });
+
+  it('inserts a prompt reference through complete keyboard selection', async () => {
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/prompts') && url.includes('q=depl')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: 'prompt-1',
+                title: 'Deploy Checklist',
+                tags: [],
+                projectId: 'project-1',
+              },
+              {
+                id: 'prompt-2',
+                title: 'Deploy Notes',
+                tags: [],
+                projectId: 'project-1',
+              },
+            ],
+          }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
+    });
+
+    const user = userEvent.setup();
+
+    renderWithQuery(<Harness projectId="project-1" />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    await user.type(textarea, 'Prefix @depl');
+    await settleDebounce();
+
+    const firstOption = await screen.findByRole('option', { name: /Deploy Checklist/i });
+    expect(firstOption).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Deploy Notes/i })).toBeInTheDocument();
+    expect(firstOption).toHaveAttribute('aria-selected', 'true');
+
+    await user.keyboard('{ArrowDown}');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(textarea).toHaveValue('Prefix [[prompt:Deploy Notes]]'));
+
+    const expectedCaret = 'Prefix '.length + '[[prompt:Deploy Notes]]'.length;
+    await waitFor(() => expect(textarea.selectionStart).toBe(expectedCaret));
+    expect(textarea.selectionEnd).toBe(expectedCaret);
+  });
+
+  it('performs no prompt lookup when projectId is undefined', async () => {
+    const user = userEvent.setup();
+
+    renderWithQuery(<Harness />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    await user.type(textarea, '@init');
+    await settleDebounce();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole('option')).toBeNull();
   });
 });

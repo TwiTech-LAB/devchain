@@ -195,4 +195,4 @@ verify that historical manifest too instead of copying its prior verification cl
 environmental sentinel such as unavailable PSI remains a failed strict check with `actual: null`;
 the prose may describe an approved environmental deviation but must never rewrite it as a pass.
 The published verdict must equal the matrix verdict recorded by the manifest. See the
-[final validation report](../../../../docs/mem-relief-v1-final-validation.md) for the currently authoritative manifest and report.
+[final validation report](evidence/mem-relief-v1-final-validation.md) for the currently authoritative manifest and report.

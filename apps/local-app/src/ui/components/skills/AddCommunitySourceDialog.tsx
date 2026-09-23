@@ -12,20 +12,24 @@ import {
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { Tabs, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
+import type { ExistingProjectsChoice } from '@/ui/lib/skills';
 
 type AddSourceType = 'community' | 'local';
+type ExistingProjectsOption = 'none' | 'current-project' | 'all';
 
 interface AddCommunitySourceDialogSubmitCommunity {
   type: 'community';
   name: string;
   url: string;
   branch: string;
+  existingProjects: ExistingProjectsChoice;
 }
 
 interface AddCommunitySourceDialogSubmitLocal {
   type: 'local';
   name: string;
   folderPath: string;
+  existingProjects: ExistingProjectsChoice;
 }
 
 export type AddCommunitySourceDialogSubmit =
@@ -35,6 +39,7 @@ export type AddCommunitySourceDialogSubmit =
 interface AddCommunitySourceDialogProps {
   open: boolean;
   isSubmitting: boolean;
+  currentProject: { id: string; name: string } | null;
   onOpenChange: (open: boolean) => void;
   onSubmit: (input: AddCommunitySourceDialogSubmit) => Promise<void>;
 }
@@ -79,9 +84,23 @@ function suggestNameFromFolderPath(folderPath: string): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function toExistingProjectsChoice(
+  option: ExistingProjectsOption,
+  currentProject: { id: string } | null,
+): ExistingProjectsChoice {
+  if (option === 'all') {
+    return { mode: 'all' };
+  }
+  if (option === 'current-project' && currentProject) {
+    return { mode: 'selected', projectIds: [currentProject.id] };
+  }
+  return { mode: 'none' };
+}
+
 export function AddCommunitySourceDialog({
   open,
   isSubmitting,
+  currentProject,
   onOpenChange,
   onSubmit,
 }: AddCommunitySourceDialogProps) {
@@ -91,7 +110,17 @@ export function AddCommunitySourceDialog({
   const [name, setName] = useState('');
   const [branch, setBranch] = useState('main');
   const [nameEdited, setNameEdited] = useState(false);
+  const [existingProjectsOption, setExistingProjectsOption] =
+    useState<ExistingProjectsOption>('none');
   const [error, setError] = useState<string | null>(null);
+
+  const existingProjectsOptions: Array<{ value: ExistingProjectsOption; label: string }> = [
+    { value: 'none', label: 'Keep disabled' },
+    ...(currentProject
+      ? [{ value: 'current-project' as const, label: `Enable in ${currentProject.name}` }]
+      : []),
+    { value: 'all', label: 'Enable in all existing projects (all workspaces in this instance)' },
+  ];
 
   useEffect(() => {
     if (open) {
@@ -104,6 +133,7 @@ export function AddCommunitySourceDialog({
     setName('');
     setBranch('main');
     setNameEdited(false);
+    setExistingProjectsOption('none');
     setError(null);
   }, [open]);
 
@@ -141,18 +171,22 @@ export function AddCommunitySourceDialog({
 
     setError(null);
     try {
+      const existingProjects = toExistingProjectsChoice(existingProjectsOption, currentProject);
+
       if (sourceType === 'community') {
         await onSubmit({
           type: 'community',
           name: normalizedName,
           url: normalizedUrl,
           branch: normalizedBranch,
+          existingProjects,
         });
       } else {
         await onSubmit({
           type: 'local',
           name: normalizedName,
           folderPath: normalizedFolderPath,
+          existingProjects,
         });
       }
       onOpenChange(false);
@@ -271,6 +305,28 @@ export function AddCommunitySourceDialog({
               />
             </div>
           ) : null}
+
+          <fieldset className="space-y-2" disabled={isSubmitting}>
+            <legend className="text-sm font-medium">Existing projects</legend>
+            <div className="space-y-1.5">
+              {existingProjectsOptions.map((option) => (
+                <label
+                  key={option.value}
+                  className="flex cursor-pointer items-center gap-2 text-sm"
+                >
+                  <input
+                    type="radio"
+                    name="existing-projects"
+                    value={option.value}
+                    className="h-4 w-4 accent-foreground"
+                    checked={existingProjectsOption === option.value}
+                    onChange={() => setExistingProjectsOption(option.value)}
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+          </fieldset>
 
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
         </div>

@@ -12,6 +12,7 @@ import {
 import {
   INTEGRATION_PROVIDER_IDS,
   MAX_REMOTE_TASK_ID_LENGTH,
+  ESTIMATE_LEGACY_ASSIGN_INPUT_BODY_SCHEMA,
   ESTIMATE_LOG_STATE_RESPONSE_SCHEMA,
   ESTIMATE_LOG_STATE_SET_INPUT_BODY_SCHEMA,
   ESTIMATE_TIME_ENTRY_CREATE_INPUT_BODY_SCHEMA,
@@ -88,6 +89,12 @@ const resolveInputSchema = z
     expectedRevision: nonnegativeIntegerSchema,
   })
   .strict();
+const assignLegacyInputSchema = z
+  .object({
+    scopeKey: scopeKeySchema,
+    expectedLegacyRevision: nonnegativeIntegerSchema,
+  })
+  .strict();
 
 function parseOrThrow<T, I>(schema: z.ZodType<T, z.ZodTypeDef, I>, value: unknown): T {
   return parseWithFallback(schema, value, 'Invalid estimate request.');
@@ -117,6 +124,7 @@ function toStateView(snapshot: ExternalEstimateLogSnapshot): ExternalEstimateLog
     canVerify: snapshot.canVerify,
     verifyExpiresAt: snapshot.verifyExpiresAt,
     pending,
+    legacyCheckpoint: snapshot.legacyCheckpoint,
   };
 }
 
@@ -321,6 +329,48 @@ export class ExternalEstimateLogController {
       expectedRevision: input.expectedRevision,
     });
     return { outcome: result.outcome, state: toStateView(result.snapshot) };
+  }
+
+  @Post(':provider/tasks/:taskId/estimate-log-legacy-assignment')
+  @ApiOperation({
+    summary: 'Assign previous unassigned logged time to this project',
+    description:
+      'One-time ownership recovery: moves the complete unassigned legacy checkpoint state and dated ledger of the linked remote task to the requesting project inside one transaction. Sends no provider request and preserves any pending outcome for the ordinary resolve route. Requires the X-DevChain-Connection-Epoch header and the legacy revision the caller saw.',
+  })
+  @ApiParam({ name: 'provider', enum: [...INTEGRATION_PROVIDER_IDS] })
+  @ApiParam({ name: 'taskId', type: String })
+  @ApiBody({ schema: ESTIMATE_LEGACY_ASSIGN_INPUT_BODY_SCHEMA })
+  @ApiResponse({
+    status: 200,
+    description: 'The project checkpoint after the whole-state assignment',
+    schema: ESTIMATE_LOG_STATE_RESPONSE_SCHEMA,
+  })
+  @ApiResponse({ status: 404, description: 'The linked task or legacy checkpoint was not found' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Epoch precondition, stale legacy revision, existing target checkpoint, or a concurrent claim',
+  })
+  async assignLegacyCheckpoint(
+    @Param('provider') providerValue: string,
+    @Param('taskId') taskIdValue: string,
+    @Headers('x-devchain-connection-epoch') epochValue: unknown,
+    @Body() body: unknown,
+    @Query('projectId') projectIdValue: unknown,
+  ): Promise<ExternalEstimateLogStateView> {
+    const { provider, taskId } = this.parseTaskPath(providerValue, taskIdValue);
+    const epoch = parseOrThrow(connectionEpochHeaderSchema, String(epochValue ?? ''));
+    const input = parseOrThrow(assignLegacyInputSchema, body);
+    return toStateView(
+      await this.estimateLogging.assignLegacyCheckpoint({
+        projectId: this.parseProjectId(projectIdValue),
+        provider,
+        remoteScopeKey: input.scopeKey,
+        remoteTaskId: taskId,
+        expectedEpoch: epoch,
+        expectedLegacyRevision: input.expectedLegacyRevision,
+      }),
+    );
   }
 
   private parseTaskPath(

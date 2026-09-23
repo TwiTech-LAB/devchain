@@ -36,103 +36,34 @@ Before you begin, ensure you have the following installed:
 
 ## Development Scripts
 
-| Script | Description |
-|--------|-------------|
-| `pnpm dev` | Start with CLI validations + hot reload (recommended) |
-| `pnpm dev:pure` | Skip CLI validations, instant startup (escape hatch) |
-| `pnpm build` | Production build |
-| `pnpm lint` | Run ESLint |
-| `pnpm test` | Run tests |
-| `pnpm start` | Start production server |
+Use [Common Commands](docs/operations.md#common-commands) for development, build, lint, format, and database tasks, and [Test commands](docs/operations.md#test-commands) for test entry points.
 
 ## Project Structure
 
-```
-devchain/
-├── scripts/
-│   └── cli.js              # CLI entry point
-├── apps/
-│   ├── local-app/          # Main runtime: NestJS API + Vite UI
-│   │   ├── src/modules/    # API modules
-│   │   └── src/ui/         # React UI
-│   ├── mobile-app/         # Expo/React Native mobile client
-│   ├── devchain-bridge/    # Mobile relay (JSON-RPC tunnel)
-│   ├── identity-service/   # Auth/identity service (PostgreSQL)
-│   ├── notifications-service/  # Push notifications (PostgreSQL)
-│   ├── admin-portal/       # Admin SPA for user/org management
-│   ├── landing/            # devchain.cc site assets
-│   ├── remote-api/         # Future/shared-cloud API
-│   └── template-registry/  # Template registry service
-├── packages/               # Shared libraries (shared, auth-common, template-cli, …)
-├── docs/                   # Documentation — see docs/README.md
-└── package.json
-```
-
-Full directory map: `docs/code-map.md`.
+Use the [Code Map](docs/code-map.md) to find packages, entry points, and generated outputs.
 
 ## Architecture
 
-- **API**: NestJS running on port 3000 (or next available)
-- **UI**: Vite dev server on port 5175 (proxies API requests)
-- **Database**: SQLite via better-sqlite3
+Use [Architecture](docs/architecture.md) for subsystem boundaries and [Local App Development](apps/local-app/DEV.md#runtime-modes) for API/UI ports and runtime modes.
 
 ## Development Mode (`pnpm dev`)
 
-When you run `pnpm dev`, the CLI performs these validations:
-
-1. **tmux check** - Ensures tmux is installed
-2. **Provider detection** - Checks for a supported provider CLI on PATH (`claude`, `codex`, `opencode`, `agy`, `copilot`)
-3. **MCP configuration** - Validates MCP server registration
-4. **Claude bypass permissions** - Prompts to enable auto-approval (if Claude detected)
-
-Then it starts:
-- NestJS API with `nest start --watch` (hot reload)
-- Vite UI with HMR on port 5175
+The launcher validates prerequisites and starts hot reload. See [CLI startup checks](docs/cli.md) and [Local App Development](apps/local-app/DEV.md) for the exact flow.
 
 ## Skipping Validations
 
-For quick restarts when you know everything is configured:
-
-```bash
-# Skip all CLI validations
-pnpm dev:pure
-
-# Skip individual checks via environment variables
-DEVCHAIN_SKIP_TMUX_CHECK=1 pnpm dev
-DEVCHAIN_SKIP_PROVIDER_CHECK=1 pnpm dev
-```
+Use the bypass options in [Common Commands](docs/operations.md#common-commands) and [Environment variables](docs/operations.md#environment-variables-local-app) when the environment is already configured.
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | API server port | 3000 |
-| `HOST` | API server host | 127.0.0.1 |
-| `LOG_LEVEL` | Pino log level | error (interactive), info (foreground) |
-| `DB_PATH` | Database directory | ~/.devchain |
-| `DEVCHAIN_SKIP_TMUX_CHECK` | Skip tmux validation | - |
-| `DEVCHAIN_SKIP_PROVIDER_CHECK` | Skip provider detection | - |
+Names, defaults, and per-session precedence live in [Operations](docs/operations.md#environment-variables-local-app).
 
 ## Building
 
-```bash
-# Full build (API + UI + CLI packaging)
-pnpm build
-
-# Quick UI-only build
-pnpm build:fast
-```
+Use [Common Commands](docs/operations.md#common-commands): the Local App fast build includes both API and UI; `build:ui` is the UI-only target.
 
 ## Troubleshooting
 
-### API not starting
-- Check if port 3000 is available, or specify a different port with `--port`
-- Ensure dependencies are installed: `pnpm install`
+Use [Setup](docs/setup.md) for missing prerequisites and [Local App diagnostics](apps/local-app/DEV.md#diagnostics) for ports, blank UI, proxy failures, or missing build output.
 
-### UI not loading
-- The UI runs on port 5175 in dev mode
-- Check that the API is healthy: `curl http://localhost:3000/health`
-
-### Provider not detected
-- Ensure at least one supported provider CLI (`claude`, `codex`, `opencode`, `agy`, `copilot`) is installed and on your PATH
-- Test with: `which claude` (or the equivalent for your provider)
+Before review, follow [Development Standards](docs/development-standards.md#build-test-and-validation-before-review). Agents start with [AGENTS](docs/AGENTS.md).

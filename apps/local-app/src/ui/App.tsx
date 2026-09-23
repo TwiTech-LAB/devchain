@@ -20,14 +20,12 @@ import { AutomationPage } from './pages/AutomationPage';
 import { ReviewsPageWithSuspense } from './pages/ReviewsPage.lazy';
 import { ReviewDetailPageWithSuspense } from './pages/ReviewDetailPage.lazy';
 import { NotFoundPage } from './pages/NotFoundPage';
-import { DocumentsDisabledPage } from './pages/DocumentsDisabledPage';
 import { ProjectSelectionProvider } from './hooks/useProjectSelection';
 import { RecordsDisabledPage } from './pages/RecordsDisabledPage';
 import { RegistryPage } from './pages/RegistryPage';
 import { SkillsPage } from './pages/SkillsPage';
 import { PluginsPage } from './pages/PluginsPage';
 import { WorktreesPage } from './pages/WorktreesPage';
-import { CodebaseOverviewDisabledPage } from './pages/CodebaseOverviewDisabledPage';
 import { RuntimeProvider, useRuntime } from './hooks/useRuntime';
 import { CloudCallbackPage } from './components/cloud/CloudCallbackPage';
 import { CloudPage } from './pages/CloudPage';
@@ -71,11 +69,9 @@ function AppRoutes() {
               <Routes>
                 <Route path="/" element={<Navigate to="/projects" replace />} />
                 <Route path="/projects" element={<ProjectsPage />} />
-                <Route path="/overview" element={<CodebaseOverviewDisabledPage />} />
                 <Route path="/registry" element={<RegistryPage />} />
                 <Route path="/skills" element={<SkillsPage />} />
                 <Route path="/plugins" element={<PluginsPage />} />
-                <Route path="/documents" element={<DocumentsDisabledPage />} />
                 <Route path="/prompts" element={<PromptsPage />} />
                 <Route path="/profiles" element={<ProfilesPage />} />
                 <Route path="/providers" element={<ProvidersPage />} />

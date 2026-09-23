@@ -6,18 +6,15 @@
  *     exported teams and remap profile names through the family-selection map;
  *  2. `pruneUnavailableTeamProfileSelections` — drop config selections whose provider was
  *     filtered out, keeping genuine template typos so strict import still surfaces them;
- *  3. create each team, resolving member/lead/profile/config references through the
- *     ImportContext maps written by the profiles + agents codecs (`agentNameToId`,
- *     `profileNameToId`, `configLookupMap`) — NOT live storage queries, because in both
- *     pipeline modes the only agents/profiles/configs that exist are the ones those codecs
- *     just created, so the context maps are an exact equivalent (and make the dependency
- *     declared, not implicit).
+ *  3. create each team, resolving member/lead/profile/config references against current
+ *     storage. ImportContext supplies the remap and provider-filter inputs used before
+ *     creation; current storage remains the source of truth for name and config resolution.
  *
  * Mode-conditional fatality (matrix row 13): replace = FATAL with scoped cleanup (teams
  * created this run are deleted before re-throwing, so no partial-orphan teams survive);
  * create = NON-FATAL (declared `onFailure: { replace: 'fatal', create: 'swallow' }` — the
- * pipeline catches and logs, the run continues). The create-mode ACTIVATION (registering
- * this codec on the create path) lands in Task 8; the fatality contract is unit-tested now.
+ * pipeline catches and logs, the run continues). Both modes invoke this codec; the declaration
+ * keeps their failure behavior explicit.
  */
 import { createLogger } from '../../../../common/logging/logger';
 import { buildProviderConfigLookupKey } from '../../helpers/profile-mapping.helpers';

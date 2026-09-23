@@ -168,6 +168,7 @@ describe('prompt-tools', () => {
       expect(result.success).toBe(true);
       const prompt = (result.data as { prompt: { content: string } }).prompt;
       expect(prompt.content).toBe('Hello {{agent_name}}, team: {{team_name}}');
+      expect(prompt).not.toHaveProperty('contentPreview');
     });
 
     it('by id with sessionId and team: team vars rendered', async () => {
@@ -334,6 +335,7 @@ describe('prompt-tools', () => {
             title: testPrompt.title,
             version: 1,
             tags: [],
+            contentPreview: 'Hello {{agent_name}}, te…',
             createdAt: testPrompt.createdAt,
             updatedAt: testPrompt.updatedAt,
           },
@@ -346,9 +348,10 @@ describe('prompt-tools', () => {
       const result = await handleListPrompts(ctx, { sessionId: 'session-1' });
 
       expect(result.success).toBe(true);
-      const data = result.data as { prompts: Array<{ title: string }>; total: number };
+      const data = result.data as { prompts: Array<{ title: string }> };
       expect(data.prompts).toHaveLength(1);
       expect(data.prompts[0].title).toBe('Hello Prompt');
+      expect(data.prompts[0]).toHaveProperty('contentPreview');
     });
 
     it('returns session resolution failures before listing prompts', async () => {

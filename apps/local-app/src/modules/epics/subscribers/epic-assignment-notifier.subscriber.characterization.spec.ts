@@ -35,6 +35,7 @@ describe('EpicAssignmentNotifierSubscriber characterization', () => {
       getGuest: jest.fn().mockResolvedValue({ id: 'guest-1', name: 'Guest User' }),
       getProject: jest.fn().mockResolvedValue({ id: 'project-1', name: 'Project From Storage' }),
       getEpic: jest.fn().mockResolvedValue({ id: 'epic-1', title: 'Epic From Storage' }),
+      getStatus: jest.fn().mockResolvedValue({ id: 'status-1', label: 'New' }),
     };
     const subscriber = new EpicAssignmentNotifierSubscriber(
       eventLog as never,
@@ -71,7 +72,7 @@ describe('EpicAssignmentNotifierSubscriber characterization', () => {
       ['agent-1'],
       {
         kind: 'pooled',
-        body: '[Epic Assignment]\nImplement Characterization is now assigned to Coder in DevChain. (Epic ID: epic-1)',
+        body: '[Epic Assignment]\nImplement Characterization is now assigned to Coder in DevChain. Status: New. (Epic ID: epic-1)',
         source: 'epic.created',
         projectId: 'project-1',
         senderName: 'System',

@@ -68,6 +68,7 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
   const onToggleContextTracking = jest.fn();
   const onOpenOverrides = jest.fn();
   const onReleaseHeldMessages = jest.fn();
+  const onForceSend = jest.fn();
 
   const utils = render(
     <AgentRow
@@ -92,6 +93,7 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
       canOverride={true}
       onOpenOverrides={onOpenOverrides}
       onReleaseHeldMessages={onReleaseHeldMessages}
+      onForceSend={onForceSend}
       onClick={onClick}
       onRestart={onRestart}
       onLaunch={onLaunch}
@@ -110,6 +112,7 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
     onToggleContextTracking,
     onOpenOverrides,
     onReleaseHeldMessages,
+    onForceSend,
   };
 }
 
@@ -462,6 +465,74 @@ describe('AgentRow', () => {
 
       expect(screen.getByLabelText('Open terminal for Alpha (online)')).toBeInTheDocument();
       expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('force send button', () => {
+    it('shows Send now when canForceSend is true and humanHeldMessageCount is positive', () => {
+      renderAgentRow({ humanHeldMessageCount: 1, canForceSend: true });
+
+      expect(screen.getByRole('button', { name: 'Send now for Alpha' })).toBeInTheDocument();
+    });
+
+    it('shows Send now when canForceSend is true and humanHeldMessageCount is 0', () => {
+      renderAgentRow({ humanHeldMessageCount: 0, canForceSend: true });
+
+      expect(screen.getByRole('button', { name: 'Send now for Alpha' })).toBeInTheDocument();
+    });
+
+    it('hides Send now for draft_active (canForceSend false)', () => {
+      renderAgentRow({
+        humanHeldMessageCount: 2,
+        canReleaseHeldMessages: true,
+        canForceSend: false,
+      });
+
+      expect(screen.queryByRole('button', { name: 'Send now for Alpha' })).not.toBeInTheDocument();
+      expect(screen.getByText('2 waiting')).toBeInTheDocument();
+    });
+
+    it('fires onForceSend without selecting the agent row', () => {
+      const { onClick, onForceSend } = renderAgentRow({ canForceSend: true });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Send now for Alpha' }));
+
+      expect(onForceSend).toHaveBeenCalledTimes(1);
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    it('disables Send now while force is pending', () => {
+      renderAgentRow({ canForceSend: true, forceSending: true });
+
+      expect(screen.getByRole('button', { name: 'Send now for Alpha' })).toBeDisabled();
+    });
+
+    it('hides the count badge when canForceSend is true even with held messages', () => {
+      renderAgentRow({ humanHeldMessageCount: 1, canForceSend: true });
+
+      expect(screen.queryByText('1')).not.toBeInTheDocument();
+    });
+
+    it('shows hold-reason label before force threshold for non-draft holds', () => {
+      renderAgentRow({
+        humanHeldMessageCount: 0,
+        canForceSend: false,
+        holdReasonLabel: 'Waiting for provider idle',
+      });
+
+      expect(screen.getByText('Waiting for provider idle')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Send now for Alpha' })).not.toBeInTheDocument();
+    });
+
+    it('hides hold-reason label when force is eligible', () => {
+      renderAgentRow({
+        humanHeldMessageCount: 0,
+        canForceSend: true,
+        holdReasonLabel: 'Waiting for terminal quiet',
+      });
+
+      expect(screen.queryByText('Waiting for terminal quiet')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send now for Alpha' })).toBeInTheDocument();
     });
   });
 

@@ -10,6 +10,14 @@ import {
 } from '@/ui/lib/realtime-invalidation-registry';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
+export type DeferredHoldReason = 'human_draft' | 'awaiting_quiet' | 'awaiting_idle';
+
+export const HOLD_REASON_LABELS: Record<DeferredHoldReason, string> = {
+  human_draft: 'Waiting for you to finish typing',
+  awaiting_quiet: 'Waiting for terminal quiet',
+  awaiting_idle: 'Waiting for provider idle',
+};
+
 /** Pool details from the API */
 export interface PoolDetails {
   agentId: string;
@@ -18,6 +26,10 @@ export interface PoolDetails {
   messageCount: number;
   humanHeldMessageCount: number;
   humanReleaseEligibleAt?: number;
+  holdReason?: DeferredHoldReason;
+  forceEligibleAt?: number;
+  activeSessionId?: string;
+  deferredMessageIds?: string[];
   waitingMs: number;
   messages: Array<{
     id: string;
@@ -25,6 +37,38 @@ export interface PoolDetails {
     source: string;
     timestamp: number;
   }>;
+}
+
+/** Server-derived Send now eligibility; never inferred from waitingMs or held counts. */
+export function isForceEligible(pool: PoolDetails, now: number): boolean {
+  return (
+    pool.holdReason !== undefined &&
+    pool.holdReason !== 'human_draft' &&
+    pool.forceEligibleAt !== undefined &&
+    pool.forceEligibleAt <= now &&
+    pool.activeSessionId !== undefined &&
+    pool.deferredMessageIds !== undefined &&
+    pool.deferredMessageIds.length > 0
+  );
+}
+
+export interface ForceDeliveryResult {
+  status: 'delivered' | 'unconfirmed' | 'deferred' | 'failed';
+  deliveredCount?: number;
+  reason?: string;
+}
+
+export class ForceConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ForceConflictError';
+  }
+}
+
+export interface ForceDeliveryRequest {
+  agentId: string;
+  sessionId: string;
+  messageIds: string[];
 }
 
 interface PoolsResponse {
@@ -40,6 +84,32 @@ async function fetchPools(projectId: string, fetchFn: FetchFn): Promise<PoolDeta
   }
   const data: PoolsResponse = await res.json();
   return data.pools;
+}
+
+async function forceDeferred(
+  projectId: string,
+  agentId: string,
+  sessionId: string,
+  messageIds: string[],
+  fetchFn: FetchFn,
+): Promise<ForceDeliveryResult> {
+  const response = await fetchFn(
+    `/api/sessions/pools/${encodeURIComponent(agentId)}/force-deferred`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, sessionId, messageIds }),
+    },
+  );
+  if (response.status === 409) {
+    throw new ForceConflictError(
+      (await response.json().catch(() => ({}))).message ?? 'Snapshot changed',
+    );
+  }
+  if (!response.ok) {
+    throw new Error('Failed to force-send messages.');
+  }
+  return response.json();
 }
 
 async function releaseHumanHold(
@@ -93,6 +163,12 @@ export function useMessagePools(projectId: string | null) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: poolsQueryKey }),
   });
 
+  const forceMutation = useMutation({
+    mutationFn: (req: ForceDeliveryRequest) =>
+      forceDeferred(projectId!, req.agentId, req.sessionId, req.messageIds, apiFetch),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: poolsQueryKey }),
+  });
+
   const poolsRegistry: RealtimeInvalidationRegistry = useMemo(
     () => [
       {
@@ -129,5 +205,7 @@ export function useMessagePools(projectId: string | null) {
     error,
     releaseHumanHeldMessages: releaseMutation.mutateAsync,
     releasingAgentId: releaseMutation.isPending ? releaseMutation.variables : null,
+    forceDeferredDelivery: forceMutation.mutateAsync,
+    forcingAgentId: forceMutation.isPending ? (forceMutation.variables?.agentId ?? null) : null,
   };
 }

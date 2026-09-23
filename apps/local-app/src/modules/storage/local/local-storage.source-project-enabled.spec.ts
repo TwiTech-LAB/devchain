@@ -65,7 +65,7 @@ describe('LocalStorageService - source_project_enabled integration', () => {
         repoName: 'community-later-repo',
         branch: 'main',
       },
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: { mode: 'none' } },
     );
 
     await expect(service.listSourceProjectEnabled(project.id)).resolves.toEqual([
@@ -81,7 +81,7 @@ describe('LocalStorageService - source_project_enabled integration', () => {
         name: 'local-later',
         folderPath: '/tmp/local-later',
       },
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: { mode: 'none' } },
     );
 
     await expect(service.listSourceProjectEnabled(project.id)).resolves.toEqual([

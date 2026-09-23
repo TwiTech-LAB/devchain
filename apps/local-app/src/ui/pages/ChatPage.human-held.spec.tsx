@@ -119,6 +119,10 @@ interface PoolFixture {
   messageCount: number;
   humanHeldMessageCount: number;
   humanReleaseEligibleAt?: number;
+  holdReason?: string;
+  forceEligibleAt?: number;
+  activeSessionId?: string;
+  deferredMessageIds?: string[];
 }
 
 function poolsResponse(pools: PoolFixture[], waitingMs: number) {
@@ -132,6 +136,10 @@ function poolsResponse(pools: PoolFixture[], waitingMs: number) {
         messageCount: pool.messageCount,
         humanHeldMessageCount: pool.humanHeldMessageCount,
         humanReleaseEligibleAt: pool.humanReleaseEligibleAt ?? 0,
+        holdReason: pool.holdReason,
+        forceEligibleAt: pool.forceEligibleAt,
+        activeSessionId: pool.activeSessionId,
+        deferredMessageIds: pool.deferredMessageIds,
         waitingMs,
         messages: [],
       })),
@@ -167,6 +175,17 @@ function sidebarData() {
   return mockSidebarProps.current.data as {
     humanHeldMessageCounts?: Record<string, number>;
     humanHeldReleaseEligibleAgentIds?: Record<string, true>;
+    forceEligibleAgentIds?: Record<string, true>;
+    holdReasonLabels?: Record<string, string>;
+  };
+}
+
+function sidebarController() {
+  if (!mockSidebarProps.current) throw new Error('ChatSidebar has not rendered yet');
+  return mockSidebarProps.current.sessionController as {
+    onReleaseHeldMessages: (agentId: string) => void;
+    onForceDelivery: (agentId: string) => void;
+    forcingAgentId: string | null;
   };
 }
 
@@ -312,5 +331,146 @@ describe('ChatPage human-held message counts mapping', () => {
     expect(
       screen.queryByRole('heading', { name: 'Release queued messages, my draft is clear' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('uses truthful draft-release copy about quiet waiting', async () => {
+    global.fetch = stubFetch(
+      () => [{ agentId: 'agent-a', messageCount: 2, humanHeldMessageCount: 2 }],
+      () => 31_000,
+    ) as unknown as typeof fetch;
+    await setup();
+    await waitFor(() => expect(sidebarData().humanHeldMessageCounts).toEqual({ 'agent-a': 2 }));
+
+    const controller = mockSidebarProps.current?.sessionController as {
+      onReleaseHeldMessages: (agentId: string) => void;
+    };
+    act(() => controller.onReleaseHeldMessages('agent-a'));
+
+    expect(screen.getByText(/will send when the terminal is quiet/)).toBeInTheDocument();
+  });
+
+  describe('force delivery flow', () => {
+    const forcePool: PoolFixture = {
+      agentId: 'agent-a',
+      messageCount: 1,
+      humanHeldMessageCount: 1,
+      holdReason: 'awaiting_quiet',
+      forceEligibleAt: Date.now() - 1000,
+      activeSessionId: 'session-1',
+      deferredMessageIds: ['msg-1'],
+    };
+
+    it('exposes forceEligibleAgentIds for awaiting_stable_idle with humanHeldMessageCount=1', async () => {
+      global.fetch = stubFetch(
+        () => [forcePool],
+        () => 35_000,
+      ) as unknown as typeof fetch;
+      await setup();
+
+      await waitFor(() => expect(sidebarData().forceEligibleAgentIds).toEqual({ 'agent-a': true }));
+    });
+
+    it('does not expose force for draft_active', async () => {
+      global.fetch = stubFetch(
+        () => [
+          {
+            agentId: 'agent-a',
+            messageCount: 2,
+            humanHeldMessageCount: 2,
+            holdReason: 'human_draft',
+          },
+        ],
+        () => 35_000,
+      ) as unknown as typeof fetch;
+      await setup();
+
+      await waitFor(() => expect(poolsFetchCount()).toBeGreaterThan(0));
+      expect(sidebarData().forceEligibleAgentIds).toEqual({});
+    });
+
+    it('opens force confirmation dialog and Cancel sends nothing', async () => {
+      global.fetch = stubFetch(
+        () => [forcePool],
+        () => 35_000,
+      ) as unknown as typeof fetch;
+      await setup();
+      await waitFor(() => expect(sidebarData().forceEligibleAgentIds).toEqual({ 'agent-a': true }));
+
+      act(() => sidebarController().onForceDelivery('agent-a'));
+
+      expect(screen.getByRole('heading', { name: 'Send now' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      expect(screen.queryByRole('heading', { name: 'Send now' })).not.toBeInTheDocument();
+      expect(
+        (global.fetch as jest.Mock).mock.calls.filter((c) =>
+          String(c[0]).includes('force-deferred'),
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('Confirm posts exact session+messageIds and shows delivered toast', async () => {
+      const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('force-deferred')) {
+          return {
+            ok: true,
+            json: async () => ({ status: 'delivered', deliveredCount: 1 }),
+          };
+        }
+        if (url.includes('/api/sessions/pools')) {
+          return poolsResponse([forcePool], 35_000);
+        }
+        return { ok: true, json: async () => ({ items: [] }) };
+      }) as unknown as typeof fetch;
+      global.fetch = fetchImpl;
+
+      await setup();
+      await waitFor(() => expect(sidebarData().forceEligibleAgentIds).toEqual({ 'agent-a': true }));
+
+      act(() => sidebarController().onForceDelivery('agent-a'));
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Send now' }));
+      });
+
+      await waitFor(() =>
+        expect(fetchImpl).toHaveBeenCalledWith(
+          expect.stringContaining('force-deferred'),
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({
+              projectId: 'project-1',
+              sessionId: 'session-1',
+              messageIds: ['msg-1'],
+            }),
+          }),
+        ),
+      );
+    });
+
+    it('shows hold-reason label for on_idle lane before force threshold', async () => {
+      global.fetch = stubFetch(
+        () => [
+          {
+            agentId: 'agent-a',
+            messageCount: 1,
+            humanHeldMessageCount: 0,
+            holdReason: 'awaiting_idle',
+            forceEligibleAt: Date.now() + 60000,
+            activeSessionId: 'session-1',
+            deferredMessageIds: ['msg-1'],
+          },
+        ],
+        () => 5_000,
+      ) as unknown as typeof fetch;
+      await setup();
+
+      await waitFor(() =>
+        expect(sidebarData().holdReasonLabels).toEqual({
+          'agent-a': 'Waiting for provider idle',
+        }),
+      );
+      expect(sidebarData().forceEligibleAgentIds).toEqual({});
+    });
   });
 });

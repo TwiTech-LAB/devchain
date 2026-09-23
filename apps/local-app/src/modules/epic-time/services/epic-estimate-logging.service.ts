@@ -22,9 +22,11 @@ import type {
 } from '../../storage/models/domain.models';
 import {
   EXTERNAL_ESTIMATE_TIME_ENTRY_NOTE,
+  type AssignExternalEstimateLegacyCheckpointInput,
   type CreateExternalEstimateTimeEntryInput,
   type CreateExternalEstimateTimeEntryResult,
   type EpicTimeDailyTotal,
+  type ExternalEstimateLegacyCheckpoint,
   type ExternalEstimateLogSnapshot,
   type ExternalEstimateTaskContext,
   type ResolveExternalEstimateOperationInput,
@@ -102,6 +104,7 @@ export class EpicEstimateLoggingService {
     input: SetExternalEstimateLoggedMinutesInput,
   ): Promise<ExternalEstimateLogSnapshot> {
     const context = await this.resolveContext(input);
+    await this.assertNoUnassignedLegacyHistory(context);
     // Set logged rebuilds the dated baseline from the live projection in the
     // requested zone: the canonical binding and the oldest-first placement
     // of min(logged, current) both ride this one read.
@@ -120,6 +123,7 @@ export class EpicEstimateLoggingService {
     input: CreateExternalEstimateTimeEntryInput,
   ): Promise<CreateExternalEstimateTimeEntryResult> {
     const context = await this.resolveContext(input);
+    await this.assertNoUnassignedLegacyHistory(context);
     const requestKey = this.requireRequestKey(input.requestKey);
     const dailySnapshot = this.requireDailySnapshot(
       input.dailySnapshot,
@@ -391,6 +395,29 @@ export class EpicEstimateLoggingService {
       stoppedReason,
       snapshot: await this.snapshot(context, finalState),
     };
+  }
+
+  /**
+   * One-time ownership recovery: assigns the unassigned legacy history of
+   * the linked remote task to the requesting project. Sends no provider
+   * request and preserves the pending outcome for the ordinary Verify/Mark
+   * actions to settle afterwards.
+   */
+  async assignLegacyCheckpoint(
+    input: AssignExternalEstimateLegacyCheckpointInput,
+  ): Promise<ExternalEstimateLogSnapshot> {
+    const context = await this.resolveContext(input);
+    this.requireNonnegativeInteger(input.expectedLegacyRevision, 'Expected legacy revision');
+    const assigned = await this.storage.assignUnassignedExternalEstimateLogCheckpoint({
+      projectId: context.request.projectId,
+      provider: context.request.provider,
+      remoteScopeKey: context.request.remoteScopeKey,
+      remoteTaskId: context.request.remoteTaskId,
+      expectedRevision: input.expectedLegacyRevision,
+      connectionId: context.connection.id,
+      connectionGeneration: context.connection.generation,
+    });
+    return this.snapshot(context, assigned.state);
   }
 
   async resolveOperation(
@@ -695,6 +722,9 @@ export class EpicEstimateLoggingService {
     context: ResolvedEstimateTaskContext,
     state: ExternalEstimateLogState | null,
   ): Promise<ExternalEstimateLogSnapshot> {
+    // resolveContext already authorized the project, current connection
+    // epoch, and local link, so the exact unassigned probe may run.
+    const legacyCheckpoint = await this.readLegacyCheckpoint(context);
     if (!state) {
       return {
         state: null,
@@ -707,6 +737,7 @@ export class EpicEstimateLoggingService {
         pendingDisposition: 'none',
         canVerify: false,
         verifyExpiresAt: null,
+        legacyCheckpoint,
       };
     }
     // One authoritative revision: the scalar, revision, pending operation,
@@ -728,7 +759,59 @@ export class EpicEstimateLoggingService {
       days: checkpoint.days,
       unallocatedLoggedMinutes: checkpoint.unallocatedLoggedMinutes,
       ...this.pendingDispositionFields(context, checkpoint.state),
+      legacyCheckpoint,
     };
+  }
+
+  /**
+   * Previous checkpoint history still owned by the reserved legacy identity.
+   * The projection never mixes into the project's own figures; its presence
+   * gates estimate export and Set logged until the one-time assignment
+   * resolves ownership.
+   */
+  private async readLegacyCheckpoint(
+    context: ResolvedEstimateTaskContext,
+  ): Promise<ExternalEstimateLegacyCheckpoint | null> {
+    const legacy = await this.storage.findUnassignedExternalEstimateLogCheckpoint(
+      context.identity.provider,
+      context.identity.remoteScopeKey,
+      context.identity.remoteTaskId,
+    );
+    if (!legacy) {
+      return null;
+    }
+    return {
+      revision: legacy.revision,
+      loggedMinutes: legacy.loggedMinutes,
+      hasPendingOperation: legacy.pendingOperationId !== null,
+    };
+  }
+
+  /**
+   * Estimate preparation, dispatch, and ordinary Set logged stay closed
+   * while unassigned history exists — Set logged would rebuild dates from
+   * the current Epic and destroy the preserved ledger, so it can never
+   * double as assignment.
+   */
+  private async assertNoUnassignedLegacyHistory(
+    context: ResolvedEstimateTaskContext,
+  ): Promise<void> {
+    const legacy = await this.storage.findUnassignedExternalEstimateLogCheckpoint(
+      context.identity.provider,
+      context.identity.remoteScopeKey,
+      context.identity.remoteTaskId,
+    );
+    if (legacy) {
+      throw new ConflictError(
+        'Assign the previous logged time to this project before changing estimate time.',
+        {
+          reason: 'legacy_ownership_unresolved',
+          revision: legacy.revision,
+          loggedMinutes: legacy.loggedMinutes,
+          hasPendingOperation: legacy.pendingOperationId !== null,
+        },
+      );
+    }
   }
 
   private pendingDispositionFields(
@@ -839,12 +922,14 @@ export class EpicEstimateLoggingService {
   ): Promise<ResolvedEstimateTaskContext> {
     const request = this.normalizeContext(input);
     const identity = {
+      projectId: request.projectId,
       provider: request.provider,
       remoteScopeKey: request.remoteScopeKey,
       remoteTaskId: request.remoteTaskId,
     };
     const [link, connection] = await Promise.all([
       this.storage.findExternalTaskLink(
+        identity.projectId,
         identity.provider,
         identity.remoteScopeKey,
         identity.remoteTaskId,

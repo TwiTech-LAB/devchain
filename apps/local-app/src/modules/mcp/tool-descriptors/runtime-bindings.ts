@@ -1,5 +1,4 @@
 import { sessionBindings } from './session.bindings';
-import { documentBindings } from './document.bindings';
 import { promptBindings } from './prompt.bindings';
 import { skillBindings } from './skill.bindings';
 import { agentBindings } from './agent.bindings';
@@ -12,7 +11,6 @@ import { reviewBindings } from './review.bindings';
 
 export const allBindingGroups = Object.freeze([
   sessionBindings,
-  documentBindings,
   promptBindings,
   skillBindings,
   agentBindings,

@@ -86,7 +86,7 @@ describe('LocalStorageService - managed skill source transactions', () => {
           repoName: 'atomic-repo',
           branch: 'main',
         },
-        { seedExistingProjectsDisabled: true },
+        { existingProjects: { mode: 'none' } },
       ),
     ).rejects.toMatchObject({
       details: { cause: expect.stringContaining('injected managed source default failure') },
@@ -124,7 +124,7 @@ describe('LocalStorageService - managed skill source transactions', () => {
           name: 'atomic-local',
           folderPath: '/tmp/atomic-local',
         },
-        { seedExistingProjectsDisabled: true },
+        { existingProjects: { mode: 'none' } },
       ),
     ).rejects.toMatchObject({
       details: { cause: expect.stringContaining('injected local managed source default failure') },
@@ -155,7 +155,7 @@ describe('LocalStorageService - managed skill source transactions', () => {
         repoName: 'community-second-repo',
         branch: 'main',
       },
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: { mode: 'none' } },
     );
 
     blocker.release();
@@ -173,7 +173,7 @@ describe('LocalStorageService - managed skill source transactions', () => {
         name: 'local-first',
         folderPath: '/tmp/local-first',
       },
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: { mode: 'none' } },
     );
     const project = service.createProject({
       name: 'Project Second',
@@ -211,7 +211,7 @@ describe('LocalStorageService - managed skill source transactions', () => {
         repoName: 'template-later-repo',
         branch: 'main',
       },
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: { mode: 'none' } },
     );
 
     releaseTemplate();
@@ -220,5 +220,105 @@ describe('LocalStorageService - managed skill source transactions', () => {
     await expect(
       service.getSourceProjectEnabled(project.id, 'template-later-source'),
     ).resolves.toBe(false);
+  });
+
+  describe('existing-project enablement choice', () => {
+    const enablementRows = (
+      sqlite: Database.Database,
+      sourceName: string,
+    ): Array<{ project_id: string; enabled: number }> =>
+      sqlite
+        .prepare(
+          'SELECT project_id, enabled FROM source_project_enabled WHERE source_name = ? ORDER BY project_id',
+        )
+        .all(sourceName) as Array<{ project_id: string; enabled: number }>;
+
+    it('enables every existing project for mode all', async () => {
+      const first = await service.createProject({
+        name: 'All First',
+        description: null,
+        rootPath: '/tmp/all-first',
+        isTemplate: false,
+      });
+      const second = await service.createProject({
+        name: 'All Second',
+        description: null,
+        rootPath: '/tmp/all-second',
+        isTemplate: false,
+      });
+
+      await service.createLocalSkillSource(
+        { name: 'all-mode', folderPath: '/tmp/all-mode' },
+        { existingProjects: { mode: 'all' } },
+      );
+
+      expect(enablementRows(sqlite, 'all-mode')).toEqual(
+        [
+          { project_id: first.id, enabled: 1 },
+          { project_id: second.id, enabled: 1 },
+        ].sort((left, right) => left.project_id.localeCompare(right.project_id)),
+      );
+    });
+
+    it('enables selected projects and disables the other existing ones', async () => {
+      const chosen = await service.createProject({
+        name: 'Chosen Project',
+        description: null,
+        rootPath: '/tmp/chosen-project',
+        isTemplate: false,
+      });
+      const other = await service.createProject({
+        name: 'Other Project',
+        description: null,
+        rootPath: '/tmp/other-project',
+        isTemplate: false,
+      });
+
+      await service.createCommunitySkillSource(
+        {
+          name: 'selected-mode',
+          repoOwner: 'owner',
+          repoName: 'selected-repo',
+          branch: 'main',
+        },
+        { existingProjects: { mode: 'selected', projectIds: [chosen.id] } },
+      );
+
+      expect(enablementRows(sqlite, 'selected-mode')).toEqual(
+        [
+          { project_id: chosen.id, enabled: 1 },
+          { project_id: other.id, enabled: 0 },
+        ].sort((left, right) => left.project_id.localeCompare(right.project_id)),
+      );
+    });
+
+    it('rejects unknown selected project ids and rolls back source and enablement rows', async () => {
+      const known = await service.createProject({
+        name: 'Known Project',
+        description: null,
+        rootPath: '/tmp/known-project',
+        isTemplate: false,
+      });
+
+      await expect(
+        service.createLocalSkillSource(
+          { name: 'unknown-target', folderPath: '/tmp/unknown-target' },
+          {
+            existingProjects: {
+              mode: 'selected',
+              projectIds: [known.id, '00000000-0000-0000-0000-0000000000aa'],
+            },
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: 'validation_error',
+        details: { unknownProjectIds: ['00000000-0000-0000-0000-0000000000aa'] },
+      });
+
+      expect(
+        sqlite.prepare('SELECT id FROM local_skill_sources WHERE name = ?').get('unknown-target'),
+      ).toBeUndefined();
+      expect(enablementRows(sqlite, 'unknown-target')).toEqual([]);
+    });
   });
 });

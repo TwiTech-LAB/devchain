@@ -10,6 +10,7 @@ import {
 } from '@/ui/pages/board/lib/board-api';
 import type { Agent, Epic, Status } from '@/ui/types';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { boardCacheKeys } from '@/ui/lib/board-cache';
 
 export interface UseBoardDataArgs {
   selectedProjectId: string | null | undefined;
@@ -18,7 +19,7 @@ export interface UseBoardDataArgs {
 
 export interface UseBoardDataResult {
   archivedFilter: 'active' | 'archived' | 'all';
-  epicsKey: readonly ['epics', string | null | undefined, 'active' | 'archived' | 'all'];
+  epicsKey: ReturnType<typeof boardCacheKeys.list>;
   statusesData: { items?: Status[] } | undefined;
   statusesLoading: boolean;
   epicsData: { items?: Epic[] } | undefined;
@@ -41,7 +42,7 @@ export function useBoardData({ selectedProjectId, filters }: UseBoardDataArgs): 
 
   const archivedFilter = filters.archived ?? 'active';
   const epicsKey = useMemo(
-    () => ['epics', selectedProjectId, archivedFilter] as const,
+    () => boardCacheKeys.list(selectedProjectId, archivedFilter),
     [selectedProjectId, archivedFilter],
   );
 
@@ -64,7 +65,7 @@ export function useBoardData({ selectedProjectId, filters }: UseBoardDataArgs): 
   });
 
   const { data: subEpicsData, isLoading: subEpicsLoading } = useQuery({
-    queryKey: ['epics', 'parent', filters.parent ?? null],
+    queryKey: boardCacheKeys.children(filters.parent ?? null),
     queryFn: () => fetchSubEpics((filters.parent as string) ?? '', apiFetch),
     enabled: !!filters.parent,
   });
@@ -135,7 +136,7 @@ export function useBoardData({ selectedProjectId, filters }: UseBoardDataArgs): 
 
   const subEpicCountQueries = useQueries({
     queries: topLevelEpics.map((epic) => ({
-      queryKey: ['epics', epic.id, 'sub-counts'],
+      queryKey: boardCacheKeys.subCounts(epic.id),
       queryFn: () => fetchSubEpicCounts(epic.id, apiFetch),
       enabled: !!selectedProjectId && !filters.parent,
       staleTime: 30000,

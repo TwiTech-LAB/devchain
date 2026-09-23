@@ -4,7 +4,11 @@ import type { EventsService } from '../../events/services/events.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { CreateEpic, Epic } from '../../storage/models/domain.models';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
-import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import {
+  NotFoundError,
+  ValidationError,
+  DescriptionEditNotFoundError,
+} from '../../../common/errors/error-types';
 
 describe('EpicsService', () => {
   let storage: {
@@ -1559,6 +1563,116 @@ describe('EpicsService', () => {
       storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Demo' });
       const result = await service.updateEpic('epic-A', { parentId: null }, 1);
       expect(result.parentId).toBeNull();
+    });
+  });
+
+  describe('description edits', () => {
+    it('resolves edits against the read epic and writes the final text as a plain description', async () => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: 'alpha beta gamma' });
+      storage.updateEpic.mockImplementation(
+        async (_id: string, data: { description?: string }) => ({
+          ...baseEpic,
+          description: data.description ?? null,
+          version: 2,
+        }),
+      );
+
+      const result = await service.updateEpicWithOutcome(
+        baseEpic.id,
+        {
+          descriptionEdits: [
+            { find: 'beta', replace: 'BETA' },
+            { find: 'gamma', replace: 'delta' },
+          ],
+        },
+        baseEpic.version,
+      );
+
+      expect(storage.updateEpic).toHaveBeenCalledWith(
+        baseEpic.id,
+        expect.objectContaining({ description: 'alpha BETA delta' }),
+        baseEpic.version,
+        expect.any(Function),
+      );
+      const payload = (storage.updateEpic as jest.Mock).mock.calls[0][1] as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('descriptionEdits');
+      expect(payload).not.toHaveProperty('appendDescription');
+
+      expect(result.epic.description).toBe('alpha BETA delta');
+      expect(result.outcome.descriptionEdit).toMatchObject({
+        text: 'alpha BETA delta',
+        descriptionLength: 16,
+      });
+      expect(result.outcome.descriptionEdit?.descriptionEdits).toEqual([
+        { index: 0, context: 'alpha BETA delta' },
+        { index: 1, context: 'alpha BETA delta' },
+      ]);
+      expect(result.outcome.descriptionEdit?.appended).toBeUndefined();
+    });
+
+    it('appends after edits and reports the append junction', async () => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: 'alpha beta' });
+      storage.updateEpic.mockImplementation(
+        async (_id: string, data: { description?: string }) => ({
+          ...baseEpic,
+          description: data.description ?? null,
+          version: 2,
+        }),
+      );
+
+      const result = await service.updateEpic(
+        baseEpic.id,
+        {
+          descriptionEdits: [{ find: 'beta', replace: 'gamma' }],
+          appendDescription: 'tail',
+        },
+        baseEpic.version,
+      );
+
+      expect(result.description).toBe('alpha gamma\n\ntail');
+    });
+
+    it('makes an append on a null description the full text', async () => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: null });
+      storage.updateEpic.mockImplementation(
+        async (_id: string, data: { description?: string }) => ({
+          ...baseEpic,
+          description: data.description ?? null,
+          version: 2,
+        }),
+      );
+
+      const result = await service.updateEpicWithOutcome(
+        baseEpic.id,
+        { appendDescription: 'first text' },
+        baseEpic.version,
+      );
+
+      expect(result.outcome.descriptionEdit?.text).toBe('first text');
+      expect(result.outcome.descriptionEdit?.appended).toEqual({ context: 'first text' });
+      expect(result.outcome.descriptionEdit?.descriptionEdits).toBeUndefined();
+    });
+
+    it('throws the edit error before any storage write', async () => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: 'alpha' });
+
+      await expect(
+        service.updateEpic(baseEpic.id, { descriptionEdits: [{ find: 'zeta', replace: 'X' }] }, 1),
+      ).rejects.toThrow(DescriptionEditNotFoundError);
+      expect(storage.updateEpic).not.toHaveBeenCalled();
+    });
+
+    it('keeps a full description replace free of edit outcomes', async () => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: 'old' });
+      storage.updateEpic.mockResolvedValue({ ...baseEpic, description: 'new', version: 2 });
+
+      const result = await service.updateEpicWithOutcome(
+        baseEpic.id,
+        { description: 'new' },
+        baseEpic.version,
+      );
+
+      expect(result.outcome.descriptionEdit).toBeUndefined();
     });
   });
 

@@ -152,4 +152,125 @@ Inspect code diffs and suggest improvements.`,
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  const touchWithNewMtime = async (filePath: string): Promise<void> => {
+    const stats = await fs.stat(filePath);
+    const nextTimestamp = new Date(stats.mtime.getTime() + 2000);
+    await fs.utimes(filePath, nextTimestamp, nextTimestamp);
+  };
+
+  it('changes commit hash when only a supporting file is edited', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'local-source-adapter-'));
+    const skillPath = join(root, 'skills', 'code-review');
+    const skillMdPath = join(skillPath, 'SKILL.md');
+    const readmePath = join(skillPath, 'README.md');
+    await fs.mkdir(skillPath, { recursive: true });
+    await fs.writeFile(skillMdPath, '# Skill\n', 'utf-8');
+    await fs.writeFile(readmePath, 'Initial readme\n', 'utf-8');
+
+    try {
+      const adapter = new LocalSkillSourceAdapter(buildSource(root));
+      const initialHash = await adapter.getLatestCommit();
+
+      await fs.writeFile(readmePath, 'Updated readme\n', 'utf-8');
+      await touchWithNewMtime(readmePath);
+      const editedHash = await adapter.getLatestCommit();
+
+      expect(editedHash).not.toBe(initialHash);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('changes commit hash when a nested supporting file is edited or removed', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'local-source-adapter-'));
+    const skillPath = join(root, 'skills', 'code-review');
+    const referencePath = join(skillPath, 'references', 'guide.md');
+    await fs.mkdir(join(skillPath, 'references'), { recursive: true });
+    await fs.writeFile(join(skillPath, 'SKILL.md'), '# Skill\n', 'utf-8');
+    await fs.writeFile(referencePath, 'Initial guide\n', 'utf-8');
+
+    try {
+      const adapter = new LocalSkillSourceAdapter(buildSource(root));
+      const initialHash = await adapter.getLatestCommit();
+
+      await fs.writeFile(referencePath, 'Updated guide\n', 'utf-8');
+      await touchWithNewMtime(referencePath);
+      const editedHash = await adapter.getLatestCommit();
+
+      await fs.rm(referencePath, { force: true });
+      const removedHash = await adapter.getLatestCommit();
+
+      expect(editedHash).not.toBe(initialHash);
+      expect(removedHash).not.toBe(editedHash);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('changes commit hash when SKILL.md appears in a supporting-files-only directory', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'local-source-adapter-'));
+    const skillPath = join(root, 'skills', 'code-review');
+    await fs.mkdir(skillPath, { recursive: true });
+    await fs.writeFile(join(skillPath, 'README.md'), 'Readme only\n', 'utf-8');
+
+    try {
+      const adapter = new LocalSkillSourceAdapter(buildSource(root));
+      const initialHash = await adapter.getLatestCommit();
+
+      await fs.writeFile(join(skillPath, 'SKILL.md'), '# New Skill\n', 'utf-8');
+      const addedHash = await adapter.getLatestCommit();
+
+      expect(addedHash).not.toBe(initialHash);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores dot-files and dot-directories in the commit hash', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'local-source-adapter-'));
+    const skillPath = join(root, 'skills', 'code-review');
+    await fs.mkdir(join(skillPath, '.config'), { recursive: true });
+    await fs.writeFile(join(skillPath, 'SKILL.md'), '# Skill\n', 'utf-8');
+
+    try {
+      const adapter = new LocalSkillSourceAdapter(buildSource(root));
+      const initialHash = await adapter.getLatestCommit();
+
+      await fs.writeFile(join(skillPath, '.hidden'), 'secret\n', 'utf-8');
+      await fs.writeFile(join(skillPath, '.config', 'settings.json'), '{}\n', 'utf-8');
+      const withDotEntriesHash = await adapter.getLatestCommit();
+
+      expect(withDotEntriesHash).toBe(initialHash);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('copies nested supporting files into the storage root on download', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'local-source-adapter-'));
+    const targetRoot = await fs.mkdtemp(join(tmpdir(), 'local-source-target-'));
+    const skillPath = join(root, 'skills', 'code-review');
+    await fs.mkdir(join(skillPath, 'references', 'deep'), { recursive: true });
+    await fs.writeFile(join(skillPath, 'SKILL.md'), '# Skill\n', 'utf-8');
+    await fs.writeFile(join(skillPath, 'references', 'guide.md'), 'Guide\n', 'utf-8');
+    await fs.writeFile(join(skillPath, 'references', 'deep', 'data.json'), '{}\n', 'utf-8');
+
+    try {
+      const adapter = new LocalSkillSourceAdapter(buildSource(root));
+      const copiedPath = await adapter.downloadSkill('code-review', targetRoot);
+
+      const copiedGuide = await fs.readFile(join(copiedPath, 'references', 'guide.md'), 'utf-8');
+      const copiedData = await fs.readFile(
+        join(copiedPath, 'references', 'deep', 'data.json'),
+        'utf-8',
+      );
+
+      expect(copiedGuide).toBe('Guide\n');
+      expect(copiedData).toBe('{}\n');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(targetRoot, { recursive: true, force: true });
+    }
+  });
 });

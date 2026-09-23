@@ -22,7 +22,6 @@ import { StatusesModule } from './modules/statuses/statuses.module';
 import { EpicsModule } from './modules/epics/epics.module';
 import { ScheduledEpicsModule } from './modules/scheduled-epics/scheduled-epics.module';
 import { RecordsModule } from './modules/records/records.module';
-import { DocumentsModule } from './modules/documents/documents.module';
 import { FsModule } from './modules/fs/fs.module';
 import { WatchersModule } from './modules/watchers/watchers.module';
 import { SubscribersModule } from './modules/subscribers/subscribers.module';
@@ -32,7 +31,6 @@ import { HooksModule } from './modules/hooks/hooks.module';
 import { SessionReaderModule } from './modules/session-reader/session-reader.module';
 import { TeamsModule } from './modules/teams/teams.module';
 import { DataSeederModule } from './modules/seeders/seeders.module';
-import { CodebaseOverviewAnalyzerModule } from './modules/codebase-overview-analyzer/codebase-overview-analyzer.module';
 import { CloudModule } from './modules/cloud/cloud.module';
 import { CloudTunnelModule } from './modules/cloud-tunnel/cloud-tunnel.module';
 import { E2eeModule } from './modules/e2ee/e2ee.module';
@@ -70,7 +68,6 @@ import { ExternalIntegrationsModule } from './modules/external-integrations/exte
     EpicsModule,
     ScheduledEpicsModule,
     RecordsModule,
-    DocumentsModule,
     FsModule,
     WatchersModule,
     DataSeederModule,
@@ -80,7 +77,6 @@ import { ExternalIntegrationsModule } from './modules/external-integrations/exte
     HooksModule,
     SessionReaderModule,
     TeamsModule,
-    CodebaseOverviewAnalyzerModule,
     CloudModule,
     CloudTunnelModule,
     E2eeModule,

@@ -275,4 +275,110 @@ describe('useMessagePools', () => {
       expect(rootSocket.disconnect).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('force deferred delivery', () => {
+    it('posts force request and invalidates pools on settlement', async () => {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('force-deferred')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ status: 'delivered', deliveredCount: 1 }),
+          };
+        }
+        return { ok: true, json: async () => ({ pools: [makePool()] }) };
+      });
+      const { Wrapper, queryClient } = createWrapper();
+      const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+      const { result } = renderHook(() => useMessagePools('project-1'), { wrapper: Wrapper });
+      await waitFor(() => expect(result.current.pools).toBeDefined());
+
+      await act(async () => {
+        const outcome = await result.current.forceDeferredDelivery({
+          agentId: 'agent-1',
+          sessionId: 'session-1',
+          messageIds: ['msg-1'],
+        });
+        expect(outcome).toEqual({ status: 'delivered', deliveredCount: 1 });
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/sessions/pools/agent-1/force-deferred',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            messageIds: ['msg-1'],
+          }),
+        }),
+      );
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pools', 'project-1'] });
+    });
+
+    it('throws ForceConflictError on 409', async () => {
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('force-deferred')) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({ message: 'Batch changed' }),
+          };
+        }
+        return { ok: true, json: async () => ({ pools: [makePool()] }) };
+      });
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(() => useMessagePools('project-1'), { wrapper: Wrapper });
+      await waitFor(() => expect(result.current.pools).toBeDefined());
+
+      await expect(
+        result.current.forceDeferredDelivery({
+          agentId: 'agent-1',
+          sessionId: 'session-1',
+          messageIds: ['msg-1'],
+        }),
+      ).rejects.toThrow('Batch changed');
+    });
+
+    it('exposes forcingAgentId while the mutation is in flight', async () => {
+      let resolveForce!: () => void;
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('force-deferred')) {
+          await new Promise<void>((resolve) => {
+            resolveForce = resolve;
+          });
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ status: 'delivered', deliveredCount: 1 }),
+          };
+        }
+        return { ok: true, json: async () => ({ pools: [makePool()] }) };
+      });
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(() => useMessagePools('project-1'), { wrapper: Wrapper });
+      await waitFor(() => expect(result.current.pools).toBeDefined());
+
+      let forcePromise: Promise<unknown>;
+      act(() => {
+        forcePromise = result.current.forceDeferredDelivery({
+          agentId: 'agent-1',
+          sessionId: 'session-1',
+          messageIds: ['msg-1'],
+        });
+      });
+
+      await waitFor(() => expect(result.current.forcingAgentId).toBe('agent-1'));
+
+      await act(async () => {
+        resolveForce();
+        await forcePromise!;
+      });
+
+      await waitFor(() => expect(result.current.forcingAgentId).toBeNull());
+    });
+  });
 });

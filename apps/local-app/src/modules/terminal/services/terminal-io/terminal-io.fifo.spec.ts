@@ -1,5 +1,5 @@
 import type { EventsService } from '../../../events/services/events.service';
-import { HumanPromptStateService } from '../human-prompt-state.service';
+import { HumanPromptStateService, type ForcePromptSnapshot } from '../human-prompt-state.service';
 import type {
   DaemonSpawnOptions,
   ExecutorResult,
@@ -438,6 +438,182 @@ describe('TerminalIOService pane FIFO', () => {
     expect(promptState.getState('pane-a').meaningfulOutputEpoch).toBe(
       snapshot.meaningfulOutputEpoch + 1,
     );
+  });
+
+  describe('force delivery guard (real TerminalIOService + HumanPromptState)', () => {
+    function makeForceFence(
+      promptState: HumanPromptStateService,
+      paneName: string,
+      forceSnapshot: ForcePromptSnapshot,
+      claimState: { phase: string; cancelled?: boolean },
+    ) {
+      return {
+        canStartMutation: () => {
+          if (claimState.phase !== 'preparing' || claimState.cancelled) return false;
+          return promptState.applyForceDelivery(paneName, forceSnapshot);
+        },
+        markMutationStarted: () => {
+          if (claimState.phase === 'preparing' && !claimState.cancelled) {
+            claimState.phase = 'mutating';
+          }
+        },
+      };
+    }
+
+    it('succeeds for awaiting_stable_idle and transitions to inactive', async () => {
+      const { executor, promptState, service } = makeService();
+      const draft = promptState.recordPromptText('pane-a');
+      promptState.transitionToAwaiting('pane-a', draft.generation);
+      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+      const claimState = { phase: 'preparing' };
+
+      const result = await service.deliverGuarded(
+        { name: 'pane-a' },
+        'force-delivered',
+        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
+        undefined,
+        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
+      );
+
+      expect(result).toEqual(expect.objectContaining({ confirmed: true }));
+      expect(promptState.getState('pane-a').phase).toBe('inactive');
+      expect(executor.calls[0].input).toContain('force-delivered');
+    });
+
+    it('succeeds for inactive phase and keeps it inactive', async () => {
+      const { executor, promptState, service } = makeService();
+      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+      expect(forceSnapshot.phase).toBe('inactive');
+      const claimState = { phase: 'preparing' };
+
+      const result = await service.deliverGuarded(
+        { name: 'pane-a' },
+        'force-inactive',
+        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
+        undefined,
+        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
+      );
+
+      expect(result).toEqual(expect.objectContaining({ confirmed: true }));
+      expect(promptState.getState('pane-a').phase).toBe('inactive');
+      expect(executor.calls[0].input).toContain('force-inactive');
+    });
+
+    it('defers when typing is injected after buffer prep for awaiting_stable_idle', async () => {
+      const { executor, promptState, service } = makeService();
+      const draft = promptState.recordPromptText('pane-a');
+      promptState.transitionToAwaiting('pane-a', draft.generation);
+      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+      const claimState = { phase: 'preparing' };
+      const load = executor.holdInput('force-held');
+
+      const guarded = service.deliverGuarded(
+        { name: 'pane-a' },
+        'force-held',
+        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
+        undefined,
+        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
+      );
+      await load.started;
+
+      promptState.recordPromptText('pane-a');
+      load.release();
+
+      await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
+      expect(executor.calls.map((call) => call.argv[1])).toEqual(['load-buffer', 'delete-buffer']);
+      expect(promptState.getState('pane-a').phase).toBe('draft_active');
+    });
+
+    it('defers when typing is injected after buffer prep for inactive', async () => {
+      const { executor, promptState, service } = makeService();
+      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+      const claimState = { phase: 'preparing' };
+      const load = executor.holdInput('force-inactive-held');
+
+      const guarded = service.deliverGuarded(
+        { name: 'pane-a' },
+        'force-inactive-held',
+        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
+        undefined,
+        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
+      );
+      await load.started;
+
+      promptState.recordPromptText('pane-a');
+      load.release();
+
+      await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
+      expect(executor.calls.map((call) => call.argv[1])).toEqual(['load-buffer', 'delete-buffer']);
+    });
+
+    it('defers when executedInputEpoch changes after buffer prep', async () => {
+      const { promptState, service } = makeService();
+      const draft = promptState.recordPromptText('pane-a');
+      promptState.transitionToAwaiting('pane-a', draft.generation);
+      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+      const claimState = { phase: 'preparing' };
+
+      promptState.recordExecutedInput('pane-a');
+
+      await expect(
+        service.deliverGuarded(
+          { name: 'pane-a' },
+          'force-epoch-changed',
+          { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
+          undefined,
+          makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
+        ),
+      ).resolves.toEqual({ deferred: 'human_draft' });
+    });
+
+    it('succeeds despite meaningful output continuing (output epoch ignored)', async () => {
+      const { promptState, service } = makeService();
+      const draft = promptState.recordPromptText('pane-a');
+      promptState.transitionToAwaiting('pane-a', draft.generation);
+      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+      const claimState = { phase: 'preparing' };
+
+      promptState.recordMeaningfulOutput('pane-a');
+      promptState.recordMeaningfulOutput('pane-a');
+
+      const result = await service.deliverGuarded(
+        { name: 'pane-a' },
+        'force-despite-output',
+        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
+        undefined,
+        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
+      );
+
+      expect(result).toEqual(expect.objectContaining({ confirmed: true }));
+      expect(promptState.getState('pane-a').phase).toBe('inactive');
+    });
+
+    it('applyForceDelivery runs once per claim even with retries', async () => {
+      const { executor, promptState, service } = makeService();
+      const draft = promptState.recordPromptText('pane-a');
+      promptState.transitionToAwaiting('pane-a', draft.generation);
+      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+      const claimState = { phase: 'preparing' };
+      const applyForceSpy = jest.spyOn(promptState, 'applyForceDelivery');
+
+      executor.onRun = (options) => {
+        if (options.argv[1] === 'paste-buffer' && applyForceSpy.mock.calls.length === 1) {
+          claimState.phase = 'mutating';
+        }
+      };
+
+      const result = await service.deliverGuarded(
+        { name: 'pane-a' },
+        'force-once',
+        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0, maxAttempts: 3 },
+        undefined,
+        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
+      );
+
+      expect(result).toEqual(expect.objectContaining({ confirmed: true }));
+      expect(applyForceSpy).toHaveBeenCalledTimes(1);
+      expect(promptState.getState('pane-a').phase).toBe('inactive');
+    });
   });
 
   it('blocks new writes during shutdown and settles existing tails before cleanup', async () => {

@@ -4,7 +4,6 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'path';
 import { ConflictError, OptimisticLockError } from '../../../common/errors/error-types';
 import type {
-  Document,
   Epic,
   EpicRecord,
   Project,
@@ -17,14 +16,7 @@ import { LocalStorageService } from './local-storage.service';
 
 const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
-type VersionedEntity =
-  | Epic
-  | Prompt
-  | EpicRecord
-  | Document
-  | Review
-  | ReviewComment
-  | ScheduledEpic;
+type VersionedEntity = Epic | Prompt | EpicRecord | Review | ReviewComment | ScheduledEpic;
 
 interface VersionedMutationCase {
   name: string;
@@ -135,15 +127,6 @@ describe('LocalStorageService versioned mutations (integration)', () => {
     });
   }
 
-  async function seedDocument(): Promise<Document> {
-    return service.createDocument({
-      projectId: project.id,
-      title: 'Original document',
-      contentMd: '# Original',
-      tags: ['existing'],
-    });
-  }
-
   async function seedReview(): Promise<Review> {
     return service.createReview({
       projectId: project.id,
@@ -243,18 +226,6 @@ describe('LocalStorageService versioned mutations (integration)', () => {
         expectConflict: expectOptimisticConflict,
       },
       {
-        name: 'Document',
-        table: 'documents',
-        versionColumn: 'version',
-        seed: seedDocument,
-        update: (entity, value) =>
-          service.updateDocument(entity.id, { title: value, version: versionOf(entity) }),
-        load: (id) => service.getDocument({ id }),
-        versionOf,
-        valueOf: (entity) => (entity as Document).title,
-        expectConflict: expectOptimisticConflict,
-      },
-      {
         name: 'Review',
         table: 'reviews',
         versionColumn: 'version',
@@ -336,21 +307,6 @@ describe('LocalStorageService versioned mutations (integration)', () => {
       );
     },
   );
-
-  it('serializes two versionless Document writes and advances both versions', async () => {
-    const document = await seedDocument();
-
-    const [first, second] = await Promise.all([
-      service.updateDocument(document.id, { title: 'First versionless write' }),
-      service.updateDocument(document.id, { title: 'Second versionless write' }),
-    ]);
-
-    expect([first.version, second.version].sort()).toEqual([
-      document.version + 1,
-      document.version + 2,
-    ]);
-    expect((await service.getDocument({ id: document.id })).version).toBe(document.version + 2);
-  });
 
   it('checks ReviewComment version before no-op classification and preserves true no-op timestamps', async () => {
     const comment = await seedReviewComment();
@@ -442,21 +398,6 @@ describe('LocalStorageService versioned mutations (integration)', () => {
         load: (id) => service.getRecord(id),
         scalarSnapshot: (entity) => ({ data: (entity as EpicRecord).data }),
         tagsOf: (entity) => (entity as EpicRecord).tags,
-      },
-      {
-        name: 'Document',
-        relationTable: 'document_tags',
-        relationIdColumn: 'document_id',
-        seed: seedDocument,
-        update: (entity) =>
-          service.updateDocument(entity.id, {
-            title: 'Changed document',
-            tags: ['replacement'],
-            version: versionOf(entity),
-          }),
-        load: (id) => service.getDocument({ id }),
-        scalarSnapshot: (entity) => ({ title: (entity as Document).title }),
-        tagsOf: (entity) => (entity as Document).tags,
       },
     ];
   }

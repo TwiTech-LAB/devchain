@@ -21,17 +21,31 @@ import type {
 import { pruneUnavailableTeamProfileSelections, teamsCodec } from './teams.codec';
 
 // --- Shared context seeding ----------------------------------------------------------
-function seedCtx(): ImportContext {
-  const profilesToCreate = [
+function seedCtx(
+  options: {
+    profilesToCreate?: Array<{
+      id?: string;
+      name: string;
+      providerConfigs?: Array<{ name: string }>;
+    }>;
+    profileNameRemapMap?: Map<string, string>;
+    profileIdMap?: Record<string, string>;
+    configLookupMap?: Map<string, string>;
+  } = {},
+): ImportContext {
+  const profilesToCreate = options.profilesToCreate ?? [
     { id: 'profile-old-1', name: 'Profile 1', providerConfigs: [{ name: 'cfg-a' }] },
   ];
   const selectedProfilesByFamily = {
     profilesToCreate,
-    profileNameRemapMap: undefined,
+    profileNameRemapMap: options.profileNameRemapMap,
   } as unknown as ImportContextValues['selectedProfilesByFamily'];
   const ctx = new ImportContext({ selectedProfilesByFamily } as Partial<ImportContextValues>);
-  ctx.set('profileIdMap', { 'profile-old-1': 'profile-new-1' });
-  ctx.set('configLookupMap', new Map([['profile-new-1:cfg-a', 'config-1']]));
+  ctx.set('profileIdMap', options.profileIdMap ?? { 'profile-old-1': 'profile-new-1' });
+  ctx.set(
+    'configLookupMap',
+    options.configLookupMap ?? new Map([['profile-new-1:cfg-a', 'config-1']]),
+  );
   ctx.markState('agentsPersisted');
   return ctx;
 }
@@ -71,8 +85,14 @@ function makeStorage(overrides?: {
 function rt(
   teamsService: ReturnType<typeof makeTeamsService>,
   storage: StorageService = makeStorage(),
+  options: { teamOverrides?: CodecApplyRuntime['teamOverrides'] } = {},
 ): CodecApplyRuntime {
-  return { projectId: 'project-1', storage, teamsService } as CodecApplyRuntime;
+  return {
+    projectId: 'project-1',
+    storage,
+    teamsService,
+    ...(options.teamOverrides !== undefined ? { teamOverrides: options.teamOverrides } : {}),
+  } as CodecApplyRuntime;
 }
 
 const teamSection = (
@@ -110,14 +130,15 @@ describe('teams codec — apply (resolution against live storage)', () => {
       rt(teamsService),
     );
     expect(result.log).toEqual({ teams: 1 });
-    expect(teamsService.createTeam).toHaveBeenCalledWith(
-      expect.objectContaining({
-        teamLeadAgentId: 'agent-1',
-        memberAgentIds: ['agent-1', 'agent-2'],
-        profileIds: ['profile-new-1'],
-        profileConfigSelections: [{ profileId: 'profile-new-1', configIds: ['config-1'] }],
-      }),
-    );
+    expect(teamsService.createTeam).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      name: 'Backend Team',
+      description: 'the backend',
+      teamLeadAgentId: 'agent-1',
+      memberAgentIds: ['agent-1', 'agent-2'],
+      profileIds: ['profile-new-1'],
+      profileConfigSelections: [{ profileId: 'profile-new-1', configIds: ['config-1'] }],
+    });
   });
 
   it('throws when a member agent name is not found in storage', async () => {
@@ -130,6 +151,36 @@ describe('teams codec — apply (resolution against live storage)', () => {
         rt(teamsService, makeStorage({ agents: [{ id: 'agent-1', name: 'Agent A' }] })),
       ),
     ).rejects.toThrow('references agent "Ghost" which was not found');
+  });
+
+  it.each([
+    {
+      label: 'team lead agent name',
+      teams: [{ name: 'Team X', teamLeadAgentName: 'Ghost', memberAgentNames: ['Agent A'] }],
+      message: 'references team lead "Ghost" which was not found',
+    },
+    {
+      label: 'profile name',
+      teams: [{ name: 'Team X', memberAgentNames: ['Agent A'], profileNames: ['Ghost Profile'] }],
+      message: 'references profile "Ghost Profile" which was not found',
+    },
+    {
+      label: 'profile selection',
+      teams: [
+        {
+          name: 'Team X',
+          memberAgentNames: ['Agent A'],
+          profileSelections: [{ profileName: 'Ghost Profile', configNames: ['Config'] }],
+        },
+      ],
+      message: 'references profile "Ghost Profile" in profileSelections which was not found',
+    },
+  ])('throws when a $label is not found', async ({ teams, message }) => {
+    const teamsService = makeTeamsService();
+
+    await expect(
+      teamsCodec.apply(teamSection(teams), seedCtx(), 'replace', rt(teamsService)),
+    ).rejects.toThrow(message);
   });
 
   it('config name resolution is case-insensitive', async () => {
@@ -185,6 +236,48 @@ describe('teams codec — apply (resolution against live storage)', () => {
     );
     expect(result.log).toEqual({ teams: 0 });
   });
+
+  it('returns 0 for empty teams without reading storage', async () => {
+    const teamsService = makeTeamsService();
+    const storage = makeStorage();
+
+    const result = await teamsCodec.apply(
+      teamSection([]),
+      seedCtx(),
+      'replace',
+      rt(teamsService, storage),
+    );
+
+    expect(result.log).toEqual({ teams: 0 });
+    expect(storage.listAgents).not.toHaveBeenCalled();
+    expect(teamsService.createTeam).not.toHaveBeenCalled();
+  });
+
+  it('omits profileConfigSelections for a legacy team without selections', async () => {
+    const teamsService = makeTeamsService();
+
+    await teamsCodec.apply(
+      teamSection([
+        {
+          name: 'Legacy Team',
+          memberAgentNames: ['Agent A'],
+          profileNames: ['Profile 1'],
+        },
+      ]),
+      seedCtx(),
+      'replace',
+      rt(teamsService),
+    );
+
+    expect(teamsService.createTeam).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      name: 'Legacy Team',
+      description: null,
+      teamLeadAgentId: null,
+      memberAgentIds: ['agent-1'],
+      profileIds: ['profile-new-1'],
+    });
+  });
 });
 
 describe('teams codec — scoped partial-failure cleanup (replace)', () => {
@@ -211,6 +304,108 @@ describe('teams codec — scoped partial-failure cleanup (replace)', () => {
     expect(teamsService.deleteTeamsByIds).toHaveBeenCalledWith(['imported-1', 'imported-2']);
     // Scoped cleanup never calls the project-wide delete.
     expect(teamsService.deleteTeamsByProject).not.toHaveBeenCalled();
+  });
+
+  it('cleans up only created teams when a later team fails validation', async () => {
+    const teamsService = makeTeamsService();
+    teamsService.createTeam
+      .mockResolvedValueOnce({ id: 'imported-1' })
+      .mockResolvedValueOnce({ id: 'imported-2' });
+
+    await expect(
+      teamsCodec.apply(
+        teamSection([
+          { name: 'A', memberAgentNames: ['Agent A'] },
+          { name: 'B', memberAgentNames: ['Agent B'] },
+          { name: 'C', memberAgentNames: ['Agent A'], profileNames: ['Unknown Profile'] },
+        ]),
+        seedCtx(),
+        'replace',
+        rt(teamsService),
+      ),
+    ).rejects.toThrow('references profile "Unknown Profile" which was not found');
+
+    expect(teamsService.createTeam).toHaveBeenCalledTimes(2);
+    expect(teamsService.deleteTeamsByIds).toHaveBeenCalledWith(['imported-1', 'imported-2']);
+    expect(teamsService.deleteTeamsByProject).not.toHaveBeenCalled();
+  });
+});
+
+describe('teams codec — override composition', () => {
+  it('preserves template capacity when no overrides are provided', async () => {
+    const teamsService = makeTeamsService();
+    const teams = teamSection([{ name: 'Dev Team', memberAgentNames: ['Agent A'], maxMembers: 4 }]);
+
+    await teamsCodec.apply(teams, seedCtx(), 'replace', rt(teamsService));
+
+    expect(teamsService.createTeam).toHaveBeenCalledWith(
+      expect.objectContaining({ maxMembers: 4 }),
+    );
+  });
+
+  it('applies runtime capacity overrides to the original template teams', async () => {
+    const teamsService = makeTeamsService();
+    const teams = teamSection([{ name: 'Dev Team', memberAgentNames: ['Agent A'], maxMembers: 4 }]);
+
+    await teamsCodec.apply(
+      teams,
+      seedCtx(),
+      'replace',
+      rt(teamsService, makeStorage(), {
+        teamOverrides: [{ teamName: 'Dev Team', maxMembers: 9 }],
+      }),
+    );
+
+    expect(teamsService.createTeam).toHaveBeenCalledWith(
+      expect.objectContaining({ maxMembers: 9 }),
+    );
+  });
+
+  it('resolves remapped override selections through post-remap profile and config ids', async () => {
+    const teamsService = makeTeamsService();
+    const storage = makeStorage({
+      profiles: [{ id: 'p-claude', name: 'claude-default' }],
+      configs: [{ id: 'c1', name: 'claude-local', profileId: 'p-claude' }],
+    });
+    const teams = teamSection([
+      {
+        name: 'Dev Team',
+        memberAgentNames: ['Agent A'],
+        profileNames: ['codex-default'],
+        profileSelections: [{ profileName: 'codex-default', configNames: ['claude-local'] }],
+      },
+    ]);
+
+    await teamsCodec.apply(
+      teams,
+      seedCtx({
+        profilesToCreate: [
+          {
+            id: 'profile-codex',
+            name: 'claude-default',
+            providerConfigs: [{ name: 'claude-local' }],
+          },
+        ],
+        profileNameRemapMap: new Map([['codex-default', 'claude-default']]),
+        profileIdMap: { 'profile-codex': 'p-claude' },
+        configLookupMap: new Map([['p-claude:claude-local', 'c1']]),
+      }),
+      'replace',
+      rt(teamsService, storage, {
+        teamOverrides: [
+          {
+            teamName: 'Dev Team',
+            profileSelections: [{ profileName: 'codex-default', configNames: ['claude-local'] }],
+          },
+        ],
+      }),
+    );
+
+    expect(teamsService.createTeam).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profileConfigSelections: [{ profileId: 'p-claude', configIds: ['c1'] }],
+      }),
+    );
   });
 });
 

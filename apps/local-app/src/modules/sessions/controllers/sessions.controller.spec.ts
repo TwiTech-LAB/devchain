@@ -22,7 +22,11 @@ describe('SessionsController', () => {
   let mockMessagePoolService: jest.Mocked<
     Pick<
       SessionsMessagePoolService,
-      'getMessageLog' | 'getPoolDetails' | 'getMessageById' | 'releaseHumanHeldMessages'
+      | 'getMessageLog'
+      | 'getPoolDetails'
+      | 'getMessageById'
+      | 'releaseHumanHeldMessages'
+      | 'forceDeferredDelivery'
     >
   >;
   let mockStorage: { getAgent: jest.Mock };
@@ -66,6 +70,9 @@ describe('SessionsController', () => {
       getPoolDetails: jest.fn().mockReturnValue([]),
       getMessageById: jest.fn().mockReturnValue(null),
       releaseHumanHeldMessages: jest.fn().mockResolvedValue({ status: 'released' }),
+      forceDeferredDelivery: jest
+        .fn()
+        .mockResolvedValue({ status: 'delivered', deliveredCount: 1 }),
     };
 
     mockStorage = {
@@ -315,6 +322,78 @@ describe('SessionsController', () => {
       await expect(
         controller.releaseHumanHold(VALID_AGENT_ID, { projectId: 'bad-project' }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('POST /pools/:agentId/force-deferred', () => {
+    const VALID_SESSION_ID = '880e8400-e29b-41d4-a716-446655440003';
+    const VALID_MSG_ID = '990e8400-e29b-41d4-a716-446655440004';
+
+    it('returns the delivery result on success', async () => {
+      await expect(
+        controller.forceDeferred(VALID_AGENT_ID, {
+          projectId: VALID_PROJECT_ID,
+          sessionId: VALID_SESSION_ID,
+          messageIds: [VALID_MSG_ID],
+        }),
+      ).resolves.toEqual({ status: 'delivered', deliveredCount: 1 });
+      expect(mockMessagePoolService.forceDeferredDelivery).toHaveBeenCalledWith(
+        VALID_AGENT_ID,
+        VALID_PROJECT_ID,
+        VALID_SESSION_ID,
+        [VALID_MSG_ID],
+      );
+    });
+
+    it('maps not_found to NotFoundException', async () => {
+      mockMessagePoolService.forceDeferredDelivery.mockResolvedValueOnce({ status: 'not_found' });
+      await expect(
+        controller.forceDeferred(VALID_AGENT_ID, {
+          projectId: VALID_PROJECT_ID,
+          sessionId: VALID_SESSION_ID,
+          messageIds: [VALID_MSG_ID],
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('maps conflict to ConflictException', async () => {
+      mockMessagePoolService.forceDeferredDelivery.mockResolvedValueOnce({
+        status: 'conflict',
+        reason: 'Message batch has changed',
+      });
+      await expect(
+        controller.forceDeferred(VALID_AGENT_ID, {
+          projectId: VALID_PROJECT_ID,
+          sessionId: VALID_SESSION_ID,
+          messageIds: [VALID_MSG_ID],
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('rejects invalid agent id', async () => {
+      await expect(
+        controller.forceDeferred('bad-id', {
+          projectId: VALID_PROJECT_ID,
+          sessionId: VALID_SESSION_ID,
+          messageIds: [VALID_MSG_ID],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects empty messageIds array', async () => {
+      await expect(
+        controller.forceDeferred(VALID_AGENT_ID, {
+          projectId: VALID_PROJECT_ID,
+          sessionId: VALID_SESSION_ID,
+          messageIds: [],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects missing body fields', async () => {
+      await expect(controller.forceDeferred(VALID_AGENT_ID, {})).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
     });
   });
 

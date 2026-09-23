@@ -376,14 +376,47 @@ describe('EpicsService external task import', () => {
     ).toEqual({ connectionId: connection.id });
   });
 
-  it('returns the original Epic and project for a global remote identity imported elsewhere', async () => {
+  it('returns the same project Epic after disconnect and reconnect without rebinding', async () => {
+    const originalConnection = await connectClickUp(projectId, 'original-token');
+    const original = await service.importExternalTask(
+      serviceImportInput({ taskId: 'task-reconnect' }),
+    );
+
+    await storage.disconnectIntegrationConnection({ projectId, provider: 'clickup' });
+    const reconnected = await connectClickUp(projectId, 'fresh-token');
+    expect(reconnected.id).not.toBe(originalConnection.id);
+
+    const repeated = await service.importExternalTask(
+      serviceImportInput({ taskId: 'task-reconnect' }),
+    );
+
+    // The project keeps its original Epic and link; the disconnected
+    // snapshot's null connection id survives — reconnect never rebinds it.
+    expect(repeated).toMatchObject({
+      created: false,
+      epic: { id: original.epic.id, projectId },
+      externalTaskLink: { id: original.externalTaskLink.id, connectionId: null },
+    });
+    expect(
+      sqlite
+        .prepare('SELECT connection_id AS connectionId FROM external_task_links WHERE id = ?')
+        .get(original.externalTaskLink.id),
+    ).toEqual({ connectionId: null });
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM epics').get()).toEqual({ count: 1 });
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM external_task_links').get()).toEqual({
+      count: 1,
+    });
+    expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('imports one remote identity per project and keeps each project on reimport', async () => {
     const otherProject = await storage.createProject({
       name: 'Other import project',
       description: null,
       rootPath: '/tmp/other-import-project',
     });
     const otherStatus = (await storage.listStatuses(otherProject.id)).items[0]!;
-    const [originalConnection] = await Promise.all([
+    const [originalConnection, otherConnection] = await Promise.all([
       connectClickUp(projectId, 'original-project-token'),
       connectClickUp(otherProject.id, 'other-project-token'),
     ]);
@@ -391,15 +424,29 @@ describe('EpicsService external task import', () => {
       serviceImportInput({ taskId: 'task-global-existing' }),
     );
 
-    const repeated = await service.importExternalTask(
+    // Another project imports the same remote identity as its own Epic;
+    // it never receives the first project's Epic or link.
+    const otherImport = await service.importExternalTask(
       serviceImportInput({
         projectId: otherProject.id,
         statusId: otherStatus.id,
         taskId: 'task-global-existing',
-        title: 'Duplicate attempt in another project',
+        title: 'Same task in another project',
       }),
     );
+    expect(otherImport).toMatchObject({
+      created: true,
+      epic: { id: expect.not.stringMatching(original.epic.id), projectId: otherProject.id },
+      externalTaskLink: {
+        id: expect.not.stringMatching(original.externalTaskLink.id),
+        connectionId: otherConnection.id,
+      },
+    });
 
+    // Each repeat import returns its own project's original Epic and link.
+    const repeated = await service.importExternalTask(
+      serviceImportInput({ taskId: 'task-global-existing' }),
+    );
     expect(repeated).toMatchObject({
       created: false,
       epic: { id: original.epic.id, projectId },
@@ -408,13 +455,26 @@ describe('EpicsService external task import', () => {
         connectionId: originalConnection.id,
       },
     });
-    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM epics').get()).toEqual({ count: 1 });
+    const repeatedOther = await service.importExternalTask(
+      serviceImportInput({
+        projectId: otherProject.id,
+        statusId: otherStatus.id,
+        taskId: 'task-global-existing',
+        title: 'Same task in another project',
+      }),
+    );
+    expect(repeatedOther).toMatchObject({
+      created: false,
+      epic: { id: otherImport.epic.id, projectId: otherProject.id },
+      externalTaskLink: { id: otherImport.externalTaskLink.id },
+    });
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM epics').get()).toEqual({ count: 2 });
     expect(sqlite.prepare('SELECT COUNT(*) AS count FROM external_task_links').get()).toEqual({
-      count: 1,
+      count: 2,
     });
   });
 
-  it('keeps concurrent cross-project imports idempotent under the global remote key', async () => {
+  it('lets concurrent cross-project imports create one Epic in each project', async () => {
     const otherProject = await storage.createProject({
       name: 'Concurrent import project',
       description: null,
@@ -437,15 +497,16 @@ describe('EpicsService external task import', () => {
       ),
     ]);
 
-    expect(results.map((result) => result.created).sort()).toEqual([false, true]);
-    expect(new Set(results.map((result) => result.epic.id)).size).toBe(1);
-    expect(new Set(results.map((result) => result.epic.projectId)).size).toBe(1);
-    expect(new Set(results.map((result) => result.externalTaskLink.id)).size).toBe(1);
-    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM epics').get()).toEqual({ count: 1 });
+    expect(results.map((result) => result.created)).toEqual([true, true]);
+    expect(results[0]!.epic.projectId).toBe(projectId);
+    expect(results[1]!.epic.projectId).toBe(otherProject.id);
+    expect(new Set(results.map((result) => result.epic.id)).size).toBe(2);
+    expect(new Set(results.map((result) => result.externalTaskLink.id)).size).toBe(2);
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM epics').get()).toEqual({ count: 2 });
     expect(sqlite.prepare('SELECT COUNT(*) AS count FROM external_task_links').get()).toEqual({
-      count: 1,
+      count: 2,
     });
-    expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
+    expect(eventsService.emitCommitted).toHaveBeenCalledTimes(2);
     expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { BoardArchivedFilter } from '@/ui/pages/board/lib/board-api';
 import type { Epic, EpicsQueryData } from '@/ui/types';
+import { boardCacheKeys } from '@/ui/lib/board-cache';
 
 export interface UseBoardDragDropArgs {
-  epicsKey: readonly ['epics', string | null | undefined, BoardArchivedFilter];
+  epicsKey: ReturnType<typeof boardCacheKeys.list>;
   parentFilter: string | undefined;
   onDropStatusChange: (
     epic: Pick<Epic, 'id' | 'parentId' | 'version'>,
@@ -81,7 +81,7 @@ export function useBoardDragDrop({
 
       if (parentFilter && epicToUpdate.parentId === parentFilter) {
         queryClient.setQueryData(
-          ['epics', 'parent', parentFilter],
+          boardCacheKeys.children(parentFilter),
           (old: EpicsQueryData | undefined) => ({
             ...old,
             items: ((old?.items ?? []) as Epic[]).map((e: Epic) =>

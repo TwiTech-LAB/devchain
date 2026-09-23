@@ -7,12 +7,13 @@ import { Loader2 } from 'lucide-react';
 import { useSettingsData } from './useSettingsData';
 
 const DEFAULT_EPIC_ASSIGNED_TEMPLATE =
-  '[Epic Assignment]\n{epic_title} is now assigned to {agent_name} in {project_name}. (Epic ID: {epic_id})';
+  '[Epic Assignment]\n{epic_title} is now assigned to {agent_name} in {project_name}. Status: {epic_status}. (Epic ID: {epic_id})';
 
 const EPIC_ASSIGNED_PLACEHOLDERS = [
   { token: '{epic_id}', description: 'Epic UUID' },
   { token: '{agent_name}', description: 'Agent display name' },
   { token: '{epic_title}', description: 'Epic title' },
+  { token: '{epic_status}', description: 'Current epic status' },
   { token: '{project_name}', description: 'Project name' },
   { token: '{assigner_name}', description: 'Who assigned the epic (or "System" if unknown)' },
 ];

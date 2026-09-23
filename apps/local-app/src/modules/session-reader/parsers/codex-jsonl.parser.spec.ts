@@ -1534,3 +1534,155 @@ describe('CodexJsonlParser', () => {
     }
   });
 });
+
+describe('parseCodexJsonl bounded incremental reads (endByteOffset)', () => {
+  function rawFile(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-bounded-'));
+    const filePath = path.join(dir, 'rollout.jsonl');
+    fs.writeFileSync(filePath, content);
+    return filePath;
+  }
+  const serialize = (lines: object[]): string => lines.map((l) => JSON.stringify(l)).join('\n');
+  const userCount = (messages: { role: string }[]): number =>
+    messages.filter((m) => m.role === 'user').length;
+
+  it('holds back an unterminated final line and advances the offset only to its start', async () => {
+    const head =
+      serialize([sessionMeta(), turnContext('o3'), taskStarted(), userMessage('first')]) + '\n';
+    const partial = JSON.stringify(userMessage('second')); // no trailing newline yet
+    const filePath = rawFile(head + partial);
+    const size = fs.statSync(filePath).size;
+
+    const first = await parseCodexJsonl(filePath, { byteOffset: 0, endByteOffset: size });
+    expect(userCount(first.messages)).toBe(1);
+    expect(first.bytesRead).toBe(Buffer.byteLength(head));
+    expect(first.bytesRead).toBeLessThan(size);
+
+    fs.appendFileSync(filePath, '\n');
+    const size2 = fs.statSync(filePath).size;
+    const second = await parseCodexJsonl(filePath, {
+      byteOffset: first.bytesRead,
+      endByteOffset: size2,
+    });
+    expect(userCount(second.messages)).toBe(1); // completed line read exactly once
+    expect(second.bytesRead).toBe(size2);
+  });
+
+  it('never advances nextByteOffset past the file when the sole line lacks a newline', async () => {
+    const filePath = rawFile(JSON.stringify(userMessage('only'))); // one unterminated line
+    const size = fs.statSync(filePath).size;
+    const result = await parseCodexJsonl(filePath, { byteOffset: 0, endByteOffset: size });
+    expect(result.bytesRead).toBe(0);
+    expect(result.bytesRead).toBeLessThanOrEqual(size);
+  });
+
+  it('consumes no bytes beyond the bound when the file has grown past the proven snapshot', async () => {
+    const proven =
+      serialize([sessionMeta(), turnContext('o3'), taskStarted(), userMessage('a')]) + '\n';
+    const grown = JSON.stringify(userMessage('b')) + '\n';
+    const filePath = rawFile(proven + grown);
+    const bound = Buffer.byteLength(proven);
+
+    const first = await parseCodexJsonl(filePath, { byteOffset: 0, endByteOffset: bound });
+    expect(userCount(first.messages)).toBe(1);
+    expect(first.bytesRead).toBe(bound); // stopped exactly at the proven snapshot
+
+    const second = await parseCodexJsonl(filePath, {
+      byteOffset: bound,
+      endByteOffset: Buffer.byteLength(proven + grown),
+    });
+    expect(userCount(second.messages)).toBe(1); // withheld bytes arrive next pass, once
+  });
+});
+
+describe('parseCodexJsonl carried token baseline (continuation state)', () => {
+  function rawFile(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-baseline-'));
+    const filePath = path.join(dir, 'rollout.jsonl');
+    fs.writeFileSync(filePath, content);
+    return filePath;
+  }
+
+  // A fixture with two turns, two token_count events, and a model change between the turns.
+  const fixtureLines: object[] = [
+    sessionMeta(),
+    turnContext('o3'),
+    taskStarted('turn_001'),
+    userMessage('Question one', '2026-02-24T10:00:03.000Z'),
+    assistantMessage('Answer one', '2026-02-24T10:00:05.000Z'),
+    tokenCount(1000, 200, 500, '2026-02-24T10:00:06.000Z'),
+    taskComplete('turn_001', '2026-02-24T10:00:07.000Z'),
+    turnContext('gpt-5-codex'), // model change
+    taskStarted('turn_002'),
+    userMessage('Question two', '2026-02-24T10:01:00.000Z'),
+    assistantMessage('Answer two', '2026-02-24T10:01:02.000Z'),
+    tokenCount(1600, 400, 800, '2026-02-24T10:01:03.000Z'),
+    taskComplete('turn_002', '2026-02-24T10:01:04.000Z'),
+  ];
+  const serialized = fixtureLines.map((line) => JSON.stringify(line));
+  const content = serialized.join('\n') + '\n';
+  // Exclusive byte offset at the end of each line (a valid line boundary).
+  const lineEnds: number[] = [];
+  serialized.reduce((acc, line) => {
+    const next = acc + Buffer.byteLength(line) + 1;
+    lineEnds.push(next);
+    return next;
+  }, 0);
+
+  it.each([
+    { label: 'mid first turn (before the assistant / any token_count)', lineIndex: 3 },
+    { label: 'across a token_count event', lineIndex: 5 },
+    { label: 'across the model change', lineIndex: 7 },
+    { label: 'across the second token_count', lineIndex: 11 },
+  ])('a carried baseline is deep-equal to the prefix rescan: $label', async ({ lineIndex }) => {
+    const filePath = rawFile(content);
+    const cut = lineEnds[lineIndex];
+
+    // The baseline the cache would carry: the end state of the parse that stopped at `cut`.
+    const prefix = await parseCodexJsonl(filePath, { byteOffset: 0, endByteOffset: cut });
+    const withBaseline = await parseCodexJsonl(filePath, {
+      byteOffset: cut,
+      baseline: prefix.endTokenSnapshot,
+    });
+    const withRescan = await parseCodexJsonl(filePath, { byteOffset: cut });
+
+    expect(withBaseline.messages).toEqual(withRescan.messages);
+    expect(withBaseline.metrics).toEqual(withRescan.metrics);
+    expect(withBaseline.endTokenSnapshot).toEqual(withRescan.endTokenSnapshot);
+    expect(withBaseline.bytesRead).toBe(withRescan.bytesRead);
+  });
+
+  it('does not open a prefix read stream when a baseline is provided', async () => {
+    const filePath = rawFile(content);
+    const cut = lineEnds[7];
+    const prefix = await parseCodexJsonl(filePath, { byteOffset: 0, endByteOffset: cut });
+
+    // The prefix rescan is the only read that opens the file at `start: 0`; the main read
+    // opens at `start: cut`. Record the `start` of every stream the parser opens. The parser's
+    // `import * as fs` delegates to the real module at call time, so patch that singleton (the
+    // wrapped namespace's getter is non-configurable and cannot be spied directly).
+    const realFs = jest.requireActual<typeof import('node:fs')>('node:fs');
+    const originalCreateReadStream = realFs.createReadStream;
+    const starts: (number | undefined)[] = [];
+    const recordStart: typeof realFs.createReadStream = (streamPath, opts) => {
+      starts.push((opts as { start?: number } | undefined)?.start);
+      return originalCreateReadStream(streamPath as string, opts as never);
+    };
+
+    try {
+      realFs.createReadStream = recordStart;
+
+      starts.length = 0;
+      await parseCodexJsonl(filePath, { byteOffset: cut, baseline: prefix.endTokenSnapshot });
+      // Only the main read from `cut`; the prefix (start: 0) is never opened.
+      expect(starts).not.toContain(0);
+
+      starts.length = 0;
+      await parseCodexJsonl(filePath, { byteOffset: cut });
+      // Without a baseline the prefix IS rescanned from 0 (the once-per-full-parse fallback).
+      expect(starts).toContain(0);
+    } finally {
+      realFs.createReadStream = originalCreateReadStream;
+    }
+  });
+});

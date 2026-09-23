@@ -253,6 +253,9 @@ export function useDeleteEpicRelation(epicId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: epicRelationQueryKeys.detailRoot() });
       void queryClient.invalidateQueries({ queryKey: epicRelationQueryKeys.candidateRoot() });
+      // The Board badge counts refresh here rather than waiting for the
+      // realtime invalidation event to arrive.
+      void queryClient.invalidateQueries({ queryKey: epicRelationQueryKeys.batchRoot() });
     },
   });
 }

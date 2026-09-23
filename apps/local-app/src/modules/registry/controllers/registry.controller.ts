@@ -105,30 +105,17 @@ export class RegistryController {
   @ApiResponse({ status: 200, description: 'Download result' })
   @ApiResponse({ status: 404, description: 'Template not found' })
   async downloadTemplate(@Param('slug') slug: string, @Param('version') version: string) {
-    // Check if already cached
-    if (this.cacheService.isCached(slug, version)) {
+    const result = await this.orchestrationService.downloadToCache(slug, version);
+
+    if (result.cached) {
       return { success: true, cached: true, message: 'Already cached' };
     }
-
-    // Download from registry
-    const result = await this.registryClient.downloadTemplate(slug, version);
-
-    // Calculate content size
-    const contentStr = JSON.stringify(result.content);
-    const size = Buffer.byteLength(contentStr, 'utf-8');
-
-    // Save to cache
-    await this.cacheService.saveTemplate(slug, version, result.content, {
-      cachedAt: new Date().toISOString(),
-      checksum: result.checksum,
-      size,
-    });
 
     return {
       success: true,
       cached: false,
       checksum: result.checksum,
-      size,
+      size: result.size,
     };
   }
 

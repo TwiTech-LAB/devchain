@@ -1,6 +1,6 @@
 # ASD-STE100 Skill — Simplified Technical English for Agent Output
 
-A DevChain first-party skill that rewrites dense, ambiguous English into [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/) (STE) — the controlled-language standard the aerospace and defense industry built so aircraft maintenance instructions cannot be misread.
+A DevChain first-party skill that writes new text, or rewrites dense, ambiguous English, in [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/) (STE) — the controlled-language standard the aerospace and defense industry built so aircraft maintenance instructions cannot be misread.
 
 This skill repurposes that same discipline for a different reader: an **AI agent** parsing another agent's output, a tool description, an error message, or an inter-agent instruction, with no human in the loop to resolve ambiguity.
 
@@ -15,26 +15,25 @@ An LLM agent parsing another agent's output is in a strikingly similar position 
 | Before | After |
 |---|---|
 | "This tool will attempt to synchronize state across the various backends that have been configured, and if a conflict is detected it may resolve it automatically depending on the strategy that has been set, or otherwise it will surface the conflict for manual review." | "The tool synchronizes state across the configured backends. If it finds a conflict, it checks the current strategy. If the strategy allows automatic resolution, the tool resolves the conflict. If not, the tool reports the conflict for manual review." |
-| "An error may have occurred while processing your request due to a possible mismatch in the expected data format, which could be caused by an outdated client version." | "The request failed. The data format did not match what the server expected. Check your client version — an outdated client is the most common cause." |
+| "An error may have occurred while processing your request due to a possible mismatch in the expected data format, which could be caused by an outdated client version." | "The request failed. The data format did not match the format that the server expects. An outdated client version can cause this error." |
 
-More worked examples in [`examples/before-after.md`](examples/before-after.md).
+More worked examples are at the end of [`SKILL.md`](SKILL.md).
 
 ## What This Skill Does
 
-1. Reads the input English text for meaning.
-2. Flags every rule violation sentence-by-sentence: ambiguous word choice, present-perfect/complex tense, passive voice with an unclear actor, multi-instruction sentences, oversized noun clusters, dropped words, sentences over length.
-3. Rewrites each flagged sentence — without dropping any fact, condition, or scope qualifier from the original. If a shorter phrasing would lose required precision, it keeps the longer phrasing and flags the trade-off instead of silently simplifying.
-4. Outputs the rewritten text and nothing else — no change table, no rule-by-rule list, no edit summary. The one exception is a trade-off it could not resolve: if a sentence cannot be simplified without the loss of a fact, a condition, or a hedge, it names that sentence in a single line.
+It has two uses:
 
-It does **not** reproduce ASD's official ~900-word approved dictionary — that is ASD's own free-to-download standard. This skill applies the underlying *principle* (plainest available word, used the same way every time) rather than checking against a fixed word list. For certified STE-compliant documentation, use the real standard.
+- **Write:** an agent applies the rules while it writes its own text, such as a plan, an epic description, or a message to another agent. There is no separate rewrite pass.
+- **Rewrite:** the skill applies the rules to text that it receives.
 
-Exactly where it falls short of certified STE: [`references/writing-rules.md`](references/writing-rules.md).
+In both uses, the output is the final text only — no change table, no rule-by-rule list, no edit summary. It keeps the input format, and it returns compliant text unchanged. The one exception is a trade-off it could not resolve: if a sentence cannot be simplified without the loss of a fact, a condition, or a hedge, it keeps the long sentence and names it in one line.
+
+It does **not** reproduce ASD's official ~900-word approved dictionary. It applies the underlying *principle* (plainest available word, used the same way every time) rather than checking against a fixed word list. For certified STE-compliant documentation, a human must check the text word by word against the real standard.
 
 ## Installation
 
-The skill is self-contained: `SKILL.md` reads its two supporting files by relative path and
-calls no DevChain tool. Copy the directory into `~/.claude/skills/` and Claude Code picks it
-up. Use `~/.claude/skills/asd-ste100-skill/` as the target — the directory name should match
+The skill is self-contained: everything is in `SKILL.md`, and it calls no DevChain tool.
+Copy the directory into `~/.claude/skills/` and Claude Code picks it up. Use `~/.claude/skills/asd-ste100-skill/` as the target — the directory name should match
 the frontmatter `name`.
 
 Download just this directory out of the monorepo, with [degit](https://github.com/Rich-Harris/degit):
@@ -58,12 +57,13 @@ the same command again and overwrite.
 
 ## Usage
 
-Trigger with a request to rewrite or clarify English text:
+Trigger with a request to write or rewrite English text in STE:
 
 ```
 Apply ASD-STE100 to this tool description
 Rewrite this error message so an agent can't misparse it
 STE rewrite this instruction
+Write the epic description in STE
 ```
 
 Or paste text and ask Claude to "reduce ambiguity in this output."

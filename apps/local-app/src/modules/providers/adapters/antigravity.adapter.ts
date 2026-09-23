@@ -19,7 +19,7 @@ import { AntigravityTrustedWorkspacesService } from '../../core/services/antigra
  * with a full-screen bubbletea TUI and a per-conversation SQLite store under
  * `~/.gemini/antigravity-cli/`.
  *
- * Design is locked by the P1-1 spike (`docs/spikes/agy-p1-1-spike-findings.md`):
+ * Provider contract: `docs/provider-standards.md` (Antigravity specifics).
  * - Initial prompt is seeded at launch via `initialPromptSeedMode = 'argv'` — agy
  *   is argv-only (spike (g): stdin is rejected with `flag needs an argument`). The
  *   shared launch pipeline (P1-2b) renders the prompt before `resolveLaunchConfig`

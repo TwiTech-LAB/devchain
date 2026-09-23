@@ -12,10 +12,52 @@ import {
   ProjectsListParamsSchema,
   SendMessageParamsSchema,
   SendMessageResponse,
+  SkillsUsageStatsParamsSchema,
+  SkillsSetEnabledParamsSchema,
+  ListSkillsParamsSchema,
   TmuxSessionIdSchema,
   RegisterGuestParamsSchema,
   UpdateEpicParamsSchema,
+  ListEpicsParamsSchema,
+  GetEpicByIdParamsSchema,
 } from './mcp.dto';
+
+describe('ListEpicsParamsSchema includeDescription flag', () => {
+  it('accepts the optional flag and still rejects unknown keys', () => {
+    expect(
+      ListEpicsParamsSchema.parse({ sessionId: 'abcd1234', includeDescription: true }),
+    ).toEqual({ sessionId: 'abcd1234', includeDescription: true });
+    expect(ListEpicsParamsSchema.safeParse({ sessionId: 'abcd1234' }).success).toBe(true);
+    expect(
+      ListEpicsParamsSchema.safeParse({ sessionId: 'abcd1234', includeDescription: 'yes' }).success,
+    ).toBe(false);
+    expect(
+      ListEpicsParamsSchema.safeParse({
+        sessionId: 'abcd1234',
+        includeDescription: true,
+        unknownKey: 1,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('GetEpicByIdParamsSchema includeParentDescription flag', () => {
+  const base = {
+    sessionId: 'abcd1234',
+    id: '00000000-0000-0000-0000-000000000001',
+  };
+
+  it('accepts the optional flag and still rejects unknown keys', () => {
+    expect(
+      GetEpicByIdParamsSchema.safeParse({ ...base, includeParentDescription: true }).success,
+    ).toBe(true);
+    expect(GetEpicByIdParamsSchema.safeParse(base).success).toBe(true);
+    expect(
+      GetEpicByIdParamsSchema.safeParse({ ...base, includeParentDescription: 'yes' }).success,
+    ).toBe(false);
+    expect(GetEpicByIdParamsSchema.safeParse({ ...base, unknownKey: 1 }).success).toBe(false);
+  });
+});
 
 describe('TmuxSessionIdSchema - command injection prevention', () => {
   describe('valid session IDs', () => {
@@ -486,6 +528,122 @@ describe('Epic ID prefix support — schema validation', () => {
   });
 });
 
+describe('SkillsUsageStatsParamsSchema', () => {
+  it('accepts a bare sessionId and optional ISO from/to bounds', () => {
+    expect(SkillsUsageStatsParamsSchema.parse({ sessionId: 'abcd1234' })).toEqual({
+      sessionId: 'abcd1234',
+    });
+    expect(
+      SkillsUsageStatsParamsSchema.parse({
+        sessionId: 'abcd1234',
+        from: '2026-01-01T00:00:00.000Z',
+        to: '2026-02-01T00:00:00.000Z',
+      }),
+    ).toEqual({
+      sessionId: 'abcd1234',
+      from: '2026-01-01T00:00:00.000Z',
+      to: '2026-02-01T00:00:00.000Z',
+    });
+  });
+
+  it('rejects limit, offset, and unknown keys', () => {
+    expect(() => SkillsUsageStatsParamsSchema.parse({ sessionId: 'abcd1234', limit: 10 })).toThrow(
+      ZodError,
+    );
+    expect(() => SkillsUsageStatsParamsSchema.parse({ sessionId: 'abcd1234', offset: 0 })).toThrow(
+      ZodError,
+    );
+    expect(() =>
+      SkillsUsageStatsParamsSchema.parse({ sessionId: 'abcd1234', unexpected: true }),
+    ).toThrow(ZodError);
+  });
+
+  it('rejects non-ISO timestamps and short session IDs', () => {
+    expect(() =>
+      SkillsUsageStatsParamsSchema.parse({ sessionId: 'abcd1234', from: 'yesterday' }),
+    ).toThrow(ZodError);
+    expect(() => SkillsUsageStatsParamsSchema.parse({ sessionId: 'short' })).toThrow(ZodError);
+    expect(() => SkillsUsageStatsParamsSchema.parse({})).toThrow(ZodError);
+  });
+});
+
+describe('SkillsSetEnabledParamsSchema', () => {
+  it('accepts 1 to 200 source/name slugs and normalizes them', () => {
+    expect(
+      SkillsSetEnabledParamsSchema.parse({
+        sessionId: 'abcd1234',
+        slugs: [' OpenAI/Code-Review '],
+        enabled: false,
+      }),
+    ).toEqual({ sessionId: 'abcd1234', slugs: ['openai/code-review'], enabled: false });
+
+    const many = Array.from({ length: 200 }, (_, index) => `src/skill-${index}`);
+    expect(
+      SkillsSetEnabledParamsSchema.parse({ sessionId: 'abcd1234', slugs: many, enabled: true }),
+    ).toEqual({ sessionId: 'abcd1234', slugs: many, enabled: true });
+  });
+
+  it('rejects empty and oversized slug arrays', () => {
+    expect(() =>
+      SkillsSetEnabledParamsSchema.parse({ sessionId: 'abcd1234', slugs: [], enabled: false }),
+    ).toThrow(ZodError);
+    const tooMany = Array.from({ length: 201 }, (_, index) => `src/skill-${index}`);
+    expect(() =>
+      SkillsSetEnabledParamsSchema.parse({ sessionId: 'abcd1234', slugs: tooMany, enabled: false }),
+    ).toThrow(ZodError);
+  });
+
+  it('rejects malformed slugs, non-boolean enabled, and unknown keys', () => {
+    expect(() =>
+      SkillsSetEnabledParamsSchema.parse({
+        sessionId: 'abcd1234',
+        slugs: ['bare'],
+        enabled: false,
+      }),
+    ).toThrow(ZodError);
+    expect(() =>
+      SkillsSetEnabledParamsSchema.parse({
+        sessionId: 'abcd1234',
+        slugs: ['src/../traversal'],
+        enabled: false,
+      }),
+    ).toThrow(ZodError);
+    expect(() =>
+      SkillsSetEnabledParamsSchema.parse({
+        sessionId: 'abcd1234',
+        slugs: ['src/skill'],
+        enabled: 'yes',
+      }),
+    ).toThrow(ZodError);
+    expect(() =>
+      SkillsSetEnabledParamsSchema.parse({
+        sessionId: 'abcd1234',
+        slugs: ['src/skill'],
+        enabled: false,
+        unexpected: 1,
+      }),
+    ).toThrow(ZodError);
+  });
+});
+
+describe('listSkillsSchema - includeDisabled', () => {
+  it('accepts the optional includeDisabled flag and rejects unknown keys', () => {
+    expect(ListSkillsParamsSchema.parse({ sessionId: 'abcd1234', includeDisabled: true })).toEqual({
+      sessionId: 'abcd1234',
+      includeDisabled: true,
+    });
+    expect(ListSkillsParamsSchema.parse({ sessionId: 'abcd1234' })).toEqual({
+      sessionId: 'abcd1234',
+    });
+    expect(() =>
+      ListSkillsParamsSchema.parse({ sessionId: 'abcd1234', includeDisabled: 'yes' }),
+    ).toThrow(ZodError);
+    expect(() => ListSkillsParamsSchema.parse({ sessionId: 'abcd1234', unexpected: true })).toThrow(
+      ZodError,
+    );
+  });
+});
+
 describe('MCP epic DTO schemas - skillsRequired validation', () => {
   it('normalizes and deduplicates skillsRequired for create epic params', () => {
     const parsed = CreateEpicParamsSchema.parse({
@@ -505,6 +663,70 @@ describe('MCP epic DTO schemas - skillsRequired validation', () => {
         skillsRequired: ['openai'],
       }),
     ).toThrow(ZodError);
+  });
+
+  describe('CreateEpicParamsSchema relation list', () => {
+    const base = { sessionId: 'abcd1234', title: 'Epic' };
+
+    it('accepts 1 to 20 strict relation entries', () => {
+      const single = CreateEpicParamsSchema.safeParse({
+        ...base,
+        relations: [{ relatedEpicId: '11111111-1111-4111-8111-111111111111', relation: 'related' }],
+      });
+      expect(single.success).toBe(true);
+
+      const twenty = CreateEpicParamsSchema.safeParse({
+        ...base,
+        relations: Array.from({ length: 20 }, () => ({
+          relatedEpicId: '11111111-1111-4111-8111-111111111112',
+          relation: 'blocks' as const,
+        })),
+      });
+      expect(twenty.success).toBe(true);
+    });
+
+    it('rejects an empty list, more than 20 entries, and non-strict items', () => {
+      expect(CreateEpicParamsSchema.safeParse({ ...base, relations: [] }).success).toBe(false);
+      expect(
+        CreateEpicParamsSchema.safeParse({
+          ...base,
+          relations: Array.from({ length: 21 }, () => ({
+            relatedEpicId: '11111111-1111-4111-8111-111111111111',
+            relation: 'related' as const,
+          })),
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateEpicParamsSchema.safeParse({
+          ...base,
+          relations: [
+            {
+              relatedEpicId: '11111111-1111-4111-8111-111111111111',
+              relation: 'related' as const,
+              extra: true,
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    });
+
+    it('keeps the single relation field working and rejects it together with relations', () => {
+      expect(
+        CreateEpicParamsSchema.safeParse({
+          ...base,
+          relation: { relatedEpicId: '11111111-1111-4111-8111-111111111111', relation: 'related' },
+        }).success,
+      ).toBe(true);
+      expect(
+        CreateEpicParamsSchema.safeParse({
+          ...base,
+          relation: { relatedEpicId: '11111111-1111-4111-8111-111111111111', relation: 'related' },
+          relations: [
+            { relatedEpicId: '11111111-1111-4111-8111-111111111112', relation: 'blocks' },
+          ],
+        }).success,
+      ).toBe(false);
+    });
   });
 
   it('rejects malformed skillsRequired values for update epic params', () => {
@@ -573,6 +795,77 @@ describe('MCP epic DTO schemas - skillsRequired validation', () => {
           assignment: '{"wrong":"field"}',
         }),
       ).toThrow(ZodError);
+    });
+  });
+
+  describe('UpdateEpicParamsSchema description patch fields', () => {
+    const base = {
+      sessionId: 'abcd1234',
+      id: '00000000-0000-0000-0000-000000000001',
+      version: 1,
+    };
+
+    it('accepts descriptionEdits and appendDescription together', () => {
+      const result = UpdateEpicParamsSchema.parse({
+        ...base,
+        descriptionEdits: [{ find: 'old', replace: 'new' }],
+        appendDescription: 'tail',
+      });
+      expect(result.descriptionEdits).toEqual([{ find: 'old', replace: 'new' }]);
+      expect(result.appendDescription).toBe('tail');
+    });
+
+    it('accepts appendDescription alone', () => {
+      expect(UpdateEpicParamsSchema.safeParse({ ...base, appendDescription: 'tail' }).success).toBe(
+        true,
+      );
+    });
+
+    it('rejects description together with descriptionEdits or appendDescription', () => {
+      expect(
+        UpdateEpicParamsSchema.safeParse({
+          ...base,
+          description: 'full text',
+          descriptionEdits: [{ find: 'a', replace: 'b' }],
+        }).success,
+      ).toBe(false);
+      expect(
+        UpdateEpicParamsSchema.safeParse({
+          ...base,
+          description: 'full text',
+          appendDescription: 'tail',
+        }).success,
+      ).toBe(false);
+    });
+
+    it('bounds the edit array between 1 and 50 strict items', () => {
+      expect(UpdateEpicParamsSchema.safeParse({ ...base, descriptionEdits: [] }).success).toBe(
+        false,
+      );
+      expect(
+        UpdateEpicParamsSchema.safeParse({
+          ...base,
+          descriptionEdits: Array.from({ length: 51 }, () => ({ find: 'a', replace: 'b' })),
+        }).success,
+      ).toBe(false);
+      expect(
+        UpdateEpicParamsSchema.safeParse({
+          ...base,
+          descriptionEdits: [{ find: '', replace: 'b' }],
+        }).success,
+      ).toBe(false);
+      expect(
+        UpdateEpicParamsSchema.safeParse({
+          ...base,
+          descriptionEdits: [{ find: 'a', replace: 'b', extra: true }],
+        }).success,
+      ).toBe(false);
+    });
+
+    it('rejects an empty appendDescription', () => {
+      expect(UpdateEpicParamsSchema.safeParse({ ...base, appendDescription: '' }).success).toBe(
+        false,
+      );
     });
   });
 });

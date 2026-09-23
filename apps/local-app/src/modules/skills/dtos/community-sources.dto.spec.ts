@@ -38,7 +38,62 @@ describe('CommunitySources DTO', () => {
       repoOwner: 'JeffAllan',
       repoName: 'claude-skills',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
+  });
+
+  it('carries the existingProjects choice through the url transform', () => {
+    const parsed = CreateCommunitySourceSchema.parse({
+      name: 'jeffallan',
+      url: 'https://github.com/JeffAllan/claude-skills',
+      existingProjects: { mode: 'all' },
+    });
+
+    expect(parsed).toMatchObject({
+      repoOwner: 'JeffAllan',
+      repoName: 'claude-skills',
+      branch: 'main',
+      existingProjects: { mode: 'all' },
+    });
+  });
+
+  it('carries the existingProjects choice through the owner/repo input', () => {
+    const parsed = CreateCommunitySourceSchema.parse({
+      name: 'jeffallan',
+      repoOwner: 'JeffAllan',
+      repoName: 'claude-skills',
+      existingProjects: {
+        mode: 'selected',
+        projectIds: ['00000000-0000-0000-0000-000000000002'],
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      branch: 'main',
+      existingProjects: {
+        mode: 'selected',
+        projectIds: ['00000000-0000-0000-0000-000000000002'],
+      },
+    });
+  });
+
+  it('rejects an invalid existingProjects choice', () => {
+    expect(() =>
+      CreateCommunitySourceSchema.parse({
+        name: 'jeffallan',
+        repoOwner: 'JeffAllan',
+        repoName: 'claude-skills',
+        existingProjects: { mode: 'selected' },
+      }),
+    ).toThrow(ZodError);
+    expect(() =>
+      CreateCommunitySourceSchema.parse({
+        name: 'jeffallan',
+        repoOwner: 'JeffAllan',
+        repoName: 'claude-skills',
+        existingProjects: { mode: 'none', unexpected: 1 },
+      }),
+    ).toThrow(ZodError);
   });
 
   it('returns ZodError for non-github hosts in schema parsing', () => {

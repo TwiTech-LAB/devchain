@@ -38,6 +38,7 @@ function parseArgs(args) {
     wallClockSec: 120,
     budgetBytes: 64 * 1024 * 1024,
   };
+  const explicit = new Set();
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--help') return { help: true };
     const name = {
@@ -47,10 +48,31 @@ function parseArgs(args) {
       '--baseline-sec': 'baselineSec',
       '--append-sec': 'appendSec',
       '--recovery-sec': 'recoverySec',
+      '--profile': 'profile',
     }[args[i]];
     if (!name || args[i + 1] === undefined)
       throw new Error(`Unknown or incomplete option: ${args[i]}`);
-    config[name] = name === 'report' ? path.resolve(args[++i]) : Number(args[++i]);
+    explicit.add(name);
+    config[name] =
+      name === 'report'
+        ? path.resolve(args[++i])
+        : name === 'profile'
+          ? args[++i]
+          : Number(args[++i]);
+  }
+  // Profiles preset a scenario; explicit flags still override their defaults.
+  if (config.profile !== undefined) {
+    assert(config.profile === 'many-unviewed', `Unknown profile: ${config.profile}`);
+    // Many appending Claude+Codex sessions, exactly ONE viewed by the canonical client and the
+    // rest served by the metrics-only lane. This is the case the lane targets: the lane keeps
+    // unviewed watchers at zero cache entries and O(new-bytes) parse work.
+    if (!explicit.has('sessions')) config.sessions = 20;
+    if (!explicit.has('fileMiB')) config.fileMiB = 5;
+    config.formats = ['codex', 'claude'];
+    config.viewedOnly = true;
+  } else {
+    config.formats = ['codex'];
+    config.viewedOnly = false;
   }
   for (const key of ['fileMiB', 'sessions', 'baselineSec', 'appendSec', 'recoverySec']) {
     assert(
@@ -58,12 +80,23 @@ function parseArgs(args) {
       `${key} must be a positive integer`,
     );
   }
-  assert(config.sessions <= 4, 'At most four isolated sessions');
-  assert(config.fileMiB <= 200, 'At most 200 MiB per fixture');
+  if (config.profile === 'many-unviewed') {
+    assert(config.sessions <= 40, 'many-unviewed: at most 40 isolated sessions');
+    assert(config.fileMiB <= 50, 'many-unviewed: at most 50 MiB per fixture');
+    // The whole point of the lane is bounded memory, but the single viewed session still parses
+    // and the BEFORE run retains bodies for every appending watcher, so keep generous headroom.
+    config.childHeapMiB = 2048;
+    config.rssCutoffMiB = 3072;
+    config.wallClockSec = 240;
+  } else {
+    assert(config.sessions <= 4, 'At most four isolated sessions');
+    assert(config.fileMiB <= 200, 'At most 200 MiB per fixture');
+    config.childHeapMiB = config.sessions > 1 ? 1536 : 768;
+    config.rssCutoffMiB = config.sessions > 1 ? 2048 : 1100;
+  }
   assert(config.report, '--report is required');
-  config.childHeapMiB = config.sessions > 1 ? 1536 : 768;
-  config.rssCutoffMiB = config.sessions > 1 ? 2048 : 1100;
   config.acceptanceProfile =
+    config.profile === undefined &&
     [65, 200].includes(config.fileMiB) &&
     (config.sessions === 1 || (config.sessions === 4 && config.fileMiB === 65)) &&
     config.baselineSec >= 15 &&
@@ -139,24 +172,80 @@ function makeTurn(i) {
   ].join('');
 }
 
+// A Claude turn: one user message + one assistant message (end_turn), so message accounting is
+// turns*2, identical to a Codex turn. The large assistant text keeps per-turn bytes comparable.
+const CLAUDE_TS = '2026-09-18T12:00:00.000Z';
+function makeClaudeTurn(i) {
+  const user = `u_${i}`;
+  const assistant = `a_${i}`;
+  return (
+    [
+      JSON.stringify({
+        type: 'user',
+        uuid: user,
+        parentUuid: i === 0 ? null : `a_${i - 1}`,
+        isSidechain: false,
+        timestamp: CLAUDE_TS,
+        message: { role: 'user', content: `Inspect synthetic module ${i}` },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: assistant,
+        parentUuid: user,
+        isSidechain: false,
+        timestamp: CLAUDE_TS,
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4-6',
+          content: [
+            {
+              type: 'text',
+              text:
+                `Inspected synthetic module ${i}\n` +
+                'const syntheticValue = 123; // example source data\n'.repeat(300),
+            },
+          ],
+          stop_reason: 'end_turn',
+          usage: {
+            input_tokens: 120,
+            output_tokens: 60,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      }),
+    ].join('\n') + '\n'
+  );
+}
+
+// fixtures[0] is the single VIEWED session; the canonical client is proven against Codex, so keep
+// it Codex. Remaining sessions alternate formats so both Claude and Codex run in the lane unviewed.
+function providerForIndex(config, index) {
+  return config.formats[index % config.formats.length];
+}
+
 function createFixtures(directory, config) {
   return Array.from({ length: config.sessions }, (_, index) => {
     const id = `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
+    const provider = providerForIndex(config, index);
+    const makeTurnFor = provider === 'claude' ? makeClaudeTurn : makeTurn;
     const file = path.join(directory, `${id}.jsonl`);
     const fd = fs.openSync(file, 'wx');
     let bytes = 0;
     let turns = 0;
     try {
-      bytes = fs.writeSync(
-        fd,
-        line('session_meta', { id }) +
-          line('turn_context', { model: 'o3', context_window: 200000 }),
-      );
-      while (bytes < config.fileMiB * 1024 * 1024) bytes += fs.writeSync(fd, makeTurn(turns++));
+      if (provider === 'codex') {
+        bytes = fs.writeSync(
+          fd,
+          line('session_meta', { id }) +
+            line('turn_context', { model: 'o3', context_window: 200000 }),
+        );
+      }
+      while (bytes < config.fileMiB * 1024 * 1024) bytes += fs.writeSync(fd, makeTurnFor(turns++));
     } finally {
       fs.closeSync(fd);
     }
-    return { id, file, initialBytes: bytes, initialTurns: turns, turns, appends: 0 };
+    return { id, provider, file, initialBytes: bytes, initialTurns: turns, turns, appends: 0 };
   });
 }
 
@@ -218,21 +307,40 @@ function validateCanonical(index, pageSize = 10) {
 
 async function worker({ config, fixtures }) {
   require(path.join(APP, 'node_modules/@nestjs/common')).Logger.overrideLogger(false);
+  // Count every byte the process runs through SHA-256, before requiring the services that hash.
+  // The append proof is what changed between BEFORE (whole-file digests) and AFTER (bounded
+  // head/tail anchors), so this is the direct cross-version measure of "bytes hashed per append".
+  const crypto = require('node:crypto');
+  let hashedBytes = 0;
+  const realCreateHash = crypto.createHash;
+  crypto.createHash = (...createArgs) => {
+    const digest = realCreateHash(...createArgs);
+    const realUpdate = digest.update.bind(digest);
+    digest.update = (data, ...rest) => {
+      hashedBytes += typeof data === 'string' ? Buffer.byteLength(data) : data.length;
+      return realUpdate(data, ...rest);
+    };
+    return digest;
+  };
   const req = (file) => require(path.join(APP, 'dist/modules/session-reader', file));
   const { SessionCacheService } = req('services/session-cache.service');
   const { TranscriptWatcherService } = req('services/transcript-watcher.service');
   const { SessionReaderService } = req('services/session-reader.service');
   const { SessionReaderController } = req('controllers/session-reader.controller');
   const { CodexSessionReaderAdapter } = req('adapters/codex-session-reader.adapter');
+  const { ClaudeSessionReaderAdapter } = req('adapters/claude-session-reader.adapter');
   const { SessionReaderAdapterFactory } = req('adapters/session-reader-adapter.factory');
   const { PricingService } = req('services/pricing.service');
   const { MetricsService } = require(
     path.join(APP, 'dist/modules/metrics/services/metrics.service'),
   );
   const pricing = new PricingService();
-  const adapter = new CodexSessionReaderAdapter(pricing);
+  const adaptersByProvider = {
+    codex: new CodexSessionReaderAdapter(pricing),
+    claude: new ClaudeSessionReaderAdapter(pricing),
+  };
   const factory = new SessionReaderAdapterFactory();
-  factory.registerAdapter(adapter);
+  for (const adapter of Object.values(adaptersByProvider)) factory.registerAdapter(adapter);
   const metrics = new MetricsService();
   const cache = new SessionCacheService(metrics);
   cache.onModuleInit();
@@ -300,8 +408,9 @@ async function worker({ config, fixtures }) {
       }
     };
   }
-  for (const method of ['parseFullSession', 'parseIncremental'])
-    observe(adapter, method, (args) => byFile.get(args[0]), 'parse');
+  for (const adapter of Object.values(adaptersByProvider))
+    for (const method of ['parseFullSession', 'parseIncremental'])
+      observe(adapter, method, (args) => byFile.get(args[0]), 'parse');
   const events = {
     publish: async (name, payload) => {
       if (name === 'session.transcript.updated') {
@@ -317,7 +426,12 @@ async function worker({ config, fixtures }) {
     getSession: (id) => {
       const fixture = byId.get(id);
       assert(fixture, 'Unknown synthetic session');
-      return { id, providerNameAtLaunch: 'codex', transcriptPath: fixture.file, status: 'running' };
+      return {
+        id,
+        providerNameAtLaunch: fixture.provider,
+        transcriptPath: fixture.file,
+        status: 'running',
+      };
     },
   };
   const validator = {
@@ -363,6 +477,8 @@ async function worker({ config, fixtures }) {
   const snapshot = () => ({
     counters,
     cache: accounting(),
+    cacheEntries: cache.cache.size,
+    hashedBytes,
     memory: process.memoryUsage(),
     httpActive,
     cacheFlights: cache.parseFlights.size,
@@ -380,7 +496,8 @@ async function worker({ config, fixtures }) {
     send({ type: 'sample', ...snapshot() });
     loop.reset();
   }, config.sampleIntervalMs);
-  for (const fixture of fixtures) await watcher.startWatching(fixture.id, fixture.file, 'codex');
+  for (const fixture of fixtures)
+    await watcher.startWatching(fixture.id, fixture.file, fixture.provider);
   send({ type: 'ready', port: server.address().port, ...snapshot() });
   let lastWatcherCounts;
   process.on('message', async (message) => {
@@ -405,8 +522,13 @@ async function worker({ config, fixtures }) {
         final.lastWatcherCounts = lastWatcherCounts;
         final.transcriptReaders = transcriptReaders(process.pid, new Set(byFile.keys()));
         final.watchers = watcher.activeWatcherCount;
-        send({ type: 'final', ...final, operations, errors, accountingFailures });
         loop.disable();
+        // Wait for the final IPC message to flush before disconnecting: with many sessions the
+        // operations payload is large enough that an immediate disconnect drops it, leaving the
+        // parent with no `final` (and a spuriously incomplete report).
+        await new Promise((resolve) =>
+          process.send({ type: 'final', ...final, operations, errors, accountingFailures }, resolve),
+        );
         process.disconnect();
       }
     } catch (error) {
@@ -493,6 +615,24 @@ function summarize(report) {
       .map((op) => op.durationMs),
     0.95,
   );
+  // Lane-relevant totals (safe for every profile): cache entries and byte budget held, total bytes
+  // hashed, and parse counts. These are the BEFORE/AFTER contrast numbers.
+  const telemetry = report.telemetry ?? [];
+  const appendTelemetry = telemetry.filter((sample) => sample.phase === 'append');
+  const lastTelemetry = telemetry[telemetry.length - 1];
+  const counters = report.final ? Object.values(report.final.counters) : [];
+  summary.cacheEntriesPeak = Math.max(0, ...telemetry.map((sample) => sample.cacheEntries ?? 0));
+  summary.cacheEntriesPeakAppend = Math.max(
+    0,
+    ...appendTelemetry.map((sample) => sample.cacheEntries ?? 0),
+  );
+  summary.budgetUsedPeakMiB =
+    Math.max(0, ...telemetry.map((sample) => sample.cache?.budgetUsedBytes ?? 0)) / 1024 / 1024;
+  summary.hashedBytesTotalMiB = (lastTelemetry?.hashedBytes ?? 0) / 1024 / 1024;
+  summary.fullParses = counters.length ? counters.reduce((sum, key) => sum + key.full, 0) : null;
+  summary.incrementalParses = counters.length
+    ? counters.reduce((sum, key) => sum + key.incremental, 0)
+    : null;
   return summary;
 }
 
@@ -505,8 +645,12 @@ function evaluate(report) {
   if (report.config.sessions === 1) {
     cpuTargetPercent = report.config.fileMiB === 65 ? 50 : 80;
   }
-  return {
-    acceptanceProfile: report.config.acceptanceProfile,
+  const checks = {
+    // A measurement profile is not a CPU-acceptance scenario, so the question is N/A (null), not a
+    // failure; its own direction gates below decide the pass. Non-profile runs keep the strict flag,
+    // so a shortened acceptance smoke still reports acceptanceProfile:false and cannot pass.
+    acceptanceProfile:
+      report.config.profile === 'many-unviewed' ? null : report.config.acceptanceProfile,
     completed: !report.safetyAbort && report.exit?.code === 0 && !!final,
     concurrency:
       perKey.length === report.config.sessions &&
@@ -553,6 +697,24 @@ function evaluate(report) {
     fixturesRemoved: report.fixturesRemoved === true,
     sourceUnchanged: report.sourceUnchanged === true,
   };
+  // The metrics-only lane's target direction: with many appending sessions and exactly one viewed,
+  // no more than the viewed session ever holds a cache entry and only it does full parses. A
+  // BEFORE run (no lane) fails these — every appending watcher retains bodies and reparses on
+  // eviction — which is the contrast the profile exists to measure.
+  if (report.config.profile === 'many-unviewed') {
+    const viewedId = report.fixtures?.[0]?.id;
+    const appendTelemetry = (report.telemetry ?? []).filter((sample) => sample.phase === 'append');
+    const peakEntriesDuringAppend = Math.max(
+      0,
+      ...appendTelemetry.map((sample) => sample.cacheEntries ?? 0),
+    );
+    checks.unviewedHoldNoEntries = appendTelemetry.length > 0 && peakEntriesDuringAppend <= 1;
+    checks.viewedIsBodyPath = !!final && (final.counters[viewedId]?.full ?? 0) >= 1;
+    checks.fullParsesOnlyViewed =
+      !!final &&
+      Object.entries(final.counters).every(([id, key]) => id === viewedId || key.full === 0);
+  }
+  return checks;
 }
 
 async function parent(config) {
@@ -782,10 +944,13 @@ async function parent(config) {
     readyAt = performance.now();
     phase = 'baseline';
     previous = undefined;
+    // Summary polling on every session (an O(1) lane read for the unviewed ones). The index route
+    // parses and creates a cache entry, so with viewedOnly it runs only for the single viewed
+    // session — the canonical client already covers it and the unviewed ones must stay in the lane.
     const poll = () => {
       for (const { id } of report.fixtures) {
         void request('summary', id);
-        void request('index', id);
+        if (!config.viewedOnly || id === report.fixtures[0].id) void request('index', id);
       }
     };
     poll();
@@ -807,7 +972,8 @@ async function parent(config) {
     writer = setInterval(() => {
       try {
         for (const fixture of report.fixtures) {
-          fs.appendFileSync(fixture.file, makeTurn(fixture.turns++));
+          const makeTurnFor = fixture.provider === 'claude' ? makeClaudeTurn : makeTurn;
+          fs.appendFileSync(fixture.file, makeTurnFor(fixture.turns++));
           fixture.appends += 1;
         }
       } catch (error) {
@@ -896,7 +1062,7 @@ if (require.main === module) {
           const config = parseArgs(process.argv.slice(2));
           if (config.help) {
             console.log(
-              'node apps/local-app/scripts/transcript-load.js --file-mib 65 --sessions 1 --report /tmp/transcript-65.json\nBuild local-app first. Acceptance: 65/200 MiB single-session or four 65 MiB sessions. Optional --baseline-sec/--append-sec/--recovery-sec shorten smoke runs (not acceptance evidence).',
+              'node apps/local-app/scripts/transcript-load.js --file-mib 65 --sessions 1 --report /tmp/transcript-65.json\nBuild local-app first. Acceptance: 65/200 MiB single-session or four 65 MiB sessions.\n--profile many-unviewed: ~20 Claude+Codex sessions (~5 MiB), one viewed, the rest in the metrics-only lane.\nOptional --baseline-sec/--append-sec/--recovery-sec shorten smoke runs (not acceptance evidence).',
             );
             return;
           }

@@ -1,6 +1,6 @@
 import type { ProjectCommunicationService } from '../../project-communication/project-communication.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
-import { filterHiddenTools } from '../constants';
+import { filterHiddenTools, RECORDS_TOOL_NAMES } from '../constants';
 import { allMetadata } from '../tool-descriptors';
 import type { McpBindingRuntime } from '../tool-descriptors/binding-types';
 import { projectBindings } from '../tool-descriptors/project.bindings';
@@ -26,7 +26,6 @@ function createStorage(): StorageService {
       name: 'Project',
       rootPath: '/project',
     }),
-    listDocuments: jest.fn().mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 }),
   } as unknown as StorageService;
 }
 
@@ -66,10 +65,10 @@ describe('McpToolBindingRegistry composition', () => {
     jest.restoreAllMocks();
   });
 
-  it('publishes eleven groups and forty-four unique executable names with exact metadata parity', () => {
+  it('publishes ten groups and forty-four unique executable names with exact metadata parity', () => {
     const names = allBindingDefinitions.map((definition) => definition.name);
 
-    expect(allBindingGroups).toHaveLength(11);
+    expect(allBindingGroups).toHaveLength(10);
     expect(names).toHaveLength(44);
     expect(new Set(names).size).toBe(44);
     expect(new Set(names)).toEqual(new Set(allMetadata.map((metadata) => metadata.name)));
@@ -171,18 +170,32 @@ describe('McpToolBindingRegistry composition', () => {
     expect(createAdapter).not.toHaveBeenCalled();
   });
 
-  it('routes a hidden document tool through the real registry while keeping it unadvertised', async () => {
+  it('returns UNKNOWN_TOOL for removed document tool names through the real registry', async () => {
     const storage = createStorage();
     const registry = createMcpToolBindingRegistryFixture(storage, {
       sessionsService: createSessionsService(),
     });
     const service = new McpService(storage, registry);
 
-    expect(filterHiddenTools(allMetadata).map(({ name }) => name)).not.toContain(
-      'devchain_list_documents',
+    const metadataNames = allMetadata.map(({ name }) => name);
+    expect(metadataNames).not.toContain('devchain_list_documents');
+    expect(metadataNames).not.toContain('devchain_get_document');
+    expect(metadataNames).not.toContain('devchain_create_document');
+    expect(metadataNames).not.toContain('devchain_update_document');
+    expect(filterHiddenTools(allMetadata).map(({ name }) => name)).toEqual(
+      metadataNames.filter((name) => !RECORDS_TOOL_NAMES.includes(name)),
     );
-    await expect(
-      service.handleToolCall('devchain_list_documents', { sessionId: SESSION_ID }),
-    ).resolves.toMatchObject({ success: true, data: { documents: [], total: 0 } });
+
+    for (const name of [
+      'devchain_list_documents',
+      'devchain_get_document',
+      'devchain_create_document',
+      'devchain_update_document',
+    ]) {
+      await expect(service.handleToolCall(name, { sessionId: SESSION_ID })).resolves.toMatchObject({
+        success: false,
+        error: { code: 'UNKNOWN_TOOL' },
+      });
+    }
   });
 });

@@ -73,7 +73,7 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
         repoName: data.repoName,
         branch: data.branch,
       },
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: data.existingProjects ?? { mode: 'none' } },
     );
 
     await this.admitInitialSync(source.name, 'community');
@@ -100,7 +100,7 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
         name: data.name,
         folderPath: normalizedFolderPath,
       },
-      { seedExistingProjectsDisabled: true },
+      { existingProjects: data.existingProjects ?? { mode: 'none' } },
     );
 
     await this.admitInitialSync(source.name, 'local');

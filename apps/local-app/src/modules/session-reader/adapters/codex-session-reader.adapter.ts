@@ -12,7 +12,7 @@ import type {
 } from './session-reader-adapter.interface';
 import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
-import { parseCodexJsonl } from '../parsers/codex-jsonl.parser';
+import { parseCodexJsonl, type TokenSnapshot } from '../parsers/codex-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
 
 const CODEX_ROOT = '.codex/sessions/';
@@ -158,19 +158,24 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
     const byteOffset = options.byteOffset ?? 0;
 
     if (byteOffset >= fileSize) {
+      // Nothing new: preserve the carried baseline for the next append.
       return {
         hasMore: false,
         nextByteOffset: byteOffset,
         messageCount: 0,
         entries: [],
+        continuationState: options.continuationState,
       };
     }
 
     const result = await parseCodexJsonl(filePath, {
       maxMessages: options.maxMessages,
       byteOffset,
+      endByteOffset: options.endByteOffset,
       includeToolCalls: options.includeToolCalls ?? true,
       pricingService: this.pricingService,
+      // Opaque token baseline from the previous parse; skips the prefix rescan when present.
+      baseline: options.continuationState as TokenSnapshot | undefined,
     });
 
     const hasMore = result.bytesRead < fileSize;
@@ -182,6 +187,7 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
       entries: result.messages,
       metrics: result.metrics,
       warnings: result.warnings,
+      continuationState: result.endTokenSnapshot,
     };
   }
 
@@ -247,6 +253,16 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
       metrics: result.metrics,
       warnings: result.warnings,
       exactFields: EXACT_SUMMARY_FIELDS,
+      // Seed for the watcher's metrics-only lane (file+delta), including the Codex token baseline.
+      laneSeed: {
+        endOffset: result.bytesRead,
+        tail: result.tail,
+        firstMessageTimestamp: result.firstMessageTimestamp,
+        lastMessageTimestamp: result.lastMessageTimestamp,
+        visibleContextTokens: result.visibleContextTokensMerge,
+        messageCount: result.metrics.messageCount,
+        continuationState: result.endTokenSnapshot,
+      },
     };
   }
 

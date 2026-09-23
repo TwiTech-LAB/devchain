@@ -70,12 +70,12 @@ describe('related-time rollup convergence', () => {
     sqlite
       .prepare(
         `INSERT INTO external_task_links
-           (id, epic_id, provider, remote_scope_key, remote_task_id,
+           (id, epic_id, project_id, provider, remote_scope_key, remote_task_id,
             source_snapshot, created_at, updated_at)
-         VALUES (?, ?, 'clickup', 'scope', ?, '{}',
+         VALUES (?, ?, (SELECT project_id FROM epics WHERE id = ?), 'clickup', 'scope', ?, '{}',
                  '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
       )
-      .run(`link-${epicId}`, epicId, `task-${epicId}`);
+      .run(`link-${epicId}`, epicId, epicId, `task-${epicId}`);
   }
 
   function insertSegmentAt(

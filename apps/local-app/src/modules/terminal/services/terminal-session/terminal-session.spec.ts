@@ -432,6 +432,75 @@ describe('TerminalSession', () => {
         jest.useRealTimers();
       }
     });
+
+    it('does not advance lastDataAt or busy for particle-only frames', () => {
+      jest.useFakeTimers();
+      try {
+        const session = createSession();
+        session.subscribe('client-1');
+
+        session.pushFrame('\x1b[38;5;245m⠁\x1b[0m');
+        session.pushFrame('⠂ ⠄');
+
+        expect(session.getActivityState().lastDataAt).toBeNull();
+        expect(session.getActivityState().busySince).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('does not advance prompt output epoch for particle-only frames', () => {
+      const promptState = new HumanPromptStateService();
+      const session = new TerminalSession({
+        sessionId: 'session-1',
+        tmuxSessionName: 'tmux-session-1',
+        humanPromptState: promptState,
+      });
+
+      session.pushFrame('\x1b[38;5;245m⠁\x1b[0m');
+      session.pushFrame('⠐⠠⡀⢀');
+
+      expect(promptState.getState('tmux-session-1').meaningfulOutputEpoch).toBe(0);
+    });
+
+    it('advances busy and epoch when real text is mixed with particles', () => {
+      const promptState = new HumanPromptStateService();
+      const session = new TerminalSession({
+        sessionId: 'session-1',
+        tmuxSessionName: 'tmux-session-1',
+        humanPromptState: promptState,
+      });
+
+      session.pushFrame('⠁ ready');
+
+      expect(session.getActivityState().lastDataAt).not.toBeNull();
+      expect(promptState.getState('tmux-session-1').meaningfulOutputEpoch).toBe(1);
+    });
+
+    it('expires busy at configured timeout while particle redraws continue', () => {
+      jest.useFakeTimers();
+      try {
+        const session = new TerminalSession({
+          sessionId: 'session-1',
+          tmuxSessionName: 'tmux-session-1',
+          idleAfterMs: 5000,
+        });
+
+        session.pushFrame('real output');
+        expect(session.getActivityState().busySince).not.toBeNull();
+
+        jest.advanceTimersByTime(2000);
+        session.pushFrame('⠁');
+        session.pushFrame('⠂');
+
+        jest.advanceTimersByTime(3001);
+
+        expect(session.getActivityState().busySince).toBeNull();
+        expect(session.getActivityState().idleSince).not.toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe('getActivityState', () => {

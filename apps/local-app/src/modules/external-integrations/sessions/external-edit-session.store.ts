@@ -65,7 +65,8 @@ function sessionBytes(session: ExternalEditSession): number {
  * - `outcome_unknown` permits exactly Verify and a retry of the same payload
  *   fingerprint; seeing the old baseline after it never re-arms writes.
  * - A verified save advances the baseline and revision exactly once.
- * - `diverged`, `invalidated`, and `expired` are terminal for writes.
+ * - `diverged` blocks writes until explicit reload; `invalidated` and expired
+ *   sessions cannot recover.
  */
 export class ExternalEditSessionStore {
   private readonly entries = new Map<string, ExternalEditSession>();
@@ -261,7 +262,7 @@ export class ExternalEditSessionStore {
    * Verification outcome handling. `old_baseline` keeps the session locked in
    * `outcome_unknown` — writes are never re-armed for a fresh payload;
    * `new_payload` commits the pending save exactly once; any other remote
-   * content is divergence, which is terminal.
+   * content is divergence, which blocks Save until explicit reload.
    */
   applyVerifyOutcome(
     sessionId: string,
@@ -293,11 +294,9 @@ export class ExternalEditSessionStore {
   }
 
   /**
-   * Re-baselines an `editable` session from a fresh provider read (explicit
-   * reload). The revision advances so an editor holding the stale revision
-   * gets a revision_conflict instead of writing against a moved baseline.
-   * Only reachable from `editable` — a session with a pending unknown write
-   * must Verify or retry, never reload.
+   * Explicit reload restores `editable` from `editable` or `diverged` only.
+   * Advancing the revision rejects editors holding a stale baseline; unknown
+   * or unverified writes must be resolved before reload is allowed.
    */
   commitReload(
     sessionId: string,
@@ -307,7 +306,7 @@ export class ExternalEditSessionStore {
     if (!session || this.applyExpiry(sessionId) === null) {
       return { ok: false, reason: 'session_not_found' };
     }
-    if (session.state !== 'editable') {
+    if (session.state !== 'editable' && session.state !== 'diverged') {
       return { ok: false, reason: 'session_not_editable' };
     }
     if (newBaseline && JSON.stringify(newBaseline).length > this.limits.maxBaselineBytes) {
@@ -315,6 +314,8 @@ export class ExternalEditSessionStore {
     }
     const previousBytes = sessionBytes(session);
     session.baseline = newBaseline;
+    session.state = 'editable';
+    session.pendingWrite = null;
     session.revision += 1;
     session.lastActivityAt = this.now();
     this.totalBytes -= previousBytes;

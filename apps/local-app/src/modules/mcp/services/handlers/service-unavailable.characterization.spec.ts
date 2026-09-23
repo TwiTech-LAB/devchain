@@ -36,7 +36,12 @@ import {
 } from './teams-tools';
 import { handleGetAgentByName } from './agent-tools';
 import { handleListSessions, handleRegisterGuest } from './session-tools';
-import { handleListSkills, handleGetSkill } from './skill-tools';
+import {
+  handleListSkills,
+  handleGetSkill,
+  handleSkillsSetSourceEnabled,
+  handleSkillsSync,
+} from './skill-tools';
 import type { McpResponse } from '../../dtos/mcp.dto';
 import { missingSessionResolver } from '../utils/session-context-helpers';
 import { createNullAdapter } from './null-adapter';
@@ -48,6 +53,7 @@ import type { EpicRelationsService } from '../../../epics/services/epic-relation
 import type { ReviewsService } from '../../../reviews/services/reviews.service';
 import type { ReviewSuggestionApplier } from '../../../reviews/services/review-suggestion-applier.service';
 import type { SkillsService } from '../../../skills/services/skills.service';
+import type { SkillSourceLifecycleService } from '../../../skills/services/skill-source-lifecycle.service';
 import type { SessionsService } from '../../../sessions/services/sessions.service';
 import type { GuestsService } from '../../../guests/services/guests.service';
 import type { TerminalIOService } from '../../../terminal/services/terminal-io/terminal-io.service';
@@ -503,13 +509,16 @@ describe('session-tools SERVICE_UNAVAILABLE', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §8  skill-tools.ts — 2 SERVICE_UNAVAILABLE sites
+// §8  skill-tools.ts — SERVICE_UNAVAILABLE sites
 // ---------------------------------------------------------------------------
 describe('skill-tools SERVICE_UNAVAILABLE', () => {
   it('handleListSkills: skillsService is null adapter', async () => {
     const ctx: SkillToolContext = {
       storage: storageWithAgent() as never,
       skillsService: createNullAdapter<SkillsService>('SkillsService'),
+      skillSourceLifecycleService: createNullAdapter<SkillSourceLifecycleService>(
+        'SkillSourceLifecycleService',
+      ),
       resolveSessionContext: resolveToAgent(),
     };
     const result = await handleListSkills(ctx, { sessionId: SESSION_ID });
@@ -520,9 +529,42 @@ describe('skill-tools SERVICE_UNAVAILABLE', () => {
     const ctx: SkillToolContext = {
       storage: storageWithAgent() as never,
       skillsService: createNullAdapter<SkillsService>('SkillsService'),
+      skillSourceLifecycleService: createNullAdapter<SkillSourceLifecycleService>(
+        'SkillSourceLifecycleService',
+      ),
       resolveSessionContext: resolveToAgent(),
     };
     const result = await handleGetSkill(ctx, { sessionId: SESSION_ID, slug: 'test/skill' });
+    assertServiceUnavailable(result);
+  });
+
+  it('handleSkillsSetSourceEnabled: skillsService is null adapter', async () => {
+    const ctx: SkillToolContext = {
+      storage: storageWithAgent() as never,
+      skillsService: createNullAdapter<SkillsService>('SkillsService'),
+      skillSourceLifecycleService: createNullAdapter<SkillSourceLifecycleService>(
+        'SkillSourceLifecycleService',
+      ),
+      resolveSessionContext: resolveToAgent(),
+    };
+    const result = await handleSkillsSetSourceEnabled(ctx, {
+      sessionId: SESSION_ID,
+      sourceName: 'src',
+      enabled: true,
+    });
+    assertServiceUnavailable(result);
+  });
+
+  it('handleSkillsSync: skillSourceLifecycleService is null adapter', async () => {
+    const ctx: SkillToolContext = {
+      storage: storageWithAgent() as never,
+      skillsService: createNullAdapter<SkillsService>('SkillsService'),
+      skillSourceLifecycleService: createNullAdapter<SkillSourceLifecycleService>(
+        'SkillSourceLifecycleService',
+      ),
+      resolveSessionContext: resolveToAgent(),
+    };
+    const result = await handleSkillsSync(ctx, { sessionId: SESSION_ID });
     assertServiceUnavailable(result);
   });
 });

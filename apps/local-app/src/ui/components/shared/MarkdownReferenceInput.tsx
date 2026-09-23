@@ -5,15 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Textarea, type TextareaProps } from '@/ui/components/ui/textarea';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
 import { cn } from '@/ui/lib/utils';
-import { FileText, Hash, Loader2, ScrollText } from 'lucide-react';
-
-type DocumentSummary = {
-  id: string;
-  title: string;
-  slug: string;
-  tags: string[];
-  projectId: string | null;
-};
+import { Loader2, ScrollText } from 'lucide-react';
 
 type PromptSummary = {
   id: string;
@@ -21,40 +13,6 @@ type PromptSummary = {
   tags: string[];
   projectId: string | null;
 };
-
-type SuggestionItem =
-  | {
-      kind: 'tag-group';
-      key: string;
-    }
-  | {
-      kind: 'document';
-      document: DocumentSummary;
-    }
-  | {
-      kind: 'prompt';
-      prompt: PromptSummary;
-    };
-
-type ActiveToken =
-  | {
-      type: 'tagKey';
-      start: number;
-      end: number;
-      value: string;
-      fullValue: string;
-      key: string;
-    }
-  | {
-      type: 'mention';
-      start: number;
-      end: number;
-      value: string;
-      fullValue: string;
-    };
-
-const TOKEN_BOUNDARY = /[\s\[\]\(\)\{\}"'`~!$%^&*+=|\\;,.<>/?]/;
-const MAX_DEFAULT_SUGGESTIONS = 7;
 
 interface MarkdownReferenceInputProps
   extends Omit<TextareaProps, 'value' | 'onChange' | 'onKeyDown' | 'onChangeCapture'> {
@@ -64,43 +22,15 @@ interface MarkdownReferenceInputProps
   maxSuggestions?: number;
 }
 
-interface DebouncedToken {
-  type: ActiveToken['type'];
+interface ActiveToken {
+  start: number;
+  end: number;
   value: string;
+  fullValue: string;
 }
 
-async function fetchDocumentSuggestions({
-  mode,
-  value,
-  projectId,
-  limit,
-}: {
-  mode: 'tagKey' | 'search';
-  value: string;
-  projectId?: string | null;
-  limit: number;
-}): Promise<DocumentSummary[]> {
-  const params = new URLSearchParams();
-  params.set('limit', `${limit}`);
-  params.set('offset', '0');
-
-  if (projectId !== undefined) {
-    params.set('projectId', projectId === null ? '' : projectId);
-  }
-
-  if (mode === 'tagKey') {
-    params.append('tagKey', value);
-  } else {
-    params.set('q', value);
-  }
-
-  const response = await fetch(`/api/documents?${params.toString()}`);
-  if (!response.ok) {
-    throw new Error('Failed to fetch document suggestions');
-  }
-  const data = (await response.json()) as { items: DocumentSummary[] };
-  return data.items ?? [];
-}
+const TOKEN_BOUNDARY = /[\s\[\]\(\)\{\}"'`~!$%^&*+=|\\;,.<>/?]/;
+const MAX_DEFAULT_SUGGESTIONS = 7;
 
 async function fetchPromptSuggestions({
   value,
@@ -124,42 +54,12 @@ async function fetchPromptSuggestions({
 
   const response = await fetch(`/api/prompts?${params.toString()}`);
   if (!response.ok) {
-    // Silently fail for prompts - documents are primary
+    // Suggestions are decorative: a failed fetch yields an empty list instead
+    // of blocking instruction editing.
     return [];
   }
   const data = (await response.json()) as { items: PromptSummary[] };
   return data.items ?? [];
-}
-
-interface CombinedSuggestions {
-  documents: DocumentSummary[];
-  prompts: PromptSummary[];
-}
-
-async function fetchCombinedSuggestions({
-  mode,
-  value,
-  projectId,
-  limit,
-}: {
-  mode: 'tagKey' | 'search';
-  value: string;
-  projectId?: string | null;
-  limit: number;
-}): Promise<CombinedSuggestions> {
-  // For tag searches, only fetch documents
-  if (mode === 'tagKey') {
-    const documents = await fetchDocumentSuggestions({ mode, value, projectId, limit });
-    return { documents, prompts: [] };
-  }
-
-  // For @ mentions, fetch both in parallel
-  const [documents, prompts] = await Promise.all([
-    fetchDocumentSuggestions({ mode, value, projectId, limit }),
-    fetchPromptSuggestions({ value, projectId, limit }),
-  ]);
-
-  return { documents, prompts };
 }
 
 function detectReferenceToken(text: string, caret: number | null): ActiveToken | null {
@@ -172,7 +72,7 @@ function detectReferenceToken(text: string, caret: number | null): ActiveToken |
 
   while (index >= 0) {
     const char = text[index];
-    if (char === '#' || char === '@') {
+    if (char === '@') {
       tokenStart = index;
       break;
     }
@@ -190,49 +90,22 @@ function detectReferenceToken(text: string, caret: number | null): ActiveToken |
     return null;
   }
 
-  const trigger = text[tokenStart];
   const caretIdx = caret;
 
   let tokenEnd = caretIdx;
   while (tokenEnd < text.length && !TOKEN_BOUNDARY.test(text[tokenEnd])) {
-    const nextChar = text[tokenEnd];
-    if (nextChar === '#' || nextChar === '@') {
+    if (text[tokenEnd] === '@') {
       break;
     }
     tokenEnd += 1;
   }
 
-  const value = text.slice(tokenStart + 1, caretIdx);
-  const fullValue = text.slice(tokenStart + 1, tokenEnd);
-
-  if (trigger === '#') {
-    const key = value.split(':', 1)[0]?.trim() ?? '';
-    return {
-      type: 'tagKey',
-      start: tokenStart,
-      end: tokenEnd,
-      value,
-      fullValue,
-      key,
-    };
-  }
-
   return {
-    type: 'mention',
     start: tokenStart,
     end: tokenEnd,
-    value,
-    fullValue,
+    value: text.slice(tokenStart + 1, caretIdx),
+    fullValue: text.slice(tokenStart + 1, tokenEnd),
   };
-}
-
-function renderDocumentSubtitle(document: DocumentSummary) {
-  const parts: string[] = [];
-  parts.push(`[[${document.slug}]]`);
-  if (document.tags.length) {
-    parts.push(document.tags.join(', '));
-  }
-  return parts.join(' • ');
 }
 
 function renderPromptSubtitle(prompt: PromptSummary) {
@@ -255,15 +128,11 @@ export function MarkdownReferenceInput({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [activeToken, setActiveToken] = useState<ActiveToken | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [debouncedToken, setDebouncedToken] = useState<DebouncedToken | null>(null);
+  const [debouncedValue, setDebouncedValue] = useState<string | null>(null);
 
   const updateToken = useCallback((text: string, caret: number | null) => {
     const token = detectReferenceToken(text, caret);
-    if (token && token.type === 'tagKey' && token.key.length === 0) {
-      setActiveToken(null);
-      return;
-    }
-    if (token && token.type === 'mention' && token.value.length === 0) {
+    if (token && token.value.length === 0) {
       setActiveToken(null);
       return;
     }
@@ -279,85 +148,55 @@ export function MarkdownReferenceInput({
     updateToken(value, textarea.selectionStart);
   }, [updateToken, value]);
 
-  const tokenKeyDependency = activeToken?.type === 'tagKey' ? activeToken.key : undefined;
-  const tokenValueDependency = activeToken?.value;
+  const activeTokenStart = activeToken?.start ?? null;
+  const activeTokenValue = activeToken?.value ?? null;
 
   useEffect(() => {
-    if (!activeToken) {
-      setDebouncedToken(null);
+    if (activeTokenValue === null) {
+      setDebouncedValue(null);
       return;
     }
-    const lookupValue = activeToken.type === 'tagKey' ? activeToken.key : activeToken.value.trim();
+    const lookupValue = activeTokenValue.trim();
 
     if (!lookupValue) {
-      setDebouncedToken(null);
+      setDebouncedValue(null);
       return;
     }
 
     const handle = window.setTimeout(() => {
-      setDebouncedToken({
-        type: activeToken.type,
-        value: lookupValue,
-      });
+      setDebouncedValue(lookupValue);
     }, 180);
 
     return () => {
       window.clearTimeout(handle);
     };
-  }, [activeToken?.type, tokenKeyDependency, tokenValueDependency]);
+  }, [activeTokenStart, activeTokenValue]);
 
   const projectScopeKey =
     projectId === undefined ? '__any__' : projectId === null ? '__global__' : projectId;
 
   const suggestionsQuery = useQuery({
-    queryKey: [
-      'markdown-reference-suggestions',
-      debouncedToken?.type,
-      debouncedToken?.value,
-      projectScopeKey,
-      maxSuggestions,
-    ],
-    enabled: Boolean(debouncedToken),
+    queryKey: ['markdown-reference-suggestions', debouncedValue, projectScopeKey, maxSuggestions],
+    enabled: Boolean(debouncedValue),
     queryFn: () =>
-      fetchCombinedSuggestions({
-        mode: debouncedToken?.type === 'tagKey' ? 'tagKey' : 'search',
-        value: debouncedToken!.value,
+      fetchPromptSuggestions({
+        value: debouncedValue!,
         projectId,
         limit: maxSuggestions,
       }),
     staleTime: 15_000,
   });
 
-  const suggestions = useMemo<SuggestionItem[]>(() => {
+  const suggestions = useMemo<PromptSummary[]>(() => {
     if (!activeToken) {
       return [];
     }
-
-    const items: SuggestionItem[] = [];
-    if (activeToken.type === 'tagKey' && activeToken.key) {
-      items.push({ kind: 'tag-group', key: activeToken.key });
-    }
-
-    // Add documents first
-    if (suggestionsQuery.data?.documents?.length) {
-      for (const doc of suggestionsQuery.data.documents) {
-        items.push({ kind: 'document', document: doc });
-      }
-    }
-
-    // Then add prompts
-    if (suggestionsQuery.data?.prompts?.length) {
-      for (const prompt of suggestionsQuery.data.prompts) {
-        items.push({ kind: 'prompt', prompt });
-      }
-    }
-
-    return items;
+    return suggestionsQuery.data ?? [];
   }, [activeToken, suggestionsQuery.data]);
 
   useEffect(() => {
     setSelectedIndex(0);
-  }, [activeToken?.type, debouncedToken?.value, suggestions.length]);
+  }, [activeTokenStart, activeTokenValue, debouncedValue, suggestions.length]);
 
   useEffect(() => {
     if (selectedIndex >= suggestions.length) {
@@ -367,7 +206,7 @@ export function MarkdownReferenceInput({
 
   const closePopover = useCallback(() => {
     setActiveToken(null);
-    setDebouncedToken(null);
+    setDebouncedValue(null);
   }, []);
 
   const handleTextareaChange = useCallback(
@@ -378,6 +217,32 @@ export function MarkdownReferenceInput({
       updateToken(nextValue, caret);
     },
     [onChange, updateToken],
+  );
+
+  const handleSuggestionSelect = useCallback(
+    (prompt: PromptSummary) => {
+      if (!activeToken) {
+        return;
+      }
+      const replacement = `[[prompt:${prompt.title}]]`;
+
+      const before = value.slice(0, activeToken.start);
+      const after = value.slice(activeToken.end);
+      const nextValue = `${before}${replacement}${after}`;
+
+      const nextCaret = before.length + replacement.length;
+
+      onChange(nextValue);
+      closePopover();
+
+      requestAnimationFrame(() => {
+        if (textareaRef.current) {
+          textareaRef.current.focus();
+          textareaRef.current.setSelectionRange(nextCaret, nextCaret);
+        }
+      });
+    },
+    [activeToken, closePopover, onChange, value],
   );
 
   const handleKeyDown = useCallback(
@@ -406,60 +271,27 @@ export function MarkdownReferenceInput({
 
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault();
-        const item = suggestions[selectedIndex] ?? suggestions[0];
-        if (item) {
+        const prompt = suggestions[selectedIndex] ?? suggestions[0];
+        if (prompt) {
           if (event.key === 'Tab') {
             event.stopPropagation();
           }
-          handleSuggestionSelect(item);
+          handleSuggestionSelect(prompt);
         }
       }
     },
-    [activeToken, closePopover, selectedIndex, suggestions],
-  );
-
-  const handleSuggestionSelect = useCallback(
-    (item: SuggestionItem) => {
-      if (!activeToken) {
-        return;
-      }
-      let replacement: string;
-      if (item.kind === 'tag-group') {
-        replacement = `[[#${item.key}]]`;
-      } else if (item.kind === 'prompt') {
-        replacement = `[[prompt:${item.prompt.title}]]`;
-      } else {
-        replacement = `[[${item.document.slug}]]`;
-      }
-
-      const before = value.slice(0, activeToken.start);
-      const after = value.slice(activeToken.end);
-      const nextValue = `${before}${replacement}${after}`;
-
-      const nextCaret = before.length + replacement.length;
-
-      onChange(nextValue);
-      closePopover();
-
-      requestAnimationFrame(() => {
-        if (textareaRef.current) {
-          textareaRef.current.focus();
-          textareaRef.current.setSelectionRange(nextCaret, nextCaret);
-        }
-      });
-    },
-    [activeToken, closePopover, onChange, value],
+    [activeToken, closePopover, handleSuggestionSelect, selectedIndex, suggestions],
   );
 
   const handleMouseDownSuggestion = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>, item: SuggestionItem) => {
+    (event: React.MouseEvent<HTMLButtonElement>, prompt: PromptSummary) => {
       event.preventDefault();
-      handleSuggestionSelect(item);
+      handleSuggestionSelect(prompt);
     },
     [handleSuggestionSelect],
   );
 
-  const popoverOpen = Boolean(activeToken && (debouncedToken || suggestionsQuery.isLoading));
+  const popoverOpen = Boolean(activeToken && (debouncedValue || suggestionsQuery.isLoading));
 
   return (
     <Popover
@@ -493,13 +325,9 @@ export function MarkdownReferenceInput({
         onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <div className="border-b px-3 py-2 text-xs text-muted-foreground">
-          {activeToken?.type === 'tagKey'
-            ? activeToken.key
-              ? `Add reference for #${activeToken.key}`
-              : 'Type to search for tag keys'
-            : activeToken?.value
-              ? `Search documents and prompts for "${activeToken.value}"`
-              : 'Type to search documents and prompts'}
+          {activeToken?.value
+            ? `Search prompts for "${activeToken.value}"`
+            : 'Type to search prompts'}
         </div>
         <div
           className="max-h-64 overflow-y-auto overscroll-contain"
@@ -511,18 +339,12 @@ export function MarkdownReferenceInput({
               Loading suggestions…
             </div>
           ) : suggestions.length ? (
-            <div role="listbox" aria-label="Reference suggestions">
-              {suggestions.map((item, index) => {
+            <div role="listbox" aria-label="Prompt suggestions">
+              {suggestions.map((prompt, index) => {
                 const isActive = index === selectedIndex;
-                const key =
-                  item.kind === 'tag-group'
-                    ? `tag:${item.key}`
-                    : item.kind === 'prompt'
-                      ? `prompt:${item.prompt.id}`
-                      : `doc:${item.document.id}`;
                 return (
                   <button
-                    key={key}
+                    key={`prompt:${prompt.id}`}
                     type="button"
                     role="option"
                     aria-selected={isActive}
@@ -530,29 +352,13 @@ export function MarkdownReferenceInput({
                       'flex w-full items-start gap-2 px-3 py-2 text-left text-sm transition-colors',
                       isActive ? 'bg-muted' : 'hover:bg-muted/60',
                     )}
-                    onMouseDown={(event) => handleMouseDownSuggestion(event, item)}
+                    onMouseDown={(event) => handleMouseDownSuggestion(event, prompt)}
                   >
-                    {item.kind === 'tag-group' ? (
-                      <Hash className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
-                    ) : item.kind === 'prompt' ? (
-                      <ScrollText className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
-                    ) : (
-                      <FileText className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
-                    )}
+                    <ScrollText className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
                     <div className="flex flex-col">
-                      <span className="font-medium">
-                        {item.kind === 'tag-group'
-                          ? `All ${item.key}:*`
-                          : item.kind === 'prompt'
-                            ? item.prompt.title
-                            : item.document.title || item.document.slug}
-                      </span>
+                      <span className="font-medium">{prompt.title}</span>
                       <span className="text-xs text-muted-foreground">
-                        {item.kind === 'tag-group'
-                          ? 'Insert grouped reference'
-                          : item.kind === 'prompt'
-                            ? renderPromptSubtitle(item.prompt)
-                            : renderDocumentSubtitle(item.document)}
+                        {renderPromptSubtitle(prompt)}
                       </span>
                     </div>
                   </button>
@@ -563,9 +369,7 @@ export function MarkdownReferenceInput({
             <div className="px-3 py-4 text-sm text-muted-foreground">
               {suggestionsQuery.isError
                 ? 'Unable to load suggestions'
-                : activeToken?.type === 'tagKey'
-                  ? `No documents tagged with ${activeToken.key}`
-                  : 'No documents or prompts match your search'}
+                : 'No prompts match your search'}
             </div>
           )}
         </div>

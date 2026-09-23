@@ -10,33 +10,36 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import type {
   IncrementalResult,
+  ParseOptions,
   SessionReaderAdapter,
   SessionSourceRef,
 } from '../adapters/session-reader-adapter.interface';
-import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
-import { estimateVisibleFromMessages } from '../adapters/utils/estimate-content-tokens';
-import { isToolResultOnlyMessage } from '../adapters/utils/tool-result-fold';
+import type { UnifiedSession, UnifiedMessage } from '../dtos/unified-session.types';
 import { coalesceAssistantTurns, foldTurnParts } from '../adapters/utils/coalesce-turns';
+import {
+  computeLeadingContinuationFold,
+  deriveMergeInputsFromMessages,
+  describeTail,
+  mergeMetrics,
+} from './metrics-merge';
+import {
+  anchorsEqual,
+  hashFileAnchors,
+  type FileContentAnchors,
+  type FileFreshnessSnapshot,
+} from './bounded-anchor-proof';
+import { lastCompleteLineEnd } from '../parsers/bounded-line-read';
 import { MetricsService } from '../../metrics/services/metrics.service';
 import type { CacheStats } from '../../metrics/types/metrics.types';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
+import { buildChunks } from '../builders/chunk-builder';
 
 const DEFAULT_CACHE_IDLE_TTL_MS = 10 * 60 * 1_000;
 const DEFAULT_CACHE_SWEEP_INTERVAL_MS = 60_000;
 const DEFAULT_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 const SAFE_INTEGER_LOW_BITS = 0x20_0000;
-const FILE_HASH_CHUNK_BYTES = 64 * 1024;
-
-interface FileContentDigests {
-  prefixDigest: string;
-  fullDigest: string;
-}
-
-interface FileFreshnessSnapshot {
-  size: number;
-  mtimeMs: number;
-  fileIdentity?: string;
-}
+/** FIFO cap on the per-session full-parse cost record (bounds it without a lifecycle hook). */
+const FULL_PARSE_COST_CAP = 256;
 
 /**
  * Compress replacement-sensitive file stats into the cursor's numeric field.
@@ -106,8 +109,11 @@ export interface SessionCacheEntry {
   lastMtime: number;
   /** Stable filesystem identity for file-backed sources; absent for DB sources. */
   fileIdentity?: string;
-  /** SHA-256 of exactly `lastOffset` accepted bytes from the parsed file generation. */
-  fileContentDigest?: string;
+  /**
+   * Bounded head/tail SHA-256 anchors over the `[0, lastOffset)` accepted bytes of the
+   * parsed file generation (see {@link FileContentAnchors}); absent for DB sources.
+   */
+  fileContentAnchors?: FileContentAnchors;
   /**
    * Numeric source revision (file: deterministic stat fingerprint; DB: the
    * token's `maxUpdated`, i.e. max `time_updated` across the session — see
@@ -130,6 +136,12 @@ export interface SessionCacheEntry {
    * full reparse / snapshot / cache hit.
    */
   boundaryFold: boolean;
+  /**
+   * Opaque per-adapter continuation state from the last incremental parse (Codex token
+   * baseline), threaded into the next `parseIncremental` so the adapter skips rescanning
+   * earlier bytes. Cleared (undefined) by a full parse. File-delta adapters only.
+   */
+  continuationState?: unknown;
 }
 
 export type SourceChangeKind =
@@ -152,11 +164,47 @@ export interface GetOrParseResult {
   sourceVersion: number;
   /** See {@link SessionCacheEntry.boundaryFold}. */
   boundaryFold: boolean;
+  /**
+   * Accepted append proof anchors for the entry's `[0, lastOffset)` bytes (file sources
+   * only; see {@link SessionCacheEntry.fileContentAnchors}). Exposed so downstream lane
+   * state can carry the proven anchors without re-hashing.
+   */
+  fileContentAnchors?: FileContentAnchors;
+  /**
+   * Accepted opaque continuation state for the entry (see
+   * {@link SessionCacheEntry.continuationState}). Exposed so downstream lane state can carry
+   * it forward without re-deriving it.
+   */
+  continuationState?: unknown;
 }
 
+/**
+ * The generation of a cache entry BEFORE a refresh mutated it: the values a viewing client
+ * holds when it created/last-read the entry. {@link SessionCacheService.refreshIfPresent}
+ * reports it so the watcher can adopt it as its previous generation and emit a correct delta
+ * (or nothing, on a cache hit) when it switches from the lane to the body path.
+ */
+export interface PreParseGeneration {
+  sourceVersion: number;
+  messageCount: number;
+  chunkCount: number;
+}
+
+export type RefreshIfPresentResult =
+  | { present: false; lastFullParse?: { seq: number; durationMs: number } }
+  | { present: true; preParse: PreParseGeneration; result: GetOrParseResult };
+
+/** Whether a parse may create a new entry (`always`) or must only refresh an existing one. */
+type ParseMode = 'always' | 'ifPresent';
+
 interface ParseSnapshot {
-  result: GetOrParseResult;
+  /** Absent only for an `ifPresent` pass that found no entry (see {@link absent}). */
+  result?: GetOrParseResult;
   freshnessToken: unknown;
+  /** An `ifPresent` refresh found no same-identity entry — nothing parsed, nothing created. */
+  absent?: boolean;
+  /** Generation of the entry before an `ifPresent` refresh mutated it. */
+  preParse?: PreParseGeneration;
 }
 
 interface ParseFlight {
@@ -180,6 +228,16 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
   private dtoMisses = 0;
   private budgetUsedBytes = 0;
   private evictions = 0;
+  /** Service-wide monotonic counter, bumped on every recorded full parse. */
+  private fullParseSeq = 0;
+  /**
+   * Last full-parse cost per session (`{ seq, durationMs }`), keyed by sessionId. Kept OUTSIDE the
+   * entry cache so it survives eviction and {@link invalidate}: a large viewed session whose entry
+   * cannot stay resident is served by the watcher's metrics-only lane, and the lane reads this to
+   * tell whether a reader just paid a costly full parse and so re-applies the refresh cooldown.
+   * FIFO-capped at {@link FULL_PARSE_COST_CAP}; a dropped record costs at most one unthrottled pass.
+   */
+  private readonly fullParseCosts = new Map<string, { seq: number; durationMs: number }>();
   private idleSweepTimer?: NodeJS.Timeout;
   private readonly config: TranscriptCacheConfig;
 
@@ -213,6 +271,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       this.idleSweepTimer = undefined;
     }
     this.clear();
+    this.fullParseCosts.clear();
   }
 
   getCacheStats(): CacheStats {
@@ -320,7 +379,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     const arrivalGeneration = this.flightGeneration;
     const existing = this.parseFlights.get(sessionId);
     if (!existing) {
-      return (await this.startParseFlight(sessionId, source, adapter).promise).result;
+      return (await this.startParseFlight(sessionId, source, adapter).promise).result!;
     }
     let flight: ParseFlight = existing;
 
@@ -332,9 +391,12 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       } catch (error) {
         if (sameSource) throw error;
       }
+      // An absent snapshot (an `ifPresent` refresh that created nothing) is never a shareable
+      // result: a viewer that joined it must fall through and start its own real parse.
+      const shareable = snapshot && !snapshot.absent ? snapshot : undefined;
       // A snapshot started after arrival bounds waiting even if the source keeps growing.
-      if (sameSource && snapshot && flight.generation > arrivalGeneration) {
-        return this.sharedResult(snapshot.result);
+      if (sameSource && shareable && flight.generation > arrivalGeneration) {
+        return this.sharedResult(shareable.result!);
       }
 
       const next: ParseFlight | undefined = flight.next ?? this.parseFlights.get(sessionId);
@@ -349,11 +411,106 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
         sessionId,
         source,
         adapter,
-        sameSource ? snapshot : undefined,
+        sameSource ? shareable : undefined,
       );
       flight.next = refresh;
-      return (await refresh.promise).result;
+      return (await refresh.promise).result!;
     }
+  }
+
+  /**
+   * Refresh a session ONLY when a same-identity entry is already cached, otherwise report
+   * `absent` without parsing or creating anything. The presence check and the refresh run as
+   * one flight so they cannot race eviction into recreating the entry (the thrash path a
+   * `getEntry` + `getOrParse` pair would take). The watcher's metrics-only lane uses this to
+   * stay off the cache until a reader creates an entry.
+   */
+  async refreshIfPresent(
+    sessionId: string,
+    source: string | SessionSourceRef,
+    adapter: SessionReaderAdapter,
+  ): Promise<RefreshIfPresentResult> {
+    const snapshot = await this.resolveIfPresentFlight(sessionId, source, adapter);
+    return this.toRefreshResult(sessionId, snapshot);
+  }
+
+  /**
+   * Settle an `ifPresent` pass through the SAME successor-aware chain {@link getOrParseResult}
+   * walks (`flight.next ?? parseFlights.get`), so it never installs a competing flight beside one
+   * a `getOrParse` waiter already chained — which would run two full parses for the same key at
+   * once. It adopts any same-source snapshot from a flight that STARTED after arrival, and only
+   * starts its OWN flight at the tail. That tail flight is `ifPresent`, so it never creates an
+   * entry; a `getOrParse` waiter's created/refreshed entry is instead observed by sharing its
+   * (non-absent) snapshot.
+   */
+  private async resolveIfPresentFlight(
+    sessionId: string,
+    source: string | SessionSourceRef,
+    adapter: SessionReaderAdapter,
+  ): Promise<ParseSnapshot> {
+    const sourceIdentity = this.sourceIdentity(this.toSourceRef(source, adapter));
+    const arrivalGeneration = this.flightGeneration;
+    const existing = this.parseFlights.get(sessionId);
+    if (!existing) {
+      return this.startParseFlight(sessionId, source, adapter, undefined, 'ifPresent').promise;
+    }
+    let flight: ParseFlight = existing;
+    for (;;) {
+      const sameSource = flight.sourceIdentity === sourceIdentity;
+      let snapshot: ParseSnapshot | undefined;
+      try {
+        snapshot = await flight.promise;
+      } catch {
+        // A failed flight yields nothing to adopt; continue to its successor or our own pass.
+      }
+      // An absent snapshot (a prior `ifPresent` pass that created nothing) is never adopted: a
+      // later flight may hold the entry, so keep walking exactly as `getOrParseResult` does.
+      const shareable = snapshot && !snapshot.absent ? snapshot : undefined;
+      // A snapshot from a flight that started after arrival reflects the post-arrival state.
+      if (sameSource && shareable && flight.generation > arrivalGeneration) {
+        return shareable;
+      }
+
+      const next: ParseFlight | undefined = flight.next ?? this.parseFlights.get(sessionId);
+      if (next) {
+        flight = next;
+        continue;
+      }
+
+      const refresh = this.startParseFlight(
+        sessionId,
+        source,
+        adapter,
+        sameSource ? shareable : undefined,
+        'ifPresent',
+      );
+      flight.next = refresh;
+      return refresh.promise;
+    }
+  }
+
+  private toRefreshResult(sessionId: string, snapshot: ParseSnapshot): RefreshIfPresentResult {
+    if (snapshot.absent || !snapshot.result) {
+      const record = this.fullParseCosts.get(sessionId);
+      return record
+        ? { present: false, lastFullParse: { seq: record.seq, durationMs: record.durationMs } }
+        : { present: false };
+    }
+    // Our own `ifPresent` flight supplies the true pre-parse generation and classification.
+    if (snapshot.preParse) {
+      return { present: true, preParse: snapshot.preParse, result: snapshot.result };
+    }
+    // A shared `getOrParse` (`always`) successor carries no pre-parse generation, and its
+    // classification (e.g. `same-file-rewrite` after growth during a held full parse) describes
+    // the READER's parse, not a change this caller observed. Hand it over exactly as
+    // `getOrParseResult` shares a joined flight: a cache hit on the adopted generation. A lane
+    // watcher that adopts that generation then publishes nothing (the reader already holds it);
+    // a body-path watcher still sees a changed cache hit and requires a refetch, as before.
+    return {
+      present: true,
+      preParse: this.preParseFromResult(snapshot.result),
+      result: this.sharedResult(snapshot.result),
+    };
   }
 
   private startParseFlight(
@@ -361,13 +518,14 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     source: string | SessionSourceRef,
     adapter: SessionReaderAdapter,
     previous?: ParseSnapshot,
+    mode: ParseMode = 'always',
   ): ParseFlight {
     const sourceIdentity = this.sourceIdentity(this.toSourceRef(source, adapter));
     const flight: ParseFlight = {
       sourceIdentity,
       generation: ++this.flightGeneration,
       promise: Promise.resolve()
-        .then(() => this.parseSession(sessionId, source, adapter, sourceIdentity, previous))
+        .then(() => this.parseSession(sessionId, source, adapter, sourceIdentity, previous, mode))
         .finally(() => {
           if (this.parseFlights.get(sessionId) === flight) {
             this.parseFlights.delete(sessionId);
@@ -383,12 +541,42 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     return { ...result, cacheHit: true, sourceChangeKind: 'cache-hit', boundaryFold: false };
   }
 
+  /**
+   * Run and time a full parse, recording its cost for the session. The watcher's lane reads this
+   * (via {@link refreshIfPresent}) to re-apply the refresh cooldown when a reader pays a costly full
+   * parse for a session whose entry cannot stay resident.
+   */
+  private async timedFullParse(
+    sessionId: string,
+    adapter: SessionReaderAdapter,
+    filePath: string,
+    threadRef: SessionSourceRef | undefined,
+  ): Promise<UnifiedSession> {
+    const startedAt = performance.now();
+    const session = threadRef
+      ? await adapter.parseFullSession(filePath, threadRef)
+      : await adapter.parseFullSession(filePath);
+    this.recordFullParse(sessionId, performance.now() - startedAt);
+    return session;
+  }
+
+  private recordFullParse(sessionId: string, durationMs: number): void {
+    this.fullParseSeq += 1;
+    // FIFO cap: only a NEW session key can grow the map; evict the oldest key when it is full.
+    if (!this.fullParseCosts.has(sessionId) && this.fullParseCosts.size >= FULL_PARSE_COST_CAP) {
+      const oldest = this.fullParseCosts.keys().next().value;
+      if (oldest !== undefined) this.fullParseCosts.delete(oldest);
+    }
+    this.fullParseCosts.set(sessionId, { seq: this.fullParseSeq, durationMs });
+  }
+
   private async parseSession(
     sessionId: string,
     source: string | SessionSourceRef,
     adapter: SessionReaderAdapter,
     sourceIdentity: string,
     previous?: ParseSnapshot,
+    mode: ParseMode = 'always',
   ): Promise<ParseSnapshot> {
     const now = Date.now();
     const ref = this.toSourceRef(source, adapter);
@@ -399,9 +587,23 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     const retained = this.cache.get(sessionId);
     const cached = retained?.sourceIdentity === sourceIdentity ? retained : undefined;
 
+    // `ifPresent` refresh: the entry may have been evicted during the freshness await above.
+    // Report absent instead of parsing so an eviction can never be recreated as a retained
+    // entry (the metrics-only lane must never touch the cache).
+    if (mode === 'ifPresent' && !cached) {
+      return { absent: true, freshnessToken: freshness.token };
+    }
+    // Capture the entry's generation BEFORE this refresh mutates it (for the lane→body switch).
+    const preParse = mode === 'ifPresent' && cached ? this.preParseGeneration(cached) : undefined;
+
     if (previous && JSON.stringify(previous.freshnessToken) === JSON.stringify(freshness.token)) {
-      if (cached?.session === previous.result.session) this.touchLru(sessionId, cached, now);
-      return { result: this.sharedResult(previous.result), freshnessToken: freshness.token };
+      if (cached && cached.session === previous.result?.session)
+        this.touchLru(sessionId, cached, now);
+      return {
+        result: this.sharedResult(previous.result!),
+        freshnessToken: freshness.token,
+        preParse,
+      };
     }
 
     const freshSession = this.takeFreshCachedSession(sessionId, cached, freshness.token, now);
@@ -409,6 +611,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       return {
         result: this.toGetOrParseResult(freshSession, cached, true, 'cache-hit'),
         freshnessToken: freshness.token,
+        preParse,
       };
     }
 
@@ -417,7 +620,10 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     let session: UnifiedSession;
     let lastOffset: number;
     let boundaryFold = false;
-    let acceptedFileDigests: FileContentDigests | undefined;
+    let acceptedFileAnchors: FileContentAnchors | undefined;
+    // Opaque adapter continuation state to store on the new entry; only an accepted incremental
+    // parse carries one forward. A full parse (any branch below) leaves it undefined = cleared.
+    let continuationState: unknown;
     const sameFileIdentity =
       ref.kind !== 'file' ||
       (cached?.fileIdentity !== undefined && cached.fileIdentity === freshness.fileIdentity);
@@ -427,14 +633,18 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       ref.kind === 'file' &&
       sameFileIdentity &&
       freshness.size > cached.lastSize;
-    const growthDigests =
-      sameIdentityGrowth && cached.fileContentDigest !== undefined
-        ? await this.tryHashFileContent(ref.filePath, freshness, cached.lastOffset)
+    // Pre-parse proof: re-read the cached prefix's bounded head/tail anchors and require
+    // BOTH to match the stored pair. Inode continuity and growth alone are insufficient —
+    // the earlier bytes must still be the exact parsed prefix before an incremental read
+    // may extend the cached session.
+    const growthAnchors =
+      sameIdentityGrowth && cached.fileContentAnchors !== undefined
+        ? await this.tryHashFileAnchors(ref.filePath, freshness, cached.lastOffset)
         : undefined;
     const provenSameFileAppend =
       sameIdentityGrowth &&
-      cached.fileContentDigest !== undefined &&
-      growthDigests?.prefixDigest === cached.fileContentDigest;
+      cached.fileContentAnchors !== undefined &&
+      anchorsEqual(growthAnchors, cached.fileContentAnchors);
     let sourceChangeKind: SourceChangeKind = !cached
       ? 'unknown-full-parse'
       : ref.kind === 'db'
@@ -449,25 +659,44 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
               ? 'file-truncation'
               : 'same-file-rewrite';
 
-    // Inode continuity and growth are insufficient: earlier bytes must still match the
-    // exact parsed prefix before an incremental read can safely extend the cached session.
-    if (cached && provenSameFileAppend && growthDigests) {
+    if (cached && provenSameFileAppend && cached.fileContentAnchors) {
       this.logger.debug(
         { sessionId, lastOffset: cached.lastOffset, currentSize: freshness.size },
         'Incremental parse (source grew)',
       );
 
-      const incOptions = { byteOffset: cached.lastOffset, includeToolCalls: true };
+      // Bound delta reads to the proven snapshot size: a file that grows mid-parse yields no
+      // bytes beyond it (they arrive next pass). Snapshot adapters re-read from 0 and ignore
+      // the bound, so it is not threaded for them.
+      const incOptions: ParseOptions = { byteOffset: cached.lastOffset, includeToolCalls: true };
+      if (adapter.incrementalMode === 'delta') {
+        incOptions.endByteOffset = freshness.size;
+      }
+      // Carry the prior opaque continuation state (e.g. Codex token baseline) into this parse
+      // so the adapter can skip rescanning earlier bytes. Absent → the adapter falls back.
+      if (cached.continuationState !== undefined) {
+        incOptions.continuationState = cached.continuationState;
+      }
       let tentativeResult: IncrementalResult | undefined = threadRef
         ? await adapter.parseIncremental(ref.filePath, incOptions, threadRef)
         : await adapter.parseIncremental(ref.filePath, incOptions);
+      const newOffset = tentativeResult.nextByteOffset;
 
-      const postParseDigests = await this.tryHashFileContent(
-        ref.filePath,
-        freshness,
-        freshness.size,
-      );
-      if (postParseDigests?.fullDigest !== growthDigests.fullDigest) {
+      // Post-parse proof: the file must still be the same inode and no shorter than the
+      // snapshot (allowGrowth), the proven prefix anchors must STILL match (no mid-parse
+      // rewrite), and only then do we capture the accepted-prefix anchors ending at the new
+      // offset for the next append's pre-parse proof. Any mismatch, missing proof, or a
+      // regressing offset discards the tentative result and falls back to a full parse.
+      const prefixHeld =
+        newOffset >= cached.lastOffset &&
+        anchorsEqual(
+          await this.tryHashFileAnchors(ref.filePath, freshness, cached.lastOffset, true),
+          cached.fileContentAnchors,
+        );
+      const proofAnchors = prefixHeld
+        ? await this.tryHashFileAnchors(ref.filePath, freshness, newOffset, true)
+        : undefined;
+      if (proofAnchors === undefined) {
         this.logger.debug(
           { sessionId },
           'Discarding incremental parse because its proven file revision drifted',
@@ -475,13 +704,12 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
         tentativeResult = undefined;
         freshness = await this.computeFreshness(ref, adapter);
         sourceChangeKind = this.classifyUnsafeFileChange(cached, freshness);
-        session = threadRef
-          ? await adapter.parseFullSession(ref.filePath, threadRef)
-          : await adapter.parseFullSession(ref.filePath);
+        session = await this.timedFullParse(sessionId, adapter, ref.filePath, threadRef);
         lastOffset = freshness.size;
       } else {
         const acceptedResult = tentativeResult;
-        acceptedFileDigests = postParseDigests;
+        acceptedFileAnchors = proofAnchors;
+        continuationState = acceptedResult.continuationState;
         const newMessages = acceptedResult.entries as UnifiedMessage[];
 
         if (adapter.incrementalMode === 'snapshot') {
@@ -507,8 +735,14 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
           );
           boundaryFold = folded.tailMutatedWithoutNewMessage;
           const mergedMessages = folded.merged;
+          // Shared with the watcher's metrics-only lane: the cache derives the merged-array inputs
+          // (count, visible-context tokens, duration) from all messages, the lane from running state.
           const mergedMetrics = acceptedResult.metrics
-            ? this.mergeMetrics(cached.session.metrics, acceptedResult.metrics, mergedMessages)
+            ? mergeMetrics(
+                cached.session.metrics,
+                acceptedResult.metrics,
+                deriveMergeInputsFromMessages(cached.session.metrics, mergedMessages),
+              )
             : cached.session.metrics;
 
           session = {
@@ -528,9 +762,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       } else if (cached && freshness.size < cached.lastSize) {
         this.logger.debug({ sessionId }, 'Full reparse (source truncated)');
       }
-      session = threadRef
-        ? await adapter.parseFullSession(ref.filePath, threadRef)
-        : await adapter.parseFullSession(ref.filePath);
+      session = await this.timedFullParse(sessionId, adapter, ref.filePath, threadRef);
       lastOffset = freshness.size;
     }
 
@@ -551,12 +783,12 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     }
     session = this.withoutDerivedChunks(session);
 
-    const fileContentDigest =
-      ref.kind === 'file'
-        ? lastOffset === freshness.size && acceptedFileDigests !== undefined
-          ? acceptedFileDigests.fullDigest
-          : (await this.tryHashFileContent(ref.filePath, freshness, lastOffset))?.prefixDigest
-        : undefined;
+    const fileContentAnchors = await this.resolveStoredAnchors(
+      ref,
+      freshness,
+      lastOffset,
+      acceptedFileAnchors,
+    );
 
     // A replacement entry owns every retained representation for this session.
     // Replacing it drops stale chunks/DTOs atomically before budget enforcement.
@@ -569,13 +801,14 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       lastSize: freshness.size,
       lastMtime: freshness.mtimeMs,
       fileIdentity: freshness.fileIdentity,
-      fileContentDigest,
+      fileContentAnchors,
       sourceVersion: freshness.sourceVersion,
       freshnessToken: freshness.token,
       lastAccessedAt: now,
       sourceWeightBytes,
       weights: { parsed: sourceWeightBytes * 2, chunks: 0, dto: 0 },
       boundaryFold,
+      continuationState,
     };
     this.cache.set(sessionId, entry);
     this.budgetUsedBytes += entry.weights.parsed;
@@ -584,11 +817,39 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     return {
       result: this.toGetOrParseResult(session, entry, false, sourceChangeKind),
       freshnessToken: freshness.token,
+      preParse,
     };
   }
 
   getEntry(sessionId: string): SessionCacheEntry | undefined {
     return this.cache.get(sessionId);
+  }
+
+  /**
+   * The generation a viewing client holds for an entry (its chunk count from the cached chunks
+   * when a reader set them, else built once). Captured before an `ifPresent` refresh so the
+   * watcher can emit a correct delta on the lane→body switch.
+   */
+  private preParseGeneration(entry: SessionCacheEntry): PreParseGeneration {
+    return {
+      sourceVersion: entry.sourceVersion,
+      messageCount: entry.session.messages.length,
+      chunkCount: entry.chunks?.chunks.length ?? buildChunks(entry.session.messages).length,
+    };
+  }
+
+  /**
+   * The pre-refresh generation to report when an `ifPresent` caller SHARES a concurrent
+   * `getOrParse` result (which captured no pre-parse generation): the result's own generation, so
+   * the watcher adopts it as its previous and the lane→body switch publishes nothing rather than a
+   * spurious full-refetch. The cache stores sessions without derived chunks, so chunkCount is built.
+   */
+  private preParseFromResult(result: GetOrParseResult): PreParseGeneration {
+    return {
+      sourceVersion: result.sourceVersion,
+      messageCount: result.session.messages.length,
+      chunkCount: result.session.chunks?.length ?? buildChunks(result.session.messages).length,
+    };
   }
 
   getChunks(sessionId: string, sourceVersion: number): UnifiedChunk[] | undefined {
@@ -729,6 +990,8 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       lastMtime: entry.lastMtime,
       sourceVersion: entry.sourceVersion,
       boundaryFold: cacheHit ? false : entry.boundaryFold,
+      fileContentAnchors: entry.fileContentAnchors,
+      continuationState: entry.continuationState,
     };
   }
 
@@ -816,25 +1079,13 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     newMessages: UnifiedMessage[],
   ): { merged: UnifiedMessage[]; tailMutatedWithoutNewMessage: boolean } {
     const tail = cachedMessages[cachedMessages.length - 1];
-    if (!tail || tail.role !== 'assistant' || newMessages.length === 0) {
-      return { merged: [...cachedMessages, ...newMessages], tailMutatedWithoutNewMessage: false };
-    }
-
-    // Walk the LEADING run, advancing the end_turn guard as continuation assistants merge.
-    let foldCount = 0;
-    let tailStopReason = tail.stopReason ?? null;
-    while (foldCount < newMessages.length) {
-      const m = newMessages[foldCount];
-      if (m.isSidechain !== tail.isSidechain) break; // sidechain transition → new context
-      if (m.isCompactSummary) break; // compaction boundary
-      const isToolResult = isToolResultOnlyMessage(m);
-      const isContinuationAssistant = m.role === 'assistant';
-      if (!isToolResult && !isContinuationAssistant) break; // real user prompt → new turn
-      // Claude over-merge guard: a completed turn does not continue into a new assistant.
-      if (isContinuationAssistant && tailStopReason === 'end_turn') break;
-      if (isContinuationAssistant) tailStopReason = m.stopReason ?? null;
-      foldCount += 1;
-    }
+    // The fold DECISION (how many leading messages continue the tail's turn) is shared with
+    // the watcher's metrics-only lane so the two paths never drift; this method then performs
+    // the message-level merge the cache needs.
+    const { foldCount, tailMutatedWithoutNewMessage } = computeLeadingContinuationFold(
+      describeTail(tail),
+      newMessages,
+    );
 
     if (foldCount === 0) {
       return { merged: [...cachedMessages, ...newMessages], tailMutatedWithoutNewMessage: false };
@@ -857,71 +1108,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     const remaining = newMessages.slice(foldCount);
     return {
       merged: [...cachedMessages.slice(0, -1), foldedTail, ...remaining],
-      tailMutatedWithoutNewMessage: remaining.length === 0,
-    };
-  }
-
-  /**
-   * Merge existing session metrics with incremental parse metrics.
-   *
-   * Token totals and cost are additive. Latest-state fields (isOngoing,
-   * primaryModel, visibleContextTokens) come from the incremental result.
-   * Compaction-related fields are kept from the existing metrics since they
-   * cannot be reliably computed incrementally — they refresh on full reparse.
-   */
-  private mergeMetrics(
-    existing: UnifiedMetrics,
-    incremental: UnifiedMetrics,
-    allMessages: UnifiedMessage[],
-  ): UnifiedMetrics {
-    const inputTokens = existing.inputTokens + incremental.inputTokens;
-    const outputTokens = existing.outputTokens + incremental.outputTokens;
-    const cacheReadTokens = existing.cacheReadTokens + incremental.cacheReadTokens;
-    const cacheCreationTokens = existing.cacheCreationTokens + incremental.cacheCreationTokens;
-    const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
-
-    // Duration from first to last message timestamp
-    let durationMs = existing.durationMs;
-    if (allMessages.length >= 2) {
-      durationMs =
-        allMessages[allMessages.length - 1].timestamp.getTime() -
-        allMessages[0].timestamp.getTime();
-    }
-
-    // Models: union of both sets
-    const modelsSet = new Set<string>();
-    if (existing.primaryModel) modelsSet.add(existing.primaryModel);
-    if (incremental.primaryModel) modelsSet.add(incremental.primaryModel);
-    if (existing.modelsUsed) existing.modelsUsed.forEach((m) => modelsSet.add(m));
-    if (incremental.modelsUsed) incremental.modelsUsed.forEach((m) => modelsSet.add(m));
-    const modelsUsed = modelsSet.size > 1 ? Array.from(modelsSet) : undefined;
-
-    return {
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
-      totalTokens,
-      costUsd: existing.costUsd + incremental.costUsd,
-      primaryModel: incremental.primaryModel ?? existing.primaryModel,
-      modelsUsed,
-      isOngoing: incremental.isOngoing,
-      // Recomputed from all messages (compaction-aware) on every merge
-      // to avoid staleness between full reparses.
-      visibleContextTokens: estimateVisibleFromMessages(allMessages),
-      // Assistant usage snapshot always implies positive total tokens;
-      // 0 means no assistant/token_count was observed in this delta slice.
-      totalContextTokens:
-        incremental.totalContextTokens > 0
-          ? incremental.totalContextTokens
-          : existing.totalContextTokens,
-      contextWindowTokens: incremental.contextWindowTokens ?? existing.contextWindowTokens,
-      messageCount: allMessages.length,
-      durationMs,
-      // Compaction fields: kept from existing (refreshed on full reparse)
-      totalContextConsumption: existing.totalContextConsumption,
-      compactionCount: existing.compactionCount,
-      phaseBreakdowns: existing.phaseBreakdowns,
+      tailMutatedWithoutNewMessage,
     };
   }
 
@@ -967,77 +1154,64 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     return 'same-file-rewrite';
   }
 
-  private async tryHashFileContent(
+  /**
+   * Wrap the shared bounded anchor proof, turning a drifted/unavailable snapshot into
+   * `undefined` (an unsafe append) rather than throwing on the hot path.
+   */
+  private async tryHashFileAnchors(
     filePath: string,
     expected: FileFreshnessSnapshot,
-    prefixLength: number,
-  ): Promise<FileContentDigests | undefined> {
+    offset: number,
+    allowGrowth = false,
+  ): Promise<FileContentAnchors | undefined> {
     try {
-      return await this.hashFileContent(filePath, expected, prefixLength);
+      return await hashFileAnchors(filePath, expected, offset, allowGrowth);
     } catch (error) {
-      this.logger.debug({ error, filePath }, 'File prefix proof unavailable — append is unsafe');
+      this.logger.debug({ error, filePath }, 'File anchor proof unavailable — append is unsafe');
       return undefined;
     }
   }
 
-  private async hashFileContent(
-    filePath: string,
-    expected: FileFreshnessSnapshot,
-    prefixLength: number,
-  ): Promise<FileContentDigests> {
-    if (
-      !Number.isSafeInteger(prefixLength) ||
-      prefixLength < 0 ||
-      prefixLength > expected.size ||
-      expected.fileIdentity === undefined
-    ) {
-      throw new Error('Invalid file prefix proof bounds');
-    }
+  /**
+   * The bounded anchors to store over `[0, lastOffset)` for a new entry; file sources only.
+   *
+   * The accepted-append path already proved its anchors and ends on a line boundary by
+   * construction. Every full-parse path (no accepted anchors) hashes them now under a strict
+   * same-snapshot assertion, but ONLY when the snapshot ends on a line boundary. A full parse that
+   * catches the file mid-write — its final line still unterminated — stores NO proof, so the next
+   * change re-parses in full and the completed line is read exactly once. Without this,
+   * `[0, lastOffset)` ending inside that line would be accepted as an append and the incremental
+   * parse would start mid-line and drop the message. lastOffset is never rewound: parseFullSession
+   * already parsed the line when it was complete JSON, so rewinding would duplicate it. Empty
+   * snapshots and a file that changed mid-parse also store no anchors.
+   */
+  private async resolveStoredAnchors(
+    ref: SessionSourceRef,
+    freshness: FileFreshnessSnapshot,
+    lastOffset: number,
+    acceptedFileAnchors: FileContentAnchors | undefined,
+  ): Promise<FileContentAnchors | undefined> {
+    if (ref.kind !== 'file') return undefined;
+    if (acceptedFileAnchors) return acceptedFileAnchors;
+    if (!(await this.snapshotEndsOnLineBoundary(ref.filePath, lastOffset))) return undefined;
+    return this.tryHashFileAnchors(ref.filePath, freshness, lastOffset);
+  }
 
-    const handle = await fs.open(filePath, 'r');
-    const assertStableSnapshot = async (): Promise<void> => {
-      const current = await handle.stat();
-      if (
-        current.size !== expected.size ||
-        current.mtime.getTime() !== expected.mtimeMs ||
-        `${current.dev}:${current.ino}` !== expected.fileIdentity
-      ) {
-        throw new Error('File changed while computing append proof');
-      }
-    };
-
+  /**
+   * Whether the parsed snapshot `[0, offset)` ends on a line boundary — the byte before `offset`
+   * is a newline, or the snapshot is empty. A full parse that caught the file mid-write ends inside
+   * an unterminated last line and fails this check, so it stores no append proof. On a read error
+   * the snapshot is treated as NOT on a boundary (fail closed to a safe full re-parse next change).
+   */
+  private async snapshotEndsOnLineBoundary(filePath: string, offset: number): Promise<boolean> {
     try {
-      await assertStableSnapshot();
-      const prefixHash = createHash('sha256');
-      const fullHash = createHash('sha256');
-      const buffer = Buffer.allocUnsafe(
-        Math.min(FILE_HASH_CHUNK_BYTES, Math.max(1, expected.size)),
+      return (await lastCompleteLineEnd(filePath, 0, offset)) === offset;
+    } catch (error) {
+      this.logger.debug(
+        { error, filePath },
+        'Line-boundary probe failed — withholding append proof',
       );
-      let position = 0;
-
-      while (position < expected.size) {
-        const requested = Math.min(buffer.byteLength, expected.size - position);
-        const { bytesRead } = await handle.read(buffer, 0, requested, position);
-        if (bytesRead === 0) {
-          throw new Error('File ended while computing append proof');
-        }
-
-        const chunk = buffer.subarray(0, bytesRead);
-        fullHash.update(chunk);
-        const prefixBytes = Math.min(bytesRead, Math.max(0, prefixLength - position));
-        if (prefixBytes > 0) {
-          prefixHash.update(chunk.subarray(0, prefixBytes));
-        }
-        position += bytesRead;
-      }
-
-      await assertStableSnapshot();
-      return {
-        prefixDigest: prefixHash.digest('hex'),
-        fullDigest: fullHash.digest('hex'),
-      };
-    } finally {
-      await handle.close();
+      return false;
     }
   }
 

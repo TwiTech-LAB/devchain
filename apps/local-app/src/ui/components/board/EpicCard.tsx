@@ -291,6 +291,7 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
                   epicId={epic.id}
                   epicTitle={epic.title}
                   focalProjectId={epic.projectId}
+                  focalIsRoot={epic.parentId === null}
                   dragFenceRef={relationPointerDownRef}
                   isDragging={isDragging}
                 />
@@ -305,6 +306,7 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
               epicId={epic.id}
               epicTitle={epic.title}
               focalProjectId={epic.projectId}
+              focalIsRoot={epic.parentId === null}
               dragFenceRef={relationPointerDownRef}
               isDragging={isDragging}
             />

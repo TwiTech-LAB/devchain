@@ -9,6 +9,7 @@ import type { ReviewSuggestionApplier } from '../../reviews/services/review-sugg
 import type { SessionsService } from '../../sessions/services/sessions.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { SkillsService } from '../../skills/services/skills.service';
+import type { SkillSourceLifecycleService } from '../../skills/services/skill-source-lifecycle.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { TeamsService } from '../../teams/services/teams.service';
 import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
@@ -29,6 +30,7 @@ export interface McpBindingRuntime {
   readonly settingsService?: SettingsService;
   readonly guestsService?: GuestsService;
   readonly skillsService?: SkillsService;
+  readonly skillSourceLifecycleService?: SkillSourceLifecycleService;
   readonly reviewsService?: ReviewsService;
   readonly reviewSuggestionApplier?: ReviewSuggestionApplier;
   readonly teamsService?: TeamsService;

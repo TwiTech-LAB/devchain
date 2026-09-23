@@ -179,7 +179,9 @@ describe('context-window resolution lifecycle', () => {
       (await firstRuntime.reader.getTranscriptSummary(SESSION_ID)).metrics.contextWindowTokens,
     ).toBe(750_000);
     expect(firstRuntime.cache.invalidateDto).toHaveBeenCalledWith(SESSION_ID);
-    expect(firstRuntime.watcher.invalidateLastKnownSummaryMetrics).toHaveBeenCalledWith(SESSION_ID);
+    // A runtime-context change keeps the watcher's last summary metrics (a lane session has no
+    // cache entry to fall back to); the context window is resolved at read time instead.
+    expect(firstRuntime.watcher.invalidateLastKnownSummaryMetrics).not.toHaveBeenCalled();
     expect(firstRuntime.events.publish).toHaveBeenCalledWith('session.runtime-context.updated', {
       sessionId: SESSION_ID,
     });

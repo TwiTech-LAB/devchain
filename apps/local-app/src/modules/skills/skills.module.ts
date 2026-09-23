@@ -78,6 +78,7 @@ import { SkillSyncService } from './services/skill-sync.service';
     VercelSkillSource,
     SkillCategoryService,
     SkillSourceRegistryService,
+    SkillSourceLifecycleService,
     SkillsService,
     SKILL_SOURCE_ADAPTERS,
   ],

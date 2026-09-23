@@ -76,12 +76,67 @@ describe('RegistryOrchestrationService', () => {
     it('should skip download if already cached', async () => {
       mockCacheService.isCached.mockReturnValue(true);
 
-      await service.downloadToCache('test-template', '1.0.0');
+      await expect(service.downloadToCache('test-template', '1.0.0')).resolves.toEqual({
+        cached: true,
+      });
 
       expect(mockRegistryClient.downloadTemplate).not.toHaveBeenCalled();
+      expect(mockCacheService.getTemplate).not.toHaveBeenCalled();
+      expect(mockCacheService.saveTemplate).not.toHaveBeenCalled();
     });
 
     it('should download and cache if not cached', async () => {
+      mockCacheService.isCached.mockReturnValue(false);
+      const content = { prompts: [{ title: 'Café 🚀' }] };
+      mockRegistryClient.downloadTemplate.mockResolvedValue({
+        content,
+        checksum: 'abc123',
+        slug: 'test-template',
+        version: '1.0.0',
+      });
+
+      await expect(service.downloadToCache('test-template', '1.0.0')).resolves.toEqual({
+        cached: false,
+        checksum: 'abc123',
+        size: 36,
+      });
+
+      expect(mockRegistryClient.downloadTemplate).toHaveBeenCalledWith('test-template', '1.0.0');
+      expect(mockCacheService.saveTemplate).toHaveBeenCalledWith(
+        'test-template',
+        '1.0.0',
+        content,
+        expect.objectContaining({
+          checksum: 'abc123',
+          size: 36,
+        }),
+      );
+    });
+
+    it('should propagate registry download failures unchanged', async () => {
+      mockCacheService.isCached.mockReturnValue(false);
+      const error = new Error('Registry unavailable');
+      mockRegistryClient.downloadTemplate.mockRejectedValue(error);
+
+      await expect(service.downloadToCache('test-template', '1.0.0')).rejects.toBe(error);
+      expect(mockCacheService.saveTemplate).not.toHaveBeenCalled();
+    });
+
+    it('should propagate cache save failures unchanged', async () => {
+      mockCacheService.isCached.mockReturnValue(false);
+      const error = new Error('Cache unavailable');
+      mockRegistryClient.downloadTemplate.mockResolvedValue({
+        content: { prompts: [] },
+        checksum: 'abc123',
+        slug: 'test-template',
+        version: '1.0.0',
+      });
+      mockCacheService.saveTemplate.mockRejectedValue(error);
+
+      await expect(service.downloadToCache('test-template', '1.0.0')).rejects.toBe(error);
+    });
+
+    it('should return only after cache save settles', async () => {
       mockCacheService.isCached.mockReturnValue(false);
       mockRegistryClient.downloadTemplate.mockResolvedValue({
         content: { prompts: [] },
@@ -90,18 +145,105 @@ describe('RegistryOrchestrationService', () => {
         version: '1.0.0',
       });
 
-      await service.downloadToCache('test-template', '1.0.0');
+      let resolveSave!: () => void;
+      const saveSettled = new Promise<void>((resolve) => {
+        resolveSave = resolve;
+      });
+      mockCacheService.saveTemplate.mockImplementation(() => saveSettled);
 
-      expect(mockRegistryClient.downloadTemplate).toHaveBeenCalledWith('test-template', '1.0.0');
-      expect(mockCacheService.saveTemplate).toHaveBeenCalledWith(
-        'test-template',
-        '1.0.0',
-        { prompts: [] },
-        expect.objectContaining({
-          checksum: 'abc123',
-          size: expect.any(Number),
-        }),
+      let completed = false;
+      const resultPromise = service.downloadToCache('test-template', '1.0.0').then((result) => {
+        completed = true;
+        return result;
+      });
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockCacheService.saveTemplate).toHaveBeenCalled();
+      expect(completed).toBe(false);
+
+      resolveSave();
+      await expect(resultPromise).resolves.toEqual({
+        cached: false,
+        checksum: 'abc123',
+        size: 14,
+      });
+    });
+  });
+
+  describe('getOrDownloadTemplate', () => {
+    it('should read the existing cache entry on a hit', async () => {
+      const cached = {
+        content: { prompts: [] },
+        metadata: {
+          slug: 'test-template',
+          version: '1.0.0',
+          checksum: 'abc',
+          cachedAt: '',
+          size: 0,
+        },
+      };
+      mockCacheService.isCached.mockReturnValue(true);
+      mockCacheService.getTemplate.mockResolvedValue(cached);
+
+      await expect(service.getOrDownloadTemplate('test-template', '1.0.0')).resolves.toEqual(
+        cached,
       );
+
+      expect(mockRegistryClient.downloadTemplate).not.toHaveBeenCalled();
+      expect(mockCacheService.getTemplate).toHaveBeenCalledWith('test-template', '1.0.0');
+    });
+
+    it('should read the cache only after a miss has finished saving', async () => {
+      mockCacheService.isCached.mockReturnValue(false);
+      mockRegistryClient.downloadTemplate.mockResolvedValue({
+        content: { prompts: [] },
+        checksum: 'abc123',
+        slug: 'test-template',
+        version: '1.0.0',
+      });
+
+      let resolveSave!: () => void;
+      const saveSettled = new Promise<void>((resolve) => {
+        resolveSave = resolve;
+      });
+      mockCacheService.saveTemplate.mockImplementation(() => saveSettled);
+      const cached = {
+        content: { prompts: [] },
+        metadata: {
+          slug: 'test-template',
+          version: '1.0.0',
+          checksum: 'abc',
+          cachedAt: '',
+          size: 0,
+        },
+      };
+      mockCacheService.getTemplate.mockResolvedValue(cached);
+
+      const resultPromise = service.getOrDownloadTemplate('test-template', '1.0.0');
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockCacheService.saveTemplate).toHaveBeenCalled();
+      expect(mockCacheService.getTemplate).not.toHaveBeenCalled();
+
+      resolveSave();
+      await expect(resultPromise).resolves.toBe(cached);
+      expect(mockCacheService.getTemplate).toHaveBeenCalledWith('test-template', '1.0.0');
+    });
+
+    it('should return null when a post-acquisition cache read is missing or unreadable', async () => {
+      mockCacheService.isCached.mockReturnValue(false);
+      mockRegistryClient.downloadTemplate.mockResolvedValue({
+        content: { prompts: [] },
+        checksum: 'abc123',
+        slug: 'test-template',
+        version: '1.0.0',
+      });
+      mockCacheService.saveTemplate.mockResolvedValue();
+      mockCacheService.getTemplate.mockResolvedValue(null);
+
+      await expect(service.getOrDownloadTemplate('test-template', '1.0.0')).resolves.toBeNull();
+      expect(mockRegistryClient.downloadTemplate).toHaveBeenCalledTimes(1);
+      expect(mockCacheService.getTemplate).toHaveBeenCalledWith('test-template', '1.0.0');
     });
   });
 

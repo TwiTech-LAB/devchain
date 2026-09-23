@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ExistingProjectsEnablementSchema } from './skill.dto';
 
 const COMMUNITY_SOURCE_NAME_PATTERN = /^[a-z0-9-]+$/;
 const GITHUB_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
@@ -105,6 +106,7 @@ const CreateCommunitySourceByRepoSchema = z.object({
   repoOwner: GitHubOwnerSchema,
   repoName: GitHubRepoSchema,
   branch: BranchSchema.optional(),
+  existingProjects: ExistingProjectsEnablementSchema,
 });
 
 const CreateCommunitySourceByUrlSchema = z
@@ -112,6 +114,7 @@ const CreateCommunitySourceByUrlSchema = z
     name: CommunitySourceNameSchema,
     url: z.string().trim().url(),
     branch: BranchSchema.optional(),
+    existingProjects: ExistingProjectsEnablementSchema,
   })
   .superRefine((value, ctx) => {
     const parsed = tryParseGitHubRepoUrl(value.url);
@@ -140,6 +143,7 @@ const CreateCommunitySourceByUrlSchema = z
       repoOwner: parsed.data.repoOwner,
       repoName: parsed.data.repoName,
       branch: value.branch ?? 'main',
+      existingProjects: value.existingProjects,
     };
   });
 
@@ -149,6 +153,7 @@ const CreateCommunitySourceByRepoNormalizedSchema = CreateCommunitySourceByRepoS
     repoOwner: value.repoOwner,
     repoName: value.repoName,
     branch: value.branch ?? 'main',
+    existingProjects: value.existingProjects,
   }),
 );
 

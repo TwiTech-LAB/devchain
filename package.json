@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.23.2",
+  "version": "0.23.4",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,23 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.23.4": [
+      "[New] MCP: agents can patch epic descriptions and add several relations on create",
+      "[New] Board: remove an epic relation from the Board preview",
+      "[Fix] Automation: \"Coder reset\" can wait while epics are in chosen statuses, so it keeps coders other phases still need",
+      "[Impr] Dev Template: GPT-6 family models, a skill review prompt, and better bundled skills",
+      "[New] Skills: \"Project skill review\" suggests which skills to enable or disable, based on usage",
+      "[Perf] MCP: smaller responses use less agent context; epic lists return description previews by default",
+      "[Fix] Skills: agents no longer load disabled skills, and edits to any local skill file now sync"
+    ],
+    "0.23.3": [
+      "[Perf] Sessions: lower CPU and memory use with many agents running",
+      "[New] Terminal: \"Send now\" delivers queued messages without waiting",
+      "[Fix] Terminal: finished agents no longer stay marked busy",
+      "[Fix] Chat: model and context size no longer disappear while an agent works",
+      "[New] Integrations: import the same ClickUp or Jira task into several projects",
+      "[Fix] Integrations: \"Reload remote\" works again after a remote change"
+    ],
     "0.23.2": [
       "Performance: reduced CPU usage in long-running sessions and smoother live transcript updates in the web UI"
     ],

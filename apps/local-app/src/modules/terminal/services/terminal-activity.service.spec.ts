@@ -126,6 +126,22 @@ describe('TerminalActivityService', () => {
         );
       });
 
+      it('does not signal for idle-particle-only data frames', () => {
+        stream.emit('frame', {
+          type: 'data',
+          sessionId,
+          payload: { data: '\x1b[38;5;245m⠁\x1b[0m' },
+        });
+        stream.emit('frame', {
+          type: 'data',
+          sessionId,
+          payload: { data: '⠂⠄⠈⠐⠠⡀⢀' },
+        });
+        expect(mockDb.prepare).not.toHaveBeenCalledWith(
+          expect.stringContaining('last_activity_at'),
+        );
+      });
+
       it('does not treat a split ANSI sequence as visible output', () => {
         stream.emit('frame', { type: 'data', sessionId, payload: { data: '\x1b[' } });
         stream.emit('frame', { type: 'data', sessionId, payload: { data: '31' } });

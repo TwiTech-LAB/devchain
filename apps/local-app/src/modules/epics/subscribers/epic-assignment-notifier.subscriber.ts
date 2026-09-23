@@ -16,12 +16,15 @@ import type {
 
 const TEMPLATE_SETTING_KEY = 'events.epicAssigned.template';
 const DEFAULT_TEMPLATE =
-  '[Epic Assignment]\n{epic_title} is now assigned to {agent_name} in {project_name}. (Epic ID: {epic_id})';
+  '[Epic Assignment]\n{epic_title} is now assigned to {agent_name} in {project_name}. Status: {epic_status}. (Epic ID: {epic_id})';
+
+const UNKNOWN_STATUS = 'Unknown';
 
 const LEGACY_VARIABLES = [
   'epic_id',
   'agent_name',
   'epic_title',
+  'epic_status',
   'project_name',
   'assigner_name',
   'team_name',
@@ -94,12 +97,17 @@ export class EpicAssignmentNotifierSubscriber {
       const teamCtx = await this.resolveTeamTemplateContext(payload.agentId, payload.projectId);
 
       const template = this.resolveTemplate();
+      const epicStatus = await this.resolveStatusName(template, payload.epicId, {
+        statusName: payload.statusName,
+        statusId: payload.statusId,
+      });
       const message = renderTemplate(
         template,
         {
           epic_id: payload.epicId,
           agent_name: payload.agentName ?? payload.agentId,
           epic_title: payload.epicTitle ?? payload.title,
+          epic_status: epicStatus,
           project_name: payload.projectName ?? payload.projectId,
           assigner_name: assignerName ?? 'System',
           ...teamCtx,
@@ -187,12 +195,17 @@ export class EpicAssignmentNotifierSubscriber {
       const teamCtx = await this.resolveTeamTemplateContext(newAgentId, payload.projectId);
 
       const template = this.resolveTemplate();
+      const epicStatus = await this.resolveStatusName(template, payload.epicId, {
+        statusName: payload.changes.statusId?.currentName,
+        statusId: payload.changes.statusId?.current,
+      });
       const message = renderTemplate(
         template,
         {
           epic_id: payload.epicId,
           agent_name: agentName ?? newAgentId,
           epic_title: epicTitle ?? payload.epicId,
+          epic_status: epicStatus,
           project_name: projectName ?? payload.projectId,
           assigner_name: assignerName ?? 'System',
           ...teamCtx,
@@ -405,6 +418,33 @@ export class EpicAssignmentNotifierSubscriber {
       resolvedProject ?? project ?? undefined,
       resolvedEpic ?? epic ?? undefined,
     ];
+  }
+
+  /**
+   * Resolves the epic's current status label. Storage is read only when the
+   * template uses the placeholder and the event payload lacks the name.
+   */
+  private async resolveStatusName(
+    template: string,
+    epicId: string,
+    known: { statusName?: string; statusId?: string | null },
+  ): Promise<string> {
+    if (known.statusName) {
+      return known.statusName;
+    }
+    if (!template.includes('epic_status')) {
+      return UNKNOWN_STATUS;
+    }
+
+    try {
+      const statusId = known.statusId ?? (await this.storage.getEpic(epicId)).statusId;
+      if (!statusId) {
+        return UNKNOWN_STATUS;
+      }
+      return (await this.storage.getStatus(statusId)).label;
+    } catch {
+      return UNKNOWN_STATUS;
+    }
   }
 
   /**

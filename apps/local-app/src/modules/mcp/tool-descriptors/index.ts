@@ -1,7 +1,6 @@
 import type { ToolMetadataEntry } from './types';
 
 import { sessionMetadata } from './session.metadata';
-import { documentMetadata } from './document.metadata';
 import { promptMetadata } from './prompt.metadata';
 import { skillMetadata } from './skill.metadata';
 import { agentMetadata } from './agent.metadata';
@@ -14,7 +13,6 @@ import { projectMetadata } from './project.metadata';
 
 export const allMetadata: ToolMetadataEntry[] = [
   ...sessionMetadata,
-  ...documentMetadata,
   ...promptMetadata,
   ...skillMetadata,
   ...agentMetadata,

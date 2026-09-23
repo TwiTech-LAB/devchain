@@ -11,8 +11,10 @@ import type {
   PhaseTokenBreakdown,
 } from '../dtos/unified-session.types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
+import type { TailDescriptor } from '../adapters/session-reader-adapter.interface';
 import { estimateMessageTokens } from '../adapters/utils/estimate-content-tokens';
 import { isToolResultOnlyMessage } from '../adapters/utils/tool-result-fold';
+import { lastCompleteLineEnd, noLines } from './bounded-line-read';
 
 const logger = createLogger('ClaudeJsonlParser');
 
@@ -91,6 +93,16 @@ export interface ClaudeParseResult {
   metrics: UnifiedMetrics;
   bytesRead: number;
   warnings?: string[];
+  /**
+   * Metrics-only lane seed extras (populated regardless of `retainMessages`). `tail` and the
+   * timestamps are absent when the parse produced no messages. `visibleContextTokensMerge` is
+   * the MERGE-term visible-context sum (content after the last compact summary, excluding it),
+   * which differs from `metrics.visibleContextTokens` (the parser counts the compact summary).
+   */
+  tail?: TailDescriptor;
+  firstMessageTimestamp?: number;
+  lastMessageTimestamp?: number;
+  visibleContextTokensMerge: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +112,8 @@ export interface ClaudeParseResult {
 export interface ClaudeParseOptions {
   maxMessages?: number;
   byteOffset?: number;
+  /** Exclusive upper byte bound; an unterminated final line inside it is held back. */
+  endByteOffset?: number;
   includeToolCalls?: boolean;
   pricingService?: PricingServiceInterface;
   /** Metrics-only scan: preserve coalescing state without retaining the full message array. */
@@ -115,6 +129,7 @@ export async function parseClaudeJsonl(
   options?: ClaudeParseOptions,
 ): Promise<ClaudeParseResult> {
   const byteOffset = options?.byteOffset ?? 0;
+  const endByteOffset = options?.endByteOffset;
   const maxMessages = options?.maxMessages;
   const includeToolCalls = options?.includeToolCalls ?? true;
   const pricing = options?.pricingService;
@@ -147,9 +162,17 @@ export async function parseClaudeJsonl(
     currentPhaseNumber: 1,
   };
 
-  // Visible context
+  // Visible context. `visibleContextTokens` is the parser meaning (counts the compact summary
+  // itself); `visibleContextTokensMerge` mirrors `estimateVisibleFromMessages` (excludes it), the
+  // value the incremental merge uses — tracked here so the lane seed matches the merged path.
   let visibleContextTokens = 0;
+  let visibleContextTokensMerge = 0;
   let totalContextTokens = 0;
+
+  // Metrics-only lane seed: the POSITIONAL first message timestamp and the last merged message
+  // (its descriptor + timestamp), tracked even when messages are not retained.
+  let firstMessageTimestamp: Date | undefined;
+  let lastMessage: UnifiedMessage | undefined;
 
   // Ongoing detection: track last assistant stop_reason
   let lastAssistantStopReason: string | null = null;
@@ -170,18 +193,28 @@ export async function parseClaudeJsonl(
   // Byte tracking
   let bytesRead = byteOffset;
 
-  const stream = fs.createReadStream(filePath, {
-    start: byteOffset,
-    encoding: 'utf8',
-  });
+  // Bounded read: stream only whole lines within [byteOffset, endByteOffset). streamEnd is
+  // the last newline boundary in that window; an unterminated final line is excluded and
+  // bytesRead stays on its start. When the window has no complete line, skip the stream
+  // entirely (an empty range would make createReadStream throw).
+  const streamEnd =
+    endByteOffset === undefined
+      ? undefined
+      : await lastCompleteLineEnd(filePath, byteOffset, endByteOffset);
+  const stream =
+    streamEnd !== undefined && streamEnd <= byteOffset
+      ? null
+      : fs.createReadStream(filePath, {
+          start: byteOffset,
+          ...(streamEnd === undefined ? {} : { end: streamEnd - 1 }),
+          encoding: 'utf8',
+        });
 
-  const rl = readline.createInterface({
-    input: stream,
-    crlfDelay: Infinity,
-  });
+  const rl =
+    stream === null ? null : readline.createInterface({ input: stream, crlfDelay: Infinity });
 
   try {
-    for await (const line of rl) {
+    for await (const line of rl ?? noLines()) {
       const lineBytes = Buffer.byteLength(line, 'utf8') + 1; // +1 for newline
       bytesRead += lineBytes;
 
@@ -229,7 +262,9 @@ export async function parseClaudeJsonl(
       if (!unified) continue;
 
       if (!entry.isSidechain) {
-        visibleContextTokens += estimateMessageTokens(unified.content);
+        const contentTokens = estimateMessageTokens(unified.content);
+        visibleContextTokens += contentTokens;
+        visibleContextTokensMerge += contentTokens;
       }
 
       // Process assistant-specific metrics
@@ -357,6 +392,10 @@ export async function parseClaudeJsonl(
 
       messageCount++;
       if (retainMessages) messages.push(unified);
+      // Positional first/last message for the lane seed (kept even without retained messages);
+      // a later continuation coalesces into `lastMessage` in place, so its timestamp is stable.
+      if (!firstMessageTimestamp) firstMessageTimestamp = ts;
+      lastMessage = unified;
 
       // Track the fold target + its stop_reason. A real user / compact-summary message (or a
       // tool_result with no preceding assistant, pushed as a fallback above) ends the
@@ -370,16 +409,18 @@ export async function parseClaudeJsonl(
       }
 
       if (entry.type === 'user' && entry.isCompactSummary && !entry.isSidechain) {
-        // Reset visible context to compact summary tokens only.
+        // Reset visible context to compact summary tokens only (parser meaning); the merge
+        // meaning drops the compact summary itself, so its running sum resets to zero.
         visibleContextTokens = estimateMessageTokens(unified.content);
+        visibleContextTokensMerge = 0;
       }
 
       // Check max messages limit
       if (maxMessages && messageCount >= maxMessages) break;
     }
   } finally {
-    rl.close();
-    stream.destroy();
+    rl?.close();
+    stream?.destroy();
   }
 
   // Finalize phases: add final phase only when last postCompaction > 0
@@ -454,7 +495,25 @@ export async function parseClaudeJsonl(
     );
   }
 
-  return { messages, metrics, bytesRead, warnings: warnings.length > 0 ? warnings : undefined };
+  const tail: TailDescriptor | undefined = lastMessage
+    ? {
+        role: lastMessage.role,
+        isSidechain: lastMessage.isSidechain,
+        stopReason: lastMessage.stopReason ?? null,
+        isCompactSummary: lastMessage.isCompactSummary ?? false,
+      }
+    : undefined;
+
+  return {
+    messages,
+    metrics,
+    bytesRead,
+    warnings: warnings.length > 0 ? warnings : undefined,
+    tail,
+    firstMessageTimestamp: firstMessageTimestamp?.getTime(),
+    lastMessageTimestamp: lastMessage?.timestamp.getTime(),
+    visibleContextTokensMerge,
+  };
 }
 
 // ---------------------------------------------------------------------------

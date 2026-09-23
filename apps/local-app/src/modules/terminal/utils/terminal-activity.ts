@@ -1,5 +1,11 @@
 type ParserState = 'text' | 'escape' | 'csi' | 'osc' | 'osc_escape';
 
+// Single-dot Braille characters ignored in output-only activity checks.
+// A working indicator made ONLY from these eight glyphs no longer sustains busy.
+const IDLE_PARTICLE_CODEPOINTS = new Set([
+  0x2801, 0x2802, 0x2804, 0x2808, 0x2810, 0x2820, 0x2840, 0x2880,
+]);
+
 /**
  * Builds a streaming predicate for terminal output. Parser state is retained across
  * chunks because PTY frames may split an ANSI sequence at any byte boundary.
@@ -93,5 +99,7 @@ function isIgnoredTextCharacter(
   code: number,
   includePrintableWhitespace: boolean,
 ): boolean {
-  return code <= 0x1f || code === 0x7f || (!includePrintableWhitespace && /^\s$/u.test(char));
+  if (code <= 0x1f || code === 0x7f) return true;
+  if (includePrintableWhitespace) return false;
+  return /^\s$/u.test(char) || IDLE_PARTICLE_CODEPOINTS.has(code);
 }

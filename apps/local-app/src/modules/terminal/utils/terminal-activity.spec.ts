@@ -4,6 +4,7 @@ import {
   hasMeaningfulTerminalOutput,
   hasPrintableTerminalInput,
 } from './terminal-activity';
+import attachFixture from './__fixtures__/idle-animation-attach-stream.json';
 
 describe('terminal activity predicate', () => {
   it('recognizes visible text and rejects whitespace and ANSI-only output', () => {
@@ -56,5 +57,72 @@ describe('terminal activity predicate', () => {
     expect(countPlainTerminalInputCharacters('')).toBeNull();
     expect(countPlainTerminalInputCharacters('\r')).toBeNull();
     expect(countPlainTerminalInputCharacters('\x1b[A')).toBeNull();
+  });
+
+  describe('idle particle filtering', () => {
+    const PARTICLES = ['⠁', '⠂', '⠄', '⠈', '⠐', '⠠', '⡀', '⢀'];
+
+    it('ignores each single-dot Braille particle in output', () => {
+      for (const p of PARTICLES) {
+        expect(hasMeaningfulTerminalOutput(p)).toBe(false);
+      }
+    });
+
+    it('ignores particles mixed with ANSI and whitespace in output', () => {
+      expect(hasMeaningfulTerminalOutput('\x1b[38;5;245m⠁\x1b[0m')).toBe(false);
+      expect(hasMeaningfulTerminalOutput('⠁ ⠂ ⠄')).toBe(false);
+    });
+
+    it('counts particles as printable in input mode', () => {
+      for (const p of PARTICLES) {
+        expect(hasPrintableTerminalInput(p)).toBe(true);
+      }
+    });
+
+    it('counts particles in exact input-length tracking', () => {
+      expect(countPlainTerminalInputCharacters('⠁')).toBe(1);
+      expect(countPlainTerminalInputCharacters('⠁⠂⠄')).toBe(3);
+    });
+
+    it('treats multi-dot Braille spinners as meaningful output', () => {
+      expect(hasMeaningfulTerminalOutput('⠃')).toBe(true);
+      expect(hasMeaningfulTerminalOutput('⠇')).toBe(true);
+      expect(hasMeaningfulTerminalOutput('⣿')).toBe(true);
+    });
+
+    it('treats real text mixed with particles as meaningful output', () => {
+      expect(hasMeaningfulTerminalOutput('⠁ ready')).toBe(true);
+      expect(hasMeaningfulTerminalOutput('output⠂')).toBe(true);
+    });
+
+    it('replays the tmux attach-stream fixture chunk-by-chunk: no chunk is meaningful', () => {
+      const predicate = createMeaningfulOutputPredicate();
+      for (let i = 0; i < attachFixture.chunks.length; i++) {
+        expect(predicate(attachFixture.chunks[i].data)).toBe(false);
+      }
+    });
+
+    it('replays the fixture with arbitrary single-byte splits: still no meaningful output', () => {
+      for (const splitWidth of [1, 2, 7, 31, 128]) {
+        const predicate = createMeaningfulOutputPredicate();
+        let meaningfulCount = 0;
+        for (const chunk of attachFixture.chunks) {
+          const chars = [...chunk.data];
+          for (let i = 0; i < chars.length; i += splitWidth) {
+            const slice = chars.slice(i, i + splitWidth).join('');
+            if (predicate(slice)) meaningfulCount++;
+          }
+        }
+        expect(meaningfulCount).toBe(0);
+      }
+    });
+
+    it('replays the fixture with mid-CSI split: parser recovers and detects appended real text', () => {
+      const predicate = createMeaningfulOutputPredicate();
+      for (const chunk of attachFixture.chunks) {
+        predicate(chunk.data);
+      }
+      expect(predicate('provider finished')).toBe(true);
+    });
   });
 });

@@ -68,6 +68,8 @@ export function makeFlatChatSidebarProps(
     onTerminateConfirm: jest.fn(),
     onReleaseHeldMessages: jest.fn(),
     releasingHeldAgentId: null,
+    onForceDelivery: jest.fn(),
+    forcingAgentId: null,
     pendingRestartAgentIds: new Set<string>(),
     onMarkForRestart: jest.fn(),
     worktreeSessionActionsByAgentKey: {},

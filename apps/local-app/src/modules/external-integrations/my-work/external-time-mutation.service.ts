@@ -6,6 +6,7 @@ import {
   ValidationError,
 } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { LEGACY_UNASSIGNED_PROJECT_ID } from '../../storage/models/domain.models';
 import type {
   IntegrationConnection,
   IntegrationCredentials,
@@ -926,9 +927,15 @@ export class ExternalTimeMutationService {
     let linkedIdentity = requestedLink !== undefined;
 
     if (currentLinks.length > 0 && !requestedLink) {
+      // Altered-scope anti-bypass: only a pending state this project owns in
+      // a currently linked scope re-anchors the authoritative identity; any
+      // other unlinked scope stays a hard mismatch.
       const currentScopes = new Set(currentLinks.map((link) => link.remoteScopeKey));
       const pending = states.find(
-        (state) => currentScopes.has(state.remoteScopeKey) && state.pendingOperationId !== null,
+        (state) =>
+          state.pendingOperationId !== null &&
+          state.projectId === connection.projectId &&
+          currentScopes.has(state.remoteScopeKey),
       );
       if (pending) {
         authoritativeScopeKey = pending.remoteScopeKey;
@@ -939,28 +946,63 @@ export class ExternalTimeMutationService {
         });
       }
     } else if (currentLinks.length === 0) {
-      const ownedPending = states.find(
-        (state) => state.pendingOperationId !== null && state.pendingConnectionId === connection.id,
+      // No current-connection link anchors the identity, and the provider
+      // call still targets the same task under the same credentials, so a
+      // changed client scope must not bypass the pending guard. Anchor from
+      // durable ownership evidence in priority order: a pending row this
+      // project admitted through the current connection (any scope of this
+      // task), then a pending row for the exact requested identity, then a
+      // pending row whose scope a retained same-project link still
+      // snapshots — disconnect preserves that link, so its scope stays
+      // authoritative for this project even after reconnect.
+      const currentConnectionPending = states.find(
+        (state) =>
+          state.pendingOperationId !== null &&
+          state.projectId === connection.projectId &&
+          state.pendingConnectionId === connection.id,
       );
+      const retainedProjectScopes = new Set(
+        links
+          .filter((link) => link.projectId === connection.projectId)
+          .map((link) => link.remoteScopeKey),
+      );
+      const ownedPending =
+        currentConnectionPending ??
+        states.find(
+          (state) =>
+            state.pendingOperationId !== null &&
+            (state.projectId === connection.projectId ||
+              state.projectId === LEGACY_UNASSIGNED_PROJECT_ID) &&
+            (state.remoteScopeKey === requestedScopeKey ||
+              retainedProjectScopes.has(state.remoteScopeKey)),
+        );
       if (ownedPending) {
         authoritativeScopeKey = ownedPending.remoteScopeKey;
+        linkedIdentity = true;
       }
     }
 
-    const state = await this.storage.getExternalEstimateLogState({
-      provider,
-      remoteScopeKey: authoritativeScopeKey,
-      remoteTaskId,
-    });
-    const ownedPending =
-      state?.pendingOperationId && (linkedIdentity || state.pendingConnectionId === connection.id);
-    if (ownedPending) {
+    // Pending protection for the authoritative remote identity, by durable
+    // ownership: an unassigned pending blocks every project's writes while
+    // ownership is unresolved; an owned pending blocks only its owning
+    // project — including after disconnect/reconnect, when the pending row
+    // keeps a retired connection id. Pending history of other scopes or
+    // projects never blocks this write, and settled unassigned history never
+    // activates the manual-write guard.
+    const authoritativePending = states.find(
+      (state) =>
+        state.pendingOperationId !== null &&
+        state.remoteScopeKey === authoritativeScopeKey &&
+        (state.projectId === connection.projectId ||
+          state.projectId === LEGACY_UNASSIGNED_PROJECT_ID),
+    );
+    if (authoritativePending) {
       throw new BusyError('An estimate operation is pending for this task.', {
         reason: 'estimate_operation_pending',
-        operationId: state.pendingOperationId,
+        operationId: authoritativePending.pendingOperationId,
       });
     }
-    if (currentLinks.length > 0 && !requestedLink) {
+    if (currentLinks.length > 0 && !requestedLink && !linkedIdentity) {
       throw new ConflictError('The remote scope does not match the current task link.', {
         reason: 'remote_scope_mismatch',
       });

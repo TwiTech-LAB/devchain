@@ -1,5 +1,6 @@
 import { BusyError, ConflictError, NotFoundError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
+import { LEGACY_UNASSIGNED_PROJECT_ID } from '../../storage/models/domain.models';
 import { ClickUpProviderError } from '../errors/external-provider.errors';
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
 import type { ExternalTaskProvider } from '../ports/external-task-provider';
@@ -26,6 +27,7 @@ const connection = {
   updatedAt: '2026-08-19T11:00:00.000Z',
 };
 const pendingEstimateState = {
+  projectId,
   provider: 'clickup' as const,
   remoteScopeKey,
   remoteTaskId: 'task-1',
@@ -160,7 +162,7 @@ describe('ExternalTimeMutationService', () => {
 
   describe('create', () => {
     it('rejects a stale manual client before provider reads while durable estimate state is pending', async () => {
-      storage.getExternalEstimateLogState.mockResolvedValue(pendingEstimateState);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([pendingEstimateState]);
 
       await expect(
         service.createTimeEntry(
@@ -179,11 +181,10 @@ describe('ExternalTimeMutationService', () => {
         },
       });
 
-      expect(storage.getExternalEstimateLogState).toHaveBeenCalledWith({
-        provider: 'clickup',
-        remoteScopeKey,
-        remoteTaskId: 'task-1',
-      });
+      expect(storage.listExternalEstimateLogStatesByRemoteTask).toHaveBeenCalledWith(
+        'clickup',
+        'task-1',
+      );
       expect(listOwnTimeEntryIdsInRange).not.toHaveBeenCalled();
       expect(createTimeEntry).not.toHaveBeenCalled();
       expect(service.inspectOperation('manual-operation-1')).toBeNull();
@@ -192,9 +193,6 @@ describe('ExternalTimeMutationService', () => {
     it('rejects create when an altered scope hides the current connection pending row', async () => {
       storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([authoritativeLink]);
       storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([pendingEstimateState]);
-      storage.getExternalEstimateLogState.mockImplementation(async (identity) =>
-        identity.remoteScopeKey === remoteScopeKey ? pendingEstimateState : null,
-      );
       listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
       createTimeEntry.mockResolvedValue({ remoteEntryId: '9100' });
 
@@ -213,11 +211,6 @@ describe('ExternalTimeMutationService', () => {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
         },
-      });
-      expect(storage.getExternalEstimateLogState).toHaveBeenCalledWith({
-        provider: 'clickup',
-        remoteScopeKey,
-        remoteTaskId: 'task-1',
       });
       expect(listOwnTimeEntryIdsInRange).not.toHaveBeenCalled();
       expect(createTimeEntry).not.toHaveBeenCalled();
@@ -256,10 +249,269 @@ describe('ExternalTimeMutationService', () => {
       expect(createTimeEntry).toHaveBeenCalledTimes(1);
     });
 
+    it('does not block manual writes for a pending state owned by another project', async () => {
+      const foreignPending = { ...pendingEstimateState, projectId: 'project-2' };
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([authoritativeLink]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([foreignPending]);
+      storage.getExternalEstimateLogState.mockResolvedValue(null);
+      listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
+      createTimeEntry.mockResolvedValue({ remoteEntryId: '9100' });
+
+      await expect(
+        service.createTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          createInput,
+          'manual-operation-1',
+          4,
+          remoteScopeKey,
+        ),
+      ).resolves.toMatchObject({ outcome: 'created' });
+      expect(storage.listExternalEstimateLogStatesByRemoteTask).toHaveBeenCalledWith(
+        'clickup',
+        'task-1',
+      );
+      expect(createTimeEntry).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks every project while an unassigned pending operation is unresolved', async () => {
+      const unassignedPending = {
+        ...pendingEstimateState,
+        projectId: LEGACY_UNASSIGNED_PROJECT_ID,
+      };
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([authoritativeLink]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([unassignedPending]);
+
+      await expect(
+        service.createTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          createInput,
+          'manual-operation-1',
+          4,
+          remoteScopeKey,
+        ),
+      ).rejects.toMatchObject<BusyError>({
+        details: {
+          reason: 'estimate_operation_pending',
+          operationId: 'estimate-operation-1',
+        },
+      });
+      expect(storage.getExternalEstimateLogState).not.toHaveBeenCalled();
+      expect(listOwnTimeEntryIdsInRange).not.toHaveBeenCalled();
+      expect(createTimeEntry).not.toHaveBeenCalled();
+    });
+
+    it('does not block a linked scope for unassigned pending history of another scope with the same task id', async () => {
+      const foreignScopeLegacyPending = {
+        ...pendingEstimateState,
+        projectId: LEGACY_UNASSIGNED_PROJECT_ID,
+        remoteScopeKey: 'other-workspace',
+      };
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([authoritativeLink]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([
+        foreignScopeLegacyPending,
+      ]);
+      listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
+      createTimeEntry.mockResolvedValue({ remoteEntryId: '9100' });
+
+      await expect(
+        service.createTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          createInput,
+          'manual-operation-1',
+          4,
+          remoteScopeKey,
+        ),
+      ).resolves.toMatchObject({ outcome: 'created' });
+      expect(listOwnTimeEntryIdsInRange).toHaveBeenCalledTimes(1);
+      expect(createTimeEntry).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks a same-project pending operation that outlived its connection after reconnect', async () => {
+      const retainedPending = {
+        ...pendingEstimateState,
+        pendingConnectionId: 'retired-connection',
+        pendingConnectionGeneration: 2,
+      };
+      // The retained link survived the disconnect with a null connection id,
+      // so it is not part of the current connection's links.
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([
+        { ...authoritativeLink, connectionId: null },
+      ]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([retainedPending]);
+
+      await expect(
+        service.createTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          createInput,
+          'manual-operation-1',
+          4,
+          remoteScopeKey,
+        ),
+      ).rejects.toMatchObject<BusyError>({
+        details: {
+          reason: 'estimate_operation_pending',
+          operationId: 'estimate-operation-1',
+        },
+      });
+      expect(listOwnTimeEntryIdsInRange).not.toHaveBeenCalled();
+      expect(createTimeEntry).not.toHaveBeenCalled();
+    });
+
+    it('blocks an altered-scope manual create on current-connection pending evidence without a link', async () => {
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([pendingEstimateState]);
+
+      await expect(
+        service.createTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          createInput,
+          'manual-operation-1',
+          4,
+          'altered-workspace',
+        ),
+      ).rejects.toMatchObject<BusyError>({
+        details: {
+          reason: 'estimate_operation_pending',
+          operationId: 'estimate-operation-1',
+        },
+      });
+      expect(listOwnTimeEntryIdsInRange).not.toHaveBeenCalled();
+      expect(createTimeEntry).not.toHaveBeenCalled();
+    });
+
+    it('blocks an altered-scope manual delete on current-connection pending evidence without a link', async () => {
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([pendingEstimateState]);
+
+      await expect(
+        service.deleteTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          '9100',
+          'manual-operation-1',
+          4,
+          'altered-workspace',
+        ),
+      ).rejects.toMatchObject<BusyError>({
+        details: {
+          reason: 'estimate_operation_pending',
+          operationId: 'estimate-operation-1',
+        },
+      });
+      expect(assertTimeEntryDeletable).not.toHaveBeenCalled();
+      expect(deleteTimeEntry).not.toHaveBeenCalled();
+    });
+
+    it('blocks an altered-scope write anchored by a retained disconnected link of this project', async () => {
+      const retainedPending = {
+        ...pendingEstimateState,
+        pendingConnectionId: 'retired-connection',
+        pendingConnectionGeneration: 2,
+      };
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([
+        { ...authoritativeLink, projectId, connectionId: null },
+      ]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([retainedPending]);
+
+      await expect(
+        service.createTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          createInput,
+          'manual-operation-1',
+          4,
+          'altered-workspace',
+        ),
+      ).rejects.toMatchObject<BusyError>({
+        details: {
+          reason: 'estimate_operation_pending',
+          operationId: 'estimate-operation-1',
+        },
+      });
+      expect(listOwnTimeEntryIdsInRange).not.toHaveBeenCalled();
+      expect(createTimeEntry).not.toHaveBeenCalled();
+    });
+
+    it('blocks a linkless same-project pending operation for the exact requested identity', async () => {
+      const retainedPending = {
+        ...pendingEstimateState,
+        pendingConnectionId: 'retired-connection',
+        pendingConnectionGeneration: 2,
+      };
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([retainedPending]);
+
+      await expect(
+        service.deleteTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          '9100',
+          'manual-operation-1',
+          4,
+          remoteScopeKey,
+        ),
+      ).rejects.toMatchObject<BusyError>({
+        details: {
+          reason: 'estimate_operation_pending',
+          operationId: 'estimate-operation-1',
+        },
+      });
+      expect(assertTimeEntryDeletable).not.toHaveBeenCalled();
+      expect(deleteTimeEntry).not.toHaveBeenCalled();
+    });
+
+    it('does not block ordinary manual entries for settled unassigned history', async () => {
+      const settledUnassigned = {
+        ...pendingEstimateState,
+        projectId: LEGACY_UNASSIGNED_PROJECT_ID,
+        loggedMinutes: 90,
+        pendingOperationId: null,
+        pendingDeltaMinutes: null,
+        pendingEstimateTotalMinutes: null,
+        pendingStartedAt: null,
+        pendingConnectionId: null,
+        pendingConnectionGeneration: null,
+        pendingPhase: null,
+        pendingResolution: null,
+        pendingActivityDate: null,
+      };
+      storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([authoritativeLink]);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([settledUnassigned]);
+      storage.getExternalEstimateLogState.mockResolvedValue(null);
+      listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
+      createTimeEntry.mockResolvedValue({ remoteEntryId: '9100' });
+
+      await expect(
+        service.createTimeEntry(
+          projectId,
+          'clickup',
+          'task-1',
+          createInput,
+          'manual-operation-1',
+          4,
+          remoteScopeKey,
+        ),
+      ).resolves.toMatchObject({ outcome: 'created' });
+      expect(createTimeEntry).toHaveBeenCalledTimes(1);
+    });
+
     it('admits a later manual create only after durable pending state is cleared', async () => {
-      storage.getExternalEstimateLogState
-        .mockResolvedValueOnce(pendingEstimateState)
-        .mockResolvedValueOnce(null);
+      storage.listExternalEstimateLogStatesByRemoteTask
+        .mockResolvedValueOnce([pendingEstimateState])
+        .mockResolvedValueOnce([]);
       listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
       createTimeEntry.mockResolvedValue({ remoteEntryId: '9100' });
 
@@ -290,7 +542,7 @@ describe('ExternalTimeMutationService', () => {
     });
 
     it('keeps estimate dispatch explicit so its own prepared checkpoint does not self-block', async () => {
-      storage.getExternalEstimateLogState.mockResolvedValue(pendingEstimateState);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([pendingEstimateState]);
       listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
       createTimeEntry.mockResolvedValue({ remoteEntryId: '9100' });
 
@@ -890,7 +1142,6 @@ describe('ExternalTimeMutationService', () => {
         revised,
       );
       expect(readTimeEntryExact).toHaveBeenCalledTimes(1);
-      expect(storage.getExternalEstimateLogState).toHaveBeenCalledTimes(1);
     });
 
     it('keeps an ambiguous update verifiable and resolves it from the exact desired tuple', async () => {
@@ -938,7 +1189,7 @@ describe('ExternalTimeMutationService', () => {
     });
 
     it('blocks updates while a durable estimate operation is pending', async () => {
-      storage.getExternalEstimateLogState.mockResolvedValue(pendingEstimateState);
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([pendingEstimateState]);
 
       await expect(
         service.updateTimeEntry(
@@ -961,12 +1212,14 @@ describe('ExternalTimeMutationService', () => {
 
   describe('delete', () => {
     it('rejects manual delete while a stored estimate resolution is still pending', async () => {
-      storage.getExternalEstimateLogState.mockResolvedValue({
-        ...pendingEstimateState,
-        revision: 3,
-        pendingResolution: 'logged',
-        updatedAt: '2026-08-19T09:32:00.000Z',
-      });
+      storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([
+        {
+          ...pendingEstimateState,
+          revision: 3,
+          pendingResolution: 'logged',
+          updatedAt: '2026-08-19T09:32:00.000Z',
+        },
+      ]);
 
       await expect(
         service.deleteTimeEntry(
@@ -991,9 +1244,6 @@ describe('ExternalTimeMutationService', () => {
     it('rejects delete when an altered scope hides the current connection pending row', async () => {
       storage.listExternalTaskLinksByRemoteTask.mockResolvedValue([authoritativeLink]);
       storage.listExternalEstimateLogStatesByRemoteTask.mockResolvedValue([pendingEstimateState]);
-      storage.getExternalEstimateLogState.mockImplementation(async (identity) =>
-        identity.remoteScopeKey === remoteScopeKey ? pendingEstimateState : null,
-      );
       assertTimeEntryDeletable.mockResolvedValue(undefined);
       deleteTimeEntry.mockResolvedValue(undefined);
 

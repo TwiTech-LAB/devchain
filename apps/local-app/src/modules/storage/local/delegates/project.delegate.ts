@@ -470,8 +470,6 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
       recordTags,
       epicTags,
       epics,
-      documents,
-      documentTags,
       prompts,
       promptTags,
       agentProfilePrompts,
@@ -530,12 +528,6 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
         .from(agents)
         .where(eq(agents.projectId, id));
       const agentIds = projectAgents.map((a) => a.id);
-
-      const projectDocs = await this.db
-        .select({ id: documents.id })
-        .from(documents)
-        .where(eq(documents.projectId, id));
-      const docIds = projectDocs.map((d) => d.id);
 
       const projectPrompts = await this.db
         .select({ id: prompts.id })
@@ -628,13 +620,7 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
         await this.db.delete(epics).where(inArray(epics.id, epicIds));
       }
 
-      // 8. Document-related records
-      if (docIds.length > 0) {
-        await this.db.delete(documentTags).where(inArray(documentTags.documentId, docIds));
-        await this.db.delete(documents).where(inArray(documents.id, docIds));
-      }
-
-      // 9. Prompt-related records
+      // 8. Prompt-related records
       if (promptIds.length > 0) {
         await this.db.delete(promptTags).where(inArray(promptTags.promptId, promptIds));
         await this.db

@@ -12,12 +12,13 @@ import {
   type Ref,
 } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Link2, Minus } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Link2, Minus, X } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { useEpicRelations } from '@/ui/hooks/useEpicRelations';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
+import { EpicRelationRemoveDialog } from '@/ui/components/epics/EpicRelationRemoveDialog';
 import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
 import {
   relatedEpicRole,
@@ -123,12 +124,14 @@ function RelationPreviewRow({
   sameProject,
   activateCrossProject,
   titleLinkRef,
+  onRemove,
 }: {
   relation: EpicRelation;
   sameProject: boolean;
   /** Null while the focal workspace is unresolved: cross-project titles stay inert. */
   activateCrossProject: ((projectId: string) => void) | null;
   titleLinkRef?: Ref<HTMLAnchorElement>;
+  onRemove: (relation: EpicRelation) => void;
 }) {
   const { relatedEpic } = relation;
   const navigable = sameProject || activateCrossProject !== null;
@@ -138,37 +141,57 @@ function RelationPreviewRow({
 
   return (
     <li className="rounded-md border bg-muted/30 px-2 py-1.5">
-      {navigable ? (
-        <Link
-          ref={titleLinkRef}
-          to={to}
-          title={relatedEpic.title}
+      <div className="flex items-start justify-between gap-1">
+        <div className="min-w-0 flex-1">
+          {navigable ? (
+            <Link
+              ref={titleLinkRef}
+              to={to}
+              title={relatedEpic.title}
+              draggable={false}
+              className="block truncate rounded text-xs font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (
+                  sameProject ||
+                  event.button !== 0 ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                ) {
+                  return;
+                }
+                activateCrossProject?.(relatedEpic.project.id);
+              }}
+              onDragStart={(event) => event.stopPropagation()}
+            >
+              {relatedEpic.title}
+            </Link>
+          ) : (
+            <p className="truncate text-xs font-medium" title={relatedEpic.title}>
+              {relatedEpic.title}
+            </p>
+          )}
+          <RelationRowFacts target={relatedEpic} />
+        </div>
+        <button
+          type="button"
           draggable={false}
-          className="block truncate rounded text-xs font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label={`Remove relation with ${relatedEpic.title}`}
           onClick={(event) => {
+            // Same fence as the title link: the preview portal still bubbles
+            // into the Epic card, so the click must neither open the editor
+            // nor start a card drag.
             event.stopPropagation();
-            if (
-              sameProject ||
-              event.button !== 0 ||
-              event.metaKey ||
-              event.ctrlKey ||
-              event.shiftKey ||
-              event.altKey
-            ) {
-              return;
-            }
-            activateCrossProject?.(relatedEpic.project.id);
+            onRemove(relation);
           }}
           onDragStart={(event) => event.stopPropagation()}
         >
-          {relatedEpic.title}
-        </Link>
-      ) : (
-        <p className="truncate text-xs font-medium" title={relatedEpic.title}>
-          {relatedEpic.title}
-        </p>
-      )}
-      <RelationRowFacts target={relatedEpic} />
+          <X className="h-3 w-3" aria-hidden="true" />
+        </button>
+      </div>
     </li>
   );
 }
@@ -184,6 +207,7 @@ export function EpicRelationBadges({
   epicId,
   epicTitle,
   focalProjectId,
+  focalIsRoot,
   dragFenceRef,
   isDragging = false,
 }: {
@@ -192,6 +216,8 @@ export function EpicRelationBadges({
   epicTitle: string;
   /** Project of the focal Epic; separates same-project links from cross-project ones. */
   focalProjectId: string;
+  /** Whether the focal Epic is a root; the removal warning's eligibility needs it. */
+  focalIsRoot: boolean;
   /** Card drag fence shared with EpicCard: armed on pointer-down, cleared on release. */
   dragFenceRef?: { current: boolean };
   /** A card drag closes the preview and blocks reopening while armed. */
@@ -200,6 +226,7 @@ export function EpicRelationBadges({
   const [mode, setMode] = useState<RelationPreviewMode>('closed');
   const open = mode !== 'closed';
   const [entered, setEntered] = useState(false);
+  const [removeRelation, setRemoveRelation] = useState<EpicRelation | null>(null);
   const openTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   // The pointer type of the last pointer-down on the trigger. A non-null
@@ -541,6 +568,7 @@ export function EpicRelationBadges({
                     titleLinkRef={
                       relation.relationId === firstLinkRelationId ? firstLinkRef : undefined
                     }
+                    onRemove={setRemoveRelation}
                   />
                 ))}
               </ul>
@@ -557,79 +585,104 @@ export function EpicRelationBadges({
   }
 
   return (
-    <Popover open={open} onOpenChange={handlePopoverOpenChange}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          ref={triggerRef}
-          data-testid="epic-relation-badges"
-          aria-label={accessibleSummary(counts, pieces)}
-          title={`Relations: ${counts.total}. ${OUTSIDE_BOARD_HINT}`}
-          className="inline-flex flex-wrap items-center gap-1 rounded-full p-0.5 touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onPointerOver={handleTriggerPointerOver}
-          onPointerOut={handleTriggerPointerOut}
-          onPointerDown={handlePointerDown}
-          onPointerUp={releaseDragFence}
-          onPointerCancel={releaseDragFence}
-          onLostPointerCapture={clearDragFence}
-          onClick={handleClick}
-          onKeyDown={handleTriggerKeyDown}
-          onFocus={handleFocus}
-          onBlur={handleBlur}
+    <>
+      <Popover open={open} onOpenChange={handlePopoverOpenChange}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            ref={triggerRef}
+            data-testid="epic-relation-badges"
+            aria-label={accessibleSummary(counts, pieces)}
+            title={`Relations: ${counts.total}. ${OUTSIDE_BOARD_HINT}`}
+            className="inline-flex flex-wrap items-center gap-1 rounded-full p-0.5 touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onPointerOver={handleTriggerPointerOver}
+            onPointerOut={handleTriggerPointerOut}
+            onPointerDown={handlePointerDown}
+            onPointerUp={releaseDragFence}
+            onPointerCancel={releaseDragFence}
+            onLostPointerCapture={clearDragFence}
+            onClick={handleClick}
+            onKeyDown={handleTriggerKeyDown}
+            onFocus={handleFocus}
+            onBlur={handleBlur}
+          >
+            {relatedBadges}
+            {counts.blocks > 0 ? (
+              <span
+                className={badgeClass}
+                title={`Blocks: ${counts.blocks}. ${OUTSIDE_BOARD_HINT}`}
+              >
+                Blocks {counts.blocks}
+              </span>
+            ) : null}
+            {counts.blockedBy > 0 ? (
+              <span
+                className={badgeClass}
+                title={`Blocked by: ${counts.blockedBy}. ${OUTSIDE_BOARD_HINT}`}
+              >
+                Blocked by {counts.blockedBy}
+              </span>
+            ) : null}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          side="bottom"
+          align="end"
+          sideOffset={4}
+          className="w-80 p-3"
+          aria-labelledby={headingId}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onEscapeKeyDown={() => {
+            // Escape-origin close: arm the restore guard before Radix runs its
+            // deferred close autofocus.
+            restoreGuardRef.current = true;
+          }}
+          onCloseAutoFocus={(event) => {
+            if (restoreGuardRef.current) {
+              // Let Radix move focus back to the trigger; the focus event
+              // consumes the guard. When focus never moved, the deferred
+              // cleanup below discards the unused guard so a later focus on
+              // the trigger opens the preview normally again.
+              window.setTimeout(() => {
+                restoreGuardRef.current = false;
+              }, 0);
+              return;
+            }
+            event.preventDefault();
+          }}
+          onPointerOver={handleContentPointerOver}
+          onPointerOut={handleContentPointerOut}
         >
-          {relatedBadges}
-          {counts.blocks > 0 ? (
-            <span className={badgeClass} title={`Blocks: ${counts.blocks}. ${OUTSIDE_BOARD_HINT}`}>
-              Blocks {counts.blocks}
-            </span>
-          ) : null}
-          {counts.blockedBy > 0 ? (
-            <span
-              className={badgeClass}
-              title={`Blocked by: ${counts.blockedBy}. ${OUTSIDE_BOARD_HINT}`}
-            >
-              Blocked by {counts.blockedBy}
-            </span>
-          ) : null}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="bottom"
-        align="end"
-        sideOffset={4}
-        className="w-80 p-3"
-        aria-labelledby={headingId}
-        onOpenAutoFocus={(event) => event.preventDefault()}
-        onEscapeKeyDown={() => {
-          // Escape-origin close: arm the restore guard before Radix runs its
-          // deferred close autofocus.
-          restoreGuardRef.current = true;
-        }}
-        onCloseAutoFocus={(event) => {
-          if (restoreGuardRef.current) {
-            // Let Radix move focus back to the trigger; the focus event
-            // consumes the guard. When focus never moved, the deferred
-            // cleanup below discards the unused guard so a later focus on
-            // the trigger opens the preview normally again.
-            window.setTimeout(() => {
-              restoreGuardRef.current = false;
-            }, 0);
-            return;
-          }
-          event.preventDefault();
-        }}
-        onPointerOver={handleContentPointerOver}
-        onPointerOut={handleContentPointerOut}
+          <h3
+            id={headingId}
+            className="mb-2 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+          >
+            Relations for {epicTitle}
+          </h3>
+          {previewContent}
+        </PopoverContent>
+      </Popover>
+      {/* Rendered outside PopoverContent: the preview closes when the pointer
+          leaves it, and an open removal dialog must outlive that close. The
+          portaled dialog still bubbles React events into the Epic card's
+          tree, so this fence keeps its clicks and drags from opening the
+          editor or starting a card drag. */}
+      <div
+        draggable={false}
+        className="contents"
+        onClick={(event) => event.stopPropagation()}
+        onDragStart={(event) => event.stopPropagation()}
       >
-        <h3
-          id={headingId}
-          className="mb-2 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-        >
-          Relations for {epicTitle}
-        </h3>
-        {previewContent}
-      </PopoverContent>
-    </Popover>
+        <EpicRelationRemoveDialog
+          epicId={epicId}
+          epicTitle={epicTitle}
+          focalProjectId={focalProjectId}
+          focalIsRoot={focalIsRoot}
+          relation={removeRelation}
+          onClose={() => setRemoveRelation(null)}
+        />
+      </div>
+    </>
   );
 }
 

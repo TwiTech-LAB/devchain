@@ -19,6 +19,10 @@ import {
   RelationConfirmationRequiredError,
   ValidationError,
   ForbiddenError,
+  DescriptionEditNotFoundError,
+  DescriptionEditAmbiguousError,
+  IndexedRelationError,
+  RelationRouteConflictError,
 } from '../../../../common/errors/error-types';
 import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 
@@ -35,31 +39,36 @@ jest.mock('../utils/resolve-epic-id', () => ({
     })),
 }));
 
-jest.mock('../mappers/dto-mappers', () => ({
-  mapStatusSummary: jest.fn().mockImplementation((s) => ({
-    id: s.id,
-    label: s.label,
-    color: s.color,
-    position: s.position,
-  })),
-  mapEpicSummary: jest.fn().mockImplementation((e) => ({
-    id: e.id,
-    title: e.title,
-    parentId: e.parentId,
-    agentId: e.agentId,
-    agentName: e.agentName,
-    version: e.version,
-    tags: e.tags || [],
-  })),
-  mapEpicChild: jest.fn().mockImplementation((e) => ({ id: e.id, title: e.title })),
-  mapEpicParent: jest.fn().mockImplementation((e) => ({ id: e.id, title: e.title })),
-  mapEpicComment: jest.fn().mockImplementation((c) => ({
-    id: c.id,
-    content: c.content,
-    authorName: c.authorName,
-    createdAt: c.createdAt,
-  })),
-}));
+jest.mock('../mappers/dto-mappers', () => {
+  const actual =
+    jest.requireActual<typeof import('../mappers/dto-mappers')>('../mappers/dto-mappers');
+  return {
+    ...actual,
+    mapStatusSummary: jest.fn().mockImplementation((s) => ({
+      id: s.id,
+      label: s.label,
+      color: s.color,
+      position: s.position,
+    })),
+    mapEpicSummary: jest.fn().mockImplementation((e) => ({
+      id: e.id,
+      title: e.title,
+      description: e.description ?? null,
+      parentId: e.parentId,
+      agentId: e.agentId,
+      agentName: e.agentName,
+      version: e.version,
+      tags: e.tags || [],
+    })),
+    mapEpicChild: jest.fn().mockImplementation((e) => ({ id: e.id, title: e.title })),
+    mapEpicComment: jest.fn().mockImplementation((c) => ({
+      id: c.id,
+      content: c.content,
+      authorName: c.authorName,
+      createdAt: c.createdAt,
+    })),
+  };
+});
 
 const { resolveEpicId: resolveEpicIdMock } = jest.requireMock('../utils/resolve-epic-id') as {
   resolveEpicId: jest.Mock;
@@ -312,6 +321,68 @@ describe('epic-tools handlers', () => {
       expect(result.success).toBe(true);
       expect(result.data.epics).toHaveLength(1);
     });
+
+    it('returns description previews instead of descriptions by default', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.listProjectEpics as jest.Mock).mockResolvedValue({
+        items: [
+          {
+            id: EPIC_ID,
+            title: 'Test Epic',
+            description: 'a'.repeat(350),
+            statusId: STATUS_ID,
+            parentId: null,
+            agentId: null,
+            agentName: null,
+            version: 1,
+            tags: [],
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const result = await handleListEpics(ctx, { sessionId: SESSION_ID });
+
+      const item = result.data.epics[0];
+      expect(item).not.toHaveProperty('description');
+      expect(item.descriptionPreview).toBe(`${'a'.repeat(300)}…`);
+      expect(item.descriptionLength).toBe(350);
+    });
+
+    it('returns full descriptions with includeDescription', async () => {
+      const ctx = makeEpicCtx();
+      const description = 'Full list description';
+      (ctx.storage.listProjectEpics as jest.Mock).mockResolvedValue({
+        items: [
+          {
+            id: EPIC_ID,
+            title: 'Test Epic',
+            description,
+            statusId: STATUS_ID,
+            parentId: null,
+            agentId: null,
+            agentName: null,
+            version: 1,
+            tags: [],
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const result = await handleListEpics(ctx, {
+        sessionId: SESSION_ID,
+        includeDescription: true,
+      });
+
+      const item = result.data.epics[0];
+      expect(item.description).toBe(description);
+      expect(item).not.toHaveProperty('descriptionPreview');
+      expect(item).not.toHaveProperty('descriptionLength');
+    });
   });
 
   describe('handleListAssignedEpicsTasks', () => {
@@ -327,6 +398,37 @@ describe('epic-tools handlers', () => {
       });
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
+    });
+
+    it('keeps full descriptions on assigned task items', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.listAssignedEpics as jest.Mock).mockResolvedValue({
+        items: [
+          {
+            id: EPIC_ID,
+            title: 'Assigned Epic',
+            description: 'Full assigned-task description',
+            statusId: STATUS_ID,
+            parentId: null,
+            agentId: AGENT_ID,
+            agentName: AGENT_NAME,
+            version: 1,
+            tags: [],
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+
+      const result = await handleListAssignedEpicsTasks(ctx, {
+        sessionId: SESSION_ID,
+        agentName: AGENT_NAME,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data.epics[0].description).toBe('Full assigned-task description');
+      expect(result.data.epics[0]).not.toHaveProperty('descriptionPreview');
     });
   });
 
@@ -384,6 +486,113 @@ describe('epic-tools handlers', () => {
       );
     });
 
+    it('forwards a relations list to the atomic service workflow', async () => {
+      const ctx = makeEpicCtx();
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        title: 'Atomic Epic',
+        relations: [
+          { relatedEpicId: RELATED_ID, relation: 'related' },
+          { relatedEpicId: '00000000-0000-0000-0000-000000000008', relation: 'blocks' },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      expect(ctx.epicsService.createEpicForProject).toHaveBeenCalledWith(
+        PROJECT_ID,
+        expect.objectContaining({
+          relations: [
+            { relatedEpicId: RELATED_ID, relation: 'related' },
+            { relatedEpicId: '00000000-0000-0000-0000-000000000008', relation: 'blocks' },
+          ],
+        }),
+        { actor: { type: 'agent', id: AGENT_ID }, creatorAgentName: AGENT_NAME },
+      );
+    });
+
+    it('maps a route conflict between two relations without a deletion hint', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.epicsService.createEpicForProject as jest.Mock).mockRejectedValue(
+        new RelationRouteConflictError(1, 0, { sourceEpicId: EPIC_ID, targetEpicId: RELATED_ID }),
+      );
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        title: 'Atomic Epic',
+        relations: [
+          { relatedEpicId: RELATED_ID, relation: 'related' },
+          { relatedEpicId: '00000000-0000-0000-0000-000000000008', relation: 'related' },
+        ],
+      });
+
+      expect(result).toEqual({
+        success: false,
+        error: {
+          code: 'RELATION_ROUTE_CONFLICT',
+          message: expect.stringContaining('Relations 0 and 1'),
+          data: {
+            relationIndex: 1,
+            conflictingRelationIndex: 0,
+            currentEffect: { sourceEpicId: EPIC_ID, targetEpicId: RELATED_ID },
+          },
+        },
+      });
+      expect(result.error?.message).not.toContain('Delete');
+    });
+
+    it('maps an indexed missing relation target with its relationIndex', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.epicsService.createEpicForProject as jest.Mock).mockRejectedValue(
+        new IndexedRelationError(1, new NotFoundError('Related Epic')),
+      );
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        title: 'Atomic Epic',
+        relations: [
+          { relatedEpicId: RELATED_ID, relation: 'related' },
+          { relatedEpicId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', relation: 'related' },
+        ],
+      });
+
+      expect(result).toEqual({
+        success: false,
+        error: {
+          code: 'RELATED_EPIC_NOT_FOUND',
+          message: expect.any(String),
+          data: { relationIndex: 1 },
+        },
+      });
+    });
+
+    it('maps an indexed ambiguous relation target with its relationIndex', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.epicsService.createEpicForProject as jest.Mock).mockRejectedValue(
+        new IndexedRelationError(
+          0,
+          new ValidationError('Multiple Epics match the related Epic address.', {
+            code: 'AMBIGUOUS_RELATED_EPIC',
+          }),
+        ),
+      );
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        title: 'Atomic Epic',
+        relations: [{ relatedEpicId: '00000000', relation: 'related' }],
+      });
+
+      expect(result).toEqual({
+        success: false,
+        error: {
+          code: 'AMBIGUOUS_RELATED_EPIC',
+          message: expect.any(String),
+          data: { code: 'AMBIGUOUS_RELATED_EPIC', relationIndex: 0 },
+        },
+      });
+    });
+
     it('returns error when status not found', async () => {
       const ctx = makeEpicCtx();
       const result = await handleCreateEpic(ctx, {
@@ -435,6 +644,7 @@ describe('epic-tools handlers', () => {
       const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
       expect(result.success).toBe(true);
       expect(result.data.epic.id).toBe(EPIC_ID);
+      expect(result.data.epic.description).toBe('desc');
       expect(result.data.relations).toMatchObject({
         items: [],
         total: 51,
@@ -456,6 +666,110 @@ describe('epic-tools handlers', () => {
       const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('EPIC_NOT_FOUND');
+    });
+
+    it('returns a parent summary with the status label and no description by default', async () => {
+      const PARENT_ID = '00000000-0000-0000-0000-000000000098';
+      const ctx = makeEpicCtx();
+      (ctx.storage.getEpic as jest.Mock)
+        .mockResolvedValueOnce({
+          id: EPIC_ID,
+          projectId: PROJECT_ID,
+          title: 'Child Epic',
+          description: 'child text',
+          statusId: STATUS_ID,
+          parentId: PARENT_ID,
+          agentId: AGENT_ID,
+          version: 1,
+          tags: [],
+          data: null,
+          skillsRequired: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        })
+        .mockResolvedValueOnce({
+          id: PARENT_ID,
+          projectId: PROJECT_ID,
+          title: 'Parent Epic',
+          description: 'Large phase context',
+          statusId: STATUS_ID,
+          parentId: null,
+          agentId: AGENT_ID,
+          version: 3,
+          tags: [],
+          data: null,
+          skillsRequired: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        });
+
+      const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
+
+      expect(result.success).toBe(true);
+      expect(result.data.parent).toEqual({
+        id: PARENT_ID,
+        title: 'Parent Epic',
+        status: 'New',
+        agentName: AGENT_NAME,
+      });
+      expect(result.data.parent).not.toHaveProperty('description');
+    });
+
+    it('includes the parent description with includeParentDescription', async () => {
+      const PARENT_ID = '00000000-0000-0000-0000-000000000098';
+      const ctx = makeEpicCtx();
+      (ctx.storage.getEpic as jest.Mock)
+        .mockResolvedValueOnce({
+          id: EPIC_ID,
+          projectId: PROJECT_ID,
+          title: 'Child Epic',
+          description: null,
+          statusId: STATUS_ID,
+          parentId: PARENT_ID,
+          agentId: null,
+          version: 1,
+          tags: [],
+          data: null,
+          skillsRequired: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        })
+        .mockResolvedValueOnce({
+          id: PARENT_ID,
+          projectId: PROJECT_ID,
+          title: 'Parent Epic',
+          description: 'Large phase context',
+          statusId: STATUS_ID,
+          parentId: null,
+          agentId: null,
+          version: 3,
+          tags: [],
+          data: null,
+          skillsRequired: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        });
+
+      const result = await handleGetEpicById(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        includeParentDescription: true,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data.parent).toMatchObject({
+        id: PARENT_ID,
+        description: 'Large phase context',
+      });
+    });
+
+    it('returns no parent key for a root epic', async () => {
+      const ctx = makeEpicCtx();
+
+      const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
+
+      expect(result.success).toBe(true);
+      expect(result.data).not.toHaveProperty('parent');
     });
   });
 
@@ -1009,6 +1323,129 @@ describe('epic-tools handlers', () => {
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('HIERARCHY_CONFLICT');
       expect(result.error?.message).toContain('Cannot move an epic that has sub-epics');
+    });
+
+    it('passes descriptionEdits and appendDescription through to the service', async () => {
+      const ctx = makeEpicCtx();
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 1,
+        descriptionEdits: [{ find: 'old line', replace: 'new line' }],
+        appendDescription: 'follow-up',
+      });
+
+      expect(ctx.epicsService.updateEpicWithOutcome).toHaveBeenCalledWith(
+        EPIC_ID,
+        {
+          descriptionEdits: [{ find: 'old line', replace: 'new line' }],
+          appendDescription: 'follow-up',
+        },
+        1,
+        { actor: { type: 'agent', id: AGENT_ID } },
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it('maps DescriptionEditNotFoundError with its edit facts', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.epicsService.updateEpicWithOutcome as jest.Mock).mockRejectedValue(
+        new DescriptionEditNotFoundError(0, 'vanished text', 0),
+      );
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 1,
+        descriptionEdits: [{ find: 'vanished text', replace: 'x' }],
+      });
+
+      expect(result).toEqual({
+        success: false,
+        error: {
+          code: 'DESCRIPTION_EDIT_NOT_FOUND',
+          message: expect.any(String),
+          data: { index: 0, find: 'vanished text', matchCount: 0 },
+        },
+      });
+    });
+
+    it('maps DescriptionEditAmbiguousError with its edit facts', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.epicsService.updateEpicWithOutcome as jest.Mock).mockRejectedValue(
+        new DescriptionEditAmbiguousError(1, 'aa', 2),
+      );
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 1,
+        descriptionEdits: [
+          { find: 'unique', replace: 'x' },
+          { find: 'aa', replace: 'y' },
+        ],
+      });
+
+      expect(result).toEqual({
+        success: false,
+        error: {
+          code: 'DESCRIPTION_EDIT_AMBIGUOUS',
+          message: expect.any(String),
+          data: { index: 1, find: 'aa', matchCount: 2 },
+        },
+      });
+    });
+
+    it('surfaces edit contexts, the append junction, and the final length from the outcome', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.epicsService.updateEpicWithOutcome as jest.Mock).mockResolvedValue({
+        epic: {
+          id: EPIC_ID,
+          projectId: PROJECT_ID,
+          title: 'Test Epic',
+          description: 'final text',
+          statusId: STATUS_ID,
+          parentId: null,
+          agentId: null,
+          version: 2,
+          tags: [],
+          data: null,
+          skillsRequired: null,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:01Z',
+        },
+        outcome: {
+          statusChanged: false,
+          agentUnchanged: true,
+          previousAssigneeAgent: null,
+          descriptionEdit: {
+            text: 'final text',
+            descriptionEdits: [{ index: 0, context: '…final text…' }],
+            appended: { context: 'before\n\nafter' },
+            descriptionLength: 10,
+          },
+        },
+      });
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 1,
+        descriptionEdits: [{ find: 'draft', replace: 'final text' }],
+        appendDescription: 'after',
+      });
+
+      expect(result).toEqual({
+        success: true,
+        data: {
+          id: EPIC_ID,
+          version: 2,
+          descriptionEdits: [{ index: 0, context: '…final text…' }],
+          appended: { context: 'before\n\nafter' },
+          descriptionLength: 10,
+        },
+      });
     });
   });
 

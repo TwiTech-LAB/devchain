@@ -272,8 +272,9 @@ export interface ExternalTaskLinkStateSummary extends ExternalTaskLinkLookupInpu
   projectId: string | null;
   projectName: string | null;
   /**
-   * Durable estimate-checkpoint minutes. Null means unavailable, unlinked, or
-   * awaiting an authoritative refresh; zero means the server confirmed a
+   * Durable estimate-checkpoint minutes. Null means unavailable, unlinked,
+   * awaiting an authoritative refresh, or pre-project legacy history whose
+   * ownership has not been recovered yet; zero means the server confirmed a
    * linked task that has no checkpoint row. Never convert null to zero.
    */
   loggedMinutes: number | null;

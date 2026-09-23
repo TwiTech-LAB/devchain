@@ -1,7 +1,7 @@
 import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { RegistryClientService } from './registry-client.service';
-import { TemplateCacheService } from './template-cache.service';
+import { TemplateCacheService, type CachedTemplate } from './template-cache.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { InstalledTemplate, UpdateInfo } from '../interfaces/registry.interface';
 
@@ -21,6 +21,10 @@ export interface RegistryUpdateStatus {
   state: RegistryUpdateCheckState;
   results: RegistryProjectUpdateStatus[];
 }
+
+export type RegistryDownloadToCacheResult =
+  | { cached: true }
+  | { cached: false; checksum: string; size: number };
 
 /**
  * Orchestration service for registry operations
@@ -53,11 +57,11 @@ export class RegistryOrchestrationService implements OnApplicationBootstrap {
   /**
    * Download template to local cache if not already cached
    */
-  async downloadToCache(slug: string, version: string): Promise<void> {
+  async downloadToCache(slug: string, version: string): Promise<RegistryDownloadToCacheResult> {
     // Check if already cached
     if (this.cacheService.isCached(slug, version)) {
       logger.debug({ slug, version }, 'Template already cached');
-      return;
+      return { cached: true };
     }
 
     logger.info({ slug, version }, 'Downloading template from registry');
@@ -77,6 +81,16 @@ export class RegistryOrchestrationService implements OnApplicationBootstrap {
     });
 
     logger.info({ slug, version, checksum: result.checksum }, 'Template cached');
+
+    return { cached: false, checksum: result.checksum, size };
+  }
+
+  /**
+   * Download a template when needed, then return its persisted cache entry.
+   */
+  async getOrDownloadTemplate(slug: string, version: string): Promise<CachedTemplate | null> {
+    await this.downloadToCache(slug, version);
+    return this.getFromCache(slug, version);
   }
 
   /**

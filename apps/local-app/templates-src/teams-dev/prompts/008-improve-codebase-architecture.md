@@ -1,1 +1,1 @@
-run devchain/improve-codebase-architecture (via devchain_get_skill)
+run improve-codebase-architecture (via devchain_get_skill)

@@ -1299,3 +1299,83 @@ describe('ClaudeJsonlParser', () => {
     });
   });
 });
+
+describe('parseClaudeJsonl bounded incremental reads (endByteOffset)', () => {
+  function rawFile(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-bounded-'));
+    const filePath = path.join(dir, 'session.jsonl');
+    fs.writeFileSync(filePath, content, 'utf8');
+    return filePath;
+  }
+
+  function userLine(id: string): string {
+    return JSON.stringify({
+      type: 'user',
+      uuid: id,
+      parentUuid: null,
+      isSidechain: false,
+      timestamp: '2026-01-01T10:00:00.000Z',
+      message: { role: 'user', content: `message ${id}` },
+    });
+  }
+
+  it('holds back an unterminated final line and advances the offset only to its start', async () => {
+    const head = `${userLine('u1')}\n${userLine('u2')}\n`;
+    const partial = userLine('u3'); // still being written — no trailing newline yet
+    const filePath = rawFile(head + partial);
+    const size = fs.statSync(filePath).size;
+    try {
+      const first = await parseClaudeJsonl(filePath, { byteOffset: 0, endByteOffset: size });
+      expect(first.messages).toHaveLength(2);
+      // The offset lands on the partial line's start, never inside or past it.
+      expect(first.bytesRead).toBe(Buffer.byteLength(head));
+      expect(first.bytesRead).toBeLessThan(size);
+
+      // The writer completes the line; the next pass reads it exactly once.
+      fs.appendFileSync(filePath, '\n');
+      const size2 = fs.statSync(filePath).size;
+      const second = await parseClaudeJsonl(filePath, {
+        byteOffset: first.bytesRead,
+        endByteOffset: size2,
+      });
+      expect(second.messages).toHaveLength(1);
+      expect(second.messages[0].role).toBe('user');
+      expect(second.bytesRead).toBe(size2);
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
+  it('never advances nextByteOffset past the file when the sole line lacks a newline', async () => {
+    const filePath = rawFile(userLine('only')); // one unterminated line
+    const size = fs.statSync(filePath).size;
+    try {
+      const result = await parseClaudeJsonl(filePath, { byteOffset: 0, endByteOffset: size });
+      expect(result.messages).toHaveLength(0);
+      expect(result.bytesRead).toBe(0);
+      expect(result.bytesRead).toBeLessThanOrEqual(size);
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
+  it('consumes no bytes beyond the bound when the file has grown past the proven snapshot', async () => {
+    const proven = `${userLine('u1')}\n${userLine('u2')}\n`;
+    const grown = `${userLine('u3')}\n`;
+    const filePath = rawFile(proven + grown); // already larger than the snapshot
+    const bound = Buffer.byteLength(proven);
+    try {
+      const first = await parseClaudeJsonl(filePath, { byteOffset: 0, endByteOffset: bound });
+      expect(first.messages).toHaveLength(2);
+      expect(first.bytesRead).toBe(bound); // stopped exactly at the proven snapshot
+
+      const second = await parseClaudeJsonl(filePath, {
+        byteOffset: bound,
+        endByteOffset: Buffer.byteLength(proven + grown),
+      });
+      expect(second.messages).toHaveLength(1); // the withheld bytes arrive next pass, once
+    } finally {
+      cleanup(filePath);
+    }
+  });
+});

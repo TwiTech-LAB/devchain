@@ -213,4 +213,70 @@ describe('HumanPromptStateService', () => {
     expect(activity).toEqual(expect.objectContaining({ accepted: true, cleared: false }));
     expect(service.getManualReleaseEligibleAt('pane')).toBe(55_000);
   });
+
+  describe('force snapshot', () => {
+    it('returns snapshot for inactive phase', () => {
+      const snapshot = service.getForceSnapshot('pane');
+      expect(snapshot).toEqual({
+        phase: 'inactive',
+        generation: 0,
+        executedInputEpoch: 0,
+      });
+    });
+
+    it('returns snapshot for awaiting_stable_idle phase', () => {
+      const draft = service.recordPromptText('pane');
+      service.transitionToAwaiting('pane', draft.generation);
+      const snapshot = service.getForceSnapshot('pane');
+      expect(snapshot).toEqual({
+        phase: 'awaiting_stable_idle',
+        generation: 2,
+        executedInputEpoch: 0,
+      });
+    });
+
+    it('returns null for draft_active phase', () => {
+      service.recordPromptText('pane');
+      expect(service.getForceSnapshot('pane')).toBeNull();
+    });
+
+    it('applyForceDelivery transitions awaiting to inactive', () => {
+      const draft = service.recordPromptText('pane');
+      service.transitionToAwaiting('pane', draft.generation);
+      const snapshot = service.getForceSnapshot('pane')!;
+
+      expect(service.applyForceDelivery('pane', snapshot)).toBe(true);
+      expect(service.getState('pane').phase).toBe('inactive');
+    });
+
+    it('applyForceDelivery keeps inactive as inactive', () => {
+      const snapshot = service.getForceSnapshot('pane')!;
+
+      expect(service.applyForceDelivery('pane', snapshot)).toBe(true);
+      expect(service.getState('pane').phase).toBe('inactive');
+    });
+
+    it('applyForceDelivery rejects when phase changed to draft_active', () => {
+      const snapshot = service.getForceSnapshot('pane')!;
+      service.recordPromptText('pane');
+
+      expect(service.applyForceDelivery('pane', snapshot)).toBe(false);
+    });
+
+    it('applyForceDelivery rejects when generation changed', () => {
+      const draft = service.recordPromptText('pane');
+      service.transitionToAwaiting('pane', draft.generation);
+      const snapshot = service.getForceSnapshot('pane')!;
+      service.recordExecutedInput('pane');
+
+      expect(service.applyForceDelivery('pane', snapshot)).toBe(false);
+    });
+
+    it('applyForceDelivery rejects when executedInputEpoch changed', () => {
+      const snapshot = service.getForceSnapshot('pane')!;
+      service.recordExecutedInput('pane');
+
+      expect(service.applyForceDelivery('pane', snapshot)).toBe(false);
+    });
+  });
 });

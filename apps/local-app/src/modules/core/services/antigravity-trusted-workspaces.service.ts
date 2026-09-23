@@ -35,10 +35,10 @@ export interface EnsureAntigravityTrustResult {
 /**
  * Dedicated workspace-trust provisioner for Google Antigravity (`agy`).
  *
- * Per the P1-1(c) spike (`docs/spikes/agy-p1-1-spike-findings.md`):
+ * Workspace trust contract: `docs/providers-lifecycle.md` (Antigravity provisioning).
  * `--dangerously-skip-permissions` only auto-approves tool permissions, NOT
  * workspace trust — trust must be pre-written so the full-screen TUI launches
- * non-interactively. The spike found two stores in play, so we write BOTH:
+ * non-interactively. The provider uses two trust stores, so we write BOTH:
  *  1. `~/.gemini/antigravity-cli/settings.json` `trustedWorkspaces: []` (the
  *     documented agy key — the authoritative agy-native store).
  *  2. `~/.gemini/trustedFolders.json` (`"<abs-path>": "TRUST_FOLDER"`) — the

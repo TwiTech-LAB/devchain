@@ -1,0 +1,1 @@
+run project-skill-review (via devchain_get_skill) #to review the project skills. A shorter skill list helps agents pick the right skill

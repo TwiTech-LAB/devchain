@@ -1,4 +1,7 @@
-import type { CreateSkillSourceOptions } from '../../interfaces/storage.interface';
+import type {
+  CreateSkillSourceOptions,
+  ExistingProjectsEnablement,
+} from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import {
@@ -196,12 +199,12 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
           })
           .run();
 
-        if (options?.seedExistingProjectsDisabled) {
-          this.seedExistingProjectsDisabledInCurrentTransaction(record.name, now);
+        if (options?.existingProjects) {
+          this.seedExistingProjectsInCurrentTransaction(record.name, now, options.existingProjects);
         }
       });
     } catch (error) {
-      if (error instanceof ConflictError) {
+      if (error instanceof ConflictError || error instanceof ValidationError) {
         throw error;
       }
       if (isSqliteUniqueConstraint(error)) {
@@ -343,12 +346,12 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
           })
           .run();
 
-        if (options?.seedExistingProjectsDisabled) {
-          this.seedExistingProjectsDisabledInCurrentTransaction(record.name, now);
+        if (options?.existingProjects) {
+          this.seedExistingProjectsInCurrentTransaction(record.name, now, options.existingProjects);
         }
       });
     } catch (error) {
-      if (error instanceof ConflictError) {
+      if (error instanceof ConflictError || error instanceof ValidationError) {
         throw error;
       }
       if (isSqliteUniqueConstraint(error)) {
@@ -415,14 +418,30 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
     );
   }
 
-  private seedExistingProjectsDisabledInCurrentTransaction(
+  private seedExistingProjectsInCurrentTransaction(
     sourceName: string,
     createdAt: string,
+    choice: ExistingProjectsEnablement,
   ): void {
     const projectRows = this.db.select({ id: projects.id }).from(projects).all();
+
+    // Validation runs inside the owning transaction so an unknown project id
+    // rolls back the source insert as well: no source row, no enablement rows.
+    if (choice.mode === 'selected') {
+      const knownIds = new Set(projectRows.map((row) => row.id));
+      const unknownIds = choice.projectIds.filter((id) => !knownIds.has(id));
+      if (unknownIds.length > 0) {
+        throw new ValidationError('Unknown project ids in existing projects selection.', {
+          unknownProjectIds: unknownIds,
+        });
+      }
+    }
+
     if (projectRows.length === 0) {
       return;
     }
+
+    const enabledProjectIds = new Set(this.enabledExistingProjectIds(choice, projectRows));
 
     this.db
       .insert(sourceProjectEnabled)
@@ -431,12 +450,26 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
           id: randomUUID(),
           projectId: project.id,
           sourceName,
-          enabled: false,
+          enabled: enabledProjectIds.has(project.id),
           createdAt,
         })),
       )
       .onConflictDoNothing()
       .run();
+  }
+
+  private enabledExistingProjectIds(
+    choice: ExistingProjectsEnablement,
+    projectRows: Array<{ id: string }>,
+  ): string[] {
+    switch (choice.mode) {
+      case 'all':
+        return projectRows.map((row) => row.id);
+      case 'selected':
+        return choice.projectIds;
+      case 'none':
+        return [];
+    }
   }
 
   private crossKindNameConflict(name: string): ConflictError {

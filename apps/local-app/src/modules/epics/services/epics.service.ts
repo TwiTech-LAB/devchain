@@ -10,6 +10,7 @@ import {
 import type {
   Epic,
   EpicComment,
+  EpicRelationCandidate,
   ExternalTaskLink,
   UpdateEpic,
   CreateEpic,
@@ -19,12 +20,26 @@ import type {
   EpicRelationType,
 } from '../../storage/models/domain.models';
 import { EventsService } from '../../events/services/events.service';
-import { NotFoundError, StorageError, ValidationError } from '../../../common/errors/error-types';
+import {
+  AppError,
+  NotFoundError,
+  StorageError,
+  ValidationError,
+  IndexedRelationError,
+  RelationConfirmationRequiredError,
+  RelationRouteConflictError,
+  type RelationRouteEffectFacts,
+} from '../../../common/errors/error-types';
 import { SettingsService } from '../../settings/services/settings.service';
 import { normalizeExternalTaskSourceUrl } from '../../external-integrations/models/external-task-source';
 import type { ExternalTaskSourceSummary } from '../../external-integrations/models/external-provider.models';
 import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
 import { resolveEpicRelationTarget } from './epic-relation-target-resolver';
+import {
+  applyEpicDescriptionEdits,
+  type EpicDescriptionEdit,
+  type EpicDescriptionEditOutcome,
+} from '../utils/apply-description-edits';
 interface EpicBroadcastPayload {
   projectId: string;
   type: 'created' | 'updated' | 'deleted' | 'comment.created';
@@ -72,6 +87,21 @@ export interface UpdateEpicOutcome {
   statusChanged: boolean;
   agentUnchanged: boolean;
   previousAssigneeAgent: { id: string; name: string } | null;
+  /**
+   * Present when descriptionEdits or appendDescription ran; carries the final
+   * text plus context snippets for the response, so callers need no re-read.
+   */
+  descriptionEdit?: EpicDescriptionEditOutcome;
+}
+
+/**
+ * Service-level update input: scalar UpdateEpic fields plus patch-style
+ * description changes the service resolves against the epic it reads under
+ * the caller's expected version.
+ */
+export interface UpdateEpicOperationInput extends UpdateEpic {
+  descriptionEdits?: EpicDescriptionEdit[];
+  appendDescription?: string;
 }
 
 export interface ImportExternalTaskInput {
@@ -93,11 +123,15 @@ export interface ImportExternalTaskInput {
   };
 }
 
+/** One relation attachment for atomic Epic creation. */
+export interface EpicRelationInputOperation {
+  relatedEpicId: string;
+  relation: EpicRelationType;
+}
+
 export interface CreateEpicForProjectOperationInput extends CreateEpicForProjectInput {
-  relation?: {
-    relatedEpicId: string;
-    relation: EpicRelationType;
-  };
+  relation?: EpicRelationInputOperation;
+  relations?: EpicRelationInputOperation[];
 }
 
 @Injectable()
@@ -293,7 +327,8 @@ export class EpicsService {
     input: CreateEpicForProjectOperationInput,
     context?: EpicOperationContext,
   ): Promise<Epic> {
-    const { relation, ...epicInput } = input;
+    const { relation, relations, ...epicInput } = input;
+    const relationList: EpicRelationInputOperation[] = relations ?? (relation ? [relation] : []);
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(projectId, epicInput.statusId, epicInput);
     const statusSnapshot = await this.resolveEpicCreatedStatusSnapshot(
@@ -328,7 +363,7 @@ export class EpicsService {
     let prepared: PreparedEvent<'epic.created'> | null = null;
     let relationWorkspaceId: string | null = null;
     let epic: Epic;
-    if (relation) {
+    if (relationList.length > 0) {
       const relationStatusId = createInput.statusId;
       if (!relationStatusId) {
         throw new ValidationError('Project has no statuses configured.', { projectId });
@@ -356,23 +391,7 @@ export class EpicsService {
           },
           (created) => (prepared = this.prepareEpicCreatedEvent(created, context, names)),
           async (created) => {
-            const target = await resolveEpicRelationTarget(
-              this.storage,
-              created.id,
-              relation.relatedEpicId,
-              { excludeMcpHidden: true },
-            );
-            const result = await this.storage.setEpicRelation(
-              {
-                epicId: created.id,
-                relatedEpicId: target.id,
-                type: relation.relation,
-                createdBy: context?.actor?.type === 'agent' ? 'agent' : 'user',
-                createdByAgentId: context?.actor?.type === 'agent' ? context.actor.id : null,
-              },
-              context?.actor ? { actor: context.actor } : {},
-            );
-            relationWorkspaceId = result.workspaceId;
+            relationWorkspaceId = await this.attachEpicRelations(created.id, relationList, context);
           },
         ),
       );
@@ -385,7 +404,7 @@ export class EpicsService {
     }
 
     this.emitPreparedCreated(prepared);
-    if (relation) {
+    if (relationList.length > 0) {
       if (!relationWorkspaceId) {
         throw new StorageError('Epic relation creation did not resolve its workspace scope.');
       }
@@ -397,38 +416,155 @@ export class EpicsService {
     return epic;
   }
 
+  /**
+   * Resolves every relation target (rejecting duplicate resolved targets),
+   * then writes each relation in input order inside the caller's create
+   * transaction; any throw rolls back the Epic, its tags, every relation, and
+   * the durable epic.created event. Relation errors carry the failing input
+   * index, and a second eligible Related time route from the new Epic becomes
+   * a create-specific route conflict instead of a displacement confirmation.
+   */
+  private async attachEpicRelations(
+    createdEpicId: string,
+    relationList: EpicRelationInputOperation[],
+    context?: EpicOperationContext,
+  ): Promise<string> {
+    const resolvedTargets: Array<{ index: number; id: string }> = [];
+    const seenTargetIds = new Set<string>();
+    for (let index = 0; index < relationList.length; index += 1) {
+      const relationInput = relationList[index];
+      let target: EpicRelationCandidate;
+      try {
+        target = await resolveEpicRelationTarget(
+          this.storage,
+          createdEpicId,
+          relationInput.relatedEpicId,
+          {
+            excludeMcpHidden: true,
+          },
+        );
+      } catch (error) {
+        throw this.indexRelationError(error, index);
+      }
+      if (seenTargetIds.has(target.id)) {
+        throw this.indexRelationError(
+          new ValidationError(
+            'Duplicate related Epic in the relations list; each target Epic may appear once.',
+            { duplicateRelatedEpicId: target.id },
+          ),
+          index,
+        );
+      }
+      seenTargetIds.add(target.id);
+      resolvedTargets.push({ index, id: target.id });
+    }
+
+    let workspaceId: string | null = null;
+    for (const resolved of resolvedTargets) {
+      try {
+        const result = await this.storage.setEpicRelation(
+          {
+            epicId: createdEpicId,
+            relatedEpicId: resolved.id,
+            type: relationList[resolved.index].relation,
+            createdBy: context?.actor?.type === 'agent' ? 'agent' : 'user',
+            createdByAgentId: context?.actor?.type === 'agent' ? context.actor.id : null,
+          },
+          context?.actor ? { actor: context.actor } : {},
+        );
+        workspaceId = result.workspaceId;
+      } catch (error) {
+        if (error instanceof RelationConfirmationRequiredError) {
+          const currentEffect = error.details?.currentEffect as
+            | RelationRouteEffectFacts
+            | undefined;
+          const conflictingRelationIndex = currentEffect
+            ? (resolvedTargets.find(
+                (candidate) =>
+                  candidate.id === currentEffect.targetEpicId && candidate.index < resolved.index,
+              )?.index ?? null)
+            : null;
+          throw new RelationRouteConflictError(
+            resolved.index,
+            conflictingRelationIndex,
+            currentEffect ?? { sourceEpicId: createdEpicId, targetEpicId: resolved.id },
+          );
+        }
+        throw this.indexRelationError(error, resolved.index);
+      }
+    }
+    if (!workspaceId) {
+      throw new StorageError('Epic relation creation did not resolve its workspace scope.');
+    }
+    return workspaceId;
+  }
+
+  private indexRelationError(error: unknown, index: number): unknown {
+    if (error instanceof AppError) {
+      return new IndexedRelationError(index, error);
+    }
+    return error;
+  }
+
   async updateEpic(
     id: string,
-    data: UpdateEpic,
+    data: UpdateEpicOperationInput,
     expectedVersion: number,
     context?: EpicOperationContext,
   ): Promise<Epic> {
+    return (await this.updateEpicWithDescriptionEditOutcome(id, data, expectedVersion, context))
+      .epic;
+  }
+
+  /**
+   * Resolves descriptionEdits/appendDescription against the freshly read epic,
+   * then performs the versioned update with the resulting description text.
+   * The edit helper throws before any storage write when a `find` text cannot
+   * be matched uniquely, leaving the stored description and version untouched.
+   */
+  private async updateEpicWithDescriptionEditOutcome(
+    id: string,
+    data: UpdateEpicOperationInput,
+    expectedVersion: number,
+    context?: EpicOperationContext,
+  ): Promise<{ epic: Epic; descriptionEdit?: EpicDescriptionEditOutcome }> {
     const before = await this.storage.getEpic(id);
 
+    const { descriptionEdits, appendDescription, ...updateData } = data;
+    let descriptionEdit: EpicDescriptionEditOutcome | undefined;
+    if (descriptionEdits !== undefined || appendDescription !== undefined) {
+      descriptionEdit = applyEpicDescriptionEdits({
+        text: before.description,
+        edits: descriptionEdits ?? [],
+        append: appendDescription,
+      });
+      updateData.description = descriptionEdit.text;
+    }
+
     // Enforce 1-level hierarchy: a child with sub-epics cannot be moved under another parent
-    if (data.parentId !== undefined && data.parentId !== null) {
+    if (updateData.parentId !== undefined && updateData.parentId !== null) {
       const children = await this.storage.listSubEpics(id, { limit: 1 });
       if (children.items.length > 0) {
         throw new ValidationError(
           'Cannot move an epic that has sub-epics under another parent (one-level hierarchy).',
-          { epicId: id, parentId: data.parentId },
+          { epicId: id, parentId: updateData.parentId },
         );
       }
     }
 
     // Clear agentId if moving to an auto-clean status
-    if (data.statusId !== undefined && data.statusId !== before.statusId) {
-      this.applyAutoCleanIfNeeded(before.projectId, data.statusId, data);
+    if (updateData.statusId !== undefined && updateData.statusId !== before.statusId) {
+      this.applyAutoCleanIfNeeded(before.projectId, updateData.statusId, updateData);
     }
 
     const changeNames = await this.resolveEpicUpdatedChangeNames(
       before,
       {
-        statusId: data.statusId ?? before.statusId,
-        agentId: data.agentId !== undefined ? data.agentId : before.agentId,
-        parentId: data.parentId !== undefined ? data.parentId : before.parentId,
+        statusId: updateData.statusId ?? before.statusId,
+        agentId: updateData.agentId !== undefined ? updateData.agentId : before.agentId,
+        parentId: updateData.parentId !== undefined ? updateData.parentId : before.parentId,
       },
-      data,
+      updateData,
     );
 
     let projectName: string | undefined;
@@ -447,10 +583,10 @@ export class EpicsService {
     let prepared: PreparedEvent<'epic.updated'> | null = null;
     const updated = await this.storage.updateEpic(
       id,
-      data,
+      updateData,
       expectedVersion,
       (current, previous) => {
-        const changes = this.buildEpicChanges(previous, current, data, changeNames);
+        const changes = this.buildEpicChanges(previous, current, updateData, changeNames);
         const tagsChanged = !this.haveSameExactTags(previous.tags, current.tags);
         if (Object.keys(changes).length === 0 && !tagsChanged) {
           return null;
@@ -475,33 +611,42 @@ export class EpicsService {
     }
 
     // CASCADE: Clear all sub-epics' agents when parent moves to auto-clean status
-    if (data.statusId !== undefined && data.statusId !== before.statusId) {
+    if (updateData.statusId !== undefined && updateData.statusId !== before.statusId) {
       const autoCleanIds = this.settingsService.getAutoCleanStatusIds(before.projectId);
-      if (autoCleanIds.includes(data.statusId)) {
+      if (autoCleanIds.includes(updateData.statusId)) {
         await this.cascadeClearSubEpicAgents(updated.id);
       }
     }
 
     // A parent change reshapes related-time rollups for both endpoint scopes;
     // the hint rides after commit so it never lands inside the write transaction.
-    if (projectWorkspaceId && data.parentId !== undefined && before.parentId !== updated.parentId) {
+    if (
+      projectWorkspaceId &&
+      updateData.parentId !== undefined &&
+      before.parentId !== updated.parentId
+    ) {
       await this.eventsService.publish('epic.time.scope.invalidated', {
         workspaceId: projectWorkspaceId,
       });
     }
 
-    return updated;
+    return { epic: updated, descriptionEdit };
   }
 
   async updateEpicWithOutcome(
     id: string,
-    data: UpdateEpic,
+    data: UpdateEpicOperationInput,
     expectedVersion: number,
     context?: EpicOperationContext,
   ): Promise<{ epic: Epic; outcome: UpdateEpicOutcome }> {
     const before = await this.storage.getEpic(id);
 
-    const updated = await this.updateEpic(id, data, expectedVersion, context);
+    const { epic: updated, descriptionEdit } = await this.updateEpicWithDescriptionEditOutcome(
+      id,
+      data,
+      expectedVersion,
+      context,
+    );
 
     const statusChanged = before.statusId !== updated.statusId;
     const agentUnchanged = before.agentId === updated.agentId;
@@ -518,7 +663,7 @@ export class EpicsService {
 
     return {
       epic: updated,
-      outcome: { statusChanged, agentUnchanged, previousAssigneeAgent },
+      outcome: { statusChanged, agentUnchanged, previousAssigneeAgent, descriptionEdit },
     };
   }
 

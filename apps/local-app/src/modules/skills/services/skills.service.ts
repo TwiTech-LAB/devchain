@@ -7,11 +7,14 @@ import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import {
+  epics,
   skillProjectDisabled,
   skills,
   skillUsageLog,
   sourceProjectEnabled,
+  statuses,
 } from '../../storage/db/schema';
+import { parseSkillsRequired } from '../../storage/local/helpers/storage-helpers';
 import type { ResolvedSkillSummary } from '../dtos/skill.dto';
 import type {
   Skill,
@@ -46,6 +49,28 @@ export interface ListProjectSkillsOptions {
 export interface ProjectSkill extends Skill {
   disabled: boolean;
 }
+
+export interface StoredProjectSkill extends Skill {
+  /** True when any of the three independent blocks below applies. */
+  disabled: boolean;
+  /** The project has a skill_project_disabled row for the skill. */
+  skillDisabled: boolean;
+  /** The source is enabled for the project (source_project_enabled, default true). */
+  sourceProjectEnabled: boolean;
+  /** The source is enabled in settings skills.sources (default true). */
+  sourceGloballyEnabled: boolean;
+}
+
+export type ResolveDiscoverableSkillResult =
+  | { status: 'resolved'; skill: Skill }
+  | { status: 'disabled'; enabledAlternatives: string[] }
+  | { status: 'ambiguous'; candidates: string[] }
+  | { status: 'not_found' };
+
+export type SetSourceProjectEnabledResult =
+  | { status: 'ok'; name: string; projectId: string; projectEnabled: boolean }
+  | { status: 'source_not_found'; name: string }
+  | { status: 'source_disabled_globally'; name: string };
 
 export interface UpsertSkillData {
   name?: string;
@@ -82,6 +107,30 @@ export interface SkillUsageStat {
   lastAccessedAt: string | null;
   skillName: string | null;
   skillDisplayName: string | null;
+}
+
+export interface SkillUsageStatsSummary {
+  totalEvents: number;
+  distinctSkills: number;
+  firstEventAt: string | null;
+  lastEventAt: string | null;
+}
+
+export interface CompleteSkillUsageStats {
+  summary: SkillUsageStatsSummary;
+  skills: SkillUsageStat[];
+}
+
+export interface SkillEpicReference {
+  slug: string;
+  total: number;
+  byStatus: Record<string, number>;
+}
+
+export interface SetSkillsEnabledResult {
+  updated: string[];
+  unchanged: string[];
+  notFound: string[];
 }
 
 export interface SkillUsageLogOptions {
@@ -166,38 +215,42 @@ export class SkillsService {
       return [];
     }
 
-    const query = this.db
-      .select({
-        skill: skills,
-        disabled: sql<number>`case when ${skillProjectDisabled.id} is null then 0 else 1 end`,
-      })
-      .from(skills)
-      .leftJoin(
-        skillProjectDisabled,
-        and(
-          eq(skillProjectDisabled.skillId, skills.id),
-          eq(skillProjectDisabled.projectId, normalizedProjectId),
-        ),
-      );
+    return this.queryProjectSkills(
+      normalizedProjectId,
+      [inArray(skills.source, enabledSources)],
+      options,
+      (skill, skillDisabled) => ({ ...skill, disabled: skillDisabled }),
+    );
+  }
 
-    const conditions: SQL<unknown>[] = [inArray(skills.source, enabledSources)];
-    const parsed = this.appendProjectSkillFilterConditions(conditions, options);
+  /**
+   * Lists every stored skill for the project with the three independent
+   * enablement flags (skill-level disable, per-project source enablement,
+   * global source enablement) and their effective combination. Unlike
+   * listAllForProject it applies no source filter: skills of project-disabled
+   * and globally disabled sources appear, because a review must judge the
+   * whole stored catalog.
+   */
+  async listAllStoredForProject(
+    projectId: string,
+    options: ListProjectSkillsOptions = {},
+  ): Promise<StoredProjectSkill[]> {
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+    const sourceSettings = this.settingsService.getSkillSourcesEnabled();
+    const projectSourceEnabledMap = await this.getProjectSourceEnabledMap(normalizedProjectId);
 
-    const whereClause = this.combineConditions(conditions);
-    if (whereClause) {
-      query.where(whereClause);
-    }
-
-    const rows = await query.orderBy(asc(skills.name), asc(skills.slug));
-    const mapped = rows.map((row) => ({
-      ...this.mapSkillRow(row.skill),
-      disabled: Number(row.disabled) === 1,
-    }));
-
-    if (parsed) {
-      return sortByRelevance(mapped, parsed);
-    }
-    return mapped;
+    return this.queryProjectSkills(normalizedProjectId, [], options, (skill, skillDisabled) => {
+      const sourceName = skill.source.trim().toLowerCase();
+      const sourceProjectEnabled = projectSourceEnabledMap.get(sourceName) ?? true;
+      const sourceGloballyEnabled = this.isSourceEnabled(sourceName, sourceSettings);
+      return {
+        ...skill,
+        skillDisabled,
+        sourceProjectEnabled,
+        sourceGloballyEnabled,
+        disabled: skillDisabled || !sourceProjectEnabled || !sourceGloballyEnabled,
+      };
+    });
   }
 
   async listDiscoverable(
@@ -259,6 +312,75 @@ export class SkillsService {
     }
 
     return this.mapSkillRow(row[0]);
+  }
+
+  /**
+   * Resolves a skill reference the way MCP agents ask for it: a full
+   * `source/name` slug or a bare name matched against the slug name segment
+   * only (never the frontmatter name). Only skills that pass the
+   * listDiscoverable filter resolve; anything else reports why so callers can
+   * surface disabled/ambiguous outcomes without a second lookup.
+   */
+  async resolveDiscoverableSkill(
+    projectId: string,
+    slugOrName: string,
+  ): Promise<ResolveDiscoverableSkillResult> {
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+    const normalizedInput = this.requireNonEmpty(slugOrName, 'slug').toLowerCase();
+
+    const discoverable = await this.listDiscoverable(normalizedProjectId);
+
+    if (normalizedInput.includes('/')) {
+      const exact = discoverable.find((skill) => skill.slug === normalizedInput);
+      if (exact) {
+        return { status: 'resolved', skill: exact };
+      }
+
+      const [existing] = await this.db
+        .select({ id: skills.id })
+        .from(skills)
+        .where(eq(skills.slug, normalizedInput))
+        .limit(1);
+      if (!existing) {
+        return { status: 'not_found' };
+      }
+
+      return {
+        status: 'disabled',
+        enabledAlternatives: this.filterSkillsByNameSegment(
+          discoverable,
+          this.slugNameSegment(normalizedInput),
+        ).map((skill) => skill.slug),
+      };
+    }
+
+    const matches = this.filterSkillsByNameSegment(discoverable, normalizedInput);
+    const [single] = matches;
+    if (matches.length === 1 && single) {
+      return { status: 'resolved', skill: single };
+    }
+    if (matches.length > 1) {
+      const sourceKindByName = new Map(
+        (await this.getRegisteredSources()).map((source) => [source.name, source.kind] as const),
+      );
+      const localMatches = matches.filter(
+        (skill) => sourceKindByName.get(skill.source) === 'local',
+      );
+      const [localSingle] = localMatches;
+      if (localMatches.length === 1 && localSingle) {
+        return { status: 'resolved', skill: localSingle };
+      }
+      return { status: 'ambiguous', candidates: matches.map((skill) => skill.slug) };
+    }
+
+    const allSlugs = await this.db.select({ slug: skills.slug }).from(skills);
+    const anySkillWithName = allSlugs.some(
+      (row) => this.slugNameSegment(row.slug) === normalizedInput,
+    );
+    if (anySkillWithName) {
+      return { status: 'disabled', enabledAlternatives: [] };
+    }
+    return { status: 'not_found' };
   }
 
   async listSkillsBySource(sourceName: string): Promise<Skill[]> {
@@ -474,6 +596,55 @@ export class SkillsService {
       );
   }
 
+  async setSkillsEnabled(
+    projectId: string,
+    slugs: string[],
+    enabled: boolean,
+  ): Promise<SetSkillsEnabledResult> {
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+
+    const normalizedSlugs = new Set(
+      slugs.map((slug) => this.requireNonEmpty(slug, 'slug').toLowerCase()),
+    );
+
+    // Resolution covers skills of globally enabled sources, including sources
+    // the project disabled: a review disables a source's non-matching skills
+    // before it enables the source, so those toggles must land while the
+    // source is still project-disabled. The compared state is the skill-level
+    // skill_project_disabled row, independent of any source-level disable.
+    const storedSkills = await this.listAllStoredForProject(normalizedProjectId);
+    const skillBySlug = new Map(
+      storedSkills
+        .filter((skill) => skill.sourceGloballyEnabled)
+        .map((skill) => [skill.slug, skill] as const),
+    );
+
+    const updated: string[] = [];
+    const unchanged: string[] = [];
+    const notFound: string[] = [];
+    for (const slug of normalizedSlugs) {
+      const skill = skillBySlug.get(slug);
+      if (!skill) {
+        notFound.push(slug);
+        continue;
+      }
+
+      if (skill.skillDisabled !== enabled) {
+        unchanged.push(slug);
+        continue;
+      }
+
+      if (enabled) {
+        await this.enableSkill(normalizedProjectId, skill.id);
+      } else {
+        await this.disableSkill(normalizedProjectId, skill.id);
+      }
+      updated.push(slug);
+    }
+
+    return { updated, unchanged, notFound };
+  }
+
   async listDisabled(projectId: string): Promise<string[]> {
     const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
     const rows = await this.db
@@ -687,6 +858,42 @@ export class SkillsService {
     };
   }
 
+  /**
+   * Project-level source toggle for MCP: refuses unknown sources and sources
+   * that settings disable globally (a project toggle has no effect while the
+   * source is globally disabled), then delegates to setSourceProjectEnabled.
+   * The REST routes keep the direct setSourceProjectEnabled path.
+   */
+  async setSourceProjectEnabledForMcp(
+    projectId: string,
+    sourceName: string,
+    enabled: boolean,
+  ): Promise<SetSourceProjectEnabledResult> {
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+    const normalizedSourceName = sourceName.trim().toLowerCase();
+
+    try {
+      await this.requireKnownSourceName(normalizedSourceName);
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        return { status: 'source_not_found', name: normalizedSourceName };
+      }
+      throw error;
+    }
+
+    const sourceSettings = this.settingsService.getSkillSourcesEnabled();
+    if (!this.isSourceEnabled(normalizedSourceName, sourceSettings)) {
+      return { status: 'source_disabled_globally', name: normalizedSourceName };
+    }
+
+    const result = await this.setSourceProjectEnabled(
+      normalizedSourceName,
+      normalizedProjectId,
+      enabled,
+    );
+    return { status: 'ok', ...result };
+  }
+
   async logUsage(
     skillId: string,
     skillSlug: string,
@@ -737,12 +944,107 @@ export class SkillsService {
       conditions.push(lte(skillUsageLog.accessedAt, options.to));
     }
 
+    return this.queryUsageStatsRows(
+      this.combineConditions(conditions),
+      options.limit ?? 100,
+      options.offset ?? 0,
+    );
+  }
+
+  async getCompleteUsageStats(options: {
+    projectId: string;
+    from?: string;
+    to?: string;
+  }): Promise<CompleteSkillUsageStats> {
+    const normalizedProjectId = this.requireNonEmpty(options.projectId, 'projectId');
+    const conditions: SQL<unknown>[] = [eq(skillUsageLog.projectId, normalizedProjectId)];
+    if (options.from) {
+      conditions.push(gte(skillUsageLog.accessedAt, options.from));
+    }
+    if (options.to) {
+      conditions.push(lte(skillUsageLog.accessedAt, options.to));
+    }
+    const whereClause = this.combineConditions(conditions);
+
+    // distinctSkills must count the same skill id + slug pairs the rows query
+    // groups by; the concatenated key is injective because skill ids are
+    // fixed-length UUIDs that never contain the separator.
+    const summaryQuery = this.db
+      .select({
+        totalEvents: sql<number>`count(*)`,
+        distinctSkills: sql<number>`count(distinct ${skillUsageLog.skillId} || '|' || ${skillUsageLog.skillSlug})`,
+        firstEventAt: sql<string | null>`min(${skillUsageLog.accessedAt})`,
+        lastEventAt: sql<string | null>`max(${skillUsageLog.accessedAt})`,
+      })
+      .from(skillUsageLog);
+    if (whereClause) {
+      summaryQuery.where(whereClause);
+    }
+    const summaryRows = await summaryQuery;
+    const summaryRow = summaryRows[0];
+
+    const skills = await this.queryUsageStatsRows(whereClause, null, 0);
+
+    return {
+      summary: {
+        totalEvents: Number(summaryRow?.totalEvents ?? 0),
+        distinctSkills: Number(summaryRow?.distinctSkills ?? 0),
+        firstEventAt: summaryRow?.firstEventAt ?? null,
+        lastEventAt: summaryRow?.lastEventAt ?? null,
+      },
+      skills,
+    };
+  }
+
+  async getSkillsEpicReferences(projectId: string): Promise<SkillEpicReference[]> {
+    const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+
+    // Deliberately includes epics with MCP-hidden statuses: hidden is read
+    // visibility, not a closed state, and their skill requirements stay in
+    // force.
+    const rows = await this.db
+      .select({
+        skillsRequired: epics.skillsRequired,
+        statusLabel: statuses.label,
+      })
+      .from(epics)
+      .innerJoin(statuses, eq(statuses.id, epics.statusId))
+      .where(eq(epics.projectId, normalizedProjectId));
+
+    const references = new Map<string, { total: number; byStatus: Map<string, number> }>();
+    for (const row of rows) {
+      const requiredSlugs = parseSkillsRequired(row.skillsRequired);
+      if (!requiredSlugs) continue;
+
+      // One epic counts once per slug, even when a legacy row lists the slug twice.
+      for (const slug of new Set(requiredSlugs)) {
+        let entry = references.get(slug);
+        if (!entry) {
+          entry = { total: 0, byStatus: new Map() };
+          references.set(slug, entry);
+        }
+        entry.total += 1;
+        entry.byStatus.set(row.statusLabel, (entry.byStatus.get(row.statusLabel) ?? 0) + 1);
+      }
+    }
+
+    return Array.from(references.entries())
+      .map(([slug, entry]) => ({
+        slug,
+        total: entry.total,
+        byStatus: Object.fromEntries(entry.byStatus),
+      }))
+      .sort((a, b) => a.slug.localeCompare(b.slug));
+  }
+
+  private async queryUsageStatsRows(
+    whereClause: SQL<unknown> | undefined,
+    limit: number | null,
+    offset: number,
+  ): Promise<SkillUsageStat[]> {
     const usageCountExpr = count();
     const firstAccessedExpr = sql<string | null>`min(${skillUsageLog.accessedAt})`;
     const lastAccessedExpr = sql<string | null>`max(${skillUsageLog.accessedAt})`;
-    const whereClause = this.combineConditions(conditions);
-    const limit = options.limit ?? 100;
-    const offset = options.offset ?? 0;
 
     const query = this.db
       .select({
@@ -761,11 +1063,11 @@ export class SkillsService {
       query.where(whereClause);
     }
 
-    const rows = await query
+    const grouped = query
       .groupBy(skillUsageLog.skillId, skillUsageLog.skillSlug, skills.name, skills.displayName)
-      .orderBy(desc(usageCountExpr), desc(lastAccessedExpr))
-      .limit(limit)
-      .offset(offset);
+      .orderBy(desc(usageCountExpr), desc(lastAccessedExpr));
+
+    const rows = limit === null ? await grouped : await grouped.limit(limit).offset(offset);
 
     return rows.map((row) => ({
       skillId: row.skillId,
@@ -831,6 +1133,50 @@ export class SkillsService {
       limit,
       offset,
     };
+  }
+
+  /**
+   * Shared query of the project listings that report skill-level disables:
+   * skills left-joined to this project's skill_project_disabled rows, filtered
+   * by the given conditions plus the optional q, ordered by name, then by
+   * relevance when q is present.
+   */
+  private async queryProjectSkills<T extends Skill>(
+    projectId: string,
+    conditions: SQL<unknown>[],
+    options: ListProjectSkillsOptions,
+    mapRow: (skill: Skill, skillDisabled: boolean) => T,
+  ): Promise<T[]> {
+    const query = this.db
+      .select({
+        skill: skills,
+        disabled: sql<number>`case when ${skillProjectDisabled.id} is null then 0 else 1 end`,
+      })
+      .from(skills)
+      .leftJoin(
+        skillProjectDisabled,
+        and(
+          eq(skillProjectDisabled.skillId, skills.id),
+          eq(skillProjectDisabled.projectId, projectId),
+        ),
+      );
+
+    const parsed = this.appendProjectSkillFilterConditions(conditions, options);
+
+    const whereClause = this.combineConditions(conditions);
+    if (whereClause) {
+      query.where(whereClause);
+    }
+
+    const rows = await query.orderBy(asc(skills.name), asc(skills.slug));
+    const mapped = rows.map((row) =>
+      mapRow(this.mapSkillRow(row.skill), Number(row.disabled) === 1),
+    );
+
+    if (parsed) {
+      return sortByRelevance(mapped, parsed);
+    }
+    return mapped;
   }
 
   private appendProjectSkillFilterConditions(
@@ -1020,6 +1366,15 @@ export class SkillsService {
       return conditions[0];
     }
     return and(...conditions);
+  }
+
+  private slugNameSegment(slug: string): string {
+    const separatorIndex = slug.indexOf('/');
+    return separatorIndex === -1 ? slug : slug.slice(separatorIndex + 1);
+  }
+
+  private filterSkillsByNameSegment(skillsToFilter: Skill[], name: string): Skill[] {
+    return skillsToFilter.filter((skill) => this.slugNameSegment(skill.slug) === name);
   }
 
   private async getRegisteredSources(): Promise<

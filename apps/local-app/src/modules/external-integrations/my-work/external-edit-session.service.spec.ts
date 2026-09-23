@@ -9,6 +9,7 @@ import type {
   ExternalOwnedMutationsCapability,
 } from '../models/external-provider.models';
 import type { ExternalRichDocumentV1 } from '../models/external-rich-document';
+import type { ExternalEditSessionView } from '../models/external-edit-session.models';
 import { ExternalEditSessionService } from './external-edit-session.service';
 import { ExternalEditSessionStore } from '../sessions/external-edit-session.store';
 import { ProviderOperationGate } from '../sessions/provider-operation-gate';
@@ -107,6 +108,8 @@ class FakeStorage {
 
 class FakeAdapter {
   descriptionRaw: unknown = BASELINE_ADF;
+  readDescriptionCalls: unknown[][] = [];
+  readDescriptionImpl: (() => Promise<unknown>) | null = null;
   writeCalls: unknown[] = [];
   writeImpl: ((raw: unknown) => Promise<void>) | null = null;
   findCalls = 0;
@@ -131,7 +134,10 @@ class FakeAdapter {
   };
 
   readonly descriptionEdit: ExternalDescriptionEditCapability = {
-    readDescription: async () => this.descriptionRaw,
+    readDescription: async (credentials, context, remoteTaskId) => {
+      this.readDescriptionCalls.push([credentials, context, remoteTaskId]);
+      return this.readDescriptionImpl ? this.readDescriptionImpl() : this.descriptionRaw;
+    },
     writeDescription: async (_credentials, _context, _taskId, raw) => {
       this.writeCalls.push(raw);
       if (this.writeImpl) {
@@ -210,6 +216,14 @@ class FakeRegistry {
   getSupportedProviders() {
     return ['clickup', 'jira'] as IntegrationProvider[];
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 function setup(provider: IntegrationProvider = 'jira') {
@@ -393,6 +407,18 @@ describe('ExternalEditSessionService', () => {
         outcome: 'pre_dispatch_rejected',
         reason: 'diverged',
       });
+      expect(adapter.writeCalls).toHaveLength(1);
+      const reloaded = await service.reloadSession(PROJECT_ID, session.sessionId);
+      expect(reloaded).toMatchObject({
+        status: 'reloaded',
+        session: { state: 'editable', revision: 1 },
+      });
+      adapter.writeImpl = async (raw) => {
+        adapter.descriptionRaw = raw;
+      };
+      const saved = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 1);
+      expect(saved.outcome).toBe('saved');
+      expect(adapter.writeCalls).toHaveLength(2);
     });
 
     it('rejects a stale revision with revision_conflict', async () => {
@@ -634,6 +660,280 @@ describe('ExternalEditSessionService', () => {
     expect(adapter.findCalls).toBe(0);
   });
 
+  describe('session read admission and result validation', () => {
+    const paths = ['description reload', 'comment reload', 'delete verification'] as const;
+    type ReadPath = (typeof paths)[number];
+
+    async function open(path: ReadPath) {
+      const fixture = setup(path === 'description reload' ? 'jira' : 'clickup');
+      const { service, adapter } = fixture;
+      let session: ExternalEditSessionView;
+      switch (path) {
+        case 'description reload':
+          session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+          break;
+        case 'comment reload':
+          session = await service.createCommentEditSession(
+            PROJECT_ID,
+            'clickup',
+            'task-1',
+            'comment-1',
+            null,
+          );
+          break;
+        case 'delete verification':
+          session = await service.createCommentDeleteSession(
+            PROJECT_ID,
+            'clickup',
+            'task-1',
+            'comment-1',
+            null,
+          );
+          break;
+      }
+      if (path === 'delete verification') {
+        adapter.deleteImpl = async () => {
+          throw dispatchedUnknown('clickup');
+        };
+        expect((await service.executeCommentDelete(PROJECT_ID, session.sessionId)).outcome).toBe(
+          'outcome_unknown',
+        );
+      }
+      adapter.readDescriptionCalls = [];
+      adapter.findCalls = 0;
+      return {
+        ...fixture,
+        session,
+        read: () =>
+          path === 'delete verification'
+            ? service.verifySession(PROJECT_ID, session.sessionId)
+            : service.reloadSession(PROJECT_ID, session.sessionId),
+      };
+    }
+
+    async function expectSuperseded(
+      path: ReadPath,
+      pending: ReturnType<Awaited<ReturnType<typeof open>>['read']>,
+    ) {
+      if (path === 'delete verification') {
+        await expect(pending).resolves.toMatchObject({
+          remoteState: 'diverged',
+          reason: null,
+          session: { state: 'invalidated' },
+        });
+      } else {
+        await expect(pending).rejects.toMatchObject({
+          message: 'The connection was replaced; the session is invalid.',
+          details: { reason: 'connection_superseded' },
+        });
+      }
+    }
+
+    it.each(paths)(
+      '%s rejects replacement acquired after a paused credential read without content access',
+      async (path) => {
+        const { storage, store, adapter, session, read } = await open(path);
+        const entered = deferred<void>();
+        const release = deferred<IntegrationCredentials | null>();
+        const originalCredentials = storage.getIntegrationConnectionCredentials.bind(storage);
+        const credentials = await originalCredentials({ provider: storage.connection.provider });
+        const credentialReads = jest
+          .spyOn(storage, 'getIntegrationConnectionCredentials')
+          .mockImplementationOnce(() => {
+            entered.resolve();
+            return release.promise;
+          });
+        const pending = read();
+        await entered.promise;
+        storage.connection = { ...storage.connection, generation: 2 };
+        expect(store.invalidateConnection(storage.connection.id)).toBe(1);
+        release.resolve(credentials);
+        await expectSuperseded(path, pending);
+        expect(credentialReads).toHaveBeenCalledTimes(2);
+        expect(adapter.readDescriptionCalls).toHaveLength(0);
+        expect(adapter.findCalls).toBe(0);
+        expect(store.get(session.sessionId)).toMatchObject({
+          value: { state: 'invalidated', revision: 0 },
+        });
+        expect(adapter.deleteCalls).toBe(path === 'delete verification' ? 1 : 0);
+      },
+    );
+
+    it.each([
+      ['description reload', 'supported'],
+      ['description reload', 'unsupported'],
+      ['comment reload', 'gone'],
+      ['delete verification', 'gone'],
+      ['delete verification', 'old_baseline'],
+    ] as const)(
+      '%s rejects %s from a provider read superseded during I/O',
+      async (path, result) => {
+        const { storage, store, adapter, session, read } = await open(path);
+        const before = store.get(session.sessionId);
+        if (!before.ok) throw new Error(before.reason);
+        const entered = deferred<void>();
+        const release = deferred<unknown>();
+        const hook = () => {
+          entered.resolve();
+          return release.promise;
+        };
+        if (path === 'description reload') adapter.readDescriptionImpl = hook;
+        else adapter.findImpl = hook;
+        const connectionReads = jest.spyOn(storage, 'getIntegrationConnection');
+        const pending = read();
+        await entered.promise;
+        connectionReads.mockClear();
+        storage.connection = { ...storage.connection, generation: 2 };
+        expect(store.invalidateConnection(storage.connection.id)).toBe(1);
+        switch (result) {
+          case 'gone':
+            release.resolve(null);
+            break;
+          case 'old_baseline':
+            release.resolve(adapter.snapshot);
+            break;
+          case 'unsupported':
+            release.resolve({ type: 'doc', version: 1, content: [{ type: 'table', content: [] }] });
+            break;
+          case 'supported':
+            release.resolve(adfWithText('fresh content'));
+            break;
+        }
+        await expectSuperseded(path, pending);
+        expect(connectionReads).toHaveBeenCalledTimes(1);
+        expect(connectionReads).toHaveBeenCalledWith({
+          projectId: PROJECT_ID,
+          provider: storage.connection.provider,
+        });
+        expect(store.get(session.sessionId)).toMatchObject({
+          value: {
+            state: 'invalidated',
+            baseline: before.value.baseline,
+            revision: before.value.revision,
+          },
+        });
+        expect(adapter.readDescriptionCalls).toHaveLength(path === 'description reload' ? 1 : 0);
+        expect(adapter.findCalls).toBe(path === 'description reload' ? 0 : 1);
+        expect(adapter.deleteCalls).toBe(path === 'delete verification' ? 1 : 0);
+      },
+    );
+
+    it.each(['generation', 'id'] as const)(
+      'rejects a changed connection %s even while the old session is editable',
+      async (field) => {
+        const { storage, store, adapter, session, read } = await open('description reload');
+        storage.connection =
+          field === 'generation'
+            ? { ...storage.connection, generation: 2 }
+            : { ...storage.connection, id: 'connection-2' };
+        expect(store.get(session.sessionId)).toMatchObject({ value: { state: 'editable' } });
+        await expectSuperseded('description reload', read());
+        expect(adapter.readDescriptionCalls).toHaveLength(0);
+        expect(store.get(session.sessionId)).toMatchObject({ value: { state: 'invalidated' } });
+      },
+    );
+
+    it.each(['missing', 'project', 'provider'] as const)(
+      'rejects a %s scoped connection after a fulfilled read',
+      async (change) => {
+        const { storage, adapter, read } = await open('description reload');
+        adapter.readDescriptionImpl = async () => {
+          if (change === 'missing') storage.connected = false;
+          if (change === 'project') storage.connection.projectId = 'project-2';
+          if (change === 'provider') storage.connection.provider = 'clickup';
+          return BASELINE_ADF;
+        };
+        await expectSuperseded('description reload', read());
+      },
+    );
+
+    it.each(['outcome_unknown', 'saved_unverified', 'invalidated'] as const)(
+      'reload rejects %s before reading unsupported content',
+      async (state) => {
+        const { store, adapter, session, read } = await open('description reload');
+        store.beginDispatch(session.sessionId, 'pending', 0);
+        if (state === 'saved_unverified') store.markSavedUnverified(session.sessionId);
+        if (state === 'invalidated') store.invalidate(session.sessionId);
+        const before = store.get(session.sessionId);
+        adapter.descriptionRaw = {
+          type: 'doc',
+          version: 1,
+          content: [{ type: 'table', content: [] }],
+        };
+        await expect(read()).rejects.toMatchObject({ details: { reason: 'session_not_editable' } });
+        expect(adapter.readDescriptionCalls).toHaveLength(0);
+        expect(store.get(session.sessionId)).toEqual(before);
+      },
+    );
+
+    it('an admitted reload keeps the same-generation unsupported outcome', async () => {
+      const { adapter, read } = await open('description reload');
+      adapter.descriptionRaw = {
+        type: 'doc',
+        version: 1,
+        content: [{ type: 'table', content: [] }],
+      };
+      await expect(read()).resolves.toMatchObject({
+        status: 'unsupported',
+        session: { state: 'diverged', revision: 0 },
+      });
+      expect(adapter.readDescriptionCalls).toHaveLength(1);
+    });
+
+    it('comment null cannot bypass a live state change to outcome_unknown', async () => {
+      const { store, adapter, session, read } = await open('comment reload');
+      const entered = deferred<void>();
+      const release = deferred<unknown>();
+      adapter.findImpl = () => {
+        entered.resolve();
+        return release.promise;
+      };
+      const pending = read();
+      await entered.promise;
+      expect(store.beginDispatch(session.sessionId, 'pending', 0).ok).toBe(true);
+      release.resolve(null);
+      await expect(pending).rejects.toMatchObject({ details: { reason: 'session_not_editable' } });
+      expect(store.get(session.sessionId)).toMatchObject({
+        value: { state: 'outcome_unknown', revision: 0, pendingWrite: { fingerprint: 'pending' } },
+      });
+    });
+
+    it('same-generation delete verification returns old_baseline and keeps the unknown deletion blocked', async () => {
+      const { store, adapter, session, read } = await open('delete verification');
+      await expect(read()).resolves.toMatchObject({
+        remoteState: 'old_baseline',
+        session: { state: 'outcome_unknown', revision: 0 },
+      });
+      expect(adapter.findCalls).toBe(1);
+      expect(store.beginDispatch(session.sessionId, 'new-payload', 0)).toEqual({
+        ok: false,
+        reason: 'session_not_editable',
+      });
+      expect(adapter.deleteCalls).toBe(1);
+    });
+
+    it.each(paths)(
+      '%s propagates a provider rejection unchanged without a post-read check or retry',
+      async (path) => {
+        const { storage, store, adapter, session, read } = await open(path);
+        const before = store.get(session.sessionId);
+        const connectionReads = jest.spyOn(storage, 'getIntegrationConnection');
+        const error = dispatchedUnknown(storage.connection.provider as IntegrationProvider);
+        const hook = async () => {
+          connectionReads.mockClear();
+          throw error;
+        };
+        if (path === 'description reload') adapter.readDescriptionImpl = hook;
+        else adapter.findImpl = hook;
+        await expect(read()).rejects.toBe(error);
+        expect(connectionReads).not.toHaveBeenCalled();
+        expect(store.get(session.sessionId)).toEqual(before);
+        expect(adapter.readDescriptionCalls).toHaveLength(path === 'description reload' ? 1 : 0);
+        expect(adapter.findCalls).toBe(path === 'description reload' ? 0 : 1);
+      },
+    );
+  });
+
   describe('Phase 14: stateless rich reads, comment editing, reload, and capability gates', () => {
     it('readRichDescription returns the document and flags without creating a session', async () => {
       const { service, store } = setup();
@@ -644,6 +944,99 @@ describe('ExternalEditSessionService', () => {
       expect(read.canDeleteOwnedComments).toBe(true);
       expect(read.document).not.toBeNull();
       expect(read.fingerprint).toBeTruthy();
+      expect(store.size()).toBe(0);
+    });
+
+    it('forwards replacement credentials with the stable generation to a rich read', async () => {
+      const { service, storage, adapter } = setup('jira');
+      const connection = (generation: number) => ({
+        id: 'connection-1',
+        projectId: PROJECT_ID,
+        provider: 'jira' as const,
+        generation,
+      });
+      jest
+        .spyOn(storage, 'getIntegrationConnection')
+        .mockResolvedValueOnce({ ...connection(1), createdAt: '', updatedAt: '' })
+        .mockResolvedValueOnce({ ...connection(2), createdAt: '', updatedAt: '' })
+        .mockResolvedValue({ ...connection(2), createdAt: '', updatedAt: '' });
+      jest
+        .spyOn(storage, 'getIntegrationConnectionCredentials')
+        .mockResolvedValueOnce({
+          provider: 'jira',
+          siteUrl: 'https://old.atlassian.net',
+          email: 'old@example.com',
+          token: 'old-token',
+        })
+        .mockResolvedValueOnce({
+          provider: 'jira',
+          siteUrl: 'https://replacement.atlassian.net',
+          email: 'replacement@example.com',
+          token: 'replacement-token',
+        });
+
+      await service.readRichDescription(PROJECT_ID, 'jira', 'KAN-1');
+
+      expect(adapter.readDescriptionCalls).toEqual([
+        [
+          {
+            provider: 'jira',
+            siteUrl: 'https://replacement.atlassian.net',
+            email: 'replacement@example.com',
+            token: 'replacement-token',
+          },
+          { connectionId: 'connection-1', connectionGeneration: 2 },
+          'KAN-1',
+        ],
+      ]);
+    });
+
+    it('rejects a disconnected rich read with its caller message before provider access', async () => {
+      const { service, storage, adapter, store } = setup('jira');
+      storage.connected = false;
+
+      await expect(service.readRichDescription(PROJECT_ID, 'jira', 'KAN-1')).rejects.toEqual(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: 'Connect the integration before editing.',
+          code: 'validation_error',
+          statusCode: 400,
+          details: { provider: 'jira', projectId: PROJECT_ID, reason: 'not_connected' },
+        }),
+      );
+      expect(adapter.readDescriptionCalls).toHaveLength(0);
+      expect(store.size()).toBe(0);
+    });
+
+    it('rejects a rich read when connection acquisition stays unstable for three attempts', async () => {
+      const { service, storage, adapter, store } = setup('jira');
+      const connection = (generation: number) => ({
+        id: 'connection-1',
+        projectId: PROJECT_ID,
+        provider: 'jira' as const,
+        generation,
+        createdAt: '',
+        updatedAt: '',
+      });
+      jest
+        .spyOn(storage, 'getIntegrationConnection')
+        .mockResolvedValueOnce(connection(1))
+        .mockResolvedValueOnce(connection(2))
+        .mockResolvedValueOnce(connection(2))
+        .mockResolvedValueOnce(connection(3))
+        .mockResolvedValueOnce(connection(3))
+        .mockResolvedValueOnce(connection(4));
+
+      await expect(service.readRichDescription(PROJECT_ID, 'jira', 'KAN-1')).rejects.toEqual(
+        expect.objectContaining({
+          name: 'BusyError',
+          message: 'Integration connection changed during the operation.',
+          code: 'busy',
+          statusCode: 409,
+          details: { provider: 'jira', projectId: PROJECT_ID, reason: 'connection_changed' },
+        }),
+      );
+      expect(adapter.readDescriptionCalls).toHaveLength(0);
       expect(store.size()).toBe(0);
     });
 
@@ -729,7 +1122,7 @@ describe('ExternalEditSessionService', () => {
       expect(view.state).toBe('invalidated');
     });
 
-    it('preflight drift before dispatch rejects with diverged and never mutates', async () => {
+    it('preflight drift blocks Save until explicit Reload recovers the baseline and revision', async () => {
       const { service, adapter } = setup();
       const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
       adapter.descriptionRaw = adfWithText('someone raced ahead');
@@ -741,7 +1134,26 @@ describe('ExternalEditSessionService', () => {
       );
       expect(rejected).toMatchObject({ outcome: 'pre_dispatch_rejected', reason: 'diverged' });
       expect(adapter.writeCalls).toHaveLength(0);
+      expect(session.state).toBe('editable');
       expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe('diverged');
+      const reloaded = await service.reloadSession(PROJECT_ID, session.sessionId);
+      expect(reloaded).toMatchObject({
+        status: 'reloaded',
+        session: {
+          state: 'editable',
+          revision: 1,
+          baselineFingerprint: JSON.stringify(adfToRichDocument(adapter.descriptionRaw).document),
+        },
+      });
+      adapter.writeImpl = async (raw) => {
+        adapter.descriptionRaw = raw;
+      };
+      const saved = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 1);
+      expect(saved).toMatchObject({
+        outcome: 'saved',
+        session: { state: 'editable', revision: 2 },
+      });
+      expect(adapter.writeCalls).toHaveLength(1);
     });
 
     it('comment edit sessions: owner-validated create, save preserves fetched metadata exactly', async () => {
@@ -828,9 +1240,11 @@ describe('ExternalEditSessionService', () => {
         throw dispatchedUnknown(provider);
       };
       await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
+      const reads = adapter.readDescriptionCalls.length;
       await expect(service.reloadSession(PROJECT_ID, session.sessionId)).rejects.toMatchObject({
         details: { reason: 'session_not_editable' },
       });
+      expect(adapter.readDescriptionCalls).toHaveLength(reads);
     });
 
     it('comment reload reports gone when the comment vanished remotely', async () => {

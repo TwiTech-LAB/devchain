@@ -40,8 +40,8 @@ export interface ExternalTaskDetailDialogProps {
   onCreateDevChainTask?: (detail: ExternalTaskDetail) => void;
   enabled?: boolean;
   connectionEpoch: IntegrationConnectionEpoch | null;
-  /** Global remote identity attribution from the Board batch-link lookup. */
-  globalLink?: ExternalTaskLinkStateSummary | null;
+  /** Selected-project link attribution from the Board batch-link lookup. */
+  projectLink?: ExternalTaskLinkStateSummary | null;
   /**
    * When set, this dialog is the DevChain linked-task workspace: detail,
    * comments, composer, and actions stay hidden until the loaded task links
@@ -100,7 +100,7 @@ export function ExternalTaskDetailDialog({
   onCreateDevChainTask,
   enabled = true,
   connectionEpoch,
-  globalLink = null,
+  projectLink = null,
   expectedLinkedEpicId,
   routeWindowNav,
   returnFocusTo,
@@ -196,15 +196,15 @@ export function ExternalTaskDetailDialog({
     event.preventDefault();
   };
   let devChainAction: ReactNode = null;
-  const attributedLink = globalLink?.linked && globalLink.epicId ? globalLink : null;
-  if (expectedLinkedEpicId == null && attributedLink) {
+  const projectAttributedLink = projectLink?.linked && projectLink.epicId ? projectLink : null;
+  if (expectedLinkedEpicId == null && projectAttributedLink) {
     devChainAction = (
       <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
         <span className="text-muted-foreground">
-          DevChain project: {attributedLink.projectName ?? 'Unknown'}
+          DevChain project: {projectAttributedLink.projectName ?? 'Unknown'}
         </span>
         <Button asChild variant="outline" size="sm">
-          <Link to={`/epics/${attributedLink.epicId}`}>Open linked DevChain task</Link>
+          <Link to={`/epics/${projectAttributedLink.epicId}`}>Open linked DevChain task</Link>
         </Button>
       </div>
     );
