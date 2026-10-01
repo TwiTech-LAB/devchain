@@ -49,9 +49,7 @@ DevChain opens in your browser:
 
 ## Remote VMs
 
-<p align="center">
-  <a href="https://devchain.cc/features/remote-vms.mp4"><img src=".github/assets/remote-vms-poster.jpg" alt="Remote VMs: watch the 42-second demo" width="100%"></a>
-</p>
+https://github.com/user-attachments/assets/5ec85c19-f407-43bc-bb44-4da7f899702f
 
 Move a project to your own VM and keep working from the same app. The agents keep running when your laptop sleeps, and the mobile app can tell you when the work is done.
 
