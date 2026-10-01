@@ -1,3 +1,4 @@
+import { BUILT_IN_SKILL_SOURCE_NAMES } from '../../common/constants/built-in-skill-sources';
 import { Module } from '@nestjs/common';
 import { SettingsModule } from '../settings/settings.module';
 import { StorageModule } from '../storage/storage.module';
@@ -30,7 +31,7 @@ import { SkillSyncService } from './services/skill-sync.service';
       provide: GitHubDirectorySkillSourceAdapter,
       useFactory: () =>
         new GitHubDirectorySkillSourceAdapter({
-          sourceName: 'devchain',
+          sourceName: BUILT_IN_SKILL_SOURCE_NAMES.devchain,
           repoOwner: 'TwiTech-LAB',
           repoName: 'devchain',
           branch: 'main',

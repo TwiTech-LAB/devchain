@@ -20,6 +20,7 @@ import {
   ChevronRight,
   MoreHorizontal,
 } from 'lucide-react';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { cn } from '@/ui/lib/utils';
 import { NewCommentForm, CommentIndicator, type LineSelection } from './InlineComment';
 import { CommentThread } from './CommentThread';
@@ -294,7 +295,7 @@ const LazyHunk = memo(function LazyHunk({
                   </span>
                 </button>
                 <span
-                  className="text-muted-foreground/60"
+                  className="text-muted-foreground"
                   aria-label={`Hunk at line ${oldStart} old, ${newStart} new`}
                 >
                   @@ -{oldStart} +{newStart} @@
@@ -942,9 +943,7 @@ export function DiffViewer({
       return (
         <div className="flex items-center gap-0.5">
           {/* Line number */}
-          <span className={cn(isInSelection && 'bg-blue-100 dark:bg-blue-900/40')}>
-            {renderDefault()}
-          </span>
+          <span className={cn(isInSelection && 'bg-selected')}>{renderDefault()}</span>
 
           {/* Comment indicator or add button */}
           <div className="w-5 flex items-center justify-center">
@@ -985,7 +984,7 @@ export function DiffViewer({
 
                 return showAddButton ? (
                   <button
-                    className="h-4 w-4 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center opacity-60 hover:opacity-100"
+                    className="h-4 w-4 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground flex items-center justify-center"
                     onMouseDown={() => handleAddButtonMouseDown(side)}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1036,7 +1035,7 @@ export function DiffViewer({
       if (!lineNumber) return '';
 
       if (lineNumber >= lineSelection.lineStart && lineNumber <= lineSelection.lineEnd) {
-        return 'bg-blue-50 dark:bg-blue-900/30';
+        return 'bg-selected';
       }
 
       return '';
@@ -1085,23 +1084,23 @@ export function DiffViewer({
         <span className="font-mono text-sm truncate">{filePath}</span>
         <div className="flex items-center gap-1 ml-2" role="group" aria-label="File statistics">
           <Badge
-            variant="secondary"
-            className="text-xs bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300"
+            variant="outline"
+            className={cn('text-xs', TONE_CLASSES.ok)}
             aria-label={`${additions} lines added`}
           >
             +{additions}
           </Badge>
           <Badge
-            variant="secondary"
-            className="text-xs bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300"
+            variant="outline"
+            className={cn('text-xs', TONE_CLASSES.error)}
             aria-label={`${deletions} lines removed`}
           >
             -{deletions}
           </Badge>
           {fileCommentCount > 0 && (
             <Badge
-              variant="secondary"
-              className="text-xs bg-blue-100 text-blue-700"
+              variant="outline"
+              className={cn('text-xs', TONE_CLASSES.info)}
               aria-label={`${fileCommentCount} comments`}
             >
               <MessageSquare className="h-3 w-3 mr-1" aria-hidden="true" />
@@ -1117,7 +1116,7 @@ export function DiffViewer({
           aria-label="View type"
         >
           <Button
-            variant={viewType === 'unified' ? 'secondary' : 'ghost'}
+            variant={viewType === 'unified' ? 'selected' : 'ghost'}
             size="sm"
             className="h-7 px-2 text-xs"
             onClick={() => onViewTypeChange('unified')}
@@ -1128,7 +1127,7 @@ export function DiffViewer({
             Unified
           </Button>
           <Button
-            variant={viewType === 'split' ? 'secondary' : 'ghost'}
+            variant={viewType === 'split' ? 'selected' : 'ghost'}
             size="sm"
             className="h-7 px-2 text-xs"
             onClick={() => onViewTypeChange('split')}

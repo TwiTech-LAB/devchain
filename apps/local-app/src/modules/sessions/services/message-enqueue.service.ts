@@ -27,6 +27,8 @@ export interface PoolMessage {
   readonly deferWhileHumanTyping?: boolean;
   /** Internal marker for an explicit human submit that completes prompt ownership. */
   readonly humanPromptSubmit?: boolean;
+  /** Text from outside this DevChain; see `EnqueueOptions.outsideText`. */
+  readonly outsideText?: boolean;
 }
 
 export interface MessageEnqueueResult extends EnqueueResult {
@@ -65,6 +67,7 @@ export class MessageEnqueueService {
         clientMessageId: message.clientMessageId,
         deferWhileHumanTyping: message.deferWhileHumanTyping,
         humanPromptSubmit: message.humanPromptSubmit,
+        outsideText: message.outsideText,
       });
 
       results.push({ agentId: message.agentId, ...result });

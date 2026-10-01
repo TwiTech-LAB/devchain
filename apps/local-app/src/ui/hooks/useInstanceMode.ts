@@ -1,4 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export type InstanceMode = 'local' | 'cloud';
 
@@ -7,16 +9,16 @@ interface Settings {
   apiKey?: string;
 }
 
-async function fetchSettings(): Promise<Settings> {
-  const response = await fetch('/api/settings');
+async function fetchSettings(fetchFn: FetchFn): Promise<Settings> {
+  const response = await fetchFn('/api/settings');
   if (!response.ok) {
     throw new Error('Failed to fetch settings');
   }
   return response.json();
 }
 
-async function updateSettings(settings: Settings): Promise<Settings> {
-  const response = await fetch('/api/settings', {
+async function updateSettings(fetchFn: FetchFn, settings: Settings): Promise<Settings> {
+  const response = await fetchFn('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
@@ -28,15 +30,16 @@ async function updateSettings(settings: Settings): Promise<Settings> {
 }
 
 export function useInstanceMode() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ['settings'],
-    queryFn: fetchSettings,
+    queryFn: () => fetchSettings(fetchFn),
   });
 
   const mutation = useMutation({
-    mutationFn: updateSettings,
+    mutationFn: (settings: Settings) => updateSettings(fetchFn, settings),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
     },

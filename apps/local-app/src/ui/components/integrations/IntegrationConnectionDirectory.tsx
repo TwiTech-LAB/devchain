@@ -65,7 +65,7 @@ function IntegrationDirectoryRow({ entry, onOpenBoard }: IntegrationDirectoryRow
           {entry.configured ? ` · Managed sync ${entry.subtaskSyncEnabled ? 'on' : 'paused'}` : ''}
         </p>
         {entry.hasMigratedSharedOrigin ? (
-          <p className="mt-1 flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300">
+          <p className="mt-1 flex items-center gap-1 text-xs text-status-warn">
             <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
             Migrated from a shared connection
           </p>

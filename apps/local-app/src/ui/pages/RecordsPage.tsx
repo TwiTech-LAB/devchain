@@ -20,6 +20,8 @@ import {
 } from '@/ui/components/shared';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useBreadcrumbs } from '@/ui/hooks/useBreadcrumbs';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface EpicSummary {
   id: string;
@@ -55,20 +57,24 @@ interface RecordsListResponse {
   offset: number;
 }
 
-async function fetchEpics(projectId: string): Promise<EpicListResponse> {
-  const res = await fetch(`/api/epics?projectId=${projectId}`);
+async function fetchEpics(fetchFn: FetchFn, projectId: string): Promise<EpicListResponse> {
+  const res = await fetchFn(`/api/epics?projectId=${projectId}`);
   if (!res.ok) {
     throw new Error('Failed to load epics');
   }
   return res.json();
 }
 
-async function fetchRecords(epicId: string, type?: string): Promise<RecordsListResponse> {
+async function fetchRecords(
+  fetchFn: FetchFn,
+  epicId: string,
+  type?: string,
+): Promise<RecordsListResponse> {
   const params = new URLSearchParams({ epicId, limit: '100', offset: '0' });
   if (type && type !== 'all') {
     params.set('type', type);
   }
-  const res = await fetch(`/api/records?${params.toString()}`);
+  const res = await fetchFn(`/api/records?${params.toString()}`);
   if (!res.ok) {
     throw new Error('Failed to load records');
   }
@@ -78,6 +84,7 @@ async function fetchRecords(epicId: string, type?: string): Promise<RecordsListR
 const TYPE_ALL = 'all';
 
 export function RecordsPage() {
+  const fetchFn = useFetchFactory();
   const { selectedProjectId, projectsLoading } = useSelectedProject();
   const { setBreadcrumbs, clearBreadcrumbs } = useBreadcrumbs();
   const [selectedEpicId, setSelectedEpicId] = useState<string | undefined>();
@@ -91,7 +98,7 @@ export function RecordsPage() {
     refetch: refetchEpics,
   } = useQuery({
     queryKey: ['records', 'epics', selectedProjectId],
-    queryFn: () => fetchEpics(selectedProjectId!),
+    queryFn: () => fetchEpics(fetchFn, selectedProjectId!),
     enabled: !!selectedProjectId,
   });
 
@@ -131,7 +138,7 @@ export function RecordsPage() {
     refetch: refetchRecords,
   } = useQuery({
     queryKey: ['records', 'list', selectedEpicId, typeFilter],
-    queryFn: () => fetchRecords(selectedEpicId!, typeFilter),
+    queryFn: () => fetchRecords(fetchFn, selectedEpicId!, typeFilter),
     enabled: !!selectedEpicId,
   });
 

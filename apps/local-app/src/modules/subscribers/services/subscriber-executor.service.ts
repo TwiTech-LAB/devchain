@@ -27,6 +27,7 @@ export type { SubscriberExecutionResult } from './subscriber-scheduler.types';
 import { renderTemplate } from '../../../common/template/handlebars-renderer';
 import { buildPromptRenderContext } from '../../../common/template/prompt-render-context';
 import { TeamsService } from '../../teams/services/teams.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 /**
  * Summary result of scheduling subscribers for an event (not execution).
@@ -100,6 +101,7 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
     private readonly scheduler: AutomationSchedulerService,
     private readonly teamsService: TeamsService,
     private readonly moduleRef: ModuleRef,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   private getSessionRuntime(): SessionRuntime {
@@ -223,6 +225,14 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
     const projectId = await this.resolveProjectId(payload);
     if (!projectId) {
       this.logger.warn({ eventName }, 'Could not resolve projectId for event, skipping');
+      return null;
+    }
+    // Automations act on the project's agents and sessions, which only its writer may run.
+    if (!this.admission.isWritable(projectId)) {
+      this.logger.debug(
+        { eventName, projectId },
+        'Project not writable here; skipping automations',
+      );
       return null;
     }
 
@@ -941,6 +951,11 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
       projectId,
       tmuxSessionName,
       event,
+      eventFieldInputs: new Set(
+        Object.entries(subscriber.actionInputs)
+          .filter(([, mapping]) => mapping.source === 'event_field')
+          .map(([name]) => name),
+      ),
       logger: this.logger,
     };
 

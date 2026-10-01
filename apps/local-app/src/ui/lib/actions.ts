@@ -2,6 +2,7 @@
  * Actions API functions
  * Provides centralized API layer for action metadata retrieval.
  */
+import type { FetchFn } from '@/ui/lib/api-transport';
 
 // ============================================
 // TYPES
@@ -69,8 +70,8 @@ export interface ActionMetadata {
 /**
  * Fetch all available actions.
  */
-export async function fetchActions(): Promise<ActionMetadata[]> {
-  const response = await fetch('/api/actions');
+export async function fetchActions(fetchFn: FetchFn): Promise<ActionMetadata[]> {
+  const response = await fetchFn('/api/actions');
   if (!response.ok) {
     throw new Error('Failed to fetch actions');
   }
@@ -80,8 +81,8 @@ export async function fetchActions(): Promise<ActionMetadata[]> {
 /**
  * Fetch a single action by type.
  */
-export async function fetchAction(type: string): Promise<ActionMetadata> {
-  const response = await fetch(`/api/actions/${encodeURIComponent(type)}`);
+export async function fetchAction(fetchFn: FetchFn, type: string): Promise<ActionMetadata> {
+  const response = await fetchFn(`/api/actions/${encodeURIComponent(type)}`);
   if (!response.ok) {
     if (response.status === 404) {
       throw new Error(`Action type '${type}' not found`);

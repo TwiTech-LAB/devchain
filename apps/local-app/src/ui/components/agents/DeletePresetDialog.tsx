@@ -12,6 +12,7 @@ import { Button } from '@/ui/components/ui/button';
 import { useToast } from '@/ui/hooks/use-toast';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import type { Preset } from '@/ui/lib/preset-validation';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 interface DeletePresetDialogProps {
   open: boolean;
@@ -21,11 +22,15 @@ interface DeletePresetDialogProps {
 }
 
 async function deletePreset(projectId: string, presetName: string): Promise<void> {
-  const res = await fetch(`/api/projects/${projectId}/presets`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ presetName }),
-  });
+  const res = await apiFetch(
+    `/api/projects/${projectId}/presets`,
+    {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ presetName }),
+    },
+    { backend: HOME_BACKEND },
+  );
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to delete preset' }));
     throw new Error(error.message || 'Failed to delete preset');

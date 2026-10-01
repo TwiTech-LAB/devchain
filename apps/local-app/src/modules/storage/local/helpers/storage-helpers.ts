@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import type { ListOptions } from '../../interfaces/storage.interface';
 import { ValidationError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
@@ -149,6 +150,84 @@ export function normalizeEnvForStorage(
     return null;
   }
   return JSON.stringify(env);
+}
+
+/** One `provider_env_scopes` row on its way out, in its storage column spelling. */
+export interface ProviderEnvScopeRow {
+  provider_id: string;
+  env_key: string;
+  project_id: string;
+}
+
+/**
+ * A provider env key with no scope rows applies to every project, so a key
+ * whose last scope row is leaving must lose its value too — otherwise it
+ * silently widens into a machine-global secret. A key that never had rows is
+ * global on purpose and is never touched, because it never appears in
+ * `removedRows`. Runs inside the caller's transaction; never commits alone.
+ */
+export function dropProviderEnvKeysLosingLastScope(
+  rawClient: Database.Database,
+  removedRows: readonly ProviderEnvScopeRow[],
+): void {
+  if (removedRows.length === 0) {
+    return;
+  }
+
+  const removedProjects = new Map<
+    string,
+    { providerId: string; envKey: string; projects: Set<string> }
+  >();
+  for (const row of removedRows) {
+    const key = `${row.provider_id}\0${row.env_key}`;
+    const pair = removedProjects.get(key) ?? {
+      providerId: row.provider_id,
+      envKey: row.env_key,
+      projects: new Set<string>(),
+    };
+    pair.projects.add(row.project_id);
+    removedProjects.set(key, pair);
+  }
+
+  for (const { providerId, envKey, projects } of removedProjects.values()) {
+    const remainingRows = rawClient
+      .prepare('SELECT project_id FROM provider_env_scopes WHERE provider_id = ? AND env_key = ?')
+      .all(providerId, envKey) as Array<{ project_id: string }>;
+    if (remainingRows.some((row) => !projects.has(row.project_id))) {
+      continue;
+    }
+
+    const providerRow = rawClient
+      .prepare('SELECT env FROM providers WHERE id = ?')
+      .get(providerId) as { env: string | null } | undefined;
+    if (!providerRow?.env) {
+      continue;
+    }
+    const env = parseProviderEnv(providerRow.env, providerId);
+    if (!env || !(envKey in env)) {
+      continue;
+    }
+    delete env[envKey];
+    rawClient
+      .prepare('UPDATE providers SET env = ?, updated_at = ? WHERE id = ?')
+      .run(normalizeEnvForStorage(env), new Date().toISOString(), providerId);
+  }
+}
+
+/**
+ * Runs `dropProviderEnvKeysLosingLastScope` for every scope row of a project
+ * that is about to be deleted (its rows go with it through the FK cascade).
+ */
+export function dropProviderEnvKeysOfProject(
+  rawClient: Database.Database,
+  projectId: string,
+): void {
+  const removedScopes = rawClient
+    .prepare(
+      'SELECT provider_id, env_key, project_id FROM provider_env_scopes WHERE project_id = ?',
+    )
+    .all(projectId) as ProviderEnvScopeRow[];
+  dropProviderEnvKeysLosingLastScope(rawClient, removedScopes);
 }
 
 export function parseSkillsRequired(raw: unknown): string[] | null {

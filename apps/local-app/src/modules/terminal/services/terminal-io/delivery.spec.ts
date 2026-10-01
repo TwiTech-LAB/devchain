@@ -1,8 +1,13 @@
 import { TerminalIOService } from './terminal-io.service';
-import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
+import {
+  FakeProcessExecutor,
+  type CannedResponse,
+} from '../process-executor/fake-process-executor';
 import type { SessionTarget, DeliveryOptions } from './types';
 import type { EventsService } from '../../../events/services/events.service';
+import type { SettingsService } from '../../../settings/services/settings.service';
 import { HumanPromptStateService } from '../human-prompt-state.service';
+import { FOLLOW_NOTE } from '../../../../common/follow-note';
 
 jest.mock('../../../../common/delivery-nonce', () => ({
   generateDeliveryNonce: () => 'abc1234',
@@ -11,11 +16,14 @@ jest.mock('../../../../common/delivery-nonce', () => ({
 const target: SessionTarget = { name: 'test-session' };
 const NONCE = 'abc1234';
 
-function makeService() {
+function makeService(followNoteEnabled = true) {
   const fake = new FakeProcessExecutor();
   const events = { publish: jest.fn() } as unknown as EventsService;
   const promptState = new HumanPromptStateService();
-  const svc = new TerminalIOService(fake, events, promptState);
+  const settings = {
+    getFollowNoteEnabled: () => followNoteEnabled,
+  } as unknown as SettingsService;
+  const svc = new TerminalIOService(fake, events, promptState, settings);
   return { fake, promptState, svc };
 }
 
@@ -421,6 +429,289 @@ describe('TerminalIOService delivery', () => {
       expect(
         fake.calls.some((call) => call.argv[1] === 'send-keys' && call.argv.includes('Escape')),
       ).toBe(true);
+    });
+  });
+
+  describe('follow note', () => {
+    const NOTE_ARGV = ['tmux', 'send-keys', '-t', '=test-session:', '-l', '--', FOLLOW_NOTE];
+    const ENTER_ARGV = ['tmux', 'send-keys', '-t', '=test-session:', 'Enter'];
+
+    function noteCalls(fake: FakeProcessExecutor) {
+      return fake.calls.filter((c) => c.argv.includes(FOLLOW_NOTE));
+    }
+
+    const NOTE_OPTS = { agentId: 'a1', postPasteDelayMs: 0, followNote: true } as const;
+
+    // One confirmed-mode attempt: baseline capture, the three buffer steps, then the check.
+    function enqueuePaste(fake: FakeProcessExecutor, confirmation: CannedResponse) {
+      fake.enqueueResponse({ type: 'success', stdout: '' }); // baseline
+      fake.enqueueResponse({ type: 'success' }); // load-buffer
+      fake.enqueueResponse({ type: 'success' }); // paste-buffer
+      fake.enqueueResponse({ type: 'success' }); // delete-buffer
+      fake.enqueueResponse(confirmation);
+    }
+
+    function enqueueConfirmedPaste(fake: FakeProcessExecutor) {
+      enqueuePaste(fake, { type: 'success', stdout: `[MsgId:${NONCE}]` });
+    }
+
+    it('types the note after paste-buffer and before the submit keys', async () => {
+      const { fake, svc } = makeService();
+      enqueueConfirmedPaste(fake);
+
+      const result = await svc.deliver(target, 'hello', NOTE_OPTS);
+
+      expect(result.confirmed).toBe(true);
+      expect(fake.calls.map((c) => c.argv[1])).toEqual([
+        'capture-pane',
+        'load-buffer',
+        'paste-buffer',
+        'delete-buffer',
+        'capture-pane',
+        'send-keys',
+        'send-keys',
+      ]);
+      expect(fake.calls[5].argv).toEqual(NOTE_ARGV);
+      expect(fake.calls[6].argv).toEqual(ENTER_ARGV);
+    });
+
+    it('waits at least 100 ms between the note and the submit keys', async () => {
+      const { fake, svc } = makeService();
+      const writtenAt: number[] = [];
+      const run = fake.run.bind(fake);
+      jest.spyOn(fake, 'run').mockImplementation((opts) => {
+        if (opts.argv[1] === 'send-keys') writtenAt.push(Date.now());
+        return run(opts);
+      });
+
+      await svc.deliver(target, 'hello', { ...NOTE_OPTS, confirm: false });
+
+      expect(writtenAt).toHaveLength(2);
+      expect(writtenAt[1] - writtenAt[0]).toBeGreaterThanOrEqual(95);
+    });
+
+    it('types the note once when a capture error counts as delivered', async () => {
+      const { fake, svc } = makeService();
+      enqueuePaste(fake, { type: 'failure', stderr: 'capture failed' });
+
+      const result = await svc.deliver(target, 'hello', NOTE_OPTS);
+
+      expect(result.confirmed).toBe(true);
+      expect(noteCalls(fake)).toHaveLength(1);
+      expect(fake.calls.at(-1)!.argv).toEqual(ENTER_ARGV);
+    });
+
+    it('types the note once when confirmation is off', async () => {
+      const { fake, svc } = makeService();
+
+      await svc.deliver(target, 'hello', { ...NOTE_OPTS, confirm: false });
+      await svc.deliverImmediate(target, 'hello', {
+        confirm: false,
+        postPasteDelayMs: 0,
+        followNote: true,
+      });
+
+      expect(fake.calls.map((c) => c.argv[1])).toEqual([
+        'load-buffer',
+        'paste-buffer',
+        'delete-buffer',
+        'send-keys',
+        'send-keys',
+        'load-buffer',
+        'paste-buffer',
+        'delete-buffer',
+        'send-keys',
+        'send-keys',
+      ]);
+      expect(fake.calls[3].argv).toEqual(NOTE_ARGV);
+      expect(fake.calls[4].argv).toEqual(ENTER_ARGV);
+      expect(fake.calls[8].argv).toEqual(NOTE_ARGV);
+      expect(fake.calls[9].argv).toEqual(ENTER_ARGV);
+    });
+
+    it('types the note once, after the attempt that succeeds', async () => {
+      const { fake, svc } = makeService();
+      enqueuePaste(fake, { type: 'success', stdout: 'no match' }); // unconfirmed
+      fake.enqueueResponse({ type: 'success' }); // Escape
+      enqueueConfirmedPaste(fake);
+
+      const result = await svc.deliver(target, 'hello', {
+        ...NOTE_OPTS,
+        confirmTimeoutMs: 0,
+        maxAttempts: 2,
+      });
+
+      expect(result).toEqual(expect.objectContaining({ confirmed: true, retryCount: 1 }));
+      expect(noteCalls(fake)).toHaveLength(1);
+      const noteIndex = fake.calls.findIndex((c) => c.argv.includes(FOLLOW_NOTE));
+      const lastPasteIndex = fake.calls.map((c) => c.argv[1]).lastIndexOf('paste-buffer');
+      const escapeIndex = fake.calls.findIndex((c) => c.argv.includes('Escape'));
+      expect(escapeIndex).toBeLessThan(lastPasteIndex);
+      expect(noteIndex).toBeGreaterThan(lastPasteIndex);
+      expect(fake.calls[noteIndex + 1].argv).toEqual(ENTER_ARGV);
+    });
+
+    it('writes the note once when the submit keys fail and the retry succeeds', async () => {
+      const { fake, svc } = makeService();
+      enqueueConfirmedPaste(fake);
+      fake.enqueueResponse({ type: 'success' }); // note
+      fake.enqueueResponse({ type: 'failure', stderr: 'transient' }); // Enter
+      fake.enqueueResponse({ type: 'success' }); // Enter retry
+
+      const result = await svc.deliver(target, 'hello', NOTE_OPTS);
+
+      expect(result.confirmed).toBe(true);
+      expect(noteCalls(fake)).toHaveLength(1);
+      expect(fake.calls.filter((c) => c.argv.includes('Enter'))).toHaveLength(2);
+    });
+
+    it('still sends the submit keys when the note write fails', async () => {
+      const { fake, svc } = makeService();
+      enqueueConfirmedPaste(fake);
+      fake.enqueueResponse({ type: 'failure', stderr: 'note failed' }); // note
+      fake.enqueueResponse({ type: 'success' }); // Enter
+
+      const result = await svc.deliver(target, 'hello', NOTE_OPTS);
+
+      expect(result.confirmed).toBe(true);
+      expect(noteCalls(fake)).toHaveLength(1);
+      expect(fake.calls.at(-1)!.argv).toEqual(ENTER_ARGV);
+    });
+
+    it('does not type the note when the paste is never confirmed', async () => {
+      const { fake, svc } = makeService();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        enqueuePaste(fake, { type: 'success', stdout: 'nope' });
+        if (attempt < 1) fake.enqueueResponse({ type: 'success' }); // Escape
+      }
+
+      const result = await svc.deliver(target, 'hello', {
+        ...NOTE_OPTS,
+        confirmTimeoutMs: 0,
+        maxAttempts: 2,
+      });
+
+      expect(result.confirmed).toBe(false);
+      expect(noteCalls(fake)).toHaveLength(0);
+      expect(fake.calls.at(-1)!.argv).toEqual(ENTER_ARGV);
+    });
+
+    it.each<[string, string, Omit<DeliveryOptions, 'agentId'>]>([
+      ['submitKeys is empty', 'hello', { submitKeys: [], followNote: true }],
+      ['bracketed is false', 'hello', { bracketed: false, followNote: true }],
+      ['followNote is false', 'hello', { followNote: false }],
+      ['followNote is unset', 'hello', {}],
+      ['the text is a provider command', '/compact', { followNote: true }],
+      ['the text is a shell command', '!git status', { followNote: true }],
+      ['the command follows spaces', '   /compact', { followNote: true }],
+      ['the command follows a newline', '\n\t!git status', { followNote: true }],
+    ])('does not type the note when %s', async (_label, text, options) => {
+      const { fake, svc } = makeService();
+
+      await svc.deliver(target, text, {
+        agentId: 'a1',
+        confirm: false,
+        postPasteDelayMs: 0,
+        ...options,
+      });
+      await svc.deliverImmediate(target, text, { confirm: false, postPasteDelayMs: 0, ...options });
+
+      expect(fake.calls.filter((c) => c.argv[1] === 'paste-buffer')).toHaveLength(2);
+      expect(noteCalls(fake)).toHaveLength(0);
+    });
+
+    it('types the note for a message that only mentions a command', async () => {
+      const { fake, svc } = makeService();
+
+      await svc.deliverImmediate(target, 'please run /compact', {
+        confirm: false,
+        postPasteDelayMs: 0,
+        followNote: true,
+      });
+
+      expect(noteCalls(fake)).toHaveLength(1);
+    });
+
+    it('makes no pane writes, including the note, when the human-draft guard refuses', async () => {
+      const { fake, promptState, svc } = makeService();
+      const draft = promptState.recordPromptText(target.name);
+      promptState.transitionToAwaiting(target.name, draft.generation);
+      const snapshot = promptState.getQuietSnapshot(target.name)!;
+      promptState.recordExecutedInput(target.name);
+
+      const result = await svc.deliverGuarded(
+        target,
+        'hello',
+        { ...NOTE_OPTS, confirm: false },
+        snapshot,
+      );
+
+      expect(result).toEqual({ deferred: 'human_draft' });
+      expect(fake.calls.map((c) => c.argv[1])).toEqual(['load-buffer', 'delete-buffer']);
+    });
+
+    it('keeps the note free of paste-confirmation and submit triggers', () => {
+      expect(FOLLOW_NOTE).not.toMatch(/pasted/i);
+      expect(FOLLOW_NOTE).not.toMatch(/[\r\n]/);
+      expect(FOLLOW_NOTE).not.toContain('[MsgId:');
+    });
+
+    describe('settings gate', () => {
+      it('deliver does not type the note when the switch is off', async () => {
+        const { fake, svc } = makeService(false);
+
+        const result = await svc.deliver(target, 'hello', { ...NOTE_OPTS, confirm: false });
+
+        expect(result.confirmed).toBe(true);
+        expect(noteCalls(fake)).toHaveLength(0);
+        expect(fake.calls.map((c) => c.argv[1])).toEqual([
+          'load-buffer',
+          'paste-buffer',
+          'delete-buffer',
+          'send-keys',
+        ]);
+      });
+
+      it('deliverImmediate does not type the note when the switch is off', async () => {
+        const { fake, svc } = makeService(false);
+
+        await svc.deliverImmediate(target, 'hello', {
+          confirm: false,
+          postPasteDelayMs: 0,
+          followNote: true,
+        });
+
+        expect(noteCalls(fake)).toHaveLength(0);
+        expect(fake.calls.map((c) => c.argv[1])).toEqual([
+          'load-buffer',
+          'paste-buffer',
+          'delete-buffer',
+          'send-keys',
+        ]);
+      });
+
+      it('deliverGuarded does not type the note when the switch is off', async () => {
+        const { fake, promptState, svc } = makeService(false);
+        const draft = promptState.recordPromptText(target.name);
+        promptState.transitionToAwaiting(target.name, draft.generation);
+        const snapshot = promptState.getQuietSnapshot(target.name)!;
+
+        const result = await svc.deliverGuarded(
+          target,
+          'hello',
+          { ...NOTE_OPTS, confirm: false },
+          snapshot,
+        );
+
+        expect(result).toEqual(expect.objectContaining({ confirmed: true }));
+        expect(noteCalls(fake)).toHaveLength(0);
+        expect(fake.calls.map((c) => c.argv[1])).toEqual([
+          'load-buffer',
+          'paste-buffer',
+          'delete-buffer',
+          'send-keys',
+        ]);
+      });
     });
   });
 

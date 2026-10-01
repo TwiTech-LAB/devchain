@@ -24,11 +24,9 @@ describe('PricingService', () => {
 
     it('should be case-insensitive', () => {
       // Find any model that exists in the data
-      const sonnet = service.getPricing('claude-3-5-sonnet-20241022');
-      if (sonnet) {
-        const upper = service.getPricing('CLAUDE-3-5-SONNET-20241022');
-        expect(upper).toEqual(sonnet);
-      }
+      const sonnet = service.getPricing('claude-sonnet-4-5');
+      expect(sonnet).not.toBeNull();
+      expect(service.getPricing('CLAUDE-SONNET-4-5')).toEqual(sonnet);
     });
 
     it('should return pricing entry with required fields for known model', () => {
@@ -38,6 +36,7 @@ describe('PricingService', () => {
         'claude-3-5-haiku-20241022',
         'claude-3-opus-20240229',
         'claude-sonnet-4-20250514',
+        'claude-sonnet-4-5',
       ];
 
       let found: ModelPricing | null = null;
@@ -53,6 +52,15 @@ describe('PricingService', () => {
         expect(typeof found.output_cost_per_token).toBe('number');
       }
     });
+
+    // LiteLLM drops retired direct-API models; pricing:update keeps them so old
+    // transcripts still get a cost.
+    it.each(['claude-sonnet-4-20250514', 'claude-opus-4-1', 'gpt-5.1-codex-max', 'gpt-5.2-codex'])(
+      'keeps pricing for retired model %s',
+      (model) => {
+        expect(service.getPricing(model)).not.toBeNull();
+      },
+    );
   });
 
   describe('calculateMessageCost', () => {
@@ -280,6 +288,7 @@ describe('PricingService', () => {
         'claude-3-5-sonnet-20241022',
         'claude-3-5-haiku-20241022',
         'claude-sonnet-4-20250514',
+        'claude-sonnet-4-5',
       ];
 
       for (const name of candidates) {
@@ -290,6 +299,7 @@ describe('PricingService', () => {
         expect(contextWindow).toBe(pricing.max_input_tokens);
         return;
       }
+      throw new Error('No candidate model has max_input_tokens in pricing.json');
     });
 
     it.each([

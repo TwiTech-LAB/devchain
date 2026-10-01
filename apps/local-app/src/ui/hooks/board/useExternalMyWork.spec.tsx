@@ -5,7 +5,7 @@ import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import { useExternalMyWork } from './useExternalMyWork';
 
 // Layer: hook unit. The fetch factory is mocked because this spec owns the URL,
-// query-key, and error-projection contract; the worktree-aware fetch has its own suite.
+// query-key, and error-projection contract.
 const fetchMock = jest.fn();
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({

@@ -4,6 +4,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'node:path';
 import { EventLogService } from '../events/services/event-log.service';
 import type { EventsService } from '../events/services/events.service';
+import type { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
 import type { EventsStreamService } from '../events/services/events-stream.service';
 import { CommittedEventStore } from '../events/services/committed-event.store';
 import { DurableEventDispatcherService } from '../events/services/durable-event-dispatcher.service';
@@ -190,7 +191,9 @@ describe('Epic-time team batch convergence', () => {
     const events = {
       registerDurableSubscriber: registry.register.bind(registry),
     } as unknown as EventsService;
-    return new AgentTimeAccountingService(store, events);
+    return new AgentTimeAccountingService(store, events, {
+      listRemoteOwnedProjectIds: () => [],
+    } as unknown as ProjectWriteAdmissionService);
   }
 
   async function startAccounting(): Promise<void> {

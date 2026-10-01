@@ -73,17 +73,19 @@ export function pruneChunkMap(
   return changed;
 }
 
+export interface ChunkRendererProps {
+  sessionId?: string | null;
+  chunk: SerializedChunk;
+  isLive: boolean;
+  isAiGroupExpanded?: boolean;
+  onAiGroupToggle?: (chunkId: string) => void;
+}
+
 interface PagedSessionMessageListProps {
   sessionId: string;
   isLive: boolean;
   metrics?: UnifiedMetrics;
-  ChunkRenderer: React.ComponentType<{
-    sessionId?: string | null;
-    chunk: SerializedChunk;
-    isLive: boolean;
-    isAiGroupExpanded?: boolean;
-    onAiGroupToggle?: (chunkId: string) => void;
-  }>;
+  ChunkRenderer: React.ComponentType<ChunkRendererProps>;
 }
 
 export const PagedSessionMessageList = memo(function PagedSessionMessageList({
@@ -202,7 +204,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
             viewport.first + MAX_CANONICAL_VISIBLE_CHUNKS - 1,
           );
         }
-        const { pages, ...nextIndex } = await fetchTranscriptIndex(sessionId, '', apiFetch, window);
+        const { pages, ...nextIndex } = await fetchTranscriptIndex(sessionId, apiFetch, window);
         if (isStale()) throw new DOMException('Transcript request cancelled', 'AbortError');
         if (!pages) throw new Error('Combined transcript response is missing pages');
         const chunks = new Map<string, SerializedChunk>();
@@ -315,7 +317,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     queries: batchKeys.map((batch) => ({
       queryKey: transcriptQueryKeys.chunkPage(sessionId, batch.cursor ?? null, batch.size),
       queryFn: () =>
-        fetchTranscriptChunks(sessionId, batch.cursor, batch.size, undefined, '', apiFetch),
+        fetchTranscriptChunks(sessionId, batch.cursor, batch.size, undefined, apiFetch),
       enabled: !!batch.cursor && recoverySnapshot === null,
       staleTime: 30_000,
       gcTime: CHUNK_GC_TIME,

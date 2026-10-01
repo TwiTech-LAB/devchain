@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SessionsModule } from './sessions.module';
 import { SessionLifecycleFacade } from './services/session-lifecycle-facade.service';
+import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 /**
  * Narrow facade module exposing session lifecycle (launch/restart/restore/
@@ -8,7 +9,7 @@ import { SessionLifecycleFacade } from './services/session-lifecycle-facade.serv
  * (e.g. CloudTunnelModule / mobile chat).
  */
 @Module({
-  imports: [SessionsModule],
+  imports: [SessionsModule, ProjectWriteAdmissionModule],
   providers: [SessionLifecycleFacade],
   exports: [SessionLifecycleFacade],
 })

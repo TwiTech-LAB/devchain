@@ -4,6 +4,7 @@ import { Button } from '@/ui/components/ui/button';
 import { useToast } from '@/ui/hooks/use-toast';
 import { triggerSync, type SkillSyncError, type SkillSyncResult } from '@/ui/lib/skills';
 import { cn } from '@/ui/lib/utils';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export interface SyncButtonProps {
   sourceName?: string;
@@ -31,11 +32,12 @@ function describeSyncErrors(errors: SkillSyncError[]): string {
 }
 
 export function SyncButton({ sourceName, className, onSynced }: SyncButtonProps) {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   const syncMutation = useMutation({
-    mutationFn: () => triggerSync(sourceName),
+    mutationFn: () => triggerSync(fetchFn, sourceName),
     onSuccess: async (result) => {
       if (result.status === 'already_running') {
         toast({

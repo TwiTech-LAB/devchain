@@ -2,7 +2,7 @@ import { EpicTooltipWrapper } from '@/ui/components/shared/EpicTooltipWrapper';
 import { EpicRelationTotalBadge } from '@/ui/components/board/EpicRelationBadges';
 import { EpicTimeBadge } from '@/ui/components/board/EpicTimeBadge';
 import { cn } from '@/ui/lib/utils';
-import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
+import type { BoardCardDragBindings } from '@/ui/hooks/useBoardCardDrag';
 import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
 import type { Epic, Status } from './types';
 
@@ -17,11 +17,8 @@ export interface CollapsedColumnProps {
   relationCounts?: ReadonlyMap<string, EpicRelationCounts>;
   onExpand: () => void;
   onAddEpic: (statusId: string) => void;
-  onDragOver: () => void;
-  onDrop: () => void;
-  isActiveDrop: boolean;
-  onDragStartEpic: (epic: Epic) => void;
-  onDragEndEpic: () => void;
+  draggedEpic: Epic | null;
+  cardDrag?: BoardCardDragBindings;
   getAgentName: (agentId: string | null) => string | null;
   onEpicEdit: (epic: Epic) => void;
   onEpicDelete: (epic: Epic) => void;
@@ -40,11 +37,8 @@ export function CollapsedColumn({
   relationCounts,
   onExpand,
   onAddEpic,
-  onDragOver,
-  onDrop,
-  isActiveDrop,
-  onDragStartEpic,
-  onDragEndEpic,
+  draggedEpic,
+  cardDrag,
   getAgentName,
   onEpicEdit,
   onEpicDelete,
@@ -75,14 +69,10 @@ export function CollapsedColumn({
         'hover:bg-muted/40 transition-colors cursor-pointer',
         'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
         'snap-start w-[160px] flex-shrink-0',
-        isActiveDrop && 'border-primary/60 bg-primary/5',
+        'data-[board-drop-active]:border-primary/60 data-[board-drop-active]:bg-primary/5',
       )}
       style={{ height: '100%' }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        onDragOver();
-      }}
-      onDrop={onDrop}
+      data-board-drop-status-id={status.id}
       aria-label={`${status.label} column (${count} epic${count !== 1 ? 's' : ''}). Press Enter or Space to expand, + to add epic.`}
       tabIndex={0}
     >
@@ -104,8 +94,7 @@ export function CollapsedColumn({
       {epics.length > 0 && (
         <div className="w-full flex-1 space-y-1 text-left overflow-y-auto min-h-0">
           {epics.map((epic) => {
-            const mergedFromWorktree = getMergedWorktree(epic.tags ?? []);
-            const visibleTags = (epic.tags ?? []).filter((tag) => !isMergedTag(tag));
+            const visibleTags = epic.tags ?? [];
             const timeMinutes = epic.parentId === null ? timeTotals?.get(epic.id) : undefined;
             const hasTimeBadge = timeMinutes !== undefined && timeMinutes > 0;
             const relations = relationCounts?.get(epic.id);
@@ -113,10 +102,13 @@ export function CollapsedColumn({
             return (
               <div
                 key={epic.id}
-                className="truncate rounded border bg-background px-2 py-1 text-xs text-foreground"
-                draggable
-                onDragStart={() => onDragStartEpic(epic)}
-                onDragEnd={onDragEndEpic}
+                className={cn(
+                  'select-none truncate rounded border bg-background px-2 py-1 text-xs text-foreground',
+                  draggedEpic !== null && 'pointer-events-none',
+                )}
+                data-board-card-drag-source
+                onPointerDown={(event) => cardDrag?.pointerDown(epic, event)}
+                onDragStartCapture={(event) => event.preventDefault()}
               >
                 {/* The time and relation badges stay on the title line so a
                     badged row without tags or sub-epics keeps the compact
@@ -172,11 +164,6 @@ export function CollapsedColumn({
                 </div>
                 {((subEpicCounts?.[epic.id] ?? 0) > 0 || (epic.tags && epic.tags.length > 0)) && (
                   <div className="mt-1 flex flex-wrap gap-1">
-                    {mergedFromWorktree && (
-                      <span className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700">
-                        Merged from {mergedFromWorktree}
-                      </span>
-                    )}
                     {visibleTags.slice(0, 2).map((tag) => (
                       <span
                         key={`${epic.id}-${tag}`}

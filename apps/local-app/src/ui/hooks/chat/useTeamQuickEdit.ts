@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { chatQueryKeys } from '@/ui/hooks/useChatQueries';
 import { teamsQueryKeys, updateTeam } from '@/ui/lib/teams';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /**
  * Quick-edit-team domain flow, extracted from ChatPage. Owns the modal target,
@@ -37,6 +38,7 @@ export function useTeamQuickEdit({
 }: {
   projectId: string | null;
 }): UseTeamQuickEditResult {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast, showError } = useToastHelpers();
 
@@ -61,11 +63,15 @@ export function useTeamQuickEdit({
       maxConcurrentTasks: number;
       allowTeamLeadCreateAgents: boolean;
     }) =>
-      updateTeam(payload.teamId, {
-        maxMembers: payload.maxMembers,
-        maxConcurrentTasks: payload.maxConcurrentTasks,
-        allowTeamLeadCreateAgents: payload.allowTeamLeadCreateAgents,
-      }),
+      updateTeam(
+        payload.teamId,
+        {
+          maxMembers: payload.maxMembers,
+          maxConcurrentTasks: payload.maxConcurrentTasks,
+          allowTeamLeadCreateAgents: payload.allowTeamLeadCreateAgents,
+        },
+        fetchFn,
+      ),
     onSuccess: () => {
       const teamName = quickEditTeam?.teamName ?? '';
       const teamId = quickEditTeam?.teamId;

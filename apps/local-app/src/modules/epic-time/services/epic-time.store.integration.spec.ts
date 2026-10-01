@@ -1483,6 +1483,185 @@ describe('EpicTimeStore', () => {
     ]);
   });
 
+  describe('remote-owned projects and handoff settlement', () => {
+    const TRACKING = '2026-01-01T00:00:00.000Z';
+    const NOW = new Date('2026-01-01T00:01:00.000Z');
+
+    function insertWatermark(lastActivityAt: string): void {
+      sqlite
+        .prepare(
+          `INSERT INTO epic_time_session_watermarks
+             (session_id, project_id, last_activity_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(SESSION_ID, PROJECT_ID, lastActivityAt, lastActivityAt, lastActivityAt);
+    }
+
+    function watermarks(): Array<Record<string, unknown>> {
+      return sqlite
+        .prepare(`SELECT session_id, last_activity_at FROM epic_time_session_watermarks`)
+        .all() as Array<Record<string, unknown>>;
+    }
+
+    /** A stopped member session whose open team lane waits behind a pending delivery. */
+    function seedPendingTeamLane(): void {
+      seedValidTeam();
+      updateSession({
+        lastActivityAt: '2026-01-01T00:00:05.000Z',
+        status: 'stopped',
+        activityState: 'idle',
+      });
+      insertWatermark('2026-01-01T00:00:05.000Z');
+      insertBatch('batch-1', '2026-01-01T00:00:01.000Z', null);
+      insertTeamSegment({
+        id: 'lane-1',
+        batchId: 'batch-1',
+        agentId: AGENT_ID,
+        agentName: 'Coder',
+        sessionId: SESSION_ID,
+        startedAt: '2026-01-01T00:00:01.000Z',
+        lastActivityAt: '2026-01-01T00:00:05.000Z',
+        durationMs: 4_000,
+      });
+      insertDelivery('event-pending', 'pending', '2026-01-01T00:00:06.000Z');
+    }
+
+    const settleInput = (force: boolean) => ({
+      projectId: PROJECT_ID,
+      trackingStartedAt: TRACKING,
+      idleTimeoutMs: 30_000,
+      deliveryKey: DELIVERY_KEY,
+      force,
+      now: NOW,
+    });
+
+    it('leaves sessions and open segments of an excluded project out of the sweep', async () => {
+      expect(store.listReconciliationSessionIds(TRACKING)).toEqual([SESSION_ID]);
+      expect(store.listReconciliationSessionIds(TRACKING, [PROJECT_ID])).toEqual([]);
+
+      insertWatermark('2026-01-01T00:00:05.000Z');
+      insertSegmentRow({
+        id: 'open-1',
+        startedAt: '2026-01-01T00:00:01.000Z',
+        lastActivityAt: '2026-01-01T00:00:05.000Z',
+        closedAt: null,
+      });
+      expect(store.listReconciliationSessionIds(TRACKING)).toEqual(['session-open-1']);
+      expect(store.listReconciliationSessionIds(TRACKING, [PROJECT_ID])).toEqual([]);
+    });
+
+    it('never creates a segment or watermark for an excluded project', async () => {
+      const result = await store.reconcileSession(SESSION_ID, TRACKING, 30_000, NOW, {
+        excludedProjectIds: [PROJECT_ID],
+      });
+
+      expect(result.action).toBe('noop');
+      expect(segments()).toEqual([]);
+      expect(watermarks()).toEqual([]);
+    });
+
+    it('never seals, finalizes or cancels a batch of an excluded project', async () => {
+      seedValidTeam();
+      insertBatch('batch-open', '2026-01-01T00:00:01.000Z', null);
+      insertBatch('batch-sealed', '2026-01-01T00:00:02.000Z', '2026-01-01T00:00:03.000Z');
+      sqlite.prepare(`DELETE FROM team_members`).run();
+
+      const excluded = await store.processTeamBatches(DELIVERY_KEY, 30_000, NOW, {
+        excludedProjectIds: [PROJECT_ID],
+      });
+
+      expect(excluded).toEqual({ sealedBatches: 0, finalizedBatches: 0, cancelledBatches: 0 });
+      expect(batches().map((batch) => [batch.id, batch.sealed_at])).toEqual([
+        ['batch-open', null],
+        ['batch-sealed', '2026-01-01T00:00:03.000Z'],
+      ]);
+      await store.processTeamBatches(DELIVERY_KEY, 30_000, NOW);
+      expect(batches()).toEqual([]);
+    });
+
+    it('keeps the settled rows of an excluded agent through a termination reset', () => {
+      insertBufferedSegment('mirrored', '2026-01-01T00:00:01.000Z', '2026-01-01T00:00:03.000Z');
+
+      store.runTerminationResetSync({
+        sessionId: SESSION_ID,
+        agentId: AGENT_ID,
+        trackingStartedAt: TRACKING,
+        idleTimeoutMs: 30_000,
+        deliveryKey: DELIVERY_KEY,
+        now: NOW,
+        excludedProjectIds: [PROJECT_ID],
+      });
+
+      expect(segments().map((segment) => segment.id)).toEqual(['mirrored']);
+    });
+
+    it('settles a project: closes open segments and waits on a pending barrier', async () => {
+      seedPendingTeamLane();
+
+      const pass = await store.settleProjectTime(settleInput(false));
+
+      expect(pass).toEqual({
+        closedSegments: 1,
+        finalizedBatchIds: [],
+        cancelledBatchIds: [],
+        openSegments: 0,
+        openBatches: 1,
+      });
+      expect(batches()).toEqual([
+        expect.objectContaining({ id: 'batch-1', sealed_at: NOW.toISOString() }),
+      ]);
+      expect(barriers()).toEqual([
+        { team_batch_id: 'batch-1', committed_event_id: 'event-pending' },
+      ]);
+    });
+
+    it('finalizes a batch whose barrier never drains when forced', async () => {
+      seedPendingTeamLane();
+      await store.settleProjectTime(settleInput(false));
+
+      const forced = await store.settleProjectTime(settleInput(true));
+
+      expect(forced).toEqual({
+        closedSegments: 0,
+        finalizedBatchIds: ['batch-1'],
+        cancelledBatchIds: [],
+        openSegments: 0,
+        openBatches: 0,
+      });
+      expect(barriers()).toEqual([]);
+      expect(segments()).toEqual([
+        expect.objectContaining({
+          id: 'lane-1',
+          team_batch_id: null,
+          attribution_source: 'team',
+          agent_id_snapshot: LEAD_ID,
+          duration_ms: 4_000,
+        }),
+      ]);
+    });
+
+    it('cancels a forced batch whose team identity changed', async () => {
+      seedPendingTeamLane();
+      sqlite.prepare(`DELETE FROM team_members`).run();
+
+      const forced = await store.settleProjectTime(settleInput(true));
+
+      expect(forced).toMatchObject({
+        finalizedBatchIds: [],
+        cancelledBatchIds: ['batch-1'],
+        openBatches: 0,
+      });
+      expect(segments()).toEqual([
+        expect.objectContaining({
+          id: 'lane-1',
+          team_batch_id: null,
+          attribution_source: 'direct',
+          agent_id_snapshot: AGENT_ID,
+        }),
+      ]);
+    });
+  });
+
   describe('agent time buffer assignment', () => {
     function seedEligibleMatrix(): void {
       insertAgent('agent-two', 'Second Coder');

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Check, Copy, Play, Loader2 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 
@@ -109,13 +110,13 @@ export function SuggestionBlock({
 
   return (
     <div
-      className={cn('rounded-md border bg-muted/30 overflow-hidden', className)}
+      className={cn('rounded-md border bg-background overflow-hidden', className)}
       data-testid="suggestion-block"
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-blue-50 dark:bg-blue-950/30 border-b">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-background border-b">
         <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-xs bg-blue-100 text-blue-700">
+          <Badge variant="outline" className={cn('text-xs', TONE_CLASSES.info)}>
             Suggestion
           </Badge>
           {filePath && lineInfo && (
@@ -133,7 +134,7 @@ export function SuggestionBlock({
             title="Copy suggestion"
           >
             {copied ? (
-              <Check className="h-3.5 w-3.5 text-green-600" />
+              <Check className="h-3.5 w-3.5 text-status-ok" />
             ) : (
               <Copy className="h-3.5 w-3.5" />
             )}
@@ -145,22 +146,22 @@ export function SuggestionBlock({
       <div className="text-sm font-mono">
         {/* Original code (if provided) */}
         {originalCode && (
-          <div className="bg-red-50 dark:bg-red-950/30 border-l-4 border-red-300 dark:border-red-700">
+          <div className="bg-destructive/10 border-l-4 border-destructive/40">
             {originalCode.split('\n').map((line, i) => (
               <div key={`old-${i}`} className="px-3 py-0.5 flex">
-                <span className="text-red-500 dark:text-red-400 mr-2 select-none">-</span>
-                <span className="text-red-700 dark:text-red-300">{line || ' '}</span>
+                <span className="text-destructive mr-2 select-none">-</span>
+                <span className="text-foreground">{line || ' '}</span>
               </div>
             ))}
           </div>
         )}
 
         {/* Suggested code */}
-        <div className="bg-green-50 dark:bg-green-950/30 border-l-4 border-green-300 dark:border-green-700">
+        <div className="bg-status-ok/10 border-l-4 border-status-ok/40">
           {suggestedCode.split('\n').map((line, i) => (
             <div key={`new-${i}`} className="px-3 py-0.5 flex">
-              <span className="text-green-500 dark:text-green-400 mr-2 select-none">+</span>
-              <span className="text-green-700 dark:text-green-300">{line || ' '}</span>
+              <span className="text-status-ok mr-2 select-none">+</span>
+              <span className="text-foreground">{line || ' '}</span>
             </div>
           ))}
         </div>
@@ -193,8 +194,8 @@ export function SuggestionBlock({
 
       {/* Applied indicator */}
       {isApplied && (
-        <div className="px-3 py-2 bg-green-50 dark:bg-green-950/30 border-t">
-          <span className="text-xs text-green-700 dark:text-green-300 flex items-center gap-1">
+        <div className="px-3 py-2 bg-status-ok/10 border-t">
+          <span className="text-xs text-status-ok flex items-center gap-1">
             <Check className="h-3 w-3" />
             Suggestion applied
           </span>

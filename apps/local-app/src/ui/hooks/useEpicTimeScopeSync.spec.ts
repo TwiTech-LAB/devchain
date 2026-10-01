@@ -1,8 +1,30 @@
-import { QueryClient } from '@tanstack/react-query';
+import { renderHook, act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import React from 'react';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { dispatchRealtimeEnvelope } from '@/ui/lib/realtime-invalidation-registry';
 import { epicTimeQueryKeys } from '@/ui/lib/epic-time';
-import { createEpicTimeScopeInvalidationRegistry } from './useEpicTimeScopeSync';
+import { useAppSocket } from './useAppSocket';
+import { useHomeSocket } from './useHomeSocket';
+import {
+  createEpicTimeScopeInvalidationRegistry,
+  useEpicTimeScopeSync,
+} from './useEpicTimeScopeSync';
+
+jest.mock('./useAppSocket', () => ({ useAppSocket: jest.fn() }));
+jest.mock('./useHomeSocket', () => ({ useHomeSocket: jest.fn() }));
+
+const useAppSocketMock = jest.mocked(useAppSocket);
+const useHomeSocketMock = jest.mocked(useHomeSocket);
+
+function makeWrapper() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return {
+    queryClient,
+    wrapper: ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: queryClient }, children),
+  };
+}
 
 describe('useEpicTimeScopeSync registry', () => {
   const workspaceId = '11111111-1111-4111-8111-111111111111';
@@ -55,7 +77,7 @@ describe('useEpicTimeScopeSync registry', () => {
   it('refreshes every runtime scope variant through the family-prefix invalidation', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const epicId = 'epic-1';
-    for (const scope of ['main', 'isolated'] as const) {
+    for (const scope of ['active', 'disabled'] as const) {
       queryClient.setQueryData(epicTimeQueryKeys.detail(epicId, 'UTC', scope), 0);
       queryClient.setQueryData(epicTimeQueryKeys.batch([epicId], 'UTC', scope), new Map());
       queryClient.setQueryData(epicTimeQueryKeys.buffers('project-1', scope), {
@@ -76,7 +98,7 @@ describe('useEpicTimeScopeSync registry', () => {
     );
     await Promise.resolve();
 
-    for (const scope of ['main', 'isolated'] as const) {
+    for (const scope of ['active', 'disabled'] as const) {
       expect(
         queryClient.getQueryState(epicTimeQueryKeys.detail(epicId, 'UTC', scope))?.isInvalidated,
       ).toBe(true);
@@ -88,5 +110,44 @@ describe('useEpicTimeScopeSync registry', () => {
       ).toBe(true);
     }
     queryClient.clear();
+  });
+});
+
+describe('useEpicTimeScopeSync socket source', () => {
+  const workspaceId = '11111111-1111-4111-8111-111111111111';
+
+  beforeEach(() => {
+    useAppSocketMock.mockClear();
+    useHomeSocketMock.mockClear();
+  });
+
+  it('subscribes on the home socket, not the project socket', () => {
+    const { wrapper } = makeWrapper();
+
+    renderHook(() => useEpicTimeScopeSync(workspaceId), { wrapper });
+
+    expect(useHomeSocketMock).toHaveBeenCalled();
+    expect(useAppSocketMock).not.toHaveBeenCalled();
+  });
+
+  it('invalidates detail, batch and buffer roots when the home socket delivers the scope hint', () => {
+    const { wrapper, queryClient } = makeWrapper();
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
+
+    renderHook(() => useEpicTimeScopeSync(workspaceId), { wrapper });
+
+    const handlers = useHomeSocketMock.mock.calls[0][0];
+    const envelope: WsEnvelope = {
+      topic: `workspace/${workspaceId}/epic-time-scope`,
+      type: 'invalidated',
+      payload: { workspaceId },
+      ts: '2026-08-30T00:00:00.000Z',
+    };
+
+    act(() => handlers.message?.(envelope));
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: epicTimeQueryKeys.detailRoot() });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: epicTimeQueryKeys.batchRoot() });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: epicTimeQueryKeys.bufferRoot() });
   });
 });

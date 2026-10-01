@@ -16,8 +16,10 @@
           var cls = document.documentElement.classList;
           cls.remove('dark');
           cls.remove('theme-ocean');
-          if (t === 'dark') cls.add('dark');
-          else if (t === 'ocean') cls.add('theme-ocean');
+          // No stored choice means Dark (DEFAULT_THEME in ThemeSelect.tsx);
+          // the deprecated 'light' value migrates to Ocean.
+          if (t === 'ocean' || t === 'light') cls.add('theme-ocean');
+          else cls.add('dark');
         } catch (e) { /* no-op */ }
       })();
     </script>

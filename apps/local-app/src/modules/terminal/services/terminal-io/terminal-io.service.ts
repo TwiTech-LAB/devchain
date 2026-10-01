@@ -28,6 +28,7 @@ import {
   type HumanPromptQuietSnapshot,
   sanitizeTmuxSessionName,
 } from '../human-prompt-state.service';
+import { SettingsService } from '../../../settings/services/settings.service';
 
 const logger = createLogger('TerminalIOService');
 
@@ -73,6 +74,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     private readonly executor: ProcessExecutor,
     private readonly eventsService: EventsService,
     private readonly humanPromptState: HumanPromptStateService,
+    private readonly settingsService: SettingsService,
   ) {
     this.gap = new InMemorySendGap();
   }
@@ -432,7 +434,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     options: DeliveryOptions,
   ): Promise<DeliveryResult> {
     return this.runPaneOperation(target, () =>
-      deliveryMod.deliver(this.executor, this.gap, target, text, options),
+      deliveryMod.deliver(this.executor, this.gap, target, text, this.applyFollowNoteGate(options)),
     );
   }
 
@@ -442,7 +444,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     options: Omit<DeliveryOptions, 'agentId'>,
   ): Promise<DeliveryResult> {
     return this.runPaneOperation(target, () =>
-      deliveryMod.deliverImmediate(this.executor, target, text, options),
+      deliveryMod.deliverImmediate(this.executor, target, text, this.applyFollowNoteGate(options)),
     );
   }
 
@@ -460,16 +462,32 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     mutationFence?: GuardedDeliveryMutationFence,
   ): Promise<GuardedDeliveryResult> {
     return this.runPaneOperation<GuardedDeliveryResult>(target, () =>
-      deliveryMod.deliverGuarded(this.executor, this.gap, target, text, options, () => {
-        // Cancellation, prompt release, and claim mutation form one synchronous commit boundary.
-        if (mutationFence && !mutationFence.canStartMutation()) return false;
-        if (quietSnapshot && !this.humanPromptState.releaseIfQuiet(target.name, quietSnapshot)) {
-          return false;
-        }
-        mutationFence?.markMutationStarted();
-        return true;
-      }),
+      deliveryMod.deliverGuarded(
+        this.executor,
+        this.gap,
+        target,
+        text,
+        this.applyFollowNoteGate(options),
+        () => {
+          // Cancellation, prompt release, and claim mutation form one synchronous commit boundary.
+          if (mutationFence && !mutationFence.canStartMutation()) return false;
+          if (quietSnapshot && !this.humanPromptState.releaseIfQuiet(target.name, quietSnapshot)) {
+            return false;
+          }
+          mutationFence?.markMutationStarted();
+          return true;
+        },
+      ),
     );
+  }
+
+  // The messaging.followNote setting is a suppression gate: it can only remove
+  // a note the caller requested, never add one to a delivery that has none.
+  private applyFollowNoteGate<T extends { followNote?: boolean }>(options: T): T {
+    if (options.followNote === true && !this.settingsService.getFollowNoteEnabled()) {
+      return { ...options, followNote: false };
+    }
+    return options;
   }
 
   private runPaneOperation<T>(target: SessionTarget, operation: () => Promise<T> | T): Promise<T> {

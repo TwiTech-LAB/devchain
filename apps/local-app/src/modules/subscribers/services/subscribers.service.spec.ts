@@ -7,6 +7,8 @@ import type {
   CreateSubscriber,
   UpdateSubscriber,
 } from '../../storage/models/domain.models';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('SubscribersService', () => {
   let service: SubscribersService;
@@ -55,6 +57,7 @@ describe('SubscribersService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         SubscribersService,
         {
           provide: STORAGE_SERVICE,

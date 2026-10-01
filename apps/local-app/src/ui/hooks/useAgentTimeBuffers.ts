@@ -1,7 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import {
   epicTimeQueryKeys,
   MIN_VISIBLE_AGENT_TIME_BUFFER_MINUTES,
@@ -61,9 +60,10 @@ function recordsEqual(
 }
 
 /**
- * One project-wide read of claimable agent time, admitted only in the main
- * runtime (resolved runtime, empty apiBase, selected project) and polled on a
- * five-second cadence there. The raw JSON snapshot stays in the query cache
+ * One project-wide read of claimable agent time, admitted only for a selected
+ * project and polled on a five-second cadence there. A call without a project
+ * keys under the disabled cache scope and exposes no active-scope data. The
+ * raw JSON snapshot stays in the query cache
  * so the assignment dialog can freeze exact tokens; the derived minute map
  * retains its previous reference across unchanged polls so the memoized
  * ChatSidebar bundles — and the AgentRow subtrees under them — stay idle.
@@ -74,9 +74,8 @@ export function useAgentTimeBuffers(projectId: string | null): {
   minutesByAgentId: Record<string, number>;
 } {
   const apiFetch = useFetchFactory();
-  const { runtimeResolved, apiBase } = useOptionalWorktreeTab();
-  const admitted = projectId !== null && runtimeResolved && apiBase === '';
-  const scope = admitted ? 'main' : 'isolated';
+  const admitted = projectId !== null;
+  const scope = admitted ? 'active' : 'disabled';
   const cacheProjectId = projectId ?? '';
 
   const query = useQuery({

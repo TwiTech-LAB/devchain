@@ -15,6 +15,7 @@ export type { EffortCapability } from './effort.capability';
 export type { HookCapability, HookEnvContext } from './hook.capability';
 export type {
   ProjectProvisioningCapability,
+  ProjectProvisioningContext,
   ProvisioningResult,
   ProvisioningWarningItem,
 } from './project-provisioning.capability';

@@ -1,3 +1,5 @@
+import { CopilotAdapter } from '../../../providers/adapters/copilot.adapter';
+import { AntigravityAdapter } from '../../../providers/adapters/antigravity.adapter';
 import { resolve, type LaunchConfigInput } from './provider-launch-config.service';
 import { ClaudeAdapter } from '../../../providers/adapters/claude.adapter';
 import { CodexAdapter } from '../../../providers/adapters/codex.adapter';
@@ -42,6 +44,34 @@ describe('ProviderLaunchConfig.resolve', () => {
   });
 
   describe('DevChain-owned launch overlays', () => {
+    it.each([
+      [new ClaudeAdapter(), 'DISABLE_AUTOUPDATER', '1'],
+      [new CopilotAdapter(undefined as never, undefined as never), 'COPILOT_AUTO_UPDATE', 'false'],
+      [new OpencodeAdapter(), 'OPENCODE_DISABLE_AUTOUPDATE', 'true'],
+      [new AntigravityAdapter(), 'AGY_CLI_DISABLE_AUTO_UPDATE', 'true'],
+    ] as const)(
+      'enforces %s update policy in new and restore base and runtime passes',
+      (adapter, key, value) => {
+        for (const mode of ['new', 'restore'] as const) {
+          const input = makeInput({
+            adapter,
+            mode,
+            providerSessionId: 'session',
+            providerEnv: { [key]: 'provider-conflict' },
+            configEnv: { [key]: 'config-conflict' },
+          });
+          expect(resolve(input).env).toMatchObject({ [key]: value });
+          expect(resolve({ ...input, runtimeEnv: { RUNTIME: 'present' } }).env).toMatchObject({
+            [key]: value,
+            RUNTIME: 'present',
+          });
+          expect(resolve({ ...input, runtimeEnv: { [key]: 'runtime-wins' } }).env?.[key]).toBe(
+            'runtime-wins',
+          );
+        }
+      },
+    );
+
     it('places provider options before profile options for new and restore Claude launches', () => {
       const common = {
         adapter: new ClaudeAdapter(),
@@ -89,6 +119,7 @@ describe('ProviderLaunchConfig.resolve', () => {
       expect(result.env).toEqual({
         DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json',
         KEEP: 'config',
+        DISABLE_AUTOUPDATER: '1',
       });
     });
   });

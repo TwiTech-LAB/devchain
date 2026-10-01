@@ -26,6 +26,7 @@ import {
   MobileRpcWorkspaceAccessService,
   type MobileRpcWorkspaceAuthorization,
 } from './mobile-rpc-workspace-access.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 const logger = createLogger('TunnelHandler');
 
@@ -83,6 +84,7 @@ export class TunnelHandlerService {
     private readonly terminalKeyInput: TerminalKeyInputFacade,
     private readonly activeSessions: ActiveSessionLookup,
     private readonly workspaceAccess?: MobileRpcWorkspaceAccessService,
+    private readonly admission?: ProjectWriteAdmissionService,
   ) {
     this.handlers = {
       'board.listWorkspaces': (_p, _cryptoCtx, authorization) => this.listWorkspaces(authorization),
@@ -316,14 +318,44 @@ export class TunnelHandlerService {
       (params['workspaceId'] as string | undefined) ??
       DEFAULT_PROJECT_WORKSPACE_ID;
     const result = await this.storage.listProjects({ ...params, workspaceId });
-    return this.itemsOf(result).map((project) => ({
-      id: project.id,
-      name: project.name,
-    }));
+    // Remote-owned projects are hidden by default: their mirror here is a
+    // stale copy and the phone reaches the live project on the host instance
+    // it is also connected to. With the opt-in flag the phone instead wants
+    // one merged list, so they are appended as placeholders carrying the
+    // owning remote's name and binding state — no project data is exposed.
+    const includePlaceholders = params['includeRemotePlaceholders'] === true;
+    const real: unknown[] = [];
+    const placeholders: unknown[] = [];
+    for (const project of this.itemsOf(result)) {
+      const owner = this.admission?.getRemoteOwner(project.id as string) ?? null;
+      if (!owner) {
+        real.push({ id: project.id, name: project.name, workspaceId: project.workspaceId });
+      } else if (includePlaceholders) {
+        placeholders.push({
+          id: project.id,
+          name: project.name,
+          workspaceId: project.workspaceId,
+          placeholder: true,
+          remote: { name: owner.remoteName, state: owner.state },
+        });
+      }
+    }
+    return [...real, ...placeholders];
+  }
+
+  /**
+   * Remote-owned projects answer mobile board reads with the same not-found as
+   * a missing project, so neither the project nor its mirror data is exposed.
+   */
+  private assertProjectNotRemoteOwned(projectId: unknown): void {
+    if (typeof projectId === 'string' && this.admission?.getRemoteOwner(projectId)) {
+      throw new NotFoundError('Project', projectId);
+    }
   }
 
   private async listStatuses(params: Record<string, unknown>): Promise<unknown[]> {
     const projectId = params['projectId'] as string;
+    this.assertProjectNotRemoteOwned(projectId);
     const result = await this.storage.listStatuses(projectId, params);
     const statuses = this.itemsOf(result);
 
@@ -346,6 +378,7 @@ export class TunnelHandlerService {
 
   private async listParentEpics(params: Record<string, unknown>): Promise<unknown> {
     const projectId = params['projectId'] as string;
+    this.assertProjectNotRemoteOwned(projectId);
     const type = (params['type'] as EpicListType | undefined) ?? 'active';
     const limit = (params['limit'] as number | undefined) ?? 20;
     const offset = (params['offset'] as number | undefined) ?? 0;
@@ -369,6 +402,7 @@ export class TunnelHandlerService {
 
   private async listParentEpicsByStatus(params: Record<string, unknown>): Promise<unknown> {
     const projectId = params['projectId'] as string;
+    this.assertProjectNotRemoteOwned(projectId);
     const statusId = params['statusId'] as string;
     const type = (params['type'] as EpicListType | undefined) ?? 'active';
     const limit = (params['limit'] as number | undefined) ?? 20;
@@ -464,6 +498,7 @@ export class TunnelHandlerService {
   private async listEpicsByStatus(params: Record<string, unknown>): Promise<unknown[]> {
     const statusId = params['statusId'] as string;
     const projectId = await this.resolveProjectIdForStatus(statusId, params['projectId']);
+    this.assertProjectNotRemoteOwned(projectId);
     const [result, statusesResult, agentsResult] = await Promise.all([
       this.storage.listEpicsByStatus(statusId, {
         limit: (params['limit'] as number | undefined) ?? 100,
@@ -489,6 +524,7 @@ export class TunnelHandlerService {
     if (!projectId) {
       throw new Error('Parent epic is missing projectId');
     }
+    this.assertProjectNotRemoteOwned(projectId);
 
     const [childrenResult, statusesResult, agentsResult, rawChildStatusCounts] = await Promise.all([
       this.storage.listParentChildren(parentId, { statusId, limit, offset }),
@@ -538,6 +574,7 @@ export class TunnelHandlerService {
     if (!projectId) {
       throw new Error('Epic is missing projectId');
     }
+    this.assertProjectNotRemoteOwned(projectId);
 
     const [statusesResult, agentsResult] = await Promise.all([
       this.storage.listStatuses(projectId, { limit: 1000, offset: 0 }),

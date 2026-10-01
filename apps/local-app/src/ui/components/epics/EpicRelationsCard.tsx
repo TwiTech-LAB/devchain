@@ -919,9 +919,9 @@ export function EpicRelationsCard({
           </div>
         ) : total === 0 ? (
           <div className="text-center py-4">
-            <Link2 className="h-8 w-8 mx-auto text-muted-foreground/50 mb-2" />
+            <Link2 className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
             <p className="text-sm text-muted-foreground">No relations yet.</p>
-            <p className="mt-1 text-xs text-muted-foreground/70">
+            <p className="mt-1 text-xs text-muted-foreground">
               Link an epic to group related work or mark blockers.
             </p>
           </div>

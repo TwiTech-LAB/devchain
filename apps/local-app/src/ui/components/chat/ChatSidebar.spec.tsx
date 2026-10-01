@@ -5,7 +5,6 @@ import { MemoryRouter } from 'react-router-dom';
 import { ChatSidebar } from './ChatSidebar';
 import { packChatSidebarProps, type FlatChatSidebarProps } from './ChatSidebar.test-helpers';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
-import type { WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
 
 const mockToast = jest.fn();
 
@@ -106,8 +105,6 @@ function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
     projectId: 'project-1',
     agents: [agent],
     guests: [],
-    worktreeAgentGroups: [],
-    worktreeAgentGroupsLoading: false,
     agentPresence: {},
     presenceReady: true,
     offlineAgents: [agent],
@@ -119,13 +116,8 @@ function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
     startingAll: false,
     terminatingAll: false,
     selectedAgentId: null,
-    selectedWorktreeAgent: null,
     hasSelectedProject: true,
     onSelectAgent: jest.fn(),
-    onLaunchWorktreeAgentChat: jest.fn(),
-    onLaunchWorktreeSession: jest.fn(async () => {}),
-    onRestartWorktreeSession: jest.fn(async () => {}),
-    onTerminateWorktreeSession: jest.fn(async () => {}),
     onStartAllAgents: jest.fn(),
     onTerminateAllConfirm: jest.fn(),
     onLaunchSession: jest.fn(async () => ({ id: 'session-1' })),
@@ -133,8 +125,6 @@ function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
     onTerminateConfirm: jest.fn(),
     getProviderForAgent: jest.fn(() => null),
     pendingRestartAgentIds: new Set<string>(),
-    onMarkForRestart: jest.fn(),
-    worktreeSessionActionsByAgentKey: {},
     validatedPresets: [],
     activePreset: null,
     onApplyPreset: jest.fn(),
@@ -142,8 +132,6 @@ function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
     onSwitchConfig: jest.fn(),
     fetchProviderConfigsForProfile: jest.fn(async () => []),
     updatingConfigAgentIds: {},
-    onSwitchWorktreeConfig: jest.fn(),
-    updatingWorktreeConfigKey: null,
   };
 
   return render(
@@ -1092,26 +1080,6 @@ describe('ChatSidebar human-held message badges', () => {
     projectId: 'project-1',
   } as AgentOrGuest;
 
-  const worktreeAgent: AgentOrGuest = {
-    id: 'agent-wt-1',
-    name: 'Worktree Agent',
-    profileId: 'profile-wt-1',
-    projectId: 'project-wt-1',
-  } as AgentOrGuest;
-
-  const worktreeGroup: WorktreeAgentGroup = {
-    id: 'worktree-1',
-    name: 'feature-auth',
-    status: 'running',
-    runtimeType: 'process',
-    devchainProjectId: 'project-wt-1',
-    apiBase: '/wt/feature-auth',
-    agents: [worktreeAgent],
-    agentPresence: {},
-    disabled: false,
-    error: null,
-  };
-
   beforeEach(() => {
     global.fetch = jest.fn(async () => ({
       ok: true,
@@ -1167,35 +1135,9 @@ describe('ChatSidebar human-held message badges', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
   });
-
-  it('never surfaces root-project held counts on worktree rows', async () => {
-    renderSidebar({
-      agents: [mainAgent],
-      offlineAgents: [mainAgent],
-      worktreeAgentGroups: [worktreeGroup],
-      humanHeldMessageCounts: {
-        [mainAgent.id]: 1,
-        [worktreeAgent.id]: 9,
-      },
-    });
-
-    const worktreeRow = await screen.findByRole('listitem', {
-      name: 'Open terminal for Worktree Agent in feature-auth (offline)',
-    });
-    expect(worktreeRow).not.toHaveTextContent(/waiting/i);
-    expect(within(worktreeRow).queryByText(/waiting/i)).not.toBeInTheDocument();
-
-    // The main row still shows its own compact pre-eligibility count.
-    const mainRow = screen.getByRole('listitem', {
-      name: 'Open terminal for Alpha (offline), 1 message waiting for you to finish typing',
-    });
-    expect(mainRow).toBeInTheDocument();
-    expect(mainRow.parentElement).toHaveTextContent('1');
-    expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
-  });
 });
 
-describe('ChatSidebar guest and worktree compatibility', () => {
+describe('ChatSidebar guest compatibility', () => {
   const originalFetch = global.fetch;
 
   const guestAgent: AgentOrGuest = {
@@ -1205,40 +1147,6 @@ describe('ChatSidebar guest and worktree compatibility', () => {
     projectId: 'project-1',
     type: 'guest',
   } as AgentOrGuest;
-
-  const worktreeAgent: AgentOrGuest = {
-    id: 'agent-wt-1',
-    name: 'Worktree Agent',
-    profileId: 'profile-wt-1',
-    projectId: 'project-wt-1',
-    providerConfigId: 'config-wt-1',
-    providerConfig: {
-      id: 'config-wt-1',
-      name: 'WT Config',
-      providerId: 'provider-claude',
-      providerName: 'Claude',
-    },
-  } as AgentOrGuest;
-
-  const worktreeGroup: WorktreeAgentGroup = {
-    id: 'worktree-1',
-    name: 'feature-auth',
-    status: 'running',
-    runtimeType: 'process',
-    devchainProjectId: 'project-wt-1',
-    apiBase: '/wt/feature-auth',
-    agents: [worktreeAgent],
-    agentPresence: {
-      [worktreeAgent.id]: {
-        online: true,
-        sessionId: 'session-wt-1',
-        activityState: 'busy',
-        busySince: new Date(Date.now()).toISOString(),
-      },
-    } as WorktreeAgentGroup['agentPresence'],
-    disabled: false,
-    error: null,
-  };
 
   beforeEach(() => {
     global.fetch = jest.fn(async () => ({
@@ -1278,42 +1186,6 @@ describe('ChatSidebar guest and worktree compatibility', () => {
     expect(badge).toHaveTextContent('Guest');
     expect(badge).toHaveClass('border-purple-500/40', 'bg-purple-500/10', 'text-purple-600');
   });
-
-  it('keeps worktree rows clickable while applying restrained row polish', async () => {
-    const onLaunchWorktreeAgentChat = jest.fn();
-    const onRestartWorktreeSession = jest.fn(async () => {});
-    const onTerminateWorktreeSession = jest.fn(async () => {});
-
-    renderSidebar({
-      worktreeAgentGroups: [worktreeGroup],
-      onLaunchWorktreeAgentChat,
-      onRestartWorktreeSession,
-      onTerminateWorktreeSession,
-    });
-
-    const worktreeRow = await screen.findByRole('listitem', {
-      name: 'Open terminal for Worktree Agent in feature-auth (online)',
-    });
-    expect(worktreeRow).toHaveClass('bg-card/40', 'hover:border-border');
-    expect(worktreeRow).not.toHaveAttribute('data-agent-event-bus-agent-id');
-
-    const providerIconFrame = screen.getByTitle('Provider: Claude');
-    expect(providerIconFrame).toHaveClass(
-      'h-6',
-      'w-6',
-      'bg-primary/10',
-      'border-primary/60',
-      'shadow-[0_0_8px_hsl(var(--primary)/0.35)]',
-      'animate-busy-halo',
-    );
-    expect(providerIconFrame.querySelector('img')).not.toHaveClass('animate-spin');
-
-    fireEvent.click(worktreeRow);
-    expect(onLaunchWorktreeAgentChat).toHaveBeenCalledWith(worktreeGroup, worktreeAgent.id);
-
-    expect(onRestartWorktreeSession).not.toHaveBeenCalled();
-    expect(onTerminateWorktreeSession).not.toHaveBeenCalled();
-  });
 });
 
 describe('ChatSidebar unlogged time markers', () => {
@@ -1325,38 +1197,6 @@ describe('ChatSidebar unlogged time markers', () => {
     projectId: 'project-1',
     type: 'guest',
   } as AgentOrGuest;
-  const worktreeAgent: AgentOrGuest = {
-    id: 'agent-wt-1',
-    name: 'Worktree Agent',
-    profileId: 'profile-wt-1',
-    projectId: 'project-wt-1',
-    providerConfigId: 'config-wt-1',
-    providerConfig: {
-      id: 'config-wt-1',
-      name: 'WT Config',
-      providerId: 'provider-claude',
-      providerName: 'Claude',
-    },
-  } as AgentOrGuest;
-  const worktreeGroup: WorktreeAgentGroup = {
-    id: 'worktree-1',
-    name: 'feature-auth',
-    status: 'running',
-    runtimeType: 'process',
-    devchainProjectId: 'project-wt-1',
-    apiBase: '/wt/feature-auth',
-    agents: [worktreeAgent],
-    agentPresence: {
-      [worktreeAgent.id]: {
-        online: true,
-        sessionId: 'session-wt-1',
-        activityState: 'busy',
-        busySince: new Date(Date.now()).toISOString(),
-      },
-    } as WorktreeAgentGroup['agentPresence'],
-    disabled: false,
-    error: null,
-  };
 
   beforeEach(() => {
     global.fetch = jest.fn(async () => ({
@@ -1441,22 +1281,15 @@ describe('ChatSidebar unlogged time markers', () => {
     expect(row.querySelector('[data-unlogged-time-marker]')).not.toBeNull();
   });
 
-  it('never marks guests or worktree rows even when their ids carry minutes', async () => {
+  it('never marks guest rows even when their ids carry minutes', async () => {
     renderSidebar({
       guests: [guestAgent],
-      worktreeAgentGroups: [worktreeGroup],
-      unloggedTimeMinutes: { 'guest-1': 19, 'agent-wt-1': 19, 'agent-1': 9 },
+      unloggedTimeMinutes: { 'guest-1': 19, 'agent-1': 9 },
     });
 
     const guestRow = await screen.findByRole('listitem', { name: 'Guest: Guest Agent (online)' });
     expect(guestRow.textContent).not.toContain('not logged');
     expect(guestRow.querySelector('span.pointer-events-none')).toBeNull();
-
-    const worktreeRow = screen.getByRole('listitem', {
-      name: 'Open terminal for Worktree Agent in feature-auth (online)',
-    });
-    expect(worktreeRow.textContent).not.toContain('not logged');
-    expect(worktreeRow.querySelector('span.pointer-events-none')).toBeNull();
     // A main agent below ten whole minutes stays unmarked too.
     const mainRow = screen.getByRole('listitem', { name: 'Open terminal for Alpha (offline)' });
     expect(mainRow.querySelector('span.pointer-events-none')).toBeNull();

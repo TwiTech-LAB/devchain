@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { AlertCircle, Crown, Loader2, Pencil, Plus, Trash2, Users, UsersRound } from 'lucide-react';
 
@@ -45,12 +45,13 @@ import {
   type UpdateTeamPayload,
   updateTeam,
 } from '@/ui/lib/teams';
-import { fetchJsonOrThrow } from '@/ui/lib/sessions';
+import { fetchJsonOrThrow, type FetchFn } from '@/ui/lib/sessions';
 import {
   type ProfileSelection,
   type ConfigItem,
 } from '@/ui/components/team/ProviderGroupedConfigSelector';
 import { ProviderConfigGranularSelector } from '@/ui/components/team/ProviderConfigGranularSelector';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ── Types ────────────────────────────────────────────────
 
@@ -76,15 +77,27 @@ interface TeamFormData {
   profileConfigSelections: Array<{ profileId: string; configIds: string[] }>;
 }
 
-async function fetchProjectAgents(projectId: string): Promise<ListResult<AgentListItem>> {
+async function fetchProjectAgents(
+  projectId: string,
+  fetchFn: FetchFn,
+): Promise<ListResult<AgentListItem>> {
   return fetchJsonOrThrow<ListResult<AgentListItem>>(
     `/api/agents?projectId=${encodeURIComponent(projectId)}`,
+    {},
+    undefined,
+    fetchFn,
   );
 }
 
-async function fetchProjectProfiles(projectId: string): Promise<ListResult<ProfileListItem>> {
+async function fetchProjectProfiles(
+  projectId: string,
+  fetchFn: FetchFn,
+): Promise<ListResult<ProfileListItem>> {
   return fetchJsonOrThrow<ListResult<ProfileListItem>>(
     `/api/profiles?projectId=${encodeURIComponent(projectId)}`,
+    {},
+    undefined,
+    fetchFn,
   );
 }
 
@@ -486,13 +499,19 @@ function ConfigureTeamConfigsModal({
   selections,
   onSave,
 }: ConfigureTeamConfigsModalProps) {
+  const fetchFn = useFetchFactory();
   const [workingSelections, setWorkingSelections] = useState<
     Array<ProfileSelection<string, string>>
   >([]);
   const [focusedProfileId, setFocusedProfileId] = useState<string | null>(null);
+  const wasOpen = useRef(false);
 
+  // Load the saved selections only as the window opens. A parent re-render passes new
+  // arrays, and reloading on it would discard the ticks the user has not saved.
   useEffect(() => {
-    if (!open) return;
+    const opening = open && !wasOpen.current;
+    wasOpen.current = open;
+    if (!opening) return;
     const initial: Array<ProfileSelection<string, string>> = linkedProfileIds.map((pid) => {
       const sel = selections.find((s) => s.profileId === pid);
       if (!sel || sel.configIds.length === 0) {
@@ -514,6 +533,9 @@ function ConfigureTeamConfigsModal({
     queryFn: () =>
       fetchJsonOrThrow<ProviderConfigItem[]>(
         `/api/profiles/${encodeURIComponent(focusedProfileId!)}/provider-configs`,
+        {},
+        undefined,
+        fetchFn,
       ),
     enabled: !!focusedProfileId,
   });
@@ -574,7 +596,7 @@ function ConfigureTeamConfigsModal({
                     onClick={() => setFocusedProfileId(profile.id)}
                     className={`flex items-center justify-between rounded px-2 py-2 text-left text-sm ${
                       focusedProfileId === profile.id
-                        ? 'bg-accent text-accent-foreground'
+                        ? 'bg-selected text-selected-foreground'
                         : 'hover:bg-muted/50'
                     }`}
                   >
@@ -718,6 +740,7 @@ function TeamCard({
 // ── Page Component ───────────────────────────────────────
 
 export function TeamsPage() {
+  const fetchFn = useFetchFactory();
   const { selectedProjectId, selectedProject } = useSelectedProject();
 
   // ── Dialog state (headless kit) ──
@@ -729,25 +752,25 @@ export function TeamsPage() {
   // ── Queries ──
   const { data, isLoading } = useQuery({
     queryKey: teamsQueryKeys.teams(selectedProjectId ?? ''),
-    queryFn: () => fetchTeams(selectedProjectId!),
+    queryFn: () => fetchTeams(selectedProjectId!, fetchFn),
     enabled: !!selectedProjectId,
   });
 
   const { data: agentsData } = useQuery({
     queryKey: ['teams-page-agents', selectedProjectId ?? ''] as const,
-    queryFn: () => fetchProjectAgents(selectedProjectId!),
+    queryFn: () => fetchProjectAgents(selectedProjectId!, fetchFn),
     enabled: !!selectedProjectId,
   });
 
   const { data: profilesData } = useQuery({
     queryKey: ['teams-page-profiles', selectedProjectId ?? ''] as const,
-    queryFn: () => fetchProjectProfiles(selectedProjectId!),
+    queryFn: () => fetchProjectProfiles(selectedProjectId!, fetchFn),
     enabled: !!selectedProjectId,
   });
 
   const { data: editTeamDetail } = useQuery({
     queryKey: teamsQueryKeys.detail(editingTeam?.id ?? ''),
-    queryFn: () => fetchTeamDetail(editingTeam!.id),
+    queryFn: () => fetchTeamDetail(editingTeam!.id, fetchFn),
     enabled: !!editingTeam,
   });
 
@@ -759,7 +782,7 @@ export function TeamsPage() {
   const teamDetailQueries = useQueries({
     queries: teams.map((team) => ({
       queryKey: teamsQueryKeys.detail(team.id),
-      queryFn: () => fetchTeamDetail(team.id),
+      queryFn: () => fetchTeamDetail(team.id, fetchFn),
     })),
   });
 
@@ -802,7 +825,7 @@ export function TeamsPage() {
   type TeamsList = ListContainer<TeamListItem>;
 
   const createMutation = useCrudMutation<TeamDetail, CreateTeamPayload, void>({
-    mutationFn: (payload) => createTeam(payload),
+    mutationFn: (payload) => createTeam(payload, fetchFn),
     optimistic: {
       queryKey: teamsKey,
       // temp-id add — Teams appends the new row.
@@ -842,7 +865,7 @@ export function TeamsPage() {
     { id: string; payload: UpdateTeamPayload },
     void
   >({
-    mutationFn: ({ id, payload }) => updateTeam(id, payload),
+    mutationFn: ({ id, payload }) => updateTeam(id, payload, fetchFn),
     optimistic: {
       queryKey: teamsKey,
       // in-place merge — same per-field precedence as before.
@@ -876,7 +899,7 @@ export function TeamsPage() {
   });
 
   const disbandMutation = useCrudMutation<void, string, { teamName: string }>({
-    mutationFn: (teamId) => disbandTeam(teamId),
+    mutationFn: (teamId) => disbandTeam(teamId, fetchFn),
     optimistic: {
       queryKey: teamsKey,
       // filter-out.

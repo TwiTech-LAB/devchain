@@ -16,11 +16,11 @@ import type { SyncResult } from './skill-sync.types';
 
 const logger = createLogger('SkillSourceLifecycleService');
 
-type ManagedSourceKind = 'community' | 'local';
+type SourceKind = 'builtin' | 'community' | 'local';
 
 type DeferredSyncJob = {
   kind: 'deferred_sync';
-  sourceKind: ManagedSourceKind;
+  sourceKind: SourceKind;
   sourceName: string;
 };
 
@@ -64,7 +64,10 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
     return this.storage.listCommunitySkillSources();
   }
 
-  async createCommunitySource(data: CreateCommunitySourceDto): Promise<CommunitySkillSource> {
+  async createCommunitySource(
+    data: CreateCommunitySourceDto,
+    options?: { deferInitialSync?: boolean },
+  ): Promise<CommunitySkillSource> {
     this.assertManagedSourceNameAvailable(data.name);
     const source = await this.storage.createCommunitySkillSource(
       {
@@ -76,12 +79,13 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
       { existingProjects: data.existingProjects ?? { mode: 'none' } },
     );
 
-    await this.admitInitialSync(source.name, 'community');
+    if (options?.deferInitialSync) this.enqueueDeferredSync(source.name, 'community');
+    else await this.admitInitialSync(source.name, 'community');
     return source;
   }
 
   deleteCommunitySource(id: string): Promise<void> {
-    return this.enqueueDelete(async () => {
+    return this.enqueueExclusiveJob(async () => {
       const source = await this.storage.getCommunitySkillSource(id);
       await this.deleteSourceSkillsDirectory(source.name, 'community');
       await this.storage.deleteCommunitySkillSource(id);
@@ -92,7 +96,10 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
     return this.storage.listLocalSkillSources();
   }
 
-  async createLocalSource(data: CreateLocalSourceDto): Promise<LocalSkillSource> {
+  async createLocalSource(
+    data: CreateLocalSourceDto,
+    options?: { deferInitialSync?: boolean },
+  ): Promise<LocalSkillSource> {
     this.assertManagedSourceNameAvailable(data.name);
     const normalizedFolderPath = await this.validateAndNormalizeFolderPath(data.folderPath);
     const source = await this.storage.createLocalSkillSource(
@@ -103,12 +110,13 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
       { existingProjects: data.existingProjects ?? { mode: 'none' } },
     );
 
-    await this.admitInitialSync(source.name, 'local');
+    if (options?.deferInitialSync) this.enqueueDeferredSync(source.name, 'local');
+    else await this.admitInitialSync(source.name, 'local');
     return source;
   }
 
   deleteLocalSource(id: string): Promise<void> {
-    return this.enqueueDelete(async () => {
+    return this.enqueueExclusiveJob(async () => {
       const source = await this.storage.getLocalSkillSource(id);
       if (!source) {
         throw new NotFoundError('Local skill source', id);
@@ -141,7 +149,7 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
     return true;
   }
 
-  private async admitInitialSync(sourceName: string, sourceKind: ManagedSourceKind): Promise<void> {
+  private async admitInitialSync(sourceName: string, sourceKind: SourceKind): Promise<void> {
     const normalizedSourceName = sourceName.trim().toLowerCase();
     if (this.schedulerActive || this.pendingJobs.length > 0) {
       this.enqueueDeferredSync(normalizedSourceName, sourceKind);
@@ -154,7 +162,8 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
     );
   }
 
-  private enqueueDeferredSync(sourceName: string, sourceKind: ManagedSourceKind): void {
+  enqueueDeferredSync(sourceName: string, sourceKind: SourceKind): void {
+    sourceName = sourceName.trim().toLowerCase();
     if (this.pendingDeferredSources.has(sourceName)) {
       return;
     }
@@ -164,7 +173,7 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
     this.startQueueIfIdle();
   }
 
-  private enqueueDelete(run: () => Promise<void>): Promise<void> {
+  enqueueExclusiveJob(run: () => Promise<void>): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.pendingJobs.push({ kind: 'delete', run, resolve, reject });
       this.startQueueIfIdle();
@@ -217,10 +226,7 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
     }
   }
 
-  private async syncSourceAfterCreate(
-    sourceName: string,
-    sourceKind: ManagedSourceKind,
-  ): Promise<void> {
+  private async syncSourceAfterCreate(sourceName: string, sourceKind: SourceKind): Promise<void> {
     try {
       const syncResult = await this.skillSyncService.syncSource(sourceName);
       if (syncResult.failed > 0) {
@@ -310,7 +316,7 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
 
   private async deleteSourceSkillsDirectory(
     sourceName: string,
-    sourceKind: ManagedSourceKind,
+    sourceKind: SourceKind,
   ): Promise<void> {
     const normalizedSourceName = sourceName.trim().toLowerCase();
     const sourcePath = join(homedir(), '.devchain', 'skills', normalizedSourceName);

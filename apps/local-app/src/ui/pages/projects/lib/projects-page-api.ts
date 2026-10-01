@@ -4,6 +4,7 @@ import type {
   ImportDryRunResponse,
   ImportProjectResponse,
   PathStatResult,
+  ProjectRemoteOwner,
   ProjectWorkspace,
   DeleteProjectWorkspaceResult,
   ProjectsQueryData,
@@ -38,6 +39,7 @@ export interface ProjectsPageApi {
   runImportDryRun(projectId: string, input: Record<string, unknown>): Promise<ImportDryRunResponse>;
   commitImport(projectId: string, input: Record<string, unknown>): Promise<ImportProjectResponse>;
   commitUpgrade(projectId: string, input: Record<string, unknown>): Promise<UpgradeProjectResponse>;
+  listRemoteOwners(): Promise<ProjectRemoteOwner[]>;
 }
 
 export interface WorkspaceTransitionDevice {

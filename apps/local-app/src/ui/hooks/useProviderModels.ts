@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /**
  * Provider model catalog option. `id` is a stable composite when the API omits
@@ -48,6 +49,15 @@ export function parseProviderModels(payload: unknown, providerId: string): Provi
     .filter((model): model is ProviderModelOption => Boolean(model));
 }
 
+/**
+ * Catalog names are unique per provider case-insensitively (the DB index is on
+ * `lower(name)`), so a configured override matches its catalog row in any case.
+ * The override keeps its own spelling: it is the exact launch string.
+ */
+export function sameCatalogName(catalogName: string, configured: string): boolean {
+  return catalogName.toLowerCase() === configured.toLowerCase();
+}
+
 export interface UseProviderModelsOptions {
   providerId: string | null;
   /** Current model-override selection (`null` = Default). */
@@ -69,13 +79,14 @@ export interface UseProviderModelsResult {
  * `onStaleSelection` so the caller can reset its field.
  */
 export function useProviderModels(options: UseProviderModelsOptions): UseProviderModelsResult {
+  const fetchFn = useFetchFactory();
   const { providerId, modelOverride, onStaleSelection } = options;
 
   const { data: models = [], isLoading } = useQuery({
     queryKey: providerModelQueryKeys.main(providerId ?? 'none'),
     queryFn: async () => {
       if (!providerId) return [] as ProviderModelOption[];
-      const res = await fetch(`/api/providers/${providerId}/models`);
+      const res = await fetchFn(`/api/providers/${providerId}/models`);
       if (!res.ok) return [] as ProviderModelOption[];
       const payload = (await res.json().catch(() => [])) as unknown;
       return parseProviderModels(payload, providerId);
@@ -89,7 +100,7 @@ export function useProviderModels(options: UseProviderModelsOptions): UseProvide
   // wipe a still-valid selection.
   useEffect(() => {
     if (!providerId || isLoading || !modelOverride) return;
-    if (!models.some((model) => model.name === modelOverride)) {
+    if (!models.some((model) => sameCatalogName(model.name, modelOverride))) {
       onStaleSelection(null);
     }
   }, [providerId, models, isLoading, modelOverride, onStaleSelection]);

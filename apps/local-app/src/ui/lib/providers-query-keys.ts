@@ -29,4 +29,11 @@ export const providersQueryKeys = {
    * project" (TanStack matches on key prefix).
    */
   preflightAll: () => ['preflight', 'providers-page'] as const,
+
+  /**
+   * Home-owned provider CLI version overview (GET /api/provider-clis). Kept a
+   * sibling of `list` rather than a child so invalidating the provider list
+   * does not refetch the registry overview.
+   */
+  clis: () => ['provider-clis'] as const,
 };

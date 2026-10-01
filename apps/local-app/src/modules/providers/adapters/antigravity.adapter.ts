@@ -1,3 +1,4 @@
+import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
 import type {
   ProviderAdapter,
@@ -50,6 +51,7 @@ export class AntigravityAdapter
     ProjectProvisioningCapability
 {
   readonly providerName = 'agy';
+  readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
 
   // agy = ProjectProvisioningCapability adopter #2. Workspace trust must be
   // pre-written (spike (c): --dangerously-skip-permissions does NOT cover trust),

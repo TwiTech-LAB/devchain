@@ -320,6 +320,20 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
       expect(scopes['KEY_A']).toEqual([p1]);
     });
 
+    it('keeps a key and makes it global on purpose when envScopes clears all of its scopes', () => {
+      const provider = seedProvider({ KEY_A: 'a' });
+      const p1 = seedProject('Previously scoped');
+      insertScopeRow(provider.id, 'KEY_A', p1);
+
+      delegate.updateProviderWithScopes(provider.id, {}, {}, ['KEY_A']);
+
+      expect(delegate.listEnvScopes(provider.id)).toEqual({});
+      const unrelated = seedProject('Unrelated');
+      const effectiveEnv = delegate.getProviderEnvForProject(provider.id, unrelated);
+      expect(Object.keys(effectiveEnv ?? {})).toEqual(['KEY_A']);
+      expect(effectiveEnv?.KEY_A === 'a').toBe(true);
+    });
+
     it('throws NotFoundError when provider does not exist', () => {
       expect(() => delegate.updateProviderWithScopes(randomUUID(), {}, undefined, [])).toThrow(
         'not found',

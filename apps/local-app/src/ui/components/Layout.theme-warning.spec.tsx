@@ -48,15 +48,6 @@ jest.mock('../hooks/useRuntime', () => ({
   useRuntime: () => useRuntimeMock(),
 }));
 
-jest.mock('../hooks/useWorktreeTab', () => ({
-  WorktreeTabProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useOptionalWorktreeTab: () => ({
-    activeWorktree: null,
-    setActiveWorktree: jest.fn(),
-    apiBase: '',
-  }),
-}));
-
 jest.mock('../terminal-windows', () => ({
   TerminalWindowsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   TerminalWindowsLayer: () => null,
@@ -148,10 +139,8 @@ const RUNNING_SESSION: ActiveSession = {
 
 async function renderLayout(bootId = 'boot-id-test') {
   useRuntimeMock.mockReturnValue({
-    runtimeInfo: { mode: 'normal', version: '1.0.0', bootId },
+    runtimeInfo: { version: '1.0.0', bootId },
     runtimeLoading: false,
-    isMainMode: false,
-    dockerAvailable: false,
     cloudUiEnabled: false,
   });
 

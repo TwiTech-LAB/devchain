@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { buildChunks } from '../builders/chunk-builder';
 import { ClaudeSessionReaderAdapter } from './claude-session-reader.adapter';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 
@@ -119,6 +120,26 @@ describe('ClaudeSessionReaderAdapter', () => {
         fs.rmSync(baseDir, { recursive: true, force: true });
       }
     });
+
+    it('never lists Syncthing markers in a project transcript directory as transcripts', async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
+      const projectDir = path.join(home, '.claude/projects/-test-project');
+      fs.mkdirSync(path.join(projectDir, '.stfolder'), { recursive: true });
+      fs.writeFileSync(path.join(projectDir, '.stignore'), '(?d).DS_Store\n');
+      fs.mkdirSync(path.join(projectDir, '.stversions'));
+      createTestJsonlFile(path.join(projectDir, '.stversions'), 'old.jsonl', [userEntry]);
+      createTestJsonlFile(projectDir, 'abc123.jsonl', [userEntry, assistantEntry]);
+      (adapter as unknown as { homeDir: string }).homeDir = home;
+
+      try {
+        const results = await adapter.discoverSessionFile({ projectRoot: '/test/project' });
+
+        expect(results.map((r) => r.filePath)).toEqual([path.join(projectDir, 'abc123.jsonl')]);
+        expect(results[0].providerSessionId).toBe('abc123');
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('parseSessionFile', () => {
@@ -174,6 +195,39 @@ describe('ClaudeSessionReaderAdapter', () => {
     });
   });
 
+  describe('encodeProjectPath', () => {
+    const encode = (projectRoot: string): string =>
+      (adapter as unknown as { encodeProjectPath: (p: string) => string }).encodeProjectPath(
+        projectRoot,
+      );
+
+    it('replaces every character outside letters and digits, like Claude Code', () => {
+      expect(encode('/home/ngsupb/repos/rbac2.0')).toBe('-home-ngsupb-repos-rbac2-0');
+      expect(encode('/home/ngsupb/repos/devchain_motion')).toBe(
+        '-home-ngsupb-repos-devchain-motion',
+      );
+      expect(encode('/home/ngsupb/repos/my projects/sundermarch v2')).toBe(
+        '-home-ngsupb-repos-my-projects-sundermarch-v2',
+      );
+    });
+
+    it('keeps DevChain-style folder names unchanged', () => {
+      expect(encode('/home/ngsupb/repos/twitech/devchain')).toBe(
+        '-home-ngsupb-repos-twitech-devchain',
+      );
+    });
+
+    it('truncates a name over 200 characters and appends the base-36 path hash', () => {
+      const projectRoot = `/home/ngsupb/repos/${'deep.workspace/'.repeat(15)}rbac2.0`;
+      const encoded = encode(projectRoot);
+
+      expect(encoded).toBe(
+        '-home-ngsupb-repos-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-d-8ujvg5',
+      );
+      expect(encoded.length).toBe(200 + 1 + '8ujvg5'.length);
+    });
+  });
+
   describe('getWatchPaths', () => {
     it('should return encoded project directory under ~/.claude/projects/', () => {
       const paths = adapter.getWatchPaths('/home/user/my-repo');
@@ -215,5 +269,49 @@ describe('ClaudeSessionReaderAdapter', () => {
 
       expect(mockPricing.calculateMessageCost).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+// Adapter unit tests exercise the real parser at its file boundary, including metrics-only scans.
+describe('queued human input across adapter read modes', () => {
+  const fixture = path.join(__dirname, '../__fixtures__/claude-queued-command.jsonl');
+
+  it.each([3, 4])(
+    'matches full parsing when the incremental split is after line %i',
+    async (lineCount) => {
+      const adapter = new ClaudeSessionReaderAdapter(mockPricing);
+      const lines = fs.readFileSync(fixture, 'utf8').trimEnd().split('\n');
+      const boundary = Buffer.byteLength(lines.slice(0, lineCount).join('\n') + '\n');
+      const full = await adapter.parseFullSession(fixture);
+      const head = await adapter.parseIncremental(fixture, {
+        byteOffset: 0,
+        endByteOffset: boundary,
+      });
+      const tail = await adapter.parseIncremental(fixture, { byteOffset: head.nextByteOffset });
+      expect([...head.entries, ...tail.entries]).toEqual(full.messages);
+      expect(head.messageCount + tail.messageCount).toBe(full.metrics.messageCount);
+    },
+  );
+
+  it('keeps full and metrics-only duration and positional last timestamp in agreement', async () => {
+    const adapter = new ClaudeSessionReaderAdapter(mockPricing);
+    const full = await adapter.parseFullSession(fixture);
+    const summary = await adapter.getSummary({
+      filePath: fixture,
+      providerName: 'claude',
+      kind: 'file',
+    });
+    expect(buildChunks(full.messages).map((chunk) => chunk.type)).toEqual([
+      'user',
+      'ai',
+      'user',
+      'ai',
+      'user',
+    ]);
+    expect(summary.metrics).toEqual(full.metrics);
+    expect(summary.metrics.durationMs).toBe(30_000);
+    expect(summary.laneSeed.lastMessageTimestamp).toBe(full.messages.at(-1)!.timestamp.getTime());
+    expect(summary.laneSeed.lastMessageTimestamp).toBe(Date.parse('2026-01-01T10:00:25.000Z'));
+    expect(summary.laneSeed.messageCount).toBe(5);
   });
 });

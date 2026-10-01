@@ -21,6 +21,8 @@ import {
   type PairedDeviceWorkspaceAccessRevokedEvent,
 } from '../events/paired-device-workspace-access.events';
 
+import { readRevokedDeviceKids, updateRevokedDeviceKids } from './device-revocation-history';
+
 const logger = createLogger('E2eeDeviceStore');
 
 const SETTINGS_KEY = 'cloud.e2ee.devices';
@@ -155,7 +157,10 @@ export class E2eeDeviceStoreService {
       if (existing?.notificationRoutingKid !== undefined) {
         record.notificationRoutingKid = existing.notificationRoutingKid;
       }
-      if (!existing) this.deleteWorkspaceGrants(record.kid);
+      // Connect can deliver grants before the public key; only a revoked pairing resets them.
+      if (!existing && readRevokedDeviceKids(this.sqlite).includes(record.kid)) {
+        this.deleteWorkspaceGrants(record.kid);
+      }
       dir.devices[record.kid] = record;
       const evicted = this.supersedeByInstallId(
         dir.devices,
@@ -164,6 +169,7 @@ export class E2eeDeviceStoreService {
         opts.evictVerified ?? false,
       );
       for (const kid of evicted) this.deleteWorkspaceGrants(kid);
+      updateRevokedDeviceKids(this.sqlite, evicted, record.kid);
       this.save(dir);
       return evicted;
     });
@@ -198,7 +204,9 @@ export class E2eeDeviceStoreService {
       const reconciled = reconcilePeerKey(prior, incoming, now) as StoredE2eeTrustRecord;
       const next = this.toDevice(reconciled);
       if (isCanonicalUuid(opts.installId)) next.installId = opts.installId;
-      if (!existing) this.deleteWorkspaceGrants(next.kid);
+      if (!existing && readRevokedDeviceKids(this.sqlite).includes(next.kid)) {
+        this.deleteWorkspaceGrants(next.kid);
+      }
       dir.devices[next.kid] = next;
       const evicted = this.supersedeByInstallId(
         dir.devices,
@@ -207,6 +215,7 @@ export class E2eeDeviceStoreService {
         opts.evictVerified ?? false,
       );
       for (const kid of evicted) this.deleteWorkspaceGrants(kid);
+      updateRevokedDeviceKids(this.sqlite, evicted, next.kid);
       this.save(dir);
       return { record: next, supersededKids: evicted };
     });
@@ -349,6 +358,7 @@ export class E2eeDeviceStoreService {
       if (!dir.devices[kid]) return false;
       delete dir.devices[kid];
       this.deleteWorkspaceGrants(kid);
+      updateRevokedDeviceKids(this.sqlite, [kid]);
       this.save(dir);
       return true;
     });

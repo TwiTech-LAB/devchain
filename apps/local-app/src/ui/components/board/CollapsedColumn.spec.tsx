@@ -50,11 +50,8 @@ function renderColumn(
     epics,
     onExpand: jest.fn(),
     onAddEpic: jest.fn(),
-    onDragOver: jest.fn(),
-    onDrop: jest.fn(),
-    isActiveDrop: false,
-    onDragStartEpic: jest.fn(),
-    onDragEndEpic: jest.fn(),
+    draggedEpic: null,
+    cardDrag: { pointerDown: jest.fn() },
     getAgentName: () => null,
     onEpicEdit: jest.fn(),
     onEpicDelete: jest.fn(),
@@ -184,6 +181,8 @@ describe('CollapsedColumn interaction contract', () => {
   it('expands on Enter and Space and adds on + from the column keyboard target', () => {
     const props = renderColumn([createEpic()]);
     const column = screen.getByRole('button', { name: /Todo column \(1 epic\)/ });
+    expect(column).toHaveAttribute('data-board-drop-status-id', status.id);
+    expect(fireEvent.dragOver(column)).toBe(true);
 
     column.focus();
     fireEvent.keyDown(column, { key: 'Enter' });
@@ -197,13 +196,35 @@ describe('CollapsedColumn interaction contract', () => {
     expect(props.onExpand).toHaveBeenCalledTimes(2);
   });
 
+  it('styles the drop highlight from the data attribute', () => {
+    renderColumn([createEpic()]);
+
+    const column = screen.getByRole('button', { name: /Todo column \(1 epic\)/ });
+    expect(column).toHaveClass('data-[board-drop-active]:border-primary/60');
+    expect(column).toHaveClass('data-[board-drop-active]:bg-primary/5');
+  });
+
   it('starts epic drags from the compact row', () => {
     const epic = createEpic();
     const props = renderColumn([epic]);
 
-    fireEvent.dragStart(screen.getByText('Root epic'));
+    fireEvent.pointerDown(screen.getByText('Root epic'));
 
-    expect(props.onDragStartEpic).toHaveBeenCalledWith(epic);
+    expect(props.cardDrag.pointerDown).toHaveBeenCalledWith(epic, expect.anything());
+    const row = screen.getByText('Root epic').closest('[data-board-card-drag-source]')!;
+    expect(row).not.toHaveAttribute('draggable');
+    expect(row).toHaveClass('select-none');
+    expect(fireEvent.dragStart(row)).toBe(false);
+  });
+
+  it('disables pointer events on every row during a card drag', () => {
+    const epic = createEpic();
+    renderColumn([epic, createEpic({ id: 'second', title: 'Second epic' })], undefined, {
+      draggedEpic: epic,
+    });
+    document.querySelectorAll('[data-board-card-drag-source]').forEach((row) => {
+      expect(row).toHaveClass('pointer-events-none');
+    });
   });
 
   it('keeps the compact title truncation styling', () => {

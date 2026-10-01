@@ -5,7 +5,7 @@
   "description": "Devchain Local App - NestJS + Vite SSR + React (internal workspace, not published)",
   "main": "dist/main.js",
   "scripts": {
-    "prebuild": "pnpm check:journal && rimraf dist",
+    "prebuild": "pnpm check:journal && pnpm --filter @devchain/proxmox-client build && rimraf dist",
     "build": "nest build && vite build && cp -r templates dist/templates",
     "check:journal": "ts-node --compiler-options '{\"module\":\"commonjs\"}' scripts/validate-journal.ts",
     "pricing:update": "ts-node --compiler-options '{\"module\":\"commonjs\"}' scripts/fetch-pricing-data.ts",
@@ -20,10 +20,10 @@
     "preview:ui": "vite preview --host 127.0.0.1 --port 5176",
     "lint": "eslint \"{src,test}/**/*.{ts,tsx}\" --max-warnings=0",
     "lint:fix": "eslint \"{src,test}/**/*.{ts,tsx}\" --fix",
-    "test": "cross-env NODE_ENV=test node --expose-gc ../../node_modules/jest/bin/jest.js --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=50% --workerIdleMemoryLimit=512MB",
+    "test": "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=50% --workerIdleMemoryLimit=512MB",
     "test:watch": "cross-env NODE_ENV=test jest --watch --maxWorkers=75%",
-    "test:cov": "cross-env NODE_ENV=test node --expose-gc ../../node_modules/jest/bin/jest.js --coverage --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=512MB",
-    "test:cov:full": "cross-env NODE_ENV=test jest --coverage --runInBand",
+    "test:cov": "node scripts/test-queue.mjs --coverage --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=512MB",
+    "test:cov:full": "node scripts/test-queue.mjs --coverage --runInBand",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:ui": "playwright test",
@@ -31,11 +31,12 @@
     "test:ui:ci": "playwright test --reporter=github",
     "smoke:xterm6": "node scripts/xterm6-browser-smoke.mjs",
     "test:external": "cross-env NODE_ENV=test jest --selectProjects external-integration --runInBand",
-    "test:full": "cross-env NODE_ENV=test jest --maxWorkers=50% --workerIdleMemoryLimit=512MB",
-    "test:lowmem": "cross-env NODE_ENV=test jest --maxWorkers=4",
+    "test:full": "node scripts/test-queue.mjs --maxWorkers=50% --workerIdleMemoryLimit=512MB",
+    "test:lowmem": "node scripts/test-queue.mjs --maxWorkers=4",
+    "test:queue": "node --test scripts/test-queue.test.mjs",
     "test:integration": "jest --runInBand --testPathPatterns=storage/local",
     "test:health-report": "pnpm test:health-report:generate && pnpm test:health-report:render",
-    "test:health-report:generate": "cross-env NODE_ENV=test jest --selectProjects backend-unit backend-integration ui cli-helpers --coverage --json --outputFile=reports/.jest-results.json --coverageReporters=json-summary",
+    "test:health-report:generate": "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers --coverage --json --outputFile=reports/.jest-results.json --coverageReporters=json-summary",
     "test:health-report:render": "ts-node --compiler-options '{\"module\":\"commonjs\"}' scripts/test-health-report.ts --results reports/.jest-results.json --coverage coverage/coverage-summary.json",
     "memory-soak": "node scripts/memory-soak/index.js",
     "memory-soak:test": "node --test scripts/memory-soak/*.test.js",
@@ -45,6 +46,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@devchain/proxmox-client": "workspace:*",
     "@devchain/shared": "workspace:*",
     "@fastify/http-proxy": "9.5.0",
     "@fastify/send": "2.1.0",
@@ -92,7 +94,6 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "croner": "10.0.1",
-    "dockerode": "5.0.1",
     "dompurify": "3.3.1",
     "dotenv": "^16.4.5",
     "drizzle-orm": "0.44.6",
@@ -117,11 +118,14 @@
     "refractor": "5.0.0",
     "rxjs": "^7.8.1",
     "semver": "^7.6.0",
+    "smol-toml": "1.9.0",
     "socket.io": "4.8.1",
     "socket.io-client": "4.8.1",
+    "ssh2": "1.17.0",
     "swagger-ui-dist": "5.17.14",
     "tailwind-merge": "3.3.1",
     "tar": "^7.5.22",
+    "undici": "5.29.0",
     "ws": "8.20.0",
     "zod": "^3.22.4"
   },
@@ -137,7 +141,6 @@
     "@testing-library/react": "^14.1.2",
     "@testing-library/user-event": "14.6.1",
     "@types/better-sqlite3": "7.6.13",
-    "@types/dockerode": "3.3.46",
     "@types/express": "^4.17.21",
     "@types/jest": "^30.0.0",
     "@types/jest-axe": "3.5.9",
@@ -146,6 +149,7 @@
     "@types/react": "^18.2.61",
     "@types/react-dom": "^18.2.19",
     "@types/semver": "^7.5.8",
+    "@types/ssh2": "1.15.5",
     "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "^4.2.1",
     "@xterm/headless": "6.0.0",
@@ -209,6 +213,7 @@
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1",
       "^@devchain/shared$": "<rootDir>/test/mocks/devchain-shared.ts",
+      "^@devchain/proxmox-client$": "<rootDir>/../../packages/proxmox-client/src/index.ts",
       "\\.(css|less|scss|sass)$": "identity-obj-proxy",
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
@@ -235,6 +240,7 @@
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
+          "^@devchain/proxmox-client$": "<rootDir>/../../../packages/proxmox-client/src/index.ts",
           "^(\\.{1,2}/.*)\\.js$": "$1"
         }
       },
@@ -255,6 +261,7 @@
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
+          "^@devchain/proxmox-client$": "<rootDir>/../../../packages/proxmox-client/src/index.ts",
           "^(\\.{1,2}/.*)\\.js$": "$1"
         }
       },
@@ -274,6 +281,7 @@
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
+          "^@devchain/proxmox-client$": "<rootDir>/../../../packages/proxmox-client/src/index.ts",
           "\\.(css|less|scss|sass)$": "identity-obj-proxy",
           "\\?raw$": "<rootDir>/../test/mocks/raw-file.ts",
           "^(\\.{1,2}/.*)\\.js$": "$1"
@@ -305,6 +313,7 @@
         "moduleNameMapper": {
           "^@/(.*)$": "<rootDir>/$1",
           "^@devchain/shared$": "<rootDir>/../test/mocks/devchain-shared.ts",
+          "^@devchain/proxmox-client$": "<rootDir>/../../../packages/proxmox-client/src/index.ts",
           "^(\\.{1,2}/.*)\\.js$": "$1"
         }
       }

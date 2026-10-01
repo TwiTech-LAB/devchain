@@ -103,7 +103,7 @@ export class SessionLaunchPipeline {
         this.emitAutoCompactRecommendation(provider, agent, agentId, silent);
 
         // Phase 3: verifyProvider (preflight + MCP ensure)
-        await this.verifyProvider(provider, project.rootPath);
+        await this.verifyProvider(provider, project.rootPath, project.id, configEnv);
 
         // Phase 4: create the read-only provider runtime plan
         const adapter = this.providerAdapterFactory.getAdapter(provider.name);
@@ -389,7 +389,12 @@ export class SessionLaunchPipeline {
     };
   }
 
-  private async verifyProvider(provider: Provider, projectRootPath: string): Promise<void> {
+  private async verifyProvider(
+    provider: Provider,
+    projectRootPath: string,
+    projectId: string,
+    configEnv: Record<string, string> | null,
+  ): Promise<void> {
     if (!provider.binPath) {
       throw new ValidationError(
         `Provider ${provider.name} is missing a binary path. Set the path before launching sessions.`,
@@ -397,11 +402,16 @@ export class SessionLaunchPipeline {
       );
     }
 
+    const providerEnv = this.storage.getProviderEnvForProject(provider.id, projectId);
+    const provisioningContext = {
+      env: { ...(providerEnv ?? {}), ...(configEnv ?? {}) },
+    };
+
     const preflightResult = await this.preflightService.runChecks(projectRootPath);
     let providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
 
     if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
-      await this.mcpEnsureService.ensureMcp(provider, projectRootPath);
+      await this.mcpEnsureService.ensureMcp(provider, projectRootPath, provisioningContext);
       const recheck = await this.preflightService.runChecks(projectRootPath);
       providerCheck = recheck.providers?.find((p) => p.id === provider.id);
 
@@ -424,6 +434,7 @@ export class SessionLaunchPipeline {
         const provisioning = await this.mcpEnsureService.ensureProjectProvisioning(
           provider,
           projectRootPath,
+          provisioningContext,
         );
         for (const warning of provisioning.warnings) {
           logger.warn(
@@ -671,10 +682,14 @@ export class SessionLaunchPipeline {
     const rendered = await this.renderInitialPromptText(params);
     if (!rendered) return;
 
+    const behavior = this.providerAdapterFactory.getAdapter(
+      params.provider.name,
+    ).runtimePromptBehavior;
     await this.terminalIO.deliver({ name: params.tmuxSessionName }, rendered, {
       agentId: params.agentId,
       preKeys: params.launchHandshake?.preKeys,
       preDelayMs: params.launchHandshake?.preDelayMs,
+      followNote: behavior?.followNote === true,
     });
   }
 

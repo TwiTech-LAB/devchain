@@ -8,6 +8,7 @@
  */
 
 import { ProjectTemplateUpgradeService } from './project-template-upgrade.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 const metadata = {
   templateSlug: 'template-1',
@@ -71,6 +72,7 @@ describe('ProjectTemplateUpgradeService characterization', () => {
       unified as never,
       settings as never,
       sessions as never,
+      createProjectWriteAdmissionStub() as never,
     );
     return { service, cache, settings, projects, sessions };
   }

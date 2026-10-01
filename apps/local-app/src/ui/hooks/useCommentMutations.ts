@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@/ui/hooks/use-toast';
 import type { ReviewComment, CommentType } from '@/ui/lib/reviews';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface CommentsQueryData {
   items: ReviewComment[];
@@ -51,11 +52,12 @@ interface EditParams {
  * Hook for creating new comments with optimistic updates
  */
 export function useCreateComment() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (params: CreateCommentParams) => {
-      const response = await fetch(`/api/reviews/${params.reviewId}/comments`, {
+      const response = await fetchFn(`/api/reviews/${params.reviewId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -141,11 +143,12 @@ export function useCreateComment() {
  * Hook for replying to comments with optimistic updates
  */
 export function useReplyToComment() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (params: ReplyParams) => {
-      const response = await fetch(`/api/reviews/${params.reviewId}/comments`, {
+      const response = await fetchFn(`/api/reviews/${params.reviewId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -224,11 +227,12 @@ export function useReplyToComment() {
  * Hook for resolving comments with optimistic updates
  */
 export function useResolveComment() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (params: ResolveParams) => {
-      const response = await fetch(
+      const response = await fetchFn(
         `/api/reviews/${params.reviewId}/comments/${params.commentId}/resolve`,
         {
           method: 'PATCH',
@@ -288,13 +292,17 @@ export function useResolveComment() {
  * (The current UI only supports single-level replies, but agents/API can create deeper threads.)
  */
 export function useDeleteComment() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (params: DeleteParams) => {
-      const response = await fetch(`/api/reviews/${params.reviewId}/comments/${params.commentId}`, {
-        method: 'DELETE',
-      });
+      const response = await fetchFn(
+        `/api/reviews/${params.reviewId}/comments/${params.commentId}`,
+        {
+          method: 'DELETE',
+        },
+      );
       if (!response.ok) throw new Error('Failed to delete comment');
     },
 
@@ -370,15 +378,19 @@ export function useDeleteComment() {
  * Hook for editing comments with optimistic updates
  */
 export function useEditComment() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (params: EditParams) => {
-      const response = await fetch(`/api/reviews/${params.reviewId}/comments/${params.commentId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: params.content, version: params.version }),
-      });
+      const response = await fetchFn(
+        `/api/reviews/${params.reviewId}/comments/${params.commentId}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: params.content, version: params.version }),
+        },
+      );
       if (!response.ok) throw new Error('Failed to edit comment');
       return response.json() as Promise<ReviewComment>;
     },

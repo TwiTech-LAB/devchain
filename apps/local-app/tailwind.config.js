@@ -1,10 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   darkMode: ['class'],
-  content: [
-    './index.html',
-    './src/**/*.{js,ts,jsx,tsx}',
-  ],
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     container: {
       center: true,
@@ -51,6 +48,27 @@ module.exports = {
         terminal: {
           DEFAULT: 'hsl(var(--terminal-background))',
           foreground: 'hsl(var(--terminal-foreground))',
+        },
+        canvas: 'hsl(var(--canvas))',
+        shell: 'hsl(var(--shell))',
+        group: 'hsl(var(--group))',
+        selected: {
+          DEFAULT: 'hsl(var(--selected))',
+          foreground: 'hsl(var(--selected-foreground))',
+        },
+        // --overlay and --switch-off carry their own alpha, so they take no opacity modifier.
+        overlay: 'hsl(var(--overlay))',
+        'status-ok': 'hsl(var(--status-ok) / <alpha-value>)',
+        'status-warn': 'hsl(var(--status-warn) / <alpha-value>)',
+        'status-info': 'hsl(var(--status-info) / <alpha-value>)',
+        'switch-off': 'hsl(var(--switch-off))',
+      },
+      // `text-destructive` reads --destructive-text, a text-safe red; fills, borders and rings keep
+      // the button red --destructive. In Dark the two values differ.
+      textColor: {
+        // Deep-merged with colors.destructive, so text-destructive-foreground still resolves.
+        destructive: {
+          DEFAULT: 'hsl(var(--destructive-text) / <alpha-value>)',
         },
       },
       fontFamily: {

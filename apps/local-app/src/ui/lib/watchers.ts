@@ -2,6 +2,7 @@
  * Watchers API functions
  * Provides centralized API layer for watcher management.
  */
+import type { FetchFn } from '@/ui/lib/api-transport';
 
 // ============================================
 // TYPES
@@ -107,9 +108,9 @@ export interface WatcherTestResult {
 /**
  * Fetch all watchers for a project.
  */
-export async function fetchWatchers(projectId: string): Promise<Watcher[]> {
+export async function fetchWatchers(fetchFn: FetchFn, projectId: string): Promise<Watcher[]> {
   const params = new URLSearchParams({ projectId });
-  const response = await fetch(`/api/watchers?${params.toString()}`);
+  const response = await fetchFn(`/api/watchers?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch watchers');
   }
@@ -119,8 +120,8 @@ export async function fetchWatchers(projectId: string): Promise<Watcher[]> {
 /**
  * Fetch a single watcher by ID.
  */
-export async function fetchWatcher(id: string): Promise<Watcher> {
-  const response = await fetch(`/api/watchers/${id}`);
+export async function fetchWatcher(fetchFn: FetchFn, id: string): Promise<Watcher> {
+  const response = await fetchFn(`/api/watchers/${id}`);
   if (!response.ok) {
     throw new Error('Failed to fetch watcher');
   }
@@ -130,8 +131,8 @@ export async function fetchWatcher(id: string): Promise<Watcher> {
 /**
  * Create a new watcher.
  */
-export async function createWatcher(data: CreateWatcherData): Promise<Watcher> {
-  const response = await fetch('/api/watchers', {
+export async function createWatcher(fetchFn: FetchFn, data: CreateWatcherData): Promise<Watcher> {
+  const response = await fetchFn('/api/watchers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -146,8 +147,12 @@ export async function createWatcher(data: CreateWatcherData): Promise<Watcher> {
 /**
  * Update an existing watcher.
  */
-export async function updateWatcher(id: string, data: UpdateWatcherData): Promise<Watcher> {
-  const response = await fetch(`/api/watchers/${id}`, {
+export async function updateWatcher(
+  fetchFn: FetchFn,
+  id: string,
+  data: UpdateWatcherData,
+): Promise<Watcher> {
+  const response = await fetchFn(`/api/watchers/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -162,8 +167,8 @@ export async function updateWatcher(id: string, data: UpdateWatcherData): Promis
 /**
  * Delete a watcher.
  */
-export async function deleteWatcher(id: string): Promise<void> {
-  const response = await fetch(`/api/watchers/${id}`, {
+export async function deleteWatcher(fetchFn: FetchFn, id: string): Promise<void> {
+  const response = await fetchFn(`/api/watchers/${id}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -174,8 +179,12 @@ export async function deleteWatcher(id: string): Promise<void> {
 /**
  * Toggle a watcher's enabled status.
  */
-export async function toggleWatcher(id: string, enabled: boolean): Promise<Watcher> {
-  const response = await fetch(`/api/watchers/${id}/toggle`, {
+export async function toggleWatcher(
+  fetchFn: FetchFn,
+  id: string,
+  enabled: boolean,
+): Promise<Watcher> {
+  const response = await fetchFn(`/api/watchers/${id}/toggle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),
@@ -189,8 +198,8 @@ export async function toggleWatcher(id: string, enabled: boolean): Promise<Watch
 /**
  * Test a watcher against current terminal viewports.
  */
-export async function testWatcher(id: string): Promise<WatcherTestResult> {
-  const response = await fetch(`/api/watchers/${id}/test`, {
+export async function testWatcher(fetchFn: FetchFn, id: string): Promise<WatcherTestResult> {
+  const response = await fetchFn(`/api/watchers/${id}/test`, {
     method: 'POST',
   });
   if (!response.ok) {

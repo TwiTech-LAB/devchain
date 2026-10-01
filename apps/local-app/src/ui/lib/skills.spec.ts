@@ -8,6 +8,8 @@ import {
   resolveSkillSlugs,
 } from './skills';
 
+const globalFetch = (input: RequestInfo | URL, init?: RequestInit) => global.fetch(input, init);
+
 describe('ui/lib/skills resolveSkillSlugs', () => {
   const originalFetch = global.fetch;
 
@@ -24,7 +26,7 @@ describe('ui/lib/skills resolveSkillSlugs', () => {
     const fetchMock = jest.fn();
     (global as unknown as { fetch: unknown }).fetch = fetchMock;
 
-    await expect(resolveSkillSlugs(['', '   '])).resolves.toEqual({});
+    await expect(resolveSkillSlugs(globalFetch, ['', '   '])).resolves.toEqual({});
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -55,7 +57,11 @@ describe('ui/lib/skills resolveSkillSlugs', () => {
       },
     );
 
-    const result = await resolveSkillSlugs([' OpenAI/Review ', 'openai/review', 'anthropic/pdf']);
+    const result = await resolveSkillSlugs(globalFetch, [
+      ' OpenAI/Review ',
+      'openai/review',
+      'anthropic/pdf',
+    ]);
 
     expect(result).toEqual(payload);
     expect(global.fetch).toHaveBeenCalledTimes(1);
@@ -95,7 +101,7 @@ describe('ui/lib/skills community source api', () => {
       } as Response;
     });
 
-    await expect(fetchCommunitySources()).resolves.toEqual(payload);
+    await expect(fetchCommunitySources(globalFetch)).resolves.toEqual(payload);
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -130,7 +136,7 @@ describe('ui/lib/skills community source api', () => {
     );
 
     await expect(
-      addCommunitySource({
+      addCommunitySource(globalFetch, {
         name: 'repo',
         url: 'https://github.com/owner/repo',
         branch: 'main',
@@ -151,7 +157,7 @@ describe('ui/lib/skills community source api', () => {
       },
     );
 
-    await expect(removeCommunitySource('source-3')).resolves.toBeUndefined();
+    await expect(removeCommunitySource(globalFetch, 'source-3')).resolves.toBeUndefined();
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });
@@ -187,7 +193,7 @@ describe('ui/lib/skills local source api', () => {
       } as Response;
     });
 
-    await expect(fetchLocalSources()).resolves.toEqual(payload);
+    await expect(fetchLocalSources(globalFetch)).resolves.toEqual(payload);
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -219,7 +225,7 @@ describe('ui/lib/skills local source api', () => {
     );
 
     await expect(
-      addLocalSource({
+      addLocalSource(globalFetch, {
         name: 'local-source',
         folderPath: '/tmp/local-source',
       }),
@@ -239,7 +245,7 @@ describe('ui/lib/skills local source api', () => {
       },
     );
 
-    await expect(removeLocalSource('source-3')).resolves.toBeUndefined();
+    await expect(removeLocalSource(globalFetch, 'source-3')).resolves.toBeUndefined();
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });

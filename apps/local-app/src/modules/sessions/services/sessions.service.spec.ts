@@ -58,7 +58,10 @@ describe('SessionsService', () => {
   let sqlitePrepare: jest.Mock;
   let sqliteExec: jest.Mock;
   let insertRunMock: jest.Mock;
-  let providerAdapterFactory: { getAdapter: jest.Mock; getPostPasteDelayMsForAgent: jest.Mock };
+  let providerAdapterFactory: {
+    getAdapter: jest.Mock;
+    getRuntimePromptBehaviorForAgent: jest.Mock;
+  };
   let terminalSessionRegistry: {
     create: jest.Mock;
     bind: jest.Mock;
@@ -128,7 +131,7 @@ describe('SessionsService', () => {
 
     providerAdapterFactory = {
       getAdapter: jest.fn().mockReturnValue({ providerName: 'claude' }),
-      getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+      getRuntimePromptBehaviorForAgent: jest.fn().mockResolvedValue({}),
     };
 
     terminalSessionRegistry = {
@@ -167,6 +170,7 @@ describe('SessionsService', () => {
           .mockReturnValue({ trackingStartedAt: null, idleTimeoutMs: 30_000 }),
         runTerminationResetSync: jest.fn(),
       } as unknown as EpicTimeStore,
+      { listRemoteOwnedProjectIds: () => [] } as never,
     );
   });
 
@@ -576,7 +580,9 @@ describe('SessionsService', () => {
     });
 
     it('resolves postPasteDelayMs for agy agent and passes to delivery helper', async () => {
-      providerAdapterFactory.getPostPasteDelayMsForAgent.mockResolvedValue(1500);
+      providerAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({
+        postPasteDelayMs: 1500,
+      });
       sqlitePrepare.mockReturnValue({
         run: insertRunMock,
         get: jest.fn().mockReturnValue(mockSessionRow()),
@@ -584,13 +590,15 @@ describe('SessionsService', () => {
 
       await service.injectTextIntoSession('session-1', 'hello');
 
-      expect(providerAdapterFactory.getPostPasteDelayMsForAgent).toHaveBeenCalledWith('agent-1');
+      expect(providerAdapterFactory.getRuntimePromptBehaviorForAgent).toHaveBeenCalledWith(
+        'agent-1',
+      );
       const pasteCall = mockTerminalIO.deliver.mock.calls[0];
       expect(pasteCall[2]).toHaveProperty('postPasteDelayMs', 1500);
     });
 
     it('passes undefined postPasteDelayMs for Claude agent', async () => {
-      providerAdapterFactory.getPostPasteDelayMsForAgent.mockResolvedValue(undefined);
+      providerAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
       sqlitePrepare.mockReturnValue({
         run: insertRunMock,
         get: jest.fn().mockReturnValue(mockSessionRow()),
@@ -610,7 +618,7 @@ describe('SessionsService', () => {
 
       await service.injectTextIntoSession('session-1', 'hello');
 
-      expect(providerAdapterFactory.getPostPasteDelayMsForAgent).not.toHaveBeenCalled();
+      expect(providerAdapterFactory.getRuntimePromptBehaviorForAgent).not.toHaveBeenCalled();
       const pasteCall = mockTerminalIO.deliverImmediate.mock.calls[0];
       expect(pasteCall[2]?.postPasteDelayMs).toBeUndefined();
     });

@@ -1,15 +1,63 @@
 import { CodexAdapter } from './codex.adapter';
+import { ensureCodexProjectTrusted } from '../../sessions/utils/codex-config';
+
+jest.mock('../../sessions/utils/codex-config', () => ({
+  ensureCodexProjectTrusted: jest.fn(),
+}));
+
+const mockEnsureCodexProjectTrusted = ensureCodexProjectTrusted as jest.MockedFunction<
+  typeof ensureCodexProjectTrusted
+>;
 
 describe('CodexAdapter', () => {
   let adapter: CodexAdapter;
 
   beforeEach(() => {
     adapter = new CodexAdapter();
+    mockEnsureCodexProjectTrusted.mockReset();
   });
 
   describe('providerName', () => {
     it('returns codex as provider name', () => {
       expect(adapter.providerName).toBe('codex');
+    });
+  });
+
+  describe('ProjectProvisioningCapability (project trust)', () => {
+    it('declares requiresProjectProvisioning', () => {
+      expect(adapter.requiresProjectProvisioning).toBe(true);
+    });
+
+    it('delegates project trust with the launch environment', async () => {
+      const context = { env: { CODEX_HOME: '/custom/codex-home' } };
+      mockEnsureCodexProjectTrusted.mockResolvedValue({ success: true });
+
+      await expect(adapter.provisionProjectPath('/workspace/project', context)).resolves.toEqual({
+        success: true,
+        warnings: [],
+      });
+
+      expect(mockEnsureCodexProjectTrusted).toHaveBeenCalledWith('/workspace/project', context);
+    });
+
+    it('returns fixed-code warnings when trust could not be written', async () => {
+      mockEnsureCodexProjectTrusted.mockResolvedValue({
+        success: false,
+        code: 'CODEX_TRUST_CONFIG_INVALID',
+        message: 'Codex config contains invalid TOML.',
+      });
+
+      await expect(adapter.provisionProjectPath('/workspace/project')).resolves.toEqual({
+        success: false,
+        warnings: [
+          {
+            source: 'codex_project_trust',
+            level: 'warn',
+            code: 'CODEX_TRUST_CONFIG_INVALID',
+            message: 'Codex config contains invalid TOML.',
+          },
+        ],
+      });
     });
   });
 
@@ -154,52 +202,45 @@ describe('CodexAdapter', () => {
   });
 
   describe('buildLaunchArgs', () => {
-    const UPDATE_OVERRIDE = ['-c', 'check_for_update_on_startup=false'];
+    const LAUNCH_OVERRIDES = [
+      '-c',
+      'check_for_update_on_startup=false',
+      '-c',
+      'tui.alternate_screen="never"',
+    ];
 
-    it('prepends the update-check override before profileOptionArgs for mode new', () => {
-      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: ['-m', 'o3'] });
-      expect(result.argv).toEqual([...UPDATE_OVERRIDE, '-m', 'o3']);
-    });
+    it.each(['new', 'restore'] as const)(
+      'puts the update and inline-screen overrides after profile args for %s',
+      (mode) => {
+        const result = adapter.buildLaunchArgs({
+          mode,
+          providerSessionId: 'abc',
+          profileOptionArgs: ['-m', 'o3', '-c', 'check_for_update_on_startup=true'],
+        });
+        expect(result.argv).toEqual([
+          ...(mode === 'restore' ? ['resume'] : []),
+          '-m',
+          'o3',
+          '-c',
+          'check_for_update_on_startup=true',
+          ...LAUNCH_OVERRIDES,
+          ...(mode === 'restore' ? ['abc'] : []),
+        ]);
+      },
+    );
 
-    it('returns only the update-check override for mode new with no profileOptionArgs', () => {
-      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] });
-      expect(result.argv).toEqual([...UPDATE_OVERRIDE]);
-    });
-
-    it('leads with the override, then resume, with session ID LAST for mode restore', () => {
-      const result = adapter.buildLaunchArgs({
-        mode: 'restore',
-        providerSessionId: 'abc',
-        profileOptionArgs: ['-m', 'o3', '-p', 'work'],
-      });
-      expect(result.argv).toEqual([...UPDATE_OVERRIDE, 'resume', '-m', 'o3', '-p', 'work', 'abc']);
-    });
-
-    it('restore with no profileOptionArgs yields [override, resume, sessionId]', () => {
-      const result = adapter.buildLaunchArgs({
-        mode: 'restore',
-        providerSessionId: 'xyz',
-        profileOptionArgs: [],
-      });
-      expect(result.argv).toEqual([...UPDATE_OVERRIDE, 'resume', 'xyz']);
-    });
-
-    it('places the DevChain override before any profile-supplied -c so the profile can override (last-wins)', () => {
-      const result = adapter.buildLaunchArgs({
-        mode: 'new',
-        profileOptionArgs: ['-c', 'check_for_update_on_startup=true'],
-      });
-      // Our forced `false` leads; a profile that re-adds the key trails it.
-      expect(result.argv).toEqual([
-        '-c',
-        'check_for_update_on_startup=false',
-        '-c',
-        'check_for_update_on_startup=true',
-      ]);
-      expect(result.argv.indexOf('check_for_update_on_startup=false')).toBeLessThan(
-        result.argv.lastIndexOf('check_for_update_on_startup=true'),
-      );
-    });
+    it.each(['new', 'restore'] as const)(
+      'adds the update and inline-screen overrides without profile args for %s',
+      (mode) => {
+        expect(
+          adapter.buildLaunchArgs({ mode, providerSessionId: 'abc', profileOptionArgs: [] }).argv,
+        ).toEqual([
+          ...(mode === 'restore' ? ['resume'] : []),
+          ...LAUNCH_OVERRIDES,
+          ...(mode === 'restore' ? ['abc'] : []),
+        ]);
+      },
+    );
   });
 
   describe('EffortCapability', () => {
@@ -262,21 +303,23 @@ describe('CodexAdapter', () => {
       expect(adapter.applyEffort([], env, 'low').env).toBe(env);
     });
 
-    it('final three-layer argv ordering — new: [prelude, ...args-with-effort]', () => {
-      // buildLaunchArgs prepends the prelude; applyEffort output is the middle.
+    it('places update policy after effort args for new sessions', () => {
+      // Launch policy remains authoritative after effort injection.
       const withEffort = adapter.applyEffort(['-m', 'o3'], {}, 'high').argv;
       const { argv } = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: withEffort });
       expect(argv).toEqual([
         '-c',
-        'check_for_update_on_startup=false',
-        '-c',
         'model_reasoning_effort=high',
         '-m',
         'o3',
+        '-c',
+        'check_for_update_on_startup=false',
+        '-c',
+        'tui.alternate_screen="never"',
       ]);
     });
 
-    it('final three-layer argv ordering — restore: [prelude, resume, ...args-with-effort, sessionId]', () => {
+    it('places update policy after effort args and before the resume ID', () => {
       const withEffort = adapter.applyEffort(['-m', 'o3'], {}, 'high').argv;
       const { argv } = adapter.buildLaunchArgs({
         mode: 'restore',
@@ -284,13 +327,15 @@ describe('CodexAdapter', () => {
         profileOptionArgs: withEffort,
       });
       expect(argv).toEqual([
-        '-c',
-        'check_for_update_on_startup=false',
         'resume',
         '-c',
         'model_reasoning_effort=high',
         '-m',
         'o3',
+        '-c',
+        'check_for_update_on_startup=false',
+        '-c',
+        'tui.alternate_screen="never"',
         'sess-1',
       ]);
     });

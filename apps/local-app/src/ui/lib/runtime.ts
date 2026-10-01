@@ -1,10 +1,8 @@
-export type DevchainRuntimeMode = 'normal' | 'orchestrator' | 'main' | string;
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 export interface RuntimeInfo {
-  mode: DevchainRuntimeMode;
   version: string;
   bootId: string;
-  dockerAvailable: boolean;
   runtimeToken?: string;
   features?: {
     cloudUi?: boolean;
@@ -15,9 +13,13 @@ export interface RuntimeInfo {
 }
 
 export async function fetchRuntimeInfo(): Promise<RuntimeInfo> {
-  const response = await fetch('/api/runtime', {
-    headers: { accept: 'application/json' },
-  });
+  const response = await apiFetch(
+    '/api/runtime',
+    {
+      headers: { accept: 'application/json' },
+    },
+    { backend: HOME_BACKEND },
+  );
   if (!response.ok) {
     throw new Error(`Failed to fetch runtime info: HTTP ${response.status}`);
   }

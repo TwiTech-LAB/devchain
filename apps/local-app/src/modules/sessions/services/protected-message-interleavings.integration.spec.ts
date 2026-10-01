@@ -13,6 +13,7 @@ import {
   type ProcessExecutorOptions,
 } from '../../terminal/services/process-executor/process-executor.port';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import { FOLLOW_NOTE } from '../../../common/follow-note';
 import type { SessionDto } from '../dtos/sessions.dto';
 import { DeliveryFailureNotifierService } from './delivery-failure-notifier.service';
 import { MessageActivityStreamService } from './message-activity-stream.service';
@@ -196,6 +197,7 @@ describe('protected message ownership interleavings', () => {
           useValue: {
             getMessagePoolConfig: jest.fn(() => config),
             getMessagePoolConfigForProject: jest.fn(() => config),
+            getFollowNoteEnabled: jest.fn(() => true),
           },
         },
         {
@@ -220,7 +222,12 @@ describe('protected message ownership interleavings', () => {
         },
         {
           provide: ProviderAdapterFactory,
-          useValue: { getPostPasteDelayMsForAgent: jest.fn(async () => 0) },
+          useValue: {
+            getRuntimePromptBehaviorForAgent: jest.fn(async () => ({
+              postPasteDelayMs: 0,
+              followNote: true,
+            })),
+          },
         },
         {
           provide: DeliveryFailureNotifierService,
@@ -297,11 +304,12 @@ describe('protected message ownership interleavings', () => {
     await expect(protectedDelivery).resolves.toMatchObject({ status: 'delivered' });
     await laterHumanText;
 
-    expect(pane.effects).toHaveLength(3);
+    expect(pane.effects).toHaveLength(4);
     expect(pane.effects[0]).toContain('paste:');
     expect(pane.effects[0]).toContain('protected before typing');
-    expect(pane.effects[1]).toBe('=tmux-1::keys:Enter');
-    expect(pane.effects[2]).toBe('=tmux-1::keys:-l -- later human text');
+    expect(pane.effects[1]).toBe(`=tmux-1::keys:-l -- ${FOLLOW_NOTE}`);
+    expect(pane.effects[2]).toBe('=tmux-1::keys:Enter');
+    expect(pane.effects[3]).toBe('=tmux-1::keys:-l -- later human text');
     expect(messagePool.getPoolDetails()).toEqual([]);
     expect(messagePool.getMessageLog()).toEqual([
       expect.objectContaining({ text: 'protected before typing', status: 'delivered' }),
@@ -386,6 +394,7 @@ describe('protected message ownership interleavings', () => {
     expect(stoppedSettled).toBe(false);
     expect(messagePool.getMessageLog()[0]).toMatchObject({ status: 'queued' });
     held.release();
+    await jest.advanceTimersByTimeAsync(1_000);
     await stopped;
 
     expect(pane.effects[0]).toContain('finish held paste');

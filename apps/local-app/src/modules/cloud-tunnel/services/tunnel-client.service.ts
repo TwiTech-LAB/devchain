@@ -26,7 +26,9 @@ import {
 } from '@devchain/shared';
 import { CloudSessionManagerService } from '../../cloud/services/cloud-session-manager.service';
 import { RefreshGateService } from '../../cloud/services/refresh-gate.service';
+import { InstanceLabelService } from '../../cloud/services/instance-label.service';
 import { E2eeKeypairService } from '../../e2ee/services/e2ee-keypair.service';
+import { HostHelperService } from '../../remotes/host/host-helper.service';
 import { TunnelKeypairService } from './tunnel-keypair.service';
 import { TunnelHandlerService } from './tunnel-handler.service';
 import { TunnelRpcCryptoService, E2EE_REQUIRED_POLICY } from './tunnel-rpc-crypto.service';
@@ -107,6 +109,11 @@ export class TunnelClientService
     private readonly e2eeKeypair: E2eeKeypairService,
     private readonly rpcCrypto: TunnelRpcCryptoService,
     private readonly workspaceMode: WorkspaceModeCoordinatorService,
+    private readonly instanceLabel: InstanceLabelService,
+    // Claimed-host state: the only source for the attest `role` field. Absent
+    // role means an old Local App, home, or a manual remote — never inferred
+    // from the label.
+    private readonly hostHelper: HostHelperService,
     // PC-side E2EE-required policy (Phase 2, Task:2): advertised in the attest capability
     // descriptor so the mobile negotiates consistently, AND enforced by TunnelRpcCryptoService.
     @Optional() @Inject(E2EE_REQUIRED_POLICY) private readonly e2eeRequired: boolean = false,
@@ -495,7 +502,9 @@ export class TunnelClientService
           type: 'attest',
           publicKey: kp.publicKey,
           signature,
-          label: hostname(),
+          // The user-set instance name when configured (usually the name home
+          // gave this remote); falls back to the machine hostname.
+          label: this.instanceLabel.getLabel() ?? hostname(),
           // v2 = RPC + server→client push. The bridge accepts both v1 and v2, so this
           // bump is backward-compatible (sub-epic 2: tunnel.gateway handleAttest).
           protocolVersion: TUNNEL_PROTOCOL_VERSION_PUSH,
@@ -508,6 +517,9 @@ export class TunnelClientService
           workspaceSupport: buildWorkspaceSupportCapability(),
           multiWorkspaceMode: workspaceMode.multiWorkspaceMode,
           workspaceModePending: workspaceMode.failClosedPending,
+          // 'host' only when this instance is a claimed VM; the field is
+          // omitted everywhere else so absence stays unambiguous.
+          ...(this.hostHelper.isClaimedHost() ? { role: 'host' as const } : {}),
         }),
       );
     } catch (err) {

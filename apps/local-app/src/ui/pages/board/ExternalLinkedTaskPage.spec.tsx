@@ -22,7 +22,6 @@ const mockSelection: Record<string, unknown> = {
   selectedProjectId: 'project-1',
   selectedProject: { id: 'project-1' },
   projectsLoading: false,
-  isWorkspaceSelectionLocked: false,
   projectActivation: null,
   activateProject: activateProjectMock,
 };
@@ -190,7 +189,6 @@ describe('ExternalLinkedTaskPage route ownership', () => {
       selectedProjectId: 'project-1',
       selectedProject: { id: 'project-1' },
       projectsLoading: false,
-      isWorkspaceSelectionLocked: false,
       projectActivation: null,
       activateProject: activateProjectMock,
     });
@@ -286,24 +284,6 @@ describe('ExternalLinkedTaskPage route ownership', () => {
     expect(screen.queryByRole('link', { name: /Settings.*Integrations/ })).not.toBeInTheDocument();
     expect(screen.queryByText('Task dialog')).not.toBeInTheDocument();
     expect(await axe(baseElement)).toHaveNoViolations();
-  });
-
-  it('does not activate away from a locked workspace', () => {
-    Object.assign(mockSelection, { isWorkspaceSelectionLocked: true });
-    useLinkedTaskOwnershipMock.mockReturnValue(
-      ownershipValue({
-        project: { id: 'project-2', workspaceId: 'workspace-2', name: 'Platform' },
-      }),
-    );
-    renderRoute('jira', 'epic-1', { boardReturnUrl: '/board?st=locked&v=list' });
-
-    expect(activateProjectMock).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert')).toHaveTextContent('Open the owning project');
-    expect(useIntegrationConnectionsMock).toHaveBeenCalledWith({
-      projectId: null,
-      enabled: false,
-    });
-    expectDevChainSwitch('/board?st=locked&v=list');
   });
 
   it('offers an explicit retry when cross-workspace activation fails', () => {

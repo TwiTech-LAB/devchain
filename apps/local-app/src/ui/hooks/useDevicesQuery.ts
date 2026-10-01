@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
 import { useCloudConnection } from './useCloudConnection';
 
 export interface Device {
@@ -21,15 +22,16 @@ export type DevicesQueryState =
     }
   | { status: 'ready'; devices: Device[]; devicesAvailable: true; refetch: () => void };
 
-export function useDevicesQuery(): DevicesQueryState {
-  const { status: cloudStatus } = useCloudConnection();
+export function useDevicesQuery(backend: BackendId = HOME_BACKEND): DevicesQueryState {
+  const { status: cloudStatus } = useCloudConnection(backend);
   const query = useQuery({
     // Scope the cache by current userId so an account switch never reuses the
     // previous account's device list (which would wrongly hide the download CTA
-    // for a new account that has zero devices).
-    queryKey: ['cloud', 'devices', cloudStatus.userId ?? null],
+    // for a new account that has zero devices). The backend id leads the key so
+    // switching the Cloud page target never shows the other instance's devices.
+    queryKey: [backend, 'cloud', 'devices', cloudStatus.userId ?? null],
     queryFn: async (): Promise<{ devices: Device[] } | null> => {
-      const res = await fetch('/api/cloud/devices');
+      const res = await apiFetch('/api/cloud/devices', undefined, { backend });
       if (res.status === 404 || res.status === 501) return null;
       if (!res.ok) throw new Error(`devices:${res.status}`);
       return res.json();

@@ -138,7 +138,7 @@ describe('AgentRow', () => {
     expect(screen.getByText('Sonnet')).toHaveClass('text-muted-foreground');
     expect(screen.queryByText('Alpha (Sonnet)')).not.toBeInTheDocument();
     expect(screen.getByText('Reviewing code')).toBeInTheDocument();
-    expect(container.querySelector('svg.lucide-circle.text-green-500')).toBeNull();
+    expect(container.querySelector('svg.lucide-circle')).toBeNull();
   });
 
   it('uses a grayscaled provider icon for offline agents', () => {
@@ -554,7 +554,7 @@ describe('AgentRow', () => {
       expect(accent.className).toContain('h-1/2');
       expect(accent.className).toContain('w-0.5');
       expect(accent.className).toContain('bg-gradient-to-b');
-      expect(accent.className).toContain('from-amber-700');
+      expect(accent.className).toContain('from-status-warn');
       expect(accent.className).toContain('to-transparent');
       // The accent is a plain span; the row gains no nested interactive control.
       expect(accent!.querySelector('button, [role="button"], a')).toBeNull();
@@ -589,9 +589,9 @@ describe('AgentRow', () => {
       expect(marker(row)).not.toBeNull();
       // The restart warning icon renders inline; its tooltip copy opens on
       // hover, so presence is asserted through the icon itself.
-      expect(row.querySelector('svg.text-yellow-500')).not.toBeNull();
-      // The amber fade overlays the top half; the full-height selected rail
-      // remains blue underneath and visible through the transparent end.
+      expect(row.querySelector('svg.text-status-warn')).not.toBeNull();
+      // The warning fade overlays the top half; the full-height selected rail
+      // retains its primary color underneath and visible through the transparent end.
       expect(row.className).toContain('relative');
       expect(row.className).toContain('border-r-primary');
       expect(row.className).not.toContain('pr-5');

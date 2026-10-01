@@ -6,6 +6,7 @@ import type { SessionCrashedEventPayload } from '../../events/catalog/session.cr
 import type { SessionStoppedEventPayload } from '../../events/catalog/session.stopped';
 import { EventsService } from '../../events/services/events.service';
 import type { CommittedEvent } from '../../events/services/durable-event-registry.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import { EpicTimeStore, type EpicTimeActivation } from './epic-time.store';
 
 const logger = createLogger('AgentTimeAccountingService');
@@ -28,6 +29,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
   constructor(
     private readonly store: EpicTimeStore,
     private readonly events: EventsService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -79,6 +81,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
           EPIC_TIME_DELIVERY_KEY,
           activation.idleTimeoutMs,
           new Date(),
+          { excludedProjectIds: this.admission.listRemoteOwnedProjectIds() },
         );
       }
     });
@@ -144,13 +147,17 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
       if (!activation || this.destroyed) {
         return;
       }
+      const excludedProjectIds = this.admission.listRemoteOwnedProjectIds();
       await this.store.reconcileSession(
         sessionId,
         activation.trackingStartedAt,
         activation.idleTimeoutMs,
         now,
+        { excludedProjectIds },
       );
-      await this.store.processTeamBatches(EPIC_TIME_DELIVERY_KEY, activation.idleTimeoutMs, now);
+      await this.store.processTeamBatches(EPIC_TIME_DELIVERY_KEY, activation.idleTimeoutMs, now, {
+        excludedProjectIds,
+      });
     });
   }
 
@@ -160,7 +167,12 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
       if (!activation || this.destroyed) {
         return;
       }
-      const sessionIds = this.store.listReconciliationSessionIds(activation.trackingStartedAt);
+      // A remote owns these projects' accounting; home only mirrors its settled rows.
+      const excludedProjectIds = this.admission.listRemoteOwnedProjectIds();
+      const sessionIds = this.store.listReconciliationSessionIds(
+        activation.trackingStartedAt,
+        excludedProjectIds,
+      );
       for (const sessionId of sessionIds) {
         if (this.destroyed) {
           return;
@@ -170,10 +182,15 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
           activation.trackingStartedAt,
           activation.idleTimeoutMs,
           now,
-          { forceCloseOpenSegment: options.forceCloseOpenSegments ?? false },
+          {
+            forceCloseOpenSegment: options.forceCloseOpenSegments ?? false,
+            excludedProjectIds,
+          },
         );
       }
-      await this.store.processTeamBatches(EPIC_TIME_DELIVERY_KEY, activation.idleTimeoutMs, now);
+      await this.store.processTeamBatches(EPIC_TIME_DELIVERY_KEY, activation.idleTimeoutMs, now, {
+        excludedProjectIds,
+      });
     });
   }
 

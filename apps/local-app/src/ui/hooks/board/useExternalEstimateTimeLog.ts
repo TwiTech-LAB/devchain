@@ -8,7 +8,6 @@ import type {
   ExternalEstimateResolveOperationResponse,
 } from '@/modules/epic-time/models/epic-time.models';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import type { ExternalBoardProvider } from '@/ui/lib/external-board';
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import { integrationConnectionGeneration } from '@/ui/lib/external-time';
@@ -77,9 +76,11 @@ function mutationHeaders(
 }
 
 /**
- * Main-runtime-only incremental estimate checkpoint controller. Disabled
- * runtimes observe an isolated key and expose no main-cache data; every
- * mutation carries an immutable project/provider/task/scope/epoch context.
+ * Incremental estimate checkpoint controller. A disabled caller (passed
+ * `enabled: false`, or one still missing its project/connection/task/scope
+ * context) observes a disabled-scope key and exposes no active-cache data;
+ * every mutation carries an immutable project/provider/task/scope/epoch
+ * context.
  */
 export function useExternalEstimateTimeLog(
   provider: ExternalBoardProvider,
@@ -98,20 +99,17 @@ export function useExternalEstimateTimeLog(
 ) {
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
-  const { runtimeResolved, apiBase } = useOptionalWorktreeTab();
   const scopedProjectId = validIntegrationProjectId(projectId);
   const generation = integrationConnectionGeneration(connectionEpoch);
   const normalizedScopeKey = remoteScopeKey?.trim() ?? '';
   const admitted =
     enabled &&
-    runtimeResolved &&
-    apiBase === '' &&
     scopedProjectId !== null &&
     connectionEpoch !== null &&
     generation !== null &&
     taskId !== null &&
     normalizedScopeKey.length > 0;
-  const runtimeScope = admitted ? 'main' : 'isolated';
+  const runtimeScope = admitted ? 'active' : 'disabled';
   const scopeId = `${runtimeScope}\u0000${scopedProjectId ?? ''}\u0000${provider}\u0000${connectionEpoch ?? ''}\u0000${taskId ?? ''}\u0000${normalizedScopeKey}`;
   const stateKey = useMemo(
     () =>
@@ -139,7 +137,6 @@ export function useExternalEstimateTimeLog(
           headers: { 'X-DevChain-Connection-Epoch': generation ?? '' },
         },
         'The estimate checkpoint could not be loaded.',
-        '',
         apiFetch,
       ),
     enabled: admitted,
@@ -295,7 +292,6 @@ export function useExternalEstimateTimeLog(
           }),
         },
         'The new estimate time could not be logged.',
-        '',
         apiFetch,
       ),
     onSuccess: async (result, request) => {
@@ -336,7 +332,6 @@ export function useExternalEstimateTimeLog(
           }),
         },
         'The logged estimate could not be updated.',
-        '',
         apiFetch,
       ),
     onSuccess: (state, request) => invalidateCheckpoint(request, state),
@@ -359,7 +354,6 @@ export function useExternalEstimateTimeLog(
           }),
         },
         'The estimate operation could not be resolved.',
-        '',
         apiFetch,
       ),
     onSuccess: async (result, request) => {
@@ -389,7 +383,6 @@ export function useExternalEstimateTimeLog(
           }),
         },
         'The previous logged time could not be assigned.',
-        '',
         apiFetch,
       ),
     onSuccess: (state, request) => invalidateCheckpoint(request, state),

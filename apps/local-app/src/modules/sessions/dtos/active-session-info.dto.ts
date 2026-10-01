@@ -10,6 +10,7 @@ export interface ActiveSessionInfo {
   readonly lastActivityAt: string | null;
   readonly activityState?: 'idle' | 'busy' | null;
   readonly name?: string | null;
+  readonly providerNameAtLaunch?: string | null;
 }
 
 export interface SessionLaunchErrorDetails {

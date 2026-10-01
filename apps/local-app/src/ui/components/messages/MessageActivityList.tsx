@@ -10,6 +10,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Badge } from '@/ui/components/ui/badge';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { cn } from '@/ui/lib/utils';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
@@ -130,18 +131,19 @@ function groupByBatch(messages: MessageLogPreview[] = []): MessageGroup[] {
 
 interface StatusBadgeProps {
   status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
+  className?: string;
 }
 
-function StatusBadge({ status }: StatusBadgeProps) {
+export function StatusBadge({ status, className }: StatusBadgeProps) {
   const variants: Record<string, string> = {
     queued: 'bg-muted text-muted-foreground',
-    delivered: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/40',
-    failed: 'bg-destructive/10 text-destructive border-destructive/40',
-    unconfirmed: 'bg-amber-500/10 text-amber-600 border-amber-500/40',
+    delivered: TONE_CLASSES.ok,
+    failed: TONE_CLASSES.error,
+    unconfirmed: TONE_CLASSES.warn,
   };
 
   return (
-    <Badge variant="outline" className={cn('text-xs uppercase', variants[status])}>
+    <Badge variant="outline" className={cn('text-xs uppercase', variants[status], className)}>
       {status}
     </Badge>
   );

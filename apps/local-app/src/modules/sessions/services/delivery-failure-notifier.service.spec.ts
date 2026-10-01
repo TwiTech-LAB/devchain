@@ -21,6 +21,7 @@ import { FAILURE_NOTICE_SOURCE } from './sessions-message-pool.service';
 import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import type { SessionsService } from './sessions.service';
 import type { PooledMessage } from './sessions-message-pool.service';
+import type { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 
 function makeMessage(overrides: Partial<PooledMessage> = {}): PooledMessage {
   return {
@@ -37,6 +38,9 @@ describe('DeliveryFailureNotifierService', () => {
   let notifier: DeliveryFailureNotifierService;
   let mockTerminalIO: jest.Mocked<Pick<TerminalIOService, 'deliverImmediate'>>;
   let mockSessions: jest.Mocked<Pick<SessionsService, 'listActiveSessions'>>;
+  let mockProviderAdapterFactory: jest.Mocked<
+    Pick<ProviderAdapterFactory, 'getRuntimePromptBehaviorForAgent'>
+  >;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -51,9 +55,15 @@ describe('DeliveryFailureNotifierService', () => {
         ]),
     };
 
+    // The sender is a Claude agent unless a test says otherwise.
+    mockProviderAdapterFactory = {
+      getRuntimePromptBehaviorForAgent: jest.fn().mockResolvedValue({ followNote: true }),
+    };
+
     notifier = new DeliveryFailureNotifierService(
       mockTerminalIO as unknown as TerminalIOService,
       mockSessions as unknown as SessionsService,
+      mockProviderAdapterFactory as unknown as ProviderAdapterFactory,
     );
   });
 
@@ -68,7 +78,26 @@ describe('DeliveryFailureNotifierService', () => {
     expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledWith(
       { name: 'tmux-sender-1' },
       expect.stringContaining('[Delivery Failed]'),
-      expect.objectContaining({ confirm: false }),
+      expect.objectContaining({ confirm: false, followNote: true }),
+    );
+    expect(mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent).toHaveBeenCalledWith(
+      'sender-1',
+    );
+  });
+
+  it("sends the notice without the follow note when the sender's provider does not use it", async () => {
+    mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
+
+    await notifier.notifySendersOfFailure(
+      [makeMessage({ senderAgentId: 'sender-1' })],
+      'recipient-1',
+      'No active session',
+    );
+
+    expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledWith(
+      { name: 'tmux-sender-1' },
+      expect.stringContaining('[Delivery Failed]'),
+      expect.objectContaining({ followNote: false }),
     );
   });
 

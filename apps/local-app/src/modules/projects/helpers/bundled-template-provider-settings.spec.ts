@@ -13,7 +13,7 @@ describe.each(TEMPLATE_NAMES)('%s provider settings', (templateName) => {
   it('exports only the intentional bundled Claude provider settings', () => {
     const parsed = ExportSchema.parse(loadTemplate());
 
-    expect(parsed.providerSettings).toEqual([{ name: 'claude', autoCompactThreshold: 50 }]);
+    expect(parsed.providerSettings).toEqual([{ name: 'claude', autoCompactThreshold: 60 }]);
   });
 
   it('preserves the GLM config boundary exactly', () => {

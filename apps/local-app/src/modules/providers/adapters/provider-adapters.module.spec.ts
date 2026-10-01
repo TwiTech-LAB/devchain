@@ -12,7 +12,7 @@ describe('ProviderAdaptersModule', () => {
     expect(factory).toBeDefined();
     expect(factory.getAdapter('claude')).toBeDefined();
     expect(factory.getAdapter('copilot')).toBeDefined();
-    expect(typeof factory.getPostPasteDelayMsForAgent).toBe('function');
+    expect(typeof factory.getRuntimePromptBehaviorForAgent).toBe('function');
 
     await module.close();
   });

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Badge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
+import { cn } from '@/ui/lib/utils';
 import { Button } from '@/ui/components/ui/button';
 import {
   Tooltip,
@@ -10,6 +12,7 @@ import {
 } from '@/ui/components/ui/tooltip';
 import { Download, Check, Loader2, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
 import { isLessThan } from '@devchain/shared';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 interface TemplateVersion {
   version: string;
@@ -26,22 +29,27 @@ interface VersionListProps {
 }
 
 async function fetchCachedVersions(slug: string) {
-  const res = await fetch(`/api/registry/cache/${encodeURIComponent(slug)}/versions`);
+  const res = await apiFetch(
+    `/api/registry/cache/${encodeURIComponent(slug)}/versions`,
+    undefined,
+    { backend: HOME_BACKEND },
+  );
   if (!res.ok) throw new Error('Failed to fetch cached versions');
   return res.json();
 }
 
 async function downloadTemplateVersion(slug: string, version: string) {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/registry/download/${encodeURIComponent(slug)}/${encodeURIComponent(version)}`,
     { method: 'POST' },
+    { backend: HOME_BACKEND },
   );
   if (!res.ok) throw new Error('Failed to download template');
   return res.json();
 }
 
 async function fetchAppVersion(): Promise<string | null> {
-  const res = await fetch('/health');
+  const res = await apiFetch('/health', undefined, { backend: 'home' });
   if (!res.ok) return null;
   const data = await res.json();
   return data?.version || null;
@@ -131,13 +139,12 @@ export function VersionList({ versions, slug }: VersionListProps) {
               {!isCompatible && version.minDevchainVersion && (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Badge
-                      variant="outline"
-                      className="gap-1 border-amber-500/50 bg-amber-500/10 text-amber-600 text-xs"
-                    >
-                      <AlertTriangle className="h-3 w-3" />
-                      Incompatible
-                    </Badge>
+                    <span className="inline-flex w-fit rounded-full bg-background">
+                      <Badge variant="outline" className={cn('gap-1 text-xs', TONE_CLASSES.warn)}>
+                        <AlertTriangle className="h-3 w-3" />
+                        Incompatible
+                      </Badge>
+                    </span>
                   </TooltipTrigger>
                   <TooltipContent>
                     <p>

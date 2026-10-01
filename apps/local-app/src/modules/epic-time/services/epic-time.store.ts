@@ -82,6 +82,12 @@ export interface EpicTimeReconciliationResult {
 
 export interface EpicTimeReconciliationOptions {
   forceCloseOpenSegment?: boolean;
+  /** Projects whose accounting this instance must not touch (another instance owns them). */
+  excludedProjectIds?: readonly string[];
+}
+
+export interface EpicTimeBatchProcessingOptions {
+  excludedProjectIds?: readonly string[];
 }
 
 export interface EpicTimeTaskTouch {
@@ -114,12 +120,35 @@ export interface EpicTimeTerminationResetInput {
   idleTimeoutMs: number;
   deliveryKey: string;
   now: Date;
+  excludedProjectIds?: readonly string[];
 }
 
 export interface EpicTimeTerminationResetResult {
   /** Workspace of the agent's current project; null when nothing was deleted. */
   workspaceId: string | null;
   deletedSegments: number;
+}
+
+export interface EpicTimeProjectSettleInput {
+  projectId: string;
+  trackingStartedAt: string;
+  idleTimeoutMs: number;
+  deliveryKey: string;
+  /**
+   * Finalize (or cancel, when the team identity changed) every team batch still
+   * left after the normal pass, even while its event barrier is pending.
+   */
+  force: boolean;
+  now?: Date;
+}
+
+export interface EpicTimeProjectSettleResult {
+  closedSegments: number;
+  finalizedBatchIds: string[];
+  cancelledBatchIds: string[];
+  /** What is still unsettled after this pass. */
+  openSegments: number;
+  openBatches: number;
 }
 
 export interface EpicTimeScope {
@@ -196,6 +225,15 @@ interface TeamBatchRow {
   sealed_at: string | null;
 }
 
+/** Which projects a pass over sessions or team batches covers. */
+type ProjectScope = { only: string } | { excluded: readonly string[] };
+
+interface TeamBatchPass {
+  sealedBatches: number;
+  finalizedBatchIds: string[];
+  cancelledBatchIds: string[];
+}
+
 interface LaneWinnerRow {
   agent_id_snapshot: string;
   duration_ms: number;
@@ -255,6 +293,17 @@ function buildBufferSnapshotToken(
     .digest('hex');
 }
 
+/** SQL predicate on `column` for a project scope, with its single bound parameter. */
+function projectScopeFilter(scope: ProjectScope, column: string): { sql: string; param: string } {
+  if ('only' in scope) {
+    return { sql: `${column} = ?`, param: scope.only };
+  }
+  return {
+    sql: `NOT EXISTS (SELECT 1 FROM json_each(?) excluded WHERE excluded.value = ${column})`,
+    param: JSON.stringify(scope.excluded),
+  };
+}
+
 @Injectable()
 export class EpicTimeStore {
   private readonly rawClient: Database.Database;
@@ -305,7 +354,18 @@ export class EpicTimeStore {
     };
   }
 
-  listReconciliationSessionIds(trackingStartedAt: string): string[] {
+  listReconciliationSessionIds(
+    trackingStartedAt: string,
+    excludedProjectIds: readonly string[] = [],
+  ): string[] {
+    return this.selectReconciliationSessionIds(trackingStartedAt, {
+      excluded: excludedProjectIds,
+    });
+  }
+
+  private selectReconciliationSessionIds(trackingStartedAt: string, scope: ProjectScope): string[] {
+    const sessionProject = projectScopeFilter(scope, 'COALESCE(a.project_id, e.project_id)');
+    const segmentProject = projectScopeFilter(scope, 'project_id');
     return (
       this.rawClient
         .prepare(
@@ -314,17 +374,23 @@ export class EpicTimeStore {
              SELECT s.id AS session_id
              FROM sessions s
              LEFT JOIN epic_time_session_watermarks w ON w.session_id = s.id
+             LEFT JOIN agents a ON a.id = s.agent_id
+             LEFT JOIN epics e ON e.id = s.epic_id
              WHERE s.last_activity_at IS NOT NULL
                AND s.last_activity_at > ?
                AND (w.last_activity_at IS NULL OR s.last_activity_at > w.last_activity_at)
+               AND ${sessionProject.sql}
              UNION
              SELECT session_id_snapshot AS session_id
              FROM epic_time_segments
              WHERE closed_at IS NULL
+               AND ${segmentProject.sql}
            )
            ORDER BY session_id`,
         )
-        .all(trackingStartedAt) as Array<{ session_id: string }>
+        .all(trackingStartedAt, sessionProject.param, segmentProject.param) as Array<{
+        session_id: string;
+      }>
     ).map((row) => row.session_id);
   }
 
@@ -355,6 +421,20 @@ export class EpicTimeStore {
     const nowIso = now.toISOString();
     let openSegment = this.loadOpenSegment(sessionId);
     const session = this.loadSession(sessionId);
+    const excluded = options.excludedProjectIds ?? [];
+    if (
+      excluded.length > 0 &&
+      [session?.project_id ?? session?.epic_project_id, openSegment?.project_id].some(
+        (projectId) => projectId && excluded.includes(projectId),
+      )
+    ) {
+      return {
+        sessionId,
+        action: 'noop',
+        watermark: this.loadWatermark(sessionId)?.last_activity_at ?? null,
+        segmentId: openSegment?.id ?? null,
+      };
+    }
     if (!session) {
       if (openSegment) {
         this.closeSegment(openSegment.id, openSegment.last_activity_at, nowIso);
@@ -527,10 +607,73 @@ export class EpicTimeStore {
     deliveryKey: string,
     idleTimeoutMs: number,
     now = new Date(),
+    options: EpicTimeBatchProcessingOptions = {},
   ): Promise<EpicTimeBatchProcessingResult> {
-    return this.transactionRunner.runImmediateQueued(() =>
-      this.processTeamBatchesCore(deliveryKey, idleTimeoutMs, now),
-    );
+    return this.transactionRunner.runImmediateQueued(() => {
+      const pass = this.processTeamBatchesCore(deliveryKey, idleTimeoutMs, now, {
+        excluded: options.excludedProjectIds ?? [],
+      });
+      return {
+        sealedBatches: pass.sealedBatches,
+        finalizedBatches: pass.finalizedBatchIds.length,
+        cancelledBatches: pass.cancelledBatchIds.length,
+      };
+    });
+  }
+
+  /**
+   * Settles one project's time for a handoff to another instance: closes every
+   * open segment, then seals and finalizes its team batches like a sweep. With
+   * `force`, batches still waiting on their event barrier are finalized or
+   * cancelled now. Sessions of the project must already be stopped.
+   */
+  async settleProjectTime(input: EpicTimeProjectSettleInput): Promise<EpicTimeProjectSettleResult> {
+    const now = input.now ?? new Date();
+    const nowIso = now.toISOString();
+    const scope: ProjectScope = { only: input.projectId };
+    return this.transactionRunner.runImmediateQueued(() => {
+      let closedSegments = 0;
+      for (const sessionId of this.selectReconciliationSessionIds(input.trackingStartedAt, scope)) {
+        const result = this.reconcileSessionCore(
+          sessionId,
+          input.trackingStartedAt,
+          input.idleTimeoutMs,
+          now,
+          { forceCloseOpenSegment: true },
+        );
+        if (result.action.endsWith('closed')) closedSegments += 1;
+      }
+
+      const pass = this.processTeamBatchesCore(input.deliveryKey, input.idleTimeoutMs, now, scope);
+      if (input.force) {
+        for (const batch of this.loadTeamBatches(null, scope)) {
+          this.closeTeamBatchSegments(batch.id, nowIso);
+          if (this.isTeamBatchIdentityCurrent(batch)) {
+            this.finalizeTeamBatch(batch, nowIso);
+            pass.finalizedBatchIds.push(batch.id);
+          } else {
+            this.cancelTeamBatch(batch.id, nowIso);
+            pass.cancelledBatchIds.push(batch.id);
+          }
+        }
+      }
+
+      const remaining = this.rawClient
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM epic_time_segments
+              WHERE project_id = ? AND closed_at IS NULL) AS open_segments,
+             (SELECT COUNT(*) FROM epic_time_team_batches WHERE project_id = ?) AS open_batches`,
+        )
+        .get(input.projectId, input.projectId) as { open_segments: number; open_batches: number };
+      return {
+        closedSegments,
+        finalizedBatchIds: pass.finalizedBatchIds,
+        cancelledBatchIds: pass.cancelledBatchIds,
+        openSegments: remaining.open_segments,
+        openBatches: remaining.open_batches,
+      };
+    });
   }
 
   /**
@@ -543,24 +686,19 @@ export class EpicTimeStore {
     deliveryKey: string,
     idleTimeoutMs: number,
     now: Date,
-  ): EpicTimeBatchProcessingResult {
+    scope: ProjectScope,
+  ): TeamBatchPass {
     const nowIso = now.toISOString();
     const activeAfter = new Date(now.getTime() - idleTimeoutMs).toISOString();
     let sealedBatches = 0;
-    let finalizedBatches = 0;
-    let cancelledBatches = 0;
-    const openBatches = this.loadTeamBatches(false);
+    const finalizedBatchIds: string[] = [];
+    const cancelledBatchIds: string[] = [];
+    const openBatches = this.loadTeamBatches(false, scope);
     for (const batch of openBatches) {
       if (this.hasActiveEligibleMember(batch, activeAfter)) {
         continue;
       }
-      this.rawClient
-        .prepare(
-          `UPDATE epic_time_segments
-             SET closed_at = COALESCE(closed_at, last_activity_at), updated_at = ?
-             WHERE team_batch_id = ?`,
-        )
-        .run(nowIso, batch.id);
+      this.closeTeamBatchSegments(batch.id, nowIso);
       this.rawClient
         .prepare(
           `UPDATE epic_time_team_batches
@@ -583,20 +721,20 @@ export class EpicTimeStore {
       sealedBatches += 1;
     }
 
-    const sealed = this.loadTeamBatches(true);
+    const sealed = this.loadTeamBatches(true, scope);
     for (const batch of sealed) {
       if (this.batchHasPendingBarrier(batch.id, deliveryKey)) {
         continue;
       }
       if (!this.isTeamBatchIdentityCurrent(batch)) {
         this.cancelTeamBatch(batch.id, nowIso);
-        cancelledBatches += 1;
+        cancelledBatchIds.push(batch.id);
         continue;
       }
       this.finalizeTeamBatch(batch, nowIso);
-      finalizedBatches += 1;
+      finalizedBatchIds.push(batch.id);
     }
-    return { sealedBatches, finalizedBatches, cancelledBatches };
+    return { sealedBatches, finalizedBatchIds, cancelledBatchIds };
   }
 
   async recordTaskTouch(
@@ -815,15 +953,12 @@ export class EpicTimeStore {
    */
   runTerminationResetSync(input: EpicTimeTerminationResetInput): EpicTimeTerminationResetResult {
     const now = input.now;
-    this.reconcileSessionCore(
-      input.sessionId,
-      input.trackingStartedAt,
-      input.idleTimeoutMs,
-      now,
-      {},
-    );
-    this.processTeamBatchesCore(input.deliveryKey, input.idleTimeoutMs, now);
-    if (!input.agentId) {
+    const excluded = input.excludedProjectIds ?? [];
+    this.reconcileSessionCore(input.sessionId, input.trackingStartedAt, input.idleTimeoutMs, now, {
+      excludedProjectIds: excluded,
+    });
+    this.processTeamBatchesCore(input.deliveryKey, input.idleTimeoutMs, now, { excluded });
+    if (!input.agentId || this.agentProjectIn(input.agentId, excluded)) {
       return { workspaceId: null, deletedSegments: 0 };
     }
     const deleted = this.rawClient
@@ -1090,16 +1225,39 @@ export class EpicTimeStore {
     return batch;
   }
 
-  private loadTeamBatches(sealed: boolean): TeamBatchRow[] {
+  /** `sealed` null loads open and sealed batches alike. */
+  private loadTeamBatches(sealed: boolean | null, scope: ProjectScope): TeamBatchRow[] {
+    const project = projectScopeFilter(scope, 'project_id');
+    let sealedFilter = '';
+    if (sealed === true) sealedFilter = 'sealed_at IS NOT NULL AND';
+    if (sealed === false) sealedFilter = 'sealed_at IS NULL AND';
     return this.rawClient
       .prepare(
         `SELECT id, project_id, team_id_snapshot, team_name_snapshot,
                 lead_agent_id_snapshot, lead_agent_name_snapshot, started_at, sealed_at
          FROM epic_time_team_batches
-         WHERE sealed_at IS ${sealed ? 'NOT NULL' : 'NULL'}
+         WHERE ${sealedFilter} ${project.sql}
          ORDER BY started_at, id`,
       )
-      .all() as TeamBatchRow[];
+      .all(project.param) as TeamBatchRow[];
+  }
+
+  private closeTeamBatchSegments(batchId: string, nowIso: string): void {
+    this.rawClient
+      .prepare(
+        `UPDATE epic_time_segments
+           SET closed_at = COALESCE(closed_at, last_activity_at), updated_at = ?
+           WHERE team_batch_id = ?`,
+      )
+      .run(nowIso, batchId);
+  }
+
+  private agentProjectIn(agentId: string, projectIds: readonly string[]): boolean {
+    if (projectIds.length === 0) return false;
+    const agent = this.rawClient
+      .prepare(`SELECT project_id FROM agents WHERE id = ?`)
+      .get(agentId) as { project_id: string } | undefined;
+    return agent !== undefined && projectIds.includes(agent.project_id);
   }
 
   private hasActiveEligibleMember(batch: TeamBatchRow, activeAfter: string): boolean {

@@ -1,0 +1,25 @@
+# Serves an unclaimed DevChain host VM over HTTPS: GET /api/runtime and POST /api/host/claim.
+# Once claim.json exists, devchain-host.service owns the port instead.
+[Unit]
+Description=DevChain host bootstrap (unclaimed VM)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/etc/devchain-host/claim.json
+
+[Service]
+Type=simple
+Environment=DEVCHAIN_BOOTSTRAP_PORT=3000
+# Creates /etc/devchain-host/tls/ on first start; `systemctl start` waits for it.
+ExecStartPre=/usr/local/bin/devchain-bootstrap --ensure-certificate
+ExecStart=/usr/local/bin/devchain-bootstrap
+Restart=on-failure
+RestartSec=5
+# A claim answers only after DevChain is up on the port, which systemd waits
+# for while it stops this unit for devchain-host.service. `mixed` sends
+# SIGTERM to the main process only: the systemctl call that started
+# devchain-host.service is still running in this unit then.
+TimeoutStopSec=240
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

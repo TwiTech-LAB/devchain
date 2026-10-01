@@ -44,6 +44,8 @@ import { sessionHumanPromptStateChangedEvent } from './session.human-prompt-stat
 import { integrationConnectionCreatedEvent } from './integration.connection.created';
 import { integrationConnectionUpdatedEvent } from './integration.connection.updated';
 import { integrationConnectionDeletedEvent } from './integration.connection.deleted';
+import { remoteProjectSyncedEvent } from './remote.project.synced';
+import { remoteBindingChangedEvent } from './remote.binding.changed';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
@@ -52,6 +54,10 @@ export { sessionRestoredEvent } from './session.restored';
 export type { SessionRestoredEventPayload } from './session.restored';
 export { scheduledEpicExecutedEvent } from './scheduled-epic.executed';
 export { agentMessageSentEvent } from './agent.message.sent';
+export { remoteProjectSyncedEvent } from './remote.project.synced';
+export type { RemoteProjectSyncedEventPayload } from './remote.project.synced';
+export { remoteBindingChangedEvent } from './remote.binding.changed';
+export type { RemoteBindingChangedEventPayload } from './remote.binding.changed';
 export type { AgentMessageSentEventPayload } from './agent.message.sent';
 export { sessionHumanPromptStateChangedEvent } from './session.human-prompt-state-changed';
 export type {
@@ -110,6 +116,8 @@ export const eventCatalog = {
   [integrationConnectionCreatedEvent.name]: integrationConnectionCreatedEvent.schema,
   [integrationConnectionUpdatedEvent.name]: integrationConnectionUpdatedEvent.schema,
   [integrationConnectionDeletedEvent.name]: integrationConnectionDeletedEvent.schema,
+  [remoteProjectSyncedEvent.name]: remoteProjectSyncedEvent.schema,
+  [remoteBindingChangedEvent.name]: remoteBindingChangedEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;
@@ -118,7 +126,7 @@ export type EventPayload<TName extends EventName> = z.infer<EventSchema<TName>>;
 export const eventNames = Object.keys(eventCatalog) as EventName[];
 
 // EventsService.publish enforces this policy. Direct EventLogService.recordPublished callers
-// bypass it; the only current production bypass is non-transient worktree activity.
+// bypass it.
 export const transientEventNames = [
   'epic.relations.invalidated',
   'epic.time.scope.invalidated',

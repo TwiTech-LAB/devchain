@@ -52,7 +52,7 @@ export function useEpicExternalSourcesBatch(
     return map;
   }, [query.data]);
 
-  // Disabled contexts (worktree, unresolved runtime, admission off) never see
-  // a main-tab cache entry's data.
+  // A disabled context (unresolved runtime or admission off) never reads the
+  // active scope's cached data.
   return { sources: enabled ? sources : undefined, query };
 }

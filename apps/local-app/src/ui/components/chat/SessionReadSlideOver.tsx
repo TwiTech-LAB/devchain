@@ -2,7 +2,6 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { useSessionTranscript } from '@/ui/hooks/useSessionTranscript';
 import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewerPanel';
-import { isPagedTranscriptEnabled } from '@/ui/hooks/usePagedTranscript';
 
 export interface SessionReadSlideOverProps {
   sessionId: string | null;
@@ -10,11 +9,7 @@ export interface SessionReadSlideOverProps {
 }
 
 export function SessionReadSlideOver({ sessionId, onClose }: SessionReadSlideOverProps) {
-  const pagedMode = isPagedTranscriptEnabled();
-  const { messages, chunks, metrics, isLoading, error, isLive, session } = useSessionTranscript(
-    sessionId,
-    { enableTranscript: !pagedMode },
-  );
+  const { metrics, isLive } = useSessionTranscript(sessionId);
 
   return (
     <DialogPrimitive.Root open={!!sessionId} onOpenChange={(open) => !open && onClose()}>
@@ -40,16 +35,7 @@ export function SessionReadSlideOver({ sessionId, onClose }: SessionReadSlideOve
           </div>
 
           <div className="flex-1 min-h-0">
-            <SessionViewerPanel
-              sessionId={sessionId}
-              messages={messages}
-              chunks={chunks}
-              metrics={metrics}
-              isLive={isLive}
-              isLoading={isLoading}
-              error={error}
-              warnings={session?.warnings}
-            />
+            <SessionViewerPanel sessionId={sessionId} metrics={metrics} isLive={isLive} />
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>

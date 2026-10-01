@@ -160,28 +160,26 @@ describe('EventLogService', () => {
     expect(failureResults.items[0].handlers[0].status).toBe('failure');
   });
 
-  it('filters worktree activity events by ownerProjectId from payload', async () => {
+  it('filters events by ownerProjectId and name from payload', async () => {
     await service.recordPublished({
       id: 'evt-owner-a',
-      name: 'orchestrator.worktree.activity',
+      name: 'epic.updated',
       payload: {
-        worktreeId: 'wt-1',
         ownerProjectId: 'project-a',
-        type: 'started',
+        epicId: 'epic-a',
       },
     });
     await service.recordPublished({
       id: 'evt-owner-b',
-      name: 'orchestrator.worktree.activity',
+      name: 'epic.updated',
       payload: {
-        worktreeId: 'wt-2',
         ownerProjectId: 'project-b',
-        type: 'started',
+        epicId: 'epic-b',
       },
     });
 
     const filtered = await service.listEvents({
-      name: 'orchestrator.worktree.activity',
+      name: 'epic.updated',
       ownerProjectId: 'project-a',
       limit: 20,
       offset: 0,
@@ -234,7 +232,7 @@ describe('EventLogService', () => {
       )
       .run(
         'evt-invalid-activity-filter',
-        'orchestrator.worktree.activity',
+        'session.transcript.updated',
         'not-json',
         null,
         '2026-02-18T00:00:02.000Z',
@@ -242,17 +240,16 @@ describe('EventLogService', () => {
 
     await service.recordPublished({
       id: 'evt-valid-activity-filter',
-      name: 'orchestrator.worktree.activity',
+      name: 'session.transcript.updated',
       payload: {
         ownerProjectId: 'project-safe',
-        worktreeId: 'wt-safe',
-        type: 'started',
+        sessionId: 'session-safe',
       },
       publishedAt: '2026-02-18T00:00:03.000Z',
     });
 
     const filtered = await service.listEvents({
-      name: 'orchestrator.worktree.activity',
+      name: 'session.transcript.updated',
       ownerProjectId: 'project-safe',
       limit: 20,
       offset: 0,

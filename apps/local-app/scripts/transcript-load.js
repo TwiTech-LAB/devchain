@@ -1075,4 +1075,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, validateCanonical, summarize, evaluate };
+module.exports = { parseArgs, validateCanonical, summarize, evaluate, treeDigest };

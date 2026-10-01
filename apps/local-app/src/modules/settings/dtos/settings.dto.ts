@@ -87,6 +87,12 @@ const SkillsSettingsSchema = z.object({
   sources: z.record(z.string().min(1), z.boolean()).optional(),
 });
 
+// Cloud instance settings. `instanceLabel` is the display name this instance
+// attests to the bridge tunnel; null falls back to the machine hostname.
+const CloudSettingsSchema = z.object({
+  instanceLabel: z.string().trim().max(128).nullable().optional(),
+});
+
 // Message pool settings for batching messages to agent sessions
 const MessagePoolSettingsSchema = z.object({
   // Whether message pooling is enabled (default: true)
@@ -114,6 +120,12 @@ const MessagePoolSettingsSchema = z.object({
     .optional(),
 });
 
+// Messaging delivery settings
+const MessagingSettingsSchema = z.object({
+  // Whether DevChain types the follow note after a delivered paste (default: true)
+  followNote: z.boolean().optional(),
+});
+
 export const SettingsSchema = z.object({
   claudeBinaryPath: z.string().optional(),
   codexBinaryPath: z.string().optional(),
@@ -139,10 +151,13 @@ export const SettingsSchema = z.object({
   terminal: TerminalSettingsSchema.optional(),
   autoClean: AutoCleanSettingsSchema.optional(),
   messagePool: MessagePoolSettingsSchema.optional(),
+  messaging: MessagingSettingsSchema.optional(),
   // Registry configuration
   registry: RegistryConfigSchema.optional(),
   // Skills configuration
   skills: SkillsSettingsSchema.optional(),
+  // Cloud instance configuration
+  cloud: CloudSettingsSchema.optional(),
   // Per-project template tracking: projectId -> metadata
   registryTemplates: z.record(z.string(), RegistryTemplateMetadataSchema).optional(),
   // Per-project template presets: projectId -> array of presets
@@ -153,6 +168,7 @@ export const SettingsSchema = z.object({
 
 export type SettingsDto = z.infer<typeof SettingsSchema>;
 export type MessagePoolSettingsDto = z.infer<typeof MessagePoolSettingsSchema>;
+export type MessagingSettingsDto = z.infer<typeof MessagingSettingsSchema>;
 export type TerminalSettingsDto = z.infer<typeof TerminalSettingsSchema>;
 export type TerminalInputMode = (typeof TERMINAL_INPUT_MODES)[number];
 export type RegistryTemplateMetadataDto = z.infer<typeof RegistryTemplateMetadataSchema>;

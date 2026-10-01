@@ -142,7 +142,6 @@ export function useExternalTaskImport(
           }),
         },
         'Task import failed.',
-        '',
         capturedFetch,
       );
     },

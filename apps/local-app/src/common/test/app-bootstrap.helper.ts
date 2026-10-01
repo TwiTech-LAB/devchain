@@ -1,15 +1,14 @@
-import { Type } from '@nestjs/common';
 import { Test, TestingModule, TestingModuleBuilder } from '@nestjs/testing';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'path';
-import { MainAppModule } from '../../app.main.module';
-import { NormalAppModule } from '../../app.normal.module';
+import { AppModule } from '../../app.module';
 import { DB_CONNECTION } from '../../modules/storage/db/db.provider';
 import { STORAGE_SERVICE } from '../../modules/storage/interfaces/storage.interface';
 import { TerminalIOService } from '../../modules/terminal/services/terminal-io/terminal-io.service';
+import { ChildProcessExecutor } from '../../modules/terminal/services/process-executor/child-process-executor';
 import { ProcessExecutor } from '../../modules/terminal/services/process-executor/process-executor.port';
 import { ProviderAdapterFactory } from '../../modules/providers/adapters';
 import { REALTIME_BROADCASTER } from '../../modules/realtime/ports/realtime-broadcaster.port';
@@ -17,8 +16,13 @@ import { NoopRealtimeBroadcastAdapter } from '../../modules/realtime/services/no
 import { TunnelClientService } from '../../modules/cloud-tunnel/services/tunnel-client.service';
 import { TunnelHandlerService } from '../../modules/cloud-tunnel/services/tunnel-handler.service';
 import { TunnelKeypairService } from '../../modules/cloud-tunnel/services/tunnel-keypair.service';
-
-type AppBootstrapRoot = 'normal' | 'main';
+import {
+  NodeSyncthingLauncher,
+  SyncthingLauncher,
+} from '../../modules/file-sync/syncthing-launcher';
+import { HomeGitGuardService } from '../../modules/file-sync/home-git-guard.service';
+import { FileSyncService } from '../../modules/file-sync/file-sync.service';
+import { FakeFileSyncService } from '../../modules/file-sync/testing/fake-file-sync.service';
 
 interface InMemoryBootstrapDb {
   sqlite: Database.Database;
@@ -31,23 +35,17 @@ export interface AppBootstrapFixture {
   close: () => Promise<void>;
 }
 
-export function createAppBootstrapTestingModule(
-  root: AppBootstrapRoot,
-  db: BetterSQLite3Database,
-): TestingModuleBuilder {
-  const rootModule = getRootModule(root);
-  const builder = Test.createTestingModule({ imports: [rootModule] });
+export function createAppBootstrapTestingModule(db: BetterSQLite3Database): TestingModuleBuilder {
+  const builder = Test.createTestingModule({ imports: [AppModule] });
   return applyAppBootstrapMocks(builder, db);
 }
 
-export async function compileAppBootstrapFixture(
-  root: AppBootstrapRoot,
-): Promise<AppBootstrapFixture> {
+export async function compileAppBootstrapFixture(): Promise<AppBootstrapFixture> {
   const { sqlite, db } = createInMemoryBootstrapDb();
   let moduleRef: TestingModule | undefined;
 
   try {
-    moduleRef = await createAppBootstrapTestingModule(root, db).compile();
+    moduleRef = await createAppBootstrapTestingModule(db).compile();
   } catch (error) {
     sqlite.close();
     throw error;
@@ -67,33 +65,74 @@ export function applyAppBootstrapMocks(
   builder: TestingModuleBuilder,
   db: BetterSQLite3Database,
 ): TestingModuleBuilder {
-  return builder
-    .overrideProvider(DB_CONNECTION)
-    .useValue(db)
-    .overrideProvider(STORAGE_SERVICE)
-    .useValue(createBootstrapStorageMock())
+  return applyExternalBoundaryMocks(
+    builder
+      .overrideProvider(DB_CONNECTION)
+      .useValue(db)
+      .overrideProvider(STORAGE_SERVICE)
+      .useValue(createBootstrapStorageMock())
+      .overrideProvider(REALTIME_BROADCASTER)
+      .useClass(NoopRealtimeBroadcastAdapter),
+  );
+}
+
+/**
+ * Replaces only what reaches outside the process — tmux/process spawning,
+ * provider CLIs, Syncthing, the cloud tunnel — so real storage and realtime can run.
+ * Without `realFileSync`, file sync is an in-memory `FakeFileSyncService` whose
+ * folders are always in sync, and Syncthing is never started.
+ */
+export function applyExternalBoundaryMocks(
+  builder: TestingModuleBuilder,
+  options: { realFileSync?: boolean; realTunnelHandler?: boolean } = {},
+): TestingModuleBuilder {
+  const processMock = createProcessExecutorMock();
+  if (options.realFileSync) {
+    const child = new ChildProcessExecutor();
+    const fallback = processMock.run.getMockImplementation()!;
+    processMock.run.mockImplementation((request) =>
+      request.argv[0] === 'git' ? child.run(request) : fallback(request),
+    );
+  }
+  const withFileSync = options.realFileSync
+    ? // Only Syncthing and its Git maintenance use real processes.
+      builder
+        .overrideProvider(SyncthingLauncher)
+        .useValue(new NodeSyncthingLauncher(new ChildProcessExecutor()))
+    : builder
+        .overrideProvider(SyncthingLauncher)
+        .useValue(createSyncthingLauncherMock())
+        .overrideProvider(FileSyncService)
+        .useValue(new FakeFileSyncService())
+        .overrideProvider(HomeGitGuardService)
+        .useValue({
+          install: async () => null,
+          remove: async () => undefined,
+          reinstall: async () => null,
+        });
+  const withHandler = options.realTunnelHandler
+    ? withFileSync
+    : withFileSync.overrideProvider(TunnelHandlerService).useValue(createTunnelHandlerMock());
+  return withHandler
     .overrideProvider(ProcessExecutor)
-    .useValue(createProcessExecutorMock())
+    .useValue(processMock)
     .overrideProvider(TerminalIOService)
     .useValue(createTerminalIOMock())
     .overrideProvider(ProviderAdapterFactory)
     .useValue(createProviderAdapterFactoryMock())
-    .overrideProvider(REALTIME_BROADCASTER)
-    .useClass(NoopRealtimeBroadcastAdapter)
     .overrideProvider(TunnelClientService)
     .useValue(createTunnelClientMock())
-    .overrideProvider(TunnelHandlerService)
-    .useValue(createTunnelHandlerMock())
     .overrideProvider(TunnelKeypairService)
     .useValue(createTunnelKeypairMock());
 }
 
-function getRootModule(root: AppBootstrapRoot): Type<unknown> {
-  return root === 'normal' ? NormalAppModule : MainAppModule;
+function createInMemoryBootstrapDb(): InMemoryBootstrapDb {
+  return createMigratedDatabase(':memory:');
 }
 
-function createInMemoryBootstrapDb(): InMemoryBootstrapDb {
-  const sqlite = new Database(':memory:');
+/** Opens (or creates) a SQLite database at `path` with every migration applied. */
+export function createMigratedDatabase(path: string): InMemoryBootstrapDb {
+  const sqlite = new Database(path);
   sqlite.pragma('journal_mode = WAL');
   const db = drizzle(sqlite);
 
@@ -116,6 +155,9 @@ function createBootstrapStorageMock(): Record<string, jest.Mock> {
     setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
     listProviders: jest.fn().mockResolvedValue({ items: [], total: 0 }),
     listProjects: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+    listFrozenProjects: jest.fn().mockResolvedValue([]),
+    listRemoteProjectBindings: jest.fn().mockResolvedValue([]),
+    listRemoteOperations: jest.fn().mockResolvedValue([]),
     listStatuses: jest.fn().mockResolvedValue({ items: [], total: 0 }),
     listEpicsByStatus: jest.fn().mockResolvedValue({ items: [], total: 0 }),
     getEpic: jest.fn().mockResolvedValue(null),
@@ -182,7 +224,7 @@ function createProviderAdapterFactoryMock(): Record<string, jest.Mock> {
     getAdapter: jest.fn().mockReturnValue(adapter),
     isSupported: jest.fn().mockReturnValue(true),
     getSupportedProviders: jest.fn().mockReturnValue(['test']),
-    getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+    getRuntimePromptBehaviorForAgent: jest.fn().mockResolvedValue({}),
   };
 }
 
@@ -216,5 +258,20 @@ function createTunnelKeypairMock(): Record<string, jest.Mock> {
     }),
     setInstanceId: jest.fn().mockResolvedValue(undefined),
     sign: jest.fn().mockResolvedValue('test-signature'),
+  };
+}
+
+/** Reports no binary, so booted apps never spawn Syncthing. */
+function createSyncthingLauncherMock(): Record<string, jest.Mock> {
+  return {
+    findBinary: jest.fn().mockResolvedValue({
+      found: false,
+      version: null,
+      error: 'Syncthing is disabled in this test.',
+    }),
+    spawn: jest.fn(),
+    findChildPid: jest.fn().mockResolvedValue(null),
+    isAlive: jest.fn().mockReturnValue(false),
+    kill: jest.fn(),
   };
 }

@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/ui/hooks/use-toast';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ────────────────────────────────────────────
 // Types
@@ -32,6 +34,9 @@ export interface SettingsResponse {
     maxMessages?: number;
     separator?: string;
   };
+  messaging?: {
+    followNote?: boolean;
+  };
   skills?: {
     syncOnStartup?: boolean;
   };
@@ -41,16 +46,17 @@ export interface SettingsResponse {
 // API helpers
 // ────────────────────────────────────────────
 
-async function fetchSettings(): Promise<SettingsResponse> {
-  const res = await fetch('/api/settings');
+async function fetchSettings(fetchFn: FetchFn): Promise<SettingsResponse> {
+  const res = await fetchFn('/api/settings');
   if (!res.ok) throw new Error('Failed to fetch settings');
   return res.json();
 }
 
 async function updateSettingsRequest(
+  fetchFn: FetchFn,
   data: Partial<SettingsResponse> & { projectId?: string },
 ): Promise<SettingsResponse> {
-  const res = await fetch('/api/settings', {
+  const res = await fetchFn('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -72,6 +78,7 @@ function errorMessage(error: unknown): string {
 // ────────────────────────────────────────────
 
 export function useSettingsData() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -89,7 +96,7 @@ export function useSettingsData() {
     error,
   } = useQuery({
     queryKey: ['settings'],
-    queryFn: fetchSettings,
+    queryFn: () => fetchSettings(fetchFn),
     staleTime: 60_000,
   });
 
@@ -102,7 +109,7 @@ export function useSettingsData() {
     }: {
       initialSessionPromptId: string | null;
       projectId?: string;
-    }) => updateSettingsRequest({ initialSessionPromptId, projectId }),
+    }) => updateSettingsRequest(fetchFn, { initialSessionPromptId, projectId }),
     onSuccess: () => {
       invalidateSettings();
       toast({
@@ -125,7 +132,7 @@ export function useSettingsData() {
       inputMode?: 'form' | 'tty';
       suppressCtrlCWithSelection: boolean;
     }) =>
-      updateSettingsRequest({
+      updateSettingsRequest(fetchFn, {
         terminal: { scrollbackLines, seedingMaxBytes, inputMode, suppressCtrlCWithSelection },
       }),
     onSuccess: () => {
@@ -137,7 +144,7 @@ export function useSettingsData() {
 
   const updateIdleTimeoutMutation = useMutation({
     mutationFn: ({ idleTimeoutMs }: { idleTimeoutMs: number }) =>
-      updateSettingsRequest({ activity: { idleTimeoutMs } }),
+      updateSettingsRequest(fetchFn, { activity: { idleTimeoutMs } }),
     onSuccess: () => {
       invalidateSettings();
       toast({ title: 'Activity idle timeout updated' });
@@ -159,7 +166,7 @@ export function useSettingsData() {
       maxMessages: number;
       separator: string;
     }) =>
-      updateSettingsRequest({
+      updateSettingsRequest(fetchFn, {
         messagePool: { enabled, delayMs, maxWaitMs, maxMessages, separator },
       }),
     onSuccess: () => {
@@ -169,9 +176,19 @@ export function useSettingsData() {
     onError,
   });
 
+  const updateMessagingMutation = useMutation({
+    mutationFn: ({ followNote }: { followNote: boolean }) =>
+      updateSettingsRequest(fetchFn, { messaging: { followNote } }),
+    onSuccess: () => {
+      invalidateSettings();
+      toast({ title: 'Message delivery settings updated' });
+    },
+    onError,
+  });
+
   const updateSkillsMutation = useMutation({
     mutationFn: ({ syncOnStartup }: { syncOnStartup: boolean }) =>
-      updateSettingsRequest({ skills: { syncOnStartup } }),
+      updateSettingsRequest(fetchFn, { skills: { syncOnStartup } }),
     onSuccess: () => {
       invalidateSettings();
       toast({ title: 'Skills settings updated' });
@@ -181,7 +198,7 @@ export function useSettingsData() {
 
   const updateEpicTemplateMutation = useMutation({
     mutationFn: ({ template }: { template: string }) =>
-      updateSettingsRequest({ events: { epicAssigned: { template } } }),
+      updateSettingsRequest(fetchFn, { events: { epicAssigned: { template } } }),
     onSuccess: () => {
       invalidateSettings();
       toast({
@@ -203,6 +220,7 @@ export function useSettingsData() {
     updateTerminalMutation,
     updateIdleTimeoutMutation,
     updateMessagePoolMutation,
+    updateMessagingMutation,
     updateSkillsMutation,
     updateEpicTemplateMutation,
   };

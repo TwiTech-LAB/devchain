@@ -4,14 +4,14 @@ import type { BroadcastTopicEntry } from './broadcast-metadata';
 describe('projectBroadcast', () => {
   it('resolves static topic/type and passes payload through when no projection', () => {
     const entry: BroadcastTopicEntry<Record<string, unknown>> = {
-      topic: 'worktrees',
+      topic: 'templates',
       type: 'changed',
     };
 
-    expect(projectBroadcast(entry, { worktreeId: 'wt-1' })).toEqual({
-      topic: 'worktrees',
+    expect(projectBroadcast(entry, { templateId: 't-1' })).toEqual({
+      topic: 'templates',
       type: 'changed',
-      payload: { worktreeId: 'wt-1' },
+      payload: { templateId: 't-1' },
     });
   });
 

@@ -17,11 +17,6 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 });
 
-let mockActiveWorktree: { id: string; name: string; devchainProjectId: string | null } | null =
-  null;
-let mockWorktreeApiBase = '';
-let mockWorktreeRuntimeResolved = true;
-
 // Mock components that use ESM-only modules (must be before App import)
 jest.mock('./components/review/DiffViewer', () => ({
   DiffViewer: () => null,
@@ -64,25 +59,7 @@ jest.mock('./lib/socket', () => ({
     off: jest.fn(),
     emit: jest.fn(),
   })),
-  getWorktreeSocket: jest.fn(() => ({
-    connected: true,
-    on: jest.fn(),
-    off: jest.fn(),
-    emit: jest.fn(),
-  })),
   releaseAppSocket: jest.fn(),
-  releaseWorktreeSocket: jest.fn(),
-}));
-
-jest.mock('./hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => ({
-    activeWorktree: mockActiveWorktree,
-    setActiveWorktree: jest.fn(),
-    apiBase: mockWorktreeApiBase,
-    worktrees: [],
-    worktreesLoading: false,
-    runtimeResolved: mockWorktreeRuntimeResolved,
-  }),
 }));
 
 jest.mock('./hooks/useKeyboardShortcuts', () => ({
@@ -106,10 +83,6 @@ jest.mock('./terminal-windows', () => ({
 jest.mock('./components/terminal-dock', () => ({
   TerminalDock: () => null,
   OPEN_TERMINAL_DOCK_EVENT: 'devchain:terminal-dock:open',
-}));
-
-jest.mock('./pages/WorktreesPage', () => ({
-  WorktreesPage: () => <h1>Worktrees Page</h1>,
 }));
 
 jest.mock('./pages/ChatPage', () => ({
@@ -165,9 +138,6 @@ describe('App startup routing', () => {
 
   beforeEach(() => {
     runtimeMode = 'normal';
-    mockActiveWorktree = null;
-    mockWorktreeApiBase = '';
-    mockWorktreeRuntimeResolved = true;
     queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -295,38 +265,6 @@ describe('App startup routing', () => {
     });
   });
 
-  it('should render /worktrees route in main mode', async () => {
-    runtimeMode = 'main';
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/worktrees']}>
-          <App />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Worktrees Page' })).toBeInTheDocument();
-    });
-  });
-
-  it('should render /worktrees route outside main mode', async () => {
-    runtimeMode = 'normal';
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/worktrees']}>
-          <App />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Worktrees Page' })).toBeInTheDocument();
-    });
-  });
-
   it('should keep /chat accessible in main mode', async () => {
     runtimeMode = 'main';
 
@@ -359,40 +297,6 @@ describe('App startup routing', () => {
     });
 
     reviewsRender.unmount();
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/reviews/review-1']}>
-          <App />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Review Detail Page' })).toBeInTheDocument();
-    });
-  });
-
-  it('should keep /chat and /reviews accessible in main mode when a worktree tab is active', async () => {
-    runtimeMode = 'main';
-    mockActiveWorktree = {
-      id: 'wt-1',
-      name: 'feature-auth',
-      devchainProjectId: 'project-1',
-    };
-
-    const chatRender = render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/chat']}>
-          <App />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Chat Page' })).toBeInTheDocument();
-    });
-
-    chatRender.unmount();
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/reviews/review-1']}>
@@ -475,8 +379,6 @@ describe('App board routes', () => {
       },
     });
     boardPageMock.mockClear();
-    mockWorktreeApiBase = '';
-    mockWorktreeRuntimeResolved = true;
 
     global.fetch = jest.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
@@ -630,36 +532,4 @@ describe('App board routes', () => {
     });
     expect(boardPageMock).not.toHaveBeenCalled();
   });
-
-  it.each(['/board/clickup?wt=feature', '/epics/epic-1?wt=feature'])(
-    'issues zero integration requests during a direct worktree cold load of %s',
-    async (path) => {
-      mockWorktreeRuntimeResolved = false;
-      mockWorktreeApiBase = '/wt/feature';
-      queryClient.setQueryData(['integration-connections'], {
-        items: [{ provider: 'clickup', connected: true, generation: 1, updatedAt: null }],
-      });
-      queryClient.setQueryData(['external-my-work', 'epic-sources', 'epic-1'], {
-        items: [
-          {
-            provider: 'clickup',
-            remoteTaskId: 'cached',
-            remoteKey: 'cached',
-            title: 'Cached external source',
-          },
-        ],
-      });
-
-      renderAt(path);
-
-      await waitFor(() =>
-        expect(global.fetch).toHaveBeenCalledWith('/api/runtime', expect.anything()),
-      );
-      const integrationCalls = (global.fetch as jest.Mock).mock.calls.filter(([input]) =>
-        /\/api\/integrations|\/external-sources/.test(String(input)),
-      );
-      expect(integrationCalls).toEqual([]);
-      expect(screen.queryByText('Cached external source')).not.toBeInTheDocument();
-    },
-  );
 });

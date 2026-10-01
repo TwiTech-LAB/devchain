@@ -3015,6 +3015,29 @@ describe('TerminalGateway lifecycle cleanup parity', () => {
     },
   );
 
+  it('a standalone terminal end frees terminal state at once and tells attached views', () => {
+    const { gateway, streamService, seedService, ptyService, registry, roomEmit } = createGateway({
+      autoCreateRegistrySessions: false,
+    });
+    registry.create('standalone-1', 'devchain-aux_1_standalone-1');
+
+    gateway.endStandaloneTerminal('standalone-1', 'Login stored.');
+
+    expect(streamService.clearBuffer).toHaveBeenCalledWith('standalone-1');
+    expect(seedService.invalidateCache).toHaveBeenCalledWith('standalone-1');
+    expect(ptyService.stopStreaming).toHaveBeenCalledWith('standalone-1');
+    expect(registry.get('standalone-1')).toBeUndefined();
+    expect(gateway.server.to).toHaveBeenCalledWith('session:standalone-1');
+    expect(roomEmit).toHaveBeenCalledWith(
+      'message',
+      expect.objectContaining({
+        topic: 'session/standalone-1',
+        type: 'state_change',
+        payload: { sessionId: 'standalone-1', status: 'ended', message: 'Login stored.' },
+      }),
+    );
+  });
+
   it('stopped invalidates capture immediately but retains replay for exactly 60 seconds', () => {
     jest.useFakeTimers();
     const { gateway, streamService, seedService, ptyService } = createGateway();
@@ -3231,7 +3254,11 @@ describe('TerminalGateway.handleInput authority guard', () => {
       data: 'hello',
     });
 
-    expect(terminalIO.deliverImmediate).toHaveBeenCalled();
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledWith(
+      { name: 'tmux_auth-session-nc' },
+      'hello',
+      { bracketed: true },
+    );
   });
 
   it('sends TTY paste text after option separator so leading dash stays literal', async () => {
@@ -3297,7 +3324,7 @@ describe('TerminalGateway.handleInput authority guard', () => {
     ]);
   });
 
-  it('does not let Backspace clear text whose activation write is still blocked', async () => {
+  it('keeps Backspace behind blocked text and clears the draft after both writes', async () => {
     const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
     const client = createMockSocket('authority-client-pending-text-backspace');
     gateway.handleConnection(client as unknown as Socket);
@@ -3328,14 +3355,18 @@ describe('TerminalGateway.handleInput authority guard', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_pending-text-backspace' }, [
-      'BSpace',
-    ]);
+    expect(terminalIO.sendControl).not.toHaveBeenCalled();
     expect(humanPromptState.getState('tmux_pending-text-backspace').phase).toBe('draft_active');
 
     release();
     await Promise.all([text, backspace]);
-    expect(humanPromptState.getState('tmux_pending-text-backspace').phase).toBe('draft_active');
+    expect((terminalIO.sendControl as jest.Mock).mock.calls.map((call) => call[1])).toEqual([
+      ['-l', '--', 'a'],
+      ['BSpace'],
+    ]);
+    expect(humanPromptState.getState('tmux_pending-text-backspace').phase).toBe(
+      'awaiting_stable_idle',
+    );
   });
 
   it('keeps newer TTY text active when an earlier Enter completes late', async () => {
@@ -3365,11 +3396,8 @@ describe('TerminalGateway.handleInput authority guard', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    await gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'enter-race',
-      data: 'newer',
-      ttyMode: true,
-    });
+    // Other input paths can activate a newer generation outside the gateway FIFO.
+    humanPromptState.recordPromptText('tmux_enter-race');
     const newer = humanPromptState.getState('tmux_enter-race');
     expect(newer).toEqual(expect.objectContaining({ phase: 'draft_active', generation: 2 }));
 
@@ -3379,7 +3407,7 @@ describe('TerminalGateway.handleInput authority guard', () => {
   });
 
   it('captures the Enter generation before delayed liveness so newer text keeps its draft', async () => {
-    const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
+    const { gateway, terminalIO, humanPromptState } = createGateway();
     const client = createMockSocket('authority-client-enter-liveness-race');
     gateway.handleConnection(client as unknown as Socket);
     await gateway.handleSubscribe(client as unknown as Socket, {
@@ -3389,13 +3417,6 @@ describe('TerminalGateway.handleInput authority guard', () => {
     });
     gateway.handleFocus(client as unknown as Socket, { sessionId: 'enter-liveness-race' });
     humanPromptState.recordPromptText('tmux_enter-liveness-race');
-
-    // Block the newer text's activation barrier so its pane write waits.
-    let releaseText!: () => void;
-    const promotion = new Promise<void>((resolve) => {
-      releaseText = resolve;
-    });
-    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
 
     // Delay only Enter's liveness check.
     let releaseLiveness!: (alive: boolean) => void;
@@ -3413,15 +3434,8 @@ describe('TerminalGateway.handleInput authority guard', () => {
     });
     await Promise.resolve();
 
-    const text = gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'enter-liveness-race',
-      data: 'newer',
-      ttyMode: true,
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // The newer text already bumped the generation; its write is parked at the barrier.
+    // Simulate newer input through another prompt-state consumer.
+    humanPromptState.recordPromptText('tmux_enter-liveness-race');
     expect(humanPromptState.getState('tmux_enter-liveness-race')).toEqual(
       expect.objectContaining({ phase: 'draft_active', generation: 2 }),
     );
@@ -3435,21 +3449,9 @@ describe('TerminalGateway.handleInput authority guard', () => {
       expect.objectContaining({ phase: 'draft_active', generation: 2 }),
     );
 
-    releaseText();
-    await text;
-
-    const sendControlMock = terminalIO.sendControl as jest.Mock;
-    const enterWriteIndex = sendControlMock.mock.calls.findIndex(
-      (call) => JSON.stringify(call[1]) === JSON.stringify(['Enter']),
-    );
-    const textWriteIndex = sendControlMock.mock.calls.findIndex(
-      (call) => JSON.stringify(call[1]) === JSON.stringify(['-l', '--', 'newer']),
-    );
-    expect(enterWriteIndex).toBeGreaterThanOrEqual(0);
-    expect(textWriteIndex).toBeGreaterThanOrEqual(0);
-    expect(sendControlMock.mock.invocationCallOrder[enterWriteIndex]).toBeLessThan(
-      sendControlMock.mock.invocationCallOrder[textWriteIndex],
-    );
+    expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_enter-liveness-race' }, [
+      'Enter',
+    ]);
   });
 
   it('leaves the observed draft unchanged when Enter liveness fails', async () => {
@@ -3647,24 +3649,25 @@ describe('TerminalGateway.handleInput authority guard', () => {
     gateway.handleFocus(client as unknown as Socket, { sessionId: 'form-race' });
 
     let releaseForm!: () => void;
+    let formStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      formStarted = resolve;
+    });
     (terminalIO.deliverImmediate as jest.Mock).mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
           releaseForm = resolve;
+          formStarted();
         }),
     );
     const form = gateway.handleInput(client as unknown as Socket, {
       sessionId: 'form-race',
       data: 'form prompt',
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await started;
 
-    await gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'form-race',
-      data: 'newer',
-      ttyMode: true,
-    });
+    // Other input paths can activate a newer generation outside the gateway FIFO.
+    humanPromptState.recordPromptText('tmux_form-race');
     const newer = humanPromptState.getState('tmux_form-race');
     releaseForm();
     await form;
@@ -3948,7 +3951,7 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
     expect(deadSetup.terminalIO.deliverImmediate).not.toHaveBeenCalled();
   });
 
-  it('rejects new IDs at capacity without evicting pending operations', async () => {
+  it('rejects queued new IDs at capacity without evicting completed outcomes', async () => {
     const { gateway, client, terminalIO } = await createAuthorizedPromptClient('prompt-capacity');
     let releaseExists!: (alive: boolean) => void;
     const exists = new Promise<boolean>((resolve) => {
@@ -3964,14 +3967,14 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
       PROMPT_PASTE_MAX_REQUESTS_PER_SESSION + 1,
     );
 
-    await expect(gateway.handleInput(client, overflow)).resolves.toEqual({
+    const overflowResult = gateway.handleInput(client, overflow);
+    expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    releaseExists(true);
+    await expect(overflowResult).resolves.toEqual({
       ok: false,
       code: 'BUSY',
       requestId: overflow.requestId,
     });
-    expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
-
-    releaseExists(true);
     await Promise.all(pending);
     expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(
       PROMPT_PASTE_MAX_REQUESTS_PER_SESSION,
@@ -4494,5 +4497,165 @@ describe('TerminalGateway viewport-mode restore (Task 2)', () => {
     });
 
     expect(ptyService.triggerRedraw).not.toHaveBeenCalled();
+  });
+});
+
+describe('TerminalGateway input arrival order', () => {
+  // Gateway unit tests control the awaits before pane admission, where keys can be reordered.
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function setup() {
+    const context = createGateway({ autoCreateRegistrySessions: false });
+    const client = createMockSocket('ordered-client');
+    for (const id of ['ordered', 'independent']) {
+      const session = context.registry.create(id, `tmux_${id}`);
+      session.subscribe(client.id);
+      session.claimAuthority(client.id);
+    }
+    return { ...context, client };
+  }
+
+  it('writes the first key first even when the second liveness result is ready sooner', async () => {
+    const { gateway, client, terminalIO } = await setup();
+    const firstAlive = deferred<boolean>();
+    const secondAlive = deferred<boolean>();
+    (terminalIO.sessionExists as jest.Mock)
+      .mockReturnValueOnce(firstAlive.promise)
+      .mockReturnValueOnce(secondAlive.promise);
+    const first = gateway.handleInput(client, { sessionId: 'ordered', data: 'a', ttyMode: true });
+    const second = gateway.handleInput(client, { sessionId: 'ordered', data: 'b', ttyMode: true });
+    secondAlive.resolve(true);
+    await Promise.resolve();
+    expect(terminalIO.sessionExists).toHaveBeenCalledTimes(1);
+    expect(terminalIO.sendControl).not.toHaveBeenCalled();
+    firstAlive.resolve(true);
+    await Promise.all([first, second]);
+    expect((terminalIO.sendControl as jest.Mock).mock.calls.map((call) => call[1])).toEqual([
+      ['-l', '--', 'a'],
+      ['-l', '--', 'b'],
+    ]);
+    gateway.onModuleDestroy();
+  });
+
+  it('keeps Ctrl+C behind printable input waiting for prompt activation', async () => {
+    const { gateway, client, terminalIO, eventEmitter } = await setup();
+    const promotion = deferred<void>();
+    const started = deferred<void>();
+    eventEmitter.once(sessionHumanPromptStateChangedEvent.name, () => {
+      started.resolve();
+      return promotion.promise;
+    });
+    const first = gateway.handleInput(client, { sessionId: 'ordered', data: 'a', ttyMode: true });
+    await started.promise;
+    const second = gateway.handleInput(client, { sessionId: 'ordered', data: '\x03' });
+    await Promise.resolve();
+    expect(terminalIO.sendControl).not.toHaveBeenCalled();
+    promotion.resolve();
+    await Promise.all([first, second]);
+    expect((terminalIO.sendControl as jest.Mock).mock.calls.map((call) => call[1])).toEqual([
+      ['-l', '--', 'a'],
+      ['C-c'],
+    ]);
+    gateway.onModuleDestroy();
+  });
+
+  it.each(['throw', 'reject'] as const)(
+    'continues after a handler dependency can %s',
+    async (failure) => {
+      const { gateway, client, terminalIO } = await setup();
+      (terminalIO.sessionExists as jest.Mock).mockImplementationOnce(() => {
+        if (failure === 'throw') throw new Error('liveness failed');
+        return Promise.reject(new Error('liveness failed'));
+      });
+      const first = gateway.handleInput(client, { sessionId: 'ordered', data: 'a', ttyMode: true });
+      const second = gateway.handleInput(client, {
+        sessionId: 'ordered',
+        data: 'b',
+        ttyMode: true,
+      });
+      await expect(first).rejects.toThrow('liveness failed');
+      await second;
+      expect(terminalIO.sendControl).toHaveBeenCalledTimes(1);
+      expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_ordered' }, [
+        '-l',
+        '--',
+        'b',
+      ]);
+      gateway.onModuleDestroy();
+    },
+  );
+
+  it('shares one order for typed input, prompt paste, and the following Enter', async () => {
+    const { gateway, client, terminalIO } = await setup();
+    const alive = deferred<boolean>();
+    const paste = deferred<void>();
+    const pasteStarted = deferred<void>();
+    const writes: string[] = [];
+    (terminalIO.sessionExists as jest.Mock).mockReturnValueOnce(alive.promise);
+    (terminalIO.sendControl as jest.Mock).mockImplementation(async (_target, keys) => {
+      writes.push(keys.at(-1));
+    });
+    (terminalIO.deliverImmediate as jest.Mock).mockImplementation(() => {
+      writes.push('paste');
+      pasteStarted.resolve();
+      return paste.promise;
+    });
+    const first = gateway.handleInput(client, { sessionId: 'ordered', data: 'a', ttyMode: true });
+    const second = gateway.handleInput(client, promptPastePayload('ordered'));
+    const third = gateway.handleInput(client, { sessionId: 'ordered', data: '\r' });
+    expect(writes).toEqual([]);
+    alive.resolve(true);
+    await pasteStarted.promise;
+    expect(writes).toEqual(['a', 'paste']);
+    paste.resolve();
+    await Promise.all([first, second, third]);
+    expect(writes).toEqual(['a', 'paste', 'Enter']);
+    gateway.onModuleDestroy();
+  });
+
+  it('allows another session to finish while one session is blocked', async () => {
+    const { gateway, client, terminalIO } = await setup();
+    const alive = deferred<boolean>();
+    (terminalIO.sessionExists as jest.Mock).mockReturnValueOnce(alive.promise);
+    const blocked = gateway.handleInput(client, { sessionId: 'ordered', data: 'a', ttyMode: true });
+    await gateway.handleInput(client, { sessionId: 'independent', data: 'b', ttyMode: true });
+    expect(terminalIO.sendControl).toHaveBeenCalledTimes(1);
+    expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_independent' }, [
+      '-l',
+      '--',
+      'b',
+    ]);
+    alive.resolve(true);
+    await blocked;
+    gateway.onModuleDestroy();
+  });
+
+  it('retires queued input when a session is removed and releases idle queues', async () => {
+    const { gateway, client, terminalIO, registry } = await setup();
+    const alive = deferred<boolean>();
+    (terminalIO.sessionExists as jest.Mock).mockReturnValueOnce(alive.promise);
+    const first = gateway.handleInput(client, { sessionId: 'ordered', data: 'a', ttyMode: true });
+    const queued = gateway.handleInput(client, promptPastePayload('ordered'));
+    gateway.endStandaloneTerminal('ordered', 'Ended');
+    const queues = (gateway as unknown as { inputQueues: Map<string, unknown> }).inputQueues;
+    expect(queues.size).toBe(0);
+    const restored = registry.create('ordered', 'tmux_ordered');
+    restored.subscribe(client.id);
+    restored.claimAuthority(client.id);
+    alive.resolve(true);
+    await first;
+    await expect(queued).resolves.toMatchObject({ ok: false, code: 'UNKNOWN_SESSION' });
+    expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    await gateway.handleInput(client, { sessionId: 'ordered', data: 'b', ttyMode: true });
+    expect(queues.size).toBe(0);
+    gateway.onModuleDestroy();
   });
 });

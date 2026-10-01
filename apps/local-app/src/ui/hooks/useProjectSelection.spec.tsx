@@ -18,20 +18,6 @@ const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
 const originalFetch = global.fetch;
 const DEFAULT_WORKSPACE_ID = 'workspace-default';
 const SECOND_WORKSPACE_ID = 'workspace-second';
-let mockActiveWorktree: { id: string; name: string; devchainProjectId: string | null } | null =
-  null;
-let mockRuntimeResolved = true;
-
-jest.mock('./useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => ({
-    activeWorktree: mockActiveWorktree,
-    setActiveWorktree: () => undefined,
-    apiBase: '',
-    worktrees: [],
-    worktreesLoading: false,
-    runtimeResolved: mockRuntimeResolved,
-  }),
-}));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -45,8 +31,6 @@ describe('ProjectSelectionProvider', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    mockActiveWorktree = null;
-    mockRuntimeResolved = true;
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState({}, '', '/');
@@ -233,7 +217,6 @@ describe('ProjectSelectionProvider', () => {
     currentSelection: string | undefined;
     currentProject: string | undefined;
     projectsLoading: boolean;
-    workspaceSelectionLocked: boolean;
     activationStatus: string | null;
     activationProjectId: string | null;
     updateWorkspace: (workspaceId: string) => void;
@@ -251,7 +234,6 @@ describe('ProjectSelectionProvider', () => {
       currentSelection: undefined,
       currentProject: undefined,
       projectsLoading: false,
-      workspaceSelectionLocked: false,
       activationStatus: null,
       activationProjectId: null,
       updateWorkspace: () => undefined,
@@ -265,7 +247,6 @@ describe('ProjectSelectionProvider', () => {
         selectedProjectId,
         selectedProject,
         projectsLoading,
-        isWorkspaceSelectionLocked,
         projectActivation,
         setSelectedWorkspaceId,
         setSelectedProjectId,
@@ -277,7 +258,6 @@ describe('ProjectSelectionProvider', () => {
         state.currentSelection = selectedProjectId;
         state.currentProject = selectedProject?.id;
         state.projectsLoading = projectsLoading;
-        state.workspaceSelectionLocked = isWorkspaceSelectionLocked;
         state.activationStatus = projectActivation?.status ?? null;
         state.activationProjectId = projectActivation?.projectId ?? null;
         state.updateWorkspace = setSelectedWorkspaceId;
@@ -285,7 +265,6 @@ describe('ProjectSelectionProvider', () => {
         state.activateProject = activateProject;
       }, [
         activateProject,
-        isWorkspaceSelectionLocked,
         projectActivation,
         projectsLoading,
         selectedProject,
@@ -763,180 +742,6 @@ describe('ProjectSelectionProvider', () => {
       expect(availableCall).toBeGreaterThan(detailCall);
     },
   );
-
-  it('locks workspace changes to the active worktree project and restores on unlock', async () => {
-    setupMultiWorkspaceFetch();
-    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, DEFAULT_WORKSPACE_ID);
-    localStorage.setItem(WORKSPACE_STORAGE_KEY, DEFAULT_WORKSPACE_ID);
-    mockActiveWorktree = {
-      id: 'wt-1',
-      name: 'feature-auth',
-      devchainProjectId: 'project-gamma',
-    };
-    const { state, rerender } = renderTrackerWithControls();
-
-    await waitFor(() => {
-      expect(state.workspaceSelectionLocked).toBe(true);
-      expect(state.currentWorkspace).toBe(SECOND_WORKSPACE_ID);
-      expect(state.currentSelection).toBe('project-gamma');
-    });
-    act(() => state.updateWorkspace(DEFAULT_WORKSPACE_ID));
-    expect(state.currentWorkspace).toBe(SECOND_WORKSPACE_ID);
-
-    mockActiveWorktree = null;
-    rerender();
-    await waitFor(() => {
-      expect(state.workspaceSelectionLocked).toBe(false);
-      expect(state.currentWorkspace).toBe(DEFAULT_WORKSPACE_ID);
-    });
-  });
-
-  it('preserves selection during stale data window after worktree unlock', async () => {
-    // Worktree-only projects (do NOT contain the main project IDs)
-    const worktreeProjects = {
-      items: [
-        {
-          id: 'wt-project-1',
-          workspaceId: DEFAULT_WORKSPACE_ID,
-          name: 'Worktree Project',
-          description: null,
-          rootPath: '/tmp/wt',
-          createdAt: '2024-01-01T00:00:00.000Z',
-          updatedAt: '2024-01-01T00:00:00.000Z',
-        },
-      ],
-      total: 1,
-    };
-
-    let returnWorktreeProjects = true;
-
-    const mockFetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/stats')) {
-        return { ok: true, json: async () => mockStatsResponse } as Response;
-      }
-      if (url === '/api/workspaces') {
-        return { ok: true, json: async () => mockWorkspacesResponse } as Response;
-      }
-      if (url === '/api/projects/wt-project-1') {
-        return { ok: true, json: async () => worktreeProjects.items[0] } as Response;
-      }
-      if (url.includes('/api/projects')) {
-        return {
-          ok: true,
-          json: async () => (returnWorktreeProjects ? worktreeProjects : mockProjectsResponse),
-        } as Response;
-      }
-      return { ok: true, json: async () => ({}) } as Response;
-    });
-    global.fetch = mockFetch as unknown as typeof fetch;
-
-    // Store main project selection before worktree activation
-    sessionStorage.setItem(PROJECT_STORAGE_KEY, 'project-alpha');
-    localStorage.setItem(PROJECT_STORAGE_KEY, 'project-alpha');
-
-    // Start with worktree active — selection locked to worktree project
-    mockActiveWorktree = {
-      id: 'wt-1',
-      name: 'feature-auth',
-      devchainProjectId: 'wt-project-1',
-    };
-    const { state, rerender } = renderTrackerWithControls();
-    await act(async () => await flushPromises());
-
-    await waitFor(() => {
-      expect(state.currentSelection).toBe('wt-project-1');
-    });
-
-    // Unlock (worktree → main). projectsData still has stale worktree projects.
-    // Without wasLockedRef, validation would see 'project-alpha' NOT in ['wt-project-1'] → clear.
-    mockActiveWorktree = null;
-    rerender();
-
-    // AC1: selection preserved during stale data window
-    await waitFor(() => expect(state.currentSelection).toBe('project-alpha'));
-    expect(sessionStorage.getItem(PROJECT_STORAGE_KEY)).toBe('project-alpha');
-
-    // Simulate fresh main projects arriving (cache refreshed after cleanup)
-    returnWorktreeProjects = false;
-    await act(async () => {
-      await queryClient.refetchQueries({ queryKey: ['projects'] });
-      await flushPromises();
-    });
-
-    // AC2: normal validation resumes — project-alpha exists in main projects, selection stays
-    await waitFor(() => {
-      expect(state.currentSelection).toBe('project-alpha');
-    });
-  });
-
-  it('locks selection to active worktree project and restores main selection on unlock', async () => {
-    setupMockFetch();
-    const { state, rerender } = renderTrackerWithControls();
-
-    await act(async () => await flushPromises());
-
-    await act(async () => {
-      state.updateSelection('project-alpha');
-      await flushPromises();
-    });
-    expect(state.currentSelection).toBe('project-alpha');
-
-    mockActiveWorktree = {
-      id: 'wt-1',
-      name: 'feature-auth',
-      devchainProjectId: 'project-beta',
-    };
-    rerender();
-    await act(async () => await flushPromises());
-
-    await waitFor(() => {
-      expect(state.currentSelection).toBe('project-beta');
-    });
-
-    await act(async () => {
-      state.updateSelection('project-alpha');
-      await flushPromises();
-    });
-    expect(state.currentSelection).toBe('project-beta');
-
-    mockActiveWorktree = null;
-    rerender();
-    await act(async () => await flushPromises());
-
-    await waitFor(() => {
-      expect(state.currentSelection).toBe('project-alpha');
-    });
-  });
-
-  it('gates projects query and exposed selection until runtime resolves', async () => {
-    sessionStorage.setItem(PROJECT_STORAGE_KEY, 'project-alpha');
-    localStorage.setItem(PROJECT_STORAGE_KEY, 'project-alpha');
-    mockRuntimeResolved = false;
-    const mockFetch = setupMockFetch();
-    const { state, rerender } = renderTrackerWithControls();
-
-    await act(async () => await flushPromises());
-
-    expect(mockFetch).not.toHaveBeenCalled();
-    expect(state.projectsLoading).toBe(true);
-    expect(state.currentSelection).toBeUndefined();
-    expect(state.currentProject).toBeUndefined();
-
-    mockRuntimeResolved = true;
-    rerender();
-    await act(async () => await flushPromises());
-
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/projects?workspaceId=${DEFAULT_WORKSPACE_ID}`,
-        expect.any(Object),
-      );
-      expect(state.currentSelection).toBe('project-alpha');
-      expect(state.currentProject).toBe('project-alpha');
-      expect(state.projectsLoading).toBe(false);
-    });
-  });
 });
 
 describe('fetchProjects', () => {

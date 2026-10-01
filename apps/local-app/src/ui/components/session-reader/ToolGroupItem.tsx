@@ -49,7 +49,7 @@ export function ToolGroupItem({ sessionId, group, isStepHot, percentOfChunk }: T
 
   return (
     <div
-      className={cn(isStepHot && 'border-l-2 border-amber-500 pl-1.5')}
+      className={cn(isStepHot && 'border-l-2 border-status-warn pl-1.5')}
       data-testid="tool-group-wrapper"
     >
       <Collapsible>
@@ -58,15 +58,15 @@ export function ToolGroupItem({ sessionId, group, isStepHot, percentOfChunk }: T
           data-testid="tool-group-trigger"
         >
           <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-          <FolderOpen className="h-3 w-3 text-amber-400" />
+          <FolderOpen className="h-3 w-3 text-status-warn" />
           <span className="font-mono font-medium">{label}</span>
           <span className="ml-auto flex items-center gap-1.5">
             {isStepHot && mode === 'diagnostic' && (
-              <Flame className="h-3 w-3 text-amber-500" data-testid="tool-group-flame" />
+              <Flame className="h-3 w-3 text-status-warn" data-testid="tool-group-flame" />
             )}
             {isStepHot && mode === 'diagnostic' && percentOfChunk != null && percentOfChunk > 0 && (
               <span
-                className="text-amber-600 font-medium text-[10px] tabular-nums"
+                className="text-status-warn font-medium text-[10px] tabular-nums"
                 data-testid="tool-group-pct"
               >
                 {Math.round(percentOfChunk)}%
@@ -74,7 +74,7 @@ export function ToolGroupItem({ sessionId, group, isStepHot, percentOfChunk }: T
             )}
             {group.totalTokens > 0 && (
               <span
-                className="text-muted-foreground/60 text-[10px] tabular-nums"
+                className="text-muted-foreground text-[10px] tabular-nums"
                 data-testid="tool-group-tokens"
               >
                 ~{formatTokens(group.totalTokens)}
@@ -83,11 +83,11 @@ export function ToolGroupItem({ sessionId, group, isStepHot, percentOfChunk }: T
             {group.totalDurationMs > 0 && (
               <>
                 <span
-                  className="inline-block h-1.5 w-1.5 rounded-full bg-green-500"
+                  className="inline-block h-1.5 w-1.5 rounded-full bg-status-ok"
                   aria-hidden="true"
                 />
                 <span
-                  className="text-muted-foreground/60 text-[10px] tabular-nums"
+                  className="text-muted-foreground text-[10px] tabular-nums"
                   data-testid="tool-group-duration"
                 >
                   {formatDuration(group.totalDurationMs)}

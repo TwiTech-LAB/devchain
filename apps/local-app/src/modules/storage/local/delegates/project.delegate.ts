@@ -13,6 +13,7 @@ import {
   ValidationError,
 } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
+import { dropProviderEnvKeysOfProject } from '../helpers/storage-helpers';
 import {
   communitySkillSources,
   DEFAULT_PROJECT_WORKSPACE_ID,
@@ -479,6 +480,7 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
       statuses,
       guests,
       integrationConnections,
+      remoteProjectBindings,
       teamMembers,
       teams,
     } = await import('../../db/schema');
@@ -494,6 +496,19 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
       if (projectConnection) {
         throw new ConflictError('Cannot delete a project with an integration connection.', {
           code: 'PROJECT_HAS_INTEGRATION_CONNECTIONS',
+          projectId: id,
+        });
+      }
+
+      const projectBinding = this.db
+        .select({ projectId: remoteProjectBindings.projectId })
+        .from(remoteProjectBindings)
+        .where(eq(remoteProjectBindings.projectId, id))
+        .limit(1)
+        .get();
+      if (projectBinding) {
+        throw new ConflictError('Cannot delete a project with a remote binding.', {
+          code: 'PROJECT_HAS_REMOTE_BINDING',
           projectId: id,
         });
       }
@@ -664,6 +679,10 @@ export class ProjectStorageDelegate extends BaseStorageDelegate {
 
       // 14. Guests
       await this.db.delete(guests).where(eq(guests.projectId, id));
+
+      // The project delete below cascades the provider_env_scopes rows; keys
+      // losing their last row must lose their value too, or they go global.
+      dropProviderEnvKeysOfProject(this.rawClient, id);
 
       // 15. Finally, delete the project itself
       await this.db.delete(projects).where(eq(projects.id, id));

@@ -541,13 +541,6 @@ describe('CatalogBroadcasterService', () => {
     expect(projected).not.toHaveProperty('providerSessionId');
   });
 
-  // ── Worktree ──
-  it('broadcasts orchestrator.worktree.changed with empty payload', () => {
-    emitter.emit('orchestrator.worktree.changed', { worktreeId: 'wt-1' });
-
-    expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith('worktrees', 'changed', {});
-  });
-
   // ── Error handling ──
   it('does not throw when a topic projection throws', () => {
     emitter.emit('session.activity.changed', {});
@@ -599,7 +592,6 @@ describe('broadcastRegistry contract', () => {
       'session.providerSessionId.discovered',
       'session.transcript.updated',
       'session.transcript.ended',
-      'orchestrator.worktree.changed',
       'session.presence.changed',
       'session.recommendation',
       'scheduled_epic.executed',

@@ -3,6 +3,8 @@ import { ProviderDiscoveryService } from './provider-discovery.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { ProviderAdapterFactory } from '../adapters';
 import * as resolveBinaryModule from '../../../common/resolve-binary';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
 jest.mock('../../../common/resolve-binary');
 const mockResolveBinary = resolveBinaryModule.resolveBinary as jest.MockedFunction<
@@ -13,6 +15,7 @@ describe('ProviderDiscoveryService', () => {
   let service: ProviderDiscoveryService;
   let mockStorage: { listProviders: jest.Mock };
   let mockAdapterFactory: { getSupportedProviders: jest.Mock };
+  let executor: FakeProcessExecutor;
 
   beforeEach(async () => {
     mockStorage = {
@@ -23,11 +26,14 @@ describe('ProviderDiscoveryService', () => {
       getSupportedProviders: jest.fn().mockReturnValue(['claude', 'codex', 'agy', 'opencode']),
     };
 
+    executor = new FakeProcessExecutor();
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ProviderDiscoveryService,
         { provide: STORAGE_SERVICE, useValue: mockStorage },
         { provide: ProviderAdapterFactory, useValue: mockAdapterFactory },
+        { provide: ProcessExecutor, useValue: executor },
       ],
     }).compile();
 
@@ -50,6 +56,20 @@ describe('ProviderDiscoveryService', () => {
     ]);
     expect(result.notFound).toEqual(['agy', 'opencode']);
     expect(result.alreadyPresent).toEqual([]);
+    expect(mockResolveBinary).toHaveBeenCalledWith('claude', executor);
+  });
+
+  it('finds a CLI on PATH through the real resolver and the process executor', async () => {
+    // Without an executor, the real resolver returns null for every bare name.
+    const actual = jest.requireActual<typeof resolveBinaryModule>('../../../common/resolve-binary');
+    mockResolveBinary.mockImplementationOnce(actual.resolveBinary);
+    mockAdapterFactory.getSupportedProviders.mockReturnValue(['claude']);
+    executor.setDefaultResponse({ type: 'success', stdout: `${process.execPath}\n` });
+
+    const result = await service.discoverInstalledBinaries();
+
+    expect(result.discovered).toEqual([{ name: 'claude', binPath: process.execPath }]);
+    expect(executor.calls.map((call) => call.argv.at(-1))).toEqual(['claude']);
   });
 
   it('marks existing providers as alreadyPresent without resolving', async () => {

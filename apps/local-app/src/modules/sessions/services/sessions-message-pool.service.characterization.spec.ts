@@ -63,7 +63,7 @@ describe('SessionsMessagePoolService characterization', () => {
       broadcastPoolsUpdated: jest.fn(),
     };
     const providerAdapterFactory = {
-      getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+      getRuntimePromptBehaviorForAgent: jest.fn().mockResolvedValue({ followNote: true }),
     };
     const messageLog = new MessageLogService();
     const failureNotifier = { notifySendersOfFailure: jest.fn().mockResolvedValue(undefined) };
@@ -107,6 +107,7 @@ describe('SessionsMessagePoolService characterization', () => {
       agentId: 'agent-1',
       submitKeys: ['Enter'],
       postPasteDelayMs: undefined,
+      followNote: true,
     });
   });
 

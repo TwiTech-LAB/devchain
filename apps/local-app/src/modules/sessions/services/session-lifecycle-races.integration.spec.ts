@@ -19,6 +19,7 @@ import {
   fakeProject,
   fakeProvider,
 } from './session-runtime/__test-utils__/pipeline-harness';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
@@ -264,7 +265,11 @@ describe('session lifecycle race serialization', () => {
       streamService as never,
       providerRuntimePreparation as never,
     );
-    sessionRuntime = new SessionRuntime(launchPipeline, restorePipeline);
+    sessionRuntime = new SessionRuntime(
+      launchPipeline,
+      restorePipeline,
+      createProjectWriteAdmissionStub() as never,
+    );
     sessionsService = new SessionsService(
       db,
       storage as never,
@@ -281,8 +286,13 @@ describe('session lifecycle race serialization', () => {
       claudeLaunchSettings as never,
       codexPluginProfiles as never,
       store,
+      { listRemoteOwnedProjectIds: () => [] } as never,
     );
-    facade = new SessionLifecycleFacade(sessionRuntime, sessionsService);
+    facade = new SessionLifecycleFacade(
+      sessionRuntime,
+      sessionsService,
+      createProjectWriteAdmissionStub() as never,
+    );
     seedAgentFixtures();
   });
 

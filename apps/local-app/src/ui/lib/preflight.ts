@@ -1,3 +1,5 @@
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+
 export type PreflightStatus = 'pass' | 'fail' | 'warn';
 
 export interface PreflightCheck {
@@ -42,7 +44,7 @@ export async function fetchPreflightChecks(
   if (projectPath) params.set('projectPath', projectPath);
   if (opts?.includeAllProviders === true) params.set('all', '1');
   const query = params.size > 0 ? `?${params.toString()}` : '';
-  const res = await fetch(`/api/preflight${query}`);
+  const res = await apiFetch(`/api/preflight${query}`, undefined, { backend: HOME_BACKEND });
   if (!res.ok) {
     throw new Error('Failed to fetch preflight checks');
   }

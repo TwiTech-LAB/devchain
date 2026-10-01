@@ -4,7 +4,6 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { Layout } from './Layout';
 import { RuntimeProvider } from '../hooks/useRuntime';
-import { WorktreeTabProvider } from '../hooks/useWorktreeTab';
 
 // Layer: UI component unit. Mocking project selection and the activity hook is the cheapest
 // reliable proof that Layout owns the Board active-state wiring without re-testing those hooks.
@@ -92,13 +91,11 @@ async function renderLayoutAt(initialEntry: string) {
   const result = render(
     <QueryClientProvider client={queryClient}>
       <RuntimeProvider>
-        <WorktreeTabProvider>
-          <MemoryRouter initialEntries={[initialEntry]}>
-            <Layout>
-              <div>Layout Test Content</div>
-            </Layout>
-          </MemoryRouter>
-        </WorktreeTabProvider>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <Layout>
+            <div>Layout Test Content</div>
+          </Layout>
+        </MemoryRouter>
       </RuntimeProvider>
     </QueryClientProvider>,
   );

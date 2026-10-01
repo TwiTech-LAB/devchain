@@ -681,4 +681,92 @@ describe('GitService', () => {
       }
     });
   });
+
+  describe('ownership guard helpers', () => {
+    beforeEach(() => {
+      mockExistsSync.mockReturnValue(true);
+    });
+
+    it('parses the installed git version', async () => {
+      fakeExecutor.enqueueResponse({ type: 'success', stdout: 'git version 2.43.0\n' });
+
+      await expect(service.getVersion('project-1')).resolves.toEqual({
+        major: 2,
+        minor: 43,
+        patch: 0,
+      });
+      expect(fakeExecutor.calls[0].argv).toEqual(['git', '--version']);
+    });
+
+    it('throws IOError when the version output cannot be parsed', async () => {
+      fakeExecutor.enqueueResponse({ type: 'success', stdout: 'some other tool 1.0\n' });
+
+      await expect(service.getVersion('project-1')).rejects.toThrow(IOError);
+    });
+
+    it('reads a config value and returns null when the key is unset', async () => {
+      fakeExecutor.enqueueResponse({ type: 'success', stdout: '/custom/hooks\n' });
+
+      await expect(service.getConfigValue('project-1', 'core.hooksPath')).resolves.toBe(
+        '/custom/hooks',
+      );
+
+      // `git config --get <unset>` exits 1 with empty output.
+      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1, stdout: '' });
+
+      await expect(service.getConfigValue('project-1', 'core.hooksPath')).resolves.toBeNull();
+    });
+
+    it('rejects config keys that are not dotted section.name pairs', async () => {
+      await expect(service.getConfigValue('project-1', '--upload-pack')).rejects.toThrow(
+        ValidationError,
+      );
+      expect(fakeExecutor.calls).toHaveLength(0);
+    });
+
+    it('resolves HEAD to its commit and to null when unborn', async () => {
+      fakeExecutor.enqueueResponse({ type: 'success', stdout: 'a1b2c3d4e5f6\n' });
+
+      await expect(service.mirroredHead('project-1')).resolves.toBe('a1b2c3d4e5f6');
+
+      // An unborn HEAD makes `rev-parse --verify --quiet` exit 1 with no output.
+      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1, stdout: '' });
+
+      await expect(service.mirroredHead('project-1')).resolves.toBeNull();
+    });
+
+    it('propagates hard rev-parse failures from mirroredHead', async () => {
+      fakeExecutor.enqueueResponse({
+        type: 'failure',
+        exitCode: 128,
+        stderr: 'fatal: not a git repository',
+      });
+
+      await expect(service.mirroredHead('project-1')).rejects.toThrow(IOError);
+    });
+
+    it('rebuilds the index from HEAD and tolerates a dirty worktree refresh', async () => {
+      fakeExecutor.enqueueResponse({ type: 'success', stdout: 'a1b2c3d4e5f6\n' });
+      fakeExecutor.enqueueResponse({ type: 'success', stdout: '' });
+      // update-index --refresh exits 1 when files differ from the index.
+      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1, stdout: '' });
+
+      await expect(service.refreshIndexFromHead('project-1')).resolves.toBeUndefined();
+
+      const argvs = fakeExecutor.calls.map((call) => call.argv.join(' '));
+      expect(argvs).toEqual([
+        'git rev-parse --verify --quiet HEAD^{commit}',
+        'git read-tree HEAD',
+        'git update-index --refresh',
+      ]);
+    });
+
+    it('skips the index rebuild on an unborn HEAD', async () => {
+      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1, stdout: '' });
+
+      await expect(service.refreshIndexFromHead('project-1')).resolves.toBeUndefined();
+
+      expect(fakeExecutor.calls).toHaveLength(1);
+    });
+  });
 });

@@ -2,11 +2,13 @@
 import { TunnelClientService } from './tunnel-client.service';
 import { CloudSessionManagerService } from '../../cloud/services/cloud-session-manager.service';
 import { RefreshGateService } from '../../cloud/services/refresh-gate.service';
+import { InstanceLabelService } from '../../cloud/services/instance-label.service';
 import { TunnelKeypairService } from './tunnel-keypair.service';
 import { E2eeKeypairService } from '../../e2ee/services/e2ee-keypair.service';
 import { TunnelHandlerService } from './tunnel-handler.service';
 import { TunnelRpcCryptoService } from './tunnel-rpc-crypto.service';
 import { WorkspaceModeCoordinatorService } from '../../workspaces/services/workspace-mode-coordinator.service';
+import type { HostHelperService } from '../../remotes/host/host-helper.service';
 
 const mockInstances: any[] = [];
 
@@ -43,6 +45,8 @@ describe('TunnelClientService', () => {
   let e2eeKeypair: Partial<E2eeKeypairService>;
   let rpcCrypto: Partial<TunnelRpcCryptoService>;
   let workspaceMode: Partial<WorkspaceModeCoordinatorService>;
+  let instanceLabel: Partial<InstanceLabelService>;
+  let hostHelper: { isClaimedHost: jest.Mock };
 
   beforeEach(() => {
     jest.useFakeTimers();
@@ -89,6 +93,12 @@ describe('TunnelClientService', () => {
       }),
     };
 
+    instanceLabel = {
+      getLabel: jest.fn().mockReturnValue(null),
+    };
+
+    hostHelper = { isClaimedHost: jest.fn().mockReturnValue(false) };
+
     service = new TunnelClientService(
       cloudSession as CloudSessionManagerService,
       refreshGate as RefreshGateService,
@@ -97,6 +107,8 @@ describe('TunnelClientService', () => {
       e2eeKeypair as E2eeKeypairService,
       rpcCrypto as TunnelRpcCryptoService,
       workspaceMode as WorkspaceModeCoordinatorService,
+      instanceLabel as InstanceLabelService,
+      hostHelper as unknown as HostHelperService,
     );
   });
 
@@ -288,6 +300,55 @@ describe('TunnelClientService', () => {
     const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
     expect(attestCall).toBeDefined();
     expect(JSON.parse(attestCall[0]).protocolVersion).toBe('2');
+  });
+
+  it('attests with the configured instance label when one is set', async () => {
+    (instanceLabel.getLabel as jest.Mock).mockReturnValue('lab-vm');
+    service.handleCloudConnected();
+    const ws = mockInstances[0];
+
+    ws._emit('message', Buffer.from(JSON.stringify({ type: 'challenge', nonce: 'n', ts: 't' })));
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
+    expect(JSON.parse(attestCall[0]).label).toBe('lab-vm');
+  });
+
+  it('attests role host on a claimed host', async () => {
+    hostHelper.isClaimedHost.mockReturnValue(true);
+    service.handleCloudConnected();
+    const ws = mockInstances[0];
+
+    ws._emit('message', Buffer.from(JSON.stringify({ type: 'challenge', nonce: 'n', ts: 't' })));
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
+    expect(JSON.parse(attestCall[0]).role).toBe('host');
+  });
+
+  it('omits the attest role on an instance that is not a claimed host', async () => {
+    hostHelper.isClaimedHost.mockReturnValue(false);
+    service.handleCloudConnected();
+    const ws = mockInstances[0];
+
+    ws._emit('message', Buffer.from(JSON.stringify({ type: 'challenge', nonce: 'n', ts: 't' })));
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
+    expect(JSON.parse(attestCall[0])).not.toHaveProperty('role');
+  });
+
+  it('falls back to the hostname in attestation when no label is configured', async () => {
+    (instanceLabel.getLabel as jest.Mock).mockReturnValue(null);
+    service.handleCloudConnected();
+    const ws = mockInstances[0];
+
+    ws._emit('message', Buffer.from(JSON.stringify({ type: 'challenge', nonce: 'n', ts: 't' })));
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
+    const { hostname } = require('os');
+    expect(JSON.parse(attestCall[0]).label).toBe(hostname());
   });
 
   it('advertises the E2EE capability (pubkey + fingerprint) in the attest handshake', async () => {

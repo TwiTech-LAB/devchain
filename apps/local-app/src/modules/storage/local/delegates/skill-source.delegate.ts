@@ -64,9 +64,24 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
     projectId: string,
     sourceName: string,
     enabled: boolean,
+    options?: { onlyIfMissing?: boolean },
   ): Promise<void> {
     const normalizedProjectId = normalizeProjectIdForSourceEnablement(projectId);
     const normalizedSourceName = normalizeSourceNameForSourceEnablement(sourceName);
+
+    if (options?.onlyIfMissing) {
+      await this.db
+        .insert(sourceProjectEnabled)
+        .values({
+          id: randomUUID(),
+          projectId: normalizedProjectId,
+          sourceName: normalizedSourceName,
+          enabled,
+          createdAt: new Date().toISOString(),
+        })
+        .onConflictDoNothing();
+      return;
+    }
 
     const existing = await this.db
       .select({ id: sourceProjectEnabled.id })

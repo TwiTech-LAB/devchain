@@ -46,10 +46,12 @@ export function SubNavLayout<K extends string>({
               key={section.key}
               value={section.key}
               className={cn(
-                'flex items-center gap-2 justify-start rounded-none shadow-none',
+                'relative flex items-center gap-2 justify-start rounded-none shadow-none',
                 'px-4 py-2.5 text-sm font-medium',
-                'text-muted-foreground hover:bg-muted hover:text-foreground',
-                'data-[state=active]:bg-muted data-[state=active]:text-foreground data-[state=active]:shadow-none',
+                'text-muted-foreground data-[state=inactive]:hover:bg-muted data-[state=inactive]:hover:text-foreground',
+                'data-[state=active]:bg-selected data-[state=active]:text-selected-foreground data-[state=active]:shadow-none',
+                // The active item carries the same 3px marker as the main navigation.
+                'data-[state=active]:before:absolute data-[state=active]:before:inset-y-1 data-[state=active]:before:left-0 data-[state=active]:before:w-[3px] data-[state=active]:before:rounded-full data-[state=active]:before:bg-primary',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
               )}
             >

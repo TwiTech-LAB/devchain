@@ -1,4 +1,5 @@
 import { Injectable, Inject, Optional } from '@nestjs/common';
+import type { ProjectReplicaV1 } from '@devchain/shared';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { DB_CONNECTION } from '../db/db.provider';
 import {
@@ -28,6 +29,12 @@ import {
   type DeleteAgentOptions,
   type UpdateScheduledEpicOptions,
   type VerifyIntegrationCredentials,
+  type ApplyProjectReplicaStorageOptions,
+  type FrozenProject,
+  type ProjectReplicaApplyMode,
+  type ProjectReplicaApplySummary,
+  type ProjectReplicaSource,
+  type ReadProjectReplicaSourceOptions,
 } from '../interfaces/storage.interface';
 import type { SnapshotPromptWriter } from '../interfaces/snapshot-prompt-writer.interface';
 import {
@@ -36,6 +43,20 @@ import {
   UpdateProject,
   ProjectWorkspace,
   DeleteProjectWorkspaceResult,
+  Remote,
+  CreateRemote,
+  VmProviderConnection,
+  CreateVmProviderConnection,
+  RemoteProjectBinding,
+  UpdateRemoteProjectBinding,
+  CreateProviderAuthEntry,
+  ProviderAuthEntry,
+  ProviderAuthPayload,
+  RemoteOperation,
+  CreateRemoteOperation,
+  UpdateRemoteOperation,
+  RemoteOperationState,
+  RemoteOperationKind,
   Status,
   CreateStatus,
   UpdateStatus,
@@ -152,6 +173,11 @@ import { ProviderPluginPolicyStorageDelegate } from './delegates/provider-plugin
 import { ProjectStorageDelegate } from './delegates/project.delegate';
 import { ProjectWorkspaceStorageDelegate } from './delegates/project-workspace.delegate';
 import { RecordStorageDelegate } from './delegates/record.delegate';
+import { RemoteStorageDelegate } from './delegates/remote.delegate';
+import { ProviderAuthStorageDelegate } from './delegates/provider-auth.delegate';
+import { ProjectReplicaReadStorageDelegate } from './delegates/project-replica-read.delegate';
+import { ProjectReplicaStorageDelegate } from './delegates/project-replica.delegate';
+import { ProjectHostStorageDelegate } from './delegates/project-host.delegate';
 import { ReviewStorageDelegate } from './delegates/review.delegate';
 import { SkillSourceStorageDelegate } from './delegates/skill-source.delegate';
 import { StatusStorageDelegate } from './delegates/status.delegate';
@@ -183,6 +209,11 @@ const logger = createLogger('LocalStorageService');
 export class LocalStorageService implements StorageService, SnapshotPromptWriter {
   private readonly projectDelegate: ProjectStorageDelegate;
   private readonly projectWorkspaceDelegate: ProjectWorkspaceStorageDelegate;
+  private readonly remoteDelegate: RemoteStorageDelegate;
+  private readonly providerAuthDelegate: ProviderAuthStorageDelegate;
+  private readonly projectReplicaReadDelegate: ProjectReplicaReadStorageDelegate;
+  private readonly projectReplicaDelegate: ProjectReplicaStorageDelegate;
+  private readonly projectHostDelegate: ProjectHostStorageDelegate;
   private readonly statusDelegate: StatusStorageDelegate;
   private readonly epicDelegate: EpicStorageDelegate;
   private readonly tagDelegate: TagStorageDelegate;
@@ -216,6 +247,14 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
       committedEventStore ?? new CommittedEventStore(this.db, new DurableEventRegistryService());
     this.projectDelegate = new ProjectStorageDelegate(context);
     this.projectWorkspaceDelegate = new ProjectWorkspaceStorageDelegate(context);
+    const credentialCipher = integrationCredentialCipher ?? new IntegrationCredentialCipher();
+    this.remoteDelegate = new RemoteStorageDelegate(context, credentialCipher);
+    this.providerAuthDelegate = new ProviderAuthStorageDelegate(context, credentialCipher);
+    this.projectReplicaReadDelegate = new ProjectReplicaReadStorageDelegate(context);
+    this.projectReplicaDelegate = new ProjectReplicaStorageDelegate(context, {
+      appendEvent: (event) => eventStore.appendInCurrentTransaction(event),
+    });
+    this.projectHostDelegate = new ProjectHostStorageDelegate(context);
     this.statusDelegate = new StatusStorageDelegate(context);
     this.tagDelegate = new TagStorageDelegate(context);
     const createTag = (data: CreateTag): Tag => this.tagDelegate.createTagSync(data);
@@ -351,6 +390,191 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     replacementId: string,
   ): Promise<DeleteProjectWorkspaceResult> {
     return this.projectWorkspaceDelegate.deleteProjectWorkspace(id, replacementId);
+  }
+
+  // Remotes
+  async readRemoteApiKey(id: string): Promise<string | null> {
+    return this.remoteDelegate.readRemoteApiKey(id);
+  }
+
+  async saveRemoteApiKey(id: string, key: string, onlyIfAbsent = false): Promise<void> {
+    return this.remoteDelegate.saveRemoteApiKey(id, key, onlyIfAbsent);
+  }
+
+  async createRemote(data: CreateRemote): Promise<Remote> {
+    return this.remoteDelegate.createRemote(data);
+  }
+
+  async getRemote(id: string): Promise<Remote> {
+    return this.remoteDelegate.getRemote(id);
+  }
+
+  async listRemotes(options: ListOptions = {}): Promise<ListResult<Remote>> {
+    return this.remoteDelegate.listRemotes(options);
+  }
+
+  async updateRemoteName(id: string, name: string): Promise<Remote> {
+    return this.remoteDelegate.updateRemoteName(id, name);
+  }
+
+  async updateRemoteBaseUrl(id: string, baseUrl: string | null): Promise<Remote> {
+    return this.remoteDelegate.updateRemoteBaseUrl(id, baseUrl);
+  }
+
+  async updateRemoteVmIdentity(id: string, vmIdentity: string | null): Promise<Remote> {
+    return this.remoteDelegate.updateRemoteVmIdentity(id, vmIdentity);
+  }
+
+  async updateRemoteTlsCertificate(id: string, certificate: string | null): Promise<Remote> {
+    return this.remoteDelegate.updateRemoteTlsCertificate(id, certificate);
+  }
+
+  async createVmProviderConnection(
+    data: CreateVmProviderConnection,
+  ): Promise<VmProviderConnection> {
+    return this.remoteDelegate.createVmProviderConnection(data);
+  }
+
+  async listVmProviderConnections(): Promise<VmProviderConnection[]> {
+    return this.remoteDelegate.listVmProviderConnections();
+  }
+
+  async getVmProviderConnection(id: string): Promise<VmProviderConnection> {
+    return this.remoteDelegate.getVmProviderConnection(id);
+  }
+
+  async readVmProviderTokenSecret(id: string): Promise<string> {
+    return this.remoteDelegate.readVmProviderTokenSecret(id);
+  }
+
+  async deleteVmProviderConnection(id: string): Promise<void> {
+    return this.remoteDelegate.deleteVmProviderConnection(id);
+  }
+
+  async deleteRemote(id: string): Promise<void> {
+    return this.remoteDelegate.deleteRemote(id);
+  }
+
+  // Provider auth vault
+  async listProviderAuthEntries(): Promise<ProviderAuthEntry[]> {
+    return this.providerAuthDelegate.listProviderAuthEntries();
+  }
+
+  async getProviderAuthEntry(id: string): Promise<ProviderAuthEntry> {
+    return this.providerAuthDelegate.getProviderAuthEntry(id);
+  }
+
+  async readProviderAuthPayload(id: string): Promise<ProviderAuthPayload> {
+    return this.providerAuthDelegate.readProviderAuthPayload(id);
+  }
+
+  async createProviderAuthEntry(data: CreateProviderAuthEntry): Promise<ProviderAuthEntry> {
+    return this.providerAuthDelegate.createProviderAuthEntry(data);
+  }
+
+  async deleteProviderAuthEntry(id: string): Promise<void> {
+    return this.providerAuthDelegate.deleteProviderAuthEntry(id);
+  }
+
+  async updateProviderAuthPayload(
+    id: string,
+    payload: ProviderAuthPayload,
+  ): Promise<ProviderAuthEntry> {
+    return this.providerAuthDelegate.updateProviderAuthPayload(id, payload);
+  }
+
+  async renameProviderAuthEntry(id: string, label: string): Promise<ProviderAuthEntry> {
+    return this.providerAuthDelegate.renameProviderAuthEntry(id, label);
+  }
+
+  async checkoutProviderAuthEntry(id: string, remoteId: string): Promise<ProviderAuthEntry> {
+    return this.providerAuthDelegate.checkoutProviderAuthEntry(id, remoteId);
+  }
+
+  async releaseProviderAuthEntry(id: string): Promise<ProviderAuthEntry> {
+    return this.providerAuthDelegate.releaseProviderAuthEntry(id);
+  }
+
+  async listRemoteProjectBindings(): Promise<RemoteProjectBinding[]> {
+    return this.remoteDelegate.listRemoteProjectBindings();
+  }
+
+  async getRemoteProjectBinding(projectId: string): Promise<RemoteProjectBinding | null> {
+    return this.remoteDelegate.getRemoteProjectBinding(projectId);
+  }
+
+  async createRemoteProjectBinding(data: {
+    projectId: string;
+    remoteId: string;
+  }): Promise<RemoteProjectBinding> {
+    return this.remoteDelegate.createRemoteProjectBinding(data);
+  }
+
+  async updateRemoteProjectBinding(
+    projectId: string,
+    data: UpdateRemoteProjectBinding,
+  ): Promise<RemoteProjectBinding> {
+    return this.remoteDelegate.updateRemoteProjectBinding(projectId, data);
+  }
+
+  async deleteRemoteProjectBinding(projectId: string): Promise<RemoteProjectBinding | null> {
+    return this.remoteDelegate.deleteRemoteProjectBinding(projectId);
+  }
+
+  async createRemoteOperation(data: CreateRemoteOperation): Promise<RemoteOperation> {
+    return this.remoteDelegate.createRemoteOperation(data);
+  }
+
+  async getRemoteOperation(id: string): Promise<RemoteOperation> {
+    return this.remoteDelegate.getRemoteOperation(id);
+  }
+
+  async listRemoteOperations(filter?: {
+    states?: readonly RemoteOperationState[];
+    projectId?: string;
+    remoteId?: string;
+    kinds?: readonly RemoteOperationKind[];
+    limit?: number;
+  }): Promise<RemoteOperation[]> {
+    return this.remoteDelegate.listRemoteOperations(filter);
+  }
+
+  async updateRemoteOperation(id: string, data: UpdateRemoteOperation): Promise<RemoteOperation> {
+    return this.remoteDelegate.updateRemoteOperation(id, data);
+  }
+
+  // Project replica
+  async readProjectReplicaSource(
+    projectIds: readonly string[],
+    options: ReadProjectReplicaSourceOptions,
+  ): Promise<ProjectReplicaSource> {
+    return this.projectReplicaReadDelegate.readProjectReplicaSource(projectIds, options);
+  }
+
+  async applyProjectReplica(
+    replica: ProjectReplicaV1,
+    mode: ProjectReplicaApplyMode,
+    eventFactory: (summary: ProjectReplicaApplySummary) => PreparedEvent,
+    options?: ApplyProjectReplicaStorageOptions,
+  ): Promise<ProjectReplicaApplySummary[]> {
+    return this.projectReplicaDelegate.applyProjectReplica(replica, mode, eventFactory, options);
+  }
+
+  // Project host (remote handoff)
+  async setProjectFrozen(projectId: string, frozenAt: string | null): Promise<void> {
+    return this.projectHostDelegate.setProjectFrozen(projectId, frozenAt);
+  }
+
+  async listFrozenProjects(): Promise<FrozenProject[]> {
+    return this.projectHostDelegate.listFrozenProjects();
+  }
+
+  async releaseProject(projectId: string): Promise<void> {
+    return this.projectHostDelegate.releaseProject(projectId);
+  }
+
+  async findEpicIdByIdempotencyKey(projectId: string, key: string): Promise<string | null> {
+    return this.projectHostDelegate.findEpicIdByIdempotencyKey(projectId, key);
   }
 
   // Statuses
@@ -491,6 +715,10 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
 
   async deleteEpicComment(id: string): Promise<void> {
     return this.epicDelegate.deleteEpicComment(id);
+  }
+
+  async findEpicCommentEpicId(commentId: string): Promise<string | null> {
+    return this.epicDelegate.findEpicCommentEpicId(commentId);
   }
 
   async deleteEpicCommentScoped(epicId: string, commentId: string): Promise<boolean> {
@@ -769,8 +997,14 @@ export class LocalStorageService implements StorageService, SnapshotPromptWriter
     projectId: string,
     sourceName: string,
     enabled: boolean,
+    options?: { onlyIfMissing?: boolean },
   ): Promise<void> {
-    return this.skillSourceDelegate.setSourceProjectEnabled(projectId, sourceName, enabled);
+    return this.skillSourceDelegate.setSourceProjectEnabled(
+      projectId,
+      sourceName,
+      enabled,
+      options,
+    );
   }
 
   async listSourceProjectEnabled(

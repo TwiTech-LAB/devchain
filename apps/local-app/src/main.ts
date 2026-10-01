@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
 import { ValidationPipe } from '@nestjs/common';
+import { AppModule } from './app.module';
 import { getEnvConfig } from './common/config/env.config';
 import { HostResolver } from '@devchain/shared';
 import { logger, createLogger } from './common/logging/logger';
@@ -8,14 +9,10 @@ import { writeRuntimeContextEndpointDiscovery } from './modules/runtime-context-
 import { configureSwagger } from './common/http/swagger';
 import { normalizeFastifyFrameworkError } from './common/http/runtime-route-classification';
 import { hasUiBuild, resolveUiRoot } from './modules/ui/ui-root';
+import { registerHostApiKeyBoundary } from './modules/remotes/host/host-api-key.setup';
+import { registerHostTls } from './modules/remotes/host/host-tls.setup';
 
 async function bootstrap() {
-  const mode = process.env.DEVCHAIN_MODE === 'main' ? 'main' : 'normal';
-  const RootModule =
-    mode === 'main'
-      ? (await import('./app.main.module')).MainAppModule
-      : (await import('./app.normal.module')).NormalAppModule;
-
   const config = getEnvConfig();
   const appLogger = createLogger('Bootstrap');
 
@@ -54,7 +51,7 @@ async function bootstrap() {
         };
 
   const app = await NestFactory.create<NestFastifyApplication>(
-    RootModule,
+    AppModule,
     new FastifyAdapter({
       logger: fastifyLogger,
       requestIdLogLabel: 'requestId',
@@ -66,11 +63,14 @@ async function bootstrap() {
     },
   );
 
+  registerHostApiKeyBoundary(app);
+  registerHostTls(app);
+
   const uiPath = resolveUiRoot();
   const isProduction = config.NODE_ENV === 'production';
 
   if (isProduction && hasUiBuild(uiPath)) {
-    appLogger.info({ mode, path: uiPath }, 'UI asset routes enabled');
+    appLogger.info({ path: uiPath }, 'UI asset routes enabled');
   } else if (!isProduction) {
     appLogger.info('Development mode: UI served by Vite dev server at http://127.0.0.1:5175');
   } else {
@@ -106,7 +106,6 @@ async function bootstrap() {
 
   configureSwagger(app);
 
-  // Bind to localhost only for security
   await app.listen(config.PORT, config.HOST);
 
   // Resolve actual port (may differ from config.PORT when PORT=0 for OS-assigned ports)
@@ -121,7 +120,7 @@ async function bootstrap() {
     appLogger.error({ error }, 'Failed to write runtime-context endpoint discovery file');
   }
 
-  // Write runtime port file for parent process discovery (worktree process runtime)
+  // Write runtime port file for parent process discovery.
   if (config.RUNTIME_PORT_FILE) {
     const { writeFileSync, mkdirSync } = await import('fs');
     const { dirname } = await import('path');
@@ -146,7 +145,6 @@ async function bootstrap() {
   const displayUrl = internalUrl;
   appLogger.info(
     {
-      mode,
       port: actualPort,
       bindHost: config.HOST,
       env: config.NODE_ENV,

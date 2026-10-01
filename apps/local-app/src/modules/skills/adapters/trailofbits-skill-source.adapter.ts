@@ -1,3 +1,4 @@
+import { BUILT_IN_SKILL_SOURCE_NAMES } from '../../../common/constants/built-in-skill-sources';
 import type { Dirent } from 'node:fs';
 import { join, relative } from 'node:path';
 import { Injectable } from '@nestjs/common';
@@ -15,7 +16,7 @@ const SKILLS_DIRECTORY = 'skills';
 export class TrailOfBitsSkillSource extends GitHubSkillSourceBase implements SkillSourceAdapter {
   constructor() {
     super({
-      sourceName: 'trailofbits',
+      sourceName: BUILT_IN_SKILL_SOURCE_NAMES.trailofbits,
       repoOwner: 'trailofbits',
       repoName: 'skills',
     });

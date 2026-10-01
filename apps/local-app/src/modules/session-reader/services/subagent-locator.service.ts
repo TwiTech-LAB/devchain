@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { isSyncthingMarker } from '../../../common/constants/syncthing-markers';
 
 /** Information about a discovered subagent file */
 export interface SubagentFileInfo {
@@ -78,7 +79,7 @@ export class SubagentLocator {
     try {
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
       for (const entry of entries) {
-        if (!entry.isFile()) continue;
+        if (!entry.isFile() || isSyncthingMarker(entry.name)) continue;
         const match = AGENT_FILE_PATTERN.exec(entry.name);
         if (!match) continue;
 

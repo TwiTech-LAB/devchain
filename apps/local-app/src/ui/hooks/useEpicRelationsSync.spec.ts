@@ -41,6 +41,30 @@ describe('useEpicRelationsSync registry', () => {
     });
   });
 
+  it('invalidates the same families when a remote replica apply lands', () => {
+    const queryClient = new QueryClient();
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
+
+    dispatchRealtimeEnvelope(
+      {
+        topic: `workspace/${workspaceId}/epic-relations`,
+        type: 'remote-synced',
+        payload: { workspaceId },
+        ts: '2026-09-22T00:00:00.000Z',
+      },
+      createEpicRelationsInvalidationRegistry(workspaceId),
+      queryClient,
+    );
+
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      epicRelationQueryKeys.detailRoot(),
+      epicRelationQueryKeys.candidateRoot(),
+      epicRelationQueryKeys.batchRoot(),
+      epicTimeQueryKeys.detailRoot(),
+      epicTimeQueryKeys.batchRoot(),
+    ]);
+  });
+
   it('ignores globally broadcast envelopes for another workspace', () => {
     const queryClient = new QueryClient();
     const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
@@ -62,7 +86,7 @@ describe('useEpicRelationsSync registry', () => {
   it('refreshes every runtime batch variant through the family-prefix invalidation', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const ids = ['epic-1', 'epic-2'];
-    for (const scope of ['main', 'isolated'] as const) {
+    for (const scope of ['active', 'disabled'] as const) {
       queryClient.setQueryData(epicRelationQueryKeys.batch(ids, scope), new Map());
     }
 
@@ -78,7 +102,7 @@ describe('useEpicRelationsSync registry', () => {
     );
     await Promise.resolve();
 
-    for (const scope of ['main', 'isolated'] as const) {
+    for (const scope of ['active', 'disabled'] as const) {
       expect(
         queryClient.getQueryState(epicRelationQueryKeys.batch(ids, scope))?.isInvalidated,
       ).toBe(true);

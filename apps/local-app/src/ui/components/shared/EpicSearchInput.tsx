@@ -212,8 +212,10 @@ export function EpicSearchInput({ projectId, className }: EpicSearchInputProps) 
                     role="option"
                     aria-selected={index === selectedIndex}
                     className={cn(
-                      'flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent cursor-pointer',
-                      index === selectedIndex && 'bg-accent',
+                      'flex w-full items-center gap-2 px-3 py-2 text-left text-sm cursor-pointer',
+                      index === selectedIndex
+                        ? 'bg-selected text-selected-foreground'
+                        : 'hover:bg-accent',
                     )}
                     onClick={(e) => {
                       // Only close popover on regular left-click

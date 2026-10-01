@@ -1,6 +1,7 @@
-import { useCallback } from 'react';
+import { useCallback, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../ui/button';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '../ui/context-menu';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,6 +16,10 @@ interface CloudAccountMenuProps {
   email?: string;
   identityServiceUrl: string;
   onDisconnect: () => void;
+  /** Icon-only trigger for tight rows (dock header); the dropdown content is unchanged. */
+  compact?: boolean;
+  /** Items of a right-click menu on the trigger; rendered only while that menu is open. */
+  contextMenu?: ReactNode;
 }
 
 export function CloudAccountMenu({
@@ -22,6 +27,8 @@ export function CloudAccountMenu({
   email,
   identityServiceUrl,
   onDisconnect,
+  compact = false,
+  contextMenu,
 }: CloudAccountMenuProps) {
   const handleSwitch = useCallback(() => {
     onDisconnect();
@@ -32,14 +39,34 @@ export function CloudAccountMenu({
     }, 100);
   }, [identityServiceUrl, onDisconnect]);
 
+  const displayName = email || userId.slice(0, 8);
+
+  const button = (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="gap-1.5 text-xs"
+      aria-label={compact ? `Cloud connected: ${displayName}` : undefined}
+    >
+      <Cloud className="h-3.5 w-3.5 text-status-ok" />
+      {!compact && <span className="max-w-[120px] truncate">{displayName}</span>}
+    </Button>
+  );
+  // The dropdown trigger stays outermost so the button's data-state follows the left-click menu.
+  const trigger = contextMenu ? (
+    <ContextMenu>
+      <DropdownMenuTrigger asChild>
+        <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
+      </DropdownMenuTrigger>
+      <ContextMenuContent>{contextMenu}</ContextMenuContent>
+    </ContextMenu>
+  ) : (
+    <DropdownMenuTrigger asChild>{button}</DropdownMenuTrigger>
+  );
+
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-1.5 text-xs">
-          <Cloud className="h-3.5 w-3.5 text-green-500" />
-          <span className="max-w-[120px] truncate">{email || userId.slice(0, 8)}</span>
-        </Button>
-      </DropdownMenuTrigger>
+      {trigger}
       <DropdownMenuContent align="end" side="top">
         <div className="px-2 py-1.5">
           <p className="text-sm font-medium">Cloud connected</p>

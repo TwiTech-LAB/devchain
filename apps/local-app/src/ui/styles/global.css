@@ -20,6 +20,7 @@
     --accent-foreground: 222.2 47.4% 11.2%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
+    --destructive-text: 0 84.2% 60.2%;
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
@@ -27,6 +28,19 @@
     --event-bus-session-started: 38 92% 48%;
     --event-bus-epic-assigned: 276 55% 45%;
     --event-bus-spark: 222.2 47.4% 11.2%;
+    --metric-cpu: 203 78% 42%;
+    --metric-ram: 271 62% 46%;
+    --metric-disk: 165 72% 32%;
+    --status-ok: 142 72% 29%;
+    --status-warn: 32 95% 40%;
+    --canvas: 0 0% 100%;
+    --shell: 0 0% 100%;
+    --group: 210 40% 98.8%;
+    --selected: 210 40% 96.1%;
+    --selected-foreground: 222.2 84% 4.9%;
+    --overlay: 0 0% 0% / 0.8;
+    --status-info: 221.2 83.2% 53.3%;
+    --switch-off: 215.4 16.3% 46.9% / 0.5;
     --radius: 0.5rem;
     --terminal-background: 210 40% 98%;
     --terminal-foreground: 222.2 47.4% 11.2%;
@@ -40,6 +54,7 @@
 
   .dark {
     /* Neutral dark theme matching terminal #1a1a1a style */
+    color-scheme: dark;
     --background: 0 0% 10%; /* #1a1a1a - matches terminal */
     --foreground: 0 0% 90%; /* light gray text */
     --card: 0 0% 13%; /* slightly lifted cards */
@@ -56,6 +71,7 @@
     --accent-foreground: 0 0% 90%;
     --destructive: 0 70% 50%; /* visible red */
     --destructive-foreground: 0 0% 100%;
+    --destructive-text: 0 91% 71%;
     --border: 0 0% 22%; /* visible neutral borders */
     --input: 0 0% 18%;
     --ring: 210 90% 55%;
@@ -63,6 +79,19 @@
     --event-bus-session-started: 42 94% 60%;
     --event-bus-epic-assigned: 276 76% 68%;
     --event-bus-spark: 0 0% 96%;
+    --metric-cpu: 190 92% 60%;
+    --metric-ram: 272 80% 72%;
+    --metric-disk: 160 75% 55%;
+    --status-ok: 142 65% 50%;
+    --status-warn: 38 92% 55%;
+    --canvas: 0 0% 10%;
+    --shell: 0 0% 13%;
+    --group: 0 0% 11.8%;
+    --selected: 0 0% 18%;
+    --selected-foreground: 0 0% 90%;
+    --overlay: 0 0% 0% / 0.8;
+    --status-info: 213.1 93.9% 67.8%;
+    --switch-off: 0 0% 65% / 0.5;
     --terminal-background: 0 0% 10%; /* matches main background */
     --terminal-foreground: 0 0% 88%;
     --terminal-cursor: 210 90% 55%;
@@ -86,39 +115,62 @@
     --diff-omit-gutter-line-color: rgba(248, 81, 73, 0.6);
   }
 
-  /* Ocean theme: calm, refined palette with depth */
+  /* Ocean Light: white surfaces on a blue-gray canvas. Keep --background white: it is the
+     surface color for inputs, dialogs and cards; the page itself uses --canvas. */
   .theme-ocean {
-    --background: 210 25% 95%; /* soft gray-blue, calm and easy on eyes */
-    --foreground: 215 25% 20%; /* deep blue-gray text */
-    --card: 210 30% 98%; /* crisp white cards for contrast */
-    --card-foreground: 215 25% 20%;
-    --popover: 210 30% 99%; /* clean popover */
-    --popover-foreground: 215 25% 20%;
-    --primary: 205 80% 45%; /* rich ocean blue */
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 20% 90%; /* subtle cool gray */
-    --secondary-foreground: 215 25% 25%;
-    --muted: 210 15% 92%; /* gentle muted tone */
-    --muted-foreground: 215 15% 45%;
-    --accent: 195 60% 85%; /* soft teal accent */
-    --accent-foreground: 215 30% 22%;
-    --destructive: 0 65% 50%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 210 20% 85%; /* visible but soft borders */
-    --input: 210 25% 88%;
-    --ring: 205 80% 45%;
+    color-scheme: light;
+    --background: 0 0% 100%;
+    --foreground: 205.7 43.2% 15.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 205.7 43.2% 15.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 205.7 43.2% 15.9%;
+    --primary: 198.2 86.6% 32.2%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 207.7 37.1% 93.1%;
+    --secondary-foreground: 205.7 43.2% 15.9%;
+    --muted: 204 38.5% 94.9%;
+    --muted-foreground: 206.3 20.8% 38.6%;
+    --accent: 200 50% 95.3%; /* pointer hover only; keyboard highlight uses --selected */
+    --accent-foreground: 205.7 43.2% 15.9%;
+    --destructive: 352.6 67.4% 42.2%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-text: 352.6 67.4% 42.2%;
+    --border: 207.3 26.2% 83.5%;
+    --input: 206.8 15% 50.2%;
+    --ring: 198.2 86.6% 32.2%;
+    --canvas: 201.8 35.5% 93.9%;
+    --shell: 204 45.5% 97.8%;
+    --group: 206.3 33.3% 90.6%;
+    --selected: 196.6 59.2% 90.4%;
+    --selected-foreground: 198.6 90% 27.5%;
+    --overlay: 205.7 43.2% 15.9% / 0.32;
+    --status-info: 198.2 86.6% 32.2%;
+    --switch-off: 206.8 15% 50.2%;
     --event-bus-agent-message: 174 72% 34%;
     --event-bus-session-started: 30 88% 48%;
     --event-bus-epic-assigned: 276 55% 45%;
     --event-bus-spark: 215 35% 18%;
-    --terminal-background: 210 20% 93%;
-    --terminal-foreground: 215 25% 18%;
-    --terminal-cursor: 205 80% 45%;
-    --terminal-selection: 205 80% 50%;
+    /* Deeper metric and status tones keep contrast on the light background; no glow in this theme. */
+    --metric-cpu: 205 80% 38%;
+    --metric-ram: 276 58% 42%;
+    --metric-disk: 174 75% 28%;
+    --status-ok: 154.6 67.6% 26.7%;
+    --status-warn: 37.4 100% 27.1%;
+    --terminal-background: 201.8 35.5% 93.9%;
+    --terminal-foreground: 205.7 43.2% 15.9%;
+    --terminal-cursor: 198.2 86.6% 32.2%;
+    --terminal-selection: 206.6 67% 82.2%;
     --terminal-selection-opacity: 0.25;
     --font-mono:
       'Ubuntu Mono', 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas',
       'Liberation Mono', 'Courier New', monospace;
+  }
+
+  /* Remote metrics sparklines: only the dark theme adds a small glow to the line and
+     dot; the light and ocean themes stay flat to keep contrast on light backgrounds. */
+  .dark .remote-sparkline {
+    filter: drop-shadow(0 0 2px currentColor);
   }
 }
 
@@ -127,7 +179,7 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-canvas text-foreground;
     font-feature-settings:
       'rlig' 1,
       'calt' 1;
@@ -200,7 +252,35 @@
   scrollbar-color: #5a5a5a #252525;
 }
 
-/* Dark xterm scrollbar — scoped to dark theme; light/ocean inherits root scrollbar */
+/* Ocean theme scrollbars */
+.theme-ocean *::-webkit-scrollbar {
+  background: #eaf1f5;
+}
+
+.theme-ocean *::-webkit-scrollbar-track {
+  background: #eaf1f5;
+}
+
+.theme-ocean *::-webkit-scrollbar-thumb {
+  background: #9aaebd;
+  border: 2px solid #eaf1f5;
+}
+
+.theme-ocean *::-webkit-scrollbar-thumb:hover {
+  background: #6d8293;
+}
+
+.theme-ocean *::-webkit-scrollbar-corner {
+  background: #eaf1f5;
+}
+
+/* Ocean theme Firefox scrollbar */
+.theme-ocean * {
+  scrollbar-color: #9aaebd #eaf1f5;
+}
+
+/* Dark xterm scrollbar — scoped to dark theme; the light and ocean xterm use their theme's
+   scrollbar rules above */
 .dark .xterm-viewport::-webkit-scrollbar {
   background: #252525;
 }

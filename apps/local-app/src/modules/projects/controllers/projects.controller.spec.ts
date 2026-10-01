@@ -9,14 +9,14 @@ import { ProjectTemplateUpgradeService } from '../services/project-template-upgr
 import {
   BadRequestException,
   ConflictException,
-  ForbiddenException,
   HttpStatus,
   NotFoundException,
 } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { resetEnvConfig } from '../../../common/config/env.config';
-import { NotFoundError as StorageNotFoundError } from '../../../common/errors/error-types';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 const SECOND_WORKSPACE_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -53,12 +53,7 @@ describe('ProjectsController', () => {
   >;
 
   beforeEach(async () => {
-    delete process.env.CONTAINER_PROJECT_ID;
-    delete process.env.DEVCHAIN_MODE;
     delete process.env.DATABASE_URL;
-    delete process.env.REPO_ROOT;
-    delete process.env.WORKTREES_ROOT;
-    delete process.env.WORKTREES_DATA_ROOT;
     resetEnvConfig();
 
     storage = {
@@ -109,6 +104,7 @@ describe('ProjectsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProjectsController],
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         {
           provide: STORAGE_SERVICE,
           useValue: storage,
@@ -136,12 +132,7 @@ describe('ProjectsController', () => {
   });
 
   afterEach(() => {
-    delete process.env.CONTAINER_PROJECT_ID;
-    delete process.env.DEVCHAIN_MODE;
     delete process.env.DATABASE_URL;
-    delete process.env.REPO_ROOT;
-    delete process.env.WORKTREES_ROOT;
-    delete process.env.WORKTREES_DATA_ROOT;
     resetEnvConfig();
   });
 
@@ -515,23 +506,6 @@ describe('ProjectsController', () => {
       expect(storage.getProject).not.toHaveBeenCalled();
     });
 
-    it('intersects workspace filtering with the narrower container project scope', async () => {
-      process.env.DEVCHAIN_MODE = 'normal';
-      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-      resetEnvConfig();
-      storage.getProject.mockResolvedValue(
-        makeProject({
-          id: '11111111-1111-4111-8111-111111111111',
-          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
-        }),
-      );
-
-      const result = await controller.listProjects(undefined, undefined, SECOND_WORKSPACE_ID);
-
-      expect(storage.listProjects).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ items: [], total: 0, limit: 1, offset: 0 });
-    });
-
     it('returns projects with templateMetadata', async () => {
       const project1 = makeProject({ id: 'p1', name: 'Project 1' });
       const project2 = makeProject({ id: 'p2', name: 'Project 2' });
@@ -588,63 +562,6 @@ describe('ProjectsController', () => {
       const result = await controller.listProjects();
 
       expect(result.items[0].templateMetadata?.source).toBe('registry');
-    });
-
-    it('returns only scoped project when CONTAINER_PROJECT_ID is set in normal mode', async () => {
-      process.env.DEVCHAIN_MODE = 'normal';
-      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-      resetEnvConfig();
-
-      const scopedProject = makeProject({
-        id: '11111111-1111-4111-8111-111111111111',
-        name: 'Scoped Project',
-      });
-      storage.getProject.mockResolvedValue(scopedProject);
-
-      const result = await controller.listProjects();
-
-      expect(storage.listProjects).not.toHaveBeenCalled();
-      expect(storage.getProject).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
-      expect(result.total).toBe(1);
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0].id).toBe('11111111-1111-4111-8111-111111111111');
-    });
-
-    it('returns empty list when scoped project does not exist', async () => {
-      process.env.DEVCHAIN_MODE = 'normal';
-      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-      resetEnvConfig();
-
-      storage.getProject.mockRejectedValue(
-        new StorageNotFoundError('Project', '11111111-1111-4111-8111-111111111111'),
-      );
-
-      const result = await controller.listProjects();
-
-      expect(result.total).toBe(0);
-      expect(result.items).toHaveLength(0);
-    });
-
-    it('ignores CONTAINER_PROJECT_ID in main mode', async () => {
-      process.env.DEVCHAIN_MODE = 'main';
-      process.env.REPO_ROOT = '/tmp';
-      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-      resetEnvConfig();
-
-      const project1 = makeProject({ id: 'p1', name: 'Project 1' });
-      const project2 = makeProject({ id: 'p2', name: 'Project 2' });
-      storage.listProjects.mockResolvedValue({
-        items: [project1, project2],
-        total: 2,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await controller.listProjects();
-
-      expect(storage.listProjects).toHaveBeenCalled();
-      expect(storage.getProject).not.toHaveBeenCalled();
-      expect(result.items).toHaveLength(2);
     });
 
     it('includes bundledUpgradeAvailable in response', async () => {
@@ -948,41 +865,6 @@ describe('ProjectsController', () => {
 
     await expect(controller.updateProject('p1', { workspaceId: 'invalid' })).rejects.toThrow();
     expect(projectsService.updateProject).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects update mutation for non-scoped project when CONTAINER_PROJECT_ID is set', async () => {
-    process.env.DEVCHAIN_MODE = 'normal';
-    process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-    resetEnvConfig();
-
-    await expect(controller.updateProject('p2', { name: 'Nope' })).rejects.toThrow(
-      ForbiddenException,
-    );
-    expect(projectsService.updateProject).not.toHaveBeenCalled();
-  });
-
-  it('allows update mutation for scoped project when CONTAINER_PROJECT_ID is set', async () => {
-    process.env.DEVCHAIN_MODE = 'normal';
-    process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-    resetEnvConfig();
-
-    projectsService.updateProject!.mockResolvedValue({
-      project: makeProject({
-        id: '11111111-1111-4111-8111-111111111111',
-        name: 'Scoped',
-      }),
-      provisioningWarnings: [],
-    });
-
-    const result = await controller.updateProject('11111111-1111-4111-8111-111111111111', {
-      name: 'Scoped',
-    });
-
-    expect(result.project.id).toBe('11111111-1111-4111-8111-111111111111');
-    expect(projectsService.updateProject).toHaveBeenCalledWith(
-      '11111111-1111-4111-8111-111111111111',
-      { name: 'Scoped' },
-    );
   });
 
   describe('GET /api/projects/by-path', () => {
@@ -2061,24 +1943,6 @@ describe('ProjectsController', () => {
       );
 
       expect(projectsService.deleteProject).toHaveBeenCalledWith('project-without-metadata');
-    });
-
-    it('rejects delete mutation for non-scoped project when CONTAINER_PROJECT_ID is set', async () => {
-      process.env.DEVCHAIN_MODE = 'normal';
-      process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-      resetEnvConfig();
-      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest
-        .fn()
-        .mockResolvedValue(undefined);
-
-      await expect(controller.deleteProject('p2')).rejects.toThrow(ForbiddenException);
-
-      expect(projectsService.deleteProject).not.toHaveBeenCalled();
-      expect(settingsService.clearProjectTemplateMetadata).not.toHaveBeenCalled();
-      expect(settingsService.clearProjectPresets).not.toHaveBeenCalled();
-      expect(
-        (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
-      ).not.toHaveBeenCalled();
     });
   });
 

@@ -205,7 +205,11 @@ describe('DiffViewer', () => {
     render(<DiffViewer {...defaultProps} viewType="unified" />);
 
     const unifiedButton = screen.getByTitle('Unified view');
-    expect(unifiedButton).toHaveClass('bg-secondary');
+    expect(unifiedButton).toHaveClass(
+      'bg-selected',
+      'text-selected-foreground',
+      'hover:bg-selected',
+    );
   });
 
   it('calls onViewTypeChange when split button is clicked', async () => {
@@ -232,7 +236,7 @@ describe('DiffViewer', () => {
     render(<DiffViewer {...defaultProps} viewType="split" />);
 
     const splitButton = screen.getByTitle('Side-by-side view');
-    expect(splitButton).toHaveClass('bg-secondary');
+    expect(splitButton).toHaveClass('bg-selected', 'text-selected-foreground', 'hover:bg-selected');
   });
 
   it('renders view toggle buttons', () => {
@@ -282,17 +286,16 @@ describe('DiffViewer multi-line selection', () => {
     render(<DiffViewer {...defaultProps} onAddComment={mockOnAddComment} />);
 
     // Find and click a gutter to create selection
-    const gutterElements = document.querySelectorAll('.diff-gutter');
-    if (gutterElements.length > 0) {
-      fireEvent.mouseDown(gutterElements[0]);
-      fireEvent.click(gutterElements[0]);
-    }
+    const gutter = document.querySelector('.diff-gutter');
+    expect(gutter).not.toBeNull();
+    fireEvent.mouseDown(gutter!);
+    expect(document.querySelector('.diff-line.bg-selected')).toBeInTheDocument();
 
     // Press escape to clear selection
     fireEvent.keyDown(document, { key: 'Escape' });
 
     // Selection should be cleared (no highlighted lines)
-    const highlightedLines = document.querySelectorAll('.bg-blue-50');
+    const highlightedLines = document.querySelectorAll('.diff-line.bg-selected');
     expect(highlightedLines.length).toBe(0);
   });
 
@@ -328,7 +331,9 @@ describe('DiffViewer multi-line selection', () => {
     render(<DiffViewer {...defaultProps} comments={mockComments} />);
 
     // Should show comment count badge in header (badge with MessageSquare icon)
-    const commentBadge = document.querySelector('.bg-blue-100.text-blue-700');
+    const commentBadge = document.querySelector(
+      '[class~="bg-status-info/10"][class~="text-status-info"]',
+    );
     expect(commentBadge).toBeInTheDocument();
     expect(commentBadge?.textContent).toContain('1');
   });
@@ -458,11 +463,15 @@ describe('DiffViewer adaptive layout (controlled mode)', () => {
 
     // Split button should be highlighted when viewType is split
     const splitButton = screen.getByTitle('Side-by-side view');
-    expect(splitButton).toHaveClass('bg-secondary');
+    expect(splitButton).toHaveClass('bg-selected', 'text-selected-foreground', 'hover:bg-selected');
 
     // Unified button should NOT be highlighted
     const unifiedButton = screen.getByTitle('Unified view');
-    expect(unifiedButton).not.toHaveClass('bg-secondary');
+    expect(unifiedButton).not.toHaveClass(
+      'bg-selected',
+      'text-selected-foreground',
+      'hover:bg-selected',
+    );
   });
 
   it('does not add diff-split class when viewType is unified', () => {
@@ -487,8 +496,16 @@ describe('DiffViewer adaptive layout (controlled mode)', () => {
     // Initially unified
     let splitButton = screen.getByTitle('Side-by-side view');
     let unifiedButton = screen.getByTitle('Unified view');
-    expect(unifiedButton).toHaveClass('bg-secondary');
-    expect(splitButton).not.toHaveClass('bg-secondary');
+    expect(unifiedButton).toHaveClass(
+      'bg-selected',
+      'text-selected-foreground',
+      'hover:bg-selected',
+    );
+    expect(splitButton).not.toHaveClass(
+      'bg-selected',
+      'text-selected-foreground',
+      'hover:bg-selected',
+    );
 
     // Change prop to split
     rerender(<DiffViewer {...defaultProps} viewType="split" />);
@@ -496,8 +513,12 @@ describe('DiffViewer adaptive layout (controlled mode)', () => {
     // Now split should be highlighted
     splitButton = screen.getByTitle('Side-by-side view');
     unifiedButton = screen.getByTitle('Unified view');
-    expect(splitButton).toHaveClass('bg-secondary');
-    expect(unifiedButton).not.toHaveClass('bg-secondary');
+    expect(splitButton).toHaveClass('bg-selected', 'text-selected-foreground', 'hover:bg-selected');
+    expect(unifiedButton).not.toHaveClass(
+      'bg-selected',
+      'text-selected-foreground',
+      'hover:bg-selected',
+    );
   });
 
   it('handles rapid viewType prop changes', () => {
@@ -511,7 +532,11 @@ describe('DiffViewer adaptive layout (controlled mode)', () => {
 
     // Should end up with unified highlighted
     const unifiedButton = screen.getByTitle('Unified view');
-    expect(unifiedButton).toHaveClass('bg-secondary');
+    expect(unifiedButton).toHaveClass(
+      'bg-selected',
+      'text-selected-foreground',
+      'hover:bg-selected',
+    );
   });
 
   it('does not call onViewTypeChange when clicking already-active view type', async () => {
@@ -832,7 +857,9 @@ describe('DiffViewer multi-thread per line', () => {
     renderWithQueryClient(<DiffViewer {...defaultProps} comments={multiThreadComments} />);
 
     // Header badge should show total root comments count
-    const headerBadge = document.querySelector('.bg-blue-100.text-blue-700');
+    const headerBadge = document.querySelector(
+      '[class~="bg-status-info/10"][class~="text-status-info"]',
+    );
     expect(headerBadge).toBeInTheDocument();
     expect(headerBadge?.textContent).toContain('2');
   });
@@ -940,8 +967,8 @@ describe('DiffViewer multi-thread per line', () => {
 
     renderWithQueryClient(<DiffViewer {...defaultProps} comments={multiThreadComments} />);
 
-    // CommentIndicator should show amber styling for unresolved
-    const indicator = document.querySelector('.bg-amber-100');
+    // CommentIndicator should show warning styling for unresolved
+    const indicator = document.querySelector('[class~="bg-status-warn/10"]');
     expect(indicator).toBeInTheDocument();
   });
 });

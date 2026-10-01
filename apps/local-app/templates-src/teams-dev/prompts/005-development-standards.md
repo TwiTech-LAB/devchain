@@ -71,12 +71,15 @@ You are an AI engineer creating a compact, project-specific development standard
 - Use project commands from manifests, task files, or CI whenever available.
 - If no command is present, write `Unknown`; do not pretend a command exists.
 - If a common ecosystem fallback is obvious, label it as `Recommended default`, not as a project rule.
+- The validation table must have two test rows. "Targeted tests" holds the project's command for one file or one test; run it while you work. "Full test suite" holds `devchain queue full-tests -- <the project's full test command>`; run it once before review. The queue runs one full suite at a time, because agents on one machine share its memory.
 
 Use this table format:
 
 | Purpose | Command | Source | When to run |
 | --- | --- | --- | --- |
 | Build | `Unknown` | `Unknown` | Before review when build tooling is identified |
+| Targeted tests | `Unknown` | `Unknown` | While working |
+| Full test suite | `devchain queue full-tests -- <full test command>` | `Unknown` | Once before review |
 
 Helpful fallback examples, only when labeled `Recommended default`:
 

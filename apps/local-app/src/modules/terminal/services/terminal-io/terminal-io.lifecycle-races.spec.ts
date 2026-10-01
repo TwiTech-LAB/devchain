@@ -1,4 +1,5 @@
 import type { EventsService } from '../../../events/services/events.service';
+import type { SettingsService } from '../../../settings/services/settings.service';
 import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
 import { TerminalIOService } from './terminal-io.service';
 import { HumanPromptStateService } from '../human-prompt-state.service';
@@ -31,7 +32,13 @@ describe('TerminalIOService lifecycle monitoring', () => {
     executor = new FakeProcessExecutor();
     events = { publish: jest.fn().mockResolvedValue('event-id') };
     humanPromptState = new HumanPromptStateService();
-    service = new TerminalIOService(executor, events as unknown as EventsService, humanPromptState);
+    const settings = { getFollowNoteEnabled: () => true } as unknown as SettingsService;
+    service = new TerminalIOService(
+      executor,
+      events as unknown as EventsService,
+      humanPromptState,
+      settings,
+    );
   });
 
   afterEach(() => {

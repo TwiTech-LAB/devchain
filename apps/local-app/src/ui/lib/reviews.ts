@@ -1,3 +1,6 @@
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
+
 // Review Status enum
 export type ReviewStatus = 'draft' | 'pending' | 'changes_requested' | 'approved' | 'closed';
 
@@ -116,6 +119,7 @@ export interface CommentsListResponse {
  * Fetch reviews for a project
  */
 export async function fetchReviews(
+  fetchFn: FetchFn,
   projectId: string,
   options?: {
     status?: ReviewStatus;
@@ -139,7 +143,7 @@ export async function fetchReviews(
     params.append('offset', String(options.offset));
   }
 
-  const response = await fetch(`/api/reviews?${params.toString()}`);
+  const response = await fetchFn(`/api/reviews?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch reviews');
   }
@@ -149,8 +153,8 @@ export async function fetchReviews(
 /**
  * Fetch a single review by ID
  */
-export async function fetchReview(reviewId: string): Promise<Review> {
-  const response = await fetch(`/api/reviews/${reviewId}`);
+export async function fetchReview(fetchFn: FetchFn, reviewId: string): Promise<Review> {
+  const response = await fetchFn(`/api/reviews/${reviewId}`);
   if (!response.ok) {
     throw new Error('Failed to fetch review');
   }
@@ -160,8 +164,11 @@ export async function fetchReview(reviewId: string): Promise<Review> {
 /**
  * Create a new review
  */
-export async function createReview(request: CreateReviewRequest): Promise<Review> {
-  const response = await fetch('/api/reviews', {
+export async function createReview(
+  fetchFn: FetchFn,
+  request: CreateReviewRequest,
+): Promise<Review> {
+  const response = await fetchFn('/api/reviews', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -177,10 +184,11 @@ export async function createReview(request: CreateReviewRequest): Promise<Review
  * Update an existing review
  */
 export async function updateReview(
+  fetchFn: FetchFn,
   reviewId: string,
   request: UpdateReviewRequest,
 ): Promise<Review> {
-  const response = await fetch(`/api/reviews/${reviewId}`, {
+  const response = await fetchFn(`/api/reviews/${reviewId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -195,8 +203,8 @@ export async function updateReview(
 /**
  * Delete a review
  */
-export async function deleteReview(reviewId: string): Promise<void> {
-  const response = await fetch(`/api/reviews/${reviewId}`, {
+export async function deleteReview(fetchFn: FetchFn, reviewId: string): Promise<void> {
+  const response = await fetchFn(`/api/reviews/${reviewId}`, {
     method: 'DELETE',
   });
 
@@ -209,6 +217,7 @@ export async function deleteReview(reviewId: string): Promise<void> {
  * Fetch comments for a review
  */
 export async function fetchReviewComments(
+  fetchFn: FetchFn,
   reviewId: string,
   options?: {
     status?: CommentStatus;
@@ -237,7 +246,7 @@ export async function fetchReviewComments(
     ? `/api/reviews/${reviewId}/comments?${queryString}`
     : `/api/reviews/${reviewId}/comments`;
 
-  const response = await fetch(url);
+  const response = await fetchFn(url);
   if (!response.ok) {
     throw new Error('Failed to fetch review comments');
   }
@@ -245,12 +254,12 @@ export async function fetchReviewComments(
 }
 
 // Status badge color mapping
-export const STATUS_COLORS: Record<ReviewStatus, { bg: string; text: string }> = {
-  draft: { bg: 'bg-gray-100', text: 'text-gray-700' },
-  pending: { bg: 'bg-yellow-100', text: 'text-yellow-800' },
-  changes_requested: { bg: 'bg-orange-100', text: 'text-orange-800' },
-  approved: { bg: 'bg-green-100', text: 'text-green-800' },
-  closed: { bg: 'bg-slate-100', text: 'text-slate-600' },
+export const STATUS_COLORS: Record<ReviewStatus, string> = {
+  draft: 'bg-muted border-border text-muted-foreground',
+  pending: TONE_CLASSES.warn,
+  changes_requested: TONE_CLASSES.warn,
+  approved: TONE_CLASSES.ok,
+  closed: 'bg-muted border-border text-muted-foreground',
 };
 
 // Status display names
@@ -297,6 +306,7 @@ export interface ChangedFile {
  * Fetch commits for a project
  */
 export async function fetchCommits(
+  fetchFn: FetchFn,
   projectId: string,
   options?: { ref?: string; limit?: number },
 ): Promise<GitCommit[]> {
@@ -308,7 +318,7 @@ export async function fetchCommits(
     params.append('limit', String(options.limit));
   }
 
-  const response = await fetch(`/api/git/commits?${params.toString()}`);
+  const response = await fetchFn(`/api/git/commits?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch commits');
   }
@@ -318,8 +328,8 @@ export async function fetchCommits(
 /**
  * Fetch branches for a project
  */
-export async function fetchBranches(projectId: string): Promise<GitBranch[]> {
-  const response = await fetch(`/api/git/branches?projectId=${projectId}`);
+export async function fetchBranches(fetchFn: FetchFn, projectId: string): Promise<GitBranch[]> {
+  const response = await fetchFn(`/api/git/branches?projectId=${projectId}`);
   if (!response.ok) {
     throw new Error('Failed to fetch branches');
   }
@@ -329,8 +339,8 @@ export async function fetchBranches(projectId: string): Promise<GitBranch[]> {
 /**
  * Fetch tags for a project
  */
-export async function fetchTags(projectId: string): Promise<GitTag[]> {
-  const response = await fetch(`/api/git/tags?projectId=${projectId}`);
+export async function fetchTags(fetchFn: FetchFn, projectId: string): Promise<GitTag[]> {
+  const response = await fetchFn(`/api/git/tags?projectId=${projectId}`);
   if (!response.ok) {
     throw new Error('Failed to fetch tags');
   }
@@ -341,12 +351,13 @@ export async function fetchTags(projectId: string): Promise<GitTag[]> {
  * Fetch changed files between two refs
  */
 export async function fetchChangedFiles(
+  fetchFn: FetchFn,
   projectId: string,
   base: string,
   head: string,
 ): Promise<ChangedFile[]> {
   const params = new URLSearchParams({ projectId, base, head });
-  const response = await fetch(`/api/git/changed-files?${params.toString()}`);
+  const response = await fetchFn(`/api/git/changed-files?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch changed files');
   }
@@ -356,9 +367,14 @@ export async function fetchChangedFiles(
 /**
  * Fetch unified diff between two refs
  */
-export async function fetchDiff(projectId: string, base: string, head: string): Promise<string> {
+export async function fetchDiff(
+  fetchFn: FetchFn,
+  projectId: string,
+  base: string,
+  head: string,
+): Promise<string> {
   const params = new URLSearchParams({ projectId, base, head });
-  const response = await fetch(`/api/git/diff?${params.toString()}`);
+  const response = await fetchFn(`/api/git/diff?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch diff');
   }
@@ -393,11 +409,12 @@ export interface WorkingTreeResponse {
  * Fetch working tree changes and diff
  */
 export async function fetchWorkingTree(
+  fetchFn: FetchFn,
   projectId: string,
   filter: WorkingTreeFilter = 'all',
 ): Promise<WorkingTreeResponse> {
   const params = new URLSearchParams({ projectId, filter });
-  const response = await fetch(`/api/git/working-tree?${params.toString()}`);
+  const response = await fetchFn(`/api/git/working-tree?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch working tree');
   }
@@ -408,11 +425,12 @@ export async function fetchWorkingTree(
  * Fetch diff and changed files for a specific commit
  */
 export async function fetchCommitDiff(
+  fetchFn: FetchFn,
   projectId: string,
   sha: string,
 ): Promise<{ sha: string; diff: string; changedFiles: ChangedFile[] }> {
   const params = new URLSearchParams({ projectId });
-  const response = await fetch(`/api/git/commit/${sha}?${params.toString()}`);
+  const response = await fetchFn(`/api/git/commit/${sha}?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch commit diff');
   }
@@ -422,9 +440,12 @@ export async function fetchCommitDiff(
 /**
  * Fetch active review for a project (or null if none)
  */
-export async function fetchActiveReview(projectId: string): Promise<Review | null> {
+export async function fetchActiveReview(
+  fetchFn: FetchFn,
+  projectId: string,
+): Promise<Review | null> {
   const params = new URLSearchParams({ projectId });
-  const response = await fetch(`/api/reviews/active?${params.toString()}`);
+  const response = await fetchFn(`/api/reviews/active?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch active review');
   }
@@ -435,8 +456,12 @@ export async function fetchActiveReview(projectId: string): Promise<Review | nul
 /**
  * Close a review
  */
-export async function closeReview(reviewId: string, version: number): Promise<Review> {
-  const response = await fetch(`/api/reviews/${reviewId}/close`, {
+export async function closeReview(
+  fetchFn: FetchFn,
+  reviewId: string,
+  version: number,
+): Promise<Review> {
+  const response = await fetchFn(`/api/reviews/${reviewId}/close`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version }),

@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
-import { Badge } from '@/ui/components/ui/badge';
+import { OpaqueBadge } from '@/ui/components/ui/badge';
 import { Textarea } from '@/ui/components/ui/textarea';
 import { Input } from '@/ui/components/ui/input';
 import { ToggleGroup, ToggleGroupItem } from '@/ui/components/ui/toggle-group';
@@ -12,19 +12,22 @@ import {
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
 import { MessageSquare, Plus, ChevronDown, ChevronRight, Bot, User, X, Search } from 'lucide-react';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { cn } from '@/ui/lib/utils';
 import { useMentionAutocomplete } from '@/ui/hooks/useMentionAutocomplete';
 import { parseMentions } from '@/ui/lib/mentions';
 import type { ReviewComment, CommentType } from '@/ui/lib/reviews';
 import type { ActiveSession } from '@/ui/lib/sessions';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface Agent {
   id: string;
   name: string;
 }
 
-async function fetchAgents(projectId: string): Promise<{ items: Agent[] }> {
-  const res = await fetch(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
+async function fetchAgents(fetchFn: FetchFn, projectId: string): Promise<{ items: Agent[] }> {
+  const res = await fetchFn(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
@@ -87,10 +90,11 @@ export function AddCommentButton({
   return (
     <Button
       size="sm"
-      variant="ghost"
+      variant={isInSelection ? 'selected' : 'ghost'}
       className={cn(
-        'h-5 w-5 p-0 rounded-full bg-blue-500 hover:bg-blue-600 text-white',
-        isInSelection && 'bg-blue-600',
+        'h-5 w-5 p-0 rounded-full',
+        !isInSelection &&
+          'bg-primary hover:bg-primary/90 text-primary-foreground hover:text-primary-foreground',
         className,
       )}
       onClick={handleClick}
@@ -123,10 +127,8 @@ export function CommentIndicator({
     <button
       onClick={onClick}
       className={cn(
-        'flex items-center justify-center h-5 w-5 rounded-full text-xs',
-        hasUnresolved
-          ? 'bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400'
-          : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400',
+        'flex items-center justify-center h-5 w-5 rounded-full border text-xs hover:bg-accent',
+        hasUnresolved ? TONE_CLASSES.warn : 'bg-muted text-muted-foreground',
         className,
       )}
       title={`${commentCount} comment${commentCount > 1 ? 's' : ''}`}
@@ -187,7 +189,7 @@ export function InlineCommentWidget({
         {session && onOpenTerminal ? (
           <button
             onClick={() => onOpenTerminal(session)}
-            className="text-amber-700 hover:text-amber-900 hover:underline font-medium"
+            className="bg-background text-primary hover:underline font-medium"
           >
             {agentName}
           </button>
@@ -195,9 +197,7 @@ export function InlineCommentWidget({
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="text-amber-800/70 dark:text-amber-400/70 cursor-not-allowed">
-                  {agentName}
-                </span>
+                <span className="text-status-warn cursor-not-allowed">{agentName}</span>
               </TooltipTrigger>
               <TooltipContent>
                 <p>No running session</p>
@@ -220,15 +220,13 @@ export function InlineCommentWidget({
     const remaining = rootComment.targetAgents.length - MAX_SHOWN;
 
     return (
-      <span className="text-xs text-amber-700 dark:text-amber-500 flex items-center gap-1 ml-2">
+      <span className="text-xs text-status-warn flex items-center gap-1 ml-2">
         Waiting on: {shown.map((agent, i) => renderAgentLink(agent.agentId, agent.name, i > 0))}
         {remaining > 0 && (
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="text-amber-700 dark:text-amber-500 cursor-help">
-                  +{remaining} more
-                </span>
+                <span className="text-status-warn cursor-help">+{remaining} more</span>
               </TooltipTrigger>
               <TooltipContent>
                 <p>
@@ -258,10 +256,9 @@ export function InlineCommentWidget({
     <div
       className={cn(
         'inline-comment-widget border-l-2 px-3 py-2 my-1',
-        // Pending state: amber/yellow highlight
         isPending
-          ? 'border-amber-500 bg-amber-50/50 dark:bg-amber-950/20'
-          : 'border-blue-400 bg-blue-50/50 dark:bg-blue-950/20',
+          ? 'border-status-warn/40 bg-status-warn/10'
+          : 'border-status-info/40 bg-status-info/10',
         className,
       )}
       data-testid="inline-comment-widget"
@@ -287,13 +284,14 @@ export function InlineCommentWidget({
           </span>
         </button>
         {unresolvedCount > 0 && (
-          <Badge
-            variant="secondary"
-            className="text-xs bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+          <OpaqueBadge
+            fit={false}
+            variant="outline"
+            className={cn('text-xs', TONE_CLASSES.warn)}
             aria-label={`${unresolvedCount} open comment${unresolvedCount > 1 ? 's' : ''}`}
           >
             {unresolvedCount} open
-          </Badge>
+          </OpaqueBadge>
         )}
         {renderWaitingOn()}
       </div>
@@ -326,7 +324,7 @@ export function InlineCommentWidget({
                 placeholder="Write a reply..."
                 value={replyContent}
                 onChange={(e) => setReplyContent(e.target.value)}
-                className="min-h-[60px] text-sm bg-white"
+                className="min-h-[60px] text-sm bg-background"
                 disabled={isReplying}
               />
               <div className="flex gap-2">
@@ -417,7 +415,7 @@ function CommentItem({
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="text-xs cursor-not-allowed opacity-75">{authorName}</span>
+                  <span className="text-xs cursor-not-allowed">{authorName}</span>
                 </TooltipTrigger>
                 <TooltipContent>
                   <p>No running session</p>
@@ -432,17 +430,16 @@ function CommentItem({
           {formatRelativeTime(comment.createdAt)}
         </span>
         {comment.status !== 'open' && (
-          <Badge
-            variant="secondary"
+          <OpaqueBadge
+            fit={false}
+            variant="outline"
             className={cn(
               'text-[10px] px-1',
-              comment.status === 'resolved'
-                ? 'bg-green-100 text-green-700'
-                : 'bg-gray-100 text-gray-600',
+              comment.status === 'resolved' ? TONE_CLASSES.ok : 'bg-muted text-muted-foreground',
             )}
           >
             {comment.status === 'resolved' ? 'Resolved' : "Won't fix"}
-          </Badge>
+          </OpaqueBadge>
         )}
       </div>
       <p className="whitespace-pre-wrap text-foreground">{comment.content}</p>
@@ -474,6 +471,7 @@ export function NewCommentForm({
   isSubmitting = false,
   className,
 }: NewCommentFormProps) {
+  const fetchFn = useFetchFactory();
   const [content, setContent] = useState('');
   const [commentType, setCommentType] = useState<CommentType>('comment');
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
@@ -484,7 +482,7 @@ export function NewCommentForm({
   // Fetch agents for the project (always fetch when projectId is available)
   const { data: agentsData, isLoading: agentsLoading } = useQuery({
     queryKey: ['agents', projectId],
-    queryFn: () => fetchAgents(projectId),
+    queryFn: () => fetchAgents(fetchFn, projectId),
     enabled: !!projectId,
   });
 
@@ -550,7 +548,7 @@ export function NewCommentForm({
   return (
     <div
       className={cn(
-        'new-comment-form border-l-2 border-green-400 bg-green-50/50 dark:bg-green-950/30 px-3 py-2 my-1',
+        'new-comment-form border-l-2 border-status-ok/40 bg-status-ok/10 px-3 py-2 my-1',
         className,
       )}
       data-testid="new-comment-form"
@@ -577,7 +575,7 @@ export function NewCommentForm({
           onKeyDown={(e) => {
             mentionHandleKeyDown(e, content, setContent);
           }}
-          className="min-h-[80px] text-sm bg-white dark:bg-background"
+          className="min-h-[80px] text-sm bg-background"
           disabled={isSubmitting}
           autoFocus
         />
@@ -589,8 +587,10 @@ export function NewCommentForm({
                 key={agent.id}
                 type="button"
                 className={cn(
-                  'w-full px-3 py-1.5 text-sm text-left flex items-center gap-2 hover:bg-accent',
-                  index === selectedIndex && 'bg-accent',
+                  'w-full px-3 py-1.5 text-sm text-left flex items-center gap-2',
+                  index === selectedIndex
+                    ? 'bg-selected text-selected-foreground'
+                    : 'hover:bg-accent',
                 )}
                 onClick={() => handleMentionSelect(agent)}
               >
@@ -697,7 +697,7 @@ export function NewCommentForm({
         <select
           value={commentType}
           onChange={(e) => setCommentType(e.target.value as CommentType)}
-          className="text-xs border rounded px-2 py-1 bg-white dark:bg-background"
+          className="text-xs border rounded px-2 py-1 bg-background"
           disabled={isSubmitting}
         >
           <option value="comment">Comment</option>

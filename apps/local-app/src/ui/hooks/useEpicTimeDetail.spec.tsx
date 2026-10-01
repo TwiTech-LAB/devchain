@@ -4,26 +4,12 @@ import type { ReactNode } from 'react';
 import { epicTimeQueryKeys, resolveEpicTimeZone } from '@/ui/lib/epic-time';
 import { useEpicTimeDetail } from './useEpicTimeDetail';
 
-// Layer: hook unit. The fetch factory and worktree runtime are mocked
-// because this spec owns the detail URL, key shape, runtime gating, and
-// refresh cadence.
+// Layer: hook unit. The fetch factory is mocked because this spec owns the
+// detail URL, key shape, active/disabled scope gating, and refresh cadence.
 const fetchMock = jest.fn();
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({
   useFetchFactory: () => fetchMock,
-}));
-
-const worktreeRuntime = {
-  activeWorktree: null,
-  setActiveWorktree: () => undefined,
-  apiBase: '',
-  worktrees: [],
-  worktreesLoading: false,
-  runtimeResolved: true,
-};
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => worktreeRuntime,
 }));
 
 function wrapper(client: QueryClient) {
@@ -77,8 +63,6 @@ describe('useEpicTimeDetail', () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     fetchMock.mockReset();
     fetchMock.mockResolvedValue({ ok: true, json: async () => summaryPayload });
-    worktreeRuntime.runtimeResolved = true;
-    worktreeRuntime.apiBase = '';
   });
 
   afterEach(() => client.clear());
@@ -276,25 +260,14 @@ describe('useEpicTimeDetail', () => {
     ]);
   });
 
-  it('issues no request and hides cached data for unresolved, worktree, or missing IDs', async () => {
-    worktreeRuntime.runtimeResolved = false;
-    const resolving = renderHook(() => useEpicTimeDetail('epic-1'), {
+  it('issues no request and hides cached data for disabled or missing IDs', async () => {
+    const disabled = renderHook(() => useEpicTimeDetail('epic-1', { enabled: false }), {
       wrapper: wrapper(client),
     });
-    expect(resolving.result.current.admitted).toBe(false);
-    expect(resolving.result.current.summary).toBeUndefined();
-    expect(resolving.result.current.query.data).toBeUndefined();
+    expect(disabled.result.current.admitted).toBe(false);
+    expect(disabled.result.current.summary).toBeUndefined();
+    expect(disabled.result.current.query.data).toBeUndefined();
 
-    worktreeRuntime.runtimeResolved = true;
-    worktreeRuntime.apiBase = '/wt/demo';
-    const worktree = renderHook(() => useEpicTimeDetail('epic-1'), {
-      wrapper: wrapper(client),
-    });
-    expect(worktree.result.current.admitted).toBe(false);
-    expect(worktree.result.current.summary).toBeUndefined();
-    expect(worktree.result.current.query.data).toBeUndefined();
-
-    worktreeRuntime.apiBase = '';
     const missing = renderHook(() => useEpicTimeDetail(null), {
       wrapper: wrapper(client),
     });
@@ -305,49 +278,44 @@ describe('useEpicTimeDetail', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('exposes no main result through any returned field after main-to-worktree and main-to-unresolved transitions', async () => {
-    const { result, rerender } = renderHook(() => useEpicTimeDetail('epic-1'), {
-      wrapper: wrapper(client),
-    });
+  it('warms the active cache, then leaks no result to a disabled observer', async () => {
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useEpicTimeDetail('epic-1', { enabled }),
+      { wrapper: wrapper(client), initialProps: { enabled: true } },
+    );
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
     expect(result.current.summary?.totalMinutes).toBe(90);
     expect(result.current.query.data?.totalMinutes).toBe(90);
 
-    worktreeRuntime.apiBase = '/wt/demo';
-    rerender();
+    rerender({ enabled: false });
     expect(result.current.admitted).toBe(false);
     expect(result.current.summary).toBeUndefined();
     expect(result.current.query.data).toBeUndefined();
     expect(result.current.query.isSuccess).toBe(false);
 
-    worktreeRuntime.runtimeResolved = false;
-    worktreeRuntime.apiBase = '';
-    rerender();
-    expect(result.current.summary).toBeUndefined();
-    expect(result.current.query.data).toBeUndefined();
-
-    // Only the admitted main-scope observer issued a request.
+    // Only the admitted active-scope observer issued a request.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    // The main cache entry itself survives for re-admission.
-    expect(client.getQueryData(epicTimeQueryKeys.detail('epic-1', timeZone, 'main'))).toBeDefined();
+    // The active cache entry itself survives for re-admission.
+    expect(
+      client.getQueryData(epicTimeQueryKeys.detail('epic-1', timeZone, 'active')),
+    ).toBeDefined();
   });
 
-  it('re-admits to the primed main cache immediately after a disabled stretch', async () => {
-    const { result, rerender } = renderHook(() => useEpicTimeDetail('epic-1'), {
-      wrapper: wrapper(client),
-    });
+  it('re-admits to the primed active cache immediately after a disabled stretch', async () => {
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useEpicTimeDetail('epic-1', { enabled }),
+      { wrapper: wrapper(client), initialProps: { enabled: true } },
+    );
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
 
-    worktreeRuntime.apiBase = '/wt/demo';
-    rerender();
+    rerender({ enabled: false });
     expect(result.current.summary).toBeUndefined();
 
-    worktreeRuntime.apiBase = '';
-    rerender();
-    // The main cache entry serves the card again right away; any later
-    // refresh is a fresh main-scope request, not a disabled-scope leak.
+    rerender({ enabled: true });
+    // The active cache entry serves the card again right away; any later
+    // refresh is a fresh active-scope request, not a disabled-scope leak.
     expect(result.current.summary?.totalMinutes).toBe(90);
   });
 
@@ -398,7 +366,7 @@ describe('useEpicTimeDetail', () => {
         );
         expect(result.current.timeZone).toBe(mountedZone);
         expect(
-          client.getQueryData(epicTimeQueryKeys.detail('epic-1', mountedZone, 'main')),
+          client.getQueryData(epicTimeQueryKeys.detail('epic-1', mountedZone, 'active')),
         ).toBeDefined();
 
         unmount();

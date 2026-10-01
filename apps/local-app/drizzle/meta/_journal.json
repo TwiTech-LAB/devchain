@@ -603,6 +603,62 @@
       "when": 1789655972024,
       "tag": "0085_clumsy_zodiak",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "6",
+      "when": 1790026461091,
+      "tag": "0086_retire_worktrees",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "6",
+      "when": 1790066099486,
+      "tag": "0087_add_remotes_and_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "6",
+      "when": 1790098348936,
+      "tag": "0088_add_project_frozen_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "6",
+      "when": 1790101426955,
+      "tag": "0089_add_remote_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "6",
+      "when": 1790103983260,
+      "tag": "0090_add_binding_sync_error",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "6",
+      "when": 1790214958057,
+      "tag": "0091_add_provider_auth_entries",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "6",
+      "when": 1790285023420,
+      "tag": "0092_amazing_synch",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "6",
+      "when": 1790806241239,
+      "tag": "0093_remote_tls_certificate",
+      "breakpoints": true
     }
   ]
 }

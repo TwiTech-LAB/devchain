@@ -6,13 +6,8 @@ import { ScheduledEpicsModule } from './scheduled-epics.module';
 import { SCHEDULED_EPIC_RUNNER_REFRESH } from './services/scheduled-epics.service';
 
 describe('ScheduledEpicsModule app root composition', () => {
-  it('is imported in app.normal.module.ts', () => {
-    const source = readFileSync(join(__dirname, '../../app.normal.module.ts'), 'utf-8');
-    expect(source).toContain('ScheduledEpicsModule');
-  });
-
-  it('is imported in app.main.module.ts', () => {
-    const source = readFileSync(join(__dirname, '../../app.main.module.ts'), 'utf-8');
+  it('is imported in app.module.ts', () => {
+    const source = readFileSync(join(__dirname, '../../app.module.ts'), 'utf-8');
     expect(source).toContain('ScheduledEpicsModule');
   });
 

@@ -14,6 +14,7 @@ import { SkillSourceLifecycleService } from '../../skills/services/skill-source-
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../../teams/services/teams.service';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import { allMetadata } from '../tool-descriptors';
 import type { BoundMcpToolHandler, McpBindingRuntime } from '../tool-descriptors/binding-types';
 import { allBindingDefinitions } from '../tool-descriptors/runtime-bindings';
@@ -66,6 +67,7 @@ export class McpToolBindingRegistry {
     @Inject(forwardRef(() => AgentMessageDeliveryService))
     agentMessageDelivery?: AgentMessageDeliveryService,
     @Optional() projectCommunicationService?: ProjectCommunicationService,
+    @Optional() projectWriteAdmission?: ProjectWriteAdmissionService,
   ) {
     const instructionsResolver = new InstructionsResolver(storage);
     const sessionContextResolver = new SessionContextResolver(
@@ -89,6 +91,7 @@ export class McpToolBindingRegistry {
       terminalIO,
       agentMessageDelivery,
       projectCommunicationService,
+      projectWriteAdmission,
       instructionsResolver,
       defaultInlineMaxBytes: 64 * 1024,
       resolveSessionContext: (sessionId: string) => sessionContextResolver.resolve(sessionId),

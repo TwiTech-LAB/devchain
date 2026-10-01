@@ -350,7 +350,7 @@ export function ExternalTaskKanban({
                           {timeMetrics.newMinutes !== null ? (
                             <>
                               {' '}
-                              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+                              <span className="rounded-full bg-status-warn/10 px-2 py-0.5 font-medium text-status-warn">
                                 · New unlogged {formatEpicTimeMinutes(timeMetrics.newMinutes)}
                               </span>
                             </>

@@ -156,8 +156,15 @@ describe('SuggestionBlock', () => {
   it('renders original code when provided', () => {
     render(<SuggestionBlock suggestedCode="const y = 2;" originalCode="const x = 1;" />);
 
-    expect(screen.getByText('const x = 1;')).toBeInTheDocument();
-    expect(screen.getByText('const y = 2;')).toBeInTheDocument();
+    // DOM assertions catch accidental status coloring of code without a browser harness.
+    expect(screen.getByText('const x = 1;')).toHaveClass('text-foreground');
+    expect(screen.getByText('const y = 2;')).toHaveClass('text-foreground');
+    expect(screen.getByText('-')).toHaveClass('text-destructive');
+    expect(screen.getByText('+')).toHaveClass('text-status-ok');
+    expect(screen.getByTestId('suggestion-block')).toHaveClass('bg-background');
+    expect(screen.getByText('Suggestion').parentElement?.parentElement).toHaveClass(
+      'bg-background',
+    );
   });
 
   it('copies suggestion to clipboard when copy button is clicked', async () => {
@@ -174,7 +181,7 @@ describe('SuggestionBlock', () => {
     const { container } = render(<SuggestionBlock suggestedCode="line1\nline2" />);
 
     // Check that the suggested code lines exist in the green section
-    const greenSection = container.querySelector('.bg-green-50');
+    const greenSection = container.querySelector('[class~="bg-status-ok/10"]');
     expect(greenSection).toBeInTheDocument();
     expect(greenSection?.textContent).toContain('line1');
     expect(greenSection?.textContent).toContain('line2');
@@ -188,7 +195,7 @@ describe('SuggestionBlock', () => {
     );
 
     // Check that the original code lines exist in the red section
-    const redSection = container.querySelector('.bg-red-50');
+    const redSection = container.querySelector('[class~="bg-destructive/10"]');
     expect(redSection).toBeInTheDocument();
     expect(redSection?.textContent).toContain('old1');
     expect(redSection?.textContent).toContain('old2');
@@ -196,7 +203,7 @@ describe('SuggestionBlock', () => {
     expect(redSection?.textContent).toContain('-');
 
     // Check suggested code in green section
-    const greenSection = container.querySelector('.bg-green-50');
+    const greenSection = container.querySelector('[class~="bg-status-ok/10"]');
     expect(greenSection).toBeInTheDocument();
     expect(greenSection?.textContent).toContain('newcode');
   });

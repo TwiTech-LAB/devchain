@@ -26,10 +26,9 @@ Agents aren't perfect. They can occasionally drift from their instructions, forg
 
 When an agent's terminal is open inline on the Chat page, select **Prompts** immediately before **Window** to search the active project's Custom prompts. You can also press the physical keyboard shortcut **Alt+Shift+P** while the inline terminal input is focused.
 
-- The picker appears only for an eligible main or worktree inline terminal. It is not available in detached/floating terminal windows.
+- The picker appears only for an eligible inline terminal. It is not available in detached/floating terminal windows.
 - Only prompts classified as **Custom** are shown. Untyped prompts fall back to System and are excluded; global prompts are not included.
 - Selecting a prompt inserts its full content at the current caret or replaces the selected text. It **never submits or sends automatically**—review or edit the inserted text, then send it explicitly.
-- A worktree tab reads prompts from that worktree's project store, not from the main runtime.
 
 On mobile, live editable chats expose the same **Prompts** action above the composer. Selection inserts into the message draft without sending. The live terminal viewport remains read-only and does not accept prompt text.
 

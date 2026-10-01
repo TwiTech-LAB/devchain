@@ -21,11 +21,12 @@ import { ReviewsPageWithSuspense } from './pages/ReviewsPage.lazy';
 import { ReviewDetailPageWithSuspense } from './pages/ReviewDetailPage.lazy';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { ProjectSelectionProvider } from './hooks/useProjectSelection';
+import { BackendProvider } from './lib/backend-provider';
+import { BackendBoundary, HomeQueryScope } from './components/BackendBoundary';
 import { RecordsDisabledPage } from './pages/RecordsDisabledPage';
 import { RegistryPage } from './pages/RegistryPage';
 import { SkillsPage } from './pages/SkillsPage';
 import { PluginsPage } from './pages/PluginsPage';
-import { WorktreesPage } from './pages/WorktreesPage';
 import { RuntimeProvider, useRuntime } from './hooks/useRuntime';
 import { CloudCallbackPage } from './components/cloud/CloudCallbackPage';
 import { CloudPage } from './pages/CloudPage';
@@ -65,65 +66,77 @@ function AppRoutes() {
         path="/*"
         element={
           <ProjectSelectionProvider>
-            <Layout>
-              <Routes>
-                <Route path="/" element={<Navigate to="/projects" replace />} />
-                <Route path="/projects" element={<ProjectsPage />} />
-                <Route path="/registry" element={<RegistryPage />} />
-                <Route path="/skills" element={<SkillsPage />} />
-                <Route path="/plugins" element={<PluginsPage />} />
-                <Route path="/prompts" element={<PromptsPage />} />
-                <Route path="/profiles" element={<ProfilesPage />} />
-                <Route path="/providers" element={<ProvidersPage />} />
-                <Route path="/agents" element={<AgentsPage />} />
-                <Route path="/teams" element={<TeamsPage />} />
-                <Route path="/statuses" element={<StatusesPage />} />
-                <Route path="/board" element={<BoardPage />} />
-                <Route path="/board/:provider" element={<ExternalBoardMyWorkRoute />} />
-                <Route
-                  path="/board/:provider/linked/:epicId"
-                  element={<ExternalLinkedTaskRoute />}
-                />
-                <Route path="/board/:provider/:workAreaId" element={<ExternalBoardKanbanPage />} />
-                <Route
-                  path="/chat"
-                  element={runtimeLoading ? runtimeLoadingElement : <ChatPage />}
-                />
-                <Route
-                  path="/reviews"
-                  element={runtimeLoading ? runtimeLoadingElement : <ReviewsPageWithSuspense />}
-                />
-                <Route
-                  path="/reviews/:reviewId"
-                  element={
-                    runtimeLoading ? runtimeLoadingElement : <ReviewDetailPageWithSuspense />
-                  }
-                />
-                <Route path="/records" element={<RecordsDisabledPage />} />
-                <Route path="/epics/:id" element={<EpicDetailPage />} />
-                <Route path="/events" element={<EventsPage />} />
-                <Route path="/messages" element={<MessagesPage />} />
-                <Route path="/automation" element={<AutomationPage />} />
-                <Route
-                  path="/worktrees"
-                  element={runtimeLoading ? runtimeLoadingElement : <WorktreesPage />}
-                />
-                <Route
-                  path="/cloud"
-                  element={
-                    runtimeLoading ? (
-                      runtimeLoadingElement
-                    ) : cloudUiEnabled ? (
-                      <CloudPage />
-                    ) : (
-                      <NotFoundPage />
-                    )
-                  }
-                />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route path="*" element={<NotFoundPage />} />
-              </Routes>
-            </Layout>
+            <BackendProvider>
+              <BackendBoundary>
+                <Layout>
+                  <Routes>
+                    <Route path="/" element={<Navigate to="/projects" replace />} />
+                    <Route
+                      path="/projects"
+                      element={
+                        <HomeQueryScope>
+                          <ProjectsPage />
+                        </HomeQueryScope>
+                      }
+                    />
+                    <Route path="/registry" element={<RegistryPage />} />
+                    <Route path="/skills" element={<SkillsPage />} />
+                    <Route path="/plugins" element={<PluginsPage />} />
+                    <Route path="/prompts" element={<PromptsPage />} />
+                    <Route path="/profiles" element={<ProfilesPage />} />
+                    <Route path="/providers" element={<ProvidersPage />} />
+                    <Route path="/agents" element={<AgentsPage />} />
+                    <Route path="/teams" element={<TeamsPage />} />
+                    <Route path="/statuses" element={<StatusesPage />} />
+                    <Route path="/board" element={<BoardPage />} />
+                    <Route path="/board/:provider" element={<ExternalBoardMyWorkRoute />} />
+                    <Route
+                      path="/board/:provider/linked/:epicId"
+                      element={<ExternalLinkedTaskRoute />}
+                    />
+                    <Route
+                      path="/board/:provider/:workAreaId"
+                      element={<ExternalBoardKanbanPage />}
+                    />
+                    <Route
+                      path="/chat"
+                      element={runtimeLoading ? runtimeLoadingElement : <ChatPage />}
+                    />
+                    <Route
+                      path="/reviews"
+                      element={runtimeLoading ? runtimeLoadingElement : <ReviewsPageWithSuspense />}
+                    />
+                    <Route
+                      path="/reviews/:reviewId"
+                      element={
+                        runtimeLoading ? runtimeLoadingElement : <ReviewDetailPageWithSuspense />
+                      }
+                    />
+                    <Route path="/records" element={<RecordsDisabledPage />} />
+                    <Route path="/epics/:id" element={<EpicDetailPage />} />
+                    <Route path="/events" element={<EventsPage />} />
+                    <Route path="/messages" element={<MessagesPage />} />
+                    <Route path="/automation" element={<AutomationPage />} />
+                    <Route
+                      path="/cloud"
+                      element={
+                        runtimeLoading ? (
+                          runtimeLoadingElement
+                        ) : cloudUiEnabled ? (
+                          <HomeQueryScope>
+                            <CloudPage />
+                          </HomeQueryScope>
+                        ) : (
+                          <NotFoundPage />
+                        )
+                      }
+                    />
+                    <Route path="/settings" element={<SettingsPage />} />
+                    <Route path="*" element={<NotFoundPage />} />
+                  </Routes>
+                </Layout>
+              </BackendBoundary>
+            </BackendProvider>
           </ProjectSelectionProvider>
         }
       />

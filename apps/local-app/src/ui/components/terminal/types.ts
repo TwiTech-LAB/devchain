@@ -1,16 +1,18 @@
-import type { Socket } from 'socket.io-client';
-
 /**
  * Terminal component types and interfaces
  */
 
 export interface ChatTerminalProps {
   sessionId: string;
-  socket: Socket | null;
   className?: string;
   chrome?: 'default' | 'none';
   ariaLabel?: string;
   onSessionEnded?: (payload: SessionStatePayload) => void;
+  /**
+   * `home` for instance-level sessions (the provider-auth login terminal);
+   * defaults to the active project's socket. Fixed per call site.
+   */
+  socket?: 'project' | 'home';
 }
 
 export interface SessionStatePayload {

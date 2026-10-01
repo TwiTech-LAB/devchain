@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { SessionsService } from './sessions.service';
 import { FAILURE_NOTICE_SOURCE, type PooledMessage } from './message-pool.types';
 import {
@@ -15,6 +16,7 @@ export class DeliveryFailureNotifierService {
   constructor(
     private readonly terminalIO: TerminalIOService,
     private readonly sessions: SessionsService,
+    private readonly providerAdapterFactory: ProviderAdapterFactory,
   ) {}
 
   async notifySendersOfFailure(
@@ -55,10 +57,13 @@ export class DeliveryFailureNotifierService {
         }
 
         const failureMessage = `[Delivery Failed] Message to agent ${recipientAgentId} could not be delivered: ${disclosedReason}`;
+        const { followNote } =
+          await this.providerAdapterFactory.getRuntimePromptBehaviorForAgent(senderAgentId);
 
         await this.terminalIO.deliverImmediate({ name: session.tmuxSessionId }, failureMessage, {
           submitKeys: ['Enter'],
           confirm: false,
+          followNote: followNote === true,
         });
 
         logger.debug({ senderAgentId, recipientAgentId }, 'Failure notification sent to sender');

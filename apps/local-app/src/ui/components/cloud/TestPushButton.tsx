@@ -1,5 +1,6 @@
 import React from 'react';
 import { useMutation } from '@tanstack/react-query';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 import { Button } from '../ui/button';
 
 interface TestPushResult {
@@ -17,11 +18,15 @@ export function TestPushButton({ deviceId, deviceLabel }: TestPushButtonProps) {
 
   const mutation = useMutation({
     mutationFn: async (): Promise<TestPushResult> => {
-      const res = await fetch('/api/cloud/preferences/test-push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(deviceId ? { deviceId } : {}),
-      });
+      const res = await apiFetch(
+        '/api/cloud/preferences/test-push',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(deviceId ? { deviceId } : {}),
+        },
+        { backend: HOME_BACKEND },
+      );
       if (!res.ok) throw new Error(`test-push:${res.status}`);
       return res.json();
     },

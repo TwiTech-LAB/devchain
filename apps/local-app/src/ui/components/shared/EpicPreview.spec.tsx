@@ -8,20 +8,22 @@ jest.mock('@/ui/hooks/use-toast', () => ({
   useToast: () => ({ toast: toastMock }),
 }));
 
-describe('EpicPreview merged attribution', () => {
+describe('EpicPreview tags', () => {
   beforeEach(() => {
     toastMock.mockReset();
   });
 
-  it('renders merged: tag as a source badge', () => {
+  it('renders a merged: tag as an ordinary copyable tag chip, not a special badge', () => {
     render(<EpicPreview tags={['merged:feature-auth', 'priority:high']} />);
 
-    expect(screen.getByText('Merged from feature-auth')).toBeInTheDocument();
-    expect(screen.getByText('priority:high')).toBeInTheDocument();
-    expect(screen.queryByText('merged:feature-auth')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Copy tag merged:feature-auth' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy tag priority:high' })).toBeInTheDocument();
+    expect(screen.queryByText(/Merged from/i)).not.toBeInTheDocument();
   });
 
-  it('renders regular tags unchanged when no merged-from tag exists', () => {
+  it('renders regular tags unchanged', () => {
     render(<EpicPreview tags={['priority:high']} />);
 
     expect(screen.getByText('priority:high')).toBeInTheDocument();

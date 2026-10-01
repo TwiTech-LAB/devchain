@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export const DEBUG_METRICS_POLL_MS = 10_000;
 export const DEBUG_METRICS_HISTORY_LIMIT = 60;
@@ -83,8 +85,8 @@ export class SnapshotRing {
   }
 }
 
-async function fetchDebugMetrics(): Promise<DebugMetricsSnapshot> {
-  const response = await fetch('/api/debug/metrics');
+async function fetchDebugMetrics(fetchFn: FetchFn): Promise<DebugMetricsSnapshot> {
+  const response = await fetchFn('/api/debug/metrics');
   if (!response.ok) throw new Error('Failed to fetch backend memory metrics');
   const payload: unknown = await response.json();
   if (!isDebugMetricsSnapshot(payload)) {
@@ -107,13 +109,14 @@ function isDebugMetricsSnapshot(value: unknown): value is DebugMetricsSnapshot {
 }
 
 export function useDebugMetrics() {
+  const fetchFn = useFetchFactory();
   const ringRef = useRef<SnapshotRing>();
   if (!ringRef.current) ringRef.current = new SnapshotRing();
   const [history, setHistory] = useState<DebugMetricsSnapshot[]>([]);
 
   const query = useQuery({
     queryKey: ['debug-metrics'],
-    queryFn: fetchDebugMetrics,
+    queryFn: () => fetchDebugMetrics(fetchFn),
     refetchInterval: DEBUG_METRICS_POLL_MS,
     staleTime: 0,
     retry: false,

@@ -43,8 +43,8 @@ describe('TerminalWindowsContext — mounted window LRU cap', () => {
     act(() => result.current.focusWindow('window-0'));
     act(() =>
       result.current.openWindow({
-        id: 'worktree-window',
-        title: 'Worktree Window',
+        id: 'extra-window',
+        title: 'Extra Window',
         content: <div />,
       }),
     );
@@ -56,9 +56,9 @@ describe('TerminalWindowsContext — mounted window LRU cap', () => {
       false,
     );
     expect(result.current.windows.find((window) => window.id === 'window-1')?.minimized).toBe(true);
-    expect(
-      result.current.windows.find((window) => window.id === 'worktree-window')?.minimized,
-    ).toBe(false);
+    expect(result.current.windows.find((window) => window.id === 'extra-window')?.minimized).toBe(
+      false,
+    );
     expect(mockToast).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Terminal window minimized' }),
     );

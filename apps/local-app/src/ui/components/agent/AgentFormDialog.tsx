@@ -20,9 +20,11 @@ import {
   getAgentAvatarDataUri,
   getAgentInitials,
 } from '@/ui/lib/multiavatar';
-import { useProviderModels } from '@/ui/hooks/useProviderModels';
+import { sameCatalogName, useProviderModels } from '@/ui/hooks/useProviderModels';
 import { useProviderEfforts } from '@/ui/hooks/useProviderEfforts';
 import { shortModelName } from '@/ui/lib/model-utils';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Types
@@ -111,8 +113,16 @@ const EMPTY_FORM: AgentFormValues = {
 const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
 const DEFAULT_EFFORT_OVERRIDE = '__default_effort_override__';
 
-async function fetchProviderConfigs(profileId: string): Promise<ProviderConfig[]> {
-  const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+/** A case-variant catalog row carries the configured spelling, so it shows as selected and saving keeps it. */
+function catalogOptionValue(catalogName: string, configured: string | null): string {
+  return configured && sameCatalogName(catalogName, configured) ? configured : catalogName;
+}
+
+async function fetchProviderConfigs(
+  fetchFn: FetchFn,
+  profileId: string,
+): Promise<ProviderConfig[]> {
+  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
   if (!res.ok) throw new Error('Failed to fetch provider configs');
   return res.json();
 }
@@ -157,6 +167,7 @@ export function AgentFormDialog({
   existingAgents,
   editAgentId,
 }: AgentFormDialogProps) {
+  const fetchFn = useFetchFactory();
   const isEdit = mode === 'edit';
   const idPrefix = isEdit ? 'edit-agent' : 'agent';
   const testIdPrefix = isEdit ? 'agent-preview-edit' : 'agent-preview-create';
@@ -182,7 +193,7 @@ export function AgentFormDialog({
   // ---- Provider configs query ----
   const { data: providerConfigs } = useQuery({
     queryKey: ['provider-configs', formData.profileId],
-    queryFn: () => fetchProviderConfigs(formData.profileId),
+    queryFn: () => fetchProviderConfigs(fetchFn, formData.profileId),
     enabled: !!formData.profileId,
   });
 
@@ -512,7 +523,11 @@ export function AgentFormDialog({
               >
                 <option value={DEFAULT_MODEL_OVERRIDE}>Default</option>
                 {providerModels.map((model) => (
-                  <option key={model.id} value={model.name} title={model.name}>
+                  <option
+                    key={model.id}
+                    value={catalogOptionValue(model.name, formData.modelOverride)}
+                    title={model.name}
+                  >
                     {shortModelName(model.name)}
                   </option>
                 ))}
@@ -555,7 +570,11 @@ export function AgentFormDialog({
                   >
                     <option value={DEFAULT_EFFORT_OVERRIDE}>Default</option>
                     {providerEfforts.map((effort) => (
-                      <option key={effort.id} value={effort.name} title={effort.name}>
+                      <option
+                        key={effort.id}
+                        value={catalogOptionValue(effort.name, formData.effortOverride)}
+                        title={effort.name}
+                      >
                         {effort.name}
                       </option>
                     ))}

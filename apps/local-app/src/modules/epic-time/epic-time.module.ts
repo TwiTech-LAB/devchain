@@ -9,9 +9,18 @@ import { StorageModule } from '../storage/storage.module';
 import { ExternalIntegrationsModule } from '../external-integrations/external-integrations.module';
 import { EpicEstimateLoggingService } from './services/epic-estimate-logging.service';
 import { EpicTimeStoreModule } from './epic-time-store.module';
+import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
+import { RemotesModule } from '../remotes/remotes.module';
 
 @Module({
-  imports: [EpicTimeStoreModule, EventsCoreModule, StorageModule, ExternalIntegrationsModule],
+  imports: [
+    EpicTimeStoreModule,
+    EventsCoreModule,
+    StorageModule,
+    ExternalIntegrationsModule,
+    ProjectWriteAdmissionModule,
+    RemotesModule,
+  ],
   controllers: [EpicTimeController, AgentTimeBufferController, ExternalEstimateLogController],
   providers: [AgentTimeAccountingService, EpicTimeService, EpicEstimateLoggingService],
   exports: [AgentTimeAccountingService, EpicTimeService, EpicEstimateLoggingService],

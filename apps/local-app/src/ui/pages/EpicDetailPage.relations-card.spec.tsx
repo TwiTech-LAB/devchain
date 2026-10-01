@@ -52,19 +52,6 @@ jest.mock('@/ui/components/shared/ConfirmDialog', () => ({
   ConfirmDialog: () => null,
 }));
 
-const worktreeRuntime = {
-  activeWorktree: null,
-  setActiveWorktree: () => undefined,
-  apiBase: '',
-  worktrees: [],
-  worktreesLoading: false,
-  runtimeResolved: true,
-};
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => worktreeRuntime,
-}));
-
 function jsonResponse(data: unknown): Response {
   return { ok: true, json: async () => data } as Response;
 }
@@ -172,8 +159,6 @@ function renderAt(path: string) {
 describe('EpicDetailPage relations card', () => {
   beforeEach(() => {
     fetchMock.mockReset();
-    worktreeRuntime.runtimeResolved = true;
-    worktreeRuntime.apiBase = '';
   });
 
   it('renders grouped focal-relative relations from the relations endpoint', async () => {

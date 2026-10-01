@@ -4,26 +4,13 @@ import type { ReactNode } from 'react';
 import { epicTimeQueryKeys, resolveEpicTimeZone } from '@/ui/lib/epic-time';
 import { useEpicTimeSummariesBatch } from './useEpicTimeSummariesBatch';
 
-// Layer: hook unit. The fetch factory and worktree runtime are mocked
-// because this spec owns the batch URL, body, key stability, runtime
-// gating, and totals-map contract.
+// Layer: hook unit. The fetch factory is mocked because this spec owns the
+// batch URL, body, key stability, active/disabled scope gating, and
+// totals-map contract.
 const fetchMock = jest.fn();
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({
   useFetchFactory: () => fetchMock,
-}));
-
-const worktreeRuntime = {
-  activeWorktree: null,
-  setActiveWorktree: () => undefined,
-  apiBase: '',
-  worktrees: [],
-  worktreesLoading: false,
-  runtimeResolved: true,
-};
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => worktreeRuntime,
 }));
 
 function wrapper(client: QueryClient) {
@@ -44,8 +31,6 @@ describe('useEpicTimeSummariesBatch', () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     fetchMock.mockReset();
     fetchMock.mockResolvedValue(batchResponse([]));
-    worktreeRuntime.runtimeResolved = true;
-    worktreeRuntime.apiBase = '';
   });
 
   afterEach(() => client.clear());
@@ -94,9 +79,8 @@ describe('useEpicTimeSummariesBatch', () => {
     expect(first.result.current.totals?.get('epic-3')).toBeUndefined();
   });
 
-  it('issues no request while the runtime is unresolved', async () => {
-    worktreeRuntime.runtimeResolved = false;
-    const { result } = renderHook(() => useEpicTimeSummariesBatch(['epic-1']), {
+  it('issues no request when disabled', async () => {
+    const { result } = renderHook(() => useEpicTimeSummariesBatch(['epic-1'], { enabled: false }), {
       wrapper: wrapper(client),
     });
 
@@ -105,52 +89,45 @@ describe('useEpicTimeSummariesBatch', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('exposes no main result through any returned field after main-to-worktree and main-to-unresolved transitions', async () => {
+  it('warms the active cache, then leaks no result to a disabled observer', async () => {
     fetchMock.mockResolvedValue(batchResponse([{ epicId: 'epic-1', totalMinutes: 90 }]));
-    const { result, rerender } = renderHook(() => useEpicTimeSummariesBatch(['epic-1']), {
-      wrapper: wrapper(client),
-    });
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useEpicTimeSummariesBatch(['epic-1'], { enabled }),
+      { wrapper: wrapper(client), initialProps: { enabled: true } },
+    );
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
     expect(result.current.totals?.get('epic-1')).toBe(90);
     expect(result.current.query.data?.get('epic-1')).toBe(90);
 
-    worktreeRuntime.apiBase = '/wt/demo';
-    rerender();
+    rerender({ enabled: false });
     expect(result.current.totals).toBeUndefined();
     expect(result.current.query.data).toBeUndefined();
     expect(result.current.query.isSuccess).toBe(false);
 
-    worktreeRuntime.runtimeResolved = false;
-    worktreeRuntime.apiBase = '';
-    rerender();
-    expect(result.current.totals).toBeUndefined();
-    expect(result.current.query.data).toBeUndefined();
-
-    // Only the admitted main-scope observer issued a request.
+    // Only the admitted active-scope observer issued a request.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    // The main cache entry itself survives for re-admission.
+    // The active cache entry itself survives for re-admission.
     expect(
-      client.getQueryData(epicTimeQueryKeys.batch(['epic-1'], timeZone, 'main')),
+      client.getQueryData(epicTimeQueryKeys.batch(['epic-1'], timeZone, 'active')),
     ).toBeDefined();
   });
 
-  it('re-admits to the primed main cache immediately after a disabled stretch', async () => {
+  it('re-admits to the primed active cache immediately after a disabled stretch', async () => {
     fetchMock.mockResolvedValue(batchResponse([{ epicId: 'epic-1', totalMinutes: 90 }]));
-    const { result, rerender } = renderHook(() => useEpicTimeSummariesBatch(['epic-1']), {
-      wrapper: wrapper(client),
-    });
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useEpicTimeSummariesBatch(['epic-1'], { enabled }),
+      { wrapper: wrapper(client), initialProps: { enabled: true } },
+    );
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
 
-    worktreeRuntime.apiBase = '/wt/demo';
-    rerender();
+    rerender({ enabled: false });
     expect(result.current.totals).toBeUndefined();
 
-    worktreeRuntime.apiBase = '';
-    rerender();
-    // The main cache entry serves the badge again right away; any later
-    // refresh is a fresh main-scope request, not a disabled-scope leak.
+    rerender({ enabled: true });
+    // The active cache entry serves the badge again right away; any later
+    // refresh is a fresh active-scope request, not a disabled-scope leak.
     expect(result.current.totals?.get('epic-1')).toBe(90);
   });
 

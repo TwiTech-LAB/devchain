@@ -16,10 +16,13 @@ import { MetricsModule } from '../metrics/metrics.module';
 import { TerminalSocketDrainAdapter } from './services/terminal-socket-drain.adapter';
 import { TerminalSendSchedulerService } from './services/terminal-send-scheduler.service';
 import { HumanPromptStateService } from './services/human-prompt-state.service';
+import { StandaloneTerminalService } from './services/standalone-terminal.service';
+import { ProcessExecutorModule } from './services/process-executor/process-executor.module';
 
 @Module({
   imports: [
     TerminalDeliveryModule,
+    ProcessExecutorModule,
     EventsCoreModule,
     SettingsModule,
     SessionTerminalRuntimeModule,
@@ -45,6 +48,7 @@ import { HumanPromptStateService } from './services/human-prompt-state.service';
     },
     TerminalRegistryRehydrator,
     TerminalActivityService,
+    StandaloneTerminalService,
   ],
   exports: [
     TerminalStreamService,
@@ -55,6 +59,7 @@ import { HumanPromptStateService } from './services/human-prompt-state.service';
     TerminalDeliveryModule,
     TerminalSessionRegistry,
     TerminalActivityService,
+    StandaloneTerminalService,
   ],
 })
 export class TerminalModule {}

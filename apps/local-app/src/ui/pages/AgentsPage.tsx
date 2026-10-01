@@ -29,6 +29,9 @@ import { useAgentsPagePresence } from '@/ui/hooks/useAgentsPagePresence';
 import { AgentFormDialog } from '@/ui/components/agent/AgentFormDialog';
 import type { AgentFormSubmitData } from '@/ui/components/agent/AgentFormDialog';
 import { AgentCard } from '@/ui/components/agent/AgentCard';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Types
@@ -80,34 +83,37 @@ interface Provider {
 // Fetch functions
 // ============================================
 
-async function fetchProfiles(projectId: string) {
-  const res = await fetch(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
+async function fetchProfiles(fetchFn: FetchFn, projectId: string) {
+  const res = await fetchFn(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch profiles');
   return res.json();
 }
 
-async function fetchProviders() {
-  const res = await fetch('/api/providers');
+async function fetchProviders(fetchFn: FetchFn) {
+  const res = await fetchFn('/api/providers');
   if (!res.ok) throw new Error('Failed to fetch providers');
   return res.json();
 }
 
-async function fetchAgents(projectId: string) {
-  const res = await fetch(`/api/agents?projectId=${projectId}&includeGuests=true`);
+async function fetchAgents(fetchFn: FetchFn, projectId: string) {
+  const res = await fetchFn(`/api/agents?projectId=${projectId}&includeGuests=true`);
   if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
 
-async function createAgent(data: {
-  projectId: string;
-  profileId: string;
-  providerConfigId?: string | null;
-  modelOverride?: string | null;
-  effortOverride?: string | null;
-  name: string;
-  description?: string | null;
-}) {
-  const res = await fetch('/api/agents', {
+async function createAgent(
+  fetchFn: FetchFn,
+  data: {
+    projectId: string;
+    profileId: string;
+    providerConfigId?: string | null;
+    modelOverride?: string | null;
+    effortOverride?: string | null;
+    name: string;
+    description?: string | null;
+  },
+) {
+  const res = await fetchFn('/api/agents', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -119,8 +125,8 @@ async function createAgent(data: {
   return res.json();
 }
 
-async function deleteAgent(id: string) {
-  const res = await fetch(`/api/agents/${id}`, { method: 'DELETE' });
+async function deleteAgent(fetchFn: FetchFn, id: string) {
+  const res = await fetchFn(`/api/agents/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to delete agent' }));
     throw new Error(error.message || 'Failed to delete agent');
@@ -128,6 +134,7 @@ async function deleteAgent(id: string) {
 }
 
 async function updateAgentRequest(
+  fetchFn: FetchFn,
   id: string,
   data: {
     name?: string;
@@ -139,7 +146,7 @@ async function updateAgentRequest(
     description?: string | null;
   },
 ): Promise<Agent> {
-  const res = await fetch(`/api/agents/${id}`, {
+  const res = await fetchFn(`/api/agents/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -167,29 +174,32 @@ export const agentsPageQueryKeys = {
 // ============================================
 
 export function AgentsPage() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
 
   // ---- Data queries ----
   const { data: profilesData } = useQuery({
     queryKey: agentsPageQueryKeys.profiles(selectedProjectId as string),
-    queryFn: () => fetchProfiles(selectedProjectId as string),
+    queryFn: () => fetchProfiles(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
   const { data: providersData } = useQuery({
     queryKey: agentsPageQueryKeys.providers(),
-    queryFn: fetchProviders,
+    queryFn: () => fetchProviders(fetchFn),
   });
   const { data: agentsData, isLoading } = useQuery({
     queryKey: agentsPageQueryKeys.agents(selectedProjectId as string),
-    queryFn: () => fetchAgents(selectedProjectId as string),
+    queryFn: () => fetchAgents(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
 
   const { data: presetsData } = useQuery<{ presets: { name: string }[] }>({
     queryKey: agentsPageQueryKeys.presets(selectedProjectId as string),
     queryFn: async () => {
-      const res = await fetch(`/api/projects/${selectedProjectId}/presets`);
+      const res = await apiFetch(`/api/projects/${selectedProjectId}/presets`, undefined, {
+        backend: HOME_BACKEND,
+      });
       if (!res.ok) throw new Error('Failed to fetch presets');
       return res.json();
     },
@@ -306,8 +316,8 @@ export function AgentsPage() {
   const agentsKey = agentsPageQueryKeys.agents(selectedProjectId as string);
   type AgentsList = ListContainer<Agent>;
 
-  const createMutation = useCrudMutation<Agent, Parameters<typeof createAgent>[0], void>({
-    mutationFn: createAgent,
+  const createMutation = useCrudMutation<Agent, Parameters<typeof createAgent>[1], void>({
+    mutationFn: (data) => createAgent(fetchFn, data),
     optimistic: {
       queryKey: agentsKey,
       // temp-id prepend; profile resolved from the loaded profile maps.
@@ -341,7 +351,7 @@ export function AgentsPage() {
 
   // ---- Delete mutation ----
   const deleteMutation = useCrudMutation<void, string, void>({
-    mutationFn: deleteAgent,
+    mutationFn: (id: string) => deleteAgent(fetchFn, id),
     optimistic: {
       queryKey: agentsKey,
       // filter-out.
@@ -378,7 +388,7 @@ export function AgentsPage() {
 
   const updateMutation = useCrudMutation<Agent, UpdateAgentVars, void>({
     mutationFn: (vars) =>
-      updateAgentRequest(vars.id, {
+      updateAgentRequest(fetchFn, vars.id, {
         name: vars.name,
         profileId: vars.profileId,
         providerConfigId: vars.providerConfigId,

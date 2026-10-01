@@ -17,6 +17,7 @@ import type {
 } from '../../storage/models/domain.models';
 import type { EpicOperationContext } from './epics.service';
 import type { RelationConfirmationPayload } from '../models/epic-relations.models';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 export interface SetRelationOptions {
   /**
@@ -72,6 +73,7 @@ export class EpicRelationsService {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly events: EventsService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   async listRelations(
@@ -120,6 +122,7 @@ export class EpicRelationsService {
     options: SetRelationOptions = {},
   ): Promise<EpicRelationDto> {
     const writeContext = this.resolveWriteContext(context);
+    await this.assertEpicsWritable(epicId, relatedEpicId);
     // For related writes the endpoint order defines direction: epicId is the
     // source and relatedEpicId is the target. blocks and blocked_by stay
     // focal-relative to the first address; storage derives the stored
@@ -152,15 +155,27 @@ export class EpicRelationsService {
     relatedEpicId: string,
     context?: EpicOperationContext,
   ): Promise<boolean> {
-    const result = await this.storage.deleteEpicRelation(
-      epicId,
-      relatedEpicId,
-      this.resolveWriteContext(context),
-    );
+    const writeContext = this.resolveWriteContext(context);
+    await this.assertEpicsWritable(epicId, relatedEpicId);
+    const result = await this.storage.deleteEpicRelation(epicId, relatedEpicId, writeContext);
     if (result.deleted) {
       await this.publishInvalidation(result.workspaceId);
     }
     return result.deleted;
+  }
+
+  /** A missing epic is left for the storage call to report in its own terms. */
+  private async assertEpicsWritable(...epicIds: string[]): Promise<void> {
+    for (const epicId of epicIds) {
+      let projectId: string;
+      try {
+        projectId = (await this.storage.getEpic(epicId)).projectId;
+      } catch (error) {
+        if (error instanceof NotFoundError) continue;
+        throw error;
+      }
+      this.admission.assertWritable(projectId);
+    }
   }
 
   async publishInvalidation(workspaceId: string): Promise<void> {

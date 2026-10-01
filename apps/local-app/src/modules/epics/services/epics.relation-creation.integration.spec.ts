@@ -17,6 +17,7 @@ import type { SettingsService } from '../../settings/services/settings.service';
 import type { Agent, Epic, Project } from '../../storage/models/domain.models';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { EpicsService } from './epics.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 jest.mock('node:crypto', () => {
   const actual = jest.requireActual<typeof import('node:crypto')>('node:crypto');
@@ -68,6 +69,9 @@ describe('EpicsService atomic relation creation', () => {
       events as unknown as EventsService,
       { getAutoCleanStatusIds: jest.fn().mockReturnValue([]) } as unknown as SettingsService,
       { emit: jest.fn() } as unknown as EventEmitter2,
+      createProjectWriteAdmissionStub() as never,
+      {} as never,
+      { pullNow: jest.fn() } as never,
     );
     project = await createProject('Atomic Focal');
     actor = await createAgent(project.id, 'Atomic Agent', true);
@@ -307,6 +311,45 @@ describe('EpicsService atomic relation creation', () => {
     expect(persistedCounts()).toEqual(before);
     expect(events.emitCommitted).not.toHaveBeenCalled();
     expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('links a target hidden from MCP reads by its exact ID but never by prefix', async () => {
+    const hidden = await storage.createStatus({
+      projectId: project.id,
+      label: 'Draft',
+      color: '#999',
+      position: 99,
+      mcpHidden: true,
+    });
+    const hiddenTarget = await storage.createEpicForProject(project.id, { title: 'Hidden Target' });
+    await storage.updateEpic(hiddenTarget.id, { statusId: hidden.id });
+    const before = persistedCounts();
+
+    // A prefix keeps the visible-only resolution: the hidden epic is not disclosed.
+    const byPrefix = await captureIndexedRelationError(
+      createWithRelation('related', LOWER_EPIC_ID, {
+        relatedEpicId: hiddenTarget.id.slice(0, 8),
+      }),
+    );
+    expect(byPrefix.cause).toBeInstanceOf(NotFoundError);
+    expect(byPrefix.relationIndex).toBe(0);
+    expect(persistedCounts()).toEqual(before);
+
+    // The full ID is one the caller already holds, so the relation is written.
+    const created = await createWithRelation('related', HIGHER_EPIC_ID, {
+      relatedEpicId: hiddenTarget.id,
+    });
+    expect(created.id).toBe(HIGHER_EPIC_ID);
+    expect(await storage.listEpicRelations(HIGHER_EPIC_ID)).toMatchObject({
+      items: [expect.objectContaining({ epicId: hiddenTarget.id, type: 'related' })],
+      total: 1,
+    });
+    expect(persistedCounts()).toEqual({
+      ...before,
+      epics: before.epics + 1,
+      relations: before.relations + 1,
+      events: before.events + 1,
+    });
   });
 
   it('rolls back guest, unauthorized cross-project, and injected insert failures', async () => {

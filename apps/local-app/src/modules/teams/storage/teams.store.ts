@@ -156,7 +156,15 @@ export class TeamsStore {
         )
       : eq(teams.projectId, projectId);
 
-    const rows = await this.db.select().from(teams).where(whereClause).limit(limit).offset(offset);
+    // Creation order, not rowid order: a replica inserts a project's teams sorted by id, so a
+    // host's rowid order differs from home's, and the Chat sidebar renders teams in list order.
+    const rows = await this.db
+      .select()
+      .from(teams)
+      .where(whereClause)
+      .orderBy(teams.createdAt, teams.id)
+      .limit(limit)
+      .offset(offset);
 
     const countResult = await this.db
       .select({ count: sql<number>`count(*)` })

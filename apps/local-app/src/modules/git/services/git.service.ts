@@ -36,6 +36,13 @@ export interface Tag {
   sha: string;
 }
 
+/** Parsed `git --version` output. */
+export interface GitVersion {
+  major: number;
+  minor: number;
+  patch: number;
+}
+
 export interface ChangedFile {
   path: string;
   status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
@@ -372,6 +379,79 @@ export class GitService {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Reads the installed git version. Callers gate features on it (for example
+   * the reference-transaction hook needs git >= 2.28).
+   */
+  async getVersion(projectId: string, rootPath?: string): Promise<GitVersion> {
+    const output = await this.execGit(projectId, ['--version'], {
+      rootPath,
+      maxBuffer: 4096,
+    });
+    const match = /git version (\d+)\.(\d+)\.(\d+)/.exec(output.trim());
+    if (!match) {
+      throw new IOError('Could not parse git version output', {
+        projectId,
+        output: output.trim(),
+      });
+    }
+    return {
+      major: parseInt(match[1], 10),
+      minor: parseInt(match[2], 10),
+      patch: parseInt(match[3], 10),
+    };
+  }
+
+  /**
+   * Reads one `git config` value, or null when the key is unset. Keys are
+   * limited to dotted `section.name` pairs so callers cannot inject flags.
+   */
+  async getConfigValue(projectId: string, key: string, rootPath?: string): Promise<string | null> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*)+$/.test(key)) {
+      throw new ValidationError('Invalid git config key', { key });
+    }
+    // `git config --get <missing key>` exits 1 with empty output.
+    const output = await this.execGit(projectId, ['config', '--get', key], {
+      rootPath,
+      allowNonZero: true,
+      maxBuffer: 65536,
+    });
+    const value = output.trim();
+    return value === '' ? null : value;
+  }
+
+  /**
+   * The commit HEAD points at, or null while HEAD is unborn. Other failures
+   * (not a repository, unreadable refs) propagate.
+   */
+  async mirroredHead(projectId: string, rootPath?: string): Promise<string | null> {
+    // `--verify --quiet` exits 1 with empty output for a missing ref instead
+    // of the hard 128 failure of `--verify` alone.
+    const output = await this.execGit(
+      projectId,
+      ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
+      { rootPath, allowNonZero: true },
+    );
+    const sha = output.trim();
+    return sha === '' ? null : sha;
+  }
+
+  /**
+   * Rebuilds the index from HEAD and refreshes its stat cache. The remote's
+   * index never syncs home, so once ownership returns the local index must be
+   * re-derived from the mirrored HEAD. Does nothing on an unborn HEAD.
+   * `update-index --refresh` exits 1 when the worktree has local changes,
+   * which is expected and not an error here.
+   */
+  async refreshIndexFromHead(projectId: string, rootPath?: string): Promise<void> {
+    if (!(await this.mirroredHead(projectId, rootPath))) return;
+    await this.execGit(projectId, ['read-tree', 'HEAD'], { rootPath });
+    await this.execGit(projectId, ['update-index', '--refresh'], {
+      rootPath,
+      allowNonZero: true,
+    });
   }
 
   /**

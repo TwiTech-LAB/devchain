@@ -13,7 +13,6 @@ import {
 interface WorkspaceSwitcherProps {
   workspaces: ProjectWorkspace[];
   selectedWorkspaceId?: string;
-  locked: boolean;
   onSelect: (workspaceId: string) => void;
 }
 
@@ -67,7 +66,6 @@ WorkspaceButton.displayName = 'WorkspaceButton';
 export function WorkspaceSwitcher({
   workspaces,
   selectedWorkspaceId,
-  locked,
   onSelect,
 }: WorkspaceSwitcherProps) {
   const buttonRefs = useMemo(
@@ -109,7 +107,7 @@ export function WorkspaceSwitcher({
     [focusWorkspace, workspaces.length],
   );
 
-  if (locked || workspaces.length < 2) return null;
+  if (workspaces.length < 2) return null;
 
   return (
     <TooltipProvider>

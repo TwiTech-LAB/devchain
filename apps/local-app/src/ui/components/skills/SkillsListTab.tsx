@@ -11,7 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/ui/components/ui/alert-dialog';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Switch } from '@/ui/components/ui/switch';
@@ -31,13 +31,16 @@ import {
   enableAllSkills,
   enableSkill,
   fetchSkills,
+  SKILL_STATUS_BADGES,
   type SkillListItem,
-  type SkillStatus,
 } from '@/ui/lib/skills';
 import { cn } from '@/ui/lib/utils';
 import { CategoryBadge } from './CategoryBadge';
 import { getSourceDisplay } from './source-display';
 import { SyncButton } from './SyncButton';
+import { AlwaysOnSwitch } from './AlwaysOnSwitch';
+import { isAlwaysEnabledSkillSource } from '@/common/constants/built-in-skill-sources';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export interface SkillsListTabProps {
   onSelectSkill?: (skillId: string) => void;
@@ -45,21 +48,6 @@ export interface SkillsListTabProps {
 
 type SkillSortField = 'name' | 'category' | 'source' | 'enabled';
 type SortDirection = 'asc' | 'desc';
-
-const SKILL_STATUS_BADGES: Record<SkillStatus, { label: string; className: string }> = {
-  available: {
-    label: 'Available',
-    className: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-  },
-  outdated: {
-    label: 'Outdated',
-    className: 'border-amber-200 bg-amber-50 text-amber-800',
-  },
-  sync_error: {
-    label: 'Sync Error',
-    className: 'border-red-200 bg-red-50 text-red-800',
-  },
-};
 
 function getSearchValue(skill: SkillListItem): string {
   return [skill.name, skill.displayName, skill.description, skill.shortDescription]
@@ -69,6 +57,7 @@ function getSearchValue(skill: SkillListItem): string {
 }
 
 export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
@@ -84,7 +73,7 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
     error: skillsError,
   } = useQuery({
     queryKey: ['skills', selectedProjectId],
-    queryFn: () => fetchSkills(selectedProjectId as string),
+    queryFn: () => fetchSkills(fetchFn, selectedProjectId as string),
     enabled: Boolean(selectedProjectId),
   });
 
@@ -173,9 +162,9 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
       }
 
       if (nextEnabled) {
-        await enableSkill(selectedProjectId, skillId);
+        await enableSkill(fetchFn, selectedProjectId, skillId);
       } else {
-        await disableSkill(selectedProjectId, skillId);
+        await disableSkill(fetchFn, selectedProjectId, skillId);
       }
     },
     onSuccess: () => {
@@ -196,7 +185,7 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
         throw new Error('Please select a project first');
       }
 
-      return disableAllSkills(selectedProjectId);
+      return disableAllSkills(fetchFn, selectedProjectId);
     },
     onSuccess: (result) => {
       setIsDisableAllDialogOpen(false);
@@ -221,7 +210,7 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
         throw new Error('Please select a project first');
       }
 
-      return enableAllSkills(selectedProjectId);
+      return enableAllSkills(fetchFn, selectedProjectId);
     },
     onSuccess: (result) => {
       setIsEnableAllDialogOpen(false);
@@ -344,7 +333,8 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
                   filteredAndSortedSkills.map((skill) => {
                     const sourceDisplay = getSourceDisplay(skill.source);
                     const SourceIcon = sourceDisplay.icon;
-                    const isDisabled = skill.disabled;
+                    const alwaysOn = isAlwaysEnabledSkillSource(skill.source);
+                    const isDisabled = skill.disabled && !alwaysOn;
                     const descriptionText =
                       skill.shortDescription || skill.description || 'No description';
                     const isMutatingThisSkill =
@@ -376,15 +366,16 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
                               {skill.displayName || skill.name}
                             </span>
                             {skill.status !== 'available' ? (
-                              <Badge
+                              <OpaqueBadge
+                                wrapperClassName="mt-1"
                                 variant="outline"
                                 className={cn(
-                                  'mt-1 w-fit text-[10px]',
+                                  'text-[10px]',
                                   SKILL_STATUS_BADGES[skill.status].className,
                                 )}
                               >
                                 {SKILL_STATUS_BADGES[skill.status].label}
-                              </Badge>
+                              </OpaqueBadge>
                             ) : null}
                             {isDisabled ? (
                               <Badge variant="secondary" className="mt-1 w-fit">
@@ -416,17 +407,23 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
                           className="text-right"
                           onClick={(event) => event.stopPropagation()}
                         >
-                          <Switch
-                            checked={!isDisabled}
-                            onCheckedChange={(checked) =>
-                              toggleDisableMutation.mutate({
-                                skillId: skill.id,
-                                nextEnabled: checked,
-                              })
-                            }
-                            disabled={isMutatingThisSkill || hasPendingBulkMutation}
-                            aria-label={`Enable or disable skill ${skill.displayName || skill.name}`}
-                          />
+                          {alwaysOn ? (
+                            <AlwaysOnSwitch
+                              label={`Skill ${skill.displayName || skill.name} is always on`}
+                            />
+                          ) : (
+                            <Switch
+                              checked={!isDisabled}
+                              onCheckedChange={(checked) =>
+                                toggleDisableMutation.mutate({
+                                  skillId: skill.id,
+                                  nextEnabled: checked,
+                                })
+                              }
+                              disabled={isMutatingThisSkill || hasPendingBulkMutation}
+                              aria-label={`Enable or disable skill ${skill.displayName || skill.name}`}
+                            />
+                          )}
                         </TableCell>
                       </TableRow>
                     );
@@ -443,8 +440,8 @@ export function SkillsListTab({ onSelectSkill }: SkillsListTabProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Disable all skills for this project?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will disable every skill in the selected project. You can enable individual
-              skills later from this list.
+              This will disable every skill in the selected project. Built-in DevChain skills stay
+              on. You can enable individual skills later from this list.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

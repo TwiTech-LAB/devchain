@@ -10,6 +10,7 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { SubscriberExecutorService } from './subscriber-executor.service';
 import { AutomationSchedulerService } from './automation-scheduler.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 const actionExecuteMock = jest.fn().mockResolvedValue({ success: true, message: 'ok' });
 
@@ -57,6 +58,7 @@ describe('SubscriberExecutorService characterization', () => {
       new AutomationSchedulerService(),
       teams as never,
       moduleRef as never,
+      createProjectWriteAdmissionStub() as never,
     );
 
     const result = await (

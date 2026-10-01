@@ -1,3 +1,4 @@
+import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
 import type {
   ProviderAdapter,
@@ -68,6 +69,7 @@ export class CopilotAdapter
     HookCapability
 {
   readonly providerName = 'copilot';
+  readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
 
   // Effort (`--effort=<value>`, alias `--reasoning-effort`). Static seed/endpoint
   // metadata — model, effort, and context tier all flow through profileOptionArgs.

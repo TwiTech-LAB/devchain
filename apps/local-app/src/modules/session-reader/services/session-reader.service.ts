@@ -5,8 +5,9 @@ import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { SessionCacheService, type SourceChangeKind } from './session-cache.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
-import { buildChunks } from '../builders/chunk-builder';
-import { decodeCursor, encodeCursor } from './transcript-cursor';
+import { cooperativeBudget, cooperativeMap } from './cooperative-work';
+import { buildChunks, buildChunksCooperatively } from '../builders/chunk-builder';
+import { decodeCursor, encodeCursor, TRANSCRIPT_PARSER_GENERATION } from './transcript-cursor';
 import { truncateMessages, truncateChunks } from './transcript-truncation';
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
@@ -557,14 +558,21 @@ export class SessionReaderService implements OnModuleDestroy {
     const pages = window ? this.projectIndexPages(chunks, window) : undefined;
 
     let latestOutputPreview: string | null = null;
+    const checkpoint = cooperativeBudget();
     for (let i = chunks.length - 1; i >= 0; i--) {
+      const pause = checkpoint();
+      if (pause) await pause;
       const chunk = chunks[i];
       if (chunk.type === 'ai' && 'semanticSteps' in chunk) {
-        const outputStep = [...chunk.semanticSteps].reverse().find((s) => s.type === 'output');
-        if (outputStep?.content.outputText) {
-          latestOutputPreview = outputStep.content.outputText.slice(0, 200);
+        for (let stepIndex = chunk.semanticSteps.length - 1; stepIndex >= 0; stepIndex--) {
+          const stepPause = checkpoint();
+          if (stepPause) await stepPause;
+          const step = chunk.semanticSteps[stepIndex];
+          if (step.type !== 'output') continue;
+          if (step.content.outputText) latestOutputPreview = step.content.outputText.slice(0, 200);
           break;
         }
+        if (latestOutputPreview !== null) break;
       }
     }
 
@@ -574,7 +582,7 @@ export class SessionReaderService implements OnModuleDestroy {
         messageCount: session.messages.length,
         chunkCount: chunks.length,
       },
-      chunkIds: chunks.map((c) => c.id),
+      chunkIds: await cooperativeMap(chunks, (chunk) => chunk.id),
       latestOutputPreview,
       providerName: session.providerName,
       isOngoing: session.metrics.isOngoing,
@@ -668,21 +676,23 @@ export class SessionReaderService implements OnModuleDestroy {
     }
 
     const { session, parseTiming } = await this.getParsedSession(sessionId);
-    const chunks = session.chunks ?? buildChunks(session.messages);
-
-    const replaceFromChunkIndex = Math.max(0, cursorData.chunkCount - 1);
 
     // DB-backed sources can mutate parts without growing the message count, so
     // their classified updates retain the in-place last-chunk replacement path.
     const revisionChanged = cursorData.fileSize !== parseTiming.sourceVersion;
-    const messageCountUnchanged = cursorData.messageCount === session.messages.length;
-
-    if (requiresFullRefetch(parseTiming.sourceChangeKind, revisionChanged)) {
+    if (
+      cursorData.parserGeneration !== TRANSCRIPT_PARSER_GENERATION ||
+      requiresFullRefetch(parseTiming.sourceChangeKind, revisionChanged)
+    ) {
       return {
         kind: 'full-refetch-required',
         sourceChangeKind: parseTiming.sourceChangeKind,
       };
     }
+
+    const chunks = session.chunks ?? buildChunks(session.messages);
+    const replaceFromChunkIndex = Math.max(0, cursorData.chunkCount - 1);
+    const messageCountUnchanged = cursorData.messageCount === session.messages.length;
 
     if (cursorData.messageCount > session.messages.length) {
       return null;
@@ -793,7 +803,7 @@ export class SessionReaderService implements OnModuleDestroy {
       chunks = cachedChunks;
     } else {
       const tBuild = performance.now();
-      chunks = buildChunks(session.messages);
+      chunks = await buildChunksCooperatively(session.messages);
       buildChunksMs = performance.now() - tBuild;
       this.sessionCacheService.setChunks(sessionId, sourceVersion, chunks);
     }

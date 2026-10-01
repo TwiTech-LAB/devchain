@@ -4,9 +4,15 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'node:path';
+import { ProjectFrozenError, ProjectRemoteError } from '../../common/errors/error-types';
 import { AllExceptionsFilter } from '../../common/filters/http-exception.filter';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { EventsService } from '../events/services/events.service';
+import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
+import {
+  createProjectWriteAdmissionStub,
+  type ProjectWriteAdmissionStub,
+} from '../remotes/admission/testing/project-write-admission.stub';
 import { AgentTimeBufferController } from './controllers/agent-time-buffer.controller';
 import { EpicTimeService } from './services/epic-time.service';
 import { EpicTimeStore } from './services/epic-time.store';
@@ -38,6 +44,7 @@ describe('Agent time buffer assignment API', () => {
   let app: NestFastifyApplication;
   let moduleRef: TestingModule;
   let events: { publish: jest.Mock };
+  let admission: ProjectWriteAdmissionStub;
   let targetStatusId: string;
   let foreignStatusId: string;
 
@@ -74,6 +81,7 @@ describe('Agent time buffer assignment API', () => {
     );
 
     events = { publish: jest.fn().mockResolvedValue(null) };
+    admission = createProjectWriteAdmissionStub();
     moduleRef = await Test.createTestingModule({
       controllers: [AgentTimeBufferController],
       providers: [
@@ -81,6 +89,7 @@ describe('Agent time buffer assignment API', () => {
         EpicTimeService,
         { provide: DB_CONNECTION, useValue: drizzle(sqlite) },
         { provide: EventsService, useValue: events },
+        { provide: ProjectWriteAdmissionService, useValue: admission },
       ],
     }).compile();
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
@@ -355,4 +364,55 @@ describe('Agent time buffer assignment API', () => {
     expect(staleToken.json()).toMatchObject({ code: 'conflict' });
     expect(events.publish).not.toHaveBeenCalled();
   });
+
+  // Buffers are mirrored segments: a remote-owned (home) or frozen (host)
+  // project refuses assign and reset with a valid snapshot, and keeps its rows.
+  it.each([
+    ['PROJECT_REMOTE', () => new ProjectRemoteError(PROJECT_ID, 'remote-1', 'vm-1')],
+    ['PROJECT_FROZEN', () => new ProjectFrozenError(PROJECT_ID)],
+  ] as const)(
+    'refuses assign and reset with 423 %s and keeps the segments',
+    async (code, error) => {
+      const read = await app.inject({
+        method: 'GET',
+        url: `/api/agent-time-buffers?projectId=${PROJECT_ID}`,
+      });
+      expect(read.statusCode).toBe(200);
+      const snapshot = read.json() as { capturedAt: string; items: BufferItem[] };
+      const item = snapshot.items.find((entry) => entry.agentId === AGENT_ID)!;
+      const before = segmentRows();
+      admission.assertWritable.mockImplementation(() => {
+        throw error();
+      });
+
+      const assigned = await app.inject({
+        method: 'POST',
+        url: `/api/agent-time-buffers/${AGENT_ID}/assign`,
+        payload: {
+          projectId: PROJECT_ID,
+          targetEpicId: TARGET_EPIC_ID,
+          capturedAt: snapshot.capturedAt,
+          snapshotToken: item.snapshotToken,
+        },
+      });
+      expect(assigned.statusCode).toBe(423);
+      expect(assigned.json()).toMatchObject({ code });
+
+      const reset = await app.inject({
+        method: 'POST',
+        url: `/api/agent-time-buffers/${AGENT_ID}/reset`,
+        payload: {
+          projectId: PROJECT_ID,
+          capturedAt: snapshot.capturedAt,
+          snapshotToken: item.snapshotToken,
+        },
+      });
+      expect(reset.statusCode).toBe(423);
+      expect(reset.json()).toMatchObject({ code });
+
+      expect(admission.assertWritable).toHaveBeenCalledWith(PROJECT_ID);
+      expect(segmentRows()).toEqual(before);
+      expect(events.publish).not.toHaveBeenCalled();
+    },
+  );
 });

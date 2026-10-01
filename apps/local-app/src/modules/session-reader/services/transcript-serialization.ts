@@ -1,3 +1,4 @@
+import { cooperativeBudget, cooperativeMap } from './cooperative-work';
 import type { UnifiedMessage } from '../dtos/unified-session.types';
 import type { UnifiedChunk, UnifiedSemanticStep, UnifiedTurn } from '../dtos/unified-chunk.types';
 
@@ -31,21 +32,38 @@ function serializeTurn(turn: UnifiedTurn): Record<string, unknown> {
   };
 }
 
-export function serializeChunk(chunk: UnifiedChunk): Record<string, unknown> {
+function aiSemanticSteps(chunk: UnifiedChunk): UnifiedSemanticStep[] | undefined {
+  return chunk.type === 'ai' && 'semanticSteps' in chunk ? chunk.semanticSteps : undefined;
+}
+
+/** The REST and push chunk shape; callers choose how the message and step lists are mapped. */
+function chunkWire(
+  chunk: UnifiedChunk,
+  messages: Record<string, unknown>[],
+  semanticSteps: Record<string, unknown>[] | undefined,
+): Record<string, unknown> {
   const base: Record<string, unknown> = {
     id: chunk.id,
     type: chunk.type,
     startTime: chunk.startTime.toISOString(),
     endTime: chunk.endTime.toISOString(),
-    messages: chunk.messages.map(serializeMessage),
+    messages,
     metrics: chunk.metrics,
   };
 
-  if (chunk.type === 'ai' && 'semanticSteps' in chunk) {
-    base.semanticSteps = chunk.semanticSteps.map(serializeSemanticStep);
+  if (semanticSteps) {
+    base.semanticSteps = semanticSteps;
   }
 
   return base;
+}
+
+export function serializeChunk(chunk: UnifiedChunk): Record<string, unknown> {
+  return chunkWire(
+    chunk,
+    chunk.messages.map(serializeMessage),
+    aiSemanticSteps(chunk)?.map(serializeSemanticStep),
+  );
 }
 
 /**
@@ -91,4 +109,20 @@ export function serializeRpcTranscriptTail(
     deltaChunks: response.deltaChunks.map(serializeRpcChunk),
     deltaMessages: response.deltaMessages.map(serializeMessage),
   };
+}
+
+export async function serializeChunksCooperatively(
+  chunks: UnifiedChunk[],
+): Promise<Record<string, unknown>[]> {
+  const checkpoint = cooperativeBudget();
+  const result: Record<string, unknown>[] = [];
+  for (const chunk of chunks) {
+    const messages = await cooperativeMap(chunk.messages, serializeMessage, checkpoint);
+    const steps = aiSemanticSteps(chunk);
+    const semanticSteps = steps && (await cooperativeMap(steps, serializeSemanticStep, checkpoint));
+    result.push(chunkWire(chunk, messages, semanticSteps));
+    const pause = checkpoint();
+    if (pause) await pause;
+  }
+  return result;
 }

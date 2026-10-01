@@ -166,7 +166,8 @@ describe('CommentReferenceItem', () => {
     it('applies pending styling when isPending is true', () => {
       render(<CommentReferenceItem {...defaultProps} isPending={true} />);
       const item = screen.getByTestId('comment-reference-item');
-      expect(item).toHaveClass('border-l-amber-500');
+      expect(item).toHaveClass('border-l-status-warn/40');
+      expect(screen.getByText('Open').parentElement).toHaveClass('bg-background');
     });
 
     it('shows "Pending" text indicator when isPending is true', () => {
@@ -184,13 +185,16 @@ describe('CommentReferenceItem', () => {
     it('applies selected styling when isSelected is true', () => {
       render(<CommentReferenceItem {...defaultProps} isSelected={true} />);
       const item = screen.getByTestId('comment-reference-item');
-      expect(item).toHaveClass('bg-accent');
+      expect(item).toHaveClass('bg-selected');
+      // The pointer-hover fill must not replace the selected fill.
+      expect(item).not.toHaveClass('hover:bg-accent');
     });
 
     it('does not apply selected styling when isSelected is false', () => {
       render(<CommentReferenceItem {...defaultProps} isSelected={false} />);
       const item = screen.getByTestId('comment-reference-item');
-      expect(item).not.toHaveClass('bg-accent');
+      expect(item).not.toHaveClass('bg-selected');
+      expect(item).toHaveClass('hover:bg-accent');
     });
   });
 
@@ -199,14 +203,14 @@ describe('CommentReferenceItem', () => {
       const comment = { ...baseComment, status: 'resolved' as const };
       render(<CommentReferenceItem {...defaultProps} comment={comment} />);
       const item = screen.getByTestId('comment-reference-item');
-      expect(item).toHaveClass('opacity-60');
+      expect(item).toHaveClass('text-muted-foreground');
     });
 
     it('applies muted styling for wont_fix comments', () => {
       const comment = { ...baseComment, status: 'wont_fix' as const };
       render(<CommentReferenceItem {...defaultProps} comment={comment} />);
       const item = screen.getByTestId('comment-reference-item');
-      expect(item).toHaveClass('opacity-60');
+      expect(item).toHaveClass('text-muted-foreground');
     });
 
     it('does not apply muted styling for open comments', () => {

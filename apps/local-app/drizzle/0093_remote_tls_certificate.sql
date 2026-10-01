@@ -1,0 +1,1 @@
+ALTER TABLE `remotes` ADD `tls_certificate` text;

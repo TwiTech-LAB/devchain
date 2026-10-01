@@ -13,6 +13,8 @@ import { STORAGE_SERVICE, type StorageService } from '../storage/interfaces/stor
 import { createMockAgent } from '../../../test/factories/agent';
 import { createMockProject } from '../../../test/factories/project';
 import { ProjectCommunicationService } from './project-communication.service';
+import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../remotes/admission/testing/project-write-admission.stub';
 
 const SOURCE_ID = '11111111-1111-4111-8111-111111111111';
 const TARGET_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -64,8 +66,6 @@ describe('ProjectCommunicationService', () => {
   });
 
   beforeEach(async () => {
-    process.env.DEVCHAIN_MODE = 'main';
-    process.env.CONTAINER_PROJECT_ID = SOURCE_ID;
     resetEnvConfig();
 
     storage = {
@@ -94,6 +94,7 @@ describe('ProjectCommunicationService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         ProjectCommunicationService,
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: AgentMessageDeliveryService, useValue: delivery },
@@ -105,8 +106,6 @@ describe('ProjectCommunicationService', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
-    delete process.env.CONTAINER_PROJECT_ID;
-    delete process.env.DEVCHAIN_MODE;
     resetEnvConfig();
   });
 
@@ -154,38 +153,6 @@ describe('ProjectCommunicationService', () => {
         },
       });
       expect(storage.listProjects).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('container scope', () => {
-    it('disables cross-project operations in a normal container-scoped runtime', async () => {
-      process.env.DEVCHAIN_MODE = 'normal';
-      resetEnvConfig();
-
-      const result = await service.sendToProject({
-        callerAgentId: caller.id,
-        recipientProjectId: TARGET_ID,
-        message: 'hello',
-      });
-
-      expect(result).toEqual({
-        error: {
-          code: 'CROSS_PROJECT_UNAVAILABLE',
-          message: 'Cross-project communication is unavailable in this runtime',
-        },
-      });
-      expect(storage.getProjectsByIdPrefix).not.toHaveBeenCalled();
-    });
-
-    it('intentionally ignores CONTAINER_PROJECT_ID in main mode', async () => {
-      const result = await service.sendToProject({
-        callerAgentId: caller.id,
-        recipientProjectId: TARGET_ID,
-        message: 'hello',
-      });
-
-      expect(result).toMatchObject({ result: { mode: 'project', deliveryStatus: 'queued' } });
-      expect(delivery.deliverAgentMessage).toHaveBeenCalledTimes(1);
     });
   });
 

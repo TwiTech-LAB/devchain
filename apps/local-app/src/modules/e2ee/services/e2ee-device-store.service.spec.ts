@@ -4,6 +4,11 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { E2eeDeviceStoreService, type E2eePeerDevice } from './e2ee-device-store.service';
+import {
+  readRevokedDeviceKids,
+  REVOKED_DEVICE_KIDS_KEY,
+  MAX_REVOKED_DEVICE_KIDS,
+} from './device-revocation-history';
 import { PAIRED_DEVICE_WORKSPACE_ACCESS_REVOKED_EVENT } from '../events/paired-device-workspace-access.events';
 
 // Test layer: module-unit with REAL :memory: SQLite. The directory is JSON-serialized
@@ -99,26 +104,50 @@ describe('E2eeDeviceStoreService', () => {
     });
   });
 
-  it('clears orphan grants on first adoption but preserves grants on repeated same-kid adoption', () => {
-    const kid = 'g'.repeat(32);
-    sqlite.prepare('INSERT INTO project_workspaces (id) VALUES (?)').run('w1');
-    const insertGrant = sqlite.prepare(
-      'INSERT INTO paired_device_workspace_grants (device_kid, workspace_id) VALUES (?, ?)',
-    );
-    insertGrant.run(kid, 'w1');
-
-    service.add(sample(kid));
-    expect(
-      sqlite.prepare('SELECT * FROM paired_device_workspace_grants WHERE device_kid = ?').all(kid),
-    ).toEqual([]);
-
-    insertGrant.run(kid, 'w1');
-    service.add(sample(kid));
-    expect(
+  it.each(['add', 'reconcile'] as const)(
+    'preserves pre-delivery grants on first %s and repeated adoption',
+    (method) => {
+      const kid = 'g'.repeat(32);
+      sqlite.prepare('INSERT INTO project_workspaces (id) VALUES (?)').run('w1');
       sqlite
-        .prepare('SELECT workspace_id FROM paired_device_workspace_grants WHERE device_kid = ?')
-        .all(kid),
-    ).toEqual([{ workspace_id: 'w1' }]);
+        .prepare(
+          'INSERT INTO paired_device_workspace_grants (device_kid, workspace_id) VALUES (?, ?)',
+        )
+        .run(kid, 'w1');
+      service[method](sample(kid));
+      service[method](sample(kid));
+      expect(
+        sqlite
+          .prepare('SELECT workspace_id FROM paired_device_workspace_grants WHERE device_kid = ?')
+          .all(kid),
+      ).toEqual([{ workspace_id: 'w1' }]);
+    },
+  );
+
+  it.each(['add', 'reconcile'] as const)(
+    'retains revoked authority and clears its tombstone on %s re-pair',
+    (method) => {
+      const kid = 'r'.repeat(32);
+      service.add(sample(kid));
+      service.revoke(kid);
+      expect(readRevokedDeviceKids(sqlite)).toEqual([kid]);
+      sqlite
+        .prepare('INSERT INTO paired_device_workspace_grants VALUES (?, ?)')
+        .run(kid, 'workspace');
+      service[method](sample(kid));
+      expect(readRevokedDeviceKids(sqlite)).toEqual([]);
+      expect(sqlite.prepare('SELECT * FROM paired_device_workspace_grants').all()).toEqual([]);
+    },
+  );
+
+  it('bounds retained revocations by dropping the oldest kid', () => {
+    const old = Array.from({ length: MAX_REVOKED_DEVICE_KIDS }, (_, i) => `old-${i}`);
+    sqlite
+      .prepare('INSERT INTO settings VALUES (?, ?, ?, ?, ?)')
+      .run('history', REVOKED_DEVICE_KIDS_KEY, JSON.stringify(old), 'now', 'now');
+    service.add(sample('new'));
+    service.revoke('new');
+    expect(readRevokedDeviceKids(sqlite)).toEqual([...old.slice(1), 'new']);
   });
 
   it('deletes grants on revoke and never transfers them through installId supersession', () => {

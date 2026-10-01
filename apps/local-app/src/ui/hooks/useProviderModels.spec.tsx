@@ -115,6 +115,23 @@ describe('useProviderModels', () => {
     await Promise.resolve();
     expect(onStale).not.toHaveBeenCalled();
   });
+
+  it('keeps a selection whose catalog row differs only in case', async () => {
+    mockFetch({ '/api/providers/p1/models': [{ name: 'SONNET-4' }] });
+    const onStale = jest.fn();
+    const { result } = renderHook(
+      () =>
+        useProviderModels({
+          providerId: 'p1',
+          modelOverride: 'sonnet-4',
+          onStaleSelection: onStale,
+        }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
+    await Promise.resolve();
+    expect(onStale).not.toHaveBeenCalled();
+  });
 });
 
 describe('useProviderEfforts (gating matrix + stale-clear)', () => {
@@ -185,5 +202,24 @@ describe('useProviderEfforts (gating matrix + stale-clear)', () => {
       { wrapper: makeWrapper() },
     );
     await waitFor(() => expect(onStale).toHaveBeenCalledWith(null));
+  });
+
+  it('keeps an effort selection whose catalog row differs only in case', async () => {
+    mockFetch({
+      '/api/providers/p1/efforts': { efforts: [{ name: 'high' }], supportsEffort: true },
+    });
+    const onStale = jest.fn();
+    const { result } = renderHook(
+      () =>
+        useProviderEfforts({
+          providerId: 'p1',
+          effortOverride: 'High',
+          onStaleSelection: onStale,
+        }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.efforts).toHaveLength(1));
+    await Promise.resolve();
+    expect(onStale).not.toHaveBeenCalled();
   });
 });

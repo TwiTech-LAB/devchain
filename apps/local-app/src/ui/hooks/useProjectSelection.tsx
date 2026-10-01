@@ -9,8 +9,8 @@ import {
   useState,
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
-import { useOptionalWorktreeTab } from './useWorktreeTab';
 
 const PROJECT_STORAGE_KEY = 'devchain:selectedProjectId';
 const WORKSPACE_STORAGE_KEY = 'devchain:selectedWorkspaceId';
@@ -72,7 +72,6 @@ interface ProjectSelectionContextValue {
   selectedWorkspaceId?: string;
   selectedWorkspace?: ProjectWorkspace;
   setSelectedWorkspaceId: (workspaceId: string) => void;
-  isWorkspaceSelectionLocked: boolean;
   projects: ProjectWithStats[];
   projectsLoading: boolean;
   projectsError: boolean;
@@ -91,7 +90,7 @@ const STATS_TIMEOUT_MS = 5000;
 async function fetchWorkspaces({ signal }: { signal?: AbortSignal } = {}): Promise<
   ProjectWorkspace[]
 > {
-  const response = await fetch('/api/workspaces', { signal });
+  const response = await apiFetch('/api/workspaces', { signal }, { backend: HOME_BACKEND });
   if (!response.ok) throw new Error('Failed to fetch workspaces');
   return response.json();
 }
@@ -103,7 +102,7 @@ async function fetchProjects({
   const projectsUrl = workspaceId
     ? `/api/projects?workspaceId=${encodeURIComponent(workspaceId)}`
     : '/api/projects';
-  const res = await fetch(projectsUrl, { signal });
+  const res = await apiFetch(projectsUrl, { signal }, { backend: HOME_BACKEND });
   if (!res.ok) throw new Error('Failed to fetch projects');
   const data = (await res.json()) as ProjectsResponse;
 
@@ -118,9 +117,13 @@ async function fetchProjects({
           signal && timeoutSignal && typeof AbortSignal.any === 'function'
             ? AbortSignal.any([signal, timeoutSignal])
             : (signal ?? timeoutSignal);
-        const statsRes = await fetch(`/api/projects/${project.id}/stats`, {
-          signal: statsSignal,
-        });
+        const statsRes = await apiFetch(
+          `/api/projects/${project.id}/stats`,
+          {
+            signal: statsSignal,
+          },
+          { backend: HOME_BACKEND },
+        );
         if (statsRes.ok) {
           const stats = (await statsRes.json()) as ProjectStats;
           return { ...project, stats };
@@ -145,7 +148,7 @@ async function fetchProjectDetail(
   ].filter((url): url is string => Boolean(url));
 
   for (const url of urls) {
-    const response = await fetch(url, { signal });
+    const response = await apiFetch(url, { signal }, { backend: HOME_BACKEND });
     if (response.ok) return response.json();
     if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
   }
@@ -236,12 +239,6 @@ function readUrlProjectSelector(): { id?: string; path?: string } | null {
 
 export function ProjectSelectionProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const { activeWorktree, runtimeResolved = true } = useOptionalWorktreeTab();
-  const isWorkspaceSelectionLocked = Boolean(activeWorktree);
-  const lockedProjectId =
-    activeWorktree?.devchainProjectId && activeWorktree.devchainProjectId.trim().length > 0
-      ? activeWorktree.devchainProjectId
-      : undefined;
   const [selectedWorkspaceId, setSelectedWorkspaceIdState] = useState<string | undefined>(
     () => readSelectedWorkspaceId() ?? undefined,
   );
@@ -250,8 +247,6 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
   const legacySelectedProjectIdRef = useRef(readSelectedProjectId());
   const urlSelectorRef = useRef(readUrlProjectSelector());
   const [urlSelectionApplied, setUrlSelectionApplied] = useState(!urlSelectorRef.current);
-  const wasLockedRef = useRef(false);
-  const lockedProjectsDataRef = useRef<ProjectsResponse | undefined>(undefined);
   const pendingActivationRef = useRef<PendingProjectActivation | null>(null);
   const [projectActivation, setProjectActivation] = useState<ProjectActivationState | null>(null);
 
@@ -270,24 +265,16 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
     queryFn: ({ signal }) => fetchWorkspaces({ signal }),
-    enabled: runtimeResolved,
-  });
-
-  const lockedProjectQuery = useQuery({
-    queryKey: projectsQueryKeys.detail({ id: lockedProjectId }),
-    queryFn: ({ signal }) => fetchProjectDetail({ id: lockedProjectId }, signal),
-    enabled: runtimeResolved && Boolean(lockedProjectId),
   });
 
   const urlProjectQuery = useQuery({
     queryKey: projectsQueryKeys.detail(urlSelectorRef.current ?? {}),
     queryFn: ({ signal }) => fetchProjectDetail(urlSelectorRef.current ?? {}, signal),
-    enabled: runtimeResolved && !isWorkspaceSelectionLocked && Boolean(urlSelectorRef.current),
+    enabled: Boolean(urlSelectorRef.current),
     retry: false,
   });
 
   useEffect(() => {
-    if (isWorkspaceSelectionLocked) return;
     const workspaces = workspacesQuery.data;
     if (!workspaces) return;
 
@@ -323,7 +310,6 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
     setSelectedWorkspaceIdState(defaultWorkspace.id);
     persistSelectedWorkspace(defaultWorkspace.id);
   }, [
-    isWorkspaceSelectionLocked,
     selectedWorkspaceId,
     urlSelectionApplied,
     urlProjectQuery.data,
@@ -331,17 +317,12 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
     workspacesQuery.data,
   ]);
 
-  const lockedProject = lockedProjectQuery.data;
-  const effectiveSelectedWorkspaceId = runtimeResolved
-    ? isWorkspaceSelectionLocked
-      ? lockedProject?.workspaceId
-      : selectedWorkspaceId
-    : undefined;
+  const effectiveSelectedWorkspaceId = selectedWorkspaceId;
 
   const projectsQuery = useQuery({
     queryKey: projectsQueryKeys.available(effectiveSelectedWorkspaceId),
     queryFn: ({ signal }) => fetchProjects({ signal, workspaceId: effectiveSelectedWorkspaceId }),
-    enabled: runtimeResolved && Boolean(effectiveSelectedWorkspaceId),
+    enabled: Boolean(effectiveSelectedWorkspaceId),
   });
 
   const storedSelectedProjectId = effectiveSelectedWorkspaceId
@@ -354,19 +335,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
   const unlockedSelectedProjectId = storedSelectedProjectId ?? legacySelectedProjectId;
 
   useEffect(() => {
-    if (isWorkspaceSelectionLocked) {
-      wasLockedRef.current = true;
-      if (projectsQuery.data) lockedProjectsDataRef.current = projectsQuery.data;
-      return;
-    }
-
     if (!urlSelectionApplied) return;
-
-    if (wasLockedRef.current) {
-      if (!projectsQuery.data || lockedProjectsDataRef.current === projectsQuery.data) return;
-      wasLockedRef.current = false;
-      lockedProjectsDataRef.current = undefined;
-    }
 
     const workspaceId = effectiveSelectedWorkspaceId;
     const projectsData = projectsQuery.data;
@@ -424,7 +393,6 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
     legacySelectedProjectIdRef.current = nextProjectId ?? null;
   }, [
     effectiveSelectedWorkspaceId,
-    isWorkspaceSelectionLocked,
     projectsQuery.data,
     projectsQuery.isFetching,
     queryClient,
@@ -436,18 +404,17 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
 
   const setSelectedWorkspaceId = useCallback(
     (workspaceId: string) => {
-      if (isWorkspaceSelectionLocked) return;
       if (!workspacesQuery.data?.some((workspace) => workspace.id === workspaceId)) return;
       pendingActivationRef.current = null;
       setSelectedWorkspaceIdState(workspaceId);
       persistSelectedWorkspace(workspaceId);
     },
-    [isWorkspaceSelectionLocked, workspacesQuery.data],
+    [workspacesQuery.data],
   );
 
   const setSelectedProjectId = useCallback(
     (projectId?: string) => {
-      if (isWorkspaceSelectionLocked || !effectiveSelectedWorkspaceId) return;
+      if (!effectiveSelectedWorkspaceId) return;
       pendingActivationRef.current = null;
       setSelectedProjectsByWorkspace((current) => ({
         ...current,
@@ -456,12 +423,11 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       persistSelectedProject(effectiveSelectedWorkspaceId, projectId);
       legacySelectedProjectIdRef.current = projectId ?? null;
     },
-    [effectiveSelectedWorkspaceId, isWorkspaceSelectionLocked],
+    [effectiveSelectedWorkspaceId],
   );
 
   const activateProject = useCallback(
     (project: Pick<Project, 'id' | 'workspaceId'>): void => {
-      if (isWorkspaceSelectionLocked) return;
       if (!workspacesQuery.data?.some((workspace) => workspace.id === project.workspaceId)) {
         return;
       }
@@ -507,29 +473,20 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
         })
         .catch(() => settleActivation('failed'));
     },
-    [isWorkspaceSelectionLocked, queryClient, workspacesQuery.data],
+    [queryClient, workspacesQuery.data],
   );
 
-  const effectiveSelectedProjectId = runtimeResolved
-    ? (lockedProjectId ?? unlockedSelectedProjectId)
-    : undefined;
+  const effectiveSelectedProjectId = unlockedSelectedProjectId;
 
   const selectedProject = useMemo(() => {
-    if (!runtimeResolved || !effectiveSelectedProjectId) return undefined;
+    if (!effectiveSelectedProjectId) return undefined;
     const availableProject = projectsQuery.data?.items.find(
       (project) => project.id === effectiveSelectedProjectId,
     );
     if (availableProject) return availableProject;
-    if (lockedProject?.id === effectiveSelectedProjectId) return lockedProject;
     if (urlProjectQuery.data?.id === effectiveSelectedProjectId) return urlProjectQuery.data;
     return undefined;
-  }, [
-    effectiveSelectedProjectId,
-    lockedProject,
-    projectsQuery.data,
-    runtimeResolved,
-    urlProjectQuery.data,
-  ]);
+  }, [effectiveSelectedProjectId, projectsQuery.data, urlProjectQuery.data]);
 
   const selectedWorkspace = useMemo(
     () => workspacesQuery.data?.find((workspace) => workspace.id === effectiveSelectedWorkspaceId),
@@ -540,10 +497,7 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
     await projectsQuery.refetch();
   }, [projectsQuery]);
 
-  const workspacesLoading =
-    !runtimeResolved ||
-    workspacesQuery.isLoading ||
-    (isWorkspaceSelectionLocked && lockedProjectQuery.isLoading);
+  const workspacesLoading = workspacesQuery.isLoading;
   const projectsLoading =
     workspacesLoading ||
     !effectiveSelectedWorkspaceId ||
@@ -558,7 +512,6 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       selectedWorkspaceId: effectiveSelectedWorkspaceId,
       selectedWorkspace,
       setSelectedWorkspaceId,
-      isWorkspaceSelectionLocked,
       projects: projectsQuery.data?.items ?? [],
       projectsLoading,
       projectsError: projectsQuery.isError,
@@ -573,7 +526,6 @@ export function ProjectSelectionProvider({ children }: { children: ReactNode }) 
       activateProject,
       effectiveSelectedProjectId,
       effectiveSelectedWorkspaceId,
-      isWorkspaceSelectionLocked,
       projectsLoading,
       projectsQuery.data,
       projectsQuery.isError,

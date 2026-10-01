@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, useNavigate } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 import { TerminalWindowsProvider } from '@/ui/terminal-windows';
 
 // Polyfill DOMRect for floating-ui positioning used by the context menu
@@ -64,9 +64,7 @@ if (!(global as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObs
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ChatPage = require('./ChatPage').ChatPage as React.ComponentType;
 const toastSpy = jest.fn();
-const setActiveWorktreeMock = jest.fn();
 const openTerminalWindowMock = jest.fn();
-const openWorktreeTerminalWindowMock = jest.fn();
 const closeWindowMock = jest.fn();
 const terminalWindowsMock: Array<{ id: string; minimized?: boolean }> = [];
 const appSocketEmitMock = jest.fn();
@@ -75,12 +73,6 @@ const mockAppSocket = {
   on: jest.fn(),
   off: jest.fn(),
   emit: appSocketEmitMock,
-};
-const mockWorktreeSocket = {
-  connected: true,
-  on: jest.fn(),
-  off: jest.fn(),
-  emit: jest.fn(),
 };
 const mockInlineTerminalHandle = {
   clear: jest.fn(),
@@ -166,7 +158,6 @@ jest.mock('@/ui/components/chat/InlineTerminalPanel', () => ({
 // Terminal windows hooks rely on provider; mock to avoid provider wiring
 jest.mock('@/ui/terminal-windows', () => ({
   useTerminalWindowManager: () => openTerminalWindowMock,
-  useWorktreeTerminalWindowManager: () => openWorktreeTerminalWindowMock,
   useTerminalWindows: () => ({
     windows: terminalWindowsMock,
     closeWindow: closeWindowMock,
@@ -193,26 +184,13 @@ jest.mock('@/ui/hooks/useProjectSelection', () => ({
     projects: [],
   }),
 }));
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => ({
-    activeWorktree: null,
-    setActiveWorktree: setActiveWorktreeMock,
-    apiBase: '',
-    worktrees: [],
-    worktreesLoading: false,
-    runtimeResolved: true,
-  }),
-}));
-
 // Socket mock — must return a Socket-like object with `connected` property
 jest.mock('@/ui/hooks/useAppSocket', () => ({
   useAppSocket: jest.fn(() => mockAppSocket),
 }));
 jest.mock('@/ui/lib/socket', () => ({
   getAppSocket: jest.fn(() => mockAppSocket),
-  getWorktreeSocket: jest.fn(() => mockWorktreeSocket),
   releaseAppSocket: jest.fn(),
-  releaseWorktreeSocket: jest.fn(),
 }));
 
 function renderWithClient(ui: React.ReactNode, initialEntries: string[] = ['/chat']) {
@@ -225,11 +203,6 @@ function renderWithClient(ui: React.ReactNode, initialEntries: string[] = ['/cha
     </MemoryRouter>,
   );
   return { ...utils, queryClient };
-}
-
-function BrowserBackButton() {
-  const navigate = useNavigate();
-  return <button onClick={() => navigate(-1)}>Browser back</button>;
 }
 
 beforeEach(() => {
@@ -499,9 +472,7 @@ describe('ChatPage agent context menu', () => {
 
   beforeEach(() => {
     toastSpy.mockReset();
-    setActiveWorktreeMock.mockReset();
     openTerminalWindowMock.mockReset();
-    openWorktreeTerminalWindowMock.mockReset();
     closeWindowMock.mockReset();
     terminalWindowsMock.splice(0, terminalWindowsMock.length);
     global.fetch = jest.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
@@ -754,693 +725,6 @@ describe('ChatPage agent selection transport invariant', () => {
   });
 });
 
-describe('ChatPage worktree agent groups', () => {
-  const originalFetch = global.fetch;
-
-  beforeEach(() => {
-    toastSpy.mockReset();
-    setActiveWorktreeMock.mockReset();
-    openTerminalWindowMock.mockReset();
-    openWorktreeTerminalWindowMock.mockReset();
-    closeWindowMock.mockReset();
-    terminalWindowsMock.splice(0, terminalWindowsMock.length);
-  });
-
-  afterEach(() => {
-    if (originalFetch) {
-      global.fetch = originalFetch;
-    }
-  });
-
-  it('handles worktree -> main -> worktree round-trip with pooled socket lifecycle', async () => {
-    let resolveStalePromptDetail: ((response: Response) => void) | null = null;
-    const stalePromptDetail = new Promise<Response>((resolve) => {
-      resolveStalePromptDetail = resolve;
-    });
-    let promptDetailRequestCount = 0;
-    mockInlineTerminalHandle.insertPromptText.mockClear();
-    mockInlineTerminalHandle.focus.mockClear();
-
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-
-      if (url === '/api/runtime') {
-        return {
-          ok: true,
-          json: async () => ({ mode: 'main', version: '1.0.0' }),
-        } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: 'wt-1',
-              name: 'feature-auth',
-              branchName: 'feature/auth',
-              status: 'running',
-              runtimeType: 'process',
-              containerPort: 4310,
-              devchainProjectId: 'project-wt-1',
-            },
-          ],
-        } as Response;
-      }
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              { id: 'agent-main-1', name: 'Main Agent', projectId: 'project-1', profileId: 'p1' },
-            ],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({ 'agent-main-1': { online: false, sessionId: null } }),
-        } as Response;
-      }
-      if (url.startsWith('/api/chat/threads?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              {
-                id: 'thread-main',
-                projectId: 'project-1',
-                title: null,
-                isGroup: false,
-                createdByType: 'user',
-                createdByUserId: 'user-1',
-                createdByAgentId: null,
-                members: ['agent-main-1'],
-                createdAt: '2024-01-01T00:00:00.000Z',
-                updatedAt: '2024-01-01T00:00:00.000Z',
-              },
-            ],
-            total: 1,
-            limit: 50,
-            offset: 0,
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'agent-wt-1', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
-        return {
-          ok: true,
-          json: async () => ({ 'agent-wt-1': { online: true, sessionId: 'session-wt-1' } }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/prompts?projectId=project-wt-1&limit=10000&offset=0') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              {
-                id: 'prompt-wt-1',
-                projectId: 'project-wt-1',
-                title: 'Worktree custom prompt',
-                tags: ['type:custom'],
-              },
-            ],
-            total: 1,
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/prompts/prompt-wt-1') {
-        promptDetailRequestCount += 1;
-        if (promptDetailRequestCount === 1) {
-          return stalePromptDetail;
-        }
-        return {
-          ok: true,
-          json: async () => ({
-            id: 'prompt-wt-1',
-            projectId: 'project-wt-1',
-            title: 'Worktree custom prompt',
-            content: 'current target text',
-            tags: ['type:custom'],
-          }),
-        } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      if (url.startsWith('/api/preflight')) {
-        return {
-          ok: true,
-          json: async () => ({
-            overall: 'pass',
-            checks: [],
-            providers: [],
-            supportedMcpProviders: [],
-            timestamp: new Date().toISOString(),
-          }),
-        } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    const mainAgentButton = await screen.findByLabelText(
-      /Open terminal for Main Agent \(offline\)/i,
-    );
-    fireEvent.click(mainAgentButton);
-    await waitFor(() => {
-      expect(mainAgentButton).toHaveAttribute('aria-current', 'true');
-    });
-
-    const worktreeAgentButton = await screen.findByLabelText(
-      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
-    );
-    expect(screen.getByLabelText('Process')).toBeInTheDocument();
-    fireEvent.click(worktreeAgentButton);
-
-    await waitFor(() => {
-      expect(mainAgentButton).not.toHaveAttribute('aria-current');
-      expect(worktreeAgentButton).toHaveAttribute('aria-current', 'true');
-    });
-    await waitFor(() => {
-      expect(
-        screen.getByRole('region', { name: /Inline terminal for Worktree Agent/i }),
-      ).toBeInTheDocument();
-    });
-    fireEvent.click(await screen.findByRole('button', { name: /Open custom prompts/i }));
-    expect(
-      await screen.findByRole('dialog', { name: /Insert custom prompt/i }),
-    ).toBeInTheDocument();
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        '/wt/feature-auth/api/prompts?projectId=project-wt-1&limit=10000&offset=0',
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      );
-    });
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Worktree custom prompt Prompt ID prompt-wt-1/i,
-      }),
-    );
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        '/wt/feature-auth/api/prompts/prompt-wt-1',
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      );
-    });
-
-    fireEvent.click(mainAgentButton);
-    await waitFor(() => {
-      expect(mainAgentButton).toHaveAttribute('aria-current', 'true');
-      expect(worktreeAgentButton).not.toHaveAttribute('aria-current');
-      expect(
-        screen.queryByRole('dialog', { name: /Insert custom prompt/i }),
-      ).not.toBeInTheDocument();
-    });
-    const staleDetailCall = (global.fetch as jest.Mock).mock.calls.find(
-      ([url]) => String(url) === '/wt/feature-auth/api/prompts/prompt-wt-1',
-    );
-    expect((staleDetailCall?.[1] as RequestInit | undefined)?.signal).toHaveProperty(
-      'aborted',
-      true,
-    );
-    await act(async () => {
-      resolveStalePromptDetail?.({
-        ok: true,
-        json: async () => ({
-          id: 'prompt-wt-1',
-          projectId: 'project-wt-1',
-          title: 'Worktree custom prompt',
-          content: 'stale target text',
-          tags: ['type:custom'],
-        }),
-      } as Response);
-      await stalePromptDetail;
-      await Promise.resolve();
-    });
-    expect(mockInlineTerminalHandle.insertPromptText).not.toHaveBeenCalled();
-    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
-
-    const socketLib = jest.requireMock('@/ui/lib/socket') as {
-      getWorktreeSocket: jest.Mock;
-      releaseWorktreeSocket: jest.Mock;
-    };
-    expect(socketLib.releaseWorktreeSocket).toHaveBeenCalledWith('feature-auth');
-
-    fireEvent.click(worktreeAgentButton);
-    await waitFor(() => {
-      expect(mainAgentButton).not.toHaveAttribute('aria-current');
-      expect(worktreeAgentButton).toHaveAttribute('aria-current', 'true');
-    });
-    fireEvent.click(await screen.findByRole('button', { name: /Open custom prompts/i }));
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: /Worktree custom prompt Prompt ID prompt-wt-1/i,
-      }),
-    );
-    await waitFor(() => {
-      expect(mockInlineTerminalHandle.insertPromptText).toHaveBeenCalledTimes(1);
-      expect(mockInlineTerminalHandle.insertPromptText).toHaveBeenCalledWith('current target text');
-      expect(mockInlineTerminalHandle.focus).toHaveBeenCalledTimes(1);
-      expect(
-        screen.queryByRole('dialog', { name: /Insert custom prompt/i }),
-      ).not.toBeInTheDocument();
-    });
-    expect(socketLib.getWorktreeSocket).toHaveBeenCalledWith('feature-auth');
-    expect(socketLib.getWorktreeSocket.mock.calls.length).toBeGreaterThanOrEqual(2);
-
-    expect(screen.queryByText(/Loading projects/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Launch session/i })).not.toBeInTheDocument();
-    const openWindowButton = screen.getByRole('button', { name: /Open terminal in window/i });
-    fireEvent.click(openWindowButton);
-    expect(openWorktreeTerminalWindowMock).toHaveBeenCalledWith({
-      sessionId: 'session-wt-1',
-      agentName: 'Worktree Agent',
-      worktreeName: 'feature-auth',
-    });
-
-    expect(setActiveWorktreeMock).not.toHaveBeenCalled();
-    const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-    expect(urls.some((url) => url.includes('/chat/threads/direct'))).toBe(false);
-  });
-
-  it('lets a browser-history agent selection replace the worktree terminal override', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-
-      if (url === '/api/runtime') {
-        return {
-          ok: true,
-          json: async () => ({ mode: 'main', version: '1.0.0' }),
-        } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: 'wt-1',
-              name: 'feature-auth',
-              branchName: 'feature/auth',
-              status: 'running',
-              containerPort: 4310,
-              devchainProjectId: 'project-wt-1',
-            },
-          ],
-        } as Response;
-      }
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              { id: 'agent-main-1', name: 'Main One', projectId: 'project-1', profileId: 'p1' },
-              { id: 'agent-main-2', name: 'Main Two', projectId: 'project-1', profileId: 'p1' },
-            ],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({
-            'agent-main-1': { online: false, sessionId: null },
-            'agent-main-2': { online: false, sessionId: null },
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'agent-wt-1', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
-        return {
-          ok: true,
-          json: async () => ({ 'agent-wt-1': { online: true, sessionId: 'session-wt-1' } }),
-        } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    // Component integration is the narrowest layer that covers router history,
-    // ChatPage's local worktree override, and the terminal selected for rendering.
-    renderWithClient(
-      <>
-        <ChatPage />
-        <BrowserBackButton />
-      </>,
-      ['/chat?agent=agent-main-2', '/chat?agent=agent-main-1'],
-    );
-
-    const mainOneButton = await screen.findByLabelText(/Open terminal for Main One \(offline\)/i);
-    await waitFor(() => expect(mainOneButton).toHaveAttribute('aria-current', 'true'));
-
-    const worktreeAgentButton = await screen.findByLabelText(
-      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
-    );
-    fireEvent.click(worktreeAgentButton);
-
-    expect(
-      await screen.findByRole('region', { name: /Inline terminal for Worktree Agent/i }),
-    ).toBeInTheDocument();
-    expect(worktreeAgentButton).toHaveAttribute('aria-current', 'true');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Browser back' }));
-
-    const mainTwoButton = await screen.findByLabelText(/Open terminal for Main Two \(offline\)/i);
-    await waitFor(() => {
-      expect(mainTwoButton).toHaveAttribute('aria-current', 'true');
-      expect(
-        screen.queryByRole('region', { name: /Inline terminal for Worktree Agent/i }),
-      ).not.toBeInTheDocument();
-    });
-  });
-
-  it('detects window-open state via worktree window id scheme', async () => {
-    terminalWindowsMock.push({ id: 'worktree:feature-auth:session-wt-1', minimized: false });
-
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-
-      if (url === '/api/runtime') {
-        return {
-          ok: true,
-          json: async () => ({ mode: 'main', version: '1.0.0' }),
-        } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: 'wt-1',
-              name: 'feature-auth',
-              branchName: 'feature/auth',
-              status: 'running',
-              containerPort: 4310,
-              devchainProjectId: 'project-wt-1',
-            },
-          ],
-        } as Response;
-      }
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              { id: 'agent-main-1', name: 'Main Agent', projectId: 'project-1', profileId: 'p1' },
-            ],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({ 'agent-main-1': { online: false, sessionId: null } }),
-        } as Response;
-      }
-      if (url.startsWith('/api/chat/threads?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'agent-wt-1', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
-        return {
-          ok: true,
-          json: async () => ({ 'agent-wt-1': { online: true, sessionId: 'session-wt-1' } }),
-        } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    const worktreeAgentButton = await screen.findByLabelText(
-      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
-    );
-    fireEvent.click(worktreeAgentButton);
-
-    const inlineTerminalRegion = await screen.findByRole('region', {
-      name: /Inline terminal for Worktree Agent/i,
-    });
-    expect(inlineTerminalRegion).toHaveAttribute('data-window-open', 'true');
-    expect(inlineTerminalRegion).toHaveAttribute(
-      'data-window-id',
-      'worktree:feature-auth:session-wt-1',
-    );
-  });
-
-  it('shows launch/restart worktree context menu items for offline agent and launches via proxy', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-
-      if (url === '/api/runtime') {
-        return {
-          ok: true,
-          json: async () => ({ mode: 'main', version: '1.0.0' }),
-        } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: 'wt-1',
-              name: 'feature-auth',
-              branchName: 'feature/auth',
-              status: 'running',
-              containerPort: 4310,
-              devchainProjectId: 'project-wt-1',
-            },
-          ],
-        } as Response;
-      }
-      if (url.startsWith('/api/agents?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return { ok: true, json: async () => ({}) } as Response;
-      }
-      if (url.startsWith('/api/chat/threads?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'agent-wt-1', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
-        return {
-          ok: true,
-          json: async () => ({ 'agent-wt-1': { online: false, sessionId: null } }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/launch' && init?.method === 'POST') {
-        return {
-          ok: true,
-          json: async () => ({
-            id: 'session-wt-1',
-            agentId: 'agent-wt-1',
-            status: 'running',
-            epicId: null,
-            tmuxSessionId: 'tmux-wt-1',
-            startedAt: '2024-01-01T00:00:00.000Z',
-            endedAt: null,
-            createdAt: '2024-01-01T00:00:00.000Z',
-            updatedAt: '2024-01-01T00:00:00.000Z',
-          }),
-        } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    const worktreeAgentButton = await screen.findByLabelText(
-      /Open terminal for Worktree Agent in feature-auth \(offline\)/i,
-    );
-    fireEvent.contextMenu(worktreeAgentButton);
-
-    await waitFor(() => {
-      expect(screen.getByText(/Restart session/i)).toBeInTheDocument();
-      expect(screen.getByText(/Launch session/i)).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/Terminate session/i)).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByText(/Launch session/i));
-    await waitFor(() => {
-      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-      expect(urls).toContain('/wt/feature-auth/api/sessions/launch');
-    });
-  });
-
-  it('keeps offline worktree agents clickable and launches via worktree apiBase', async () => {
-    let worktreePresenceRequestCount = 0;
-
-    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-
-      if (url === '/api/runtime') {
-        return {
-          ok: true,
-          json: async () => ({ mode: 'main', version: '1.0.0' }),
-        } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: 'wt-1',
-              name: 'feature-auth',
-              branchName: 'feature/auth',
-              status: 'running',
-              containerPort: 4310,
-              devchainProjectId: 'project-wt-1',
-            },
-          ],
-        } as Response;
-      }
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              { id: 'agent-main-1', name: 'Main Agent', projectId: 'project-1', profileId: 'p1' },
-            ],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({ 'agent-main-1': { online: true, sessionId: 'session-main-1' } }),
-        } as Response;
-      }
-      if (url.startsWith('/api/chat/threads?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'agent-wt-1', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
-        worktreePresenceRequestCount += 1;
-        return {
-          ok: true,
-          json: async () => ({
-            'agent-wt-1':
-              worktreePresenceRequestCount > 1
-                ? { online: true, sessionId: 'session-wt-1' }
-                : { online: false, sessionId: null },
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/launch' && init?.method === 'POST') {
-        return {
-          ok: true,
-          json: async () => ({
-            id: 'session-wt-1',
-            agentId: 'agent-wt-1',
-            status: 'running',
-            epicId: null,
-            tmuxSessionId: 'tmux-wt-1',
-            startedAt: '2024-01-01T00:00:00.000Z',
-            endedAt: null,
-            createdAt: '2024-01-01T00:00:00.000Z',
-            updatedAt: '2024-01-01T00:00:00.000Z',
-          }),
-        } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    const worktreeAgentButton = await screen.findByLabelText(
-      /Open terminal for Worktree Agent in feature-auth \(offline\)/i,
-    );
-    expect(worktreeAgentButton).not.toBeDisabled();
-
-    fireEvent.click(worktreeAgentButton);
-    const launchButton = await screen.findByRole('button', { name: /Launch session/i });
-    fireEvent.click(launchButton);
-
-    await waitFor(() => {
-      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-      expect(urls).toContain('/wt/feature-auth/api/sessions/launch');
-    });
-    await waitFor(() => {
-      expect(worktreePresenceRequestCount).toBeGreaterThan(1);
-    });
-    await waitFor(() => {
-      expect(
-        screen.getByRole('region', { name: /Inline terminal for Worktree Agent/i }),
-      ).toBeInTheDocument();
-    });
-    expect(screen.queryByRole('button', { name: /Launch session/i })).not.toBeInTheDocument();
-    expect(openWorktreeTerminalWindowMock).not.toHaveBeenCalled();
-  });
-});
-
 describe('ChatPage custom prompt Escape handling', () => {
   const originalFetch = global.fetch;
 
@@ -1455,9 +739,6 @@ describe('ChatPage custom prompt Escape handling', () => {
           ok: true,
           json: async () => ({ mode: 'main', version: '1.0.0' }),
         } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return { ok: true, json: async () => [] } as Response;
       }
       if (url.startsWith('/api/agents?projectId=')) {
         return {
@@ -1581,9 +862,7 @@ describe('ChatPage agent Overrides dialog', () => {
 
   beforeEach(() => {
     toastSpy.mockReset();
-    setActiveWorktreeMock.mockReset();
     openTerminalWindowMock.mockReset();
-    openWorktreeTerminalWindowMock.mockReset();
     closeWindowMock.mockReset();
     terminalWindowsMock.splice(0, terminalWindowsMock.length);
   });
@@ -1594,19 +873,13 @@ describe('ChatPage agent Overrides dialog', () => {
     }
   });
 
-  /** Standard fetch mock for the Overrides dialog tests (main + worktree proxy). */
+  /** Standard fetch mock for the Overrides dialog tests. */
   function setupFetch(overrides?: {
     mainAgents?: Array<Record<string, unknown>>;
     mainPresence?: Record<string, unknown>;
-    worktreeAgents?: Array<Record<string, unknown>>;
-    worktreePresence?: Record<string, unknown>;
     mainProviderConfigs?: Array<Record<string, unknown>>;
-    worktreeProviderConfigs?: Array<Record<string, unknown>>;
     mainProviderModels?: Record<string, Array<Record<string, unknown>>>;
-    worktreeProviderModels?: Record<string, Array<Record<string, unknown>>>;
     mainProviderEfforts?: Record<string, unknown>;
-    worktreeProviderEfforts?: Record<string, unknown>;
-    worktreeProjectId?: string | null;
   }) {
     const {
       mainAgents = [
@@ -1627,46 +900,14 @@ describe('ChatPage agent Overrides dialog', () => {
         },
       ],
       mainPresence = { 'agent-1': { online: true, sessionId: 'session-main-1' } },
-      worktreeAgents = [
-        {
-          id: 'agent-wt-1',
-          name: 'Worktree Agent',
-          profileId: 'p1',
-          type: 'agent',
-          providerConfigId: 'wt-config-1',
-          providerConfig: {
-            id: 'wt-config-1',
-            name: 'WT Config A',
-            providerId: 'provider-1',
-            providerName: 'claude',
-            model: null,
-            effort: null,
-          },
-        },
-      ],
-      worktreePresence = { 'agent-wt-1': { online: true, sessionId: 'session-wt-1' } },
       mainProviderConfigs = [
         { id: 'config-1', name: 'Config A', providerId: 'provider-1', model: null, effort: null },
         { id: 'config-2', name: 'Config B', providerId: 'provider-1', model: null, effort: null },
       ],
-      worktreeProviderConfigs = [
-        {
-          id: 'wt-config-1',
-          name: 'WT Config A',
-          providerId: 'provider-1',
-          model: null,
-          effort: null,
-        },
-      ],
       mainProviderModels = { 'provider-1': [] },
-      worktreeProviderModels = { 'provider-1': [] },
       mainProviderEfforts = {
         'provider-1': { efforts: [], supportsEffort: true, requiresModelForEffort: false },
       },
-      worktreeProviderEfforts = {
-        'provider-1': { efforts: [], supportsEffort: true, requiresModelForEffort: false },
-      },
-      worktreeProjectId = 'project-wt-1',
     } = overrides ?? {};
 
     global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1674,22 +915,6 @@ describe('ChatPage agent Overrides dialog', () => {
 
       if (url === '/api/runtime') {
         return { ok: true, json: async () => ({ mode: 'main', version: '1.0.0' }) } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: 'wt-1',
-              name: 'feature-auth',
-              branchName: 'feature/auth',
-              status: worktreeProjectId ? 'running' : 'stopped',
-              runtimeType: 'process',
-              containerPort: worktreeProjectId ? 4310 : 0,
-              devchainProjectId: worktreeProjectId,
-            },
-          ],
-        } as Response;
       }
       if (url.startsWith('/api/agents?projectId=')) {
         return { ok: true, json: async () => ({ items: mainAgents }) } as Response;
@@ -1706,38 +931,6 @@ describe('ChatPage agent Overrides dialog', () => {
       if (url.startsWith('/api/threads?projectId=')) {
         return { ok: true, json: async () => ({ items: [] }) } as Response;
       }
-      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
-        return { ok: true, json: async () => ({ items: worktreeAgents }) } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
-        return { ok: true, json: async () => worktreePresence } as Response;
-      }
-      // Worktree provider configs/models/efforts — must precede the generic /api handlers
-      if (url.startsWith('/wt/feature-auth/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => worktreeProviderConfigs } as Response;
-      }
-      if (url.startsWith('/wt/feature-auth/api/providers/') && url.endsWith('/models')) {
-        const match = url.match(/^\/wt\/feature-auth\/api\/providers\/([^/]+)\/models$/);
-        const providerId = match?.[1] ? decodeURIComponent(match[1]) : '';
-        return {
-          ok: true,
-          json: async () => (providerId ? (worktreeProviderModels[providerId] ?? []) : []),
-        } as Response;
-      }
-      if (url.startsWith('/wt/feature-auth/api/providers/') && url.endsWith('/efforts')) {
-        const match = url.match(/^\/wt\/feature-auth\/api\/providers\/([^/]+)\/efforts$/);
-        const providerId = match?.[1] ? decodeURIComponent(match[1]) : '';
-        return {
-          ok: true,
-          json: async () =>
-            (worktreeProviderEfforts as Record<string, unknown>)[providerId] ?? {
-              efforts: [],
-              supportsEffort: false,
-              requiresModelForEffort: false,
-            },
-        } as Response;
-      }
-      // Main provider configs/models/efforts
       if (url.startsWith('/api/profiles/') && url.endsWith('/provider-configs')) {
         return { ok: true, json: async () => mainProviderConfigs } as Response;
       }
@@ -1762,10 +955,7 @@ describe('ChatPage agent Overrides dialog', () => {
             },
         } as Response;
       }
-      // PUT for worktree/main config update
-      if (init?.method === 'PUT' && url.startsWith('/wt/feature-auth/api/agents/')) {
-        return { ok: true, json: async () => ({ success: true }) } as Response;
-      }
+      // PUT for agent config update
       if (init?.method === 'PUT' && url.startsWith('/api/agents/')) {
         return { ok: true, json: async () => ({ success: true }) } as Response;
       }
@@ -1884,55 +1074,29 @@ describe('ChatPage agent Overrides dialog', () => {
     });
   });
 
-  it('opens the Overrides dialog for a worktree agent via the worktree proxy base', async () => {
-    setupFetch();
-    renderWithClient(<ChatPage />);
-
-    const worktreeButton = await screen.findByLabelText(
-      /Open terminal for Worktree Agent in feature-auth \(online\)/i,
-    );
-    fireEvent.contextMenu(worktreeButton);
-
-    fireEvent.click(await screen.findByText('Overrides…'));
-
-    expect(await screen.findByText('Overrides — Worktree Agent')).toBeInTheDocument();
-
-    await waitFor(() => {
-      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
-      expect(urls).toContain('/wt/feature-auth/api/profiles/p1/provider-configs');
-      expect(urls).toContain('/wt/feature-auth/api/providers/provider-1/efforts');
-    });
-  });
-
   it('does not render the Overrides item for an agent without a profile', async () => {
     setupFetch({
-      worktreeAgents: [
-        { id: 'agent-no-profile', name: 'No Profile Agent', profileId: null, type: 'agent' },
+      mainAgents: [
+        {
+          id: 'agent-no-profile',
+          name: 'No Profile Agent',
+          projectId: 'project-1',
+          profileId: null,
+        },
       ],
-      worktreePresence: { 'agent-no-profile': { online: true, sessionId: 'session-np' } },
+      mainPresence: { 'agent-no-profile': { online: true, sessionId: 'session-np' } },
     });
     renderWithClient(<ChatPage />);
 
     const agentButton = await screen.findByLabelText(
-      /Open terminal for No Profile Agent in feature-auth \(online\)/i,
+      /Open terminal for No Profile Agent \(online\)/i,
     );
     fireEvent.contextMenu(agentButton);
 
     await waitFor(() => {
-      expect(screen.getByText(/Restart session/i)).toBeInTheDocument();
+      expect(screen.getByText(/Terminate session/i)).toBeInTheDocument();
     });
     expect(screen.queryByText('Overrides…')).not.toBeInTheDocument();
-  });
-
-  it('disables the Overrides item when the worktree has no devchainProjectId', async () => {
-    setupFetch({ worktreeProjectId: null });
-    renderWithClient(<ChatPage />);
-
-    const worktreeGroupHeader = await screen.findByText('feature-auth');
-    expect(worktreeGroupHeader).toBeInTheDocument();
-    // Worktree with no devchainProjectId reports as unavailable, so its agent rows
-    // (and their Overrides entry point) are not actionable.
-    expect(screen.queryByText(/Worktree unavailable/i)).toBeInTheDocument();
   });
 });
 
@@ -1941,7 +1105,6 @@ describe('Mass agent controls', () => {
 
   beforeEach(() => {
     toastSpy.mockReset();
-    setActiveWorktreeMock.mockReset();
   });
 
   afterEach(() => {
@@ -2113,9 +1276,7 @@ describe('ChatPage context bar integration', () => {
 
   beforeEach(() => {
     toastSpy.mockReset();
-    setActiveWorktreeMock.mockReset();
     openTerminalWindowMock.mockReset();
-    openWorktreeTerminalWindowMock.mockReset();
     closeWindowMock.mockReset();
     terminalWindowsMock.splice(0, terminalWindowsMock.length);
   });
@@ -2414,118 +1575,6 @@ describe('ChatPage context bar integration', () => {
     // Zero-usage agent → no progressbar rendered (no spacer wrapper div)
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
   });
-
-  it('no wrapper div for zero-usage worktree agent (spacer leak regression)', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === '/api/runtime') {
-        return {
-          ok: true,
-          json: async () => ({ mode: 'main', version: '1.0.0' }),
-        } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: 'wt-1',
-              name: 'feature-auth',
-              branchName: 'feature/auth',
-              status: 'running',
-              runtimeType: 'process',
-              containerPort: 4310,
-              devchainProjectId: 'project-wt-1',
-            },
-          ],
-        } as Response;
-      }
-      if (url.startsWith('/api/agents?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return { ok: true, json: async () => ({}) } as Response;
-      }
-      if (url.startsWith('/api/chat/threads?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'agent-wt-1', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
-        return {
-          ok: true,
-          json: async () => ({ 'agent-wt-1': { online: true, sessionId: 'session-wt-1' } }),
-        } as Response;
-      }
-      // Worktree summary returns zero context tokens
-      if (url.includes('/transcript/summary')) {
-        return {
-          ok: true,
-          json: async () => ({
-            sessionId: 'session-wt-1',
-            providerName: 'claude',
-            metrics: {
-              inputTokens: 0,
-              outputTokens: 0,
-              cacheReadTokens: 0,
-              cacheCreationTokens: 0,
-              totalTokens: 0,
-              totalContextConsumption: 0,
-              compactionCount: 0,
-              phaseBreakdowns: [],
-              visibleContextTokens: 0,
-              totalContextTokens: 0,
-              contextWindowTokens: 200000,
-              costUsd: 0,
-            },
-            messageCount: 0,
-            isOngoing: true,
-          }),
-        } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      if (url.startsWith('/api/preflight')) {
-        return {
-          ok: true,
-          json: async () => ({
-            overall: 'pass',
-            checks: [],
-            providers: [],
-            supportedMcpProviders: [],
-            timestamp: new Date().toISOString(),
-          }),
-        } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    await screen.findByLabelText(/Open terminal for Worktree Agent in feature-auth \(online\)/i);
-
-    // Wait for summary query to settle
-    await waitFor(() => {
-      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
-      expect(urls.some((u) => u.includes('/transcript/summary'))).toBe(true);
-    });
-
-    // Zero-usage worktree agent → no progressbar rendered (no spacer wrapper div)
-    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
-  });
 });
 
 describe('ChatPage context bar toggle', () => {
@@ -2535,9 +1584,7 @@ describe('ChatPage context bar toggle', () => {
 
   beforeEach(() => {
     toastSpy.mockReset();
-    setActiveWorktreeMock.mockReset();
     openTerminalWindowMock.mockReset();
-    openWorktreeTerminalWindowMock.mockReset();
     closeWindowMock.mockReset();
     terminalWindowsMock.splice(0, terminalWindowsMock.length);
     window.localStorage.removeItem(LS_KEY);
@@ -2778,136 +1825,6 @@ describe('ChatPage context bar toggle', () => {
 
     // Bar still hidden after remount
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
-  });
-
-  it('worktree key isolation: same agentId with different apiBase produces distinct keys', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === '/api/runtime') {
-        return { ok: true, json: async () => ({ mode: 'main', version: '1.0.0' }) } as Response;
-      }
-      if (url === '/api/worktrees' || url.startsWith('/api/worktrees?')) {
-        return {
-          ok: true,
-          json: async () => [
-            {
-              id: 'wt-1',
-              name: 'feature-auth',
-              branchName: 'feature/auth',
-              status: 'running',
-              runtimeType: 'process',
-              containerPort: 4310,
-              devchainProjectId: 'project-wt-1',
-            },
-          ],
-        } as Response;
-      }
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              { id: 'shared-id', name: 'Main Agent', projectId: 'project-1', profileId: 'p1' },
-            ],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({ 'shared-id': { online: true, sessionId: 'session-main' } }),
-        } as Response;
-      }
-      if (url.startsWith('/api/chat/threads?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url === '/wt/feature-auth/api/agents?projectId=project-wt-1&includeGuests=true') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'shared-id', name: 'Worktree Agent', profileId: 'p1', type: 'agent' }],
-          }),
-        } as Response;
-      }
-      if (url === '/wt/feature-auth/api/sessions/agents/presence?projectId=project-wt-1') {
-        return {
-          ok: true,
-          json: async () => ({ 'shared-id': { online: true, sessionId: 'session-wt' } }),
-        } as Response;
-      }
-      if (url.includes('/transcript/summary')) {
-        return {
-          ok: true,
-          json: async () => ({
-            sessionId: url.includes('session-main') ? 'session-main' : 'session-wt',
-            providerName: 'claude',
-            metrics: {
-              inputTokens: 30000,
-              outputTokens: 10000,
-              cacheReadTokens: 0,
-              cacheCreationTokens: 0,
-              totalTokens: 40000,
-              totalContextConsumption: 0,
-              compactionCount: 0,
-              phaseBreakdowns: [],
-              visibleContextTokens: 0,
-              totalContextTokens: 100000,
-              contextWindowTokens: 200000,
-              costUsd: 0,
-            },
-            messageCount: 5,
-            isOngoing: true,
-          }),
-        } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      if (url.startsWith('/api/preflight')) {
-        return {
-          ok: true,
-          json: async () => ({
-            overall: 'pass',
-            checks: [],
-            providers: [],
-            supportedMcpProviders: [],
-            timestamp: new Date().toISOString(),
-          }),
-        } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    const mainButton = await screen.findByLabelText(/Open terminal for Main Agent \(online\)/i);
-    await screen.findByLabelText(/Open terminal for Worktree Agent in feature-auth \(online\)/i);
-
-    // Both agents have context bars
-    await waitFor(() => {
-      expect(screen.getAllByRole('progressbar').length).toBe(2);
-    });
-
-    // Hide the MAIN agent's context bar
-    fireEvent.contextMenu(mainButton);
-    const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
-    fireEvent.click(checkbox);
-
-    // Main bar hidden, worktree bar still visible → 1 progressbar remains
-    await waitFor(() => {
-      expect(screen.getAllByRole('progressbar').length).toBe(1);
-    });
-
-    // localStorage has main key (agentId only), NOT the worktree key (apiBase:agentId)
-    const stored = JSON.parse(window.localStorage.getItem(LS_KEY)!) as string[];
-    expect(stored).toContain('shared-id');
-    expect(stored).not.toContain('/wt/feature-auth:shared-id');
   });
 
   it('menu item always enabled: checkbox not disabled even without active session', async () => {

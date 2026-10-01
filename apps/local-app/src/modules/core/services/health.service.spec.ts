@@ -30,8 +30,8 @@ describe('HealthService', () => {
   it('returns ready=false when any injected check fails', async () => {
     const checker = {
       getChecks: jest.fn().mockResolvedValue({
-        orchestratorDb: 'ok',
-        docker: 'fail',
+        db: 'ok',
+        tmux: 'fail',
       }),
     };
     service = new HealthService(checker);
@@ -41,8 +41,8 @@ describe('HealthService', () => {
     expect(result).toEqual({
       ready: false,
       checks: {
-        orchestratorDb: 'ok',
-        docker: 'fail',
+        db: 'ok',
+        tmux: 'fail',
       },
     });
   });

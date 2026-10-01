@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { formatPromptTransferCounts } from '@/common/prompt-transfer';
@@ -11,6 +11,7 @@ import { useCreateProjectWizard } from '@/ui/hooks/useCreateProjectWizard';
 import { useConfirmDialog, useFormDialog } from '@/ui/hooks/useFormDialog';
 import { useImportProjectWizard, useUpgradeProjectWizard } from '@/ui/hooks/useImportProjectWizard';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import { useRemotes } from '@/ui/hooks/useRemotes';
 import { useTemplateForm } from '@/ui/hooks/useTemplateForm';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { useProjectImportSource } from '@/ui/pages/projects/hooks/useProjectImportSource';
@@ -28,6 +29,7 @@ import type {
   FamilyAlternative,
   ImportProjectSuccess,
   Project,
+  ProjectRemoteOwner,
   ProjectsQueryData,
   ProjectWithStats,
   ProjectWorkspace,
@@ -146,6 +148,23 @@ export function useProjectsPageController(
   });
   const workspaces = workspacesQuery.data ?? [];
   const defaultWorkspace = workspaces.find((workspace) => workspace.isDefault) ?? workspaces[0];
+
+  const { bindingByProjectId, remotes } = useRemotes();
+  const remoteOwners = useMemo(
+    () =>
+      new Map<string, ProjectRemoteOwner>(
+        Array.from(bindingByProjectId.values()).map((binding) => [
+          binding.projectId,
+          {
+            projectId: binding.projectId,
+            remoteId: binding.remoteId,
+            remoteName: remotes.find((remote) => remote.id === binding.remoteId)?.name ?? null,
+            state: binding.state as ProjectRemoteOwner['state'],
+          },
+        ]),
+      ),
+    [bindingByProjectId, remotes],
+  );
 
   const pairedDevicesQuery = useQuery({
     queryKey: ['paired-devices'],
@@ -822,6 +841,7 @@ export function useProjectsPageController(
     collapsedWorkspaceIds,
     projectDrag,
     statusMessage: moveStatus,
+    remoteOwners,
     actions: {
       changeSearch: setSearch,
       toggleSort,

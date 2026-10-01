@@ -147,6 +147,8 @@ export const sendMessageAction: ActionDefinition = {
           source: 'subscriber.action',
           projectId,
           senderName: agentName ?? 'Subscriber Action',
+          // Event field text can come from outside DevChain (an imported task, for example).
+          outsideText: context.eventFieldInputs?.has('text') === true,
         },
         {
           submitKeys,

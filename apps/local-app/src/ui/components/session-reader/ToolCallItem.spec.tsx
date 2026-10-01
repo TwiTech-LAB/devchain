@@ -310,6 +310,7 @@ describe('ToolCallItem', () => {
       '/api/sessions/session-1/transcript/tool-result/tc-1',
       {},
       'Failed to fetch full tool result',
+      expect.any(Function),
     );
     expect(screen.queryByTestId('tool-result-load-full')).not.toBeInTheDocument();
   });
@@ -318,14 +319,14 @@ describe('ToolCallItem', () => {
   // Step-level hotspot visual treatment
   // ---------------------------------------------------------------------------
 
-  it('shows amber border, flame icon, and percentage when isStepHot=true (diagnostic mode)', () => {
+  it('shows warning border, flame icon, and percentage when isStepHot=true (diagnostic mode)', () => {
     renderWithMode(
       <ToolCallItem step={makeStep({ estimatedTokens: 500 })} isStepHot percentOfChunk={62} />,
       'diagnostic',
     );
 
     const wrapper = screen.getByTestId('tool-call-wrapper');
-    expect(wrapper.className).toContain('border-amber-500');
+    expect(wrapper).toHaveClass('border-status-warn');
     expect(wrapper.className).toContain('border-l-2');
 
     expect(screen.getByTestId('step-hotspot-flame')).toBeInTheDocument();
@@ -347,7 +348,7 @@ describe('ToolCallItem', () => {
     render(<ToolCallItem step={makeStep()} />);
 
     const wrapper = screen.getByTestId('tool-call-wrapper');
-    expect(wrapper.className).not.toContain('border-amber-500');
+    expect(wrapper.className).not.toMatch(/border-status-warn/);
 
     expect(screen.queryByTestId('step-hotspot-flame')).not.toBeInTheDocument();
     expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();

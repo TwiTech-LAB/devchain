@@ -163,6 +163,30 @@ describe('SendMessageAction', () => {
       });
     });
 
+    it('marks text bound to an event field as outside text', async () => {
+      mockContext.eventFieldInputs = new Set(['text']);
+
+      await sendMessageAction.execute(mockContext, { text: 'Imported task title' });
+
+      expect(mockAmd.deliver).toHaveBeenCalledWith(
+        ['agent-456'],
+        expect.objectContaining({ outsideText: true }),
+        expect.any(Object),
+      );
+    });
+
+    it('does not mark custom text as outside text', async () => {
+      mockContext.eventFieldInputs = new Set(['agentName']);
+
+      await sendMessageAction.execute(mockContext, { text: 'Epic completed' });
+
+      expect(mockAmd.deliver).toHaveBeenCalledWith(
+        ['agent-456'],
+        expect.objectContaining({ outsideText: false }),
+        expect.any(Object),
+      );
+    });
+
     it('should use the named recipient when the event has no agent ID', async () => {
       mockContext.agentId = null;
 
@@ -223,6 +247,7 @@ describe('SendMessageAction', () => {
           source: 'subscriber.action',
           projectId: 'project-789',
           senderName: 'Test Agent',
+          outsideText: false,
         },
         {
           submitKeys: ['Enter'],

@@ -161,6 +161,7 @@ export function createLaunchPipelineHarness() {
     getEpic: jest.fn().mockResolvedValue(fakeEpic()),
     getAgentProfile: jest.fn().mockResolvedValue(fakeProfile()),
     getProvider: jest.fn().mockResolvedValue(fakeProvider()),
+    getProviderEnvForProject: jest.fn().mockReturnValue(null),
     getInitialSessionPrompt: jest.fn().mockResolvedValue(null),
     listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([fakeProfileProviderConfig()]),
   };

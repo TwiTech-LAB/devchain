@@ -1,3 +1,5 @@
+import type { FetchFn } from '@/ui/lib/api-transport';
+
 export type ProviderPluginPolicySource = 'project' | 'default';
 
 export interface ProviderPlugin {
@@ -48,11 +50,12 @@ async function readApiErrorMessage(response: Response, fallback: string): Promis
 }
 
 async function fetchJsonOrThrow<T>(
+  fetchFn: FetchFn,
   url: string,
   options: RequestInit,
   fallbackError: string,
 ): Promise<T> {
-  const response = await fetch(url, options);
+  const response = await fetchFn(url, options);
   if (!response.ok) {
     throw new Error(await readApiErrorMessage(response, fallbackError));
   }
@@ -79,9 +82,11 @@ function normalizeCatalogResponse(payload: unknown): ProviderPluginCatalogRespon
 }
 
 export async function fetchProviderPlugins(
+  fetchFn: FetchFn,
   options: { signal?: AbortSignal } = {},
 ): Promise<ProviderPlugin[]> {
   const payload = await fetchJsonOrThrow<unknown>(
+    fetchFn,
     '/api/provider-plugins',
     { signal: options.signal },
     'Failed to load provider plugins',
@@ -89,8 +94,9 @@ export async function fetchProviderPlugins(
   return normalizeCatalogResponse(payload).items;
 }
 
-export async function refreshProviderPlugins(): Promise<ProviderPlugin[]> {
+export async function refreshProviderPlugins(fetchFn: FetchFn): Promise<ProviderPlugin[]> {
   const payload = await fetchJsonOrThrow<unknown>(
+    fetchFn,
     '/api/provider-plugins/refresh',
     { method: 'POST' },
     'Failed to refresh provider plugins',
@@ -98,8 +104,13 @@ export async function refreshProviderPlugins(): Promise<ProviderPlugin[]> {
   return normalizeCatalogResponse(payload).items;
 }
 
-export async function installProviderPlugin(providerId: string, pluginId: string): Promise<void> {
+export async function installProviderPlugin(
+  fetchFn: FetchFn,
+  providerId: string,
+  pluginId: string,
+): Promise<void> {
   await fetchJsonOrThrow<unknown>(
+    fetchFn,
     '/api/provider-plugins/install',
     {
       method: 'POST',
@@ -111,11 +122,13 @@ export async function installProviderPlugin(providerId: string, pluginId: string
 }
 
 export async function fetchProviderPluginPolicies(
+  fetchFn: FetchFn,
   projectId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<ProviderPluginPolicy[]> {
   const params = new URLSearchParams({ projectId });
   const payload = await fetchJsonOrThrow<ProviderPluginPolicyResponse>(
+    fetchFn,
     `/api/provider-plugins/policy?${params.toString()}`,
     { signal: options.signal },
     'Failed to load plugin policies',
@@ -124,11 +137,13 @@ export async function fetchProviderPluginPolicies(
 }
 
 export async function setProviderPluginDefault(
+  fetchFn: FetchFn,
   providerId: string,
   pluginId: string,
   enabled: boolean,
 ): Promise<ProviderPluginPolicy> {
   return fetchJsonOrThrow<ProviderPluginPolicy>(
+    fetchFn,
     '/api/provider-plugins/policy/default',
     {
       method: 'PUT',
@@ -140,11 +155,13 @@ export async function setProviderPluginDefault(
 }
 
 export async function resetProviderPluginDefault(
+  fetchFn: FetchFn,
   providerId: string,
   pluginId: string,
 ): Promise<void> {
   const params = new URLSearchParams({ providerId, pluginId });
   await fetchJsonOrThrow<unknown>(
+    fetchFn,
     `/api/provider-plugins/policy/default?${params.toString()}`,
     { method: 'DELETE' },
     'Failed to reset DevChain Default policy',
@@ -152,12 +169,14 @@ export async function resetProviderPluginDefault(
 }
 
 export async function setProjectProviderPluginPolicy(
+  fetchFn: FetchFn,
   projectId: string,
   providerId: string,
   pluginId: string,
   enabled: boolean,
 ): Promise<ProviderPluginPolicy> {
   return fetchJsonOrThrow<ProviderPluginPolicy>(
+    fetchFn,
     '/api/provider-plugins/policy/project',
     {
       method: 'PUT',
@@ -169,12 +188,14 @@ export async function setProjectProviderPluginPolicy(
 }
 
 export async function resetProjectProviderPluginPolicy(
+  fetchFn: FetchFn,
   projectId: string,
   providerId: string,
   pluginId: string,
 ): Promise<void> {
   const params = new URLSearchParams({ projectId, providerId, pluginId });
   await fetchJsonOrThrow<unknown>(
+    fetchFn,
     `/api/provider-plugins/policy/project?${params.toString()}`,
     { method: 'DELETE' },
     'Failed to reset This Project policy',

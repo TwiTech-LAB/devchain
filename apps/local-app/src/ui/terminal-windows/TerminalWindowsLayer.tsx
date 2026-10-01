@@ -110,7 +110,7 @@ function FloatingWindow({
       <div
         className={cn(
           'flex h-full flex-col overflow-hidden rounded-md border border-border bg-background shadow-lg transition-shadow',
-          isFocused ? 'shadow-[0_20px_45px_rgba(0,0,0,0.35)]' : 'opacity-90',
+          isFocused && 'shadow-[0_20px_45px_rgba(0,0,0,0.35)]',
         )}
       >
         <header
@@ -124,7 +124,7 @@ function FloatingWindow({
               type="button"
               aria-label="Minimize window"
               title="Minimize"
-              className="flex h-3 w-3 items-center justify-center rounded-full bg-amber-400 text-white"
+              className="flex h-3 w-3 items-center justify-center rounded-full bg-status-warn"
               onClick={(event) => {
                 event.stopPropagation();
                 onMinimize();
@@ -134,7 +134,7 @@ function FloatingWindow({
               type="button"
               aria-label={window.maximized ? 'Restore window' : 'Maximize window'}
               title={window.maximized ? 'Restore' : 'Maximize'}
-              className="flex h-3 w-3 items-center justify-center rounded-full bg-emerald-500 text-white"
+              className="flex h-3 w-3 items-center justify-center rounded-full bg-status-ok"
               onClick={(event) => {
                 event.stopPropagation();
                 onToggleMaximize();
@@ -144,7 +144,7 @@ function FloatingWindow({
               type="button"
               aria-label="Close window"
               title="Close"
-              className="flex h-3 w-3 items-center justify-center rounded-full bg-destructive text-white"
+              className="flex h-3 w-3 items-center justify-center rounded-full bg-destructive"
               onClick={(event) => {
                 event.stopPropagation();
                 onClose();
@@ -194,7 +194,7 @@ function FloatingWindow({
                             onClick={() => detail.onCopyId?.()}
                           >
                             {detail.copiedId ? (
-                              <Check className="h-3 w-3 text-emerald-500" />
+                              <Check className="h-3 w-3 text-status-ok" />
                             ) : (
                               <ClipboardCopy className="h-3 w-3" />
                             )}
@@ -212,7 +212,7 @@ function FloatingWindow({
                         title={detail.title ?? detail.value}
                       >
                         {detail.label !== 'Agent' && (
-                          <span className="mr-1 text-muted-foreground/70">{detail.label}:</span>
+                          <span className="mr-1 text-muted-foreground">{detail.label}:</span>
                         )}
                         <span className="font-medium text-foreground">{detail.value}</span>
                       </span>

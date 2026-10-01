@@ -1,3 +1,4 @@
+import { ProviderCliInstallerService } from './provider-cli-installer.service';
 import { Injectable, Inject } from '@nestjs/common';
 import { access, stat } from 'fs/promises';
 import { constants } from 'fs';
@@ -48,6 +49,7 @@ export class ProviderStateManager {
     private readonly providerProjectSync: ProviderProjectSyncService,
     private readonly executor: ProcessExecutor,
     private readonly effortSeeding: ProviderEffortSeedingService,
+    private readonly cliInstaller: ProviderCliInstallerService,
   ) {}
 
   async update(
@@ -145,12 +147,12 @@ export class ProviderStateManager {
       }
     }
 
-    const provider = await this.storage.updateProviderWithScopes(
-      providerId,
-      payload,
-      envScopes,
-      postUpdateEnvKeys,
-    );
+    const edit = () =>
+      this.storage.updateProviderWithScopes(providerId, payload, envScopes, postUpdateEnvKeys);
+    const provider =
+      partial.binPath !== undefined && partial.binPath !== existing.binPath
+        ? await this.cliInstaller.editBinaryPath(existing.name, partial.binPath, edit)
+        : await edit();
     return { provider };
   }
 

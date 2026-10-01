@@ -1,4 +1,10 @@
 import { useEffect, useState } from 'react';
+import { HOME_BACKEND } from '@/ui/lib/api-transport';
+import {
+  completeCloudSignIn,
+  fetchRemoteName,
+  readPersistedCloudTarget,
+} from '@/ui/lib/cloud-target';
 
 type CallbackState = 'processing' | 'success' | 'error';
 
@@ -39,12 +45,24 @@ export function CloudCallbackPage() {
     // Clear the fragment from the URL to prevent token leakage in history
     window.history.replaceState(null, '', window.location.pathname);
 
-    fetch('/api/auth/cloud/tokens', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accessToken, refreshToken }),
-    })
-      .then(async (response) => {
+    // The popup shares localStorage with the Cloud page, so the target the user
+    // selected there decides which backend receives these tokens.
+    const target = readPersistedCloudTarget();
+
+    void (async () => {
+      // Prefer the remote's current name over the persisted copy — the Cloud
+      // page writes both, but a rename may have happened since.
+      const remoteName =
+        target.backend === HOME_BACKEND
+          ? null
+          : await fetchRemoteName(target.backend, target.remoteName);
+      try {
+        const response = await completeCloudSignIn({
+          backend: target.backend,
+          remoteName,
+          accessToken,
+          refreshToken,
+        });
         if (!response.ok) {
           const body = await response.json().catch(() => ({}));
           throw new Error((body as Record<string, string>).message || 'Failed to store tokens');
@@ -55,11 +73,11 @@ export function CloudCallbackPage() {
         if (window.opener) {
           setTimeout(() => window.close(), 1500);
         }
-      })
-      .catch((err: Error) => {
+      } catch (err) {
         setState('error');
-        setError(err.message);
-      });
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
   }, []);
 
   return (
@@ -72,7 +90,7 @@ export function CloudCallbackPage() {
         minHeight: '100vh',
         fontFamily: 'system-ui, sans-serif',
         padding: '2rem',
-        backgroundColor: 'hsl(var(--background, 0 0% 100%))',
+        backgroundColor: 'hsl(var(--canvas, 0 0% 100%))',
         color: 'hsl(var(--foreground, 0 0% 3.9%))',
       }}
     >

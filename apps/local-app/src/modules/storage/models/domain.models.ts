@@ -28,6 +28,209 @@ export interface DeleteProjectWorkspaceResult {
   remappedDeviceGrantCount: number;
 }
 
+export const REMOTE_KIND_IDS = ['address', 'proxmox'] as const;
+export type RemoteKind = (typeof REMOTE_KIND_IDS)[number];
+
+export interface Remote {
+  id: string;
+  name: string;
+  baseUrl: string | null;
+  kind: RemoteKind;
+  vmProviderConnectionId: string | null;
+  vmIdentity: string | null;
+  vmSpec: VmSpec | null;
+  /** The VM's certificate (PEM); every call to the VM is pinned to it. Null: the VM cannot be reached. */
+  tlsCertificate: string | null;
+  /** SHA-256 of `tlsCertificate`, upper-case hex without colons. */
+  tlsFingerprint: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VmSpec {
+  cores: number;
+  /** Memory in MiB. */
+  memory: number;
+  /** Disk capacity in GiB. */
+  disk: number;
+}
+
+export type CreateRemote = (
+  | {
+      name: string;
+      baseUrl: string;
+      kind: 'address';
+    }
+  | {
+      name: string;
+      baseUrl: string | null;
+      kind: 'proxmox';
+      vmProviderConnectionId: string;
+      vmIdentity: string | null;
+      vmSpec: VmSpec;
+    }
+) & { tlsCertificate?: string | null };
+
+export interface VmProviderConnection {
+  id: string;
+  kind: 'proxmox';
+  name: string;
+  apiUrl: string;
+  node: string;
+  pool: string;
+  storage: string;
+  imageStorage: string;
+  bridge: string;
+  vmidMin: number;
+  vmidMax: number;
+  namePrefix: string;
+  tag: string;
+  sslFingerprint: string;
+  caPem: string | null;
+  tokenId: string;
+  tokenSecretCiphertext: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateVmProviderConnection = Omit<
+  VmProviderConnection,
+  'id' | 'tokenSecretCiphertext' | 'createdAt' | 'updatedAt' | 'caPem'
+> & { tokenSecret: string; caPem?: string | null };
+
+export interface UpdateRemote {
+  name: string;
+}
+
+// ── Provider auth vault ───────────────────────────────────────────────────────
+// Login material for VM claims, stored encrypted at home only.
+
+export const PROVIDER_AUTH_KIND_IDS = ['static', 'family'] as const;
+export type ProviderAuthKind = (typeof PROVIDER_AUTH_KIND_IDS)[number];
+
+export const PROVIDER_AUTH_PAYLOAD_KIND_IDS = [
+  'env',
+  'files',
+  'opencode-entry',
+  'opencode-entries',
+] as const;
+export type ProviderAuthPayloadKind = (typeof PROVIDER_AUTH_PAYLOAD_KIND_IDS)[number];
+
+/** A vault entry; `payloadCiphertext` is dropped by every route — only the claim path decrypts. */
+export interface ProviderAuthEntry {
+  id: string;
+  provider: string;
+  kind: ProviderAuthKind;
+  label: string;
+  payloadKind: ProviderAuthPayloadKind;
+  payloadCiphertext: string;
+  /** The remote currently holding the family, or null. */
+  checkedOutRemoteId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastVerifiedAt: string | null;
+  lastWritebackAt: string | null;
+}
+
+/** One entry's decrypted payload. */
+export type ProviderAuthPayload =
+  | { payloadKind: 'env'; envKey: string; value: string }
+  | { payloadKind: 'files'; content: string }
+  | { payloadKind: 'opencode-entry'; providerId: string; entry: Record<string, unknown> }
+  | { payloadKind: 'opencode-entries'; entries: Record<string, Record<string, unknown>> };
+
+export interface CreateProviderAuthEntry {
+  provider: string;
+  kind: ProviderAuthKind;
+  label: string;
+  payload: ProviderAuthPayload;
+  /** Set when the entry's login was verified before it was stored. */
+  lastVerifiedAt?: string;
+}
+
+export const REMOTE_BINDING_STATE_IDS = ['attaching', 'remote', 'detaching', 'failed'] as const;
+export type RemoteBindingState = (typeof REMOTE_BINDING_STATE_IDS)[number];
+
+export interface RemoteProjectBinding {
+  projectId: string;
+  remoteId: string;
+  state: RemoteBindingState;
+  hostCursor: string | null;
+  /** Last live-sync apply error, or null while the mirror is healthy. */
+  syncError: string | null;
+  syncFailedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpdateRemoteProjectBinding {
+  state?: RemoteBindingState;
+  hostCursor?: string | null;
+  /** Setting a message stamps `syncFailedAt`; null clears both. */
+  syncError?: string | null;
+}
+
+export const REMOTE_OPERATION_KIND_IDS = [
+  'attach',
+  'detach',
+  'create_vm',
+  'destroy_vm',
+  'claim',
+  'install_host',
+  'reset_vm',
+  'update_host',
+  'update_logins',
+] as const;
+export type RemoteOperationKind = (typeof REMOTE_OPERATION_KIND_IDS)[number];
+
+export const REMOTE_OPERATION_STATE_IDS = ['running', 'failed', 'done', 'cancelled'] as const;
+export type RemoteOperationState = (typeof REMOTE_OPERATION_STATE_IDS)[number];
+
+export type RemoteOperationStepState = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+export interface RemoteOperationStepError {
+  message: string;
+  code: string | null;
+}
+
+export interface RemoteOperationStep {
+  id: string;
+  label: string;
+  state: RemoteOperationStepState;
+  startedAt: string | null;
+  endedAt: string | null;
+  error: RemoteOperationStepError | null;
+}
+
+export interface RemoteOperation {
+  id: string;
+  kind: RemoteOperationKind;
+  remoteId: string;
+  projectId: string | null;
+  state: RemoteOperationState;
+  steps: RemoteOperationStep[];
+  details: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateRemoteOperation {
+  id?: string;
+  kind: RemoteOperationKind;
+  remoteId: string;
+  projectId: string | null;
+  steps: RemoteOperationStep[];
+  details: Record<string, unknown>;
+}
+
+export interface UpdateRemoteOperation {
+  state?: RemoteOperationState;
+  steps?: RemoteOperationStep[];
+  details?: Record<string, unknown>;
+  /** Apply only while the operation is in this state; otherwise 409 `REMOTE_OPERATION_STATE_CHANGED`. */
+  expectedState?: RemoteOperationState;
+}
+
 export interface Status {
   id: string;
   projectId: string;

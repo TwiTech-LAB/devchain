@@ -498,7 +498,7 @@ describe('InlineSessionSummaryChip', () => {
 
     const progressBar = screen.getByRole('progressbar');
     const fill = progressBar.firstElementChild as HTMLElement;
-    expect(fill.className).toContain('bg-amber-500');
+    expect(fill.className).toContain('bg-status-warn');
     expect(fill.style.width).toBe('60%');
     expect(progressBar).toHaveAttribute('aria-valuenow', '60');
   });

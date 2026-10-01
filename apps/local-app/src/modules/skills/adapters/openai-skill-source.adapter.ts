@@ -1,3 +1,4 @@
+import { BUILT_IN_SKILL_SOURCE_NAMES } from '../../../common/constants/built-in-skill-sources';
 import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { Injectable } from '@nestjs/common';
@@ -19,7 +20,7 @@ interface OpenAIAgentMetadata {
 export class OpenAISkillSource extends GitHubSkillSourceBase {
   constructor() {
     super({
-      sourceName: 'openai',
+      sourceName: BUILT_IN_SKILL_SOURCE_NAMES.openai,
       repoOwner: 'openai',
       repoName: 'skills',
     });

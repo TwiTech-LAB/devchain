@@ -59,10 +59,6 @@ export interface BoardListViewProps {
   onAgentChange?: (epic: Epic, agentId: string | null) => Promise<void> | void;
   /** Map of epic ID to sub-epic count (for showing expand button only when has children) */
   subEpicCounts?: Record<string, number>;
-  /** Handler for "Move to worktree" action (parent epics only, main mode) */
-  onMoveToWorktree?: (epic: Epic) => void;
-  /** Whether running worktrees exist (main mode only) */
-  hasRunningWorktrees?: boolean;
   /** Stored external sources by Epic ID; main rows only, never sub-epic rows. */
   externalSources?: ReadonlyMap<string, ExternalTaskSourceSummary>;
   /** Estimated-time totals in whole minutes by Epic ID (root epics only). */
@@ -103,8 +99,6 @@ export function BoardListView({
   onStatusChange,
   onAgentChange,
   subEpicCounts,
-  onMoveToWorktree,
-  hasRunningWorktrees,
   externalSources,
   timeTotals,
   className,
@@ -315,8 +309,8 @@ export function BoardListView({
       {/* Scrollable table container */}
       <div className="flex-1 overflow-auto rounded-lg border bg-card">
         <Table>
-          <TableHeader>
-            <TableRow>
+          <TableHeader className="bg-muted">
+            <TableRow className="hover:bg-transparent">
               <TableHead className="w-[40px]">
                 <Checkbox
                   ref={headerCheckboxRef}
@@ -401,8 +395,6 @@ export function BoardListView({
                   onViewDetails={onViewDetails}
                   onBulkEdit={onBulkEditEpic}
                   onToggleParentFilter={onToggleParentFilter}
-                  onMoveToWorktree={onMoveToWorktree}
-                  hasRunningWorktrees={hasRunningWorktrees}
                   onStatusChange={onStatusChange}
                   onAgentChange={onAgentChange}
                   subEpicCount={subEpicCounts?.[epic.id] ?? 0}

@@ -3,6 +3,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { CloudAuthForm } from './CloudAuthForm';
 import { useQrAuth } from '../../hooks/useQrAuth';
+import { HOME_BACKEND, type BackendId } from '@/ui/lib/api-transport';
+import { CLOUD_TARGET_STORAGE_KEY, readPersistedCloudTarget } from '@/ui/lib/cloud-target';
 
 jest.mock('../../hooks/useQrAuth');
 jest.mock('./QrDisplayPanel', () => ({
@@ -30,6 +32,7 @@ const mockUseQrAuth = useQrAuth as jest.MockedFunction<typeof useQrAuth>;
 
 describe('CloudAuthForm', () => {
   beforeEach(() => {
+    window.localStorage.clear();
     mockUseQrAuth.mockReturnValue({
       status: 'idle',
       qrPayload: null,
@@ -45,8 +48,14 @@ describe('CloudAuthForm', () => {
     });
   });
 
-  function renderForm() {
-    return render(<CloudAuthForm identityServiceUrl="http://localhost:3002" />);
+  function renderForm(backend: BackendId = HOME_BACKEND, remoteName: string | null = null) {
+    return render(
+      <CloudAuthForm
+        identityServiceUrl="http://localhost:3002"
+        backend={backend}
+        remoteName={remoteName}
+      />,
+    );
   }
 
   describe('idle mode', () => {
@@ -60,6 +69,24 @@ describe('CloudAuthForm', () => {
     it('renders the QR sign-in button with correct testid', () => {
       renderForm();
       expect(screen.getByTestId('qr-sign-in-button')).toBeInTheDocument();
+    });
+  });
+
+  describe('GitHub OAuth', () => {
+    it('persists the shown target before opening the popup', () => {
+      // A persisted remote that went offline: the page shows This PC instead.
+      window.localStorage.setItem(
+        CLOUD_TARGET_STORAGE_KEY,
+        JSON.stringify({ backend: 'r1', remoteName: 'lab-vm' }),
+      );
+      const open = jest.spyOn(window, 'open').mockImplementation(() => null);
+
+      renderForm();
+      fireEvent.click(screen.getByRole('button', { name: /sign in with github/i }));
+
+      expect(readPersistedCloudTarget()).toEqual({ backend: HOME_BACKEND, remoteName: null });
+      expect(open).toHaveBeenCalled();
+      open.mockRestore();
     });
   });
 
@@ -80,10 +107,17 @@ describe('CloudAuthForm', () => {
       expect(screen.queryByRole('button', { name: /send magic link/i })).not.toBeInTheDocument();
     });
 
-    it('calls useQrAuth with claim mode', () => {
+    it('calls useQrAuth with claim mode for This PC by default', () => {
       renderForm();
       fireEvent.click(screen.getByRole('button', { name: /sign in with qr code/i }));
-      expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'claim');
+      expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'claim', HOME_BACKEND);
+    });
+
+    it('pairs the QR sign-in with the selected remote backend', () => {
+      renderForm('r1', 'lab-vm');
+      fireEvent.click(screen.getByRole('button', { name: /sign in with qr code/i }));
+
+      expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'claim', 'r1');
     });
 
     it('calls start on mount', () => {

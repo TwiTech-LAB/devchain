@@ -167,7 +167,7 @@ export function InlineSessionSummaryChip({
 
   const formattedWindowPct = formatContextPercent(totalContext, contextWindow);
   const contextBarColorClass =
-    windowPct > 80 ? 'bg-destructive' : windowPct > 50 ? 'bg-amber-500' : 'bg-primary/60';
+    windowPct > 80 ? 'bg-destructive' : windowPct > 50 ? 'bg-status-warn' : 'bg-primary/60';
 
   const parts: React.ReactNode[] = [
     <span key="model" className="max-w-[120px] truncate" title={metrics.primaryModel}>
@@ -220,7 +220,7 @@ export function InlineSessionSummaryChip({
     index === 0
       ? [part]
       : [
-          <span key={`sep-${index}`} className="text-muted-foreground/50" aria-hidden="true">
+          <span key={`sep-${index}`} className="text-muted-foreground" aria-hidden="true">
             ·
           </span>,
           part,
@@ -252,7 +252,7 @@ export function InlineSessionSummaryChip({
             <span
               className={cn(
                 'inline-block h-1.5 w-1.5 rounded-full',
-                metrics.isOngoing ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground/50',
+                metrics.isOngoing ? 'bg-status-ok animate-pulse' : 'bg-muted-foreground/50',
               )}
               aria-hidden="true"
             />

@@ -1,5 +1,15 @@
-import { ConflictError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import {
+  ConflictError,
+  NotFoundError,
+  ProjectRemoteError,
+  ValidationError,
+} from '../../../common/errors/error-types';
 import type { EventsService } from '../../events/services/events.service';
+import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import {
+  createProjectWriteAdmissionStub,
+  type ProjectWriteAdmissionStub,
+} from '../../remotes/admission/testing/project-write-admission.stub';
 import type { EpicTimeStore, EpicTimeSummarySegment } from './epic-time.store';
 import { EpicTimeService } from './epic-time.service';
 
@@ -23,6 +33,7 @@ describe('EpicTimeService', () => {
     >
   >;
   let events: { publish: jest.Mock };
+  let admission: ProjectWriteAdmissionStub;
   let service: EpicTimeService;
 
   beforeEach(() => {
@@ -37,7 +48,12 @@ describe('EpicTimeService', () => {
       resetAgentTimeBuffer: jest.fn(),
     };
     events = { publish: jest.fn().mockResolvedValue(null) };
-    service = new EpicTimeService(store as unknown as EpicTimeStore, events as EventsService);
+    admission = createProjectWriteAdmissionStub();
+    service = new EpicTimeService(
+      store as unknown as EpicTimeStore,
+      events as unknown as EventsService,
+      admission as unknown as ProjectWriteAdmissionService,
+    );
   });
 
   const segment = (id: string, overrides: SourceSegmentOverrides = {}): EpicTimeSummarySegment =>
@@ -744,6 +760,32 @@ describe('EpicTimeService', () => {
       };
 
       await expect(service.resetAgentTimeBuffer(input)).rejects.toThrow(ConflictError);
+      expect(events.publish).not.toHaveBeenCalled();
+    });
+
+    it('refuses assignment and reset before the store when the project is not writable here', async () => {
+      const projectId = '11111111-1111-4111-8111-111111111111';
+      admission.assertWritable.mockImplementation(() => {
+        throw new ProjectRemoteError(projectId, 'remote-1', 'lab');
+      });
+      const base = {
+        projectId,
+        agentId: 'agent-1',
+        capturedAt: '2026-01-02T00:00:00.000Z',
+        snapshotToken: 'a'.repeat(64),
+      };
+
+      await expect(
+        service.assignAgentTimeBuffer({
+          ...base,
+          targetEpicId: '22222222-2222-4222-8222-222222222222',
+        }),
+      ).rejects.toThrow(ProjectRemoteError);
+      await expect(service.resetAgentTimeBuffer(base)).rejects.toThrow(ProjectRemoteError);
+
+      expect(admission.assertWritable).toHaveBeenCalledWith(projectId);
+      expect(store.assignAgentTimeBuffer).not.toHaveBeenCalled();
+      expect(store.resetAgentTimeBuffer).not.toHaveBeenCalled();
       expect(events.publish).not.toHaveBeenCalled();
     });
   });

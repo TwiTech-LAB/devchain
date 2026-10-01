@@ -170,6 +170,7 @@ describe('EpicEstimateLoggingService', () => {
       'inspectOperation' | 'createEstimateTimeEntry' | 'verifyOperation' | 'acknowledgeOperation'
     >
   >;
+  let mirrorSync: { pullNow: jest.Mock };
   let service: EpicEstimateLoggingService;
 
   beforeEach(() => {
@@ -196,10 +197,12 @@ describe('EpicEstimateLoggingService', () => {
       verifyOperation: jest.fn(),
       acknowledgeOperation: jest.fn(),
     };
+    mirrorSync = { pullNow: jest.fn().mockResolvedValue(undefined) };
     service = new EpicEstimateLoggingService(
       storage as unknown as StorageService,
       epicTime as unknown as EpicTimeService,
       timeMutations as unknown as ExternalTimeMutationService,
+      mirrorSync,
     );
     jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-30T12:00:00.000Z'));
   });
@@ -689,6 +692,32 @@ describe('EpicEstimateLoggingService', () => {
     },
   );
 
+  it('pulls the project mirror once before validating, so a stale mirror does not reject', async () => {
+    const activityDate = '2026-08-29';
+    let mirroredMinutes = 60;
+    mirrorSync.pullNow.mockImplementation(async () => {
+      mirroredMinutes = 90;
+    });
+    epicTime.getDailyProjection.mockImplementation(() =>
+      projection([{ activityDate, minutes: mirroredMinutes }]),
+    );
+    storage.getExternalEstimateLogDailyCheckpoint.mockResolvedValue(
+      checkpoint(ready(90, 1), [{ activityDate, loggedMinutes: 90 }]),
+    );
+
+    // Against the 60-minute mirror the 90-minute capture would be `estimate_snapshot_ahead`.
+    await expect(
+      service.createTimeEntry(createInput({ expectedRevision: 1 })),
+    ).rejects.toMatchObject<ValidationError>({
+      details: { reason: 'estimate_up_to_date' },
+    });
+    expect(mirrorSync.pullNow).toHaveBeenCalledTimes(1);
+    expect(mirrorSync.pullNow).toHaveBeenCalledWith(context.projectId);
+    expect(mirrorSync.pullNow.mock.invocationCallOrder[0]).toBeLessThan(
+      epicTime.getDailyProjection.mock.invocationCallOrder[0],
+    );
+  });
+
   it('rejects an up-to-date checkpoint with nothing new to log', async () => {
     const activityDate = '2026-08-29';
     epicTime.getDailyProjection.mockReturnValue(projection([{ activityDate, minutes: 90 }]));
@@ -1162,6 +1191,41 @@ describe('EpicEstimateLoggingService', () => {
       days: [{ activityDate: '2026-08-29', loggedMinutes: 200 }],
       unallocatedLoggedMinutes: 0,
     });
+  });
+
+  it('pulls the project mirror before Set logged reads the projection', async () => {
+    // Against the pre-pull mirror the baseline would capture 60 stale
+    // minutes; the pull must land before the projection read.
+    let mirroredMinutes = 60;
+    mirrorSync.pullNow.mockImplementation(async () => {
+      mirroredMinutes = 200;
+    });
+    epicTime.getDailyProjection.mockImplementation(() =>
+      projection([{ activityDate: '2026-08-29', minutes: mirroredMinutes }]),
+    );
+    const settled = { ...ready(200, 2), aggregationTimeZone: AGGREGATION_ZONE };
+    storage.setExternalEstimateLoggedMinutes.mockResolvedValue(settled);
+    storage.getExternalEstimateLogDailyCheckpoint.mockResolvedValue(
+      checkpoint(settled, [{ activityDate: '2026-08-29', loggedMinutes: 200 }]),
+    );
+
+    await service.setLoggedMinutes({
+      ...context,
+      loggedMinutes: 200,
+      expectedRevision: 1,
+      timeZone: AGGREGATION_ZONE,
+    });
+
+    expect(mirrorSync.pullNow).toHaveBeenCalledTimes(1);
+    expect(mirrorSync.pullNow).toHaveBeenCalledWith(context.projectId);
+    expect(mirrorSync.pullNow.mock.invocationCallOrder[0]).toBeLessThan(
+      epicTime.getDailyProjection.mock.invocationCallOrder[0],
+    );
+    expect(storage.setExternalEstimateLoggedMinutes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        currentDailyTotals: [{ activityDate: '2026-08-29', minutes: 200 }],
+      }),
+    );
   });
 
   it('exposes the dated ledger, canonical zone, and derived credit on state projections', async () => {
@@ -1849,6 +1913,7 @@ describe('EpicEstimateLoggingService legacy ownership signal and recovery', () =
       storage as unknown as StorageService,
       epicTime as unknown as EpicTimeService,
       timeMutations as unknown as ExternalTimeMutationService,
+      { pullNow: jest.fn().mockResolvedValue(undefined) },
     );
   });
 

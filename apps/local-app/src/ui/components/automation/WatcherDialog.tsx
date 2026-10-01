@@ -33,6 +33,8 @@ import {
   type TriggerCondition,
 } from '@/ui/lib/watchers';
 import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface Agent {
   id: string;
@@ -92,20 +94,20 @@ interface WatcherDialogProps {
   watcher?: Watcher | null;
 }
 
-async function fetchAgents(projectId: string): Promise<{ items: Agent[] }> {
-  const res = await fetch(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
+async function fetchAgents(fetchFn: FetchFn, projectId: string): Promise<{ items: Agent[] }> {
+  const res = await fetchFn(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
 
-async function fetchProfiles(projectId: string): Promise<{ items: Profile[] }> {
-  const res = await fetch(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
+async function fetchProfiles(fetchFn: FetchFn, projectId: string): Promise<{ items: Profile[] }> {
+  const res = await fetchFn(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch profiles');
   return res.json();
 }
 
-async function fetchProviders(): Promise<{ items: Provider[] }> {
-  const res = await fetch('/api/providers');
+async function fetchProviders(fetchFn: FetchFn): Promise<{ items: Provider[] }> {
+  const res = await fetchFn('/api/providers');
   if (!res.ok) throw new Error('Failed to fetch providers');
   return res.json();
 }
@@ -113,6 +115,7 @@ async function fetchProviders(): Promise<{ items: Provider[] }> {
 const EVENT_NAME_REGEX = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
 
 export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProps) {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
@@ -124,19 +127,19 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
   // Fetch scope options
   const { data: agentsData } = useQuery({
     queryKey: ['agents', selectedProjectId],
-    queryFn: () => fetchAgents(selectedProjectId as string),
+    queryFn: () => fetchAgents(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId && open,
   });
 
   const { data: profilesData } = useQuery({
     queryKey: ['profiles', selectedProjectId],
-    queryFn: () => fetchProfiles(selectedProjectId as string),
+    queryFn: () => fetchProfiles(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId && open,
   });
 
   const { data: providersData } = useQuery({
     queryKey: providersQueryKeys.list(),
-    queryFn: fetchProviders,
+    queryFn: () => fetchProviders(fetchFn),
     enabled: open,
   });
 
@@ -169,7 +172,7 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
 
   // Create mutation
   const createMutation = useMutation({
-    mutationFn: (data: CreateWatcherData) => createWatcher(data),
+    mutationFn: (data: CreateWatcherData) => createWatcher(fetchFn, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['watchers', selectedProjectId] });
       onOpenChange(false);
@@ -189,7 +192,8 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
 
   // Update mutation
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: UpdateWatcherData }) => updateWatcher(id, data),
+    mutationFn: ({ id, data }: { id: string; data: UpdateWatcherData }) =>
+      updateWatcher(fetchFn, id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['watchers', selectedProjectId] });
       onOpenChange(false);

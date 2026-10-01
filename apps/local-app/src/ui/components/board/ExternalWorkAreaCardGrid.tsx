@@ -1,5 +1,6 @@
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { Badge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Button } from '@/ui/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Skeleton } from '@/ui/components/ui/skeleton';
@@ -91,10 +92,7 @@ function RefreshStateBadge({ state }: { state: ExternalWorkAreaCardModel['refres
   }
   if (state === 'stale') {
     return (
-      <Badge
-        variant="outline"
-        className="shrink-0 gap-1 border-amber-500/40 bg-amber-500/10 text-amber-600"
-      >
+      <Badge variant="outline" className={cn('shrink-0 gap-1', TONE_CLASSES.warn)}>
         <RefreshCw className="h-3 w-3" aria-hidden="true" />
         Stale
       </Badge>

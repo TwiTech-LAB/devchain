@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { resolveBinary } from '../../../common/resolve-binary';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { ProviderAdapterFactory } from '../adapters';
 
 const logger = createLogger('ProviderDiscoveryService');
@@ -22,6 +23,7 @@ export class ProviderDiscoveryService {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly adapterFactory: ProviderAdapterFactory,
+    private readonly executor: ProcessExecutor,
   ) {}
 
   async discoverInstalledBinaries(): Promise<DiscoveryResult> {
@@ -43,7 +45,8 @@ export class ProviderDiscoveryService {
         continue;
       }
 
-      const binPath = await resolveBinary(nameLower);
+      // A bare name resolves only through the executor's `which`.
+      const binPath = await resolveBinary(nameLower, this.executor);
       if (binPath) {
         result.discovered.push({ name: nameLower, binPath });
       } else {

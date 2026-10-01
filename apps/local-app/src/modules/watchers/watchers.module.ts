@@ -6,6 +6,7 @@ import { TerminalModule } from '../terminal/terminal.module';
 import { EventsCoreModule } from '../events/events-core.module';
 import { WatchersService } from './services/watchers.service';
 import { WatcherRunnerService } from './services/watcher-runner.service';
+import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { WatcherRunnerService } from './services/watcher-runner.service';
     forwardRef(() => SessionsModule),
     forwardRef(() => TerminalModule),
     EventsCoreModule,
+    ProjectWriteAdmissionModule,
   ],
   controllers: [WatchersController],
   providers: [WatchersService, WatcherRunnerService],

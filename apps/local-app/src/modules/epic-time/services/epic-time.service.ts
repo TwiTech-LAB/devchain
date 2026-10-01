@@ -16,6 +16,7 @@ import type {
 } from '../models/epic-time.models';
 import { canonicalizeEpicTimeZone } from '../models/epic-time-local-day';
 import { EventsService } from '../../events/services/events.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import { EpicTimeStore, type EpicTimeScope, type EpicTimeSummarySegment } from './epic-time.store';
 
 const MILLIS_PER_MINUTE = 60_000;
@@ -62,6 +63,7 @@ export class EpicTimeService {
   constructor(
     private readonly store: EpicTimeStore,
     private readonly eventsService: EventsService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   /** Pass-through of the one project-scoped storage read; the projection is safe by construction. */
@@ -74,10 +76,14 @@ export class EpicTimeService {
    * atomically before this resolves; only then does the transient scope
    * invalidation hint fire, so realtime consumers never see the hint for a
    * write that did not land.
+   *
+   * Buffers are mirrored segments, so the write gate applies: refused while a
+   * remote owns the project or a handoff freezes it here.
    */
   async assignAgentTimeBuffer(
     input: AgentTimeBufferAssignmentInput,
   ): Promise<AgentTimeBufferAssignmentResult> {
+    this.admission.assertWritable(input.projectId);
     const result = await this.store.assignAgentTimeBuffer(input);
     await this.eventsService.publish('epic.time.scope.invalidated', {
       workspaceId: result.workspaceId,
@@ -94,6 +100,7 @@ export class EpicTimeService {
   async resetAgentTimeBuffer(
     input: AgentTimeBufferResetInput,
   ): Promise<AgentTimeBufferResetResult> {
+    this.admission.assertWritable(input.projectId);
     const result = await this.store.resetAgentTimeBuffer(input);
     await this.eventsService.publish('epic.time.scope.invalidated', {
       workspaceId: result.workspaceId,

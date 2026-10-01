@@ -1,14 +1,19 @@
+/**
+ * Integration harness for the summary-only session transcript flow.
+ *
+ * Real `useSessionTranscript` (summary + WS invalidation) wired to the summary
+ * chip and the paged session panel, with the network boundary mocked. The paged
+ * body pipeline itself (index extension, chunk paging) is covered by
+ * PagedSessionMessageList.spec.tsx; this file proves the live-metrics contract.
+ */
 import React, { useState } from 'react';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Socket } from 'socket.io-client';
-import {
-  useSessionTranscript,
-  type SerializedSession,
-  type TranscriptSummary,
-} from '@/ui/hooks/useSessionTranscript';
+import { useSessionTranscript, type TranscriptSummary } from '@/ui/hooks/useSessionTranscript';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
-import { fetchJsonOrThrow } from '@/ui/lib/sessions';
+import { fetchTranscriptIndex } from '@/ui/lib/sessions';
+import type { TranscriptIndex } from '@/ui/lib/sessions';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
 import { InlineSessionSummaryChip, DEFAULT_CHIP_VISIBLE_ITEMS } from './InlineSessionSummaryChip';
@@ -22,19 +27,48 @@ jest.mock('@/ui/hooks/useAppSocket', () => ({
   useAppSocket: jest.fn(),
 }));
 
-// Legacy mode: explicitly mock paged flag to false (legacy full-transcript path)
-jest.mock('@/ui/hooks/usePagedTranscript', () => ({
-  usePagedTranscriptFlag: () => [false, jest.fn()],
-  isPagedTranscriptEnabled: () => false,
-}));
-
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
-  fetchJsonOrThrow: jest.fn(),
+  fetchTranscriptIndex: jest.fn(),
+  fetchTranscriptChunks: jest.fn(),
+}));
+
+jest.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: jest.fn((options: { count: number }) => ({
+    getVirtualItems: () => {
+      if (options.count === 0) return [];
+      return Array.from({ length: options.count }, (_, index) => ({
+        index,
+        start: index * 120,
+        size: 120,
+        key: index,
+        lane: 0,
+        end: 120,
+      }));
+    },
+    getTotalSize: () => options.count * 120,
+    measureElement: jest.fn(),
+    isScrolling: false,
+  })),
+}));
+
+jest.mock('@/ui/hooks/useAutoScrollBottom', () => ({
+  useAutoScrollBottom: () => ({
+    scrollContainerRef: { current: null },
+    bottomRef: { current: null },
+    handleScroll: jest.fn(),
+  }),
+}));
+
+jest.mock('./SessionNavigationToolbar', () => ({
+  SessionNavigationToolbar: () => null,
 }));
 
 const useAppSocketMock = useAppSocket as jest.MockedFunction<typeof useAppSocket>;
-const fetchJsonOrThrowMock = fetchJsonOrThrow as jest.MockedFunction<typeof fetchJsonOrThrow>;
+const fetchTranscriptIndexMock = fetchTranscriptIndex as jest.MockedFunction<
+  typeof fetchTranscriptIndex
+>;
+
 const fetchMock = jest.fn<Promise<Response>, [string | URL | Request, RequestInit?]>();
 
 function mockResponse(body: unknown, status = 200): Response {
@@ -90,43 +124,6 @@ function makeMetrics(overrides: Partial<UnifiedMetrics> = {}): UnifiedMetrics {
   };
 }
 
-function makeSession(overrides: Partial<SerializedSession> = {}): SerializedSession {
-  return {
-    id: 'session-1',
-    providerName: 'claude-code',
-    filePath: '/tmp/session.jsonl',
-    messages: [
-      {
-        id: 'msg-1',
-        parentId: null,
-        role: 'user',
-        timestamp: '2026-02-24T10:00:00.000Z',
-        content: [{ type: 'text', text: 'Hello agent' }],
-        toolCalls: [],
-        toolResults: [],
-        isMeta: false,
-        isSidechain: false,
-      },
-      {
-        id: 'msg-2',
-        parentId: 'msg-1',
-        role: 'assistant',
-        timestamp: '2026-02-24T10:00:05.000Z',
-        content: [{ type: 'text', text: 'Hello! How can I help?' }],
-        model: 'claude-sonnet-4-6',
-        toolCalls: [],
-        toolResults: [],
-        isMeta: false,
-        isSidechain: false,
-        usage: { input: 100, output: 50, cacheRead: 0, cacheCreation: 0 },
-      },
-    ],
-    metrics: makeMetrics(),
-    isOngoing: true,
-    ...overrides,
-  };
-}
-
 function makeSummary(overrides: Partial<TranscriptSummary> = {}): TranscriptSummary {
   return {
     sessionId: 'session-1',
@@ -135,6 +132,90 @@ function makeSummary(overrides: Partial<TranscriptSummary> = {}): TranscriptSumm
     messageCount: 2,
     isOngoing: true,
     ...overrides,
+  };
+}
+
+function makePagedIndex(): TranscriptIndex {
+  const messages = [
+    {
+      id: 'msg-1',
+      parentId: null,
+      role: 'user' as const,
+      timestamp: '2026-02-24T10:00:00.000Z',
+      content: [{ type: 'text' as const, text: 'Hello agent' }],
+      toolCalls: [],
+      toolResults: [],
+      isMeta: false,
+      isSidechain: false,
+    },
+    {
+      id: 'msg-2',
+      parentId: 'msg-1',
+      role: 'assistant' as const,
+      timestamp: '2026-02-24T10:00:05.000Z',
+      content: [{ type: 'text' as const, text: 'Hello! How can I help?' }],
+      model: 'claude-sonnet-4-6',
+      toolCalls: [],
+      toolResults: [],
+      isMeta: false,
+      isSidechain: false,
+    },
+  ];
+  const chunks = [
+    {
+      id: 'chunk-user',
+      type: 'user' as const,
+      startTime: '2026-02-24T10:00:00.000Z',
+      endTime: '2026-02-24T10:00:00.000Z',
+      messages: [messages[0]],
+      metrics: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 0,
+        messageCount: 1,
+        durationMs: 0,
+        costUsd: 0,
+      },
+    },
+    {
+      id: 'chunk-ai',
+      type: 'ai' as const,
+      startTime: '2026-02-24T10:00:05.000Z',
+      endTime: '2026-02-24T10:00:05.000Z',
+      messages: [messages[1]],
+      metrics: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: 150,
+        messageCount: 1,
+        durationMs: 1000,
+        costUsd: 0.001,
+      },
+    },
+  ];
+  return {
+    cursor: 'index-cursor',
+    totals: { messageCount: messages.length, chunkCount: chunks.length },
+    chunkIds: chunks.map((chunk) => chunk.id),
+    latestOutputPreview: null,
+    providerName: 'claude-code',
+    isOngoing: true,
+    pages: [
+      {
+        cursor: chunks[0].id,
+        size: chunks.length,
+        response: {
+          chunks,
+          nextCursor: null,
+          prevCursor: null,
+          totalCount: chunks.length,
+        },
+      },
+    ],
   };
 }
 
@@ -150,7 +231,7 @@ function captureWsHandler(): (envelope: WsEnvelope) => void {
 // ---------------------------------------------------------------------------
 
 function IntegrationHarness({ sessionId }: { sessionId: string | null }) {
-  const { messages, chunks, metrics, isLive, isLoading, error } = useSessionTranscript(sessionId);
+  const { metrics, isLive } = useSessionTranscript(sessionId);
   const [activeTab, setActiveTab] = useState<'terminal' | 'session'>('session');
 
   return (
@@ -176,15 +257,7 @@ function IntegrationHarness({ sessionId }: { sessionId: string | null }) {
 
       {/* Panel (only visible on session tab) */}
       {activeTab === 'session' && (
-        <SessionViewerPanel
-          sessionId={sessionId}
-          messages={messages}
-          chunks={chunks}
-          metrics={metrics}
-          isLive={isLive}
-          isLoading={isLoading}
-          error={error}
-        />
+        <SessionViewerPanel sessionId={sessionId} metrics={metrics} isLive={isLive} />
       )}
     </div>
   );
@@ -201,10 +274,10 @@ describe('Session Reader Integration', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    fetchMock.mockReset();
-    global.fetch = fetchMock as unknown as typeof fetch;
     queryClient = createQueryClient();
     useAppSocketMock.mockReturnValue(createMockSocket());
+    fetchTranscriptIndexMock.mockResolvedValue(makePagedIndex());
+    global.fetch = fetchMock as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -212,21 +285,11 @@ describe('Session Reader Integration', () => {
     global.fetch = originalFetch;
   });
 
-  function setupMocks(
-    transcript: SerializedSession | (() => Promise<SerializedSession>),
-    summary: TranscriptSummary,
-  ) {
-    fetchJsonOrThrowMock.mockImplementation((url: string) => {
-      if (url.includes('/transcript/summary')) return Promise.resolve(summary);
-      return Promise.reject(new Error(`Unexpected fetchJsonOrThrow URL: ${url}`));
-    });
+  function setupSummary(summary: TranscriptSummary) {
     fetchMock.mockImplementation((url) => {
       const urlStr = String(url);
-      if (urlStr.includes('/transcript') && !urlStr.includes('/transcript/summary')) {
-        if (typeof transcript === 'function') {
-          return transcript().then((data) => Promise.resolve(mockResponse(data)));
-        }
-        return Promise.resolve(mockResponse(transcript));
+      if (urlStr.includes('/transcript/summary')) {
+        return Promise.resolve(mockResponse(summary));
       }
       return Promise.reject(new Error(`Unexpected fetch URL: ${urlStr}`));
     });
@@ -244,67 +307,33 @@ describe('Session Reader Integration', () => {
   // Full data flow: hook → chip + panel
   // -------------------------------------------------------------------------
 
-  it('loads session data and renders chip + panel with metrics and messages', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    setupMocks(session, summary);
+  it('loads summary metrics and renders chip + paged panel', async () => {
+    setupSummary(makeSummary());
 
     renderHarness();
 
-    // Wait for data to load
+    // Panel shows messages through the paged pipeline
     await waitFor(() => {
       expect(screen.getByText('Hello agent')).toBeInTheDocument();
     });
+    expect(screen.getByText('Hello! How can I help?')).toBeInTheDocument();
+    expect(screen.getByTestId('session-viewer-panel-paged')).toBeInTheDocument();
+
+    // Metrics header in panel
+    expect(screen.getByTestId('session-metrics-header')).toBeInTheDocument();
 
     // Chip shows metrics
     const chip = screen.getByRole('button', { name: /tokens/i });
     expect(chip).toHaveTextContent('2.4k');
     expect(chip).toHaveTextContent('$0.04');
-
-    // Panel shows messages
-    expect(screen.getByTestId('user-message-card')).toBeInTheDocument();
-    expect(screen.getByTestId('ai-message-card')).toBeInTheDocument();
-    expect(screen.getByText('Hello! How can I help?')).toBeInTheDocument();
-
-    // Metrics header in panel
-    expect(screen.getByTestId('session-metrics-header')).toBeInTheDocument();
-  });
-
-  it('shows loading state then transitions to loaded', async () => {
-    let resolveTranscript: (v: SerializedSession) => void;
-    const transcriptPromise = new Promise<SerializedSession>((r) => {
-      resolveTranscript = r;
-    });
-
-    setupMocks(() => transcriptPromise, makeSummary());
-
-    renderHarness();
-
-    // Should show loading initially
-    expect(screen.getByTestId('session-viewer-loading')).toBeInTheDocument();
-
-    // Resolve the transcript
-    await act(async () => {
-      resolveTranscript!(makeSession());
-    });
-
-    // Should now show messages
-    await waitFor(() => {
-      expect(screen.getByText('Hello agent')).toBeInTheDocument();
-    });
-    expect(screen.queryByTestId('session-viewer-loading')).not.toBeInTheDocument();
   });
 
   // -------------------------------------------------------------------------
   // Live update via WebSocket
   // -------------------------------------------------------------------------
 
-  it('updates UI when WS "updated" event triggers re-fetch with new data', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    setupMocks(session, summary);
+  it('updates the summary chip when a WS "updated" event triggers a summary re-fetch', async () => {
+    setupSummary(makeSummary());
 
     renderHarness();
 
@@ -312,30 +341,11 @@ describe('Session Reader Integration', () => {
       expect(screen.getByText('Hello agent')).toBeInTheDocument();
     });
 
-    // Now update the mock to return new data with an additional message
-    const updatedSession = makeSession({
-      messages: [
-        ...session.messages,
-        {
-          id: 'msg-3',
-          parentId: 'msg-2',
-          role: 'user',
-          timestamp: '2026-02-24T10:00:10.000Z',
-          content: [{ type: 'text', text: 'Please fix the bug' }],
-          toolCalls: [],
-          toolResults: [],
-          isMeta: false,
-          isSidechain: false,
-        },
-      ],
-      metrics: makeMetrics({ totalTokens: 5000, costUsd: 0.07, messageCount: 3 }),
-    });
     const updatedSummary = makeSummary({
       metrics: makeMetrics({ totalTokens: 5000, costUsd: 0.07, messageCount: 3 }),
       messageCount: 3,
     });
-
-    setupMocks(updatedSession, updatedSummary);
+    setupSummary(updatedSummary);
 
     // Simulate WS event
     const handler = captureWsHandler();
@@ -348,15 +358,12 @@ describe('Session Reader Integration', () => {
       });
     });
 
-    // Wait for new message to appear
-    await waitFor(() => {
-      expect(screen.getByText('Please fix the bug')).toBeInTheDocument();
-    });
-
     // Chip should reflect updated metrics
-    const chip = screen.getByRole('button', { name: /tokens/i });
-    expect(chip).toHaveTextContent('5.0k');
-    expect(chip).toHaveTextContent('$0.07');
+    await waitFor(() => {
+      const chip = screen.getByRole('button', { name: /tokens/i });
+      expect(chip).toHaveTextContent('5.0k');
+      expect(chip).toHaveTextContent('$0.07');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -364,10 +371,7 @@ describe('Session Reader Integration', () => {
   // -------------------------------------------------------------------------
 
   it('shows live indicator for ongoing sessions', async () => {
-    const session = makeSession({ isOngoing: true });
-    const summary = makeSummary({ isOngoing: true });
-
-    setupMocks(session, summary);
+    setupSummary(makeSummary({ isOngoing: true }));
 
     renderHarness();
 
@@ -382,16 +386,7 @@ describe('Session Reader Integration', () => {
   });
 
   it('hides live indicator for completed sessions', async () => {
-    const session = makeSession({
-      isOngoing: false,
-      metrics: makeMetrics({ isOngoing: false }),
-    });
-    const summary = makeSummary({
-      isOngoing: false,
-      metrics: makeMetrics({ isOngoing: false }),
-    });
-
-    setupMocks(session, summary);
+    setupSummary(makeSummary({ isOngoing: false, metrics: makeMetrics({ isOngoing: false }) }));
 
     renderHarness();
 
@@ -412,7 +407,7 @@ describe('Session Reader Integration', () => {
   // -------------------------------------------------------------------------
 
   it('hides panel when switching to terminal tab and restores on session tab', async () => {
-    setupMocks(makeSession(), makeSummary());
+    setupSummary(makeSummary());
 
     renderHarness();
 
@@ -421,14 +416,14 @@ describe('Session Reader Integration', () => {
     });
 
     // Panel visible on session tab
-    expect(screen.getByTestId('session-viewer-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('session-viewer-panel-paged')).toBeInTheDocument();
 
     // Switch to terminal tab
     fireEvent.click(screen.getByTestId('switch-terminal'));
     expect(screen.getByTestId('active-tab')).toHaveTextContent('terminal');
 
     // Panel should be hidden (not rendered)
-    expect(screen.queryByTestId('session-viewer-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('session-viewer-panel-paged')).not.toBeInTheDocument();
 
     // Switch back to session tab
     fireEvent.click(screen.getByTestId('switch-session'));
@@ -436,13 +431,13 @@ describe('Session Reader Integration', () => {
 
     // Panel should be visible again with data preserved
     await waitFor(() => {
-      expect(screen.getByTestId('session-viewer-panel')).toBeInTheDocument();
+      expect(screen.getByTestId('session-viewer-panel-paged')).toBeInTheDocument();
     });
     expect(screen.getByText('Hello agent')).toBeInTheDocument();
   });
 
   it('chip click switches from terminal to session tab', async () => {
-    setupMocks(makeSession(), makeSummary());
+    setupSummary(makeSummary());
 
     renderHarness();
 
@@ -460,20 +455,22 @@ describe('Session Reader Integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Error flow
+  // Summary failure (non-fatal — panel keeps its own paged data)
   // -------------------------------------------------------------------------
 
-  it('shows error in panel when fetch fails', async () => {
+  it('hides the chip but keeps the paged panel working when the summary fetch fails', async () => {
     fetchMock.mockImplementation(() =>
       Promise.resolve(mockResponse({ message: 'Server error' }, 500)),
     );
-    fetchJsonOrThrowMock.mockRejectedValue(new Error('Server error'));
 
     renderHarness();
 
     await waitFor(() => {
-      expect(screen.getByText(/Failed to load session: Server error/)).toBeInTheDocument();
+      expect(screen.getByText('Hello agent')).toBeInTheDocument();
     });
+
+    expect(screen.queryByRole('button', { name: /tokens/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId('session-viewer-panel-paged')).toBeInTheDocument();
   });
 
   // -------------------------------------------------------------------------

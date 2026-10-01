@@ -83,7 +83,7 @@ export function QrDisplayPanel({
   if (status === 'success') {
     return (
       <div className="text-center py-8 space-y-3" data-testid="qr-success">
-        <p className="text-sm font-medium text-green-600">Connected!</p>
+        <p className="text-sm font-medium text-status-ok">Connected!</p>
         {safetyNumber ? (
           <div className="space-y-1" data-testid="qr-safety-number">
             <p className="text-xs text-muted-foreground">Safety number</p>

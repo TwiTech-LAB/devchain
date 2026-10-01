@@ -6,7 +6,6 @@ import type {
   EpicTimeTaskItem,
 } from '@/modules/epic-time/models/epic-time.models';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import { epicTimeQueryKeys, resolveEpicTimeZone } from '@/ui/lib/epic-time';
 
 function toWholeMinutes(value: unknown): number {
@@ -112,10 +111,10 @@ function normalizeDetailSummary(payload: unknown): EpicTimeDetailSummary {
 }
 
 /**
- * Estimated-time summary for one Epic detail page. Worktree and unresolved
- * runtimes issue no request, key under an isolated cache scope, and never
- * see main-scope cached data through any returned field; the summary
- * refreshes on a 60-second cadence.
+ * Estimated-time summary for one Epic detail page. A disabled caller (passed
+ * `enabled: false`, or one without an Epic id) issues no request, keys under
+ * the disabled cache scope, and never sees active-scope cached data through
+ * any returned field; the summary refreshes on a 60-second cadence.
  */
 export function useEpicTimeDetail(
   epicId: string | null,
@@ -133,9 +132,8 @@ export function useEpicTimeDetail(
   query: ReturnType<typeof useQuery>;
 } {
   const apiFetch = useFetchFactory();
-  const { runtimeResolved, apiBase } = useOptionalWorktreeTab();
-  const admitted = enabled && runtimeResolved && apiBase === '' && epicId !== null;
-  const scope = admitted ? 'main' : 'isolated';
+  const admitted = enabled && epicId !== null;
+  const scope = admitted ? 'active' : 'disabled';
   const timeZone = useMemo(() => resolveEpicTimeZone(), []);
 
   const query = useQuery({

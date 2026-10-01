@@ -1,6 +1,7 @@
 import { ProviderConfigsService } from './provider-configs.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { Agent, AgentProfile, ProfileProviderConfig } from '../../storage/models/domain.models';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -58,7 +59,11 @@ describe('ProviderConfigsService', () => {
       renameProviderConfigInProjectPresets: jest.fn().mockResolvedValue(undefined),
       getAllProjectPresetsMap: jest.fn(),
     };
-    service = new ProviderConfigsService(storage as never, settings as unknown as SettingsService);
+    service = new ProviderConfigsService(
+      storage as never,
+      settings as unknown as SettingsService,
+      createProjectWriteAdmissionStub() as never,
+    );
   });
 
   function agent(overrides: Partial<Agent>): Agent {
@@ -80,6 +85,7 @@ describe('ProviderConfigsService', () => {
     const updatedConfig = { ...baseConfig, name: ' Old Config ' };
     storage.getProfileProviderConfig.mockResolvedValue(baseConfig);
     storage.updateProfileProviderConfig.mockResolvedValue(updatedConfig);
+    storage.getAgentProfile.mockResolvedValue(projectProfile);
 
     const result = await service.updateProviderConfig('config-1', { description: 'updated' });
 
@@ -87,7 +93,7 @@ describe('ProviderConfigsService', () => {
     expect(storage.updateProfileProviderConfig).toHaveBeenCalledWith('config-1', {
       description: 'updated',
     });
-    expect(storage.getAgentProfile).not.toHaveBeenCalled();
+    expect(storage.listAgents).not.toHaveBeenCalled();
     expect(settings.renameProviderConfigInProjectPresets).not.toHaveBeenCalled();
   });
 

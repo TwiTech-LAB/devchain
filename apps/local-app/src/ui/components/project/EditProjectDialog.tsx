@@ -86,7 +86,7 @@ export function EditProjectDialog({
                 !pathValidation.isAbsolute && formData.rootPath
                   ? 'border-destructive'
                   : pathValidation.checked && !pathValidation.exists
-                    ? 'border-yellow-600'
+                    ? 'border-status-warn/40'
                     : ''
               }`}
             />
@@ -99,19 +99,15 @@ export function EditProjectDialog({
               </Alert>
             )}
             {pathValidation.isAbsolute && pathValidation.checked && !pathValidation.exists && (
-              <Alert className="mt-2 border-yellow-600">
-                <AlertTriangle className="h-4 w-4 text-yellow-600" />
-                <AlertDescription className="text-yellow-600">
-                  Warning: Path does not exist on filesystem
-                </AlertDescription>
+              <Alert variant="warn" className="mt-2">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>Warning: Path does not exist on filesystem</AlertDescription>
               </Alert>
             )}
             {pathValidation.isAbsolute && pathValidation.checked && pathValidation.exists && (
-              <Alert className="mt-2 border-green-600">
-                <CheckCircle2 className="h-4 w-4 text-green-600" />
-                <AlertDescription className="text-green-600">
-                  Path exists and is accessible
-                </AlertDescription>
+              <Alert variant="ok" className="mt-2">
+                <CheckCircle2 className="h-4 w-4" />
+                <AlertDescription>Path exists and is accessible</AlertDescription>
               </Alert>
             )}
           </div>

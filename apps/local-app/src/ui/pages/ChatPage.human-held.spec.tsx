@@ -60,7 +60,6 @@ jest.mock('@/ui/components/chat/InlineTerminalPanel', () => ({
 }));
 jest.mock('@/ui/terminal-windows', () => ({
   useTerminalWindowManager: () => jest.fn(),
-  useWorktreeTerminalWindowManager: () => jest.fn(),
   useTerminalWindows: () => ({ windows: [], closeWindow: jest.fn(), focusedWindowId: null }),
   TerminalWindowsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -74,16 +73,6 @@ jest.mock('@/ui/hooks/useProjectSelection', () => ({
     projectsLoading: false,
     projectsError: false,
     projects: [],
-  }),
-}));
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => ({
-    activeWorktree: null,
-    setActiveWorktree: jest.fn(),
-    apiBase: '',
-    worktrees: [],
-    worktreesLoading: false,
-    runtimeResolved: true,
   }),
 }));
 jest.mock('@/ui/hooks/useAppSocket', () => ({
@@ -101,14 +90,7 @@ jest.mock('@/ui/lib/socket', () => ({
     off: jest.fn(),
     emit: jest.fn(),
   })),
-  getWorktreeSocket: jest.fn(() => ({
-    connected: true,
-    on: jest.fn(),
-    off: jest.fn(),
-    emit: jest.fn(),
-  })),
   releaseAppSocket: jest.fn(),
-  releaseWorktreeSocket: jest.fn(),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports

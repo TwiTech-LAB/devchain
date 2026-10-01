@@ -10,6 +10,7 @@ import {
   type PairedDevice,
   type PairedDeviceWorkspace,
 } from '@/ui/hooks/usePairedDevices';
+import type { BackendId } from '@/ui/lib/api-transport';
 
 /**
  * Desktop "Paired devices" card — lists the phones/devices paired with this account and lets
@@ -17,7 +18,14 @@ import {
  * "Validate this device" screen. Trust state remains read-only here, while the displayed
  * local alias can be edited without changing the phone-reported name.
  */
-export function PairedDevicesCard({ className }: { className?: string }) {
+export function PairedDevicesCard({
+  backend,
+  className,
+}: {
+  /** Lists the selected instance's devices; defaults to this PC. */
+  backend?: BackendId;
+  className?: string;
+}) {
   const {
     devices,
     workspaces,
@@ -28,7 +36,7 @@ export function PairedDevicesCard({ className }: { className?: string }) {
     unpairDevice,
     updateLocalAlias,
     updateWorkspaceAccess,
-  } = usePairedDevices();
+  } = usePairedDevices(backend);
   const [pendingRemoval, setPendingRemoval] = useState<PairedDevice | null>(null);
 
   return (
@@ -274,7 +282,7 @@ function DeviceRow({
                 onClick={startAliasEdit}
               >
                 <span className="truncate">{name}</span>
-                <Pencil className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+                <Pencil className="h-3 w-3 shrink-0 text-muted-foreground" />
               </button>
             )}
             <Badge variant={badge.variant}>{badge.text}</Badge>

@@ -1,0 +1,2480 @@
+{
+  "sourceInitial": [
+    {
+      "case": "versions",
+      "engine": "29.8.1",
+      "api": "1.56",
+      "minimum": "1.40",
+      "compose": "5.5.1"
+    },
+    {
+      "case": "helper-create-missing-bind",
+      "parentExists": false,
+      "dataExists": false,
+      "running": false
+    },
+    {
+      "case": "archive-data",
+      "sourceMetadata": [
+        ["data", 0, 0, 448, ""],
+        ["data/link", 0, 0, 511, "nested/file"],
+        ["data/nested", 0, 0, 493, ""],
+        ["data/nested/file", 1234, 2345, 416, ""]
+      ],
+      "restoredMetadata": [
+        ["data", 0, 0, 448, ""],
+        ["data/link", 0, 0, 511, "nested/file"],
+        ["data/nested", 0, 0, 493, ""],
+        ["data/nested/file", 1234, 2345, 416, ""]
+      ],
+      "bytes": 3584,
+      "equal": true,
+      "helpersNeverStarted": true
+    },
+    {
+      "case": "archive-bind",
+      "sourceMetadata": [
+        ["bind", 0, 0, 448, ""],
+        ["bind/link", 0, 0, 511, "nested/file"],
+        ["bind/nested", 0, 0, 493, ""],
+        ["bind/nested/file", 1234, 2345, 416, ""]
+      ],
+      "restoredMetadata": [
+        ["bind", 0, 0, 448, ""],
+        ["bind/link", 0, 0, 511, "nested/file"],
+        ["bind/nested", 0, 0, 493, ""],
+        ["bind/nested/file", 1234, 2345, 416, ""]
+      ],
+      "bytes": 3584,
+      "equal": true,
+      "helpersNeverStarted": true
+    },
+    {
+      "case": "sizing-service-image",
+      "result": "8208\t/data"
+    },
+    {
+      "case": "helper-after-archive-bind",
+      "parentExists": true,
+      "dataExists": true,
+      "parentUid": 0,
+      "dataUid": 0
+    },
+    {
+      "case": "running-auto-remove",
+      "originalAutoRemove": true,
+      "originalVolumeTarget": "/data",
+      "holderAutoRemove": false,
+      "originalRemoved": true,
+      "heldBeforeStop": true,
+      "volumeSurvived": true,
+      "dataReadable": true
+    },
+    {
+      "case": "shared-volume",
+      "removalRejected": true,
+      "holders": [
+        "dc-proof-ffe78fcf-reader",
+        "dc-proof-ffe78fcf-seed",
+        "dc-proof-ffe78fcf-unselected"
+      ]
+    },
+    {
+      "case": "overlapping-binds",
+      "sources": ["/tmp/dc-proof-ffe78fcf-q5n0zb3u/root-owned", "/tmp/dc-proof-ffe78fcf-q5n0zb3u"],
+      "duplicateSubtree": true,
+      "policy": "collapse parent-child archive coverage; preserve both mount targets"
+    },
+    {
+      "case": "storage",
+      "dockerRoot": "/var/lib/docker",
+      "driver": "overlayfs",
+      "driverStatus": [["driver-type", "io.containerd.snapshotter.v1"]],
+      "paths": [
+        "416\t/var/lib/docker",
+        "427604\t/var/lib/containerd",
+        "32\t/tmp/dc-proof-ffe78fcf-q5n0zb3u"
+      ]
+    },
+    {
+      "case": "cleanup",
+      "remainingContainers": "",
+      "remainingVolumes": ""
+    }
+  ],
+  "sourceFinalOwnership": [
+    {
+      "case": "versions",
+      "engine": "29.8.1",
+      "api": "1.56",
+      "minimum": "1.40",
+      "compose": "5.5.1"
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-seed",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": ["dc-proof-ffe78fcf-source"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-reader",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": ["dc-proof-ffe78fcf-source"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-writer",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": ["dc-proof-ffe78fcf-target"]
+    },
+    {
+      "case": "helper-create-missing-bind",
+      "parentExists": false,
+      "dataExists": false,
+      "running": false
+    },
+    {
+      "case": "archive-data",
+      "sourceMetadata": [
+        ["data", 0, 0, 448, ""],
+        ["data/link", 0, 0, 511, "nested/file"],
+        ["data/nested", 0, 0, 493, ""],
+        ["data/nested/file", 1234, 2345, 416, ""]
+      ],
+      "restoredMetadata": [
+        ["data", 0, 0, 448, ""],
+        ["data/link", 0, 0, 511, "nested/file"],
+        ["data/nested", 0, 0, 493, ""],
+        ["data/nested/file", 1234, 2345, 416, ""]
+      ],
+      "bytes": 3584,
+      "equal": true,
+      "helpersNeverStarted": true
+    },
+    {
+      "case": "archive-bind",
+      "sourceMetadata": [
+        ["bind", 0, 0, 448, ""],
+        ["bind/link", 0, 0, 511, "nested/file"],
+        ["bind/nested", 0, 0, 493, ""],
+        ["bind/nested/file", 1234, 2345, 416, ""]
+      ],
+      "restoredMetadata": [
+        ["bind", 0, 0, 448, ""],
+        ["bind/link", 0, 0, 511, "nested/file"],
+        ["bind/nested", 0, 0, 493, ""],
+        ["bind/nested/file", 1234, 2345, 416, ""]
+      ],
+      "bytes": 3584,
+      "equal": true,
+      "helpersNeverStarted": true
+    },
+    {
+      "case": "sizing-service-image",
+      "result": "8208\t/data"
+    },
+    {
+      "case": "helper-after-archive-bind",
+      "parentExists": true,
+      "dataExists": true,
+      "parentUid": 0,
+      "dataUid": 0
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-auto",
+      "newlyCreatedVolumes": ["630ed131a36c0bddafe99e30aab0ab49eeb6f36d0123abc536c35171e3588b9f"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-hold",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": [
+        "630ed131a36c0bddafe99e30aab0ab49eeb6f36d0123abc536c35171e3588b9f"
+      ]
+    },
+    {
+      "case": "running-auto-remove",
+      "originalAutoRemove": true,
+      "originalVolumeTarget": "/data",
+      "holderAutoRemove": false,
+      "originalRemoved": true,
+      "heldBeforeStop": true,
+      "volumeSurvived": true,
+      "dataReadable": true
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-hold-again",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": [
+        "630ed131a36c0bddafe99e30aab0ab49eeb6f36d0123abc536c35171e3588b9f"
+      ]
+    },
+    {
+      "case": "explicit-existing-anonymous-cleanup",
+      "survivesLastHolderRemoval": true,
+      "dataPreserved": true
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-unselected",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": ["dc-proof-ffe78fcf-source"]
+    },
+    {
+      "case": "shared-volume",
+      "removalRejected": true,
+      "holders": [
+        "dc-proof-ffe78fcf-reader",
+        "dc-proof-ffe78fcf-seed",
+        "dc-proof-ffe78fcf-unselected"
+      ]
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-overlap",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "overlapping-binds",
+      "sources": ["/tmp/dc-proof-ffe78fcf-w82j4gky/root-owned", "/tmp/dc-proof-ffe78fcf-w82j4gky"],
+      "duplicateSubtree": true,
+      "policy": "collapse parent-child archive coverage; preserve both mount targets"
+    },
+    {
+      "case": "storage",
+      "dockerRoot": "/var/lib/docker",
+      "driver": "overlayfs",
+      "driverStatus": [["driver-type", "io.containerd.snapshotter.v1"]],
+      "paths": [
+        "800\t/var/lib/docker",
+        "428564\t/var/lib/containerd",
+        "32\t/tmp/dc-proof-ffe78fcf-w82j4gky"
+      ]
+    },
+    {
+      "case": "cleanup",
+      "remainingContainers": "",
+      "remainingVolumes": ""
+    }
+  ],
+  "sourceSettings": [
+    {
+      "case": "saved-settings-import",
+      "stopped": true,
+      "user": "1234:2345",
+      "restart": "unless-stopped",
+      "mountTypes": ["bind", "volume"],
+      "network": "dc-settings-ffe78fcf-net",
+      "aliases": ["proof-alias"],
+      "ports": {
+        "8080/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": ""
+          }
+        ]
+      }
+    },
+    {
+      "case": "saved-settings-start",
+      "running": true
+    },
+    {
+      "case": "dropped-device",
+      "running": true,
+      "devices": null,
+      "binds": null,
+      "network": "bridge"
+    },
+    {
+      "case": "dropped-docker-socket",
+      "running": true,
+      "devices": null,
+      "binds": null,
+      "network": "bridge"
+    },
+    {
+      "case": "dropped-host-network",
+      "running": true,
+      "devices": null,
+      "binds": null,
+      "network": "bridge"
+    },
+    {
+      "case": "cleanup",
+      "containers": "",
+      "volumes": "",
+      "networks": ""
+    }
+  ],
+  "sourceReconnect": [
+    {
+      "case": "compose-created-holder",
+      "composeProject": "dc-reconnect-ffe78fcf",
+      "devchainLabel": null,
+      "removeVolumeBlocked": true
+    },
+    {
+      "case": "second-connect-replacement",
+      "replacedHolder": true,
+      "freshData": true,
+      "staleGone": true
+    },
+    {
+      "case": "cancel-during-replacement",
+      "attemptHelperGone": true,
+      "attemptVolumeGone": true,
+      "oldVmCopyRecoverable": false
+    },
+    {
+      "case": "unlabelled-name-conflict",
+      "action": "reject-before-delete",
+      "hasOwnershipLabel": false,
+      "volumeStillExists": true
+    },
+    {
+      "case": "cleanup",
+      "containers": "",
+      "volumes": "",
+      "networks": ""
+    }
+  ],
+  "targetInitialArchives": [
+    {
+      "case": "versions",
+      "engine": "29.7.2",
+      "api": "1.55",
+      "minimum": "1.40",
+      "compose": "5.5.1"
+    },
+    {
+      "case": "helper-create-missing-bind",
+      "parentExists": false,
+      "dataExists": false,
+      "running": false
+    },
+    {
+      "case": "archive-data",
+      "sourceMetadata": [
+        ["data", 0, 0, 448, ""],
+        ["data/link", 0, 0, 511, "nested/file"],
+        ["data/nested", 0, 0, 493, ""],
+        ["data/nested/file", 1234, 2345, 416, ""]
+      ],
+      "restoredMetadata": [
+        ["data", 0, 0, 448, ""],
+        ["data/link", 0, 0, 511, "nested/file"],
+        ["data/nested", 0, 0, 493, ""],
+        ["data/nested/file", 1234, 2345, 416, ""]
+      ],
+      "bytes": 3584,
+      "equal": true,
+      "helpersNeverStarted": true
+    },
+    {
+      "case": "archive-bind",
+      "sourceMetadata": [
+        ["bind", 0, 0, 448, ""],
+        ["bind/link", 0, 0, 511, "nested/file"],
+        ["bind/nested", 0, 0, 493, ""],
+        ["bind/nested/file", 1234, 2345, 416, ""]
+      ],
+      "restoredMetadata": [
+        ["bind", 0, 0, 448, ""],
+        ["bind/link", 0, 0, 511, "nested/file"],
+        ["bind/nested", 0, 0, 493, ""],
+        ["bind/nested/file", 1234, 2345, 416, ""]
+      ],
+      "bytes": 3584,
+      "equal": true,
+      "helpersNeverStarted": true
+    },
+    {
+      "case": "sizing-service-image",
+      "result": "8208\t/data"
+    },
+    {
+      "case": "helper-after-archive-bind",
+      "parentExists": true,
+      "dataExists": true,
+      "parentUid": 0,
+      "dataUid": 0
+    },
+    {
+      "case": "running-auto-remove",
+      "originalAutoRemove": true,
+      "originalVolumeTarget": "/data",
+      "holderAutoRemove": false,
+      "originalRemoved": true,
+      "heldBeforeStop": true,
+      "volumeSurvived": true,
+      "dataReadable": true
+    },
+    {
+      "case": "shared-volume",
+      "removalRejected": true,
+      "holders": [
+        "dc-proof-ffe78fcf-reader",
+        "dc-proof-ffe78fcf-seed",
+        "dc-proof-ffe78fcf-unselected"
+      ]
+    },
+    {
+      "case": "overlapping-binds",
+      "sources": ["/tmp/dc-proof-ffe78fcf-r5qd2i6_/root-owned", "/tmp/dc-proof-ffe78fcf-r5qd2i6_"],
+      "duplicateSubtree": true,
+      "policy": "collapse parent-child archive coverage; preserve both mount targets"
+    },
+    {
+      "case": "storage",
+      "dockerRoot": "/var/lib/docker",
+      "driver": "overlayfs",
+      "driverStatus": [["driver-type", "io.containerd.snapshotter.v1"]],
+      "paths": [
+        "260\t/var/lib/docker",
+        "13292\t/var/lib/containerd",
+        "32\t/tmp/dc-proof-ffe78fcf-r5qd2i6_"
+      ]
+    },
+    {
+      "case": "cleanup",
+      "remainingContainers": "",
+      "remainingVolumes": ""
+    }
+  ],
+  "targetFinalOwnership": [
+    {
+      "case": "versions",
+      "engine": "29.7.2",
+      "api": "1.55",
+      "minimum": "1.40",
+      "compose": "5.5.1"
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-seed",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": ["dc-proof-ffe78fcf-source"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-reader",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": ["dc-proof-ffe78fcf-source"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-writer",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": ["dc-proof-ffe78fcf-target"]
+    },
+    {
+      "case": "helper-create-missing-bind",
+      "parentExists": false,
+      "dataExists": false,
+      "running": false
+    },
+    {
+      "case": "archive-data",
+      "sourceMetadata": [
+        ["data", 0, 0, 448, ""],
+        ["data/link", 0, 0, 511, "nested/file"],
+        ["data/nested", 0, 0, 493, ""],
+        ["data/nested/file", 1234, 2345, 416, ""]
+      ],
+      "restoredMetadata": [
+        ["data", 0, 0, 448, ""],
+        ["data/link", 0, 0, 511, "nested/file"],
+        ["data/nested", 0, 0, 493, ""],
+        ["data/nested/file", 1234, 2345, 416, ""]
+      ],
+      "bytes": 3584,
+      "equal": true,
+      "helpersNeverStarted": true
+    },
+    {
+      "case": "archive-bind",
+      "sourceMetadata": [
+        ["bind", 0, 0, 448, ""],
+        ["bind/link", 0, 0, 511, "nested/file"],
+        ["bind/nested", 0, 0, 493, ""],
+        ["bind/nested/file", 1234, 2345, 416, ""]
+      ],
+      "restoredMetadata": [
+        ["bind", 0, 0, 448, ""],
+        ["bind/link", 0, 0, 511, "nested/file"],
+        ["bind/nested", 0, 0, 493, ""],
+        ["bind/nested/file", 1234, 2345, 416, ""]
+      ],
+      "bytes": 3584,
+      "equal": true,
+      "helpersNeverStarted": true
+    },
+    {
+      "case": "sizing-service-image",
+      "result": "8208\t/data"
+    },
+    {
+      "case": "helper-after-archive-bind",
+      "parentExists": true,
+      "dataExists": true,
+      "parentUid": 0,
+      "dataUid": 0
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-auto",
+      "newlyCreatedVolumes": ["bb8bea62e7bdacc1866fe98e86aa47e22a7d57baf5f4c4faf0b8b03d8bf5a022"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-hold",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": [
+        "bb8bea62e7bdacc1866fe98e86aa47e22a7d57baf5f4c4faf0b8b03d8bf5a022"
+      ]
+    },
+    {
+      "case": "running-auto-remove",
+      "originalAutoRemove": true,
+      "originalVolumeTarget": "/data",
+      "holderAutoRemove": false,
+      "originalRemoved": true,
+      "heldBeforeStop": true,
+      "volumeSurvived": true,
+      "dataReadable": true
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-hold-again",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": [
+        "bb8bea62e7bdacc1866fe98e86aa47e22a7d57baf5f4c4faf0b8b03d8bf5a022"
+      ]
+    },
+    {
+      "case": "explicit-existing-anonymous-cleanup",
+      "survivesLastHolderRemoval": true,
+      "dataPreserved": true
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-unselected",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": ["dc-proof-ffe78fcf-source"]
+    },
+    {
+      "case": "shared-volume",
+      "removalRejected": true,
+      "holders": [
+        "dc-proof-ffe78fcf-reader",
+        "dc-proof-ffe78fcf-seed",
+        "dc-proof-ffe78fcf-unselected"
+      ]
+    },
+    {
+      "case": "container-mount-inventory",
+      "container": "dc-proof-ffe78fcf-overlap",
+      "newlyCreatedVolumes": [],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "overlapping-binds",
+      "sources": ["/tmp/dc-proof-ffe78fcf-y6kc6v6c/root-owned", "/tmp/dc-proof-ffe78fcf-y6kc6v6c"],
+      "duplicateSubtree": true,
+      "policy": "collapse parent-child archive coverage; preserve both mount targets"
+    },
+    {
+      "case": "storage",
+      "dockerRoot": "/var/lib/docker",
+      "driver": "overlayfs",
+      "driverStatus": [["driver-type", "io.containerd.snapshotter.v1"]],
+      "paths": [
+        "280\t/var/lib/docker",
+        "13336\t/var/lib/containerd",
+        "32\t/tmp/dc-proof-ffe78fcf-y6kc6v6c"
+      ]
+    },
+    {
+      "case": "cleanup",
+      "remainingContainers": "",
+      "remainingVolumes": ""
+    }
+  ],
+  "targetReconnect": [
+    {
+      "case": "compose-created-holder",
+      "composeProject": "dc-reconnect-ffe78fcf",
+      "devchainLabel": null,
+      "removeVolumeBlocked": true
+    },
+    {
+      "case": "second-connect-replacement",
+      "replacedHolder": true,
+      "freshData": true,
+      "staleGone": true
+    },
+    {
+      "case": "cancel-during-replacement",
+      "attemptHelperGone": true,
+      "attemptVolumeGone": true,
+      "oldVmCopyRecoverable": false
+    },
+    {
+      "case": "unlabelled-name-conflict",
+      "action": "reject-before-delete",
+      "hasOwnershipLabel": false,
+      "volumeStillExists": true
+    },
+    {
+      "case": "cleanup",
+      "containers": "",
+      "volumes": "",
+      "networks": ""
+    }
+  ],
+  "crossVersionSettings": [
+    {
+      "case": "saved-settings-import",
+      "stopped": true,
+      "user": "1234:2345",
+      "restart": "unless-stopped",
+      "mountTypes": ["bind", "volume"],
+      "network": "dc-settings-ffe78fcf-net",
+      "aliases": ["proof-alias"],
+      "ports": {
+        "8080/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": ""
+          }
+        ]
+      }
+    },
+    {
+      "case": "saved-settings-start",
+      "running": true
+    },
+    {
+      "case": "dropped-device",
+      "running": true,
+      "devices": null,
+      "binds": null,
+      "network": "bridge"
+    },
+    {
+      "case": "dropped-docker-socket",
+      "running": true,
+      "devices": null,
+      "binds": null,
+      "network": "bridge"
+    },
+    {
+      "case": "dropped-host-network",
+      "running": true,
+      "devices": null,
+      "binds": null,
+      "network": "bridge"
+    },
+    {
+      "case": "cleanup",
+      "containers": "",
+      "volumes": "",
+      "networks": ""
+    }
+  ],
+  "initialRoundtrip": [
+    {
+      "case": "negotiation",
+      "engines": [
+        {
+          "Version": "29.8.1",
+          "ApiVersion": "1.56",
+          "MinAPIVersion": "1.40"
+        },
+        {
+          "Version": "29.7.2",
+          "ApiVersion": "1.55",
+          "MinAPIVersion": "1.40"
+        }
+      ],
+      "selected": "1.55",
+      "sameVersion": false
+    },
+    {
+      "case": "offline-image-stream",
+      "seconds": 3.927,
+      "imageIdEqual": true
+    },
+    {
+      "case": "compose-normalized",
+      "services": ["db"]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "overlap-deduplicated",
+      "child": "/tmp/dc-roundtrip-ffe78fcf8rt7c1a6/project/data"
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 4096,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40824832,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40824832,
+      "helpersStopped": true
+    },
+    {
+      "case": "compose-reuse",
+      "containerIdSame": true,
+      "beforeVolumes": [
+        "c800a37d519253b01b5528350053e1354b44fce882306609b6a84933080a86a6",
+        "dc-roundtrip-ffe78fcf_db"
+      ],
+      "afterVolumes": [
+        "c800a37d519253b01b5528350053e1354b44fce882306609b6a84933080a86a6",
+        "dc-roundtrip-ffe78fcf_db"
+      ]
+    },
+    {
+      "case": "agent-started-postgres",
+      "kind": "compose",
+      "rowsVerified": true
+    },
+    {
+      "case": "agent-started-postgres",
+      "kind": "run",
+      "rowsVerified": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 3584,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 4096,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40825344,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 3584,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40825344,
+      "helpersStopped": true
+    },
+    {
+      "case": "roundtrip",
+      "composeRows": true,
+      "runRows": true
+    },
+    {
+      "case": "cleanup",
+      "inventory": {
+        "home": {
+          "containers": [
+            "dc-roundtrip-ffe78fcf-db-1",
+            "dc-roundtrip-ffe78fcf-run",
+            "dc-roundtrip-ffe78fcf-read-1",
+            "dc-roundtrip-ffe78fcf-read-3",
+            "dc-roundtrip-ffe78fcf-read-4",
+            "dc-roundtrip-ffe78fcf-read-5",
+            "dc-roundtrip-ffe78fcf-read-6",
+            "dc-roundtrip-ffe78fcf-write-101",
+            "dc-roundtrip-ffe78fcf-write-102",
+            "dc-roundtrip-ffe78fcf-write-103",
+            "dc-roundtrip-ffe78fcf-write-104",
+            "dc-roundtrip-ffe78fcf-write-105",
+            "dc-roundtrip-ffe78fcf-write-106",
+            "dc-roundtrip-ffe78fcf-write-107"
+          ],
+          "volumes": [
+            "c800a37d519253b01b5528350053e1354b44fce882306609b6a84933080a86a6",
+            "dc-roundtrip-ffe78fcf_db",
+            "dc-roundtrip-ffe78fcf-run-named",
+            "30e214a7048cf86a38d7c806ab3b9432bc22f3ab723e8a93ccf7a1ed048718c8"
+          ],
+          "networks": ["dc-roundtrip-ffe78fcf_default"]
+        },
+        "vm": {
+          "containers": [
+            "dc-roundtrip-ffe78fcf-write-1",
+            "dc-roundtrip-ffe78fcf-write-3",
+            "dc-roundtrip-ffe78fcf-write-4",
+            "dc-roundtrip-ffe78fcf-write-5",
+            "dc-roundtrip-ffe78fcf-write-6",
+            "dc-roundtrip-ffe78fcf-db-1",
+            "dc-roundtrip-ffe78fcf-run",
+            "dc-roundtrip-ffe78fcf-read-101",
+            "dc-roundtrip-ffe78fcf-read-102",
+            "dc-roundtrip-ffe78fcf-read-103",
+            "dc-roundtrip-ffe78fcf-read-104",
+            "dc-roundtrip-ffe78fcf-read-105",
+            "dc-roundtrip-ffe78fcf-read-106",
+            "dc-roundtrip-ffe78fcf-read-107"
+          ],
+          "volumes": [
+            "c800a37d519253b01b5528350053e1354b44fce882306609b6a84933080a86a6",
+            "dc-roundtrip-ffe78fcf_db",
+            "dc-roundtrip-ffe78fcf-run-named",
+            "30e214a7048cf86a38d7c806ab3b9432bc22f3ab723e8a93ccf7a1ed048718c8"
+          ],
+          "networks": ["dc-roundtrip-ffe78fcf_default"]
+        }
+      }
+    }
+  ],
+  "oldCleanupExtendedRoundtrip": [
+    {
+      "case": "negotiation",
+      "engines": [
+        {
+          "Version": "29.8.1",
+          "ApiVersion": "1.56",
+          "MinAPIVersion": "1.40"
+        },
+        {
+          "Version": "29.7.2",
+          "ApiVersion": "1.55",
+          "MinAPIVersion": "1.40"
+        }
+      ],
+      "selected": "1.55",
+      "sameVersion": false
+    },
+    {
+      "case": "offline-image-stream",
+      "seconds": 4.06,
+      "imageIdEqual": true
+    },
+    {
+      "case": "compose-normalized",
+      "services": ["db"]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "overlap-deduplicated",
+      "child": "/tmp/dc-roundtrip-ffe78fcfh8s1mume/project/data"
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 4096,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40824832,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40824832,
+      "helpersStopped": true
+    },
+    {
+      "case": "compose-reuse",
+      "containerIdSame": true,
+      "beforeVolumes": [
+        "86eb722b2bec62118c5a3ccf3211e9db369f3a7beaae215c6f2e755b31a31239",
+        "dc-roundtrip-ffe78fcf_db"
+      ],
+      "afterVolumes": [
+        "dc-roundtrip-ffe78fcf_db",
+        "86eb722b2bec62118c5a3ccf3211e9db369f3a7beaae215c6f2e755b31a31239"
+      ]
+    },
+    {
+      "case": "agent-started-postgres",
+      "kind": "compose",
+      "rowsVerified": true
+    },
+    {
+      "case": "agent-started-postgres",
+      "kind": "run",
+      "rowsVerified": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 3584,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 4096,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40825344,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 3584,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40825344,
+      "helpersStopped": true
+    },
+    {
+      "case": "roundtrip",
+      "composeRows": true,
+      "runRows": true
+    },
+    {
+      "case": "second-connect-holder",
+      "createdByCompose": true,
+      "differsFromImported": true,
+      "volume": "dc-roundtrip-ffe78fcf_db"
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40825344,
+      "helpersStopped": true
+    },
+    {
+      "case": "second-connect-fresh-copy",
+      "staleGone": true,
+      "rowsVerified": true
+    },
+    {
+      "case": "second-connect-cancel",
+      "onlyPreviouslyRunningSourceRestarted": true,
+      "partialVolumeRemoved": true,
+      "previousTargetCopyRestored": false
+    },
+    {
+      "case": "cleanup",
+      "inventory": {
+        "home": {
+          "containers": [
+            "dc-roundtrip-ffe78fcf-db-1",
+            "dc-roundtrip-ffe78fcf-run",
+            "dc-roundtrip-ffe78fcf-read-1",
+            "dc-roundtrip-ffe78fcf-read-3",
+            "dc-roundtrip-ffe78fcf-read-4",
+            "dc-roundtrip-ffe78fcf-read-5",
+            "dc-roundtrip-ffe78fcf-read-6",
+            "dc-roundtrip-ffe78fcf-write-101",
+            "dc-roundtrip-ffe78fcf-write-102",
+            "dc-roundtrip-ffe78fcf-write-103",
+            "dc-roundtrip-ffe78fcf-write-104",
+            "dc-roundtrip-ffe78fcf-write-105",
+            "dc-roundtrip-ffe78fcf-write-106",
+            "dc-roundtrip-ffe78fcf-write-107",
+            "dc-roundtrip-ffe78fcf-read-200"
+          ],
+          "volumes": [
+            "dc-roundtrip-ffe78fcf-run-named",
+            "6d814ed3181c9efc4292d7ce36966e96620c78f408eff914973cf9c3fc2850ca",
+            "86eb722b2bec62118c5a3ccf3211e9db369f3a7beaae215c6f2e755b31a31239",
+            "dc-roundtrip-ffe78fcf_db",
+            "6448b8e96d83830f5c74c18be4550741d72086cc171e2171006bccb6080cce8c",
+            "d903d0d98558573fe37766b0aa9e1e1025cbb0229809dd8c352faa6f5ca7fc4d",
+            "9b3320d3595d3954f9a0d457db9305ded716e2c61ee932accc2a33370f3d2449",
+            "d3eab55c14a655c9288b9b21a44a6ade63e6da2fc0093e3f31d87464b99ebeaf",
+            "3701645da3cfd1880865a4c12dc0f2227434f09b68dd40242ef519d3a0a564e3",
+            "e68958981253afbadc3afcd9bd203f346c97cd1c86e9f0b4d432598ce0904413",
+            "2c63f5ef519ac91bfa30f490e3652271fcf1fb74e58c2c40780ccb93c627ff69",
+            "bc1b37ea581d953bb3a3065b70d80f97c852d9444ec644d86879adf8775cb247",
+            "3f6702490cab3e8fa5c2a107099a55cce410d261a41ccd9c5b08ddc7fb69b86f",
+            "5451faf3090e757ffa91d04d2588078e8d697ee3bb459e62a0db1981accb9652",
+            "72ce8b1fe709268bf45b98c16381eb28257eee15b0e18d1d53840d61fb153e53",
+            "ab75b24349ea8c4f34cc4c127747145ff6cd0579ea734b5f91d61dfc109c8e25",
+            "6499f0738b688532aef5327128d1a17f88bff6061db1e7b28db95eb99faf1a92"
+          ],
+          "networks": ["dc-roundtrip-ffe78fcf_default"]
+        },
+        "vm": {
+          "containers": [
+            "dc-roundtrip-ffe78fcf-write-1",
+            "dc-roundtrip-ffe78fcf-write-3",
+            "dc-roundtrip-ffe78fcf-write-4",
+            "dc-roundtrip-ffe78fcf-write-5",
+            "dc-roundtrip-ffe78fcf-write-6",
+            "dc-roundtrip-ffe78fcf-db-1",
+            "dc-roundtrip-ffe78fcf-run",
+            "dc-roundtrip-ffe78fcf-read-101",
+            "dc-roundtrip-ffe78fcf-read-102",
+            "dc-roundtrip-ffe78fcf-read-103",
+            "dc-roundtrip-ffe78fcf-read-104",
+            "dc-roundtrip-ffe78fcf-read-105",
+            "dc-roundtrip-ffe78fcf-read-106",
+            "dc-roundtrip-ffe78fcf-read-107",
+            "dc-roundtrip-ffe78fcf-write-200",
+            "dc-roundtrip-ffe78fcf-cancel-partial"
+          ],
+          "volumes": [
+            "86eb722b2bec62118c5a3ccf3211e9db369f3a7beaae215c6f2e755b31a31239",
+            "e67a501f71459edb5a8fc05c28f0c6c58a004b779866b4fbdd276167b1c7ceed",
+            "9b7362d8ebb3fcab10ea13f42f13e4ebcd1c9d34870b1226d574723ce9afc024",
+            "dc-roundtrip-ffe78fcf_db",
+            "3458d4ff468ef1ec12a2e6ab7daf1c0c5475f3fd31cba5ed2c72de2072fd5d50",
+            "dc-roundtrip-ffe78fcf-run-named",
+            "4c94c9dccca6d45130002921c0485754073c999c6517936c2488c5b08da7d7a1",
+            "6d814ed3181c9efc4292d7ce36966e96620c78f408eff914973cf9c3fc2850ca",
+            "1d3b4d66f9839a7b05418e9d453071c216ccb02b3e16e43b2170e9905695fa9e",
+            "abefd5269f4b893308d7ddbdef9bcff44c4803279ba91c85a11d47806aff3d63",
+            "db01eeeb0bf0e558c0b6b78448e660d2f362463bb81c34240be5780ff94d44fe",
+            "ad9957fbaeacac5bcd4ad52cdc9c5daece317848d90f2cc2aff0eb9152d65888",
+            "dccf92abadf27e31082cb06a41d948f14d65203ad93b515cb635f1d133c8a23e",
+            "9cd24f7433f35459e5e0e57b1d3b40e21a477f22d06334d436f8d8b1a60d2654",
+            "0dbb9dca5e4cb1845378cd32ce34fcf746fd71dcef3f78018c876b9899cb4c2a",
+            "4973f656a57fc419e14f861cc1243ec8c2da5ae0137259b0bf5841693b218884",
+            "001d60af3c5e69f9e82b373ac870a0107714caecf522c499cf0b4de6df7ddde3",
+            "0fa5bff55aea3e56e8e2afa65efbecf19d881dd12fd671cc9e37efc0a7eb496e",
+            "1c078c594ba37b0e5117abe1b46921ad54cba8564ae26b3cb4ec2fdfbd2c1c6d",
+            "b3f3129487348ba42d38215336db81e70ffedcb4c761cb5870ae7a2b0d1cd95e"
+          ],
+          "networks": ["dc-roundtrip-ffe78fcf_default"]
+        }
+      }
+    }
+  ],
+  "rule11Roundtrip": [
+    {
+      "case": "negotiation",
+      "engines": [
+        {
+          "Version": "29.8.1",
+          "ApiVersion": "1.56",
+          "MinAPIVersion": "1.40"
+        },
+        {
+          "Version": "29.7.2",
+          "ApiVersion": "1.55",
+          "MinAPIVersion": "1.40"
+        }
+      ],
+      "selected": "1.55",
+      "sameVersion": false
+    },
+    {
+      "case": "offline-image-stream",
+      "seconds": 3.937,
+      "imageIdEqual": true
+    },
+    {
+      "case": "compose-normalized",
+      "services": ["db"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-run",
+      "newlyCreatedVolumes": [
+        "dc-roundtrip-ffe78fcf-run-named",
+        "653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"
+      ],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-1",
+      "newlyCreatedVolumes": ["57916fe4027d916d6cca5449b80d5cc67aab1861c47b23668a9ec77efbb28c1f"],
+      "protectedExistingVolumes": [
+        "2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"
+      ]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-1",
+      "newlyCreatedVolumes": ["e20e5cfe43e725511821ea4677f6152e9d4fb901e41f54bb52364b36eb627c64"],
+      "protectedExistingVolumes": [
+        "2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"
+      ]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-1",
+      "removed": ["57916fe4027d916d6cca5449b80d5cc67aab1861c47b23668a9ec77efbb28c1f"],
+      "protectedStillPresent": ["2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-1",
+      "removed": ["e20e5cfe43e725511821ea4677f6152e9d4fb901e41f54bb52364b36eb627c64"],
+      "protectedStillPresent": ["2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"]
+    },
+    {
+      "case": "overlap-deduplicated",
+      "child": "/tmp/dc-roundtrip-ffe78fcfu2y4b01q/project/data"
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-3",
+      "newlyCreatedVolumes": ["2393641d80d29aba77986951f4d16dd5ce13c40526636d48da42bdddb159b33c"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-3",
+      "newlyCreatedVolumes": ["496482fda5047b5721b2ad416bd4cb2930402d694cb638989c4730a6f2c3d2c8"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 4096,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-3",
+      "removed": ["2393641d80d29aba77986951f4d16dd5ce13c40526636d48da42bdddb159b33c"],
+      "protectedStillPresent": []
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-3",
+      "removed": ["496482fda5047b5721b2ad416bd4cb2930402d694cb638989c4730a6f2c3d2c8"],
+      "protectedStillPresent": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-4",
+      "newlyCreatedVolumes": ["70a82ab7729ab5f65e9898d11d5ecf0cc92e0351b69f7bd29735063fc1fabbe4"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-4",
+      "newlyCreatedVolumes": ["b59662098892cb04b0deda2b7c46e0dc246024f6a3c8dca203c746ce050d45ea"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40824832,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-4",
+      "removed": ["70a82ab7729ab5f65e9898d11d5ecf0cc92e0351b69f7bd29735063fc1fabbe4"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-4",
+      "removed": ["b59662098892cb04b0deda2b7c46e0dc246024f6a3c8dca203c746ce050d45ea"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-5",
+      "newlyCreatedVolumes": ["95971c037c37a0f9835fb64741630d335ca016ec6b7118efbce41eec8dc47e7c"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf-run-named"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-5",
+      "newlyCreatedVolumes": ["807ddb5c057ede8348c976a66265e1de6adc841d5f0b6c256135fb0c8e97b845"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf-run-named"]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-5",
+      "removed": ["95971c037c37a0f9835fb64741630d335ca016ec6b7118efbce41eec8dc47e7c"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf-run-named"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-5",
+      "removed": ["807ddb5c057ede8348c976a66265e1de6adc841d5f0b6c256135fb0c8e97b845"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf-run-named"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-6",
+      "newlyCreatedVolumes": ["2261851c358a77b87312dce20d0bc8d7821459799e53296ea65a6a948852af40"],
+      "protectedExistingVolumes": [
+        "653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"
+      ]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-6",
+      "newlyCreatedVolumes": ["5cc40bceb71887353ff8e3ec2d2f58d92720c3796afbc9734a1c184125af5f5e"],
+      "protectedExistingVolumes": [
+        "653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"
+      ]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40824832,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-6",
+      "removed": ["2261851c358a77b87312dce20d0bc8d7821459799e53296ea65a6a948852af40"],
+      "protectedStillPresent": ["653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-6",
+      "removed": ["5cc40bceb71887353ff8e3ec2d2f58d92720c3796afbc9734a1c184125af5f5e"],
+      "protectedStillPresent": ["653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"]
+    },
+    {
+      "case": "compose-reuse",
+      "containerIdSame": true,
+      "beforeVolumes": [
+        "2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a",
+        "dc-roundtrip-ffe78fcf_db"
+      ],
+      "afterVolumes": [
+        "dc-roundtrip-ffe78fcf_db",
+        "2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"
+      ]
+    },
+    {
+      "case": "agent-started-postgres",
+      "kind": "compose",
+      "rowsVerified": true
+    },
+    {
+      "case": "agent-started-postgres",
+      "kind": "run",
+      "rowsVerified": true
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-101",
+      "newlyCreatedVolumes": ["a9570f035c723e23d8b78ed2fe6d3dd46b1fdb597e09640d929692015a9fba03"],
+      "protectedExistingVolumes": [
+        "2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"
+      ]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-101",
+      "newlyCreatedVolumes": ["201e83903a956d63f046af5bf0d7d0867830e19ed6ac77d6810f470e453a879a"],
+      "protectedExistingVolumes": [
+        "2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"
+      ]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-101",
+      "removed": ["a9570f035c723e23d8b78ed2fe6d3dd46b1fdb597e09640d929692015a9fba03"],
+      "protectedStillPresent": ["2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-101",
+      "removed": ["201e83903a956d63f046af5bf0d7d0867830e19ed6ac77d6810f470e453a879a"],
+      "protectedStillPresent": ["2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-102",
+      "newlyCreatedVolumes": ["51a0428c702fc8c09c4c0a8671915003c1b6ccb67231b9a748f068ea05eb09ae"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-102",
+      "newlyCreatedVolumes": ["bf3d0ce5525ce5a0fae2dc5123a93c59022e176446dc4ea6f2af8bb76e7f42df"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 3584,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-102",
+      "removed": ["51a0428c702fc8c09c4c0a8671915003c1b6ccb67231b9a748f068ea05eb09ae"],
+      "protectedStillPresent": []
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-102",
+      "removed": ["bf3d0ce5525ce5a0fae2dc5123a93c59022e176446dc4ea6f2af8bb76e7f42df"],
+      "protectedStillPresent": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-103",
+      "newlyCreatedVolumes": ["0233076e54bff4e792a2226195022af301e2e0f56ccc189c0dd430446cfc3f51"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-103",
+      "newlyCreatedVolumes": ["1decc985d1eb6724bdec3093371b90df115e3333f519df761326fe5d13400416"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 4096,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-103",
+      "removed": ["0233076e54bff4e792a2226195022af301e2e0f56ccc189c0dd430446cfc3f51"],
+      "protectedStillPresent": []
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-103",
+      "removed": ["1decc985d1eb6724bdec3093371b90df115e3333f519df761326fe5d13400416"],
+      "protectedStillPresent": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-104",
+      "newlyCreatedVolumes": ["806e3ebd8c725f2ff6531097f122f964002efb77a4545745ca204cc78e0bd33e"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-104",
+      "newlyCreatedVolumes": ["f5d5cce720fcd74e2bcfd0862a37bdb268f564f1d57bdf24e143cbd31f3fddad"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40825344,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-104",
+      "removed": ["806e3ebd8c725f2ff6531097f122f964002efb77a4545745ca204cc78e0bd33e"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-104",
+      "removed": ["f5d5cce720fcd74e2bcfd0862a37bdb268f564f1d57bdf24e143cbd31f3fddad"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-105",
+      "newlyCreatedVolumes": ["015fdfbf31cdd35ca1d07a5cde62855ed7546d069642ad74db6396421e0541a0"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-105",
+      "newlyCreatedVolumes": ["c248073f4161a5529b044bbe2cb2356c4d7d221b03311d7d64e7d403ee1c8ce6"],
+      "protectedExistingVolumes": []
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "bind",
+      "metadataEqual": true,
+      "bytes": 3584,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-105",
+      "removed": ["015fdfbf31cdd35ca1d07a5cde62855ed7546d069642ad74db6396421e0541a0"],
+      "protectedStillPresent": []
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-105",
+      "removed": ["c248073f4161a5529b044bbe2cb2356c4d7d221b03311d7d64e7d403ee1c8ce6"],
+      "protectedStillPresent": []
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-106",
+      "newlyCreatedVolumes": ["a437ae647bba9ec457dff56e6e0575ed344deff8f7c348e18e979531a4711a9b"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf-run-named"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-106",
+      "newlyCreatedVolumes": ["f9d98b47ced692ed80968cf94272cd0fb2f4f7c2a888c76578fe152d2c34b341"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf-run-named"]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 2560,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-106",
+      "removed": ["a437ae647bba9ec457dff56e6e0575ed344deff8f7c348e18e979531a4711a9b"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf-run-named"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-106",
+      "removed": ["f9d98b47ced692ed80968cf94272cd0fb2f4f7c2a888c76578fe152d2c34b341"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf-run-named"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-107",
+      "newlyCreatedVolumes": ["f6f8f012896437fe2889e8c24054a15e0ebbce1d3a0719f4293056119ef9efc2"],
+      "protectedExistingVolumes": [
+        "653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"
+      ]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-107",
+      "newlyCreatedVolumes": ["aa51c5f82546c9951c4f216dc6fabd1cba23f0decf1292b31122644edf90f627"],
+      "protectedExistingVolumes": [
+        "653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"
+      ]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "vm-home",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40825344,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-read-107",
+      "removed": ["f6f8f012896437fe2889e8c24054a15e0ebbce1d3a0719f4293056119ef9efc2"],
+      "protectedStillPresent": ["653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-write-107",
+      "removed": ["aa51c5f82546c9951c4f216dc6fabd1cba23f0decf1292b31122644edf90f627"],
+      "protectedStillPresent": ["653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397"]
+    },
+    {
+      "case": "roundtrip",
+      "composeRows": true,
+      "runRows": true
+    },
+    {
+      "case": "second-connect-holder",
+      "createdByCompose": true,
+      "differsFromImported": true,
+      "volume": "dc-roundtrip-ffe78fcf_db"
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-200",
+      "newlyCreatedVolumes": ["f830a5808e2bef1f6dedfa327f53f732d3619e00ebd7dc2061f76a03dffd32e9"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-200",
+      "newlyCreatedVolumes": ["961e6b582bc0879090eaa8c5f4def82b8ffefba71a09709298787dde81586f87"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "archive-transfer",
+      "direction": "home-vm",
+      "type": "volume",
+      "metadataEqual": true,
+      "bytes": 40825344,
+      "helpersStopped": true
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "home",
+      "container": "dc-roundtrip-ffe78fcf-read-200",
+      "removed": ["f830a5808e2bef1f6dedfa327f53f732d3619e00ebd7dc2061f76a03dffd32e9"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "container-owned-volume-cleanup",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-write-200",
+      "removed": ["961e6b582bc0879090eaa8c5f4def82b8ffefba71a09709298787dde81586f87"],
+      "protectedStillPresent": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "second-connect-fresh-copy",
+      "staleGone": true,
+      "rowsVerified": true
+    },
+    {
+      "case": "container-mount-inventory",
+      "side": "vm",
+      "container": "dc-roundtrip-ffe78fcf-cancel-partial",
+      "newlyCreatedVolumes": ["2b3c2640025df2a0638b1f43e9d274cad729d47d32475a7bc031b233ecf52ce0"],
+      "protectedExistingVolumes": ["dc-roundtrip-ffe78fcf_db"]
+    },
+    {
+      "case": "second-connect-cancel",
+      "onlyPreviouslyRunningSourceRestarted": true,
+      "partialVolumeRemoved": true,
+      "previousTargetCopyRestored": false
+    },
+    {
+      "case": "cleanup",
+      "inventory": {
+        "home": {
+          "containers": [
+            "dc-roundtrip-ffe78fcf-db-1",
+            "dc-roundtrip-ffe78fcf-run",
+            "dc-roundtrip-ffe78fcf-read-1",
+            "dc-roundtrip-ffe78fcf-read-3",
+            "dc-roundtrip-ffe78fcf-read-4",
+            "dc-roundtrip-ffe78fcf-read-5",
+            "dc-roundtrip-ffe78fcf-read-6",
+            "dc-roundtrip-ffe78fcf-write-101",
+            "dc-roundtrip-ffe78fcf-write-102",
+            "dc-roundtrip-ffe78fcf-write-103",
+            "dc-roundtrip-ffe78fcf-write-104",
+            "dc-roundtrip-ffe78fcf-write-105",
+            "dc-roundtrip-ffe78fcf-write-106",
+            "dc-roundtrip-ffe78fcf-write-107",
+            "dc-roundtrip-ffe78fcf-read-200"
+          ],
+          "volumes": [
+            "dc-roundtrip-ffe78fcf-run-named",
+            "653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397",
+            "2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a",
+            "dc-roundtrip-ffe78fcf_db",
+            "57916fe4027d916d6cca5449b80d5cc67aab1861c47b23668a9ec77efbb28c1f",
+            "2393641d80d29aba77986951f4d16dd5ce13c40526636d48da42bdddb159b33c",
+            "70a82ab7729ab5f65e9898d11d5ecf0cc92e0351b69f7bd29735063fc1fabbe4",
+            "95971c037c37a0f9835fb64741630d335ca016ec6b7118efbce41eec8dc47e7c",
+            "2261851c358a77b87312dce20d0bc8d7821459799e53296ea65a6a948852af40",
+            "201e83903a956d63f046af5bf0d7d0867830e19ed6ac77d6810f470e453a879a",
+            "bf3d0ce5525ce5a0fae2dc5123a93c59022e176446dc4ea6f2af8bb76e7f42df",
+            "1decc985d1eb6724bdec3093371b90df115e3333f519df761326fe5d13400416",
+            "f5d5cce720fcd74e2bcfd0862a37bdb268f564f1d57bdf24e143cbd31f3fddad",
+            "c248073f4161a5529b044bbe2cb2356c4d7d221b03311d7d64e7d403ee1c8ce6",
+            "f9d98b47ced692ed80968cf94272cd0fb2f4f7c2a888c76578fe152d2c34b341",
+            "aa51c5f82546c9951c4f216dc6fabd1cba23f0decf1292b31122644edf90f627",
+            "f830a5808e2bef1f6dedfa327f53f732d3619e00ebd7dc2061f76a03dffd32e9"
+          ],
+          "networks": ["dc-roundtrip-ffe78fcf_default"]
+        },
+        "vm": {
+          "containers": [
+            "dc-roundtrip-ffe78fcf-write-1",
+            "dc-roundtrip-ffe78fcf-write-3",
+            "dc-roundtrip-ffe78fcf-write-4",
+            "dc-roundtrip-ffe78fcf-write-5",
+            "dc-roundtrip-ffe78fcf-write-6",
+            "dc-roundtrip-ffe78fcf-db-1",
+            "dc-roundtrip-ffe78fcf-run",
+            "dc-roundtrip-ffe78fcf-read-101",
+            "dc-roundtrip-ffe78fcf-read-102",
+            "dc-roundtrip-ffe78fcf-read-103",
+            "dc-roundtrip-ffe78fcf-read-104",
+            "dc-roundtrip-ffe78fcf-read-105",
+            "dc-roundtrip-ffe78fcf-read-106",
+            "dc-roundtrip-ffe78fcf-read-107",
+            "dc-roundtrip-ffe78fcf-write-200",
+            "dc-roundtrip-ffe78fcf-cancel-partial"
+          ],
+          "volumes": [
+            "2417fb95819e13024e123b1dfabb3c432688bcbd5d6d47bc5ccc7ec72018433a",
+            "e20e5cfe43e725511821ea4677f6152e9d4fb901e41f54bb52364b36eb627c64",
+            "496482fda5047b5721b2ad416bd4cb2930402d694cb638989c4730a6f2c3d2c8",
+            "dc-roundtrip-ffe78fcf_db",
+            "b59662098892cb04b0deda2b7c46e0dc246024f6a3c8dca203c746ce050d45ea",
+            "dc-roundtrip-ffe78fcf-run-named",
+            "807ddb5c057ede8348c976a66265e1de6adc841d5f0b6c256135fb0c8e97b845",
+            "653179df181f9e85a34f9b7229a3e0bcdc9a277a2864d6d813385aab42e44397",
+            "5cc40bceb71887353ff8e3ec2d2f58d92720c3796afbc9734a1c184125af5f5e",
+            "a9570f035c723e23d8b78ed2fe6d3dd46b1fdb597e09640d929692015a9fba03",
+            "51a0428c702fc8c09c4c0a8671915003c1b6ccb67231b9a748f068ea05eb09ae",
+            "0233076e54bff4e792a2226195022af301e2e0f56ccc189c0dd430446cfc3f51",
+            "806e3ebd8c725f2ff6531097f122f964002efb77a4545745ca204cc78e0bd33e",
+            "015fdfbf31cdd35ca1d07a5cde62855ed7546d069642ad74db6396421e0541a0",
+            "a437ae647bba9ec457dff56e6e0575ed344deff8f7c348e18e979531a4711a9b",
+            "f6f8f012896437fe2889e8c24054a15e0ebbce1d3a0719f4293056119ef9efc2",
+            "ef9eec4ad4df2a0bd0966b88b427b7339a707cc5a6ccb5c74cb2ce24147901d8",
+            "961e6b582bc0879090eaa8c5f4def82b8ffefba71a09709298787dde81586f87",
+            "bd01b1475bc17bd1058c2ba4f2cea4ef0819269a8ce9db7fdf5fe5cd9fc604fe",
+            "2b3c2640025df2a0638b1f43e9d274cad729d47d32475a7bc031b233ecf52ce0"
+          ],
+          "networks": ["dc-roundtrip-ffe78fcf_default"]
+        }
+      }
+    }
+  ],
+  "largeImage": [
+    {
+      "case": "large-image-created",
+      "payloadBytes": 4311744512,
+      "image": "dc-large-ffe78fcf:proof",
+      "imageId": "sha256:59814857dc980a92ad6ebd04d5e0a4224feb1a427b1aa1595e7772199b5adcd7",
+      "seconds": 93.56767556700288,
+      "temporaryTarFiles": 0
+    }
+  ],
+  "largeFirstLoad": [
+    {
+      "case": "16MiB-probe",
+      "bytes": 16777216,
+      "ms": 127.37087700000001
+    },
+    {
+      "case": "export-baseline",
+      "bytes": 4313068544,
+      "ms": 59216.461399,
+      "initialRangeSeconds": [59.216461398999996, 275.8824861032507],
+      "loadEstimateKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 1536,
+      "elapsedSeconds": 0.03017691200000263,
+      "remainingTransferRangeSeconds": [84736.35647821006, 169472.71295642012],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 324013568,
+      "elapsedSeconds": 5.0305190339999974,
+      "remainingTransferRangeSeconds": [61.932644081251574, 123.86528816250315],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 647204352,
+      "elapsedSeconds": 10.033046863000003,
+      "remainingTransferRangeSeconds": [56.828708147700524, 113.65741629540105],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 974720512,
+      "elapsedSeconds": 15.033159041,
+      "remainingTransferRangeSeconds": [51.48749439599908, 102.97498879199816],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 1285131776,
+      "elapsedSeconds": 20.033606385,
+      "remainingTransferRangeSeconds": [47.20176911163782, 94.40353822327565],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 1600851456,
+      "elapsedSeconds": 25.034441316999995,
+      "remainingTransferRangeSeconds": [42.41420356274494, 84.82840712548987],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 1918504448,
+      "elapsedSeconds": 30.034646906000003,
+      "remainingTransferRangeSeconds": [37.487474783871384, 74.97494956774277],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 2234486272,
+      "elapsedSeconds": 35.034896375,
+      "remainingTransferRangeSeconds": [32.59045061899224, 65.18090123798449],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 2550042112,
+      "elapsedSeconds": 40.035222356000006,
+      "remainingTransferRangeSeconds": [27.679211606927897, 55.358423213855794],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 2865499648,
+      "elapsedSeconds": 45.035307290999995,
+      "remainingTransferRangeSeconds": [22.750555946414, 45.501111892828],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 3179351552,
+      "elapsedSeconds": 50.038557053000005,
+      "remainingTransferRangeSeconds": [17.843123498079756, 35.68624699615951],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 3494809088,
+      "elapsedSeconds": 55.03876025,
+      "remainingTransferRangeSeconds": [12.886536828497404, 25.773073656994807],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 3805187584,
+      "elapsedSeconds": 60.039440286,
+      "remainingTransferRangeSeconds": [8.013504695151543, 16.027009390303085],
+      "loadTailKnown": false
+    },
+    {
+      "case": "live-correction",
+      "bytes": 4124184064,
+      "elapsedSeconds": 65.043499684,
+      "remainingTransferRangeSeconds": [2.978942604049717, 5.957885208099434],
+      "loadTailKnown": false
+    },
+    {
+      "case": "stream-result",
+      "bytes": 4313068544,
+      "greaterThan4GiB": true,
+      "exportBaselineMs": 59216.461399,
+      "exportAndTransferMs": 68063.815248,
+      "loadResponseTailMs": 8175.549452000007,
+      "totalMs": 76239.3647,
+      "temporaryArchiveFiles": 0
+    }
+  ],
+  "largeCalibratedLoad": [
+    {
+      "case": "16MiB-probe",
+      "bytes": 16777216,
+      "ms": 118.95585
+    },
+    {
+      "case": "export-baseline",
+      "bytes": 4313068544,
+      "ms": 61124.718503000004,
+      "initialRangeSeconds": [51.97520096625001, 103.95040193250001],
+      "loadEstimateKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 1536,
+      "elapsedSeconds": 0.03357813300000271,
+      "remainingTransferRangeSeconds": [94286.9385628566, 188573.8771257132],
+      "remainingTotalRangeSeconds": [70721.33558423145, 141442.6711684629],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 329682432,
+      "elapsedSeconds": 5.034774211999997,
+      "remainingTransferRangeSeconds": [60.83263081830375, 121.6652616366075],
+      "remainingTotalRangeSeconds": [51.75613520272782, 103.51227040545564],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 639766016,
+      "elapsedSeconds": 10.034801996000002,
+      "remainingTransferRangeSeconds": [57.61616375053947, 115.23232750107894],
+      "remainingTotalRangeSeconds": [49.343784901904606, 98.68756980380921],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 965447168,
+      "elapsedSeconds": 15.035001443000008,
+      "remainingTransferRangeSeconds": [52.132829104510535, 104.26565820902107],
+      "remainingTotalRangeSeconds": [45.2312839173829, 90.4625678347658],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 1272253952,
+      "elapsedSeconds": 20.035234390000006,
+      "remainingTransferRangeSeconds": [47.886220350488834, 95.77244070097767],
+      "remainingTotalRangeSeconds": [42.04632735186662, 84.09265470373325],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 1582272000,
+      "elapsedSeconds": 25.035462648000006,
+      "remainingTransferRangeSeconds": [43.207966061839876, 86.41593212367975],
+      "remainingTotalRangeSeconds": [38.53763663537991, 77.07527327075982],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 1894092288,
+      "elapsedSeconds": 30.036194286000004,
+      "remainingTransferRangeSeconds": [38.35971523602808, 76.71943047205616],
+      "remainingTotalRangeSeconds": [34.90144851602107, 69.80289703204214],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 2206535168,
+      "elapsedSeconds": 35.036341760999996,
+      "remainingTransferRangeSeconds": [33.44846905811433, 66.89693811622865],
+      "remainingTotalRangeSeconds": [31.21801388258575, 62.4360277651715],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 2525564416,
+      "elapsedSeconds": 40.03826015399999,
+      "remainingTransferRangeSeconds": [28.337647952992427, 56.675295905984854],
+      "remainingTotalRangeSeconds": [27.384898053744323, 54.769796107488645],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 2836565504,
+      "elapsedSeconds": 45.039429680000005,
+      "remainingTransferRangeSeconds": [23.44414565734853, 46.88829131469706],
+      "remainingTotalRangeSeconds": [23.7147713320114, 47.4295426640228],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 3151957504,
+      "elapsedSeconds": 50.039864721,
+      "remainingTransferRangeSeconds": [18.433573198218987, 36.867146396437974],
+      "remainingTotalRangeSeconds": [19.956841987664244, 39.91368397532849],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 3444772352,
+      "elapsedSeconds": 55.04186083500001,
+      "remainingTransferRangeSeconds": [13.87396126071336, 27.74792252142672],
+      "remainingTotalRangeSeconds": [16.537133034535024, 33.07426606907005],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 3758460416,
+      "elapsedSeconds": 60.044074532,
+      "remainingTransferRangeSeconds": [8.860258746352859, 17.720517492705717],
+      "remainingTotalRangeSeconds": [12.776856148764647, 25.553712297529295],
+      "loadTailKnown": true
+    },
+    {
+      "case": "live-correction",
+      "bytes": 4063596032,
+      "elapsedSeconds": 65.04434472,
+      "remainingTransferRangeSeconds": [3.993206002985963, 7.986412005971926],
+      "remainingTotalRangeSeconds": [9.126566591239476, 18.25313318247895],
+      "loadTailKnown": true
+    },
+    {
+      "case": "stream-result",
+      "bytes": 4313068544,
+      "greaterThan4GiB": true,
+      "exportBaselineMs": 61124.718503000004,
+      "exportAndTransferMs": 69235.29948300001,
+      "loadResponseTailMs": 8526.503795000011,
+      "totalMs": 77761.803278,
+      "temporaryArchiveFiles": 0
+    }
+  ],
+  "diskSampling": {
+    "samples": 149,
+    "sampleIntervalSeconds": 3,
+    "minimumFreeBytes": {
+      "sourceFree": 231671332864,
+      "targetRootFree": 8936538112,
+      "targetDockerFree": 536678400
+    }
+  },
+  "initialHelperLeftoversRemoved": {
+    "source": [
+      {
+        "CreatedAt": "2026-09-27T00:09:03Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/2b440895eaa4ffa47947022bd4da5a8b694ca1d7423c280ad0b6b342609591fe/_data",
+        "Name": "2b440895eaa4ffa47947022bd4da5a8b694ca1d7423c280ad0b6b342609591fe",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:12Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/2ccfcd8a7d94c6514efc2ff9eeae045ae309dd23594c1ecd5177b1f34d8ffba7/_data",
+        "Name": "2ccfcd8a7d94c6514efc2ff9eeae045ae309dd23594c1ecd5177b1f34d8ffba7",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:01Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/3f83639415f8514a2ef0e8c38ca0b476c53bc15cb3414dafe4a15dca29f022f3/_data",
+        "Name": "3f83639415f8514a2ef0e8c38ca0b476c53bc15cb3414dafe4a15dca29f022f3",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:10Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/9e5c1bd52afc39d7e99a2cfd6bb648765cfe6d5932d5271d5c83936f61b30098/_data",
+        "Name": "9e5c1bd52afc39d7e99a2cfd6bb648765cfe6d5932d5271d5c83936f61b30098",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:17Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/23c06381df7a25d936e08cc25d907db963e63c620b4066392364c599ecfa9454/_data",
+        "Name": "23c06381df7a25d936e08cc25d907db963e63c620b4066392364c599ecfa9454",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:11Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/25c28bc88dd580770d4b88fb50ae27d6d0d4144dbbddfb494cd1bd5321b3543e/_data",
+        "Name": "25c28bc88dd580770d4b88fb50ae27d6d0d4144dbbddfb494cd1bd5321b3543e",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:08:59Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/504b3dc309f02494bd1f38c10750593d47bf81921d5cddf2763cb577ad7aab8d/_data",
+        "Name": "504b3dc309f02494bd1f38c10750593d47bf81921d5cddf2763cb577ad7aab8d",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:16Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/a0ffb60af7c91e9d801c5837da63c3bd0d2a8fb5d5a9bc93b1ab906557bb7669/_data",
+        "Name": "a0ffb60af7c91e9d801c5837da63c3bd0d2a8fb5d5a9bc93b1ab906557bb7669",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:08:58Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/ba41b08255f509770035fb77ce6cff49d982cfd7b4f8be561a52f07e63aa8308/_data",
+        "Name": "ba41b08255f509770035fb77ce6cff49d982cfd7b4f8be561a52f07e63aa8308",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:13Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/ba741b2750d3cfe0d9d895e0724d7b93556abd24e3b4c4bc8aaa9fa21603f94e/_data",
+        "Name": "ba741b2750d3cfe0d9d895e0724d7b93556abd24e3b4c4bc8aaa9fa21603f94e",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:15Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/edaa4c534a2594b267575f997cfbb12506e649c69d83381929ed8ca97ac6f07f/_data",
+        "Name": "edaa4c534a2594b267575f997cfbb12506e649c69d83381929ed8ca97ac6f07f",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:08:56Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/ffa936265696ad84aa3b9fd8f5436272b0a59c19c5aea509350d6af91394752b/_data",
+        "Name": "ffa936265696ad84aa3b9fd8f5436272b0a59c19c5aea509350d6af91394752b",
+        "Options": null,
+        "Scope": "local"
+      }
+    ],
+    "target": [
+      {
+        "CreatedAt": "2026-09-27T00:09:12Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/2b290a873e9b1fab9d91218aff2335d21fa9e23630840b67b01d2b3105fe86d3/_data",
+        "Name": "2b290a873e9b1fab9d91218aff2335d21fa9e23630840b67b01d2b3105fe86d3",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:11Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/9c1f500cdf5495d7487193f363cea8b7e57f40d36729910c5464d03d05df9828/_data",
+        "Name": "9c1f500cdf5495d7487193f363cea8b7e57f40d36729910c5464d03d05df9828",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:02Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/9d3ae9129d0c3bf211a4dcd9e7251c8ed66a05d7a1df60a1dc18089ea99ded2c/_data",
+        "Name": "9d3ae9129d0c3bf211a4dcd9e7251c8ed66a05d7a1df60a1dc18089ea99ded2c",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:10Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/019c8055cdacc69b03e02fe67a81470456808dd3283e3695753ff614bd482212/_data",
+        "Name": "019c8055cdacc69b03e02fe67a81470456808dd3283e3695753ff614bd482212",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:03Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/21d67a53df3965d148be1a1ce0b70381d9545b358262a5939d58a8a94ee90e45/_data",
+        "Name": "21d67a53df3965d148be1a1ce0b70381d9545b358262a5939d58a8a94ee90e45",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:15Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/54a1717f9a493885bc8b184bec46a225e5d7c1c909db00fb6a42ecb0206bdf8c/_data",
+        "Name": "54a1717f9a493885bc8b184bec46a225e5d7c1c909db00fb6a42ecb0206bdf8c",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:16Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/94dc2d68ebef170a103084662ae66402cd986183df86a81a220df26ba0045b7c/_data",
+        "Name": "94dc2d68ebef170a103084662ae66402cd986183df86a81a220df26ba0045b7c",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:08:57Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/97e3ce33bc7ec56cb5610c8c53c62c77ff538df32f3643d29090332c50d6dda4/_data",
+        "Name": "97e3ce33bc7ec56cb5610c8c53c62c77ff538df32f3643d29090332c50d6dda4",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:13Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/699ba51014b8f913387a4dfd8e7e97c732e8cd3cb32e468050e9c94d9c097404/_data",
+        "Name": "699ba51014b8f913387a4dfd8e7e97c732e8cd3cb32e468050e9c94d9c097404",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:09:17Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/7610e98735342d2565d2674e52d8efd4639dc598c3cfd80937acd9aec0fa1fc7/_data",
+        "Name": "7610e98735342d2565d2674e52d8efd4639dc598c3cfd80937acd9aec0fa1fc7",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:08:59Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/29978ac35fb5489427f778d098d901280f3bb8e14121b8b9ecbc4536f4cc48b1/_data",
+        "Name": "29978ac35fb5489427f778d098d901280f3bb8e14121b8b9ecbc4536f4cc48b1",
+        "Options": null,
+        "Scope": "local"
+      },
+      {
+        "CreatedAt": "2026-09-27T00:08:58Z",
+        "Driver": "local",
+        "Labels": {
+          "com.docker.volume.anonymous": ""
+        },
+        "Mountpoint": "/var/lib/docker/volumes/b8297e78a186d0321718e926614ebbbe0c8ca72971147e240f8f781f37100a23/_data",
+        "Name": "b8297e78a186d0321718e926614ebbbe0c8ca72971147e240f8f781f37100a23",
+        "Options": null,
+        "Scope": "local"
+      }
+    ]
+  },
+  "ownershipReconciliation": {
+    "home": {
+      "helperCreatedIds": [
+        "57916fe4027d916d6cca5449b80d5cc67aab1861c47b23668a9ec77efbb28c1f",
+        "2393641d80d29aba77986951f4d16dd5ce13c40526636d48da42bdddb159b33c",
+        "70a82ab7729ab5f65e9898d11d5ecf0cc92e0351b69f7bd29735063fc1fabbe4",
+        "95971c037c37a0f9835fb64741630d335ca016ec6b7118efbce41eec8dc47e7c",
+        "2261851c358a77b87312dce20d0bc8d7821459799e53296ea65a6a948852af40",
+        "201e83903a956d63f046af5bf0d7d0867830e19ed6ac77d6810f470e453a879a",
+        "bf3d0ce5525ce5a0fae2dc5123a93c59022e176446dc4ea6f2af8bb76e7f42df",
+        "1decc985d1eb6724bdec3093371b90df115e3333f519df761326fe5d13400416",
+        "f5d5cce720fcd74e2bcfd0862a37bdb268f564f1d57bdf24e143cbd31f3fddad",
+        "c248073f4161a5529b044bbe2cb2356c4d7d221b03311d7d64e7d403ee1c8ce6",
+        "f9d98b47ced692ed80968cf94272cd0fb2f4f7c2a888c76578fe152d2c34b341",
+        "aa51c5f82546c9951c4f216dc6fabd1cba23f0decf1292b31122644edf90f627",
+        "f830a5808e2bef1f6dedfa327f53f732d3619e00ebd7dc2061f76a03dffd32e9"
+      ],
+      "removedImmediatelyByExactId": [
+        "57916fe4027d916d6cca5449b80d5cc67aab1861c47b23668a9ec77efbb28c1f",
+        "2393641d80d29aba77986951f4d16dd5ce13c40526636d48da42bdddb159b33c",
+        "70a82ab7729ab5f65e9898d11d5ecf0cc92e0351b69f7bd29735063fc1fabbe4",
+        "95971c037c37a0f9835fb64741630d335ca016ec6b7118efbce41eec8dc47e7c",
+        "2261851c358a77b87312dce20d0bc8d7821459799e53296ea65a6a948852af40",
+        "201e83903a956d63f046af5bf0d7d0867830e19ed6ac77d6810f470e453a879a",
+        "bf3d0ce5525ce5a0fae2dc5123a93c59022e176446dc4ea6f2af8bb76e7f42df",
+        "1decc985d1eb6724bdec3093371b90df115e3333f519df761326fe5d13400416",
+        "f5d5cce720fcd74e2bcfd0862a37bdb268f564f1d57bdf24e143cbd31f3fddad",
+        "c248073f4161a5529b044bbe2cb2356c4d7d221b03311d7d64e7d403ee1c8ce6",
+        "f9d98b47ced692ed80968cf94272cd0fb2f4f7c2a888c76578fe152d2c34b341",
+        "aa51c5f82546c9951c4f216dc6fabd1cba23f0decf1292b31122644edf90f627",
+        "f830a5808e2bef1f6dedfa327f53f732d3619e00ebd7dc2061f76a03dffd32e9"
+      ],
+      "removedAtFinalFixtureCleanup": []
+    },
+    "vm": {
+      "helperCreatedIds": [
+        "e20e5cfe43e725511821ea4677f6152e9d4fb901e41f54bb52364b36eb627c64",
+        "496482fda5047b5721b2ad416bd4cb2930402d694cb638989c4730a6f2c3d2c8",
+        "b59662098892cb04b0deda2b7c46e0dc246024f6a3c8dca203c746ce050d45ea",
+        "807ddb5c057ede8348c976a66265e1de6adc841d5f0b6c256135fb0c8e97b845",
+        "5cc40bceb71887353ff8e3ec2d2f58d92720c3796afbc9734a1c184125af5f5e",
+        "a9570f035c723e23d8b78ed2fe6d3dd46b1fdb597e09640d929692015a9fba03",
+        "51a0428c702fc8c09c4c0a8671915003c1b6ccb67231b9a748f068ea05eb09ae",
+        "0233076e54bff4e792a2226195022af301e2e0f56ccc189c0dd430446cfc3f51",
+        "806e3ebd8c725f2ff6531097f122f964002efb77a4545745ca204cc78e0bd33e",
+        "015fdfbf31cdd35ca1d07a5cde62855ed7546d069642ad74db6396421e0541a0",
+        "a437ae647bba9ec457dff56e6e0575ed344deff8f7c348e18e979531a4711a9b",
+        "f6f8f012896437fe2889e8c24054a15e0ebbce1d3a0719f4293056119ef9efc2",
+        "961e6b582bc0879090eaa8c5f4def82b8ffefba71a09709298787dde81586f87",
+        "2b3c2640025df2a0638b1f43e9d274cad729d47d32475a7bc031b233ecf52ce0"
+      ],
+      "removedImmediatelyByExactId": [
+        "e20e5cfe43e725511821ea4677f6152e9d4fb901e41f54bb52364b36eb627c64",
+        "496482fda5047b5721b2ad416bd4cb2930402d694cb638989c4730a6f2c3d2c8",
+        "b59662098892cb04b0deda2b7c46e0dc246024f6a3c8dca203c746ce050d45ea",
+        "807ddb5c057ede8348c976a66265e1de6adc841d5f0b6c256135fb0c8e97b845",
+        "5cc40bceb71887353ff8e3ec2d2f58d92720c3796afbc9734a1c184125af5f5e",
+        "a9570f035c723e23d8b78ed2fe6d3dd46b1fdb597e09640d929692015a9fba03",
+        "51a0428c702fc8c09c4c0a8671915003c1b6ccb67231b9a748f068ea05eb09ae",
+        "0233076e54bff4e792a2226195022af301e2e0f56ccc189c0dd430446cfc3f51",
+        "806e3ebd8c725f2ff6531097f122f964002efb77a4545745ca204cc78e0bd33e",
+        "015fdfbf31cdd35ca1d07a5cde62855ed7546d069642ad74db6396421e0541a0",
+        "a437ae647bba9ec457dff56e6e0575ed344deff8f7c348e18e979531a4711a9b",
+        "f6f8f012896437fe2889e8c24054a15e0ebbce1d3a0719f4293056119ef9efc2",
+        "961e6b582bc0879090eaa8c5f4def82b8ffefba71a09709298787dde81586f87"
+      ],
+      "removedAtFinalFixtureCleanup": [
+        "2b3c2640025df2a0638b1f43e9d274cad729d47d32475a7bc031b233ecf52ce0"
+      ]
+    }
+  },
+  "finalVerification": {
+    "target": [
+      "docker-ce absent",
+      "docker-ce-cli absent",
+      "containerd.io absent",
+      "docker-buildx-plugin absent",
+      "docker-compose-plugin absent",
+      "/dev/mapper/ubuntu--vg-ubuntu--lv",
+      "MainPID=623",
+      "ActiveState=active",
+      "uid=1001(ngsupb) gid=1001(ngsupb) groups=1001(ngsupb)",
+      "Filesystem                          1B-blocks        Used   Available Use% Mounted on",
+      "/dev/mapper/ubuntu--vg-ubuntu--lv 31589396480 12196384768 17927081984  41% /"
+    ],
+    "largeFirstCleanup": [
+      "sha256:59814857dc980a92ad6ebd04d5e0a4224feb1a427b1aa1595e7772199b5adcd7",
+      "Untagged: dc-large-ffe78fcf:proof",
+      "Deleted: sha256:59814857dc980a92ad6ebd04d5e0a4224feb1a427b1aa1595e7772199b5adcd7",
+      "12579600\t/var/lib/containerd",
+      "Filesystem                          1B-blocks        Used   Available Use% Mounted on",
+      "/dev/mapper/ubuntu--vg-ubuntu--lv 31589396480 12562092032 17561374720  42% /"
+    ],
+    "sourceHostPid": 5283,
+    "targetHostPid": 623,
+    "sourceRemainingContainers": 0,
+    "sourceRemainingVolumes": 0,
+    "sourceRemainingCustomNetworks": 0,
+    "sourceRetainedImages": ["alpine:3.22", "postgres:17-alpine"]
+  }
+}

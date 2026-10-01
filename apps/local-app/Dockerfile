@@ -16,6 +16,7 @@ RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/local-app/package.json ./apps/local-app/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/proxmox-client/package.json ./packages/proxmox-client/
 
 # Install only the dependency graph required by local-app.
 # Ignore scripts here because the root postinstall script is not needed in this image.
@@ -27,6 +28,8 @@ RUN pnpm --filter local-app... rebuild node-pty
 # Source files required to build local-app and workspace dependencies
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/shared/src ./packages/shared/src
+COPY packages/proxmox-client/tsconfig.json ./packages/proxmox-client/
+COPY packages/proxmox-client/src ./packages/proxmox-client/src
 
 COPY apps/local-app/nest-cli.json ./apps/local-app/
 COPY apps/local-app/tsconfig.json ./apps/local-app/

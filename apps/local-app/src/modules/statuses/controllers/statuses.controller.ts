@@ -14,6 +14,7 @@ import { StatusStorage, STORAGE_SERVICE } from '../../storage/interfaces/storage
 import { CreateStatus, UpdateStatus, Status } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 const logger = createLogger('StatusesController');
 
@@ -37,7 +38,10 @@ const UpdateStatusSchema = z.object({
 
 @Controller('api/statuses')
 export class StatusesController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StatusStorage) {}
+  constructor(
+    @Inject(STORAGE_SERVICE) private readonly storage: StatusStorage,
+    private readonly admission: ProjectWriteAdmissionService,
+  ) {}
 
   @Get()
   async listStatuses(@Query('projectId') projectId: string) {
@@ -58,6 +62,7 @@ export class StatusesController {
   async createStatus(@Body() body: unknown): Promise<Status> {
     logger.info('POST /api/statuses');
     const data = CreateStatusSchema.parse(body) as CreateStatus;
+    this.admission.assertWritable(data.projectId);
     return this.storage.createStatus(data);
   }
 
@@ -65,18 +70,24 @@ export class StatusesController {
   async updateStatus(@Param('id') id: string, @Body() body: unknown): Promise<Status> {
     logger.info({ id }, 'PUT /api/statuses/:id');
     const data = UpdateStatusSchema.parse(body) as UpdateStatus;
+    await this.assertStatusWritable(id);
     return this.storage.updateStatus(id, data);
   }
 
   @Delete(':id')
   async deleteStatus(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/statuses/:id');
+    await this.assertStatusWritable(id);
     await this.storage.deleteStatus(id);
   }
 
   @Post('reorder')
   async reorderStatuses(@Body() body: { projectId: string; statusIds: string[] }) {
     logger.info({ projectId: body.projectId }, 'POST /api/statuses/reorder');
+    this.admission.assertWritable(body.projectId);
+    for (const statusId of body.statusIds) {
+      await this.assertStatusWritable(statusId);
+    }
 
     // Update positions sequentially to avoid unique constraint conflicts
     // First pass: set all to temporary high positions
@@ -90,5 +101,9 @@ export class StatusesController {
     }
 
     return { success: true };
+  }
+
+  private async assertStatusWritable(id: string): Promise<void> {
+    this.admission.assertWritable((await this.storage.getStatus(id)).projectId);
   }
 }

@@ -10,7 +10,8 @@ import {
 import type { EpicRelationDragOverlayHandle } from '@/ui/components/board/EpicRelationDragOverlay';
 import type { Epic } from '@/ui/types';
 
-const DRAG_THRESHOLD_PX = 6;
+/** Pointer travel that turns a board press into a drag; shared by the board gestures. */
+export const DRAG_THRESHOLD_PX = 6;
 
 interface ActivePointerGesture {
   phase: 'armed' | 'dragging';

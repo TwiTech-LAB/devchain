@@ -1,3 +1,4 @@
+import { ProviderCliInstallerService } from '../services/provider-cli-installer.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ProvidersController } from './providers.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
@@ -13,7 +14,11 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import {
+  NotFoundError,
+  ValidationError,
+  ProjectRemoteError,
+} from '../../../common/errors/error-types';
 import {
   disableClaudeAutoCompact,
   enableClaudeAutoCompact,
@@ -116,6 +121,7 @@ describe('ProvidersController', () => {
         endpoint: 'http://127.0.0.1:3000/mcp',
         alias: 'devchain',
       }),
+      assertPathNotRemoteOwned: jest.fn().mockResolvedValue(undefined),
     };
     mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
 
@@ -177,6 +183,10 @@ describe('ProvidersController', () => {
           },
         },
         ProviderStateManager,
+        {
+          provide: ProviderCliInstallerService,
+          useValue: { editBinaryPath: jest.fn((_name, _path, edit) => edit()) },
+        },
         { provide: ProviderEffortSeedingService, useValue: mockEffortSeeding },
         {
           provide: ProcessExecutor,
@@ -775,6 +785,62 @@ describe('ProvidersController', () => {
         }),
       );
       expect(response?.success).toBe(true);
+    });
+
+    it('refuses a projectPath owned by a remote before registering', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      const remoteError = new ProjectRemoteError('project-1', 'remote-9', 'vm-01');
+      mcpEnsureService.assertPathNotRemoteOwned.mockRejectedValueOnce(remoteError);
+
+      await expect(
+        controller.configureMcp('p1', {
+          endpoint: 'http://127.0.0.1:3000/mcp',
+          projectPath: '/home/user/project',
+        }),
+      ).rejects.toBe(remoteError);
+      expect(mcpEnsureService.assertPathNotRemoteOwned).toHaveBeenCalledWith('/home/user/project');
+      expect(mcpRegistration.registerProvider).not.toHaveBeenCalled();
+    });
+
+    it('checks the projectPath ownership before a successful registration', async () => {
+      storage.getProvider.mockResolvedValue({
+        id: 'p1',
+        name: 'claude',
+        binPath: '/usr/local/bin/claude',
+        mcpConfigured: true,
+        mcpEndpoint: null,
+        mcpRegisteredAt: null,
+        createdAt: '',
+        updatedAt: '',
+      });
+      mcpRegistration.registerProvider.mockResolvedValue({
+        success: true,
+        message: 'MCP command completed successfully.',
+        stdout: 'ok',
+        stderr: '',
+        exitCode: 0,
+      });
+
+      await controller.configureMcp('p1', {
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        projectPath: '/home/user/project',
+      });
+
+      expect(mcpEnsureService.assertPathNotRemoteOwned).toHaveBeenCalledWith('/home/user/project');
+      expect(mcpRegistration.registerProvider).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ cwd: '/home/user/project' }),
+      );
     });
   });
 

@@ -1,10 +1,11 @@
 import { Injectable, Inject, forwardRef, OnModuleDestroy } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { createLogger } from '../../../common/logging/logger';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { SettingsService } from '../../settings/services/settings.service';
+import { DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS } from '../../settings/services/settings.constants';
 import { TerminalSessionRegistry } from './terminal-session/terminal-session-registry';
 import type { FrameEvent } from './terminal-session/terminal-frame-stream';
 import { createMeaningfulOutputPredicate } from '../utils/terminal-activity';
@@ -15,9 +16,10 @@ const logger = createLogger('TerminalActivityService');
 export class TerminalActivityService implements OnModuleDestroy {
   private sqlite: ReturnType<typeof getRawSqliteClient>;
   private readonly idleTimers = new Map<string, NodeJS.Timeout>();
+  private readonly lastSignalAt = new Map<string, number>();
   private readonly suppressUntil = new Map<string, number>();
   private readonly frameListeners = new Map<string, (frame: FrameEvent) => void>();
-  private readonly IDLE_AFTER_MS: number;
+  private idleAfterMs: number = DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS;
 
   constructor(
     @Inject(DB_CONNECTION) db: BetterSQLite3Database,
@@ -27,9 +29,35 @@ export class TerminalActivityService implements OnModuleDestroy {
     private readonly registry: TerminalSessionRegistry,
   ) {
     this.sqlite = getRawSqliteClient(db);
-    const configured = Number(this.settingsService.getSetting('activity.idleTimeoutMs'));
-    this.IDLE_AFTER_MS = Number.isFinite(configured) && configured > 0 ? configured : 30000;
+    this.refreshIdleTimeout();
     logger.info('TerminalActivityService initialized');
+  }
+
+  /** The idle timeout currently applied to newly scheduled idle transitions. */
+  get idleTimeoutMs(): number {
+    return this.idleAfterMs;
+  }
+
+  /**
+   * A replica apply may overwrite `activity.idleTimeoutMs` inside its own
+   * transaction; `remote.project.synced` is its post-commit wake-up, so the
+   * new value takes effect without a restart. Re-reading on every sync is
+   * idempotent when the value did not change.
+   */
+  @OnEvent('remote.project.synced', { async: true })
+  handleRemoteProjectSynced(): void {
+    this.refreshIdleTimeout();
+  }
+
+  private refreshIdleTimeout(): void {
+    const configured = Number(this.settingsService.getSetting('activity.idleTimeoutMs'));
+    const resolved =
+      Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS;
+    if (resolved === this.idleAfterMs) return;
+    logger.info({ idleTimeoutMs: resolved }, 'Idle timeout refreshed');
+    this.idleAfterMs = resolved;
+    // Pending idle transitions move to the new deadline, counted from each session's last activity.
+    for (const sessionId of this.idleTimers.keys()) this.scheduleIdle(sessionId);
   }
 
   /**
@@ -83,6 +111,7 @@ export class TerminalActivityService implements OnModuleDestroy {
       clearTimeout(timer);
       this.idleTimers.delete(sessionId);
     }
+    this.lastSignalAt.delete(sessionId);
 
     const listener = this.frameListeners.get(sessionId);
     if (listener) {
@@ -138,11 +167,23 @@ export class TerminalActivityService implements OnModuleDestroy {
       });
     }
 
+    this.lastSignalAt.set(sessionId, Date.now());
+    this.scheduleIdle(sessionId);
+  }
+
+  private scheduleIdle(sessionId: string): void {
     const prior = this.idleTimers.get(sessionId);
     if (prior) clearTimeout(prior);
+    const elapsed = Date.now() - (this.lastSignalAt.get(sessionId) ?? Date.now());
     this.idleTimers.set(
       sessionId,
-      setTimeout(() => this.transitionToIdle(sessionId), this.IDLE_AFTER_MS),
+      setTimeout(
+        () => {
+          this.idleTimers.delete(sessionId);
+          this.transitionToIdle(sessionId);
+        },
+        Math.max(0, this.idleAfterMs - elapsed),
+      ),
     );
   }
 

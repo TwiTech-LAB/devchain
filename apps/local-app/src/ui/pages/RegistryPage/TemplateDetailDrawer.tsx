@@ -33,6 +33,7 @@ import {
 import { isLessThan } from '@devchain/shared';
 import { VersionList } from './VersionList';
 import { CreateFromRegistryDialog } from './CreateFromRegistryDialog';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 interface TemplateVersion {
   version: string;
@@ -75,7 +76,9 @@ interface ProjectsUsingTemplateResponse {
 }
 
 async function fetchTemplateDetail(slug: string): Promise<TemplateDetailResponse | null> {
-  const res = await fetch(`/api/registry/templates/${encodeURIComponent(slug)}`);
+  const res = await apiFetch(`/api/registry/templates/${encodeURIComponent(slug)}`, undefined, {
+    backend: HOME_BACKEND,
+  });
   if (!res.ok) {
     if (res.status === 404) return null;
     throw new Error('Failed to fetch template details');
@@ -84,13 +87,15 @@ async function fetchTemplateDetail(slug: string): Promise<TemplateDetailResponse
 }
 
 async function fetchProjectsUsingTemplate(slug: string): Promise<ProjectsUsingTemplateResponse> {
-  const res = await fetch(`/api/registry/projects/${encodeURIComponent(slug)}`);
+  const res = await apiFetch(`/api/registry/projects/${encodeURIComponent(slug)}`, undefined, {
+    backend: HOME_BACKEND,
+  });
   if (!res.ok) throw new Error('Failed to fetch projects');
   return res.json();
 }
 
 async function fetchAppVersion(): Promise<string | null> {
-  const res = await fetch('/health');
+  const res = await apiFetch('/health', undefined, { backend: 'home' });
   if (!res.ok) return null;
   const data = await res.json();
   return data?.version || null;

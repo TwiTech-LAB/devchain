@@ -964,6 +964,38 @@ describe('epic-tools handlers', () => {
       );
     });
 
+    it('links an exact full target ID even when its status is hidden from reads', async () => {
+      const ctx = makeEpicCtx();
+      (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([
+        { ...candidate, statusLabel: 'Draft', statusMcpHidden: true },
+      ]);
+      (ctx.epicRelationsService.setRelation as jest.Mock).mockResolvedValue({
+        type: 'related',
+        sourceEpicId: EPIC_ID,
+        targetEpicId: RELATED_ID,
+      });
+
+      const result = await handleSetEpicRelation(ctx, {
+        sessionId: SESSION_ID,
+        epicId: EPIC_ID,
+        relatedEpicId: RELATED_ID,
+        relation: 'related',
+      });
+
+      expect(result.success).toBe(true);
+      // The caller already holds the full ID, so the lookup stays workspace-bounded
+      // but drops the MCP-hidden filter; a prefix keeps it (see the delete tests).
+      expect(ctx.storage.getWorkspaceEpicsByIdPrefix).toHaveBeenCalledWith(EPIC_ID, RELATED_ID, {
+        excludeMcpHidden: false,
+      });
+      expect(ctx.epicRelationsService.setRelation).toHaveBeenCalledWith(
+        EPIC_ID,
+        RELATED_ID,
+        'related',
+        { actor: { type: 'agent', id: AGENT_ID } },
+      );
+    });
+
     it('returns safe ambiguity without invoking a relation mutation', async () => {
       const ctx = makeEpicCtx();
       (ctx.storage.getWorkspaceEpicsByIdPrefix as jest.Mock).mockResolvedValue([

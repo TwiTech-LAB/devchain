@@ -606,7 +606,7 @@ export interface SkillsUsageStatsResponse {
 
 /**
  * Changed slugs are not echoed: they are the requested slugs minus
- * `unchanged` and `notFound`, so a large batch returns only its exceptions.
+ * `unchanged`, `notFound` and `locked`, so a large batch returns only its exceptions.
  */
 export interface SkillsSetEnabledResponse {
   /** Number of slugs whose skill-level enablement state changed. */
@@ -615,6 +615,8 @@ export interface SkillsSetEnabledResponse {
   unchanged: string[];
   /** Normalized slugs that do not exist or whose source is disabled globally. */
   notFound: string[];
+  /** Normalized slugs of always-enabled (built-in DevChain) skills that a disable skipped. */
+  locked: string[];
 }
 
 export interface SkillsSetSourceEnabledResponse {

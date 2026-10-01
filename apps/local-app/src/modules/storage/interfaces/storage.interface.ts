@@ -1,3 +1,10 @@
+import type {
+  ProjectReplicaAttachTables,
+  ProjectReplicaIdSets,
+  ProjectReplicaRow,
+  ProjectReplicaV1,
+  ReplicaInstanceSettings,
+} from '@devchain/shared';
 import type { FeatureFlagConfig } from '../../../common/config/feature-flags';
 import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
 import {
@@ -6,6 +13,17 @@ import {
   UpdateProject,
   ProjectWorkspace,
   DeleteProjectWorkspaceResult,
+  Remote,
+  CreateRemote,
+  VmProviderConnection,
+  CreateVmProviderConnection,
+  RemoteProjectBinding,
+  UpdateRemoteProjectBinding,
+  RemoteOperation,
+  CreateRemoteOperation,
+  UpdateRemoteOperation,
+  RemoteOperationState,
+  RemoteOperationKind,
   Status,
   CreateStatus,
   UpdateStatus,
@@ -106,6 +124,9 @@ import {
   PrepareExternalEstimateLogOperation,
   SetExternalEstimateLoggedMinutes,
   StoreExternalEstimateLogResolution,
+  CreateProviderAuthEntry,
+  ProviderAuthEntry,
+  ProviderAuthPayload,
 } from '../models/domain.models';
 
 export type VerifyIntegrationCredentials = (credentials: IntegrationCredentials) => Promise<void>;
@@ -326,6 +347,239 @@ export interface ProjectWorkspaceStorage {
   deleteProjectWorkspace(id: string, replacementId: string): Promise<DeleteProjectWorkspaceResult>;
 }
 
+export interface ReadProjectReplicaSourceOptions {
+  /** Prompts, teams, watchers, subscribers, schedules, settings, reviews, skill switches and env scopes. */
+  includeConfiguration: boolean;
+  /** Sessions and epic-time watermarks. */
+  includeSessions: boolean;
+  /** Workspace grant snapshot for a one-way attach. */
+  includeWorkspaceGrants?: boolean;
+  /**
+   * Limits epics (with their tags and comments) to those whose row or any
+   * comment changed after this ISO time, and segments to those updated after it.
+   */
+  changedSince?: string;
+  /** Adds the complete epic, comment and segment ID sets of the projects. */
+  includeIdSets?: boolean;
+}
+
+/** A stored `provider_models` or `provider_efforts` row. */
+export interface ProviderCatalogSourceRow {
+  id: string;
+  provider_id: string;
+  name: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Raw storage rows for a replica, read in one transaction. Referenced profiles,
+ * provider configs, prompts and tags are fetched by ID even when they belong to
+ * another project, so the caller can decide whether they may travel.
+ */
+export interface ProjectReplicaSource {
+  /** Host time read inside the same transaction as the rows. */
+  readAt: string;
+  projects: ProjectReplicaRow<'projects'>[];
+  workspaces: Array<{ id: string; name: string }>;
+  paired_device_workspace_grants: ProjectReplicaRow<'paired_device_workspace_grants'>[];
+  authorityKids: string[];
+  statuses: ProjectReplicaRow<'statuses'>[];
+  tags: ProjectReplicaRow<'tags'>[];
+  providers: Array<{ id: string; name: string; env: string | null }>;
+  agent_profiles: ProjectReplicaRow<'agent_profiles'>[];
+  profile_provider_configs: ProjectReplicaRow<'profile_provider_configs'>[];
+  agents: ProjectReplicaRow<'agents'>[];
+  epics: ProjectReplicaRow<'epics'>[];
+  epic_tags: ProjectReplicaRow<'epic_tags'>[];
+  epic_comments: ProjectReplicaRow<'epic_comments'>[];
+  /** Every relation touching a requested project's epic, with each end's project. */
+  epic_relations: Array<
+    ProjectReplicaRow<'epic_relations'> & { left_project_id: string; right_project_id: string }
+  >;
+  epic_time_segments: ProjectReplicaRow<'epic_time_segments'>[];
+  prompts: ProjectReplicaRow<'prompts'>[];
+  prompt_tags: ProjectReplicaRow<'prompt_tags'>[];
+  agent_profile_prompts: ProjectReplicaRow<'agent_profile_prompts'>[];
+  teams: ProjectReplicaRow<'teams'>[];
+  team_members: ProjectReplicaRow<'team_members'>[];
+  team_profiles: ProjectReplicaRow<'team_profiles'>[];
+  team_profile_configs: ProjectReplicaRow<'team_profile_configs'>[];
+  terminal_watchers: ProjectReplicaRow<'terminal_watchers'>[];
+  automation_subscribers: ProjectReplicaRow<'automation_subscribers'>[];
+  scheduled_epics: ProjectReplicaRow<'scheduled_epics'>[];
+  reviews: ProjectReplicaRow<'reviews'>[];
+  review_comments: ProjectReplicaRow<'review_comments'>[];
+  /** All scope rows of the referenced providers, including projects outside the replica. */
+  provider_env_scopes: Array<{ provider_id: string; env_key: string; project_id: string }>;
+  /**
+   * Instance-level provider rows of the read closure's providers: scalars,
+   * catalogs and plugin defaults. They travel on attach replicas only, with
+   * the provider keyed by name in the builder.
+   */
+  provider_settings: Array<{
+    provider_id: string;
+    auto_compact_threshold: number | null;
+    claude_launch_settings_json: string | null;
+  }>;
+  provider_models: ProviderCatalogSourceRow[];
+  provider_efforts: ProviderCatalogSourceRow[];
+  provider_plugin_defaults: Array<{
+    provider_id: string;
+    plugin_id: string;
+    enabled: 0 | 1;
+    created_at: string;
+    updated_at: string;
+  }>;
+  project_provider_plugin_overrides: ProjectReplicaAttachTables['project_provider_plugin_overrides'];
+  sender_skill_slugs: string[];
+  skill_project_disabled: ProjectReplicaAttachTables['skill_project_disabled'];
+  source_project_enabled: ProjectReplicaAttachTables['source_project_enabled'];
+  /** Stored `settings` rows for `PROJECT_REPLICA_SETTING_KEYS`; `value` is the raw JSON text. */
+  settings: Array<{ key: string; value: string }>;
+  /**
+   * This instance's effective global agent settings (message pool, epic
+   * template, skill sources, idle timeout), resolved with defaults. Read with
+   * the configuration tier; only the builder's attach scope carries them.
+   */
+  instanceSettings: ReplicaInstanceSettings;
+  sessions: ProjectReplicaRow<'sessions'>[];
+  epic_time_session_watermarks: ProjectReplicaRow<'epic_time_session_watermarks'>[];
+  idSets?: { epics: string[]; epic_comments: string[]; epic_time_segments: string[] };
+}
+
+/**
+ * `full` reconciles every table the payload carries: rows of the payload's
+ * projects that the payload omits are deleted. `live` deletes only from the
+ * tables that arrive whole on every pull (statuses, tags, profiles, provider
+ * configs, agents, relations); epics, comments and segments are upsert-only.
+ */
+export type ProjectReplicaApplyMode = 'full' | 'live';
+
+export interface ProjectReplicaApplySummary {
+  projectId: string;
+  /** Epics inserted or updated, including epics whose tags or comments changed. */
+  changedEpicIds: string[];
+  deletedEpicIds: string[];
+  /** Per-project rows skipped because their skill slug is not installed here. */
+  skippedUnknownSkillCount: number;
+}
+
+export interface ProjectReplicaStorage {
+  readProjectReplicaSource(
+    projectIds: readonly string[],
+    options: ReadProjectReplicaSourceOptions,
+  ): Promise<ProjectReplicaSource>;
+  /**
+   * Applies a replica with its IDs in one transaction and appends the factory's
+   * event for each payload project inside it. Throws `ReplicaApplyError` after
+   * rolling back.
+   */
+  applyProjectReplica(
+    replica: ProjectReplicaV1,
+    mode: ProjectReplicaApplyMode,
+    eventFactory: (summary: ProjectReplicaApplySummary) => PreparedEvent,
+    options?: ApplyProjectReplicaStorageOptions,
+  ): Promise<ProjectReplicaApplySummary[]>;
+}
+
+export interface ApplyProjectReplicaStorageOptions {
+  /** Throw `ConflictError` (`PROJECT_EXISTS`) inside the transaction if a payload project exists. */
+  requireNewProjects?: boolean;
+  /**
+   * The host's complete ID sets. In `live` mode, epics, comments and settled
+   * segments of the payload projects that are not in them are deleted.
+   */
+  idSets?: ProjectReplicaIdSets;
+  /**
+   * Leave this instance's provider env values, provider catalogs, provider
+   * scalars and plugin policy untouched: this instance is authoritative for
+   * them (home re-snapshots and live pulls).
+   */
+  keepInstanceConfig?: boolean;
+  /**
+   * Written to `projects.frozen_at` of the payload projects in the apply
+   * transaction, so a project created by the apply is never committed writable.
+   */
+  frozenAt?: string;
+}
+
+export interface FrozenProject {
+  projectId: string;
+  frozenAt: string;
+}
+
+export interface ProjectHostStorage {
+  /** `frozenAt` null thaws. Throws `NotFoundError` for an unknown project. */
+  setProjectFrozen(projectId: string, frozenAt: string | null): Promise<void>;
+  listFrozenProjects(): Promise<FrozenProject[]>;
+  /** Throws `ConflictError` (`PROJECT_NOT_FROZEN`) unless the project is frozen. */
+  releaseProject(projectId: string): Promise<void>;
+  findEpicIdByIdempotencyKey(projectId: string, key: string): Promise<string | null>;
+}
+
+export interface RemoteStorage {
+  readRemoteApiKey(id: string): Promise<string | null>;
+  saveRemoteApiKey(id: string, key: string, onlyIfAbsent?: boolean): Promise<void>;
+  createRemote(data: CreateRemote): Promise<Remote>;
+  getRemote(id: string): Promise<Remote>;
+  listRemotes(options?: ListOptions): Promise<ListResult<Remote>>;
+  updateRemoteName(id: string, name: string): Promise<Remote>;
+  updateRemoteBaseUrl(id: string, baseUrl: string | null): Promise<Remote>;
+  updateRemoteVmIdentity(id: string, vmIdentity: string | null): Promise<Remote>;
+  /** Stores the VM certificate (PEM), or clears it with null; refuses one that does not parse. */
+  updateRemoteTlsCertificate(id: string, certificate: string | null): Promise<Remote>;
+  createVmProviderConnection(data: CreateVmProviderConnection): Promise<VmProviderConnection>;
+  listVmProviderConnections(): Promise<VmProviderConnection[]>;
+  getVmProviderConnection(id: string): Promise<VmProviderConnection>;
+  readVmProviderTokenSecret(id: string): Promise<string>;
+  deleteVmProviderConnection(id: string): Promise<void>;
+  /** Refuses (409) while any binding still references the remote. */
+  deleteRemote(id: string): Promise<void>;
+  listRemoteProjectBindings(): Promise<RemoteProjectBinding[]>;
+  getRemoteProjectBinding(projectId: string): Promise<RemoteProjectBinding | null>;
+  /** Creates the binding in state `attaching`; 409 `REMOTE_BINDING_EXISTS` if the project has one. */
+  createRemoteProjectBinding(data: {
+    projectId: string;
+    remoteId: string;
+  }): Promise<RemoteProjectBinding>;
+  updateRemoteProjectBinding(
+    projectId: string,
+    data: UpdateRemoteProjectBinding,
+  ): Promise<RemoteProjectBinding>;
+  /** Returns the deleted row, or null when the project had no binding. */
+  deleteRemoteProjectBinding(projectId: string): Promise<RemoteProjectBinding | null>;
+  /** 409 `REMOTE_OPERATION_IN_PROGRESS` while the project has a `running` or `failed` operation. */
+  createRemoteOperation(data: CreateRemoteOperation): Promise<RemoteOperation>;
+  getRemoteOperation(id: string): Promise<RemoteOperation>;
+  /** Newest first. */
+  listRemoteOperations(filter?: {
+    states?: readonly RemoteOperationState[];
+    projectId?: string;
+    remoteId?: string;
+    kinds?: readonly RemoteOperationKind[];
+    limit?: number;
+  }): Promise<RemoteOperation[]>;
+  updateRemoteOperation(id: string, data: UpdateRemoteOperation): Promise<RemoteOperation>;
+}
+
+export interface ProviderAuthStorage {
+  listProviderAuthEntries(): Promise<ProviderAuthEntry[]>;
+  getProviderAuthEntry(id: string): Promise<ProviderAuthEntry>;
+  /** Decrypts one entry's payload; only the claim/compose path may call this. */
+  readProviderAuthPayload(id: string): Promise<ProviderAuthPayload>;
+  createProviderAuthEntry(data: CreateProviderAuthEntry): Promise<ProviderAuthEntry>;
+  deleteProviderAuthEntry(id: string): Promise<void>;
+  /** Re-encrypts one entry's payload and stamps `last_writeback_at` (family write-back only). */
+  updateProviderAuthPayload(id: string, payload: ProviderAuthPayload): Promise<ProviderAuthEntry>;
+  /** Renames one entry; `label` and `updated_at` change, the payload and checkout state stay. */
+  renameProviderAuthEntry(id: string, label: string): Promise<ProviderAuthEntry>;
+  /** 409 `PROVIDER_AUTH_ALREADY_CHECKED_OUT` for a family held by another remote; static never checks out. */
+  checkoutProviderAuthEntry(id: string, remoteId: string): Promise<ProviderAuthEntry>;
+  releaseProviderAuthEntry(id: string): Promise<ProviderAuthEntry>;
+}
+
 export interface StatusStorage {
   createStatus(data: CreateStatus): Promise<Status>;
   getStatus(id: string): Promise<Status>;
@@ -394,6 +648,8 @@ export interface EpicStorage {
     eventFactory?: FactualEventFactory<EpicComment, Epic>,
   ): Promise<EpicComment>;
   deleteEpicComment(id: string): Promise<void>;
+  /** The epic that owns the comment, or null when no such comment exists. */
+  findEpicCommentEpicId(commentId: string): Promise<string | null>;
   /**
    * Delete a comment scoped to its owning epic (`WHERE id = ? AND epic_id = ?`).
    * Returns true when a row was deleted, false when none matched (comment from a
@@ -529,7 +785,12 @@ export interface SkillSourceStorage {
   ): Promise<LocalSkillSource>;
   deleteLocalSkillSource(id: string): Promise<void>;
   getSourceProjectEnabled(projectId: string, sourceName: string): Promise<boolean | null>;
-  setSourceProjectEnabled(projectId: string, sourceName: string, enabled: boolean): Promise<void>;
+  setSourceProjectEnabled(
+    projectId: string,
+    sourceName: string,
+    enabled: boolean,
+    options?: { onlyIfMissing?: boolean },
+  ): Promise<void>;
   listSourceProjectEnabled(
     projectId: string,
   ): Promise<Array<{ sourceName: string; enabled: boolean }>>;
@@ -896,6 +1157,10 @@ export interface ExternalEstimateLogStorage {
 export interface StorageService
   extends ProjectStorage,
     ProjectWorkspaceStorage,
+    RemoteStorage,
+    ProviderAuthStorage,
+    ProjectReplicaStorage,
+    ProjectHostStorage,
     StatusStorage,
     EpicStorage,
     PromptStorage,

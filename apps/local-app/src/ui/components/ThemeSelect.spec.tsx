@@ -1,6 +1,12 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { ThemeSelect, getStoredTheme, applyTheme, type ThemeValue } from './ThemeSelect';
+import {
+  ThemeSelect,
+  getStoredTheme,
+  applyTheme,
+  DEFAULT_THEME,
+  type ThemeValue,
+} from './ThemeSelect';
 
 describe('ThemeSelect', () => {
   beforeEach(() => {
@@ -59,9 +65,17 @@ describe('ThemeSelect', () => {
     expect(options[1]).toHaveTextContent('Dark');
   });
 
-  it('defaults to Ocean when no stored theme exists', () => {
+  it('defaults to Dark when no stored theme exists', () => {
     localStorage.removeItem('devchain:theme');
-    applyTheme(getStoredTheme() ?? 'ocean');
+    expect(DEFAULT_THEME).toBe('dark');
+    applyTheme(getStoredTheme() ?? DEFAULT_THEME);
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(document.documentElement.classList.contains('theme-ocean')).toBe(false);
+  });
+
+  it('keeps a stored Ocean choice over the Dark default', () => {
+    localStorage.setItem('devchain:theme', 'ocean');
+    applyTheme(getStoredTheme() ?? DEFAULT_THEME);
     expect(document.documentElement.classList.contains('theme-ocean')).toBe(true);
     expect(document.documentElement.classList.contains('dark')).toBe(false);
   });

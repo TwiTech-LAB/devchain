@@ -176,7 +176,7 @@ describe('ProviderAdapterFactory', () => {
     });
   });
 
-  describe('getPostPasteDelayMsForAgent', () => {
+  describe('getRuntimePromptBehaviorForAgent', () => {
     const AGENT_ID = 'agent-001';
     const CONFIG_ID = 'config-001';
     const PROVIDER_ID = 'provider-001';
@@ -193,40 +193,40 @@ describe('ProviderAdapterFactory', () => {
       });
     }
 
-    it('returns undefined for a Claude agent', async () => {
+    it('turns the follow note on for a Claude agent', async () => {
       setupChain('claude');
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBeUndefined();
+      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
+      expect(result).toEqual({ followNote: true });
     });
 
-    it('returns undefined for a Codex agent', async () => {
+    it('returns no behavior for a Codex agent', async () => {
       setupChain('codex');
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBeUndefined();
+      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
+      expect(result).toEqual({});
     });
 
-    it('returns undefined for an OpenCode agent', async () => {
+    it('returns no behavior for an OpenCode agent', async () => {
       setupChain('opencode');
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBeUndefined();
+      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
+      expect(result).toEqual({});
     });
 
-    it('returns undefined when agent not found', async () => {
+    it('returns no behavior when agent not found', async () => {
       (mockStorage.getAgent as jest.Mock).mockRejectedValue(new NotFoundError('Agent', AGENT_ID));
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBeUndefined();
+      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
+      expect(result).toEqual({});
     });
 
-    it('returns undefined when providerConfigId is missing', async () => {
+    it('returns no behavior when providerConfigId is missing', async () => {
       (mockStorage.getAgent as jest.Mock).mockResolvedValue({
         id: AGENT_ID,
         providerConfigId: null,
       });
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBeUndefined();
+      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
+      expect(result).toEqual({});
     });
 
-    it('returns undefined when config not found', async () => {
+    it('returns no behavior when config not found', async () => {
       (mockStorage.getAgent as jest.Mock).mockResolvedValue({
         id: AGENT_ID,
         providerConfigId: CONFIG_ID,
@@ -234,8 +234,8 @@ describe('ProviderAdapterFactory', () => {
       (mockStorage.getProfileProviderConfig as jest.Mock).mockRejectedValue(
         new NotFoundError('Config', CONFIG_ID),
       );
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBeUndefined();
+      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
+      expect(result).toEqual({});
     });
 
     it('falls back to getProvider when providerName not on config', async () => {
@@ -252,17 +252,16 @@ describe('ProviderAdapterFactory', () => {
         id: PROVIDER_ID,
         name: 'claude',
       });
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      // Fallback resolves the provider name via getProvider; no surviving
-      // provider defines postPasteDelayMs, so the resolved adapter yields undefined.
+      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
+      // Fallback resolves the provider name via getProvider to the Claude adapter.
       expect(mockStorage.getProvider).toHaveBeenCalledWith(PROVIDER_ID);
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ followNote: true });
     });
 
-    it('returns undefined for unsupported provider name', async () => {
+    it('returns no behavior for an unsupported provider name', async () => {
       setupChain('unknown-provider');
-      const result = await factory.getPostPasteDelayMsForAgent(AGENT_ID);
-      expect(result).toBeUndefined();
+      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
+      expect(result).toEqual({});
     });
   });
 });

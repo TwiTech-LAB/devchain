@@ -81,7 +81,6 @@ function ValidExternalLinkedTaskPage({ provider, epicId }: ValidExternalLinkedTa
       return;
     }
     if (selectionMatchesOwner) return;
-    if (selection.isWorkspaceSelectionLocked) return;
     if (
       activationTargetsOwner &&
       (currentActivation?.status === 'pending' || currentActivation?.status === 'failed')
@@ -177,18 +176,6 @@ function ValidExternalLinkedTaskPage({ provider, epicId }: ValidExternalLinkedTa
           <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
           Retry
         </Button>
-      </div>
-    );
-  } else if (selection.isWorkspaceSelectionLocked && !activationReady) {
-    pageContent = (
-      <div className="mt-4 space-y-4">
-        <Alert>
-          <AlertTitle>Open the owning project</AlertTitle>
-          <AlertDescription>
-            This linked task belongs to {owningProject.name}. Open it from that project's main
-            workspace to use its {label} connection.
-          </AlertDescription>
-        </Alert>
       </div>
     );
   } else if (activationTargetsOwner && currentActivation?.status === 'failed') {

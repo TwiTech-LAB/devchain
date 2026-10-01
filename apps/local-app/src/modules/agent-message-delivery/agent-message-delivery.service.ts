@@ -141,6 +141,7 @@ export class AgentMessageDeliveryService {
             message.senderType === 'agent' ||
             message.senderType === 'guest',
           humanPromptSubmit: message.senderType === 'user',
+          outsideText: message.outsideText === true || message.senderType === 'guest',
           ...(message.kind === 'mcp.project' ? { failureDisclosure: 'project-safe' as const } : {}),
         },
       ]);

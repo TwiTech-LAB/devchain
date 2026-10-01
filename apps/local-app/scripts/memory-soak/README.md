@@ -69,7 +69,7 @@ registered implementation, returns the same JSON `status: "pending"` stub instea
 through to the host runner.
 
 `lib/app-fixture.js` provides the shared disposable app foundation. It redirects `HOME`, SQLite,
-runtime metadata, worktree paths, and `TMUX_TMPDIR` beneath one temporary root; starts the selected
+runtime metadata, and `TMUX_TMPDIR` beneath one temporary root; starts the selected
 entrypoint on an OS-assigned loopback port; verifies its one-run runtime token; creates a
 deterministic scratch tmux session and matching scratch-database session row; attaches a Socket.IO
 client; and samples both process trees. Teardown disconnects the client, terminates the app process

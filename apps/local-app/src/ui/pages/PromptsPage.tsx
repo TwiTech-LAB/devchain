@@ -31,6 +31,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface PromptSummary {
   id: string;
@@ -69,19 +71,22 @@ const PROMPT_TYPE_LABEL = {
   [PROMPT_TYPE.Custom]: 'Custom',
 } as const satisfies Record<PromptType, string>;
 
-async function fetchPrompts(projectId: string) {
-  const res = await fetch(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
+async function fetchPrompts(fetchFn: FetchFn, projectId: string) {
+  const res = await fetchFn(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch prompts');
   return res.json();
 }
 
-async function createPrompt(data: {
-  projectId: string;
-  title: string;
-  content: string;
-  tags?: string[];
-}) {
-  const res = await fetch('/api/prompts', {
+async function createPrompt(
+  fetchFn: FetchFn,
+  data: {
+    projectId: string;
+    title: string;
+    content: string;
+    tags?: string[];
+  },
+) {
+  const res = await fetchFn('/api/prompts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -90,8 +95,8 @@ async function createPrompt(data: {
   return res.json();
 }
 
-async function updatePrompt(id: string, data: Partial<PromptDetail>) {
-  const res = await fetch(`/api/prompts/${id}`, {
+async function updatePrompt(fetchFn: FetchFn, id: string, data: Partial<PromptDetail>) {
+  const res = await fetchFn(`/api/prompts/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -100,8 +105,8 @@ async function updatePrompt(id: string, data: Partial<PromptDetail>) {
   return res.json();
 }
 
-async function deletePrompt(id: string) {
-  const res = await fetch(`/api/prompts/${id}`, { method: 'DELETE' });
+async function deletePrompt(fetchFn: FetchFn, id: string) {
+  const res = await fetchFn(`/api/prompts/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete prompt');
 }
 
@@ -266,6 +271,7 @@ function TagInput({
 }
 
 export function PromptsPage() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
@@ -280,12 +286,13 @@ export function PromptsPage() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['prompts', selectedProjectId],
-    queryFn: () => fetchPrompts(selectedProjectId as string),
+    queryFn: () => fetchPrompts(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
 
   const createMutation = useMutation({
-    mutationFn: createPrompt,
+    mutationFn: (data: { projectId: string; title: string; content: string; tags?: string[] }) =>
+      createPrompt(fetchFn, data),
     onMutate: async (newPrompt) => {
       // Optimistic update
       await queryClient.cancelQueries({ queryKey: ['prompts', selectedProjectId] });
@@ -333,7 +340,7 @@ export function PromptsPage() {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<PromptDetail> }) =>
-      updatePrompt(id, data),
+      updatePrompt(fetchFn, id, data),
     onMutate: async ({ id, data }) => {
       await queryClient.cancelQueries({ queryKey: ['prompts', selectedProjectId] });
       const previousData = queryClient.getQueryData(['prompts', selectedProjectId]);
@@ -373,7 +380,7 @@ export function PromptsPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: deletePrompt,
+    mutationFn: (id: string) => deletePrompt(fetchFn, id),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['prompts', selectedProjectId] });
       const previousData = queryClient.getQueryData(['prompts', selectedProjectId]);
@@ -458,7 +465,7 @@ export function PromptsPage() {
 
   const handleEdit = async (prompt: PromptSummary) => {
     try {
-      const response = await fetch(`/api/prompts/${prompt.id}`);
+      const response = await fetchFn(`/api/prompts/${prompt.id}`);
       if (!response.ok) {
         throw new Error('Failed to fetch prompt');
       }

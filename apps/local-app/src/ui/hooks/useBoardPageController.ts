@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import type { EpicFormData } from '@/ui/components/board/EpicFormDialog';
 import { useToast } from '@/ui/hooks/use-toast';
 import { externalLinkedTaskState } from '@/ui/lib/external-board';
-import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
 import { useBoardData } from '@/ui/hooks/useBoardData';
@@ -28,12 +27,8 @@ export function useBoardPageController(): BoardPagePresentation {
   const location = useLocation();
   const { toast } = useToast();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
-  const { activeWorktree, worktrees } = useOptionalWorktreeTab();
-  const hasRunningWorktrees =
-    activeWorktree === null && worktrees.some((wt) => wt.status === 'running');
   const [showDialog, setShowDialog] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<Epic | null>(null);
-  const [moveToWorktreeEpic, setMoveToWorktreeEpic] = useState<Epic | null>(null);
   const [bulkDeleteIds, setBulkDeleteIds] = useState<string[] | null>(null);
   const [selectedStatusId, setSelectedStatusId] = useState<string>('');
   const [formData, setFormData] = useState<EpicFormData>({
@@ -176,10 +171,6 @@ export function useBoardPageController(): BoardPagePresentation {
     setDeleteConfirm(epic);
   }, []);
 
-  const handleMoveToWorktree = useCallback((epic: Epic) => {
-    setMoveToWorktreeEpic(epic);
-  }, []);
-
   const handleToggleParentFilter = useCallback(
     (epic: Epic) => {
       if (epic.parentId) return; // only top-level epics can be parent filters
@@ -227,7 +218,7 @@ export function useBoardPageController(): BoardPagePresentation {
     return items.map((epic) => epic.id);
   }, [filters.parent, epicsData, subEpicsData]);
 
-  // One bounded local read; worktree, unresolved, admission-off, and empty
+  // One bounded local read; unresolved-runtime, admission-off, and empty
   // contexts issue no request and see no cached data. Failures leave the map
   // empty — source notes are decoration, never a Board blocker.
   const { sources: externalSources } = useEpicExternalSourcesBatch(sourceEpicIds, {
@@ -241,8 +232,8 @@ export function useBoardPageController(): BoardPagePresentation {
   const { counts: relationCounts } = useEpicRelationCountsBatch(sourceEpicIds);
 
   // Root-only estimated-time totals: sub-Epics never badge, so a parent
-  // filter issues no time request at all. Worktree and unresolved runtimes
-  // are gated inside the hook.
+  // filter issues no time request at all. Unresolved-runtime and admission-off
+  // contexts are gated inside the hook.
   const timeSummaryEpicIds = useMemo(() => {
     if (filters.parent) return [] as string[];
     return ((epicsData?.items ?? []) as Epic[])
@@ -252,14 +243,7 @@ export function useBoardPageController(): BoardPagePresentation {
   const { totals: epicTimeTotals } = useEpicTimeSummariesBatch(timeSummaryEpicIds);
   const epicTimeTotalsMap = epicTimeTotals ?? new Map<string, number>();
 
-  const {
-    draggedEpic,
-    activeDropStatusId,
-    handleDragStart,
-    handleDragEnd,
-    handleDragOverStatus,
-    handleDrop,
-  } = useBoardDragDrop({
+  const { draggedEpic, handleDragStart, handleDragEnd, handleDrop } = useBoardDragDrop({
     epicsKey,
     parentFilter: filters.parent,
     onDropStatusChange: mutateUpdateEpicStatus,
@@ -326,10 +310,6 @@ export function useBoardPageController(): BoardPagePresentation {
     (open: boolean) => !open && setBulkDeleteIds(null),
     [],
   );
-  const changeMoveToWorktreeDialogOpen = useCallback(
-    (open: boolean) => !open && setMoveToWorktreeEpic(null),
-    [],
-  );
   const changeFilterPopoverOpen = useCallback((open: boolean) => setFilterPopoverOpen(open), []);
   const changeColumnPickerOpen = useCallback((open: boolean) => setColumnPickerOpen(open), []);
 
@@ -343,11 +323,10 @@ export function useBoardPageController(): BoardPagePresentation {
       status,
       epics,
       activeParentId: filters.parent ?? null,
-      isActiveDrop: activeDropStatusId === status.id,
+      draggedEpic,
       statusOrder: sortedStatuses,
       subEpicCounts: subEpicCountsMap,
       subEpicStatusCountsByEpicId,
-      hasRunningWorktrees,
       timeTotals: epicTimeTotalsMap,
       relationCounts,
       getAgentName,
@@ -357,11 +336,6 @@ export function useBoardPageController(): BoardPagePresentation {
       openBulkEdit: bulkEdit.open,
       openEpicDetails,
       toggleParentFilter: handleToggleParentFilter,
-      moveToWorktree: handleMoveToWorktree,
-      dragStart: handleDragStart,
-      dragEnd: handleDragEnd,
-      dragOver: () => handleDragOverStatus(status.id),
-      drop: () => handleDrop(status.id),
     };
 
     if (viewPreferences.isColumnCollapsed(status.id, epics.length === 0)) {
@@ -375,7 +349,6 @@ export function useBoardPageController(): BoardPagePresentation {
     return {
       ...common,
       kind: 'expanded',
-      draggedEpic,
       externalSources: externalSourceMap,
       collapse: () => viewPreferences.toggleColumnCollapse(status.id),
       keyboardMove: handleKeyboardMove,
@@ -390,7 +363,15 @@ export function useBoardPageController(): BoardPagePresentation {
   } else if (sortedStatuses.length === 0) {
     content = { kind: 'no-statuses', openStatusManagement };
   } else if (currentViewMode === 'kanban') {
-    content = { kind: 'kanban', columns };
+    content = {
+      kind: 'kanban',
+      columns,
+      cardDrag: {
+        start: handleDragStart,
+        drop: handleDrop,
+        cancel: handleDragEnd,
+      },
+    };
   } else {
     const sourceEpics = filters.parent
       ? ((subEpicsData?.items ?? []) as Epic[])
@@ -403,7 +384,6 @@ export function useBoardPageController(): BoardPagePresentation {
       pageSize: currentPageSize,
       currentPage: filters.page ?? 1,
       subEpicCounts: subEpicCountsMap,
-      hasRunningWorktrees,
       changePage: routeState.setPage,
       changePageSize: viewPreferences.changePageSize,
       editEpic: handleEdit,
@@ -418,7 +398,6 @@ export function useBoardPageController(): BoardPagePresentation {
       changeAgent: async (epic, agentId) => {
         await mutateUpdateEpicAgentAsync(epic, agentId);
       },
-      moveToWorktree: handleMoveToWorktree,
       externalSources: externalSourceMap,
       timeTotals: epicTimeTotalsMap,
     };
@@ -494,12 +473,6 @@ export function useBoardPageController(): BoardPagePresentation {
         controller: bulkEdit,
         statuses: sortedStatuses,
         agents: (agentsData?.items ?? []) as Agent[],
-      },
-      moveToWorktree: {
-        epic: moveToWorktreeEpic,
-        statuses: sortedStatuses,
-        agents: (agentsData?.items ?? []) as Agent[],
-        changeOpen: changeMoveToWorktreeDialogOpen,
       },
     },
   };

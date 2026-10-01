@@ -280,7 +280,6 @@ export function useExternalTaskMove(
             body: JSON.stringify({ status: move.option.actionValue }),
           },
           'The move could not be completed.',
-          '',
           apiFetch,
         );
         // Jira board search is eventually consistent: keep the optimistic

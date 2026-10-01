@@ -52,7 +52,7 @@ describe('SemanticStepList — output prose-band treatment (T2)', () => {
     expect(outputWrapper!.className).toContain('px-3');
     expect(outputWrapper!.className).toContain('py-2');
     expect(outputWrapper!.className).toContain('border-l-2');
-    expect(outputWrapper!.className).toContain('border-emerald-400/40');
+    expect(outputWrapper!.className).toContain('border-status-ok/40');
   });
 
   it('MarkdownRenderer invoked with text-sm (not text-xs)', () => {

@@ -56,7 +56,6 @@ export function EpicTooltipWrapper({
   onEdit,
   onDelete,
   showOpenDetails,
-  onMoveToWorktree,
 }: EpicTooltipWrapperProps) {
   const [computedSide, setComputedSide] = useState<TooltipSide>(side);
 
@@ -106,7 +105,6 @@ export function EpicTooltipWrapper({
             onEdit={onEdit}
             onDelete={onDelete}
             showOpenDetails={showOpenDetails}
-            onMoveToWorktree={onMoveToWorktree}
           />
         </TooltipContent>
       </Tooltip>

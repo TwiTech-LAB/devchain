@@ -4,6 +4,7 @@ import { Input } from '@/ui/components/ui/input';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Badge } from '@/ui/components/ui/badge';
 import { Search, ChevronRight, ChevronDown, Folder, FileCode, MessageSquare } from 'lucide-react';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { cn } from '@/ui/lib/utils';
 import type { ChangedFile } from '@/ui/lib/reviews';
 
@@ -26,23 +27,23 @@ export interface FileNavigatorProps {
 const STATUS_CONFIG = {
   added: {
     label: 'A',
-    className: 'bg-green-500 text-white',
-    iconColor: 'text-green-600 dark:text-green-400',
+    className: TONE_CLASSES.ok,
+    iconColor: 'text-status-ok',
   },
   modified: {
     label: 'M',
-    className: 'bg-yellow-500 text-white',
-    iconColor: 'text-amber-700 dark:text-amber-400',
+    className: TONE_CLASSES.warn,
+    iconColor: 'text-status-warn',
   },
   deleted: {
     label: 'D',
-    className: 'bg-red-500 text-white',
-    iconColor: 'text-red-600 dark:text-red-400',
+    className: TONE_CLASSES.error,
+    iconColor: 'text-destructive',
   },
   renamed: {
     label: 'R',
-    className: 'bg-blue-500 text-white',
-    iconColor: 'text-blue-600 dark:text-blue-400',
+    className: TONE_CLASSES.info,
+    iconColor: 'text-status-info',
   },
   copied: {
     label: 'C',
@@ -148,7 +149,7 @@ function LineChanges({ additions, deletions }: { additions: number; deletions: n
   return (
     <span className="text-xs shrink-0 font-mono" aria-label={label || 'No changes'}>
       {additions > 0 && (
-        <span className="text-green-600" aria-hidden="true">
+        <span className="text-status-ok" aria-hidden="true">
           +{additions}
         </span>
       )}
@@ -158,7 +159,7 @@ function LineChanges({ additions, deletions }: { additions: number; deletions: n
         </span>
       )}
       {deletions > 0 && (
-        <span className="text-red-600" aria-hidden="true">
+        <span className="text-destructive" aria-hidden="true">
           -{deletions}
         </span>
       )}
@@ -260,7 +261,7 @@ function TreeNodeItem({
     <button
       className={cn(
         'w-full text-left px-2 py-1.5 flex items-center gap-1.5 rounded-sm transition-colors',
-        isSelected ? 'bg-accent' : 'hover:bg-accent/50',
+        isSelected ? 'bg-selected text-selected-foreground' : 'hover:bg-accent/50',
       )}
       style={{ paddingLeft: paddingLeft + 20 }} // Extra indent for files to align with folder content
       onClick={() => onSelectFile(node.path)}
@@ -279,7 +280,7 @@ function TreeNodeItem({
         className={cn(
           'truncate flex-1 text-sm',
           isSelected && 'font-medium',
-          file.status === 'deleted' && 'opacity-70',
+          file.status === 'deleted' && 'text-muted-foreground',
         )}
       >
         {node.name}
@@ -323,7 +324,7 @@ function FlatFileItem({
     <button
       className={cn(
         'w-full text-left px-3 py-2 flex items-center gap-2 rounded-md transition-colors',
-        isSelected ? 'bg-accent' : 'hover:bg-accent/50',
+        isSelected ? 'bg-selected text-selected-foreground' : 'hover:bg-accent/50',
       )}
       onClick={onSelect}
       role="option"
@@ -341,7 +342,7 @@ function FlatFileItem({
         className={cn(
           'truncate flex-1 text-sm',
           isSelected && 'font-medium',
-          file.status === 'deleted' && 'opacity-70',
+          file.status === 'deleted' && 'text-muted-foreground',
         )}
       >
         {file.path}
@@ -491,7 +492,7 @@ export function FileNavigator({
           <button
             className={cn(
               'px-2 py-1 rounded-sm transition-colors',
-              viewMode === 'tree' ? 'bg-accent' : 'hover:bg-accent/50',
+              viewMode === 'tree' ? 'bg-selected text-selected-foreground' : 'hover:bg-accent/50',
             )}
             onClick={() => setViewMode('tree')}
             aria-pressed={viewMode === 'tree'}
@@ -501,7 +502,7 @@ export function FileNavigator({
           <button
             className={cn(
               'px-2 py-1 rounded-sm transition-colors',
-              viewMode === 'flat' ? 'bg-accent' : 'hover:bg-accent/50',
+              viewMode === 'flat' ? 'bg-selected text-selected-foreground' : 'hover:bg-accent/50',
             )}
             onClick={() => setViewMode('flat')}
             aria-pressed={viewMode === 'flat'}

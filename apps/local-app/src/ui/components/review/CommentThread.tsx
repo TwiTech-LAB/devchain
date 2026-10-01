@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/ui/components/ui/button';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
 import { Textarea } from '@/ui/components/ui/textarea';
 import {
   Dialog,
@@ -33,6 +33,7 @@ import {
   Trash2,
   MoreVertical,
 } from 'lucide-react';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { cn } from '@/ui/lib/utils';
 import {
   Tooltip,
@@ -91,22 +92,22 @@ const COMMENT_TYPE_CONFIG: Record<
   comment: {
     icon: MessageSquare,
     label: 'Comment',
-    className: 'bg-gray-100 text-gray-700',
+    className: 'bg-muted text-muted-foreground',
   },
   suggestion: {
     icon: Lightbulb,
     label: 'Suggestion',
-    className: 'bg-blue-100 text-blue-700',
+    className: TONE_CLASSES.info,
   },
   issue: {
     icon: AlertCircle,
     label: 'Issue',
-    className: 'bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300',
+    className: TONE_CLASSES.warn,
   },
   approval: {
     icon: CheckCircle2,
     label: 'Approval',
-    className: 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300',
+    className: TONE_CLASSES.ok,
   },
 };
 
@@ -118,17 +119,17 @@ const STATUS_CONFIG: Record<
   open: {
     icon: AlertCircle,
     label: 'Open',
-    className: 'text-amber-700 dark:text-amber-500',
+    className: 'text-status-warn',
   },
   resolved: {
     icon: Check,
     label: 'Resolved',
-    className: 'text-green-600',
+    className: 'text-status-ok',
   },
   wont_fix: {
     icon: X,
     label: "Won't Fix",
-    className: 'text-gray-500',
+    className: 'text-muted-foreground',
   },
 };
 
@@ -178,7 +179,7 @@ function CommentHeader({
         {session && onOpenTerminal ? (
           <button
             onClick={() => onOpenTerminal(session)}
-            className="text-amber-700 hover:text-amber-900 hover:underline font-medium"
+            className="bg-background text-primary hover:underline font-medium"
           >
             {agentName}
           </button>
@@ -186,9 +187,7 @@ function CommentHeader({
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="text-amber-800/70 dark:text-amber-400/70 cursor-not-allowed">
-                  {agentName}
-                </span>
+                <span className="text-status-warn cursor-not-allowed">{agentName}</span>
               </TooltipTrigger>
               <TooltipContent>
                 <p>No running session</p>
@@ -211,15 +210,13 @@ function CommentHeader({
     const remaining = comment.targetAgents.length - MAX_SHOWN;
 
     return (
-      <span className="text-xs text-amber-700 dark:text-amber-500 flex items-center gap-1">
+      <span className="text-xs text-status-warn flex items-center gap-1">
         Waiting on: {shown.map((agent, i) => renderAgentLink(agent.agentId, agent.name, i > 0))}
         {remaining > 0 && (
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="text-amber-700 dark:text-amber-500 cursor-help">
-                  +{remaining} more
-                </span>
+                <span className="text-status-warn cursor-help">+{remaining} more</span>
               </TooltipTrigger>
               <TooltipContent>
                 <p>
@@ -254,7 +251,7 @@ function CommentHeader({
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="cursor-not-allowed opacity-75">{authorName}</span>
+                <span className="cursor-not-allowed">{authorName}</span>
               </TooltipTrigger>
               <TooltipContent>
                 <p>No running session</p>
@@ -268,14 +265,15 @@ function CommentHeader({
 
       {/* Type badge (only for root comments) */}
       {!isReply && (
-        <Badge
-          variant="secondary"
+        <OpaqueBadge
+          fit={false}
+          variant="outline"
           className={cn('text-xs', typeConfig.className)}
           aria-label={`Comment type: ${typeConfig.label}`}
         >
           <TypeIcon className="h-3 w-3 mr-1" aria-hidden="true" />
           {typeConfig.label}
-        </Badge>
+        </OpaqueBadge>
       )}
 
       {/* Status indicator (only for root comments) */}
@@ -429,10 +427,9 @@ export function CommentThread({
     <div
       className={cn(
         'p-3 rounded-lg border bg-card',
-        // Pending state: amber/yellow highlight
-        isPending && 'border-l-4 border-l-amber-500 bg-amber-50/50 dark:bg-amber-950/20',
+        isPending && 'border-l-4 border-l-status-warn/40 bg-status-warn/10',
         // Resolved/won't fix state: muted
-        !isOpen && 'opacity-75',
+        !isOpen && 'text-muted-foreground',
         className,
       )}
       data-testid="comment-thread"

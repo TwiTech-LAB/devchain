@@ -471,9 +471,8 @@ describe('ExternalTaskKanban card time metrics', () => {
       `Logged ${formatEpicTimeMinutes(30)} · New unlogged ${formatEpicTimeMinutes(60)}`,
     );
     expect(screen.getByText(`· New unlogged ${formatEpicTimeMinutes(60)}`)).toHaveClass(
-      'bg-amber-500/15',
-      'text-amber-700',
-      'dark:text-amber-300',
+      'bg-status-warn/10',
+      'text-status-warn',
     );
     expect(screen.getByTestId('epic-time-badge')).toHaveTextContent(formatEpicTimeMinutes(90));
   });

@@ -6,6 +6,7 @@ import type { McpResponse } from '../dtos/mcp.dto';
 import { suggestNestedPath } from '../utils/param-suggestion';
 import { McpToolBindingRegistry } from './mcp-tool-binding.registry';
 import { redactParams } from './utils/redact';
+import { toProjectAdmissionErrorResponse } from './utils/project-admission-error';
 import { ResourceResolver } from './utils/resource-resolver';
 
 const logger = createLogger('McpService');
@@ -53,6 +54,11 @@ export class McpService {
         : normalizedParams;
       return await binding.invoke(parsed);
     } catch (error) {
+      const refused = toProjectAdmissionErrorResponse(error);
+      if (refused) {
+        logger.info({ tool: normalizedTool, code: refused.error?.code }, 'MCP write refused');
+        return refused;
+      }
       logger.error({ tool, error }, 'MCP tool call failed');
       if (error instanceof ZodError) {
         const suggestions: string[] = [];

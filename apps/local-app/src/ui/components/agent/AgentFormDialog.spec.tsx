@@ -619,6 +619,56 @@ describe('AgentFormDialog', () => {
     });
   });
 
+  it('keeps configured overrides whose catalog rows differ only in case, and saves them unchanged', async () => {
+    const user = userEvent.setup();
+    setupFetchMock(
+      undefined,
+      { 'provider-1': [{ id: 'model-1', name: 'SONNET-4' }] },
+      {
+        'provider-1': {
+          efforts: [{ name: 'high' }],
+          supportsEffort: true,
+          requiresModelForEffort: false,
+        },
+      },
+    );
+    const onSubmit = jest.fn();
+    const { Wrapper } = createWrapper();
+    render(
+      <AgentFormDialog
+        {...buildProps({
+          mode: 'edit',
+          onSubmit,
+          initialValues: {
+            name: 'Agent One',
+            profileId: 'profile-1',
+            providerConfigId: 'config-1',
+            description: '',
+            modelOverride: 'sonnet-4',
+            effortOverride: 'High',
+          },
+          editAgentId: 'agent-1',
+        })}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const modelSelect = (await screen.findByLabelText('Model Override')) as HTMLSelectElement;
+    const effortSelect = (await screen.findByLabelText('Effort override')) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(modelSelect.selectedOptions[0]?.textContent).toBe('SONNET-4');
+      expect(effortSelect.selectedOptions[0]?.textContent).toBe('high');
+    });
+    expect(modelSelect.value).toBe('sonnet-4');
+    expect(effortSelect.value).toBe('High');
+
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ modelOverride: 'sonnet-4', effortOverride: 'High' }),
+    );
+  });
+
   // ---- Cancel ----
 
   it('calls onOpenChange(false) when Cancel is clicked', async () => {

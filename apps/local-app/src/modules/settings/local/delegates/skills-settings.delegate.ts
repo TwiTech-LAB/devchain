@@ -1,11 +1,17 @@
+import { mergeSourceSwitches } from '../../../storage/local/helpers/skill-source-switches';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { createLogger } from '../../../../common/logging/logger';
 import { ValidationError } from '../../../../common/errors/error-types';
+import { isAlwaysEnabledSkillSource } from '../../../../common/constants/built-in-skill-sources';
 
 const logger = createLogger('SkillsSettingsDelegate');
 
 export const DEFAULT_SKILLS_SYNC_ON_STARTUP = true;
+
+export type HomePushedSkillSource =
+  | { name: string; kind: 'community' }
+  | { name: string; kind: 'local'; homeFolderPath: string; contentHash: string };
 
 export interface SkillsDelegateContext {
   sqlite: Database.Database;
@@ -28,20 +34,25 @@ export class SkillsSettingsDelegate {
   }
 
   setSkillsSyncOnStartup(enabled: boolean): void {
-    const now = new Date().toISOString();
-    this.sqlite
-      .prepare(
-        `INSERT INTO settings (id, key, value, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET
-           value = excluded.value,
-           updated_at = excluded.updated_at`,
-      )
-      .run(randomUUID(), 'skills.syncOnStartup', String(enabled), now, now);
+    this.writeRawSetting('skills.syncOnStartup', String(enabled));
     logger.info({ enabled }, 'Skills syncOnStartup updated');
   }
 
+  /** Switch map every reader uses: an always-enabled source never appears, so it reads as on. */
   getSkillSourcesEnabled(): Record<string, boolean> {
+    return this.readSkillSourcesMap(false);
+  }
+
+  /**
+   * The stored switch map with legacy values of always-enabled sources kept.
+   * Not for deciding enablement: only for writes that must see those values,
+   * e.g. a baseline that turns a legacy "off" into a sync.
+   */
+  getStoredSkillSourcesEnabled(): Record<string, boolean> {
+    return this.readSkillSourcesMap(true);
+  }
+
+  private readSkillSourcesMap(keepAlwaysEnabled: boolean): Record<string, boolean> {
     const raw = this.readRawSetting('skills.sources');
     if (!raw || raw.trim().length === 0) {
       return {};
@@ -57,7 +68,7 @@ export class SkillsSettingsDelegate {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return {};
       }
-      return this.normalizeSkillSourcesMap(parsed as Record<string, unknown>);
+      return this.normalizeSkillSourcesMap(parsed as Record<string, unknown>, keepAlwaysEnabled);
     } catch (error) {
       logger.warn({ error }, 'Failed to parse skills.sources setting');
       return {};
@@ -71,24 +82,46 @@ export class SkillsSettingsDelegate {
     }
 
     const current = this.getSkillSourcesEnabled();
-    current[normalizedSourceName] = enabled;
+    if (!isAlwaysEnabledSkillSource(normalizedSourceName)) {
+      current[normalizedSourceName] = enabled;
+    }
 
-    const now = new Date().toISOString();
-    const encodedMap = JSON.stringify(current);
-    this.sqlite
-      .prepare(
-        `INSERT INTO settings (id, key, value, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET
-           value = excluded.value,
-           updated_at = excluded.updated_at`,
-      )
-      .run(randomUUID(), 'skills.sources', encodedMap, now, now);
+    this.writeRawSetting('skills.sources', JSON.stringify(current));
 
     logger.info({ sourceName: normalizedSourceName, enabled }, 'Skill source enablement updated');
   }
 
-  normalizeSkillSourcesMap(rawMap: Record<string, unknown>): Record<string, boolean> {
+  /** Compares against the stored map so a legacy "off" of an always-enabled source gets rewritten. */
+  mergeSkillSourcesEnabled(homeEffective: Record<string, boolean>): Record<string, boolean> {
+    const current = this.getStoredSkillSourcesEnabled();
+    const merged = mergeSourceSwitches(homeEffective, current);
+    for (const key of Object.keys(merged)) {
+      if (isAlwaysEnabledSkillSource(key)) merged[key] = true;
+    }
+    if (
+      Object.keys(merged).length === Object.keys(current).length &&
+      Object.entries(merged).every(([key, value]) => current[key] === value)
+    )
+      return merged;
+    this.writeRawSetting('skills.sources', JSON.stringify(merged));
+    return merged;
+  }
+
+  getHomePushedSkillSources(): HomePushedSkillSource[] {
+    const raw = this.readRawSetting('host.homeSkillSources');
+    return raw ? JSON.parse(raw) : [];
+  }
+
+  setHomePushedSkillSources(sources: HomePushedSkillSource[]): void {
+    const value = JSON.stringify(sources);
+    if (this.readRawSetting('host.homeSkillSources') === value) return;
+    this.writeRawSetting('host.homeSkillSources', value);
+  }
+
+  normalizeSkillSourcesMap(
+    rawMap: Record<string, unknown>,
+    keepAlwaysEnabled = false,
+  ): Record<string, boolean> {
     const normalized: Record<string, boolean> = {};
     for (const [rawKey, rawValue] of Object.entries(rawMap)) {
       if (typeof rawValue !== 'boolean') {
@@ -98,9 +131,25 @@ export class SkillsSettingsDelegate {
       if (!normalizedKey) {
         continue;
       }
+      if (!keepAlwaysEnabled && isAlwaysEnabledSkillSource(normalizedKey)) {
+        continue;
+      }
       normalized[normalizedKey] = rawValue;
     }
     return normalized;
+  }
+
+  private writeRawSetting(key: string, value: string): void {
+    const now = new Date().toISOString();
+    this.sqlite
+      .prepare(
+        `INSERT INTO settings (id, key, value, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = excluded.updated_at`,
+      )
+      .run(randomUUID(), key, value, now, now);
   }
 
   private readRawSetting(key: string): string | undefined {

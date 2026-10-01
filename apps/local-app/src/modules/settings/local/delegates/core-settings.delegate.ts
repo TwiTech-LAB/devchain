@@ -5,6 +5,7 @@ import { access, constants } from 'fs/promises';
 import { resolve } from 'path';
 import { createLogger } from '../../../../common/logging/logger';
 import { ValidationError } from '../../../../common/errors/error-types';
+import { isAlwaysEnabledSkillSource } from '../../../../common/constants/built-in-skill-sources';
 import { SettingsDto, TERMINAL_INPUT_MODES, TerminalInputMode } from '../../dtos/settings.dto';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
@@ -13,6 +14,7 @@ import {
   DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
 } from '../../../../common/constants/terminal';
 import {
+  DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS,
   DEFAULT_TERMINAL_SEED_MAX_BYTES,
   MIN_TERMINAL_SEED_MAX_BYTES,
   MAX_TERMINAL_SEED_MAX_BYTES,
@@ -23,6 +25,7 @@ import {
   MAX_MESSAGE_POOL_MAX_WAIT_MS,
   MIN_MESSAGE_POOL_MAX_MESSAGES,
   MAX_MESSAGE_POOL_MAX_MESSAGES,
+  DEFAULT_MESSAGING_FOLLOW_NOTE,
 } from '../../services/settings.constants';
 import { settingsTerminalChangedEvent } from '../../../events/catalog';
 
@@ -68,6 +71,11 @@ export class CoreSettingsDelegate {
         const valueStr = this.decodeStringSetting(row.value);
         settings.skills = settings.skills ?? {};
         settings.skills.syncOnStartup = valueStr === 'true';
+      } else if (row.key === 'cloud.instanceLabel') {
+        // Empty string is the stored form of "no label" (hostname fallback).
+        const valueStr = this.decodeStringSetting(row.value);
+        settings.cloud = settings.cloud ?? {};
+        settings.cloud.instanceLabel = valueStr || null;
       } else if (row.key === 'skills.sources') {
         try {
           const parsed = JSON.parse(row.value);
@@ -151,7 +159,8 @@ export class CoreSettingsDelegate {
       } else if (row.key === 'activity.idleTimeoutMs') {
         const valueStr = this.decodeStringSetting(row.value);
         const parsed = Number(valueStr);
-        const idleTimeoutMs = Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
+        const idleTimeoutMs =
+          Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS;
         settings.activity = settings.activity ?? {};
         settings.activity.idleTimeoutMs = idleTimeoutMs;
       } else if (row.key === 'autoClean.statusIds') {
@@ -212,6 +221,10 @@ export class CoreSettingsDelegate {
         } catch (error) {
           logger.warn({ error }, 'Failed to parse messagePool.projects');
         }
+      } else if (row.key === 'messaging.followNote') {
+        const valueStr = this.decodeStringSetting(row.value);
+        settings.messaging = settings.messaging ?? {};
+        settings.messaging.followNote = valueStr === 'true';
       } else if (row.key === 'registryTemplates') {
         try {
           const map = JSON.parse(row.value);
@@ -272,6 +285,10 @@ export class CoreSettingsDelegate {
       seedingMaxBytes: effectiveSeedMaxBytes,
       inputMode,
       suppressCtrlCWithSelection,
+    };
+
+    settings.messaging = {
+      followNote: settings.messaging?.followNote ?? DEFAULT_MESSAGING_FOLLOW_NOTE,
     };
 
     logger.debug({ settings }, 'Retrieved settings');
@@ -449,6 +466,11 @@ export class CoreSettingsDelegate {
         }
       }
 
+      const followNote = settings.messaging?.followNote;
+      if (followNote !== undefined) {
+        stmt.run(randomUUID(), 'messaging.followNote', String(followNote), now, now);
+      }
+
       if (settings.registry !== undefined) {
         if (settings.registry.url !== undefined) {
           stmt.run(randomUUID(), 'registry.url', JSON.stringify(settings.registry.url), now, now);
@@ -487,6 +509,17 @@ export class CoreSettingsDelegate {
           const encodedMap = JSON.stringify(this.normalizeSkillSourcesMap(settings.skills.sources));
           stmt.run(randomUUID(), 'skills.sources', encodedMap, now, now);
         }
+      }
+
+      const instanceLabel = settings.cloud?.instanceLabel;
+      if (instanceLabel !== undefined) {
+        stmt.run(
+          randomUUID(),
+          'cloud.instanceLabel',
+          JSON.stringify(instanceLabel ?? ''),
+          now,
+          now,
+        );
       }
 
       if (settings.registryTemplates !== undefined) {
@@ -539,6 +572,12 @@ export class CoreSettingsDelegate {
       return DEFAULT_TERMINAL_SCROLLBACK;
     }
     return Math.max(MIN_TERMINAL_SCROLLBACK, Math.min(MAX_TERMINAL_SCROLLBACK, parsed));
+  }
+
+  getFollowNoteEnabled(): boolean {
+    const value = this.getSetting('messaging.followNote');
+    // Only a stored 'false' suppresses the note.
+    return value === undefined ? DEFAULT_MESSAGING_FOLLOW_NOTE : value !== 'false';
   }
 
   private async validateBinaryPath(binaryPath: string, providerName: string): Promise<void> {
@@ -594,7 +633,7 @@ export class CoreSettingsDelegate {
         continue;
       }
       const normalizedKey = rawKey.trim().toLowerCase();
-      if (!normalizedKey) {
+      if (!normalizedKey || isAlwaysEnabledSkillSource(normalizedKey)) {
         continue;
       }
       normalized[normalizedKey] = rawValue;

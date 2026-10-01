@@ -1,9 +1,9 @@
 {
   "_manifest": {
     "slug": "teams-dev",
-    "name": "Teams Development Flow",
+    "name": "DevChain Development Flow",
     "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy",
-    "version": "1.1.54",
+    "version": "1.1.56",
     "category": "development",
     "tags": [
       "development",
@@ -15,10 +15,10 @@
     "authorName": "Devchain",
     "changelog": "",
     "minDevchainVersion": "0.12.0",
-    "publishedAt": "2026-09-23T13:32:28.260Z"
+    "publishedAt": "2026-09-30T18:38:14.799Z"
   },
   "version": 1,
-  "exportedAt": "2026-09-23T13:32:28.260Z",
+  "exportedAt": "2026-09-30T18:38:14.799Z",
   "prompts": [
     {
       "id": "325b23a5-09d1-4f13-b0f5-4ff2713dbe24",
@@ -71,7 +71,7 @@
       "content": {
         "$file": "prompts/005-development-standards.md"
       },
-      "version": 1,
+      "version": 2,
       "tags": [
         "docs:create-development-standards",
         "type:system"
@@ -95,7 +95,7 @@
       "content": {
         "$file": "prompts/007-epic-master-instructions-sop.md"
       },
-      "version": 1,
+      "version": 3,
       "tags": [
         "agent:profile:epic-master",
         "type:system"
@@ -141,7 +141,7 @@
       "content": {
         "$file": "prompts/011-reviewer-architect-plan-decomposition-sop.md"
       },
-      "version": 2,
+      "version": 4,
       "tags": [
         "agent:profile:architect",
         "type:system"
@@ -176,7 +176,7 @@
       "content": {
         "$file": "prompts/014-worker-ai-task-execution-sop.md"
       },
-      "version": 1,
+      "version": 2,
       "tags": [
         "agent:profile:coder",
         "type:system"
@@ -419,7 +419,7 @@
           "options": "--dangerously-skip-permissions",
           "env": null,
           "model": "sonnet",
-          "effort": "xhigh",
+          "effort": "high",
           "position": 2
         },
         {
@@ -428,8 +428,8 @@
           "description": "Senior software engineer: Handles ambiguous, cross-cutting, high-risk work, and complex development",
           "options": "--dangerously-bypass-approvals-and-sandbox",
           "env": null,
-          "model": "gpt-6-sol",
-          "effort": "high",
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh",
           "position": 3
         },
         {
@@ -438,8 +438,8 @@
           "description": "Junior/Mid-level software engineer, for Backend/Frontend work",
           "options": "--dangerously-bypass-approvals-and-sandbox",
           "env": null,
-          "model": "gpt-6-luna",
-          "effort": "max",
+          "model": "gpt-6.1-sol",
+          "effort": "medium",
           "position": 4
         },
         {
@@ -570,7 +570,7 @@
           "description": null,
           "options": "--dangerously-bypass-approvals-and-sandbox",
           "env": null,
-          "model": "gpt-6-astra",
+          "model": "gpt-6.1-sol",
           "effort": "medium",
           "position": 1
         },
@@ -712,7 +712,7 @@
   "providerSettings": [
     {
       "name": "claude",
-      "autoCompactThreshold": 50
+      "autoCompactThreshold": 60
     }
   ],
   "providerModels": [
@@ -734,7 +734,8 @@
         "gpt-5.6-luna",
         "gpt-6-astra",
         "gpt-6-sol",
-        "gpt-6-luna"
+        "gpt-6-luna",
+        "gpt-6.1-sol"
       ]
     },
     {

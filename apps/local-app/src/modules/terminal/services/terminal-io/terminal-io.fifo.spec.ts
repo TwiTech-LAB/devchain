@@ -1,4 +1,5 @@
 import type { EventsService } from '../../../events/services/events.service';
+import type { SettingsService } from '../../../settings/services/settings.service';
 import { HumanPromptStateService, type ForcePromptSnapshot } from '../human-prompt-state.service';
 import type {
   DaemonSpawnOptions,
@@ -116,7 +117,8 @@ function makeService(): {
   const executor = new ControlledExecutor();
   const promptState = new HumanPromptStateService();
   const events = { publish: jest.fn() } as unknown as EventsService;
-  const service = new TerminalIOService(executor, events, promptState);
+  const settings = { getFollowNoteEnabled: () => true } as unknown as SettingsService;
+  const service = new TerminalIOService(executor, events, promptState, settings);
   activeServices.push(service);
   return { executor, promptState, service };
 }
@@ -220,7 +222,7 @@ describe('TerminalIOService pane FIFO', () => {
     const draft = promptState.recordPromptText('pane-a');
     promptState.transitionToAwaiting('pane-a', draft.generation);
     const snapshot = promptState.getQuietSnapshot('pane-a');
-    promptState.recordMeaningfulOutput('pane-a');
+    promptState.recordExecutedInput('pane-a');
 
     await expect(
       service.deliverGuarded(
@@ -235,7 +237,7 @@ describe('TerminalIOService pane FIFO', () => {
     expect(promptState.getState('pane-a').phase).toBe('awaiting_stable_idle');
   });
 
-  it('retains ownership through held confirmation preflight and defers changed output', async () => {
+  it('retains ownership through held confirmation preflight and defers changed input', async () => {
     const { executor, promptState, service } = makeService();
     const draft = promptState.recordPromptText('pane-a');
     promptState.transitionToAwaiting('pane-a', draft.generation);
@@ -260,7 +262,7 @@ describe('TerminalIOService pane FIFO', () => {
     await baseline.started;
 
     const phaseDuringPreflight = promptState.getState('pane-a').phase;
-    promptState.recordMeaningfulOutput('pane-a');
+    promptState.recordExecutedInput('pane-a');
     baseline.release();
 
     expect(phaseDuringPreflight).toBe('awaiting_stable_idle');
@@ -274,10 +276,6 @@ describe('TerminalIOService pane FIFO', () => {
   });
 
   it.each([
-    [
-      'meaningful output',
-      (promptState: HumanPromptStateService) => promptState.recordMeaningfulOutput('pane-a'),
-    ],
     [
       'executed input',
       (promptState: HumanPromptStateService) => promptState.recordExecutedInput('pane-a'),
@@ -412,13 +410,13 @@ describe('TerminalIOService pane FIFO', () => {
     const releaseIfQuiet = promptState.releaseIfQuiet.bind(promptState);
     jest.spyOn(promptState, 'releaseIfQuiet').mockImplementation((...args) => {
       const released = releaseIfQuiet(...args);
-      if (released) queueMicrotask(() => promptState.recordMeaningfulOutput('pane-a'));
+      if (released) queueMicrotask(() => promptState.recordExecutedInput('pane-a'));
       return released;
     });
-    let meaningfulOutputEpochAtPaste = -1;
+    let executedInputEpochAtPaste = -1;
     executor.onRun = (options) => {
       if (options.argv[1] === 'paste-buffer') {
-        meaningfulOutputEpochAtPaste = promptState.getState('pane-a').meaningfulOutputEpoch;
+        executedInputEpochAtPaste = promptState.getState('pane-a').executedInputEpoch;
       }
     };
 
@@ -434,10 +432,8 @@ describe('TerminalIOService pane FIFO', () => {
       snapshot,
     );
 
-    expect(meaningfulOutputEpochAtPaste).toBe(snapshot.meaningfulOutputEpoch);
-    expect(promptState.getState('pane-a').meaningfulOutputEpoch).toBe(
-      snapshot.meaningfulOutputEpoch + 1,
-    );
+    expect(executedInputEpochAtPaste).toBe(snapshot.executedInputEpoch);
+    expect(promptState.getState('pane-a').executedInputEpoch).toBe(snapshot.executedInputEpoch + 1);
   });
 
   describe('force delivery guard (real TerminalIOService + HumanPromptState)', () => {
@@ -564,28 +560,6 @@ describe('TerminalIOService pane FIFO', () => {
           makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
         ),
       ).resolves.toEqual({ deferred: 'human_draft' });
-    });
-
-    it('succeeds despite meaningful output continuing (output epoch ignored)', async () => {
-      const { promptState, service } = makeService();
-      const draft = promptState.recordPromptText('pane-a');
-      promptState.transitionToAwaiting('pane-a', draft.generation);
-      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
-      const claimState = { phase: 'preparing' };
-
-      promptState.recordMeaningfulOutput('pane-a');
-      promptState.recordMeaningfulOutput('pane-a');
-
-      const result = await service.deliverGuarded(
-        { name: 'pane-a' },
-        'force-despite-output',
-        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
-        undefined,
-        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
-      );
-
-      expect(result).toEqual(expect.objectContaining({ confirmed: true }));
-      expect(promptState.getState('pane-a').phase).toBe('inactive');
     });
 
     it('applyForceDelivery runs once per claim even with retries', async () => {

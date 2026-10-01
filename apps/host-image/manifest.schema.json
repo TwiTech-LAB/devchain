@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DevChain host manifest",
+  "description": "Image manifests are written by apps/host-image/build.sh; only the published manifest has `artifact`. Installed-host manifests are written by the host installer and have an `install` record.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "imageVersion",
+    "builtAt",
+    "arch",
+    "base",
+    "npmRegistry",
+    "bootstrap",
+    "packages",
+    "runtimes",
+    "syncthingCli"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "imageVersion": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]*$",
+      "description": "The --version given to build.sh; the bootstrap service reports it as `imageVersion`."
+    },
+    "builtAt": { "type": "string", "format": "date-time" },
+    "arch": { "const": "amd64" },
+    "base": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "serial": { "type": "string", "pattern": "^[0-9]{8}(\\.[0-9]+)?$" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "npmRegistry": {
+      "type": "string",
+      "format": "uri",
+      "description": "Registry the bootstrap service installs devchain-cli from at claim and update."
+    },
+    "bootstrap": {
+      "description": "The bootstrap package baked in; null for an image built --without-bootstrap (cannot be claimed).",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["package", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "package": { "type": "string", "minLength": 1 },
+            "version": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "packages": {
+      "type": "object",
+      "description": "Debian package versions (dpkg) of the host's system packages.",
+      "required": [
+        "tmux",
+        "git",
+        "curl",
+        "build-essential",
+        "python3",
+        "ca-certificates",
+        "xz-utils",
+        "syncthing"
+      ],
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "runtimes": {
+      "type": "object",
+      "required": ["node", "npm"],
+      "additionalProperties": false,
+      "properties": {
+        "node": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "npm": { "type": "string", "minLength": 1 }
+      }
+    },
+    "syncthingCli": {
+      "type": "string",
+      "description": "First line of `syncthing --version`."
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["file", "sha256", "bytes", "virtualSize"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^devchain-host-[0-9A-Za-z][0-9A-Za-z.+-]*\\.qcow2$"
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "virtualSize": {
+          "type": "string",
+          "description": "Virtual disk size of the qcow2; a VM disk must be at least this."
+        }
+      }
+    },
+    "install": {
+      "description": "Present when this host was installed on a supported Ubuntu or Debian VM.",
+      "type": "object",
+      "required": ["method", "devchainVersion", "installedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "method": { "const": "devchain-host-install" },
+        "devchainVersion": { "type": "string", "minLength": 1 },
+        "installedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "not": { "required": ["install"] } },
+      "then": {
+        "properties": {
+          "base": {
+            "type": "object",
+            "required": ["serial", "sha256"]
+          },
+          "packages": {
+            "type": "object",
+            "required": ["qemu-guest-agent"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

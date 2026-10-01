@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
 
 export type QrAuthStatus =
   | 'idle'
@@ -73,17 +74,22 @@ type SecureQrResult = { ok: true; payload: string } | { ok: false; reason: strin
 async function buildSecureQrPayload(
   rawPayload: string,
   channelId: string,
+  backend: BackendId,
 ): Promise<SecureQrResult> {
   if (!rawPayload || !channelId) {
     return { ok: false, reason: 'the pairing channel was incomplete (missing channel id).' };
   }
   let res: Response;
   try {
-    res = await fetch('/api/e2ee/pairing/begin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channelId }),
-    });
+    res = await apiFetch(
+      '/api/e2ee/pairing/begin',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelId }),
+      },
+      { backend },
+    );
   } catch (err) {
     return {
       ok: false,
@@ -115,7 +121,13 @@ async function buildSecureQrPayload(
   return { ok: true, payload: encodeB64UrlJson(decoded) };
 }
 
-export function useQrAuth(identityServiceUrl: string, mode: 'claim' | 'provision') {
+export function useQrAuth(
+  identityServiceUrl: string,
+  mode: 'claim' | 'provision',
+  // The backend whose cloud session and E2EE keys the QR belongs to — a remote
+  // id pairs the phone with that instance, not this PC.
+  backend: BackendId = HOME_BACKEND,
+) {
   const [state, setState] = useState<QrAuthState>(INITIAL_STATE);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const abortedRef = useRef(false);
@@ -131,35 +143,46 @@ export function useQrAuth(identityServiceUrl: string, mode: 'claim' | 'provision
   // Verify + trust the device key the relay carried back. Best-effort and additive:
   // a failure (e.g. MAC mismatch on a key-substituting relay → backend fails closed)
   // leaves the device un-trusted but never blocks login. Runs at most once.
-  const completeE2ee = useCallback(async (channelId: string, e2ee: DeviceE2eeExchange) => {
-    if (e2eeCompletedRef.current) return;
-    e2eeCompletedRef.current = true;
-    try {
-      const res = await fetch('/api/e2ee/pairing/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channelId,
-          deviceEncPubKey: e2ee.deviceEncPubKey,
-          deviceEncKid: e2ee.deviceEncKid,
-          pairingMac: e2ee.pairingMac,
-          ...(e2ee.installId !== undefined ? { installId: e2ee.installId } : {}),
-          ...(e2ee.deviceName !== undefined ? { label: e2ee.deviceName } : {}),
-        }),
-      });
-      if (!res.ok) return;
-      // Surface the safety number so the user can compare both screens (Task:8). The QR
-      // path is already auto-verified; this is a reassurance/compare confirmation.
-      const { kid } = (await res.json()) as { kid?: string };
-      if (!kid) return;
-      const snRes = await fetch(`/api/e2ee/devices/${encodeURIComponent(kid)}/safety-number`);
-      if (!snRes.ok) return;
-      const { safetyNumber } = (await snRes.json()) as { safetyNumber?: string };
-      if (safetyNumber) setState((s) => ({ ...s, safetyNumber }));
-    } catch {
-      // Non-fatal: the peer simply remains unverified; pairing/login still succeeds.
-    }
-  }, []);
+  const completeE2ee = useCallback(
+    async (channelId: string, e2ee: DeviceE2eeExchange) => {
+      if (e2eeCompletedRef.current) return;
+      e2eeCompletedRef.current = true;
+      try {
+        const res = await apiFetch(
+          '/api/e2ee/pairing/complete',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              channelId,
+              deviceEncPubKey: e2ee.deviceEncPubKey,
+              deviceEncKid: e2ee.deviceEncKid,
+              pairingMac: e2ee.pairingMac,
+              ...(e2ee.installId !== undefined ? { installId: e2ee.installId } : {}),
+              ...(e2ee.deviceName !== undefined ? { label: e2ee.deviceName } : {}),
+            }),
+          },
+          { backend },
+        );
+        if (!res.ok) return;
+        // Surface the safety number so the user can compare both screens (Task:8). The QR
+        // path is already auto-verified; this is a reassurance/compare confirmation.
+        const { kid } = (await res.json()) as { kid?: string };
+        if (!kid) return;
+        const snRes = await apiFetch(
+          `/api/e2ee/devices/${encodeURIComponent(kid)}/safety-number`,
+          undefined,
+          { backend },
+        );
+        if (!snRes.ok) return;
+        const { safetyNumber } = (await snRes.json()) as { safetyNumber?: string };
+        if (safetyNumber) setState((s) => ({ ...s, safetyNumber }));
+      } catch {
+        // Non-fatal: the peer simply remains unverified; pairing/login still succeeds.
+      }
+    },
+    [backend],
+  );
 
   const start = useCallback(async () => {
     if (abortedRef.current) return;
@@ -171,11 +194,17 @@ export function useQrAuth(identityServiceUrl: string, mode: 'claim' | 'provision
       mode === 'provision' ? '/api/cloud/qr/initiate' : `${identityServiceUrl}/auth/qr/initiate`;
 
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ machineLabel: window.location.hostname }),
-      });
+      const res = await apiFetch(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ machineLabel: window.location.hostname }),
+        },
+        // The provision QR is minted by the selected backend's cloud session; the
+        // claim QR comes straight from the identity service (never rewritten).
+        { backend: mode === 'provision' ? backend : HOME_BACKEND },
+      );
       if (!res.ok) throw new Error(`initiate:${res.status}`);
       const data = await res.json();
       if (abortedRef.current) return;
@@ -185,7 +214,7 @@ export function useQrAuth(identityServiceUrl: string, mode: 'claim' | 'provision
       // off the screen and MACs its key with it (Task:4). FAIL CLOSED: if the E2EE layer
       // is unavailable we surface an error and DO NOT render a plaintext-pairing QR — a
       // non-encrypted QR would silently downgrade the link to TLS-only.
-      const secure = await buildSecureQrPayload(data.qrPayload, data.channelId);
+      const secure = await buildSecureQrPayload(data.qrPayload, data.channelId, backend);
       if (abortedRef.current) return;
       if (!secure.ok) {
         setState((s) => ({
@@ -215,7 +244,7 @@ export function useQrAuth(identityServiceUrl: string, mode: 'claim' | 'provision
         error: err instanceof Error ? err.message : String(err),
       }));
     }
-  }, [identityServiceUrl, mode, clearPollInterval]);
+  }, [identityServiceUrl, mode, backend, clearPollInterval]);
 
   // Polling effect — starts when status='waiting'
   useEffect(() => {
@@ -227,9 +256,11 @@ export function useQrAuth(identityServiceUrl: string, mode: 'claim' | 'provision
     const tick = async () => {
       if (abortedRef.current) return;
       try {
-        const res = await fetch(`${identityServiceUrl}/auth/qr/poll/${channelId}`, {
-          headers: { 'X-Poll-Token': pollToken },
-        });
+        const res = await apiFetch(
+          `${identityServiceUrl}/auth/qr/poll/${channelId}`,
+          { headers: { 'X-Poll-Token': pollToken } },
+          { backend: 'home' },
+        );
         if (!res.ok) {
           if (abortedRef.current) return;
           setState((s) => ({ ...s, status: 'error', error: `poll:${res.status}` }));
@@ -250,11 +281,15 @@ export function useQrAuth(identityServiceUrl: string, mode: 'claim' | 'provision
         if (data.status === 'approved') {
           setState((s) => ({ ...s, status: 'finalizing' }));
           try {
-            const fin = await fetch(`${identityServiceUrl}/auth/qr/finalize`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ channelId, pollToken }),
-            });
+            const fin = await apiFetch(
+              `${identityServiceUrl}/auth/qr/finalize`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channelId, pollToken }),
+              },
+              { backend: 'home' },
+            );
             if (!fin.ok) {
               if (abortedRef.current) return;
               setState((s) => ({ ...s, status: 'error', error: `finalize:${fin.status}` }));

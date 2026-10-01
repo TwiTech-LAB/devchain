@@ -1,4 +1,14 @@
+import fs from 'fs';
+import path from 'path';
 import type { ThemeValue } from '@/ui/components/ThemeSelect';
+import {
+  contrast,
+  cssBlock,
+  cssVariable,
+  hexToRgb,
+  hslToRgb,
+  rgbToHex,
+} from '@/ui/styles/testing/theme-colors';
 import { DARK_XTERM_THEME, OCEAN_XTERM_THEME, resolveTerminalTheme } from './terminal-themes';
 
 const REQUIRED_PALETTE_KEYS = [
@@ -27,6 +37,8 @@ const REQUIRED_PALETTE_KEYS = [
 ] as const;
 
 const STRICT_HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
+const ANSI_KEYS = REQUIRED_PALETTE_KEYS.slice(6);
 
 describe('resolveTerminalTheme', () => {
   describe('dark theme', () => {
@@ -64,8 +76,8 @@ describe('resolveTerminalTheme', () => {
 
     it('returns correct tmuxStyle for ocean', () => {
       const { tmuxStyle } = resolveTerminalTheme('ocean');
-      expect(tmuxStyle.foreground).toBe('#1d2b3a');
-      expect(tmuxStyle.background).toBe('#eaeff5');
+      expect(tmuxStyle.foreground).toBe('#172b3a');
+      expect(tmuxStyle.background).toBe('#eaf1f5');
     });
 
     it('has dual output shape with xtermTheme and tmuxStyle', () => {
@@ -150,6 +162,58 @@ describe('resolveTerminalTheme', () => {
 
     it('keeps Ocean ANSI 236 dark for TUIs that use it as foreground text', () => {
       expect(OCEAN_XTERM_THEME.extendedAnsi?.[236 - 16]).toBe('#303030');
+    });
+
+    it('steps Ocean ANSI 254 and 253 down from the background to the palette group tones', () => {
+      expect(OCEAN_XTERM_THEME.extendedAnsi?.[254 - 16]).toBe('#dfe8ef');
+      expect(OCEAN_XTERM_THEME.extendedAnsi?.[253 - 16]).toBe('#d2dee8');
+    });
+  });
+
+  describe('ocean palette', () => {
+    it('uses the Ocean Light canvas, text and primary colors', () => {
+      expect(OCEAN_XTERM_THEME).toMatchObject({
+        background: '#eaf1f5',
+        cursorAccent: '#eaf1f5',
+        foreground: '#172b3a',
+        selectionForeground: '#172b3a',
+        cursor: '#0b6e99',
+        selectionBackground: '#b3d5f0',
+      });
+    });
+
+    it.each(['foreground', ...ANSI_KEYS] as const)(
+      '%s is at least 4.5:1 on the ocean terminal background',
+      (key) => {
+        expect(
+          contrast(
+            hexToRgb(OCEAN_XTERM_THEME[key] as string),
+            hexToRgb(OCEAN_XTERM_THEME.background as string),
+          ),
+        ).toBeGreaterThanOrEqual(4.5);
+      },
+    );
+
+    it('keeps the tmux window style equal to the xterm colors', () => {
+      const { tmuxStyle } = resolveTerminalTheme('ocean');
+      expect(tmuxStyle).toEqual({
+        foreground: OCEAN_XTERM_THEME.foreground,
+        background: OCEAN_XTERM_THEME.background,
+      });
+    });
+
+    // Layer: source contract (Jest). The CSS tokens paint the terminal chrome around xterm,
+    // so reading the stylesheet is the cheapest proof that the two stay in sync.
+    it('keeps the .theme-ocean --terminal-* tokens equal to the xterm colors', () => {
+      const css = fs.readFileSync(path.resolve(__dirname, '../../styles/global.css'), 'utf-8');
+      const oceanBlock = cssBlock(css, '.theme-ocean {');
+      const token = (name: string) =>
+        rgbToHex(hslToRgb(cssVariable(oceanBlock, `terminal-${name}`)));
+
+      expect(token('background')).toBe(OCEAN_XTERM_THEME.background);
+      expect(token('foreground')).toBe(OCEAN_XTERM_THEME.foreground);
+      expect(token('cursor')).toBe(OCEAN_XTERM_THEME.cursor);
+      expect(token('selection')).toBe(OCEAN_XTERM_THEME.selectionBackground);
     });
   });
 

@@ -8,7 +8,6 @@ import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
 import { useEpicExternalSources } from '@/ui/hooks/useEpicExternalSources';
 import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
-import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import {
   boardReturnUrlFromState,
   externalLinkedTaskState,
@@ -502,11 +501,7 @@ export function EpicDetailPage() {
       { label: epic.title },
     ];
   }, [epic?.parentId, epic?.title, parentEpic?.title, parentEpicLoading]);
-  const mergedFromWorktree = useMemo(() => getMergedWorktree(epic?.tags), [epic?.tags]);
-  const visibleTags = useMemo(
-    () => (epic?.tags ?? []).filter((tag) => !isMergedTag(tag)),
-    [epic?.tags],
-  );
+  const visibleTags = useMemo(() => epic?.tags ?? [], [epic?.tags]);
 
   const { data: agentsData } = useQuery({
     queryKey: ['agents', epic?.projectId],
@@ -560,7 +555,7 @@ export function EpicDetailPage() {
     isError: skillsResolveError,
   } = useQuery({
     queryKey: ['skills-resolve', skillResolveKeySlugs],
-    queryFn: () => resolveSkillSlugs(skillResolveKeySlugs),
+    queryFn: () => resolveSkillSlugs(apiFetch, skillResolveKeySlugs),
     enabled: skillResolveKeySlugs.length > 0,
   });
   const resolvedSkills: Record<string, SkillSummary> = resolvedSkillsData ?? {};
@@ -1166,11 +1161,6 @@ export function EpicDetailPage() {
           )}
 
           {/* Tags */}
-          {mergedFromWorktree && (
-            <Badge variant="outline" className="border-amber-400/60 bg-amber-500/10 text-xs">
-              Merged from {mergedFromWorktree}
-            </Badge>
-          )}
           {visibleTags.map((tag) => (
             <Badge key={tag} variant="outline" className="text-xs">
               {tag}
@@ -1267,9 +1257,9 @@ export function EpicDetailPage() {
                 </div>
               ) : comments.length === 0 ? (
                 <div className="text-center py-6">
-                  <MessageSquare className="h-8 w-8 mx-auto text-muted-foreground/50 mb-2" />
+                  <MessageSquare className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
                   <p className="text-sm text-muted-foreground">No comments yet.</p>
-                  <p className="text-xs text-muted-foreground/70 mt-1">
+                  <p className="text-xs text-muted-foreground mt-1">
                     Add a comment below to share progress or decisions.
                   </p>
                 </div>
@@ -1582,9 +1572,9 @@ export function EpicDetailPage() {
                   </div>
                 ) : sortedStatuses.length === 0 ? (
                   <div className="text-center py-6">
-                    <Layers className="h-8 w-8 mx-auto text-muted-foreground/50 mb-2" />
+                    <Layers className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">No statuses configured.</p>
-                    <p className="text-xs text-muted-foreground/70 mt-1">
+                    <p className="text-xs text-muted-foreground mt-1">
                       Add statuses in Settings to create and track sub-epics.
                     </p>
                   </div>

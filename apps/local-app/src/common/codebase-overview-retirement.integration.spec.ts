@@ -39,11 +39,11 @@ const RETIRED_ROUTES: Array<{ method: 'GET' | 'PUT'; url: string }> = [
   { method: 'PUT', url: `/api/projects/${PROJECT_ID}/codebase-overview/scope` },
 ];
 
-async function bootHttpApp(root: 'normal' | 'main'): Promise<{
+async function bootHttpApp(): Promise<{
   fixture: AppBootstrapFixture;
   app: NestFastifyApplication;
 }> {
-  const fixture = await compileAppBootstrapFixture(root);
+  const fixture = await compileAppBootstrapFixture();
   const storageMock = fixture.moduleRef.get(STORAGE_SERVICE) as Record<
     string,
     { mockResolvedValue: (v: unknown) => void }
@@ -62,7 +62,7 @@ async function bootHttpApp(root: 'normal' | 'main'): Promise<{
   return { fixture, app };
 }
 
-describe.each(['normal', 'main'] as const)('codebase overview retirement (%s root)', (root) => {
+describe('codebase overview retirement', () => {
   let fixture: AppBootstrapFixture | null = null;
   let app: NestFastifyApplication | null = null;
 
@@ -78,7 +78,7 @@ describe.each(['normal', 'main'] as const)('codebase overview retirement (%s roo
   });
 
   it('serves the project through a retained route before proving retirement', async () => {
-    ({ fixture, app } = await bootHttpApp(root));
+    ({ fixture, app } = await bootHttpApp());
 
     const response = await app!
       .getHttpAdapter()
@@ -93,7 +93,7 @@ describe.each(['normal', 'main'] as const)('codebase overview retirement (%s roo
   });
 
   it.each(RETIRED_ROUTES)('returns 404 by route absence for $method $url', async (route) => {
-    ({ fixture, app } = await bootHttpApp(root));
+    ({ fixture, app } = await bootHttpApp());
 
     const response = await app!
       .getHttpAdapter()

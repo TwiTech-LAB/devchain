@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => ({
         target: `http://127.0.0.1:${process.env.VITE_API_PORT || '3000'}`,
         ws: true,
       },
-      '/wt': {
+      '^/r/': {
         target: `http://127.0.0.1:${process.env.VITE_API_PORT || '3000'}`,
         changeOrigin: true,
         ws: true,

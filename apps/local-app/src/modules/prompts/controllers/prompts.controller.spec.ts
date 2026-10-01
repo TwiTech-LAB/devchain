@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PromptsController } from './prompts.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { BadRequestException } from '@nestjs/common';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('PromptsController', () => {
   let controller: PromptsController;
@@ -25,6 +27,7 @@ describe('PromptsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [PromptsController],
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         {
           provide: STORAGE_SERVICE,
           useValue: storage,

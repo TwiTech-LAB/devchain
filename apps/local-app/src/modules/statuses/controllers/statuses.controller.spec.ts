@@ -3,6 +3,8 @@ import { StatusesController } from './statuses.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { BadRequestException } from '@nestjs/common';
 import { Status } from '../../storage/models/domain.models';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -32,7 +34,7 @@ describe('StatusesController', () => {
   beforeEach(async () => {
     storage = {
       listStatuses: jest.fn(),
-      getStatus: jest.fn(),
+      getStatus: jest.fn().mockResolvedValue(mockStatus),
       createStatus: jest.fn(),
       updateStatus: jest.fn(),
       deleteStatus: jest.fn(),
@@ -41,6 +43,7 @@ describe('StatusesController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [StatusesController],
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         {
           provide: STORAGE_SERVICE,
           useValue: storage,

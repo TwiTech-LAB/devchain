@@ -28,14 +28,14 @@ export const LastOutputDisplay = memo(function LastOutputDisplay({
 
   return (
     <div
-      className="rounded-md border border-border/40 border-l-2 border-l-emerald-400/40 bg-card/60"
+      className="rounded-md border border-border/40 border-l-2 border-l-status-ok/40 bg-card/60"
       data-testid="last-output-display"
     >
       <div className="border-b border-border/40 px-3 py-1.5 text-[10px] text-muted-foreground">
         <span>{lastOutput.type === 'tool_result' ? 'Latest tool result' : 'Latest output'}</span>
         {!hideTimestamp && (
           <>
-            <span className="mx-1 text-muted-foreground/50">·</span>
+            <span className="mx-1 text-muted-foreground">·</span>
             <span>{formatTimestamp(lastOutput.timestamp.toISOString())}</span>
           </>
         )}

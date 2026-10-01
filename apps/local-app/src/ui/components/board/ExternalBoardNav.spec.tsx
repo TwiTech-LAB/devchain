@@ -232,6 +232,31 @@ describe('ExternalBoardNav', () => {
     expect(screen.getByRole('link', { name: 'DevChain' })).not.toHaveAttribute('aria-current');
   });
 
+  it('gives the active tab the selected colors and leaves the inactive tab without them', () => {
+    useIntegrationConnectionsMock.mockReturnValue(
+      baseHookValue({ connections: [connection('jira', true)] }),
+    );
+    renderNav('/board');
+
+    // The DevChain tab styles its link; a provider tab styles the wrapper around its link.
+    expect(screen.getByRole('link', { name: 'DevChain' })).toHaveClass(
+      'bg-selected',
+      'text-selected-foreground',
+    );
+    expect(screen.getByRole('link', { name: /^Jira/ }).parentElement).not.toHaveClass(
+      'bg-selected',
+    );
+
+    cleanup();
+    renderNav('/board/jira');
+
+    expect(screen.getByRole('link', { name: /^Jira/ }).parentElement).toHaveClass(
+      'bg-selected',
+      'text-selected-foreground',
+    );
+    expect(screen.getByRole('link', { name: 'DevChain' })).not.toHaveClass('bg-selected');
+  });
+
   it('keeps the provider tab active on its work-area routes', () => {
     useIntegrationConnectionsMock.mockReturnValue(
       baseHookValue({

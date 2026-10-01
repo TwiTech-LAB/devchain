@@ -12,10 +12,9 @@ function jsonResponse(body: unknown, ok = true): Response {
   } as Response;
 }
 
-function target(fetchFn: PromptFetch, apiBase = ''): CustomPromptApiTarget {
+function target(fetchFn: PromptFetch): CustomPromptApiTarget {
   return {
     projectId: 'project-1',
-    apiBase,
     fetchFn,
   };
 }
@@ -60,7 +59,7 @@ describe('custom prompt API', () => {
     );
   });
 
-  it('uses the explicit worktree API base and tops up a reported truncation once', async () => {
+  it('tops up a reported truncation once', async () => {
     const fetchFn = jest
       .fn()
       .mockResolvedValueOnce(
@@ -79,15 +78,15 @@ describe('custom prompt API', () => {
         }),
       );
 
-    await expect(fetchCustomPrompts(target(fetchFn, '/wt/feature'))).resolves.toHaveLength(3);
+    await expect(fetchCustomPrompts(target(fetchFn))).resolves.toHaveLength(3);
     expect(fetchFn).toHaveBeenNthCalledWith(
       1,
-      '/wt/feature/api/prompts?projectId=project-1&limit=10000&offset=0',
+      '/api/prompts?projectId=project-1&limit=10000&offset=0',
       expect.any(Object),
     );
     expect(fetchFn).toHaveBeenNthCalledWith(
       2,
-      '/wt/feature/api/prompts?projectId=project-1&limit=10000&offset=2',
+      '/api/prompts?projectId=project-1&limit=10000&offset=2',
       expect.any(Object),
     );
   });

@@ -18,10 +18,20 @@ import { DevicesProxyController } from './controllers/devices-proxy.controller';
 import { QrInitiateProxyController } from './controllers/qr-initiate-proxy.controller';
 import { PreferencesProxyController } from './controllers/preferences-proxy.controller';
 import { ActivityProxyController } from './controllers/activity-proxy.controller';
+import { InstanceLabelController } from './controllers/instance-label.controller';
+import { InstanceLabelService } from './services/instance-label.service';
 import { WorkspacesModule } from '../workspaces/workspaces.module';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
-  imports: [EventsCoreModule, RealtimeBroadcastModule, StorageModule, E2eeModule, WorkspacesModule],
+  imports: [
+    EventsCoreModule,
+    RealtimeBroadcastModule,
+    StorageModule,
+    E2eeModule,
+    WorkspacesModule,
+    SettingsModule,
+  ],
   controllers: [
     AuthCallbackController,
     EgressConfigController,
@@ -29,6 +39,7 @@ import { WorkspacesModule } from '../workspaces/workspaces.module';
     QrInitiateProxyController,
     PreferencesProxyController,
     ActivityProxyController,
+    InstanceLabelController,
   ],
   providers: [
     EncryptedTokenStoreService,
@@ -40,11 +51,15 @@ import { WorkspacesModule } from '../workspaces/workspaces.module';
     CloudEgressBridgeService,
     ProjectActivityReporterService,
     NotificationRecipientResolverService,
+    InstanceLabelService,
   ],
   exports: [
     CloudSessionManagerService,
     RefreshGateService,
     EncryptedTokenStoreService,
+    // The tunnel client attests this instance's display name; exposing the same
+    // stored value keeps the REST endpoint and the attestation on one source.
+    InstanceLabelService,
     // Exposed so the cloud-tunnel AskUserQuestion native-push gate (which lives with
     // the tunnel client to avoid a cloud↔cloud-tunnel module cycle) can reuse the SAME
     // egress queue, payload mapper, and project-egress config as CloudEgressBridge.

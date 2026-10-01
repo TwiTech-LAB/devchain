@@ -6,6 +6,7 @@ import type { EventsService } from '../../events/services/events.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { EpicRelationListItem } from '../../storage/models/domain.models';
 import { EpicRelationsService } from './epic-relations.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('EpicRelationsService', () => {
   const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
@@ -17,6 +18,7 @@ describe('EpicRelationsService', () => {
     summarizeEpicRelationsBatch: jest.Mock;
     setEpicRelation: jest.Mock;
     deleteEpicRelation: jest.Mock;
+    getEpic: jest.Mock;
   };
   let events: { publish: jest.Mock };
   let service: EpicRelationsService;
@@ -55,11 +57,13 @@ describe('EpicRelationsService', () => {
       summarizeEpicRelationsBatch: jest.fn().mockResolvedValue(new Map()),
       setEpicRelation: jest.fn(),
       deleteEpicRelation: jest.fn(),
+      getEpic: jest.fn().mockResolvedValue({ projectId: 'project-1' }),
     };
     events = { publish: jest.fn().mockResolvedValue(null) };
     service = new EpicRelationsService(
       storage as unknown as StorageService,
       events as unknown as EventsService,
+      createProjectWriteAdmissionStub() as never,
     );
   });
 

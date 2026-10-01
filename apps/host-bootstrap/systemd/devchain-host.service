@@ -1,0 +1,32 @@
+# Written by devchain-bootstrap at claim time, and by devchain-host-update --clis
+# on a version-changing update, from apps/host-bootstrap/systemd/devchain-host.service.
+# No PAMName=: a logind session would create /run/user/<uid>/bus, and
+# Antigravity would then keep its login in a keyring instead of the file the
+# provider auth vault watches.
+[Unit]
+Description=DevChain host
+After=network-online.target
+Wants=network-online.target
+Conflicts=devchain-bootstrap.service
+ConditionPathExists=/etc/devchain-host/claim.json
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@HOME@
+Environment=DEVCHAIN_HOST_TLS_KEY_FILE=@HOME@/.devchain/tls/key.pem
+Environment=DEVCHAIN_HOST_TLS_CERT_FILE=@HOME@/.devchain/tls/cert.pem
+EnvironmentFile=@HOME@/.devchain/host.env
+# Without its certificate DevChain must not start at all: home pins it, and a
+# new one would never match.
+ExecStartPre=/bin/sh -c 'for f in "$${DEVCHAIN_HOST_TLS_KEY_FILE}" "$${DEVCHAIN_HOST_TLS_CERT_FILE}"; do [ -n "$$f" ] && [ -r "$$f" ] || { echo "devchain-host: TLS file $$f is missing or unreadable; reset the VM." >&2; exit 1; }; done'
+ExecStart=@BIN@/devchain start --foreground --host 0.0.0.0 --port @PORT@ --no-open
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+# A process the OOM killer kills (a test worker, for example) must not stop DevChain and every agent session in this unit.
+OOMPolicy=continue
+
+[Install]
+WantedBy=multi-user.target

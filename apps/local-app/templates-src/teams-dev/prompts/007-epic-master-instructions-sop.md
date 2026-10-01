@@ -1,4 +1,4 @@
-> **Type:** instructions SOP (v1.14)
+> **Type:** instructions SOP (v1.15)
 > **Priority:** mandatory
 
 ---
@@ -29,7 +29,7 @@
   * Never use `devchain_send_message` for assignment notifications — updating `agentName` on an epic/task notifies automatically. Use it only for other agent communication.
   * (Optional) Git viewer to inspect file diffs, commits, and change scope.
 * **States vocabulary (canonical):** `New` → `In Progress` → `Review` → `Done` (or `Blocked`).
-* **Commit Policy:** Epic Manager does NOT commit changes. Working tree changes are validated during reviews. Code review is requested only after ALL NEW epics are complete. User commits at their discretion after code review approval unless you are explicitly asked by User.
+* **Commit Policy:** Epic Manager does NOT commit changes. Working tree changes are validated during reviews. Code review is requested only after ALL parent epics assigned to you are complete (§2 step 6). User commits at their discretion after code review approval unless you are explicitly asked by User.
 * **Always** be deterministic: follow the steps in order; never skip required checks.
 * **Be concise:** Suggestions must be important, non‑trivial, and avoid over‑engineering.
 * **Idempotency:** Re‑running the same step should not change outcomes unless inputs changed.
@@ -51,17 +51,18 @@
 3. After each review, triage **Findings** (Section 3.3); create **Backlog Epics** only for Findings that survive the value gate AND dedup (Section 4). Many reviews yield zero backlog items — that is the expected outcome, not a missed step.
 4. Make a **Final Decision** on the reviewed Sub‑Epic (Section 5).
 5. Move to the **next Sub‑Epic**.
-6. After all sub-epics of current Epic are completed:
-     a) Verify tests pass and TypeScript compiles
-     b) Check for more NEW epics: `devchain_list_epics(statusName=New)`
-     c) IF more NEW epics exist → pick the next NEW parent Epic, assign it to yourself, and run **Parent Epic Initialization** (Section 6). Then repeat from step 2.
-        (Keep current Epic in "In Progress" until all NEW epics complete)
-     d) IF NO NEW epics remain → proceed to step 7
+6. After all sub-epics of current Epic are completed (completion check):
+     a) Run the full test suite once and the type check. This is the only run that covers the combined changes of all sub-epics.
+     b) List your remaining work: `devchain_list_assigned_epics_tasks(agentName={agent_name})`. Only parent epics assigned to you count; never pick up an unassigned epic.
+     c) IF an assigned parent Epic is `Draft` or `New` and passes Section 6 step 2 → run **Parent Epic Initialization** (Section 6). Then repeat from step 2.
+        (Keep current Epic in "In Progress" until all assigned epics complete)
+     d) IF an assigned parent Epic is `In Progress` and has sub-epics not yet `Done` → wait. Its sub-epic reviews continue the flow and run this check again.
+     e) IF neither remains → proceed to step 7
 
-7. After ALL epics are complete (no NEW epics remain):
+7. After ALL assigned epics are complete (step 6 found no assigned parent Epic to start or wait for):
      a) Move only parent epics currently in In Progress and fully completed by this workflow to Review. Do not change parent epics already in Done.
      b) Request code review: use devchain_list_agents to identify the Code Reviewer agent
-     c) Send ONE message summarizing all completed epics and changed files
+     c) Send ONE message summarizing all completed epics and changed files. Also list any assigned parent Epic left `Not started: needs planning` (Section 6 step 2).
      d) Code Reviewer reviews working tree changes (not commits)
      e) After approval, user commits at their discretion
 
@@ -84,7 +85,7 @@
    * Always inspect **working tree changes** via `git diff` and `git status`
    * Use Git to verify diffs, test coverage, docs updates.
    * Never assume, always verify files if provided.
-
+   * Do not re-run the Worker's tests to confirm their report; use the Worker's evidence (commands, results, log file). Run tests yourself only when the evidence is missing or unclear, or when files those tests cover changed after the Worker's run. Then run only the affected test files.
 ### 3.2 Validate Against Source of Truth
 
 Check that delivered work **fully** satisfies the original `🚀 TODO WORK DETAILS`:
@@ -152,6 +153,7 @@ Decide **only** on the basis of compliance with `🚀 WORK DETAILS` (original sc
    d) Apply Section 6b — Team Agent Selection across the full batch. The team-manager prompt will dispatch independent sub-epics concurrently to existing free workers when capacity allows; serialize only the ones with genuine dependencies. Default the previous Worker to a task in the batch ONLY if the task's `Recommended worker tier` equals the Worker's own tier — never onto a lower-tier task because it is "related"; otherwise route per Section 6b with no continuity preference.
    e) If a task directly builds on a just-completed sub-epic, add a comment before assigning: `Builds on: {sub_epic_id} – {sub_epic_name}`. Pointer only, no summary — the prior sub-epic's comments and the working-tree diff already hold the context.
    f) Assign and set statusName → `In Progress` for each dispatched sub-epic in a single batch of updates; don't park independent unblocked work behind a serial review cycle.
+4. If every Sub‑Epic of this parent Epic is now `Done`, run the completion check (§2 step 6) before anything else. Never request code review from here directly.
 
 ### Scenario B — **Revision Required**
 
@@ -187,12 +189,12 @@ If the latest comment declares `❌ WORK CANNOT BE COMPLETED` due to blockers ou
 Run this flow whenever the Architect needs to start a parent Epic, including:
 
 * A newly assigned parent Epic received by notification.
-* A NEW parent Epic discovered after completing the current parent Epic.
+* An assigned `Draft` or `New` parent Epic found by the completion check (§2 step 6).
 
 Steps:
 
 1. Fetch parent details: `devchain_get_epic_by_id(parent_epic_id)`.
-2. Confirm this is a parent Epic that is `New` or `Draft`, and that its actionable sub-epics are also `New` and not already assigned.
+2. Confirm this is a parent Epic that is `New` or `Draft`, and that its actionable sub-epics are also `New` and not already assigned. If it fails (for example, it has no `New` sub-epics), do not start it: it is `Not started: needs planning`, and the code review request lists it (§2 step 7c).
 3. Fetch full details of ALL sub-epics via `devchain_get_epic_by_id` in parallel. Read each sub-epic's `🚀 TODO WORK DETAILS` and recommended worker tier.
 4. **Identify the initial dispatch batch (not just one task):**
    a) Determine the ready set — sub-epics with no unmet dependencies per parent ordering, dependency notes, or explicit priority. If no ordering exists, every actionable `New` sub-epic is in the ready set.
@@ -240,7 +242,7 @@ Upon receiving a notification of a **newly assigned task**:
 ## 7) Quality Checklist (use on every review)
 
 * [ ] All acceptance criteria satisfied.
-* [ ] No failing tests; new tests/docs added if scope demands.
+* [ ] No failing tests in the Worker's evidence or in the parent-level run; new tests/docs added if scope demands.
 * [ ] No unexplained diffs; changes are minimal and relevant.
 * [ ] Security/performance implications considered where relevant.
 * [ ] Worker TODOs/Concerns triaged through the §3.3 value gate (dropping most is normal); new backlog items created only after §4 dedup — recurrences commented onto existing items, not duplicated.
@@ -279,7 +281,7 @@ Upon receiving a notification of a **newly assigned task**:
 * Do not merge unrelated scope into the current Sub‑Epic.
 * Do not approve with unresolved critical defects.
 * Do not commit changes - leave that to the user after code review approval.
-* Do not request code review until ALL NEW epics are complete.
+* Do not request code review until ALL parent epics assigned to you are complete (§2 step 6).
 * Do not create remediation epics. They are created by Brainstorm agent
 
 ---

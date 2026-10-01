@@ -41,7 +41,7 @@ describe('SessionsMessagePoolService', () => {
   let mockStorage: jest.Mocked<Pick<StorageService, 'getAgent'>>;
   let mockActivityStream: jest.Mocked<MessageActivityStreamService>;
   let mockProviderAdapterFactory: jest.Mocked<
-    Pick<ProviderAdapterFactory, 'getPostPasteDelayMsForAgent'>
+    Pick<ProviderAdapterFactory, 'getRuntimePromptBehaviorForAgent'>
   >;
   let humanPromptState: HumanPromptStateService;
 
@@ -135,7 +135,8 @@ describe('SessionsMessagePoolService', () => {
     } as unknown as jest.Mocked<MessageActivityStreamService>;
 
     mockProviderAdapterFactory = {
-      getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+      // A Claude agent unless a test says otherwise: the provider that gets the follow note.
+      getRuntimePromptBehaviorForAgent: jest.fn().mockResolvedValue({ followNote: true }),
     };
 
     const mockMessageLog = new MessageLogService();
@@ -203,8 +204,29 @@ describe('SessionsMessagePoolService', () => {
       expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
         { name: 'tmux-1' },
         expect.stringContaining('Single message'),
-        expect.objectContaining({ agentId: 'agent-1' }),
+        expect.objectContaining({ agentId: 'agent-1', followNote: true }),
       );
+    });
+
+    it('types no follow note for a batch that holds one outside-text message', async () => {
+      await service.enqueue('agent-1', 'From an agent', { source: 'test' });
+      await service.enqueue('agent-1', 'From a guest', { source: 'test', outsideText: true });
+
+      await jest.advanceTimersByTimeAsync(10001);
+
+      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliver.mock.calls[0][1]).toContain('From a guest');
+      expect(mockTerminalIO.deliver.mock.calls[0][2]).toHaveProperty('followNote', false);
+    });
+
+    it("types no follow note when the agent's provider does not use it", async () => {
+      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
+
+      await service.enqueue('agent-1', 'Single message', { source: 'test' });
+      await jest.advanceTimersByTimeAsync(10001);
+
+      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliver.mock.calls[0][2]).toHaveProperty('followNote', false);
     });
 
     it('should return queued status when message is pooled', async () => {
@@ -229,6 +251,7 @@ describe('SessionsMessagePoolService', () => {
       expect(target).toEqual({ name: 'tmux-1' });
       expect(calledText).toContain('Urgent message');
       expect(calledOpts).toHaveProperty('confirm', false);
+      expect(calledOpts).toHaveProperty('followNote', true);
 
       const log = service.getMessageLog();
       expect(log[0].status).toBe('delivered');
@@ -261,7 +284,35 @@ describe('SessionsMessagePoolService', () => {
       const result = await service.enqueue('agent-1', 'Message', { source: 'test' });
 
       expect(result.status).toBe('delivered');
+      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
       expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliver.mock.calls[0][2]).toHaveProperty('followNote', true);
+    });
+
+    it('types no follow note for immediate outside text', async () => {
+      await service.enqueue('agent-1', 'Guest text', {
+        source: 'test',
+        immediate: true,
+        outsideText: true,
+      });
+
+      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliverImmediate.mock.calls[0][2]).toHaveProperty('followNote', false);
+    });
+
+    it('types no follow note for outside text when pooling is disabled', async () => {
+      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+        enabled: false,
+        delayMs: 10000,
+        maxWaitMs: 30000,
+        maxMessages: 10,
+        separator: '\n---\n',
+      });
+
+      await service.enqueue('agent-1', 'Guest text', { source: 'test', outsideText: true });
+
+      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliver.mock.calls[0][2]).toHaveProperty('followNote', false);
     });
 
     it('should return failed status when immediate delivery fails', async () => {
@@ -425,6 +476,7 @@ describe('SessionsMessagePoolService', () => {
       expect(mockCoordinator.withAgentLock).toHaveBeenCalledTimes(2);
       expect(flushNow).not.toHaveBeenCalled();
       expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliverGuarded.mock.calls[0][2]).toHaveProperty('followNote', true);
     });
 
     it('replaces and fails an old-session lane without exposing it to delayed old events', async () => {
@@ -1011,22 +1063,13 @@ describe('SessionsMessagePoolService', () => {
       expect(service.getPoolDetails()).toEqual([]);
     });
 
-    it.each([
-      {
-        activity: 'meaningful output',
-        record: (state: HumanPromptStateService) => state.recordMeaningfulOutput('tmux-1'),
-      },
-      {
-        activity: 'executed input',
-        record: (state: HumanPromptStateService) => state.recordExecutedInput('tmux-1'),
-      },
-    ])('restarts a full grace when $activity changes the quiet snapshot', async ({ record }) => {
+    it('restarts a full grace when executed input changes the quiet snapshot', async () => {
       const generation = await activate();
       await service.enqueue('agent-1', 'wait for true quiet', protectedOptions);
       await submit(generation);
 
       await jest.advanceTimersByTimeAsync(1_000);
-      record(humanPromptState);
+      humanPromptState.recordExecutedInput('tmux-1');
       await jest.advanceTimersByTimeAsync(1_000);
       expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
 
@@ -2990,12 +3033,14 @@ describe('SessionsMessagePoolService', () => {
 
   describe('postPasteDelayMs integration', () => {
     it('immediate delivery resolves postPasteDelayMs for Gemini agent', async () => {
-      mockProviderAdapterFactory.getPostPasteDelayMsForAgent.mockResolvedValue(1500);
+      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({
+        postPasteDelayMs: 1500,
+      });
 
       await service.enqueue('agent-1', 'hello', { source: 'test', immediate: true });
       await jest.runAllTimersAsync();
 
-      expect(mockProviderAdapterFactory.getPostPasteDelayMsForAgent).toHaveBeenCalledWith(
+      expect(mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent).toHaveBeenCalledWith(
         'agent-1',
       );
       const pasteCall = mockTerminalIO.deliverImmediate.mock.calls[0];
@@ -3004,7 +3049,7 @@ describe('SessionsMessagePoolService', () => {
     });
 
     it('immediate delivery passes undefined postPasteDelayMs for Claude agent', async () => {
-      mockProviderAdapterFactory.getPostPasteDelayMsForAgent.mockResolvedValue(undefined);
+      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
 
       await service.enqueue('agent-1', 'hello', { source: 'test', immediate: true });
       await jest.runAllTimersAsync();
@@ -3015,13 +3060,15 @@ describe('SessionsMessagePoolService', () => {
     });
 
     it('pooled delivery resolves postPasteDelayMs for Gemini agent', async () => {
-      mockProviderAdapterFactory.getPostPasteDelayMsForAgent.mockResolvedValue(1500);
+      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({
+        postPasteDelayMs: 1500,
+      });
 
       await service.enqueue('agent-1', 'hello', { source: 'test' });
       await jest.advanceTimersByTimeAsync(10_001);
       await jest.runAllTimersAsync();
 
-      expect(mockProviderAdapterFactory.getPostPasteDelayMsForAgent).toHaveBeenCalledWith(
+      expect(mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent).toHaveBeenCalledWith(
         'agent-1',
       );
       const pasteCall = mockTerminalIO.deliver.mock.calls[0];
@@ -3030,7 +3077,7 @@ describe('SessionsMessagePoolService', () => {
     });
 
     it('pooled delivery passes undefined postPasteDelayMs for Claude agent', async () => {
-      mockProviderAdapterFactory.getPostPasteDelayMsForAgent.mockResolvedValue(undefined);
+      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
 
       await service.enqueue('agent-1', 'hello', { source: 'test' });
       await jest.advanceTimersByTimeAsync(10_001);

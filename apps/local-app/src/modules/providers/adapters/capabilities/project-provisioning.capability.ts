@@ -1,4 +1,4 @@
-// Real capability — multiple adopters (Antigravity trusted-workspaces + Copilot trusted-folders).
+// Real capability — Claude, Antigravity, Copilot, and Codex project trust.
 
 export interface ProvisioningWarningItem {
   source: string;
@@ -12,7 +12,14 @@ export interface ProvisioningResult {
   warnings: ProvisioningWarningItem[];
 }
 
+export interface ProjectProvisioningContext {
+  env?: Record<string, string>;
+}
+
 export interface ProjectProvisioningCapability {
   readonly requiresProjectProvisioning: true;
-  provisionProjectPath(projectPath: string): Promise<ProvisioningResult>;
+  provisionProjectPath(
+    projectPath: string,
+    context?: ProjectProvisioningContext,
+  ): Promise<ProvisioningResult>;
 }

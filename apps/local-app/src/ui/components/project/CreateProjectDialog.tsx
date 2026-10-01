@@ -131,7 +131,7 @@ export function CreateProjectDialog({
                             className={`text-xs ${
                               template.source === 'bundled'
                                 ? 'text-muted-foreground'
-                                : 'text-blue-600 border-blue-600/50'
+                                : 'text-status-info border-status-info/40'
                             }`}
                           >
                             {template.source === 'bundled' ? 'Built-in' : 'Downloaded'}
@@ -187,11 +187,9 @@ export function CreateProjectDialog({
                     )}
                     {templateFilePathValidation.isAbsolute &&
                       !templateFilePathValidation.exists && (
-                        <Alert className="border-yellow-600">
-                          <AlertTriangle className="h-4 w-4 text-yellow-600" />
-                          <AlertDescription className="text-yellow-600">
-                            File does not exist
-                          </AlertDescription>
+                        <Alert variant="warn">
+                          <AlertTriangle className="h-4 w-4" />
+                          <AlertDescription>File does not exist</AlertDescription>
                         </Alert>
                       )}
                     {templateFilePathValidation.exists && !templateFilePathValidation.isFile && (
@@ -201,11 +199,9 @@ export function CreateProjectDialog({
                       </Alert>
                     )}
                     {templateFilePathValidation.exists && templateFilePathValidation.isFile && (
-                      <Alert className="border-green-600">
-                        <CheckCircle2 className="h-4 w-4 text-green-600" />
-                        <AlertDescription className="text-green-600">
-                          Valid template file
-                        </AlertDescription>
+                      <Alert variant="ok">
+                        <CheckCircle2 className="h-4 w-4" />
+                        <AlertDescription>Valid template file</AlertDescription>
                       </Alert>
                     )}
                   </div>
@@ -242,7 +238,7 @@ export function CreateProjectDialog({
                 !templatePathValidation.isAbsolute && templateFormData.rootPath
                   ? 'border-destructive'
                   : templatePathValidation.checked && !templatePathValidation.exists
-                    ? 'border-yellow-600'
+                    ? 'border-status-warn/40'
                     : ''
               }`}
             />
@@ -257,21 +253,17 @@ export function CreateProjectDialog({
             {templatePathValidation.isAbsolute &&
               templatePathValidation.checked &&
               !templatePathValidation.exists && (
-                <Alert className="mt-2 border-yellow-600">
-                  <AlertTriangle className="h-4 w-4 text-yellow-600" />
-                  <AlertDescription className="text-yellow-600">
-                    Warning: Path does not exist on filesystem
-                  </AlertDescription>
+                <Alert variant="warn" className="mt-2">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>Warning: Path does not exist on filesystem</AlertDescription>
                 </Alert>
               )}
             {templatePathValidation.isAbsolute &&
               templatePathValidation.checked &&
               templatePathValidation.exists && (
-                <Alert className="mt-2 border-green-600">
-                  <CheckCircle2 className="h-4 w-4 text-green-600" />
-                  <AlertDescription className="text-green-600">
-                    Path exists and is accessible
-                  </AlertDescription>
+                <Alert variant="ok" className="mt-2">
+                  <CheckCircle2 className="h-4 w-4" />
+                  <AlertDescription>Path exists and is accessible</AlertDescription>
                 </Alert>
               )}
           </div>

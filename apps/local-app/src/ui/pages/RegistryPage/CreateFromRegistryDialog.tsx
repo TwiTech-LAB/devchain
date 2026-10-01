@@ -16,6 +16,7 @@ import { Textarea } from '@/ui/components/ui/textarea';
 import { Alert, AlertDescription } from '@/ui/components/ui/alert';
 import { useToast } from '@/ui/hooks/use-toast';
 import { Loader2, FolderPlus, AlertCircle } from 'lucide-react';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 interface CreateFromRegistryDialogProps {
   slug: string;
@@ -47,11 +48,15 @@ interface CreateProjectResult {
 }
 
 async function createProjectFromRegistry(input: CreateProjectInput): Promise<CreateProjectResult> {
-  const res = await fetch('/api/projects/from-registry', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
+  const res = await apiFetch(
+    '/api/projects/from-registry',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+    { backend: HOME_BACKEND },
+  );
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to create project' }));

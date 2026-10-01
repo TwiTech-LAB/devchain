@@ -114,7 +114,7 @@ describe('SessionMetricsHeader', () => {
     );
     const progressBar = screen.getByRole('progressbar');
     const fill = progressBar.firstChild as HTMLElement;
-    expect(fill).toHaveClass('bg-amber-500');
+    expect(fill).toHaveClass('bg-status-warn');
   });
 
   it('uses primary color for context < 50%', () => {

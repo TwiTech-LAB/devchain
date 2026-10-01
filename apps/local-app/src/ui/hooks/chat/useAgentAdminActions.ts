@@ -200,7 +200,7 @@ export function useAgentAdminActions({
         (s) => s.agentId === agentId && s.status === 'running',
       );
       if (agentSessions.length > 0) {
-        await Promise.all(agentSessions.map((s) => terminateSession(s.id, '', apiFetch)));
+        await Promise.all(agentSessions.map((s) => terminateSession(s.id, apiFetch)));
       }
       const res = await apiFetch(`/api/agents/${agentId}`, { method: 'DELETE' });
       if (!res.ok) {

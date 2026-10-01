@@ -141,7 +141,7 @@ describe('useAgentSessionMetrics', () => {
     });
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledWith('session-1', undefined, expect.any(Function));
+    expect(fetchMock).toHaveBeenCalledWith('session-1', expect.any(Function));
   });
 
   it('module-unit: uses only staggered watchdog refreshes during transcript inactivity', async () => {
@@ -200,61 +200,6 @@ describe('useAgentSessionMetrics', () => {
     expect(metrics!.contextWindowTokens).toBe(200_000);
   });
 
-  it('handles mixed local + worktree entries with different apiBase values', async () => {
-    fetchMock.mockImplementation(async (_sessionId: string, apiBase?: string) => {
-      if (apiBase) {
-        return makeSummary({ totalContextTokens: 160_000, contextWindowTokens: 200_000 });
-      }
-      return makeSummary({ totalContextTokens: 40_000, contextWindowTokens: 200_000 });
-    });
-
-    const entries: AgentSessionEntry[] = [
-      { agentId: 'agent-1', sessionId: 'session-1' },
-      { agentId: 'agent-wt-1', sessionId: 'session-wt-1', apiBase: '/wt/feature-auth' },
-    ];
-
-    const { result } = renderHook(() => useAgentSessionMetrics(entries), {
-      wrapper: createWrapper(),
-    });
-
-    await waitFor(() => {
-      expect(result.current.size).toBe(2);
-    });
-
-    const local = result.current.get('agent-1');
-    expect(local!.contextPercent).toBe(20);
-
-    const worktree = result.current.get('/wt/feature-auth:agent-wt-1');
-    expect(worktree!.contextPercent).toBe(80);
-  });
-
-  it('namespaced lookup keys — same agentId in different worktrees get distinct entries', async () => {
-    fetchMock.mockImplementation(async (_sessionId: string, apiBase?: string) => {
-      if (apiBase === '/wt/alpha') {
-        return makeSummary({ totalContextTokens: 50_000, contextWindowTokens: 200_000 });
-      }
-      return makeSummary({ totalContextTokens: 150_000, contextWindowTokens: 200_000 });
-    });
-
-    const entries: AgentSessionEntry[] = [
-      { agentId: 'shared-agent', sessionId: 'session-a', apiBase: '/wt/alpha' },
-      { agentId: 'shared-agent', sessionId: 'session-b', apiBase: '/wt/beta' },
-    ];
-
-    const { result } = renderHook(() => useAgentSessionMetrics(entries), {
-      wrapper: createWrapper(),
-    });
-
-    await waitFor(() => {
-      expect(result.current.size).toBe(2);
-    });
-
-    expect(result.current.has('/wt/alpha:shared-agent')).toBe(true);
-    expect(result.current.has('/wt/beta:shared-agent')).toBe(true);
-    expect(result.current.get('/wt/alpha:shared-agent')!.contextPercent).toBe(25);
-    expect(result.current.get('/wt/beta:shared-agent')!.contextPercent).toBe(75);
-  });
-
   it('gracefully omits entries when summary fetch returns 404', async () => {
     fetchMock.mockRejectedValue(new Error('Not found'));
 
@@ -297,7 +242,7 @@ describe('useAgentSessionMetrics', () => {
       warnSpy.mockRestore();
     });
 
-    it('same sessionId from same apiBase does not create duplicate queries', async () => {
+    it('same sessionId does not create duplicate queries', async () => {
       fetchMock.mockResolvedValue(
         makeSummary({ totalContextTokens: 100_000, contextWindowTokens: 200_000 }),
       );
@@ -401,9 +346,5 @@ describe('useAgentSessionMetrics', () => {
 describe('getMetricsKey', () => {
   it('returns agentId for local agents', () => {
     expect(getMetricsKey('agent-1')).toBe('agent-1');
-  });
-
-  it('returns namespaced key for worktree agents', () => {
-    expect(getMetricsKey('agent-1', '/wt/feature-auth')).toBe('/wt/feature-auth:agent-1');
   });
 });

@@ -26,10 +26,12 @@ import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-
 import { EventLogService } from '../../events/services/event-log.service';
 import { AutomationSchedulerService } from './automation-scheduler.service';
 import * as actionsRegistry from '../actions/actions.registry';
-import type { ActionDefinition, ActionResult } from '../actions/action.interface';
+import type { ActionContext, ActionDefinition, ActionResult } from '../actions/action.interface';
 import * as eventFieldsCatalog from '../events/event-fields-catalog';
 import * as eventsService from '../../events/services/events.service';
 import { TeamsService } from '../../teams/services/teams.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 describe('SubscriberExecutorService', () => {
   let service: SubscriberExecutorService;
@@ -167,6 +169,7 @@ describe('SubscriberExecutorService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         SubscriberExecutorService,
         {
           provide: STORAGE_SERVICE,
@@ -1242,6 +1245,8 @@ describe('SubscriberExecutorService', () => {
             session: 'test-session',
           }),
         );
+        const context = mockExecute.mock.calls[0][0] as ActionContext;
+        expect([...(context.eventFieldInputs ?? [])]).toEqual(['session']);
       });
 
       it('should ignore legacy restart_agent agentId input mapping', async () => {
@@ -1617,6 +1622,7 @@ describe('SubscriberExecutorService', () => {
         realScheduler,
         mockTeamsService as unknown as TeamsService,
         mockModuleRef as unknown as ModuleRef,
+        createProjectWriteAdmissionStub() as never,
       );
 
       const mockExecute = jest.fn().mockResolvedValue({ success: true });
@@ -2561,16 +2567,27 @@ describe('EventEmitter2 onAny eventName capture (integration)', () => {
       const nullModuleRef = { get: jest.fn().mockReturnValue(undefined) };
 
       const svc = new SubscriberExecutorService(
-        {} as unknown as never, // storage
-        {} as unknown as never, // terminalIO
-        {} as unknown as never, // sessionsService
-        {} as unknown as never, // sessionCoordinator
-        {} as unknown as never, // amd
-        {} as unknown as never, // eventLogService
-        { addListener: jest.fn(), onAny: jest.fn() } as unknown as never, // eventEmitter
-        {} as unknown as never, // scheduler
-        {} as unknown as never, // teamsService
-        nullModuleRef as unknown as never, // moduleRef
+        {} as unknown as never,
+        // storage
+        {} as unknown as never,
+        // terminalIO
+        {} as unknown as never,
+        // sessionsService
+        {} as unknown as never,
+        // sessionCoordinator
+        {} as unknown as never,
+        // amd
+        {} as unknown as never,
+        // eventLogService
+        { addListener: jest.fn(), onAny: jest.fn() } as unknown as never,
+        // eventEmitter
+        {} as unknown as never,
+        // scheduler
+        {} as unknown as never,
+        // teamsService
+        nullModuleRef as unknown as never,
+        // moduleRef,
+        createProjectWriteAdmissionStub() as never,
       );
 
       expect(() =>

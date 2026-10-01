@@ -346,7 +346,7 @@ describe('InlineTerminalHeader', () => {
     });
     expect(action).toHaveTextContent('1h 30m');
     expect(action.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
-    expect(action.querySelector('svg')).toHaveClass('text-amber-700', 'dark:text-amber-500');
+    expect(action.querySelector('svg')).toHaveClass('text-status-warn');
 
     jest.useFakeTimers();
     try {

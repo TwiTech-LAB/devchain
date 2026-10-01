@@ -3,22 +3,15 @@ import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { Loader2, AlertCircle, Terminal as TerminalIcon } from 'lucide-react';
 import type { Preset } from '@/ui/lib/preset-types';
 import { restartKeyForMain } from '@/ui/lib/restart-keys';
-import {
-  useTerminalWindowManager,
-  useTerminalWindows,
-  useWorktreeTerminalWindowManager,
-} from '@/ui/terminal-windows';
+import { useTerminalWindowManager, useTerminalWindows } from '@/ui/terminal-windows';
 import { useToastHelpers } from '@/ui/lib/toast-helpers';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useActiveSessionConfirm } from '@/ui/hooks/useActiveSessionConfirm';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
-import { useWorktreeAgents, type WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
-import { useWorktreeSessionControls } from '@/ui/hooks/useWorktreeSessionControls';
 import { useTeamQuickEdit } from '@/ui/hooks/chat/useTeamQuickEdit';
 import { usePresetApply } from '@/ui/hooks/chat/usePresetApply';
 import { useAgentConfigSwitch } from '@/ui/hooks/chat/useAgentConfigSwitch';
 import { useAgentAdminActions } from '@/ui/hooks/chat/useAgentAdminActions';
-import { useWorktreeSocket } from '@/ui/hooks/useWorktreeSocket';
 import {
   useMessagePools,
   isForceEligible,
@@ -52,7 +45,6 @@ import { epicTimeQueryKeys, formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 // Session reader
 import { useSessionTranscript } from '@/ui/hooks/useSessionTranscript';
 import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewerPanel';
-import { isPagedTranscriptEnabled } from '@/ui/hooks/usePagedTranscript';
 
 // Extracted hooks
 import { useChatQueries } from '@/ui/hooks/useChatQueries';
@@ -85,29 +77,11 @@ import { SessionLifecycleModals } from '@/ui/components/chat/SessionLifecycleMod
 import { PreviousSessionsTable } from '@/ui/components/chat/PreviousSessionsTable';
 import { SessionReadSlideOver } from '@/ui/components/chat/SessionReadSlideOver';
 
-/** Create a worktree-aware fetch function for provider configs. */
-export function createWorktreeProviderConfigFetcher(
-  apiBase: string,
-): (profileId: string) => Promise<Array<{ id: string; name: string; providerId: string }>> {
-  return async (profileId) => {
-    const res = await fetch(`${apiBase}/api/profiles/${profileId}/provider-configs`);
-    if (!res.ok) throw new Error('Failed to fetch provider configs');
-    return res.json();
-  };
-}
-
 interface ProviderConfig {
   id: string;
   name: string;
   profileId: string;
   providerId: string;
-}
-
-interface SelectedWorktreeAgent {
-  worktreeName: string;
-  agentId: string;
-  group: WorktreeAgentGroup;
-  mainAgentIdAtSelection: string | null;
 }
 
 interface HumanReleaseTarget {
@@ -126,37 +100,6 @@ function describeHumanRelease(target: HumanReleaseTarget | null): string {
   if (!target) return '';
   const noun = target.messageCount === 1 ? 'message' : 'messages';
   return `${target.messageCount} queued ${noun} for ${target.agentName} will send when the terminal is quiet.`;
-}
-
-interface WorktreeInlineTerminalProps {
-  worktreeName: string;
-  sessionId: string;
-  agentName: string | null;
-  isWindowOpen: boolean;
-  windowId?: string | null;
-  terminalRef?: React.Ref<TerminalHandle>;
-}
-
-function WorktreeInlineTerminal({
-  worktreeName,
-  sessionId,
-  agentName,
-  isWindowOpen,
-  windowId,
-  terminalRef,
-}: WorktreeInlineTerminalProps) {
-  const { socket } = useWorktreeSocket(worktreeName);
-
-  return (
-    <InlineTerminalPanel
-      sessionId={sessionId}
-      socket={socket}
-      agentName={agentName}
-      isWindowOpen={isWindowOpen}
-      windowId={windowId}
-      terminalRef={terminalRef}
-    />
-  );
 }
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -179,11 +122,9 @@ export function ChatPage() {
   const projectId = selectedProjectId ?? null;
   const hasSelectedProject = Boolean(projectId);
   const openTerminalWindow = useTerminalWindowManager();
-  const openWorktreeTerminalWindow = useWorktreeTerminalWindowManager();
   const apiFetch = useFetchFactory();
   const { windows: terminalWindows, focusedWindowId } = useTerminalWindows();
   const [mainTerminalHandle, setMainTerminalHandle] = useState<TerminalHandle | null>(null);
-  const [worktreeTerminalHandle, setWorktreeTerminalHandle] = useState<TerminalHandle | null>(null);
   const [customPromptPickerOpen, setCustomPromptPickerOpen] = useState(false);
   const [humanReleaseTarget, setHumanReleaseTarget] = useState<HumanReleaseTarget | null>(null);
 
@@ -193,11 +134,6 @@ export function ChatPage() {
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-
-  const { worktreeAgentGroups, worktreeAgentGroupsLoading } = useWorktreeAgents(projectId);
-  const [selectedWorktreeAgent, setSelectedWorktreeAgent] = useState<SelectedWorktreeAgent | null>(
-    null,
-  );
 
   // ============================================
   // Initialize Hooks
@@ -440,19 +376,13 @@ export function ChatPage() {
   // Provider Config Switching
   // ============================================
 
-  const {
-    handleSwitchConfig,
-    handleSwitchWorktreeConfig,
-    fetchProviderConfigsForProfile,
-    updatingConfigAgentIds,
-    updatingWorktreeConfigKey,
-  } = useAgentConfigSwitch({
-    apiFetch,
-    projectId,
-    agentPresence: queries.agentPresence,
-    worktreeAgentGroups,
-    markAgentsForRestart,
-  });
+  const { handleSwitchConfig, fetchProviderConfigsForProfile, updatingConfigAgentIds } =
+    useAgentConfigSwitch({
+      apiFetch,
+      projectId,
+      agentPresence: queries.agentPresence,
+      markAgentsForRestart,
+    });
 
   // ── Agent admin actions (clone / delete / quick-add) ──
   const {
@@ -526,11 +456,10 @@ export function ChatPage() {
     [inlineTerminalAgentId],
   );
 
-  // Session transcript for Session tab
+  // Session transcript metrics for the Session tab chip
   const sessionTranscript = useSessionTranscript(
     inlineTerminalSession ? inlineTerminalSessionId : null,
     {
-      enableTranscript: !isPagedTranscriptEnabled() && inlineActiveTab === 'session',
       isSessionRunning: isInlineTerminalSessionRunning,
     },
   );
@@ -617,28 +546,6 @@ export function ChatPage() {
   // ============================================
   // Handlers
   // ============================================
-
-  const handleLaunchWorktreeAgentChat = useCallback(
-    (group: WorktreeAgentGroup, agentId: string) => {
-      const selectedAgent = group.agents.find((agent) => agent.id === agentId);
-      if (!selectedAgent) {
-        toast({
-          title: 'Unable to select agent',
-          description: 'Agent details are unavailable.',
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      setSelectedWorktreeAgent({
-        worktreeName: group.name,
-        agentId,
-        group,
-        mainAgentIdAtSelection: agentUiState.selectedAgentId,
-      });
-    },
-    [agentUiState.selectedAgentId, toast],
-  );
 
   const handleOpenHumanRelease = useCallback(
     (agentId: string) => {
@@ -738,163 +645,22 @@ export function ChatPage() {
 
   const handleSelectMainAgent = useCallback(
     (agentId: string) => {
-      setSelectedWorktreeAgent(null);
       agentUiState.handleSelectAgent(agentId);
     },
     [agentUiState],
   );
 
-  useEffect(() => {
-    if (!selectedWorktreeAgent) {
-      return;
-    }
-
-    if (
-      selectedWorktreeAgent.mainAgentIdAtSelection === null &&
-      agentUiState.selectedAgentId !== null
-    ) {
-      setSelectedWorktreeAgent({
-        ...selectedWorktreeAgent,
-        mainAgentIdAtSelection: agentUiState.selectedAgentId,
-      });
-      return;
-    }
-
-    if (agentUiState.selectedAgentId !== selectedWorktreeAgent.mainAgentIdAtSelection) {
-      setSelectedWorktreeAgent(null);
-    }
-  }, [agentUiState.selectedAgentId, selectedWorktreeAgent]);
-
-  useEffect(() => {
-    if (!selectedWorktreeAgent) {
-      return;
-    }
-
-    const nextGroup = worktreeAgentGroups.find(
-      (group) => group.name === selectedWorktreeAgent.worktreeName,
-    );
-
-    if (!nextGroup) {
-      setSelectedWorktreeAgent(null);
-      return;
-    }
-
-    if (!nextGroup.agents.some((agent) => agent.id === selectedWorktreeAgent.agentId)) {
-      setSelectedWorktreeAgent(null);
-      return;
-    }
-
-    if (nextGroup !== selectedWorktreeAgent.group) {
-      setSelectedWorktreeAgent({
-        ...selectedWorktreeAgent,
-        group: nextGroup,
-      });
-    }
-  }, [selectedWorktreeAgent, worktreeAgentGroups]);
-
-  const selectedWorktreeAgentDetails = useMemo(() => {
-    if (!selectedWorktreeAgent) {
-      return null;
-    }
-
-    const agent = selectedWorktreeAgent.group.agents.find(
-      (candidate) => candidate.id === selectedWorktreeAgent.agentId,
-    );
-    if (!agent) {
-      return null;
-    }
-
-    const presence = selectedWorktreeAgent.group.agentPresence[selectedWorktreeAgent.agentId];
-    const sessionId = presence?.sessionId ?? null;
-    const isOnline = Boolean(presence?.online && sessionId);
-
-    return {
-      agentName: agent.name,
-      worktreeName: selectedWorktreeAgent.worktreeName,
-      apiBase: selectedWorktreeAgent.group.apiBase,
-      devchainProjectId: selectedWorktreeAgent.group.devchainProjectId,
-      isOnline,
-      sessionId,
-    };
-  }, [selectedWorktreeAgent]);
-
-  const refreshWorktreeAgentGroups = useCallback(async () => {
-    await queryClient.invalidateQueries({
-      queryKey: ['chat-worktree-agent-groups'],
-      refetchType: 'none',
-    });
-    await queryClient.refetchQueries({
-      queryKey: ['chat-worktree-agent-groups'],
-      type: 'active',
-    });
-  }, [queryClient]);
-
-  // Worktree session lifecycle lives in its policy adapter (Seam 1); ChatPage
-  // only injects the cache-refresh and pending-restart seams it owns.
-  const {
-    worktreeSessionActionsByAgentKey,
-    getWorktreeAgentKey,
-    handleLaunchWorktreeSession,
-    handleRestartWorktreeSession,
-    handleTerminateWorktreeSession,
-  } = useWorktreeSessionControls({ refreshWorktreeAgentGroups, clearPendingRestart });
-
-  const selectedWorktreeSessionId = selectedWorktreeAgentDetails?.isOnline
-    ? selectedWorktreeAgentDetails.sessionId
-    : null;
-
-  const selectedWorktreeWindowId = useMemo(() => {
-    if (!selectedWorktreeSessionId || !selectedWorktreeAgentDetails) {
-      return null;
-    }
-
-    return `worktree:${encodeURIComponent(selectedWorktreeAgentDetails.worktreeName)}:${selectedWorktreeSessionId}`;
-  }, [selectedWorktreeSessionId, selectedWorktreeAgentDetails]);
-
-  const isSelectedWorktreeSessionWindowOpen = useMemo(() => {
-    if (!selectedWorktreeWindowId) {
-      return false;
-    }
-
-    return terminalWindows.some((window) => {
-      return window.id === selectedWorktreeWindowId && !window.minimized;
-    });
-  }, [selectedWorktreeWindowId, terminalWindows]);
-
   const canOpenMainCustomPrompts = Boolean(
-    !selectedWorktreeAgent &&
-      projectId &&
+    projectId &&
       showInlineTerminal &&
       inlineTerminalSessionId &&
       inlineActiveTab === 'terminal' &&
       !isInlineSessionWindowOpen &&
       mainTerminalHandle,
   );
-  const canOpenWorktreeCustomPrompts = Boolean(
-    selectedWorktreeAgentDetails?.devchainProjectId &&
-      selectedWorktreeSessionId &&
-      !isSelectedWorktreeSessionWindowOpen &&
-      worktreeTerminalHandle,
-  );
 
   const customPromptTarget = useMemo<CustomPromptPickerTarget | null>(() => {
     if (
-      selectedWorktreeAgentDetails?.devchainProjectId &&
-      selectedWorktreeSessionId &&
-      !isSelectedWorktreeSessionWindowOpen &&
-      worktreeTerminalHandle
-    ) {
-      return {
-        sessionId: selectedWorktreeSessionId,
-        projectId: selectedWorktreeAgentDetails.devchainProjectId,
-        apiBase: selectedWorktreeAgentDetails.apiBase,
-        fetchFn: fetch,
-        terminalHandle: worktreeTerminalHandle,
-      };
-    }
-
-    if (
-      !selectedWorktreeAgent &&
       projectId &&
       showInlineTerminal &&
       inlineTerminalSessionId &&
@@ -905,7 +671,6 @@ export function ChatPage() {
       return {
         sessionId: inlineTerminalSessionId,
         projectId,
-        apiBase: '',
         fetchFn: apiFetch,
         terminalHandle: mainTerminalHandle,
       };
@@ -917,14 +682,9 @@ export function ChatPage() {
     inlineActiveTab,
     inlineTerminalSessionId,
     isInlineSessionWindowOpen,
-    isSelectedWorktreeSessionWindowOpen,
     mainTerminalHandle,
     projectId,
-    selectedWorktreeAgent,
-    selectedWorktreeAgentDetails,
-    selectedWorktreeSessionId,
     showInlineTerminal,
-    worktreeTerminalHandle,
   ]);
 
   useEffect(() => {
@@ -939,82 +699,7 @@ export function ChatPage() {
     }
   }, [customPromptTarget]);
 
-  useInlineTerminalPromptShortcut(
-    canOpenMainCustomPrompts || canOpenWorktreeCustomPrompts,
-    handleOpenCustomPrompts,
-  );
-
-  const handleOpenSelectedWorktreeWindow = useCallback(() => {
-    if (!selectedWorktreeSessionId || !selectedWorktreeAgentDetails) {
-      return;
-    }
-
-    openWorktreeTerminalWindow({
-      sessionId: selectedWorktreeSessionId,
-      agentName: selectedWorktreeAgentDetails.agentName,
-      worktreeName: selectedWorktreeAgentDetails.worktreeName,
-    });
-  }, [openWorktreeTerminalWindow, selectedWorktreeSessionId, selectedWorktreeAgentDetails]);
-
-  const selectedWorktreeAgentKey = useMemo(() => {
-    if (!selectedWorktreeAgent) {
-      return null;
-    }
-    return getWorktreeAgentKey(selectedWorktreeAgent.worktreeName, selectedWorktreeAgent.agentId);
-  }, [getWorktreeAgentKey, selectedWorktreeAgent]);
-
-  const isSelectedWorktreeAgentLaunching = Boolean(
-    selectedWorktreeAgentKey &&
-      worktreeSessionActionsByAgentKey[selectedWorktreeAgentKey] === 'launching',
-  );
-
-  const handleLaunchSelectedWorktreeSession = useCallback(async () => {
-    if (!selectedWorktreeAgent) {
-      return;
-    }
-    await handleLaunchWorktreeSession(selectedWorktreeAgent.group, selectedWorktreeAgent.agentId);
-  }, [selectedWorktreeAgent, handleLaunchWorktreeSession]);
-
-  const selectedWorktreeAgentEmptyState = useMemo(() => {
-    if (!selectedWorktreeAgentDetails) {
-      return <p>Select a worktree agent from the sidebar.</p>;
-    }
-
-    return (
-      <div className="flex flex-col items-center gap-3">
-        <p>
-          {selectedWorktreeAgentDetails.agentName} is currently offline in{' '}
-          {selectedWorktreeAgentDetails.worktreeName}.
-        </p>
-        <Button
-          type="button"
-          size="sm"
-          onClick={handleLaunchSelectedWorktreeSession}
-          disabled={
-            isSelectedWorktreeAgentLaunching || !selectedWorktreeAgent?.group.devchainProjectId
-          }
-        >
-          {isSelectedWorktreeAgentLaunching ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Launching…
-            </>
-          ) : (
-            'Launch session'
-          )}
-        </Button>
-      </div>
-    );
-  }, [
-    selectedWorktreeAgentDetails,
-    handleLaunchSelectedWorktreeSession,
-    isSelectedWorktreeAgentLaunching,
-    selectedWorktreeAgent,
-  ]);
-
-  const handleClearSelectedWorktreeAgent = useCallback(() => {
-    setSelectedWorktreeAgent(null);
-  }, []);
+  useInlineTerminalPromptShortcut(canOpenMainCustomPrompts, handleOpenCustomPrompts);
 
   const handleOpenTerminal = useCallback(
     (agentId: string) => {
@@ -1062,8 +747,6 @@ export function ChatPage() {
         e.stopPropagation();
         // Claim authority before sending input — focusedWindowId is UI-only state
         // and does not trigger terminal:focus. claimAuthority is idempotent.
-        // Known limitation: worktree floating windows use a separate worktree socket;
-        // the main socket cannot claim authority on those sessions (pre-existing).
         socketRef.current.emit('terminal:focus', { sessionId: targetSessionId });
         socketRef.current.emit('terminal:input', {
           sessionId: targetSessionId,
@@ -1136,8 +819,6 @@ export function ChatPage() {
       projectId,
       agents: queries.agents,
       guests: queries.guests,
-      worktreeAgentGroups,
-      worktreeAgentGroupsLoading,
       agentPresence: queries.agentPresence,
       presenceReady: queries.presenceReady,
       offlineAgents: sessionControls.offlineAgents,
@@ -1145,12 +826,6 @@ export function ChatPage() {
       agentsLoading: queries.agentsLoading,
       agentsError: queries.agentsError,
       selectedAgentId: agentUiState.selectedAgentId,
-      selectedWorktreeAgent: selectedWorktreeAgent
-        ? {
-            worktreeName: selectedWorktreeAgent.worktreeName,
-            agentId: selectedWorktreeAgent.agentId,
-          }
-        : null,
       hasSelectedProject,
       getProviderForAgent: queries.getProviderForAgent,
       validatedPresets,
@@ -1166,8 +841,6 @@ export function ChatPage() {
       projectId,
       queries.agents,
       queries.guests,
-      worktreeAgentGroups,
-      worktreeAgentGroupsLoading,
       queries.agentPresence,
       queries.presenceReady,
       sessionControls.offlineAgents,
@@ -1175,7 +848,6 @@ export function ChatPage() {
       queries.agentsLoading,
       queries.agentsError,
       agentUiState.selectedAgentId,
-      selectedWorktreeAgent,
       hasSelectedProject,
       queries.getProviderForAgent,
       validatedPresets,
@@ -1196,10 +868,6 @@ export function ChatPage() {
       startingAll: sessionControls.startingAll,
       terminatingAll: sessionControls.terminatingAll,
       onSelectAgent: handleSelectMainAgent,
-      onLaunchWorktreeAgentChat: handleLaunchWorktreeAgentChat,
-      onLaunchWorktreeSession: handleLaunchWorktreeSession,
-      onRestartWorktreeSession: handleRestartWorktreeSession,
-      onTerminateWorktreeSession: handleTerminateWorktreeSession,
       onStartAllAgents: sessionControls.handleStartAllAgents,
       onTerminateAllConfirm: () => sessionControls.setTerminateAllConfirm(true),
       onLaunchSession: sessionControls.handleLaunchSession,
@@ -1211,15 +879,11 @@ export function ChatPage() {
       forcingAgentId,
       releasingHeldAgentId: releasingAgentId,
       pendingRestartAgentIds,
-      onMarkForRestart: markAgentsForRestart,
-      worktreeSessionActionsByAgentKey,
       onApplyPreset: handleApplyPreset,
       applyingPreset,
       onSwitchConfig: handleSwitchConfig,
       fetchProviderConfigsForProfile,
       updatingConfigAgentIds,
-      onSwitchWorktreeConfig: handleSwitchWorktreeConfig,
-      updatingWorktreeConfigKey,
     }),
     [
       sessionControls.launchingAgentIds,
@@ -1227,10 +891,6 @@ export function ChatPage() {
       sessionControls.startingAll,
       sessionControls.terminatingAll,
       handleSelectMainAgent,
-      handleLaunchWorktreeAgentChat,
-      handleLaunchWorktreeSession,
-      handleRestartWorktreeSession,
-      handleTerminateWorktreeSession,
       sessionControls.handleStartAllAgents,
       sessionControls.setTerminateAllConfirm,
       sessionControls.handleLaunchSession,
@@ -1241,15 +901,11 @@ export function ChatPage() {
       releasingAgentId,
       forcingAgentId,
       pendingRestartAgentIds,
-      markAgentsForRestart,
-      worktreeSessionActionsByAgentKey,
       handleApplyPreset,
       applyingPreset,
       handleSwitchConfig,
       fetchProviderConfigsForProfile,
       updatingConfigAgentIds,
-      handleSwitchWorktreeConfig,
-      updatingWorktreeConfigKey,
     ],
   );
 
@@ -1304,40 +960,6 @@ export function ChatPage() {
   }
 
   function renderConsoleContent(): React.ReactNode {
-    if (selectedWorktreeAgent) {
-      return (
-        <div className="flex flex-1 min-h-0 flex-col p-4">
-          <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-terminal text-terminal-foreground shadow-sm">
-            <InlineTerminalHeader
-              agentName={selectedWorktreeAgentDetails?.agentName ?? null}
-              onBackToChat={handleClearSelectedWorktreeAgent}
-              onOpenWindow={
-                selectedWorktreeSessionId ? handleOpenSelectedWorktreeWindow : undefined
-              }
-              onOpenPrompts={canOpenWorktreeCustomPrompts ? handleOpenCustomPrompts : undefined}
-            />
-            {selectedWorktreeSessionId ? (
-              <WorktreeInlineTerminal
-                worktreeName={selectedWorktreeAgent.worktreeName}
-                sessionId={selectedWorktreeSessionId}
-                agentName={selectedWorktreeAgentDetails?.agentName ?? null}
-                isWindowOpen={isSelectedWorktreeSessionWindowOpen}
-                windowId={selectedWorktreeWindowId}
-                terminalRef={setWorktreeTerminalHandle}
-              />
-            ) : (
-              <InlineTerminalPanel
-                sessionId={null}
-                agentName={selectedWorktreeAgentDetails?.agentName ?? null}
-                isWindowOpen={false}
-                emptyState={selectedWorktreeAgentEmptyState}
-              />
-            )}
-          </div>
-        </div>
-      );
-    }
-
     if (!selectedAgent) {
       return (
         <div className="flex flex-1 items-center justify-center text-center">
@@ -1387,13 +1009,8 @@ export function ChatPage() {
               sessionContent={
                 <SessionViewerPanel
                   sessionId={inlineTerminalSessionId}
-                  messages={sessionTranscript.messages}
-                  chunks={sessionTranscript.chunks}
                   metrics={sessionTranscript.metrics}
                   isLive={sessionTranscript.isLive}
-                  isLoading={sessionTranscript.isLoading}
-                  error={sessionTranscript.error}
-                  warnings={sessionTranscript.session?.warnings}
                 />
               }
               terminalRef={setMainTerminalHandle}

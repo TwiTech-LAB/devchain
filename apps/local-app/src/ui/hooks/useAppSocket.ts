@@ -1,65 +1,28 @@
-import { useEffect, useMemo } from 'react';
 import type { Socket } from 'socket.io-client';
-import {
-  getAppSocket,
-  getWorktreeSocket,
-  releaseAppSocket,
-  releaseWorktreeSocket,
-} from '@/ui/lib/socket';
-import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
+import { HOME_BACKEND } from '@/ui/lib/api-transport';
+import { useOptionalBackend } from '@/ui/lib/backend-context';
+import { useBackendSocket, type SocketHandlers } from './useBackendSocket';
+
+const NO_HANDLERS: SocketHandlers = {};
 
 /**
- * Subscribe to Socket.IO events with automatic cleanup. Returns the shared socket instance.
- * Automatically selects the worktree socket when a worktree tab is active.
- * Pass a map of event handlers and a deps array for effect re-binding.
+ * The project socket: the active project's backend (home for a local project,
+ * `/r/<remoteId>/socket.io` for a remote one). Never disconnect it in cleanup.
+ *
+ * While project routing is unknown it returns the pooled home socket with no handlers
+ * attached, so nothing listens on a guessed backend; callers must not emit project
+ * traffic before routing is known (the page and dock gates hold them back).
  */
 export function useAppSocket(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handlers: Record<string, (...args: any[]) => void>,
+  handlers: SocketHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   deps: any[] = [],
-  socketOverride?: Socket | null,
 ): Socket {
-  const { activeWorktree } = useOptionalWorktreeTab();
-  const worktreeName = useMemo(() => {
-    const normalized = activeWorktree?.name?.trim() ?? '';
-    return normalized.length > 0 ? normalized : null;
-  }, [activeWorktree?.name]);
-
-  const selectedSocket = useMemo<Socket>(() => {
-    if (socketOverride) return socketOverride;
-    if (worktreeName) return getWorktreeSocket(worktreeName);
-    return getAppSocket();
-  }, [socketOverride, worktreeName]);
-
-  // Release ref-counted socket on change or unmount.
-  useEffect(() => {
-    if (socketOverride) return;
-    return () => {
-      if (worktreeName) {
-        releaseWorktreeSocket(worktreeName);
-      } else {
-        releaseAppSocket();
-      }
-    };
-  }, [socketOverride, worktreeName]);
-
-  useEffect(() => {
-    const entries = Object.entries(handlers || {});
-    entries.forEach(([event, handler]) => {
-      if (typeof handler === 'function') {
-        selectedSocket.on(event, handler);
-      }
-    });
-
-    return () => {
-      entries.forEach(([event, handler]) => {
-        if (typeof handler === 'function') {
-          selectedSocket.off(event, handler);
-        }
-      });
-    };
-  }, [selectedSocket, ...deps]);
-
-  return selectedSocket;
+  const backend = useOptionalBackend();
+  const routingKnown = !backend || backend.ready;
+  const backendId = routingKnown ? (backend?.activeBackend ?? HOME_BACKEND) : HOME_BACKEND;
+  return useBackendSocket(backendId, routingKnown ? handlers : NO_HANDLERS, [
+    routingKnown,
+    ...deps,
+  ]);
 }

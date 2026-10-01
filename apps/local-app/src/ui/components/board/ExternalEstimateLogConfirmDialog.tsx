@@ -172,7 +172,7 @@ export function ExternalEstimateLogConfirmDialog({
             </div>
 
             {confirmation.totalChunkCount > MAX_ENTRIES_PER_REQUEST ? (
-              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-muted-foreground">
+              <p className="rounded-lg border border-status-warn/40 bg-status-warn/10 p-4 text-sm text-muted-foreground">
                 This action writes the oldest {MAX_ENTRIES_PER_REQUEST} entries and leaves the
                 remaining {confirmation.totalChunkCount - MAX_ENTRIES_PER_REQUEST} unlogged for a
                 later action. One busy date can consume all {MAX_ENTRIES_PER_REQUEST} entries.

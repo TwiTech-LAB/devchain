@@ -4,6 +4,7 @@ import { NotFoundError } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { SettingsService } from '../../settings/services/settings.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 const logger = createLogger('ProviderProjectSyncService');
 
@@ -49,6 +50,7 @@ export class ProviderProjectSyncService {
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly settings: SettingsService,
     private readonly unifiedTemplateService: UnifiedTemplateService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   async syncProviderToAllProjects(providerId: string): Promise<SyncResult> {
@@ -70,6 +72,8 @@ export class ProviderProjectSyncService {
     const { items: projects } = await this.storage.listProjects();
 
     for (const project of projects) {
+      // A remote-owned or frozen project gets the provider from its writer.
+      if (!this.admission.isWritable(project.id)) continue;
       const templateProfiles = await this.getTemplateProfilesForProject(project.id);
       const { items: profiles } = await this.storage.listAgentProfiles({
         projectId: project.id,

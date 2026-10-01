@@ -1,11 +1,16 @@
-import { encodeCursor, decodeCursor } from './transcript-cursor';
+import { encodeCursor, decodeCursor, TRANSCRIPT_PARSER_GENERATION } from './transcript-cursor';
 
 describe('transcript-cursor', () => {
   describe('encodeCursor / decodeCursor roundtrip', () => {
     it('encodes and decodes a cursor correctly', () => {
       const cursor = encodeCursor(12345, 100, 10);
       const decoded = decodeCursor(cursor);
-      expect(decoded).toEqual({ fileSize: 12345, messageCount: 100, chunkCount: 10 });
+      expect(decoded).toEqual({
+        fileSize: 12345,
+        messageCount: 100,
+        chunkCount: 10,
+        parserGeneration: TRANSCRIPT_PARSER_GENERATION,
+      });
     });
 
     it('produces opaque base64url strings', () => {
@@ -17,7 +22,12 @@ describe('transcript-cursor', () => {
 
     it('roundtrips zero values', () => {
       const cursor = encodeCursor(0, 0, 0);
-      expect(decodeCursor(cursor)).toEqual({ fileSize: 0, messageCount: 0, chunkCount: 0 });
+      expect(decodeCursor(cursor)).toEqual({
+        fileSize: 0,
+        messageCount: 0,
+        chunkCount: 0,
+        parserGeneration: TRANSCRIPT_PARSER_GENERATION,
+      });
     });
 
     it('roundtrips large values', () => {
@@ -26,15 +36,17 @@ describe('transcript-cursor', () => {
         fileSize: 999999999,
         messageCount: 50000,
         chunkCount: 2500,
+        parserGeneration: TRANSCRIPT_PARSER_GENERATION,
       });
     });
 
-    it('roundtrips a safe-integer source revision without widening the cursor shape', () => {
+    it('roundtrips a safe-integer source revision with the parser generation', () => {
       const cursor = encodeCursor(Number.MAX_SAFE_INTEGER, 2, 2);
       expect(decodeCursor(cursor)).toEqual({
         fileSize: Number.MAX_SAFE_INTEGER,
         messageCount: 2,
         chunkCount: 2,
+        parserGeneration: TRANSCRIPT_PARSER_GENERATION,
       });
     });
   });
@@ -64,3 +76,20 @@ describe('transcript-cursor', () => {
     });
   });
 });
+
+// Pure decoding tests are sufficient for legacy cursor compatibility and field validation.
+it('decodes a legacy three-field cursor as parser generation zero', () => {
+  expect(decodeCursor(Buffer.from('123:4:3').toString('base64url'))).toEqual({
+    fileSize: 123,
+    messageCount: 4,
+    chunkCount: 3,
+    parserGeneration: 0,
+  });
+});
+
+it.each(['', '-1', 'NaN', '1x', '0.5', '9007199254740992'])(
+  'rejects invalid parser generation %s',
+  (generation) => {
+    expect(decodeCursor(Buffer.from(`123:4:3:${generation}`).toString('base64url'))).toBeNull();
+  },
+);

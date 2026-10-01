@@ -145,6 +145,7 @@ describe('context-window resolution lifecycle', () => {
     ]);
     expect(freshLaunch.env).toEqual({
       PRESERVED_CONFIG_ENV: 'yes',
+      DISABLE_AUTOUPDATER: '1',
       DEVCHAIN_STATUSLINE_LOCATOR: freshSettings.runtimeEnv.DEVCHAIN_STATUSLINE_LOCATOR,
     });
     expect(freshLaunch.commandArgs).toEqual(

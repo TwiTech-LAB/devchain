@@ -7,11 +7,6 @@ jest.mock('@/ui/hooks/useSessionTranscript', () => ({
   useSessionTranscript: jest.fn(),
 }));
 
-// Legacy mode: explicitly mock paged flag to false (legacy full-transcript path)
-jest.mock('@/ui/hooks/usePagedTranscript', () => ({
-  isPagedTranscriptEnabled: jest.fn().mockReturnValue(false),
-}));
-
 // Mock SessionViewerPanel to keep the test surface minimal
 jest.mock('@/ui/components/session-reader/SessionViewerPanel', () => ({
   SessionViewerPanel: ({ sessionId }: { sessionId: string | null }) => (
@@ -26,17 +21,13 @@ const mockUseSessionTranscript = useSessionTranscript as jest.MockedFunction<
 
 function defaultTranscript(): ReturnType<typeof useSessionTranscript> {
   return {
-    messages: [],
-    chunks: [],
-    metrics: null,
-    isLoading: false,
-    error: null,
+    metrics: undefined,
     isLive: false,
-    session: null,
+    refetch: jest.fn(),
   };
 }
 
-describe('SessionReadSlideOver — Legacy full-transcript mode (devchain.pagedTranscript=false)', () => {
+describe('SessionReadSlideOver', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseSessionTranscript.mockReturnValue(defaultTranscript());
@@ -66,13 +57,11 @@ describe('SessionReadSlideOver — Legacy full-transcript mode (devchain.pagedTr
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('passes useSessionTranscript result to SessionViewerPanel', () => {
-    mockUseSessionTranscript.mockReturnValue({
-      ...defaultTranscript(),
-      isLoading: true,
-    });
-    render(<SessionReadSlideOver sessionId="session-loading" onClose={jest.fn()} />);
-    // Dialog is still open (loading state doesn't hide it)
-    expect(screen.getByText('Session transcript')).toBeInTheDocument();
+  it('does not pass a transcript-enable option to the hook', () => {
+    render(<SessionReadSlideOver sessionId="session-1" onClose={jest.fn()} />);
+
+    expect(mockUseSessionTranscript).toHaveBeenCalledTimes(1);
+    expect(mockUseSessionTranscript.mock.calls[0]).toHaveLength(1);
+    expect(mockUseSessionTranscript.mock.calls[0][0]).toBe('session-1');
   });
 });

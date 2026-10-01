@@ -14,6 +14,7 @@ import { TerminalViewportModule } from '../terminal/terminal-viewport.module';
 import { TerminalKeyInputModule } from '../terminal/terminal-key-input.module';
 import { E2eeModule } from '../e2ee/e2ee.module';
 import { WorkspacesModule } from '../workspaces/workspaces.module';
+import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 import { TunnelKeypairService } from './services/tunnel-keypair.service';
 import { TunnelHandlerService } from './services/tunnel-handler.service';
 import { TunnelRpcCryptoService, E2EE_REQUIRED_POLICY } from './services/tunnel-rpc-crypto.service';
@@ -70,6 +71,10 @@ import { MobileRpcWorkspaceAccessService } from './services/mobile-rpc-workspace
     // DbModule-only leaf — no import cycle.
     E2eeModule,
     WorkspacesModule,
+    // Remote-ownership binding map for the mobile board RPCs: `board.listProjects`
+    // hides remote-owned projects and per-project reads answer not-found.
+    // Storage-only dependency, safe for any feature module to import.
+    ProjectWriteAdmissionModule,
   ],
   providers: [
     TunnelKeypairService,

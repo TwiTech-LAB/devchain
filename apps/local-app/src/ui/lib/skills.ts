@@ -1,4 +1,13 @@
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
+
 export type SkillStatus = 'available' | 'outdated' | 'sync_error';
+
+export const SKILL_STATUS_BADGES: Record<SkillStatus, { label: string; className: string }> = {
+  available: { label: 'Available', className: TONE_CLASSES.ok },
+  outdated: { label: 'Outdated', className: TONE_CLASSES.warn },
+  sync_error: { label: 'Sync Error', className: TONE_CLASSES.error },
+};
 
 export type SkillCategory =
   | 'security'
@@ -249,11 +258,12 @@ async function readApiErrorMessage(response: Response, fallback: string): Promis
 }
 
 async function fetchJsonOrThrow<T>(
+  fetchFn: FetchFn,
   url: string,
   options: RequestInit,
   fallbackError: string,
 ): Promise<T> {
-  const response = await fetch(url, options);
+  const response = await fetchFn(url, options);
   if (!response.ok) {
     throw new Error(await readApiErrorMessage(response, fallbackError));
   }
@@ -282,6 +292,7 @@ function appendNumericQueryParam(params: URLSearchParams, key: string, value?: n
  * Fetch skills list with optional project scoping and filters.
  */
 export async function fetchSkills(
+  fetchFn: FetchFn,
   projectId: string,
   q?: string,
   source?: string,
@@ -295,14 +306,15 @@ export async function fetchSkills(
 
   const query = params.toString();
   const url = query ? `/api/skills?${query}` : '/api/skills';
-  return fetchJsonOrThrow<SkillListItem[]>(url, {}, 'Failed to fetch skills');
+  return fetchJsonOrThrow<SkillListItem[]>(fetchFn, url, {}, 'Failed to fetch skills');
 }
 
 /**
  * Fetch full skill data by ID.
  */
-export async function fetchSkill(id: string): Promise<Skill> {
+export async function fetchSkill(fetchFn: FetchFn, id: string): Promise<Skill> {
   return fetchJsonOrThrow<Skill>(
+    fetchFn,
     `/api/skills/${encodeURIComponent(id)}`,
     {},
     'Failed to fetch skill',
@@ -312,8 +324,13 @@ export async function fetchSkill(id: string): Promise<Skill> {
 /**
  * Fetch full skill data by source + name slug parts.
  */
-export async function fetchSkillBySlug(source: string, name: string): Promise<Skill> {
+export async function fetchSkillBySlug(
+  fetchFn: FetchFn,
+  source: string,
+  name: string,
+): Promise<Skill> {
   return fetchJsonOrThrow<Skill>(
+    fetchFn,
     `/api/skills/by-slug/${encodeURIComponent(source)}/${encodeURIComponent(name)}`,
     {},
     'Failed to fetch skill by slug',
@@ -323,7 +340,10 @@ export async function fetchSkillBySlug(source: string, name: string): Promise<Sk
 /**
  * Resolve multiple skill slugs into summary payloads keyed by slug.
  */
-export async function resolveSkillSlugs(slugs: string[]): Promise<Record<string, SkillSummary>> {
+export async function resolveSkillSlugs(
+  fetchFn: FetchFn,
+  slugs: string[],
+): Promise<Record<string, SkillSummary>> {
   const normalizedSlugs = Array.from(
     new Set(slugs.map((slug) => slug.trim().toLowerCase()).filter((slug) => slug.length > 0)),
   );
@@ -332,6 +352,7 @@ export async function resolveSkillSlugs(slugs: string[]): Promise<Record<string,
   }
 
   return fetchJsonOrThrow<Record<string, SkillSummary>>(
+    fetchFn,
     '/api/skills/resolve',
     {
       method: 'POST',
@@ -345,9 +366,10 @@ export async function resolveSkillSlugs(slugs: string[]): Promise<Record<string,
 /**
  * Trigger skills sync for all sources (or one specific source).
  */
-export async function triggerSync(sourceName?: string): Promise<SkillSyncResult> {
+export async function triggerSync(fetchFn: FetchFn, sourceName?: string): Promise<SkillSyncResult> {
   const payload = sourceName ? { sourceName } : {};
   return fetchJsonOrThrow<SkillSyncResult>(
+    fetchFn,
     '/api/skills/sync',
     {
       method: 'POST',
@@ -361,20 +383,21 @@ export async function triggerSync(sourceName?: string): Promise<SkillSyncResult>
 /**
  * Fetch source metadata with optional project-scoped enablement state.
  */
-export async function fetchSources(projectId?: string): Promise<SkillSource[]> {
+export async function fetchSources(fetchFn: FetchFn, projectId?: string): Promise<SkillSource[]> {
   const params = new URLSearchParams();
   appendQueryParam(params, 'projectId', projectId);
   const query = params.toString();
   const url = query ? `/api/skills/sources?${query}` : '/api/skills/sources';
 
-  return fetchJsonOrThrow<SkillSource[]>(url, {}, 'Failed to fetch skill sources');
+  return fetchJsonOrThrow<SkillSource[]>(fetchFn, url, {}, 'Failed to fetch skill sources');
 }
 
 /**
  * Fetch all community skill sources.
  */
-export async function fetchCommunitySources(): Promise<CommunitySource[]> {
+export async function fetchCommunitySources(fetchFn: FetchFn): Promise<CommunitySource[]> {
   return fetchJsonOrThrow<CommunitySource[]>(
+    fetchFn,
     '/api/skills/community-sources',
     {},
     'Failed to fetch community skill sources',
@@ -385,9 +408,11 @@ export async function fetchCommunitySources(): Promise<CommunitySource[]> {
  * Add a community skill source.
  */
 export async function addCommunitySource(
+  fetchFn: FetchFn,
   payload: AddCommunitySourceInput,
 ): Promise<CommunitySource> {
   return fetchJsonOrThrow<CommunitySource>(
+    fetchFn,
     '/api/skills/community-sources',
     {
       method: 'POST',
@@ -401,8 +426,9 @@ export async function addCommunitySource(
 /**
  * Remove a community skill source.
  */
-export async function removeCommunitySource(id: string): Promise<void> {
+export async function removeCommunitySource(fetchFn: FetchFn, id: string): Promise<void> {
   await fetchJsonOrThrow<{ success: boolean }>(
+    fetchFn,
     `/api/skills/community-sources/${encodeURIComponent(id)}`,
     { method: 'DELETE' },
     'Failed to remove community source',
@@ -412,8 +438,9 @@ export async function removeCommunitySource(id: string): Promise<void> {
 /**
  * Fetch all local skill sources.
  */
-export async function fetchLocalSources(): Promise<LocalSource[]> {
+export async function fetchLocalSources(fetchFn: FetchFn): Promise<LocalSource[]> {
   return fetchJsonOrThrow<LocalSource[]>(
+    fetchFn,
     '/api/skills/local-sources',
     {},
     'Failed to fetch local skill sources',
@@ -423,8 +450,12 @@ export async function fetchLocalSources(): Promise<LocalSource[]> {
 /**
  * Add a local skill source.
  */
-export async function addLocalSource(payload: AddLocalSourceInput): Promise<LocalSource> {
+export async function addLocalSource(
+  fetchFn: FetchFn,
+  payload: AddLocalSourceInput,
+): Promise<LocalSource> {
   return fetchJsonOrThrow<LocalSource>(
+    fetchFn,
     '/api/skills/local-sources',
     {
       method: 'POST',
@@ -438,8 +469,9 @@ export async function addLocalSource(payload: AddLocalSourceInput): Promise<Loca
 /**
  * Remove a local skill source.
  */
-export async function removeLocalSource(id: string): Promise<void> {
+export async function removeLocalSource(fetchFn: FetchFn, id: string): Promise<void> {
   await fetchJsonOrThrow<{ success: boolean }>(
+    fetchFn,
     `/api/skills/local-sources/${encodeURIComponent(id)}`,
     { method: 'DELETE' },
     'Failed to remove local source',
@@ -450,9 +482,11 @@ export async function removeLocalSource(id: string): Promise<void> {
  * Enable a skill source globally.
  */
 export async function enableSource(
+  fetchFn: FetchFn,
   sourceName: string,
 ): Promise<{ name: string; enabled: boolean }> {
   return fetchJsonOrThrow<{ name: string; enabled: boolean }>(
+    fetchFn,
     `/api/skills/sources/${encodeURIComponent(sourceName)}/enable`,
     { method: 'POST' },
     'Failed to enable skill source',
@@ -463,9 +497,11 @@ export async function enableSource(
  * Disable a skill source globally.
  */
 export async function disableSource(
+  fetchFn: FetchFn,
   sourceName: string,
 ): Promise<{ name: string; enabled: boolean }> {
   return fetchJsonOrThrow<{ name: string; enabled: boolean }>(
+    fetchFn,
     `/api/skills/sources/${encodeURIComponent(sourceName)}/disable`,
     { method: 'POST' },
     'Failed to disable skill source',
@@ -476,10 +512,12 @@ export async function disableSource(
  * Enable a skill source for a project.
  */
 export async function enableSourceForProject(
+  fetchFn: FetchFn,
   sourceName: string,
   projectId: string,
 ): Promise<{ name: string; projectId: string; projectEnabled: boolean }> {
   return fetchJsonOrThrow<{ name: string; projectId: string; projectEnabled: boolean }>(
+    fetchFn,
     `/api/skills/sources/${encodeURIComponent(sourceName)}/enable-project`,
     {
       method: 'POST',
@@ -494,10 +532,12 @@ export async function enableSourceForProject(
  * Disable a skill source for a project.
  */
 export async function disableSourceForProject(
+  fetchFn: FetchFn,
   sourceName: string,
   projectId: string,
 ): Promise<{ name: string; projectId: string; projectEnabled: boolean }> {
   return fetchJsonOrThrow<{ name: string; projectId: string; projectEnabled: boolean }>(
+    fetchFn,
     `/api/skills/sources/${encodeURIComponent(sourceName)}/disable-project`,
     {
       method: 'POST',
@@ -512,10 +552,12 @@ export async function disableSourceForProject(
  * Disable a skill for a project.
  */
 export async function disableSkill(
+  fetchFn: FetchFn,
   projectId: string,
   skillId: string,
 ): Promise<{ projectId: string; skillId: string }> {
   return fetchJsonOrThrow<{ projectId: string; skillId: string }>(
+    fetchFn,
     `/api/skills/${encodeURIComponent(skillId)}/disable`,
     {
       method: 'POST',
@@ -530,10 +572,12 @@ export async function disableSkill(
  * Enable a skill for a project.
  */
 export async function enableSkill(
+  fetchFn: FetchFn,
   projectId: string,
   skillId: string,
 ): Promise<{ projectId: string; skillId: string }> {
   return fetchJsonOrThrow<{ projectId: string; skillId: string }>(
+    fetchFn,
     `/api/skills/${encodeURIComponent(skillId)}/enable`,
     {
       method: 'POST',
@@ -548,9 +592,11 @@ export async function enableSkill(
  * Disable all skills for a project.
  */
 export async function disableAllSkills(
+  fetchFn: FetchFn,
   projectId: string,
 ): Promise<{ projectId: string; disabledCount: number }> {
   return fetchJsonOrThrow<{ projectId: string; disabledCount: number }>(
+    fetchFn,
     '/api/skills/disable-all',
     {
       method: 'POST',
@@ -565,9 +611,11 @@ export async function disableAllSkills(
  * Enable all skills for a project.
  */
 export async function enableAllSkills(
+  fetchFn: FetchFn,
   projectId: string,
 ): Promise<{ projectId: string; enabledCount: number }> {
   return fetchJsonOrThrow<{ projectId: string; enabledCount: number }>(
+    fetchFn,
     '/api/skills/enable-all',
     {
       method: 'POST',
@@ -582,6 +630,7 @@ export async function enableAllSkills(
  * Fetch aggregated skill usage statistics.
  */
 export async function fetchUsageStats(
+  fetchFn: FetchFn,
   options: SkillUsageStatsQuery = {},
 ): Promise<SkillUsageStat[]> {
   const params = new URLSearchParams();
@@ -593,13 +642,14 @@ export async function fetchUsageStats(
 
   const query = params.toString();
   const url = query ? `/api/skills/usage/stats?${query}` : '/api/skills/usage/stats';
-  return fetchJsonOrThrow<SkillUsageStat[]>(url, {}, 'Failed to fetch skill usage stats');
+  return fetchJsonOrThrow<SkillUsageStat[]>(fetchFn, url, {}, 'Failed to fetch skill usage stats');
 }
 
 /**
  * Fetch paginated skill usage log entries.
  */
 export async function fetchUsageLog(
+  fetchFn: FetchFn,
   options: SkillUsageLogQuery = {},
 ): Promise<SkillUsageLogResponse> {
   const params = new URLSearchParams();
@@ -613,5 +663,10 @@ export async function fetchUsageLog(
 
   const query = params.toString();
   const url = query ? `/api/skills/usage/log?${query}` : '/api/skills/usage/log';
-  return fetchJsonOrThrow<SkillUsageLogResponse>(url, {}, 'Failed to fetch skill usage log');
+  return fetchJsonOrThrow<SkillUsageLogResponse>(
+    fetchFn,
+    url,
+    {},
+    'Failed to fetch skill usage log',
+  );
 }

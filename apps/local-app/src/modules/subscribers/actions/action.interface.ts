@@ -169,6 +169,9 @@ export interface ActionContext {
   /** Standardized event envelope containing event metadata and payload */
   event: EventEnvelope;
 
+  /** Names of the inputs bound to an event field instead of a custom value */
+  eventFieldInputs?: ReadonlySet<string>;
+
   /** Logger instance for action logging */
   logger: Logger;
 }

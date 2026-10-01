@@ -26,6 +26,7 @@ import {
   type SkillUsageLogEntry,
   type SkillUsageStat,
 } from '@/ui/lib/skills';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface AgentUsageSummary {
   agentId: string | null;
@@ -92,6 +93,7 @@ function buildAgentBreakdown(entries: SkillUsageLogEntry[]): AgentUsageSummary[]
 }
 
 export function SkillsStatsTab() {
+  const fetchFn = useFetchFactory();
   const { projects, selectedProjectId } = useSelectedProject();
 
   const [projectFilter, setProjectFilter] = useState<string>('selected');
@@ -119,7 +121,7 @@ export function SkillsStatsTab() {
   } = useQuery({
     queryKey: ['skill-usage', resolvedProjectId ?? 'all', fromIso ?? '', toIso ?? ''],
     queryFn: () =>
-      fetchUsageStats({
+      fetchUsageStats(fetchFn, {
         projectId: resolvedProjectId,
         from: fromIso,
         to: toIso,
@@ -134,7 +136,7 @@ export function SkillsStatsTab() {
   } = useQuery({
     queryKey: ['skill-usage-log', resolvedProjectId ?? 'all', fromIso ?? '', toIso ?? ''],
     queryFn: () =>
-      fetchUsageLog({
+      fetchUsageLog(fetchFn, {
         projectId: resolvedProjectId,
         from: fromIso,
         to: toIso,

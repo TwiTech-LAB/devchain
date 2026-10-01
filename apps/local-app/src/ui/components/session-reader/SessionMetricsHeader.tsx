@@ -46,11 +46,11 @@ function PhaseRow({
     >
       <span className="w-16 font-medium">Phase {phase.phaseNumber}</span>
       <span className="tabular-nums">{formatTokens(phase.contribution)}</span>
-      <span className="text-muted-foreground/50">Peak:</span>
+      <span className="text-muted-foreground">Peak:</span>
       <span className="tabular-nums">{formatTokens(phase.peakTokens)}</span>
       {phase.postCompaction !== undefined && (
         <>
-          <span className="text-muted-foreground/50">Post:</span>
+          <span className="text-muted-foreground">Post:</span>
           <span className="tabular-nums">{formatTokens(phase.postCompaction)}</span>
         </>
       )}
@@ -58,7 +58,7 @@ function PhaseRow({
         <button
           type="button"
           onClick={() => onScrollToMessage(phase.compactionMessageId!)}
-          className="text-[10px] text-primary/80 hover:text-primary transition-colors underline"
+          className="text-[10px] text-primary underline hover:decoration-2"
           data-testid={`phase-link-${phase.phaseNumber}`}
         >
           View
@@ -117,7 +117,7 @@ export function SessionMetricsHeader({ metrics, onScrollToMessage }: SessionMetr
           </span>
         </span>
 
-        <span className="text-muted-foreground/60" aria-hidden="true">
+        <span className="text-muted-foreground" aria-hidden="true">
           ·
         </span>
 
@@ -148,7 +148,7 @@ export function SessionMetricsHeader({ metrics, onScrollToMessage }: SessionMetr
                 windowPct > 80
                   ? 'bg-destructive'
                   : windowPct > 50
-                    ? 'bg-amber-500'
+                    ? 'bg-status-warn'
                     : 'bg-primary/60',
               )}
               style={{ width: `${Math.min(windowPct, 100)}%` }}
@@ -159,7 +159,7 @@ export function SessionMetricsHeader({ metrics, onScrollToMessage }: SessionMetr
         {/* Duration */}
         {metrics.durationMs > 0 && (
           <>
-            <span className="text-muted-foreground/60" aria-hidden="true">
+            <span className="text-muted-foreground" aria-hidden="true">
               ·
             </span>
             <span className="tabular-nums" data-testid="metrics-duration">
@@ -169,7 +169,7 @@ export function SessionMetricsHeader({ metrics, onScrollToMessage }: SessionMetr
         )}
 
         {/* Message count */}
-        <span className="text-muted-foreground/60" aria-hidden="true">
+        <span className="text-muted-foreground" aria-hidden="true">
           ·
         </span>
         <span className="tabular-nums" data-testid="metrics-messages">
@@ -179,7 +179,7 @@ export function SessionMetricsHeader({ metrics, onScrollToMessage }: SessionMetr
         {/* Compaction count */}
         {metrics.compactionCount > 0 && (
           <>
-            <span className="text-muted-foreground/60" aria-hidden="true">
+            <span className="text-muted-foreground" aria-hidden="true">
               ·
             </span>
             <span
@@ -196,7 +196,7 @@ export function SessionMetricsHeader({ metrics, onScrollToMessage }: SessionMetr
         {metrics.isOngoing && (
           <span className="ml-auto inline-flex items-center gap-1" data-testid="metrics-live">
             <span
-              className="inline-block h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse"
+              className="inline-block h-1.5 w-1.5 rounded-full bg-status-ok animate-pulse"
               aria-hidden="true"
             />
             Live
@@ -208,7 +208,7 @@ export function SessionMetricsHeader({ metrics, onScrollToMessage }: SessionMetr
       {hasPhases && (
         <Collapsible>
           <CollapsibleTrigger
-            className="group flex w-full items-center gap-1 border-t border-border/30 px-3 py-1 text-[10px] text-muted-foreground/70 hover:text-muted-foreground transition-colors"
+            className="group flex w-full items-center gap-1 border-t border-border/30 px-3 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
             data-testid="phase-breakdown-trigger"
           >
             <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />

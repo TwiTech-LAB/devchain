@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardHeader, CardTitle, CardContent } from '@/ui/components/ui/card';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
+import { cn } from '@/ui/lib/utils';
 import { Button } from '@/ui/components/ui/button';
 import { Skeleton } from '@/ui/components/ui/skeleton';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
@@ -22,6 +24,7 @@ import {
   checkAllTemplateUpdates,
   type CachedTemplateInfo,
 } from '@/ui/lib/registry-updates';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 /**
  * Template info from the unified templates API (extends CachedTemplateInfo with display fields)
@@ -44,7 +47,7 @@ interface TemplatesResponse {
  * Fetch templates from the unified API
  */
 async function fetchTemplates(): Promise<TemplatesResponse> {
-  const res = await fetch('/api/templates');
+  const res = await apiFetch('/api/templates', undefined, { backend: HOME_BACKEND });
   if (!res.ok) {
     throw new Error('Failed to fetch templates');
   }
@@ -55,9 +58,10 @@ async function fetchTemplates(): Promise<TemplatesResponse> {
  * Delete a specific template version
  */
 async function deleteTemplateVersion(slug: string, version: string): Promise<void> {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/templates/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`,
     { method: 'DELETE' },
+    { backend: HOME_BACKEND },
   );
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to delete version' }));
@@ -69,9 +73,10 @@ async function deleteTemplateVersion(slug: string, version: string): Promise<voi
  * Download a template version from registry
  */
 async function downloadTemplateVersion(slug: string, version: string): Promise<void> {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/registry/download/${encodeURIComponent(slug)}/${encodeURIComponent(version)}`,
     { method: 'POST' },
+    { backend: HOME_BACKEND },
   );
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to download template' }));
@@ -109,7 +114,7 @@ function UpdateBadge({
         <Button
           size="sm"
           variant="default"
-          className="h-6 gap-1 bg-blue-600 hover:bg-blue-700 text-xs"
+          className="h-6 gap-1 text-xs"
           onClick={(e) => {
             e.stopPropagation();
             onDownload?.();
@@ -131,10 +136,10 @@ function UpdateBadge({
       );
     case 'up-to-date':
       return (
-        <Badge variant="outline" className="gap-1 text-green-600 border-green-600/50">
+        <OpaqueBadge variant="outline" className={cn('gap-1', TONE_CLASSES.ok)}>
           <CheckCircle2 className="h-3 w-3" />
           Up to date
-        </Badge>
+        </OpaqueBadge>
       );
     case 'offline':
       // Bundled templates don't show "Offline" since they work locally

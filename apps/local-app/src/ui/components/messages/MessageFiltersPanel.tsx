@@ -9,6 +9,8 @@ import {
 import { Button } from '@/ui/components/ui/button';
 import { X } from 'lucide-react';
 import type { MessageFilters } from './MessageActivityList';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface Agent {
   id: string;
@@ -29,8 +31,8 @@ const KNOWN_SOURCES = [
   { value: 'pool.failure_notice', label: 'Failure Notice' },
 ];
 
-async function fetchAgents(projectId: string): Promise<{ items: Agent[] }> {
-  const res = await fetch(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
+async function fetchAgents(fetchFn: FetchFn, projectId: string): Promise<{ items: Agent[] }> {
+  const res = await fetchFn(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
@@ -40,9 +42,10 @@ function hasActiveFilters(filters: MessageFilters): boolean {
 }
 
 export function MessageFiltersPanel({ projectId, filters, onChange }: MessageFiltersPanelProps) {
+  const fetchFn = useFetchFactory();
   const { data: agentsData } = useQuery({
     queryKey: ['agents', projectId],
-    queryFn: () => fetchAgents(projectId),
+    queryFn: () => fetchAgents(fetchFn, projectId),
     enabled: !!projectId,
     staleTime: 30000,
   });

@@ -267,6 +267,12 @@ export class ProvidersController {
     }
 
     const alias = parsed.alias ?? 'devchain';
+
+    // A remote-owned project's config files sync to the VM with home's URL.
+    if (parsed.projectPath) {
+      await this.mcpEnsureService.assertPathNotRemoteOwned(parsed.projectPath);
+    }
+
     const result = await this.mcpRegistration.registerProvider(
       provider,
       {

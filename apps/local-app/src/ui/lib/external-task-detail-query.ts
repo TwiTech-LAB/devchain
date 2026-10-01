@@ -33,7 +33,6 @@ export function externalTaskDetailQueryOptions(
         ),
         { signal },
         'Task detail could not be loaded.',
-        '',
         apiFetch,
       ),
     enabled:

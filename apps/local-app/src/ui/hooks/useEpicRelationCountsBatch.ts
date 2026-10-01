@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import { epicRelationQueryKeys } from '@/ui/lib/epic-relations';
 
 export interface EpicRelationCounts {
@@ -71,11 +70,11 @@ function parseDirectionalCounts(item: BatchRelationCountsItem): DirectionalRelat
 /**
  * One guarded batch read of relation counts for the loaded Kanban context.
  * The caller owns the Epic-ID set (sorted and deduplicated here for a stable
- * query key); worktree and unresolved runtimes issue no request, key under
- * an isolated cache scope, and never see main-scope cached data through any
- * returned field. Disabled or empty contexts return a stable empty map, and
- * a failed read leaves the map empty: relation badges are decoration, never
- * a Board blocker.
+ * query key); a disabled caller (passed `enabled: false`) issues no request,
+ * keys under the disabled cache scope, and never sees active-scope cached data
+ * through any returned field. Disabled or empty contexts return a stable empty
+ * map, and a failed read leaves the map empty: relation badges are decoration,
+ * never a Board blocker.
  */
 const EMPTY_COUNTS: EpicRelationCountsMap = new Map<string, EpicRelationCounts>();
 
@@ -84,9 +83,8 @@ export function useEpicRelationCountsBatch(
   { enabled = true }: { enabled?: boolean } = {},
 ): { counts: EpicRelationCountsMap; query: ReturnType<typeof useQuery> } {
   const apiFetch = useFetchFactory();
-  const { runtimeResolved, apiBase } = useOptionalWorktreeTab();
-  const admitted = enabled && runtimeResolved && apiBase === '';
-  const scope = admitted ? 'main' : 'isolated';
+  const admitted = enabled;
+  const scope = admitted ? 'active' : 'disabled';
   // Sort before keying: any arrival order of the same Board context must
   // resolve to one cache entry.
   const sortedIds = useMemo(() => [...new Set(epicIds)].sort(), [epicIds]);
@@ -128,8 +126,8 @@ export function useEpicRelationCountsBatch(
 
   const counts = useMemo<EpicRelationCountsMap>(() => query.data ?? EMPTY_COUNTS, [query.data]);
 
-  // Disabled contexts (worktree, unresolved runtime, empty set) get a
-  // stable empty map; the isolated key keeps them off the main-scope cache
-  // entry, which survives for re-admission.
+  // Disabled or empty contexts get a stable empty map; the disabled-scope key
+  // keeps them off the active-scope cache entry, which survives for
+  // re-admission.
   return { counts: admitted ? counts : EMPTY_COUNTS, query };
 }

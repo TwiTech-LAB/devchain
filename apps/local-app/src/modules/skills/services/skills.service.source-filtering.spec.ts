@@ -395,4 +395,66 @@ describe('SkillsService source filtering', () => {
       expect(result.map((skill) => skill.slug)).toEqual(['openai/react-hooks']);
     });
   });
+
+  describe('built-in devchain source with legacy "off" rows', () => {
+    beforeEach(() => {
+      registryService.listRegisteredSources.mockResolvedValue([
+        { name: 'devchain', repoUrl: 'https://example.test/devchain', kind: 'builtin' },
+        { name: 'devchain-local', repoUrl: 'https://example.test/devchain-local', kind: 'local' },
+        { name: 'openai', repoUrl: 'https://example.test/openai', kind: 'builtin' },
+      ]);
+      insertProject('project-lock');
+      insertSkill('skill-dc', 'devchain/code-simplifier', 'devchain');
+      insertSkill('skill-dcl', 'devchain-local/helper', 'devchain-local');
+      insertSourceProjectEnabled('project-lock', 'devchain', false);
+      insertSourceProjectEnabled('project-lock', 'devchain-local', false);
+      insertSkillProjectDisabled('spd-dc', 'project-lock', 'skill-dc');
+    });
+
+    it('keeps devchain skills discoverable and resolvable', async () => {
+      const discoverable = await service.listDiscoverable('project-lock');
+      expect(discoverable.map((skill) => skill.slug)).toEqual(['devchain/code-simplifier']);
+
+      const resolved = await service.resolveDiscoverableSkill(
+        'project-lock',
+        'devchain/code-simplifier',
+      );
+      expect(resolved).toEqual(expect.objectContaining({ status: 'resolved' }));
+    });
+
+    it('reports the devchain source and its skills as enabled in listings', async () => {
+      const sources = await service.listSources('project-lock');
+      expect(sources.find((source) => source.name === 'devchain')).toMatchObject({
+        enabled: true,
+        projectEnabled: true,
+      });
+      expect(sources.find((source) => source.name === 'devchain-local')).toMatchObject({
+        enabled: true,
+        projectEnabled: false,
+      });
+
+      const stored = await service.listAllStoredForProject('project-lock');
+      expect(stored.find((skill) => skill.slug === 'devchain/code-simplifier')).toMatchObject({
+        disabled: false,
+        skillDisabled: false,
+        sourceProjectEnabled: true,
+        sourceGloballyEnabled: true,
+      });
+      expect(stored.find((skill) => skill.slug === 'devchain-local/helper')).toMatchObject({
+        disabled: true,
+        sourceProjectEnabled: false,
+      });
+
+      const projectSkills = await service.listAllForProject('project-lock');
+      expect(
+        projectSkills.find((skill) => skill.slug === 'devchain/code-simplifier'),
+      ).toMatchObject({ disabled: false });
+    });
+
+    it('leaves legacy devchain rows out of listDisabled', async () => {
+      insertSkillProjectDisabled('spd-dcl', 'project-lock', 'skill-dcl');
+
+      expect(await service.listDisabled('project-lock')).toEqual(['skill-dcl']);
+    });
+  });
 });

@@ -15,26 +15,11 @@ import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Separator } from '@/ui/components/ui/separator';
 import { Skeleton } from '@/ui/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/ui/components/ui/tooltip';
 import { useToast } from '@/ui/hooks/use-toast';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { PresetPopover } from './PresetPopover';
-import { WorktreePresetButton } from './WorktreePresetButton';
-import { AgentIdentity, AgentRow } from './AgentRow';
-import { restartKeyForMain, restartKeyForWorktree } from '@/ui/lib/restart-keys';
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-  ContextMenuCheckboxItem,
-} from '@/ui/components/ui/context-menu';
+import { AgentRow } from './AgentRow';
+import { restartKeyForMain } from '@/ui/lib/restart-keys';
 import {
   AgentOverridesDialog,
   type OverridesConfigOption,
@@ -45,19 +30,12 @@ import {
   Circle,
   ChevronDown,
   ChevronRight,
-  GitBranch,
   UsersRound,
   Users,
   User,
   Loader2,
-  RotateCcw,
   Play,
   Square,
-  Power,
-  AlertTriangle,
-  Terminal,
-  Box,
-  SlidersHorizontal,
 } from 'lucide-react';
 import type { AgentPresenceMap } from '@/ui/lib/sessions';
 import {
@@ -65,10 +43,8 @@ import {
   getMetricsKey,
   type AgentSessionEntry,
 } from '@/ui/hooks/useAgentSessionMetrics';
-import { AgentContextBar } from './AgentContextBar';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import { compareCanonicalAgents } from '@/ui/lib/agent-ordering';
-import type { WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
 import type { PresetAvailability } from '@/ui/lib/preset-validation';
 import { getProviderIconDataUri } from '@/ui/lib/providers';
 import { shortModelName } from '@/ui/lib/model-utils';
@@ -80,6 +56,7 @@ import {
   useAgentEventBusAnchor,
   type AgentEventBusAnchorDescriptor,
 } from './agent-event-bus';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 function formatSectionCount(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -101,8 +78,6 @@ export interface ChatSidebarData {
   projectId: string | null;
   agents: AgentOrGuest[];
   guests: AgentOrGuest[];
-  worktreeAgentGroups: WorktreeAgentGroup[];
-  worktreeAgentGroupsLoading: boolean;
   agentPresence: AgentPresenceMap;
   presenceReady: boolean;
   offlineAgents: AgentOrGuest[];
@@ -110,7 +85,6 @@ export interface ChatSidebarData {
   agentsLoading: boolean;
   agentsError: boolean;
   selectedAgentId: string | null;
-  selectedWorktreeAgent: { worktreeName: string; agentId: string } | null;
   hasSelectedProject: boolean;
   getProviderForAgent: (agentId: string | null | undefined) => string | null;
   validatedPresets: PresetAvailability[];
@@ -118,8 +92,8 @@ export interface ChatSidebarData {
   projectProfiles?: Array<{ id: string; name: string }>;
   /**
    * Positive human-held message counts keyed by main-project agent id. An absent
-   * agent has nothing held. Worktree and guest rows never read this map — the
-   * counts describe the root project's pools only.
+   * agent has nothing held. Guest rows never read this map — the counts describe
+   * the root project's pools only.
    */
   humanHeldMessageCounts?: Record<string, number>;
   /** Agents whose informational waiting badge may now release the held lane. */
@@ -130,8 +104,8 @@ export interface ChatSidebarData {
   holdReasonLabels?: Record<string, string>;
   /**
    * Whole settled-but-unlogged minutes keyed by main-project agent id. Only
-   * whole minutes appear; worktree rows and guests never read this map —
-   * the read describes the root project's buffers only.
+   * whole minutes appear; guests never read this map — the read describes the
+   * root project's buffers only.
    */
   unloggedTimeMinutes?: Record<string, number>;
 }
@@ -148,14 +122,6 @@ export interface ChatSidebarSessionController {
   startingAll: boolean;
   terminatingAll: boolean;
   onSelectAgent: (agentId: string) => void;
-  onLaunchWorktreeAgentChat: (group: WorktreeAgentGroup, agentId: string) => void;
-  onLaunchWorktreeSession: (group: WorktreeAgentGroup, agentId: string) => Promise<void>;
-  onRestartWorktreeSession: (group: WorktreeAgentGroup, agentId: string) => Promise<void>;
-  onTerminateWorktreeSession: (
-    group: WorktreeAgentGroup,
-    agentId: string,
-    sessionId: string,
-  ) => Promise<void>;
   onStartAllAgents: () => void;
   onTerminateAllConfirm: () => void;
   onLaunchSession: (agentId: string, options?: { attach?: boolean }) => Promise<unknown>;
@@ -166,11 +132,6 @@ export interface ChatSidebarSessionController {
   onForceDelivery: (agentId: string) => void;
   forcingAgentId: string | null;
   pendingRestartAgentIds: Set<string>;
-  onMarkForRestart: (agentIds: string[]) => void;
-  worktreeSessionActionsByAgentKey: Record<
-    string,
-    'launching' | 'restarting' | 'terminating' | undefined
-  >;
   onApplyPreset: (presetName: string) => void;
   applyingPreset: boolean;
   // Single call carries config + model + effort overrides
@@ -182,14 +143,6 @@ export interface ChatSidebarSessionController {
   ) => Promise<unknown> | void;
   fetchProviderConfigsForProfile: (profileId: string) => Promise<OverridesConfigOption[]>;
   updatingConfigAgentIds: Record<string, boolean>;
-  onSwitchWorktreeConfig: (
-    group: WorktreeAgentGroup,
-    agentId: string,
-    providerConfigId: string,
-    modelOverride?: string | null,
-    effortOverride?: string | null,
-  ) => Promise<unknown> | void;
-  updatingWorktreeConfigKey: string | null;
 }
 
 /** Agent admin actions (clone / delete / quick-add / edit-team) and their pending state. */
@@ -273,12 +226,11 @@ function getAgentConfigDisplay(agent: AgentOrGuest): AgentConfigDisplay | null {
 // ============================================
 
 function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebarProps) {
+  const fetchFn = useFetchFactory();
   const {
     projectId,
     agents,
     guests,
-    worktreeAgentGroups,
-    worktreeAgentGroupsLoading,
     agentPresence,
     presenceReady,
     offlineAgents,
@@ -286,7 +238,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     agentsLoading,
     agentsError,
     selectedAgentId,
-    selectedWorktreeAgent,
     hasSelectedProject,
     getProviderForAgent,
     validatedPresets,
@@ -304,10 +255,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     startingAll,
     terminatingAll,
     onSelectAgent,
-    onLaunchWorktreeAgentChat,
-    onLaunchWorktreeSession,
-    onRestartWorktreeSession,
-    onTerminateWorktreeSession,
     onStartAllAgents,
     onTerminateAllConfirm,
     onLaunchSession,
@@ -318,15 +265,11 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     onForceDelivery,
     forcingAgentId,
     pendingRestartAgentIds,
-    onMarkForRestart,
-    worktreeSessionActionsByAgentKey,
     onApplyPreset,
     applyingPreset,
     onSwitchConfig,
     fetchProviderConfigsForProfile,
     updatingConfigAgentIds,
-    onSwitchWorktreeConfig,
-    updatingWorktreeConfigKey,
   } = sessionController;
   const { onCloneAgent, onDeleteAgent, pendingDeleteAgentId, onAddTeamAgent, onEditTeam } =
     adminActions;
@@ -338,10 +281,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     agent: AgentOrGuest;
     isOnline: boolean;
     triggerEl: HTMLElement | null;
-    group: WorktreeAgentGroup | null;
   } | null>(null);
-  // Focus-restoration targets for worktree rows (which render their own button, not AgentRow).
-  const worktreeRowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const closeOverrides = useCallback(() => {
     setOverridesTarget(null);
@@ -353,17 +293,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     return stored !== 'false';
   });
   const [agentGroupMode, setAgentGroupMode] = useState<AgentGroupMode>('all');
-  const [collapsedWorktreeGroups, setCollapsedWorktreeGroups] = useState<Record<string, boolean>>(
-    () => {
-      if (typeof window === 'undefined') return {};
-      try {
-        const stored = window.localStorage.getItem('devchain:chatSidebar:worktreeGroups');
-        return stored ? (JSON.parse(stored) as Record<string, boolean>) : {};
-      } catch {
-        return {};
-      }
-    },
-  );
   const [collapsedTeamGroups, setCollapsedTeamGroups] = useState<Record<string, boolean>>(() => {
     if (typeof window === 'undefined') return {};
     try {
@@ -374,21 +303,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     }
   });
 
-  useEffect(() => {
-    setCollapsedWorktreeGroups((previous) => {
-      const next = { ...previous };
-      let changed = false;
-      for (const group of worktreeAgentGroups) {
-        const key = `worktree:${group.id}`;
-        if (!(key in next)) {
-          next[key] = false;
-          changed = true;
-        }
-      }
-      return changed ? next : previous;
-    });
-  }, [worktreeAgentGroups]);
-
   const shouldFetchTeams = Boolean(projectId);
   const {
     data: teamsResponse,
@@ -397,7 +311,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     error: teamsListErrorValue,
   } = useQuery({
     queryKey: projectId ? teamsQueryKeys.teams(projectId) : ['teams', 'no-project'],
-    queryFn: () => fetchTeams(projectId!),
+    queryFn: () => fetchTeams(projectId!, fetchFn),
     enabled: shouldFetchTeams,
     refetchOnWindowFocus: true,
   });
@@ -421,7 +335,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     queries: shouldFetchTeams
       ? teams.map((team) => ({
           queryKey: teamsQueryKeys.detail(team.id),
-          queryFn: () => fetchTeamDetail(team.id),
+          queryFn: () => fetchTeamDetail(team.id, fetchFn),
           refetchOnWindowFocus: true,
         }))
       : [],
@@ -456,14 +370,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     },
     [projectId],
   );
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(
-      'devchain:chatSidebar:worktreeGroups',
-      JSON.stringify(collapsedWorktreeGroups),
-    );
-  }, [collapsedWorktreeGroups]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -506,40 +412,11 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     });
   }, []);
 
-  const toggleWorktreeGroup = useCallback((groupId: string) => {
-    const key = `worktree:${groupId}`;
-    setCollapsedWorktreeGroups((previous) => ({
-      ...previous,
-      [key]: !previous[key],
-    }));
-  }, []);
-
   const toggleTeamGroup = useCallback((teamId: string) => {
     setCollapsedTeamGroups((previous) => ({
       ...previous,
       [teamId]: !previous[teamId],
     }));
-  }, []);
-
-  const formatWorktreeStatus = useCallback((status: string): string => {
-    if (!status) {
-      return 'Unknown';
-    }
-    return status.charAt(0).toUpperCase() + status.slice(1);
-  }, []);
-
-  const formatWorktreeRuntimeType = useCallback((runtimeType: string): string => {
-    const normalized = runtimeType.trim().toLowerCase();
-    if (normalized === 'process') {
-      return 'Process';
-    }
-    if (normalized === 'container') {
-      return 'Container';
-    }
-    if (!runtimeType) {
-      return 'Container';
-    }
-    return runtimeType.charAt(0).toUpperCase() + runtimeType.slice(1);
   }, []);
 
   const renderActivityBadgeForPresence = useCallback((presence?: AgentPresenceMap[string]) => {
@@ -721,12 +598,10 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     agentGroupMode,
     agents,
     collapsedTeamGroups,
-    collapsedWorktreeGroups,
     contextBarHidden,
     mainExpanded,
     teamSections,
     teamViewLoading,
-    worktreeAgentGroups,
   ]);
 
   const agentSessionEntries = useMemo(() => {
@@ -762,39 +637,17 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         entries.push({ agentId: agent.id, sessionId: presence.sessionId });
       }
     }
-    for (const group of worktreeAgentGroups) {
-      const groupKey = `worktree:${group.id}`;
-      if (collapsedWorktreeGroups[groupKey] || group.error) continue;
-      for (const agent of group.agents) {
-        const metricsKey = getMetricsKey(agent.id, group.apiBase);
-        const presence = group.agentPresence[agent.id];
-        if (
-          visibleContextKeys.has(metricsKey) &&
-          !contextBarHidden.has(metricsKey) &&
-          presence?.online &&
-          presence.sessionId
-        ) {
-          entries.push({
-            agentId: agent.id,
-            sessionId: presence.sessionId,
-            apiBase: group.apiBase,
-          });
-        }
-      }
-    }
     return entries;
   }, [
     agentGroupMode,
     agentPresence,
     agents,
     collapsedTeamGroups,
-    collapsedWorktreeGroups,
     contextBarHidden,
     mainExpanded,
     teamSections,
     teamViewLoading,
     visibleContextKeys,
-    worktreeAgentGroups,
   ]);
 
   const contextMetrics = useAgentSessionMetrics(agentSessionEntries);
@@ -822,7 +675,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
   ) {
     const isOnline = agentPresence[agent.id]?.online ?? false;
     const activityState = agentPresence[agent.id]?.activityState ?? null;
-    const isSelected = selectedWorktreeAgent === null && selectedAgentId === agent.id;
+    const isSelected = selectedAgentId === agent.id;
     const agentProviderName = getProviderForAgent(agent.id);
     const agentProviderIcon = agentProviderName ? getProviderIconDataUri(agentProviderName) : null;
     const hasSession = Boolean(isOnline && agentPresence[agent.id]?.sessionId);
@@ -867,9 +720,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         unloggedTimeMinutes={unloggedTimeMinutes?.[agent.id]}
         isTeamLead={options?.isTeamLead ?? false}
         canOverride={agent.type !== 'guest' && Boolean(agent.profileId)}
-        onOpenOverrides={(triggerEl) =>
-          setOverridesTarget({ agent, isOnline, triggerEl, group: null })
-        }
+        onOpenOverrides={(triggerEl) => setOverridesTarget({ agent, isOnline, triggerEl })}
         canClone={agent.type !== 'guest' && Boolean(onCloneAgent)}
         onClone={
           onCloneAgent
@@ -954,7 +805,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
             <Button
               variant="outline"
               size="sm"
-              className="h-7 border-emerald-500/60 bg-emerald-500/10 px-2 text-xs text-emerald-600 hover:border-emerald-500 hover:bg-emerald-500/15 hover:text-emerald-700"
+              className="h-7 border-status-ok/40 bg-status-ok/10 px-2 text-xs text-status-ok hover:border-status-ok hover:bg-accent hover:text-status-ok"
               onClick={onStartAllAgents}
               disabled={!presenceReady || offlineAgents.length === 0 || startingAll}
               title="Launch sessions for all offline agents"
@@ -1280,319 +1131,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
             </AgentEventBus>
           </div>
 
-          {/* Worktree Agent Groups */}
-          {worktreeAgentGroupsLoading && (
-            <>
-              <Separator />
-              <div className="space-y-3 px-4 py-4" aria-hidden>
-                <Skeleton className="h-6 w-full" />
-                <Skeleton className="h-6 w-full" />
-              </div>
-            </>
-          )}
-          {!worktreeAgentGroupsLoading && worktreeAgentGroups.length > 0 && (
-            <>
-              <Separator />
-              <div className="space-y-2 px-4 py-4">
-                <h3 className="text-sm font-semibold text-muted-foreground">WORKTREES</h3>
-                {worktreeAgentGroups.map((group) => {
-                  const groupKey = `worktree:${group.id}`;
-                  const isExpanded = !collapsedWorktreeGroups[groupKey];
-                  const statusLabel = formatWorktreeStatus(group.status);
-                  const hasAgents = group.agents.length > 0;
-                  const isUnavailable = group.disabled || Boolean(group.error);
-                  const runtimeTypeLabel = formatWorktreeRuntimeType(group.runtimeType);
-
-                  return (
-                    <div
-                      key={group.id}
-                      className="overflow-hidden rounded-md border border-border bg-card/70 shadow-sm"
-                    >
-                      <div className="flex w-full items-center gap-1 border-b border-border/70 bg-muted/20 px-3 py-2">
-                        <button
-                          type="button"
-                          onClick={() => toggleWorktreeGroup(group.id)}
-                          className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted/50"
-                          aria-expanded={isExpanded}
-                          aria-controls={`worktree-group-${group.id}`}
-                        >
-                          <span className="inline-flex min-w-0 items-center gap-2">
-                            <GitBranch className="h-4 w-4 text-muted-foreground" />
-                            <span className="truncate text-sm font-medium">{group.name}</span>
-                          </span>
-                          <TooltipProvider>
-                            <span className="inline-flex shrink-0 items-center gap-1.5">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span
-                                    className={cn(
-                                      'inline-block h-2 w-2 shrink-0 rounded-full',
-                                      isUnavailable ? 'bg-red-500' : 'bg-emerald-500',
-                                    )}
-                                    aria-label={statusLabel}
-                                  />
-                                </TooltipTrigger>
-                                <TooltipContent side="top">{statusLabel}</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span
-                                    className="inline-flex shrink-0 text-muted-foreground"
-                                    aria-label={runtimeTypeLabel}
-                                  >
-                                    {runtimeTypeLabel === 'Process' ? (
-                                      <Terminal className="h-3.5 w-3.5" />
-                                    ) : (
-                                      <Box className="h-3.5 w-3.5" />
-                                    )}
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent side="top">{runtimeTypeLabel}</TooltipContent>
-                              </Tooltip>
-                              {isExpanded ? (
-                                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                              ) : (
-                                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                              )}
-                            </span>
-                          </TooltipProvider>
-                        </button>
-                        <WorktreePresetButton group={group} onMarkForRestart={onMarkForRestart} />
-                      </div>
-                      {isExpanded && (
-                        <div
-                          id={`worktree-group-${group.id}`}
-                          className="space-y-1 bg-muted/10 px-2 py-2"
-                        >
-                          {group.error ? (
-                            <p className="px-2 py-1 text-xs text-destructive">{group.error}</p>
-                          ) : !hasAgents ? (
-                            <p className="px-2 py-1 text-xs text-muted-foreground">
-                              {isUnavailable ? 'Worktree unavailable.' : 'No agents found.'}
-                            </p>
-                          ) : (
-                            group.agents.map((agent) => {
-                              const isOnline = group.agentPresence[agent.id]?.online ?? false;
-                              const sessionId = group.agentPresence[agent.id]?.sessionId ?? null;
-                              const hasSession = Boolean(isOnline && sessionId);
-                              const worktreeAgentKey = `${group.name}:${agent.id}`;
-                              const worktreeBusyAction =
-                                worktreeSessionActionsByAgentKey[worktreeAgentKey] ?? null;
-                              const isLaunching = worktreeBusyAction === 'launching';
-                              const isRestarting = worktreeBusyAction === 'restarting';
-                              const isTerminating = worktreeBusyAction === 'terminating';
-                              const anyWorktreeBusy = Boolean(worktreeBusyAction);
-                              const isDisabled = anyWorktreeBusy;
-                              const isSelected =
-                                selectedWorktreeAgent?.worktreeName === group.name &&
-                                selectedWorktreeAgent?.agentId === agent.id;
-                              const providerName =
-                                getProviderForAgent(agent.id) ??
-                                agent.providerConfig?.providerName ??
-                                agent.providerConfig?.providerId ??
-                                null;
-                              const providerIcon = providerName
-                                ? getProviderIconDataUri(providerName)
-                                : null;
-                              const worktreeContextMenuKey = `${group.apiBase}:${agent.id}`;
-                              const worktreeActivityBadge = renderActivityBadgeForPresence(
-                                group.agentPresence[agent.id],
-                              );
-                              const worktreeConfigDisplay = getAgentConfigDisplay(agent);
-                              return (
-                                <ContextMenu key={`${group.id}:${agent.id}`}>
-                                  <ContextMenuTrigger asChild>
-                                    <button
-                                      ref={(el) => {
-                                        worktreeRowRefs.current[worktreeContextMenuKey] = el;
-                                      }}
-                                      onClick={() => onLaunchWorktreeAgentChat(group, agent.id)}
-                                      disabled={isDisabled}
-                                      className={cn(
-                                        'flex w-full items-center gap-2 rounded-md border border-transparent bg-card/40 px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50',
-                                        isSelected && 'border-border bg-muted',
-                                        isDisabled &&
-                                          'cursor-not-allowed opacity-50 hover:bg-transparent',
-                                      )}
-                                      role="listitem"
-                                      aria-label={`Open terminal for ${agent.name} in ${group.name}${isOnline ? ' (online)' : ' (offline)'}`}
-                                      aria-current={isSelected ? 'true' : undefined}
-                                      data-context-metrics-key={
-                                        !contextBarHidden.has(
-                                          getMetricsKey(agent.id, group.apiBase),
-                                        )
-                                          ? getMetricsKey(agent.id, group.apiBase)
-                                          : undefined
-                                      }
-                                    >
-                                      <Circle
-                                        className={cn(
-                                          'h-2 w-2 fill-current',
-                                          isOnline ? 'text-green-500' : 'text-muted-foreground',
-                                        )}
-                                        aria-hidden="true"
-                                      />
-                                      {providerIcon && (
-                                        <span
-                                          className={cn(
-                                            'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 transition-[border-color,background-color,box-shadow] duration-300',
-                                            isOnline &&
-                                              group.agentPresence[agent.id]?.activityState ===
-                                                'busy' &&
-                                              'border-primary/60 bg-primary/10 shadow-[0_0_8px_hsl(var(--primary)/0.35)] animate-busy-halo',
-                                          )}
-                                          title={`Provider: ${providerName}`}
-                                        >
-                                          <img
-                                            src={providerIcon}
-                                            className="h-4 w-4"
-                                            aria-hidden="true"
-                                            alt=""
-                                          />
-                                        </span>
-                                      )}
-                                      <AgentIdentity
-                                        agentName={agent.name}
-                                        configDisplayName={worktreeConfigDisplay?.label ?? null}
-                                        configDisplayTitle={worktreeConfigDisplay?.title ?? null}
-                                      />
-                                      {worktreeActivityBadge && (
-                                        <span className="ml-1 shrink-0">
-                                          {worktreeActivityBadge}
-                                        </span>
-                                      )}
-                                      {pendingRestartAgentIds.has(
-                                        restartKeyForWorktree(group.apiBase, agent.id),
-                                      ) &&
-                                        isOnline && (
-                                          <TooltipProvider>
-                                            <Tooltip>
-                                              <TooltipTrigger asChild>
-                                                <AlertTriangle className="ml-1 h-4 w-4 flex-shrink-0 text-yellow-500" />
-                                              </TooltipTrigger>
-                                              <TooltipContent>
-                                                Restart to apply config changes
-                                              </TooltipContent>
-                                            </Tooltip>
-                                          </TooltipProvider>
-                                        )}
-                                    </button>
-                                  </ContextMenuTrigger>
-                                  {contextMetrics.has(getMetricsKey(agent.id, group.apiBase)) &&
-                                    !contextBarHidden.has(
-                                      getMetricsKey(agent.id, group.apiBase),
-                                    ) && (
-                                      <div className="px-3 -mt-0.5 pb-1">
-                                        <AgentContextBar
-                                          {...contextMetrics.get(
-                                            getMetricsKey(agent.id, group.apiBase),
-                                          )!}
-                                        />
-                                      </div>
-                                    )}
-                                  <ContextMenuContent className="w-56">
-                                    {agent.type !== 'guest' && Boolean(agent.profileId) && (
-                                      <ContextMenuItem
-                                        onSelect={(event) => {
-                                          event.preventDefault();
-                                          setOverridesTarget({
-                                            agent,
-                                            isOnline,
-                                            triggerEl:
-                                              worktreeRowRefs.current[worktreeContextMenuKey] ??
-                                              null,
-                                            group,
-                                          });
-                                        }}
-                                        disabled={!group.devchainProjectId || anyWorktreeBusy}
-                                      >
-                                        <SlidersHorizontal className="mr-2 h-4 w-4" />
-                                        Overrides…
-                                      </ContextMenuItem>
-                                    )}
-                                    <ContextMenuSeparator />
-                                    <ContextMenuCheckboxItem
-                                      checked={
-                                        !contextBarHidden.has(
-                                          getMetricsKey(agent.id, group.apiBase),
-                                        )
-                                      }
-                                      onCheckedChange={() =>
-                                        handleToggleContextBar(
-                                          getMetricsKey(agent.id, group.apiBase),
-                                        )
-                                      }
-                                    >
-                                      Context tracking
-                                    </ContextMenuCheckboxItem>
-                                    <ContextMenuSeparator />
-                                    <ContextMenuItem
-                                      onSelect={async (event) => {
-                                        event.preventDefault();
-                                        await onRestartWorktreeSession(group, agent.id);
-                                      }}
-                                      disabled={isRestarting || !group.devchainProjectId}
-                                    >
-                                      {isRestarting ? (
-                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                      ) : (
-                                        <RotateCcw className="mr-2 h-4 w-4" />
-                                      )}
-                                      Restart session
-                                    </ContextMenuItem>
-                                    {!hasSession && (
-                                      <ContextMenuItem
-                                        onSelect={async (event) => {
-                                          event.preventDefault();
-                                          await onLaunchWorktreeSession(group, agent.id);
-                                        }}
-                                        disabled={isLaunching || !group.devchainProjectId}
-                                      >
-                                        {isLaunching ? (
-                                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        ) : (
-                                          <Play className="mr-2 h-4 w-4" />
-                                        )}
-                                        Launch session
-                                      </ContextMenuItem>
-                                    )}
-                                    {hasSession && sessionId && (
-                                      <>
-                                        <ContextMenuSeparator />
-                                        <ContextMenuItem
-                                          onSelect={async (event) => {
-                                            event.preventDefault();
-                                            await onTerminateWorktreeSession(
-                                              group,
-                                              agent.id,
-                                              sessionId,
-                                            );
-                                          }}
-                                          disabled={isTerminating || !group.devchainProjectId}
-                                        >
-                                          {isTerminating ? (
-                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                          ) : (
-                                            <Power className="mr-2 h-4 w-4" />
-                                          )}
-                                          Terminate session
-                                        </ContextMenuItem>
-                                      </>
-                                    )}
-                                  </ContextMenuContent>
-                                </ContextMenu>
-                              );
-                            })
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-
           {/* Guests Section */}
           {canonicalGuests.length > 0 && (
             <>
@@ -1620,7 +1158,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
                         <Circle
                           className={cn(
                             'h-2 w-2 fill-current',
-                            isOnline ? 'text-green-500' : 'text-muted-foreground',
+                            isOnline ? 'text-status-ok' : 'text-muted-foreground',
                           )}
                           aria-hidden="true"
                         />
@@ -1652,47 +1190,26 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
 
       {overridesTarget &&
         (() => {
-          const { agent, isOnline, triggerEl, group } = overridesTarget;
-          const apiBase = group?.apiBase;
-          const isSaving = group
-            ? updatingWorktreeConfigKey === `${group.apiBase}:${agent.id}`
-            : Boolean(updatingConfigAgentIds[agent.id]);
-          const fetchConfigs = group
-            ? async (profileId: string): Promise<OverridesConfigOption[]> => {
-                const res = await fetch(
-                  `${group.apiBase}/api/profiles/${profileId}/provider-configs`,
-                );
-                if (!res.ok) throw new Error('Failed to fetch provider configs');
-                return res.json();
-              }
-            : fetchProviderConfigsForProfile;
+          const { agent, isOnline, triggerEl } = overridesTarget;
+          const isSaving = Boolean(updatingConfigAgentIds[agent.id]);
           const handleSave = (payload: AgentOverridesSavePayload) =>
-            group
-              ? onSwitchWorktreeConfig(
-                  group,
-                  agent.id,
-                  payload.providerConfigId,
-                  payload.modelOverride,
-                  payload.effortOverride,
-                )
-              : onSwitchConfig(
-                  agent.id,
-                  payload.providerConfigId,
-                  payload.modelOverride,
-                  payload.effortOverride,
-                );
+            onSwitchConfig(
+              agent.id,
+              payload.providerConfigId,
+              payload.modelOverride,
+              payload.effortOverride,
+            );
           return (
             <AgentOverridesDialog
-              key={`${apiBase ?? 'main'}:${agent.id}`}
+              key={agent.id}
               open
               onOpenChange={(next) => {
                 if (!next) closeOverrides();
               }}
               agent={agent}
               isOnline={isOnline}
-              apiBase={apiBase}
               isSaving={isSaving}
-              fetchProviderConfigsForProfile={fetchConfigs}
+              fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
               onSave={handleSave}
               triggerEl={triggerEl}
             />

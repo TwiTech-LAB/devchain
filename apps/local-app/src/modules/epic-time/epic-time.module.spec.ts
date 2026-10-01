@@ -1,7 +1,6 @@
 import 'reflect-metadata';
 import { MODULE_METADATA } from '@nestjs/common/constants';
-import { MainAppModule } from '../../app.main.module';
-import { NormalAppModule } from '../../app.normal.module';
+import { AppModule } from '../../app.module';
 import { EpicTimeModule } from './epic-time.module';
 import { EpicTimeStoreModule } from './epic-time-store.module';
 import { SessionsModule } from '../sessions/sessions.module';
@@ -14,15 +13,10 @@ import { EpicTimeStore } from './services/epic-time.store';
 // Layer: backend unit. Nest module metadata directly proves runtime admission
 // without booting either complete application graph.
 describe('EpicTimeModule admission', () => {
-  it('is loaded by the main runtime and excluded from normal child runtimes', () => {
-    const mainImports = Reflect.getMetadata(MODULE_METADATA.IMPORTS, MainAppModule) as unknown[];
-    const normalImports = Reflect.getMetadata(
-      MODULE_METADATA.IMPORTS,
-      NormalAppModule,
-    ) as unknown[];
+  it('is loaded by the canonical app runtime', () => {
+    const appImports = Reflect.getMetadata(MODULE_METADATA.IMPORTS, AppModule) as unknown[];
 
-    expect(mainImports).toContain(EpicTimeModule);
-    expect(normalImports).not.toContain(EpicTimeModule);
+    expect(appImports).toContain(EpicTimeModule);
   });
 
   it('owns the one-way dependency on external integrations', () => {

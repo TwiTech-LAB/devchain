@@ -29,9 +29,9 @@ const ToggleGroup = React.forwardRef<
 ToggleGroup.displayName = ToggleGroupPrimitive.Root.displayName;
 
 const toggleVariants = {
-  default: 'bg-transparent data-[state=on]:bg-accent data-[state=on]:text-accent-foreground',
+  default: 'bg-transparent data-[state=on]:bg-selected data-[state=on]:text-selected-foreground',
   outline:
-    'border border-input bg-transparent hover:bg-accent hover:text-accent-foreground data-[state=on]:bg-accent data-[state=on]:text-accent-foreground',
+    'border border-input bg-transparent hover:bg-accent hover:text-accent-foreground data-[state=on]:bg-selected data-[state=on]:text-selected-foreground',
 };
 
 const toggleSizes = {

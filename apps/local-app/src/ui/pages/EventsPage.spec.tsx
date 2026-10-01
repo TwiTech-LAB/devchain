@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { EventsPage } from './EventsPage';
 
 const ioMock = jest.fn();
@@ -193,7 +193,9 @@ describe('EventsPage', () => {
       );
     });
 
-    expect(await screen.findByText('epic.assigned')).toBeInTheDocument();
+    expect(
+      within(await screen.findByRole('row', { name: /epic.assigned/ })).getByText('epic.assigned'),
+    ).toBeInTheDocument();
     expect(await screen.findByText('EpicAssignmentNotifier')).toBeInTheDocument();
 
     const payloadViewer = await screen.findByText(/"epicId": "epic-1"/i);
@@ -211,7 +213,7 @@ describe('EventsPage', () => {
     });
 
     // Select row and ensure handler detail appears
-    const row = await screen.findByText('epic.assigned');
+    const row = await screen.findByRole('row', { name: /epic.assigned/ });
     fireEvent.click(row);
     expect(await screen.findByText('EpicAssignmentNotifier')).toBeInTheDocument();
     expect(screen.getByText(/session-1/)).toBeInTheDocument();

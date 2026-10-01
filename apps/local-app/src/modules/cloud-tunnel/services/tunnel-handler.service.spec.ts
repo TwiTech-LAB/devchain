@@ -5,6 +5,7 @@ import { ViewportStreamerService } from './viewport-streamer.service';
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
 import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
 import { TerminalKeyInputFacade } from '../../terminal/services/terminal-key-input/terminal-key-input.facade';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import {
   AppError,
   ConflictError,
@@ -209,6 +210,186 @@ describe('TunnelHandlerService', () => {
       offset: 0,
     });
     expect(storage.listEpicsByStatus).not.toHaveBeenCalled();
+  });
+
+  // Remote-owned projects: home holds only a stale mirror; the phone reaches the
+  // live project on the host instance. Service unit tests prove the filter and
+  // the not-found shape without a tunnel or a paired device.
+  describe('remote-owned projects', () => {
+    const BOUND_PROJECT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const admission = {
+      listRemoteOwnedProjectIds: () => [BOUND_PROJECT_ID],
+      getRemoteOwner: (projectId: string) =>
+        projectId === BOUND_PROJECT_ID
+          ? { projectId, remoteId: 'r1', remoteName: 'lab-vm', state: 'remote' }
+          : null,
+    } as unknown as ProjectWriteAdmissionService;
+
+    function makeService(storage: Record<string, jest.Mock>): TunnelHandlerService {
+      return new TunnelHandlerService(
+        storage,
+        mobileChat,
+        mobileBoard,
+        mobileViewport,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        admission,
+      );
+    }
+
+    it.each([
+      ['default workspace (single-workspace path)', {}],
+      ['explicit workspaceId (multi-workspace path)', { workspaceId: OTHER_PROJECT_ID }],
+    ])('board.listProjects omits bound projects via %s', async (_label, extraParams) => {
+      const storage = {
+        listProjects: jest.fn().mockResolvedValue({
+          items: [
+            { id: PROJECT_ID, name: 'Local Project' },
+            { id: BOUND_PROJECT_ID, name: 'Moved Project' },
+          ],
+          total: 2,
+        }),
+      };
+      const service = makeService(storage);
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'p1',
+          method: 'board.listProjects',
+          params: extraParams,
+        }),
+      ).resolves.toMatchObject({
+        // The returned array length is the total the phone sees.
+        result: [{ id: PROJECT_ID, name: 'Local Project' }],
+      });
+    });
+
+    type NotFoundCase = [
+      method: string,
+      params: Record<string, unknown>,
+      makeStorage: () => Record<string, jest.Mock>,
+      assertNoMirrorRead: (storage: Record<string, jest.Mock>) => void,
+    ];
+    const notFoundCases: NotFoundCase[] = [
+      [
+        'board.listStatuses',
+        { projectId: BOUND_PROJECT_ID },
+        () => ({ listStatuses: jest.fn() }),
+        (storage) => expect(storage.listStatuses).not.toHaveBeenCalled(),
+      ],
+      [
+        'board.listParentEpics',
+        { projectId: BOUND_PROJECT_ID },
+        () => ({ listProjectEpics: jest.fn() }),
+        (storage) => expect(storage.listProjectEpics).not.toHaveBeenCalled(),
+      ],
+      [
+        'board.listEpicsByStatus',
+        { statusId: STATUS_ID },
+        () => ({
+          getStatus: jest.fn().mockResolvedValue({ id: STATUS_ID, projectId: BOUND_PROJECT_ID }),
+          listEpicsByStatus: jest.fn(),
+        }),
+        (storage) => expect(storage.listEpicsByStatus).not.toHaveBeenCalled(),
+      ],
+      [
+        'board.listParentChildren',
+        { parentId: PARENT_ID },
+        () => ({
+          getEpic: jest.fn().mockResolvedValue(makeEpic({ projectId: BOUND_PROJECT_ID })),
+          listParentChildren: jest.fn(),
+        }),
+        (storage) => expect(storage.listParentChildren).not.toHaveBeenCalled(),
+      ],
+      [
+        'board.getEpicDetail',
+        { epicId: EPIC_ID },
+        () => ({
+          getEpic: jest.fn().mockResolvedValue(makeEpic({ projectId: BOUND_PROJECT_ID })),
+          listStatuses: jest.fn(),
+        }),
+        (storage) => expect(storage.listStatuses).not.toHaveBeenCalled(),
+      ],
+    ];
+
+    it.each(notFoundCases)(
+      '%s for a bound project answers not-found without reading the mirror',
+      async (method, params, makeStorage, assertNoMirrorRead) => {
+        const storage = makeStorage();
+        const service = makeService(storage);
+
+        await expect(
+          service.handle({ jsonrpc: '2.0', id: 'nf', method, params }),
+        ).resolves.toMatchObject({
+          error: { code: -32603, data: { code: 'not_found' } },
+        });
+        assertNoMirrorRead(storage);
+      },
+    );
+
+    it('board.listProjects with includeRemotePlaceholders appends bound projects as placeholders', async () => {
+      const storage = {
+        listProjects: jest.fn().mockResolvedValue({
+          items: [
+            { id: PROJECT_ID, name: 'Local Project', workspaceId: OTHER_PROJECT_ID },
+            { id: BOUND_PROJECT_ID, name: 'Moved Project', workspaceId: OTHER_PROJECT_ID },
+          ],
+          total: 2,
+        }),
+      };
+      const service = makeService(storage);
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'p2',
+          method: 'board.listProjects',
+          params: { includeRemotePlaceholders: true },
+        }),
+      ).resolves.toMatchObject({
+        // Real rows first, the placeholder appended; the placeholder carries
+        // the owning remote and the workspace, never project data.
+        result: [
+          { id: PROJECT_ID, name: 'Local Project', workspaceId: OTHER_PROJECT_ID },
+          {
+            id: BOUND_PROJECT_ID,
+            name: 'Moved Project',
+            workspaceId: OTHER_PROJECT_ID,
+            placeholder: true,
+            remote: { name: 'lab-vm', state: 'remote' },
+          },
+        ],
+      });
+    });
+
+    it('board.listProjects without the flag keeps hiding bound projects and still adds workspaceId', async () => {
+      const storage = {
+        listProjects: jest.fn().mockResolvedValue({
+          items: [
+            { id: PROJECT_ID, name: 'Local Project', workspaceId: OTHER_PROJECT_ID },
+            { id: BOUND_PROJECT_ID, name: 'Moved Project', workspaceId: OTHER_PROJECT_ID },
+          ],
+          total: 2,
+        }),
+      };
+      const service = makeService(storage);
+
+      await expect(
+        service.handle({
+          jsonrpc: '2.0',
+          id: 'p3',
+          method: 'board.listProjects',
+          params: { includeRemotePlaceholders: false },
+        }),
+      ).resolves.toEqual({
+        jsonrpc: '2.0',
+        id: 'p3',
+        result: [{ id: PROJECT_ID, name: 'Local Project', workspaceId: OTHER_PROJECT_ID }],
+      });
+    });
   });
 
   it('enriches listEpicsByStatus DTO with agent and status metadata', async () => {

@@ -13,17 +13,24 @@ import {
   RefreshCw,
   Loader2,
 } from 'lucide-react';
-import { fetchPreflightChecks } from '@/ui/lib/preflight';
+import { fetchPreflightChecks, type PreflightStatus } from '@/ui/lib/preflight';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { MemoryMetricsCard } from './MemoryMetricsCard';
 
-function getStatusIcon(status: 'pass' | 'fail' | 'warn') {
+const STATUS_BADGE_CLASSES: Record<PreflightStatus, string> = {
+  pass: TONE_CLASSES.ok,
+  warn: TONE_CLASSES.warn,
+  fail: TONE_CLASSES.error,
+};
+
+function getStatusIcon(status: PreflightStatus) {
   switch (status) {
     case 'pass':
-      return <CheckCircle2 className="h-5 w-5 text-green-600" />;
+      return <CheckCircle2 className="h-5 w-5 text-status-ok" />;
     case 'fail':
       return <XCircle className="h-5 w-5 text-destructive" />;
     case 'warn':
-      return <AlertTriangle className="h-5 w-5 text-yellow-600" />;
+      return <AlertTriangle className="h-5 w-5 text-status-warn" />;
     default:
       return null;
   }
@@ -63,7 +70,7 @@ export function SystemSection() {
                 <p className="mt-2 text-xs text-muted-foreground">
                   Target project:{' '}
                   <span className="font-semibold text-foreground">{selectedProject.name}</span>
-                  <span className="ml-2 font-mono text-[11px] text-muted-foreground/80">
+                  <span className="ml-2 font-mono text-[11px] text-muted-foreground">
                     {selectedProject.rootPath}
                   </span>
                 </p>
@@ -118,8 +125,8 @@ export function SystemSection() {
                       check.status === 'fail'
                         ? 'border-destructive'
                         : check.status === 'warn'
-                          ? 'border-yellow-600'
-                          : 'border-green-600'
+                          ? 'border-status-warn'
+                          : 'border-status-ok'
                     }
                   >
                     <CardContent className="pt-4">
@@ -139,15 +146,7 @@ export function SystemSection() {
                             </div>
                           )}
                         </div>
-                        <Badge
-                          variant={
-                            check.status === 'pass'
-                              ? 'default'
-                              : check.status === 'fail'
-                                ? 'destructive'
-                                : 'secondary'
-                          }
-                        >
+                        <Badge variant="outline" className={STATUS_BADGE_CLASSES[check.status]}>
                           {check.status.toUpperCase()}
                         </Badge>
                       </div>
@@ -175,8 +174,8 @@ export function SystemSection() {
                         provider.status === 'fail'
                           ? 'border-destructive'
                           : provider.status === 'warn'
-                            ? 'border-yellow-600'
-                            : 'border-green-600'
+                            ? 'border-status-warn'
+                            : 'border-status-ok'
                       }
                     >
                       <CardContent className="pt-4">
@@ -186,13 +185,8 @@ export function SystemSection() {
                             <div className="flex items-center justify-between">
                               <h4 className="font-semibold">{provider.name}</h4>
                               <Badge
-                                variant={
-                                  provider.status === 'pass'
-                                    ? 'default'
-                                    : provider.status === 'fail'
-                                      ? 'destructive'
-                                      : 'secondary'
-                                }
+                                variant="outline"
+                                className={STATUS_BADGE_CLASSES[provider.status]}
                               >
                                 {provider.status.toUpperCase()}
                               </Badge>
@@ -205,14 +199,8 @@ export function SystemSection() {
                             <div className="flex flex-col gap-2">
                               <div className="flex flex-wrap items-center gap-2">
                                 <Badge
-                                  variant="secondary"
-                                  className={
-                                    provider.binaryStatus === 'fail'
-                                      ? 'border border-destructive bg-destructive/10 text-destructive'
-                                      : provider.binaryStatus === 'warn'
-                                        ? 'border border-yellow-600 bg-yellow-500/10 text-yellow-700'
-                                        : 'border border-emerald-500 bg-emerald-500/10 text-emerald-600'
-                                  }
+                                  variant="outline"
+                                  className={STATUS_BADGE_CLASSES[provider.binaryStatus]}
                                 >
                                   Binary {provider.binaryStatus.toUpperCase()}
                                 </Badge>
@@ -223,14 +211,8 @@ export function SystemSection() {
                               {provider.mcpStatus && (
                                 <div className="flex flex-wrap items-center gap-2">
                                   <Badge
-                                    variant="secondary"
-                                    className={
-                                      provider.mcpStatus === 'fail'
-                                        ? 'border border-destructive bg-destructive/10 text-destructive'
-                                        : provider.mcpStatus === 'warn'
-                                          ? 'border border-yellow-600 bg-yellow-500/10 text-yellow-700'
-                                          : 'border border-emerald-500 bg-emerald-500/10 text-emerald-600'
-                                    }
+                                    variant="outline"
+                                    className={STATUS_BADGE_CLASSES[provider.mcpStatus]}
                                   >
                                     MCP {provider.mcpStatus.toUpperCase()}
                                   </Badge>

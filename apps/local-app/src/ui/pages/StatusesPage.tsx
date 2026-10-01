@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Checkbox } from '@/ui/components/ui/checkbox';
 import {
   Dialog,
@@ -33,6 +34,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /** Check if a status is an Archive status (label contains 'archiv', case-insensitive) */
 function isArchiveStatus(label: string): boolean {
@@ -51,20 +54,23 @@ interface Status {
   updatedAt: string;
 }
 
-async function fetchStatuses(projectId: string) {
-  const res = await fetch(`/api/statuses?projectId=${projectId}`);
+async function fetchStatuses(fetchFn: FetchFn, projectId: string) {
+  const res = await fetchFn(`/api/statuses?projectId=${projectId}`);
   if (!res.ok) throw new Error('Failed to fetch statuses');
   return res.json();
 }
 
-async function createStatus(data: {
-  projectId: string;
-  label: string;
-  color: string;
-  position: number;
-  mcpHidden?: boolean;
-}) {
-  const res = await fetch('/api/statuses', {
+async function createStatus(
+  fetchFn: FetchFn,
+  data: {
+    projectId: string;
+    label: string;
+    color: string;
+    position: number;
+    mcpHidden?: boolean;
+  },
+) {
+  const res = await fetchFn('/api/statuses', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -76,8 +82,8 @@ async function createStatus(data: {
   return res.json();
 }
 
-async function updateStatus(id: string, data: Partial<Status>) {
-  const res = await fetch(`/api/statuses/${id}`, {
+async function updateStatus(fetchFn: FetchFn, id: string, data: Partial<Status>) {
+  const res = await fetchFn(`/api/statuses/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -89,16 +95,16 @@ async function updateStatus(id: string, data: Partial<Status>) {
   return res.json();
 }
 
-async function deleteStatus(id: string) {
-  const res = await fetch(`/api/statuses/${id}`, { method: 'DELETE' });
+async function deleteStatus(fetchFn: FetchFn, id: string) {
+  const res = await fetchFn(`/api/statuses/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to delete status' }));
     throw new Error(error.message || 'Failed to delete status');
   }
 }
 
-async function reorderStatuses(projectId: string, statusIds: string[]) {
-  const res = await fetch(`/api/statuses/reorder`, {
+async function reorderStatuses(fetchFn: FetchFn, projectId: string, statusIds: string[]) {
+  const res = await fetchFn(`/api/statuses/reorder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ projectId, statusIds }),
@@ -116,14 +122,18 @@ interface Settings {
   };
 }
 
-async function fetchSettings(): Promise<Settings> {
-  const res = await fetch('/api/settings');
+async function fetchSettings(fetchFn: FetchFn): Promise<Settings> {
+  const res = await fetchFn('/api/settings');
   if (!res.ok) throw new Error('Failed to fetch settings');
   return res.json();
 }
 
-async function updateAutoCleanStatusIds(projectId: string, statusIds: string[]): Promise<Settings> {
-  const res = await fetch(`/api/settings/autoclean/${projectId}`, {
+async function updateAutoCleanStatusIds(
+  fetchFn: FetchFn,
+  projectId: string,
+  statusIds: string[],
+): Promise<Settings> {
+  const res = await fetchFn(`/api/settings/autoclean/${projectId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ statusIds }),
@@ -212,7 +222,7 @@ function StatusList({
               className={cn(
                 'flex items-center gap-3 p-4 border rounded-lg bg-card cursor-move transition-all',
                 draggedIndex === index && 'opacity-50 scale-95',
-                isAutoClean && 'border-amber-500/50 bg-amber-500/5',
+                isAutoClean && 'border-status-warn/40 bg-status-warn/10',
               )}
             >
               <GripVertical className="h-5 w-5 text-muted-foreground flex-shrink-0" />
@@ -231,16 +241,16 @@ function StatusList({
                     </Badge>
                   )}
                   {isAutoClean && (
-                    <Badge variant="outline" className="text-amber-600 border-amber-500/50">
+                    <OpaqueBadge variant="outline" className={TONE_CLASSES.warn}>
                       <Sparkles className="h-3 w-3 mr-1" />
                       Auto-clean
-                    </Badge>
+                    </OpaqueBadge>
                   )}
                   {status.mcpHidden && (
-                    <Badge variant="outline" className="text-blue-600 border-blue-500/50">
+                    <OpaqueBadge variant="outline" className={TONE_CLASSES.info}>
                       <EyeOff className="h-3 w-3 mr-1" />
                       MCP Hidden
-                    </Badge>
+                    </OpaqueBadge>
                   )}
                 </div>
               </div>
@@ -316,6 +326,7 @@ function StatusList({
 }
 
 export function StatusesPage() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
@@ -332,13 +343,13 @@ export function StatusesPage() {
 
   const { data: statusesData, isLoading } = useQuery({
     queryKey: ['statuses', selectedProjectId],
-    queryFn: () => fetchStatuses(selectedProjectId as string),
+    queryFn: () => fetchStatuses(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
 
   const { data: settingsData } = useQuery({
     queryKey: ['settings'],
-    queryFn: fetchSettings,
+    queryFn: () => fetchSettings(fetchFn),
   });
 
   const autoCleanStatusIds = useMemo(() => {
@@ -348,7 +359,7 @@ export function StatusesPage() {
 
   const autoCleanMutation = useMutation({
     mutationFn: ({ projectId, statusIds }: { projectId: string; statusIds: string[] }) =>
-      updateAutoCleanStatusIds(projectId, statusIds),
+      updateAutoCleanStatusIds(fetchFn, projectId, statusIds),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
@@ -363,7 +374,13 @@ export function StatusesPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: createStatus,
+    mutationFn: (data: {
+      projectId: string;
+      label: string;
+      color: string;
+      position: number;
+      mcpHidden?: boolean;
+    }) => createStatus(fetchFn, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['statuses', selectedProjectId] });
       setShowDialog(false);
@@ -383,7 +400,8 @@ export function StatusesPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<Status> }) => updateStatus(id, data),
+    mutationFn: ({ id, data }: { id: string; data: Partial<Status> }) =>
+      updateStatus(fetchFn, id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['statuses', selectedProjectId] });
       setShowDialog(false);
@@ -404,7 +422,7 @@ export function StatusesPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: deleteStatus,
+    mutationFn: (id: string) => deleteStatus(fetchFn, id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['statuses', selectedProjectId] });
       setDeleteConfirm(null);
@@ -425,7 +443,7 @@ export function StatusesPage() {
 
   const reorderMutation = useMutation({
     mutationFn: ({ projectId, statusIds }: { projectId: string; statusIds: string[] }) =>
-      reorderStatuses(projectId, statusIds),
+      reorderStatuses(fetchFn, projectId, statusIds),
     onError: (error) => {
       queryClient.invalidateQueries({ queryKey: ['statuses', selectedProjectId] });
       toast({

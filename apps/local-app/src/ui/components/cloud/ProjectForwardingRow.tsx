@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Folder } from 'lucide-react';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 import { Switch } from '../ui/switch';
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from '../ui/tooltip';
 import { useDevicesQuery } from '@/ui/hooks/useDevicesQuery';
@@ -24,7 +25,9 @@ export function ProjectForwardingRow({
   const { data, isLoading } = useQuery<{ enabled: boolean }>({
     queryKey: ['cloud', 'egress', projectId],
     queryFn: async () => {
-      const res = await fetch(`/api/cloud/egress/projects/${projectId}`);
+      const res = await apiFetch(`/api/cloud/egress/projects/${projectId}`, undefined, {
+        backend: HOME_BACKEND,
+      });
       if (!res.ok) throw new Error('Failed to fetch egress config');
       return res.json();
     },
@@ -32,11 +35,15 @@ export function ProjectForwardingRow({
 
   const mutation = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const res = await fetch(`/api/cloud/egress/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      });
+      const res = await apiFetch(
+        `/api/cloud/egress/projects/${projectId}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        },
+        { backend: HOME_BACKEND },
+      );
       if (!res.ok) throw new Error('Failed to update egress config');
       return res.json() as Promise<{ enabled: boolean }>;
     },

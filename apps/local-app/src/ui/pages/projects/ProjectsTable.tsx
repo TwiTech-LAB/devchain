@@ -1,4 +1,5 @@
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Button } from '@/ui/components/ui/button';
 import { Card } from '@/ui/components/ui/card';
 import {
@@ -59,18 +60,18 @@ function TemplateSourceBadges({
           Built-in
         </Badge>
         {template.version && (
-          <Badge variant="outline" className="border-blue-600/50 text-xs text-blue-600">
+          <OpaqueBadge variant="outline" className={cn('text-xs', TONE_CLASSES.info)}>
             v{template.version}
-          </Badge>
+          </OpaqueBadge>
         )}
       </>
     );
   }
   if (!template.version) return null;
   return (
-    <Badge variant="outline" className="border-blue-600/50 text-xs text-blue-600">
+    <OpaqueBadge variant="outline" className={cn('text-xs', TONE_CLASSES.info)}>
       v{template.version}
-    </Badge>
+    </OpaqueBadge>
   );
 }
 
@@ -184,6 +185,11 @@ function ProjectRow({ row, drag }: { row: ProjectTableRowModel; drag: ProjectsTa
                 Template
               </Badge>
             ) : null}
+            {row.remoteLock ? (
+              <Badge variant="outline" className="mt-1" title={row.remoteLock.message}>
+                Remote
+              </Badge>
+            ) : null}
           </div>
         </div>
       </td>
@@ -207,13 +213,14 @@ function ProjectRow({ row, drag }: { row: ProjectTableRowModel; drag: ProjectsTa
               {row.template.slug}
             </span>
             <TemplateSourceBadges template={row.template} />
-            {row.template.upgradeVersion && row.upgrade && (
+            {row.template.upgradeVersion && (
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-5 px-1.5 text-xs text-green-600 hover:bg-green-50 hover:text-green-700"
+                className="h-5 px-1.5 text-xs text-status-ok hover:bg-accent hover:text-foreground"
                 onClick={row.upgrade}
-                title={`Upgrade to v${row.template.upgradeVersion}`}
+                disabled={row.remoteLock !== null}
+                title={row.remoteLock?.message ?? `Upgrade to v${row.template.upgradeVersion}`}
               >
                 <ArrowUp className="mr-0.5 h-3 w-3" aria-hidden="true" />v
                 {row.template.upgradeVersion}
@@ -254,6 +261,8 @@ function ProjectRow({ row, drag }: { row: ProjectTableRowModel; drag: ProjectsTa
             variant="ghost"
             size="sm"
             onClick={row.requestDelete}
+            disabled={row.remoteLock !== null}
+            title={row.remoteLock?.message}
             className="text-destructive hover:text-destructive"
             aria-label={`Delete ${row.name}`}
           >
@@ -271,6 +280,12 @@ function ProjectRow({ row, drag }: { row: ProjectTableRowModel; drag: ProjectsTa
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {row.remoteLock && (
+                <DropdownMenuItem disabled title={row.remoteLock.message}>
+                  <MoveRight className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Move to workspace…
+                </DropdownMenuItem>
+              )}
               {row.moveTargets.length > 0 && (
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
@@ -286,7 +301,11 @@ function ProjectRow({ row, drag }: { row: ProjectTableRowModel; drag: ProjectsTa
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
               )}
-              <DropdownMenuItem onClick={row.startImport}>
+              <DropdownMenuItem
+                onClick={row.startImport}
+                disabled={row.remoteLock !== null}
+                title={row.remoteLock?.message}
+              >
                 <Download className="mr-2 h-4 w-4" aria-hidden="true" />
                 Import
               </DropdownMenuItem>
@@ -404,7 +423,7 @@ function WorkspaceGroup({
                 {group.name}
               </span>
               {group.isDefault && <Badge variant="outline">Default</Badge>}
-              <span className="shrink-0 text-xs font-normal tabular-nums opacity-80">
+              <span className="shrink-0 text-xs font-normal tabular-nums text-muted-foreground">
                 {countLabel}
               </span>
               {isSource && (

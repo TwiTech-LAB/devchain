@@ -1,11 +1,15 @@
 import Database from 'better-sqlite3';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { remoteProjectSyncedEvent } from '../../events/catalog/remote.project.synced';
+import type { CommittedEvent } from '../../events/services/durable-event-registry.service';
 import type { EventsService } from '../../events/services/events.service';
+import { ProjectReplicaApplier } from '../../remotes/replica/project-replica.applier';
+import { ProjectReplicaBuilder } from '../../remotes/replica/project-replica.builder';
 import type {
   ExternalManagedSubtaskLink,
   IntegrationProvider,
@@ -206,7 +210,11 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     });
   });
 
+  let hostDisposals: Array<() => void> = [];
+
   afterEach(() => {
+    for (const dispose of hostDisposals) dispose();
+    hostDisposals = [];
     sqlite.close();
     rmSync(secretDirectory, { recursive: true, force: true });
   });
@@ -217,7 +225,193 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     return (await storage.listExternalManagedSubtaskLinksByProvider(provider))[0]!;
   }
 
-  it('registers exactly one durable identity for factual Epic and connection events', () => {
+  /**
+   * A second migrated instance playing the authoritative host of its own
+   * project. Home receives the project through one full apply, then connects
+   * and links the parent exactly as a bound project would be. `pull` mimics
+   * one live-sync tick: apply the host's changes feed at home and hand the
+   * committed `remote.project.synced` events to the durable subscriber.
+   */
+  async function hostedMirror(): Promise<{
+    host: LocalStorageService;
+    hostedProjectId: string;
+    hostedStatusId: string;
+    hostedParentId: string;
+    pull: () => Promise<void>;
+  }> {
+    const hostSqlite = new Database(':memory:');
+    const hostDb = drizzle(hostSqlite);
+    migrate(hostDb, { migrationsFolder: MIGRATIONS_FOLDER });
+    hostSqlite.pragma('foreign_keys = ON');
+    const hostSecrets = mkdtempSync(join(os.tmpdir(), 'devchain-sync-host-'));
+    hostDisposals.push(() => {
+      hostSqlite.close();
+      rmSync(hostSecrets, { recursive: true, force: true });
+    });
+    const host = new LocalStorageService(
+      hostDb,
+      new IntegrationCredentialCipher({
+        secretDirectory: hostSecrets,
+        machineIdentity: 'sync-subscriber-test:host',
+      }),
+    );
+
+    const project = await host.createProject({
+      name: 'Hosted project',
+      rootPath: '/home/project-owner/hosted-project',
+      description: null,
+    });
+    const hostedStatusId = (await host.listStatuses(project.id)).items[0]!.id;
+    const parent = await host.createEpic({
+      projectId: project.id,
+      statusId: hostedStatusId,
+      title: 'Hosted parent',
+    });
+
+    type ApplierEvents = ConstructorParameters<typeof ProjectReplicaApplier>[1];
+    const emitted: Array<Parameters<ApplierEvents['emitCommitted']>[0]> = [];
+    const applier = new ProjectReplicaApplier(storage, {
+      prepareCommitted: ((name, payload) => ({
+        id: randomUUID(),
+        name,
+        payload: remoteProjectSyncedEvent.schema.parse(payload),
+        requestId: null,
+        publishedAt: new Date().toISOString(),
+      })) as ApplierEvents['prepareCommitted'],
+      emitCommitted: (event) => {
+        emitted.push(event);
+      },
+    });
+    const hostBuilder = new ProjectReplicaBuilder(host);
+    const attach = await hostBuilder.build({ projectIds: [project.id], scope: 'attach' });
+    if (!attach.ok) throw new Error(JSON.stringify(attach.errors));
+    await applier.apply(attach.replica, { mode: 'full', remoteId: 'remote-host', cursor: null });
+
+    const connection = await storage.replaceIntegrationConnection(
+      {
+        projectId: project.id,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'clickup-token' },
+        subtaskSyncEnabled: true,
+      },
+      async () => undefined,
+    );
+    await storage.createExternalTaskLink({
+      epicId: parent.id,
+      connectionId: connection.id,
+      provider: 'clickup',
+      remoteScopeKey: 'workspace-clickup',
+      remoteTaskId: 'clickup-hosted-parent',
+      sourceSnapshot: { workAreaId: 'list-clickup', workAreaName: 'ClickUp List' },
+    });
+
+    return {
+      host,
+      hostedProjectId: project.id,
+      hostedStatusId,
+      hostedParentId: parent.id,
+      pull: async () => {
+        emitted.length = 0;
+        const live = await hostBuilder.build({
+          projectIds: [project.id],
+          scope: 'live',
+          changedSince: new Date(Date.now() - 60_000).toISOString(),
+          includeIdSets: true,
+        });
+        if (!live.ok) throw new Error(JSON.stringify(live.errors));
+        await applier.apply(live.replica, {
+          mode: 'live',
+          remoteId: 'remote-host',
+          cursor: new Date().toISOString(),
+          idSets: live.idSets,
+        });
+        for (const event of emitted) {
+          await subscriber.handleCommittedEvent(event as CommittedEvent);
+        }
+      },
+    };
+  }
+
+  it('creates exactly one managed subtask at home for a sub-epic created on the host', async () => {
+    const mirror = await hostedMirror();
+    const child = await mirror.host.createEpic({
+      projectId: mirror.hostedProjectId,
+      statusId: mirror.hostedStatusId,
+      title: 'Hosted child',
+      description: 'Mirrored description',
+      parentId: mirror.hostedParentId,
+    });
+
+    await mirror.pull();
+
+    expect(clickup.create).toHaveBeenCalledTimes(1);
+    expect(clickup.create.mock.calls[0]![2]).toMatchObject({
+      parentRemoteTaskId: 'clickup-hosted-parent',
+      title: 'Hosted child',
+      description: 'Mirrored description',
+    });
+    const rows = await storage.listExternalManagedSubtaskLinksByProvider('clickup');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      epicIdSnapshot: child.id,
+      parentRemoteTaskId: 'clickup-hosted-parent',
+      operationPhase: 'confirmed',
+    });
+    expect(await storage.getEpic(child.id)).toMatchObject({ title: 'Hosted child' });
+
+    // The next mirror pull with no host change leaves the projection alone.
+    await mirror.pull();
+    expect(clickup.create).toHaveBeenCalledTimes(1);
+    expect(clickup.update).not.toHaveBeenCalled();
+  });
+
+  it('runs the deleted-epic path for a sub-epic deleted on the host', async () => {
+    const mirror = await hostedMirror();
+    const child = await mirror.host.createEpic({
+      projectId: mirror.hostedProjectId,
+      statusId: mirror.hostedStatusId,
+      title: 'Hosted child',
+      parentId: mirror.hostedParentId,
+    });
+    await mirror.pull();
+    const row = (await storage.listExternalManagedSubtaskLinksByProvider('clickup'))[0]!;
+    expect(row.operationPhase).toBe('confirmed');
+
+    await mirror.host.deleteEpic(child.id);
+    await mirror.pull();
+
+    expect(clickup.delete).toHaveBeenCalledTimes(1);
+    expect(clickup.delete.mock.calls[0]![2]).toMatchObject({
+      remoteTaskId: row.remoteTaskId,
+      expectedParentRemoteTaskId: 'clickup-hosted-parent',
+    });
+    expect(await storage.listExternalManagedSubtaskLinksByProvider('clickup')).toEqual([]);
+  });
+
+  it('ignores remote.project.synced when the instance is the host receiving an attach', async () => {
+    const reconcile = jest.spyOn(subscriber, 'reconcileEpic');
+
+    await subscriber.handleCommittedEvent({
+      id: 'attach-synced',
+      name: 'remote.project.synced',
+      payload: {
+        projectId,
+        workspaceId: (await storage.getProject(projectId)).workspaceId,
+        remoteId: null,
+        changedEpicIds: [childId],
+        deletedEpicIds: [parentId],
+        cursor: null,
+      },
+      requestId: null,
+      publishedAt: new Date().toISOString(),
+    });
+
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(clickup.create).not.toHaveBeenCalled();
+    expect(clickup.delete).not.toHaveBeenCalled();
+  });
+
+  it('registers exactly one durable identity for factual Epic, connection and mirror-sync events', () => {
     subscriber.onModuleInit();
 
     expect(events.registerDurableSubscriber).toHaveBeenCalledTimes(1);
@@ -232,6 +426,7 @@ describe('ExternalSubtaskSyncSubscriber', () => {
           'integration.connection.created',
           'integration.connection.updated',
           'integration.connection.deleted',
+          'remote.project.synced',
         ],
       }),
     );

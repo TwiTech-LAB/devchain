@@ -21,7 +21,7 @@ jest.mock('@/ui/components/cloud/ProjectForwardingList', () => ({
 
 describe('PushNotificationsPanel', () => {
   it('renders the redesigned two-column content hierarchy', () => {
-    const { container } = render(<PushNotificationsPanel />);
+    const { container } = render(<PushNotificationsPanel homeSignedIn />);
 
     expect(screen.getByRole('heading', { name: 'Push Notifications' })).toBeInTheDocument();
     expect(screen.getByTestId('devices-panel')).toBeInTheDocument();

@@ -1,3 +1,4 @@
+import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
 import type {
   ProviderAdapter,
@@ -47,6 +48,7 @@ function deepMergePlainObjects(
 @Injectable()
 export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
   readonly providerName = 'opencode';
+  readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
   readonly mcpMode = 'project_config' as const;
   readonly configFileName = 'opencode.json';
 

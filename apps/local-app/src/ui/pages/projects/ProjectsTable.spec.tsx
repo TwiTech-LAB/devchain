@@ -54,6 +54,7 @@ function row(overrides: Partial<ProjectTableRowModel> = {}): ProjectTableRowMode
     configure: jest.fn(),
     upgrade: jest.fn(),
     actionsButtonId: 'project-actions-project-1',
+    remoteLock: null,
     moveTargets: [],
     ...overrides,
   };
@@ -289,6 +290,26 @@ describe('ProjectsTable', () => {
     expect(readyRow.startImport).toHaveBeenCalled();
     expect(readyRow.export).toHaveBeenCalled();
     expect(requestMove).toHaveBeenCalled();
+  });
+
+  it('disables delete and import on a remote-owned project and says why', () => {
+    const message = 'Connected to remote "vm-1"; change this project there.';
+    const lockedRow = row({ remoteLock: { message }, upgrade: undefined, moveTargets: [] });
+    render(<ProjectsTable model={ready([group({ rows: [lockedRow] })])} />);
+
+    const deleteButton = screen.getByRole('button', { name: 'Delete Project One' });
+    const importItem = screen.getByRole('button', { name: 'Import' });
+    expect(deleteButton).toBeDisabled();
+    expect(deleteButton).toHaveAttribute('title', message);
+    expect(importItem).toBeDisabled();
+    expect(screen.getByText('Remote')).toHaveAttribute('title', message);
+    expect(screen.queryByTitle('Upgrade to v2.0.0')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('project-drag-handle-project-1')).not.toBeInTheDocument();
+
+    fireEvent.click(deleteButton);
+    fireEvent.click(importItem);
+    expect(lockedRow.requestDelete).not.toHaveBeenCalled();
+    expect(lockedRow.startImport).not.toHaveBeenCalled();
   });
 
   it('uses a pointer-only handle and delegates drag events from the whole workspace group', () => {

@@ -39,9 +39,154 @@ export const projects = sqliteTable('projects', {
   isTemplate: integer('is_template', { mode: 'boolean' }).notNull().default(false),
   isPrivate: integer('is_private', { mode: 'boolean' }).default(false),
   ownerUserId: text('owner_user_id'), // Optional, for cloud mode
+  // Set while a remote handoff freezes project writes on this instance; local-only, never replicated.
+  frozenAt: text('frozen_at'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
+
+export const vmProviderConnections = sqliteTable('vm_provider_connections', {
+  id: text('id').primaryKey(),
+  kind: text('kind', { enum: ['proxmox'] }).notNull(),
+  name: text('name').notNull(),
+  apiUrl: text('api_url').notNull(),
+  node: text('node').notNull(),
+  pool: text('pool').notNull(),
+  storage: text('storage').notNull(),
+  imageStorage: text('image_storage').notNull(),
+  bridge: text('bridge').notNull(),
+  vmidMin: integer('vmid_min').notNull(),
+  vmidMax: integer('vmid_max').notNull(),
+  namePrefix: text('name_prefix').notNull(),
+  tag: text('tag').notNull(),
+  sslFingerprint: text('ssl_fingerprint').notNull(),
+  caPem: text('ca_pem'),
+  tokenId: text('token_id').notNull(),
+  tokenSecretCiphertext: text('token_secret_ciphertext').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+// Remotes (host connection records at home; unused on LAN)
+export const remotes = sqliteTable(
+  'remotes',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    baseUrl: text('base_url'),
+    kind: text('kind', { enum: ['address', 'proxmox'] }).notNull(),
+    vmProviderConnectionId: text('vm_provider_connection_id').references(
+      () => vmProviderConnections.id,
+      { onDelete: 'restrict' },
+    ),
+    vmIdentity: text('vm_identity'),
+    vmSpecJson: text('vm_spec_json'),
+    // Encrypted VM API key; read only through the dedicated credential accessor.
+    credentialCiphertext: text('credential_ciphertext'),
+    // The VM's self-signed certificate (PEM); every call to the VM is pinned to it.
+    tlsCertificate: text('tls_certificate'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    nameUniqueCi: uniqueIndex('remotes_name_ci_idx').on(sql`lower(${table.name})`),
+    addressRequiresBaseUrl: check(
+      'remotes_address_requires_base_url',
+      sql`${table.kind} = 'proxmox' OR ${table.baseUrl} IS NOT NULL`,
+    ),
+  }),
+);
+
+// Remote Project Bindings (project<->remote attachment state)
+export const remoteProjectBindings = sqliteTable(
+  'remote_project_bindings',
+  {
+    projectId: text('project_id')
+      .primaryKey()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    remoteId: text('remote_id')
+      .notNull()
+      .references(() => remotes.id, { onDelete: 'restrict' }),
+    state: text('state', { enum: ['attaching', 'remote', 'detaching', 'failed'] }).notNull(),
+    hostCursor: text('host_cursor'),
+    // Last live-sync apply failure; `state` stays `remote` while the host owns the project.
+    syncError: text('sync_error'),
+    syncFailedAt: text('sync_failed_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    remoteIdIdx: index('remote_project_bindings_remote_id_idx').on(table.remoteId),
+  }),
+);
+
+// Remote Operations (saved, resumable step lists for connect/disconnect and remote lifecycle)
+export const remoteOperations = sqliteTable(
+  'remote_operations',
+  {
+    id: text('id').primaryKey(),
+    kind: text('kind', {
+      enum: [
+        'attach',
+        'detach',
+        'create_vm',
+        'destroy_vm',
+        'claim',
+        'install_host',
+        'reset_vm',
+        'update_host',
+        'update_logins',
+      ],
+    }).notNull(),
+    remoteId: text('remote_id')
+      .notNull()
+      .references(() => remotes.id, { onDelete: 'cascade' }),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    state: text('state', { enum: ['running', 'failed', 'done', 'cancelled'] }).notNull(),
+    // JSON array of { id, label, state, startedAt, endedAt, error }.
+    steps: text('steps').notNull(),
+    // JSON object: operation input and values steps hand to later steps (cursor, forced-loss report).
+    details: text('details').notNull().default('{}'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    remoteIdIdx: index('remote_operations_remote_id_idx').on(table.remoteId),
+    // A failed operation still holds its project until it is retried to completion or cancelled.
+    openProjectUnique: uniqueIndex('remote_operations_open_project_idx')
+      .on(table.projectId)
+      .where(sql`${table.state} IN ('running', 'failed')`),
+  }),
+);
+
+// Provider auth vault entries (login material for VM claims; home-only, never replicated).
+// Deleting a remote releases the families it had checked out.
+export const providerAuthEntries = sqliteTable(
+  'provider_auth_entries',
+  {
+    id: text('id').primaryKey(),
+    provider: text('provider').notNull(),
+    // static = reusable by many VMs at once; family = checked out to one remote at a time.
+    kind: text('kind', { enum: ['static', 'family'] }).notNull(),
+    label: text('label').notNull(),
+    // AES-GCM envelope from IntegrationCredentialCipher; only the claim path decrypts.
+    payloadCiphertext: text('payload_ciphertext').notNull(),
+    payloadKind: text('payload_kind', {
+      enum: ['env', 'files', 'opencode-entry', 'opencode-entries'],
+    }).notNull(),
+    checkedOutRemoteId: text('checked_out_remote_id').references(() => remotes.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    lastVerifiedAt: text('last_verified_at'),
+    lastWritebackAt: text('last_writeback_at'),
+  },
+  (table) => ({
+    checkedOutIdx: index('provider_auth_entries_remote_id_idx').on(table.checkedOutRemoteId),
+    providerIdx: index('provider_auth_entries_provider_idx').on(table.provider),
+  }),
+);
 
 export const pairedDeviceWorkspaceGrants = sqliteTable(
   'paired_device_workspace_grants',
@@ -690,91 +835,6 @@ export const scheduledEpicRuns = sqliteTable(
       table.plannedFor,
     ),
     createdEpicIdIdx: index('scheduled_epic_runs_created_epic_id_idx').on(table.createdEpicId),
-  }),
-);
-
-// Orchestrator worktrees (migrated from orchestrator Postgres storage)
-export const worktrees = sqliteTable(
-  'worktrees',
-  {
-    id: text('id').primaryKey(),
-    name: text('name').notNull().unique(),
-    branchName: text('branch_name').notNull(),
-    baseBranch: text('base_branch').notNull(),
-    repoPath: text('repo_path').notNull(),
-    worktreePath: text('worktree_path'),
-    containerId: text('container_id'),
-    containerPort: integer('container_port'),
-    templateSlug: text('template_slug').notNull(),
-    ownerProjectId: text('owner_project_id').notNull(),
-    status: text('status').notNull().default('creating'),
-    description: text('description'),
-    devchainProjectId: text('devchain_project_id'),
-    mergeCommit: text('merge_commit'),
-    mergeConflicts: text('merge_conflicts'),
-    errorMessage: text('error_message'),
-    runtimeType: text('runtime_type').notNull().default('container'),
-    processId: integer('process_id'),
-    runtimeToken: text('runtime_token'),
-    startedAt: text('started_at'),
-    createdAt: text('created_at').notNull(),
-    updatedAt: text('updated_at').notNull(),
-  },
-  (table) => ({
-    statusIdx: index('worktrees_status_idx').on(table.status),
-  }),
-);
-
-// Orchestrator merged epics history (migrated from orchestrator Postgres storage)
-export const mergedEpics = sqliteTable(
-  'merged_epics',
-  {
-    id: text('id').primaryKey(),
-    worktreeId: text('worktree_id')
-      .notNull()
-      .references(() => worktrees.id, { onDelete: 'cascade' }),
-    devchainEpicId: text('devchain_epic_id').notNull(),
-    title: text('title').notNull(),
-    description: text('description'),
-    statusName: text('status_name'),
-    statusColor: text('status_color'),
-    agentName: text('agent_name'),
-    parentEpicId: text('parent_epic_id'),
-    tags: text('tags', { mode: 'json' })
-      .$type<string[]>()
-      .default(sql`'[]'`),
-    createdAtSource: text('created_at_source'),
-    mergedAt: text('merged_at').notNull(),
-  },
-  (table) => ({
-    worktreeIdx: index('merged_epics_worktree_id_idx').on(table.worktreeId),
-    worktreeEpicUnique: uniqueIndex('merged_epics_worktree_epic_unique').on(
-      table.worktreeId,
-      table.devchainEpicId,
-    ),
-  }),
-);
-
-// Orchestrator merged agents history (migrated from orchestrator Postgres storage)
-export const mergedAgents = sqliteTable(
-  'merged_agents',
-  {
-    id: text('id').primaryKey(),
-    worktreeId: text('worktree_id')
-      .notNull()
-      .references(() => worktrees.id, { onDelete: 'cascade' }),
-    devchainAgentId: text('devchain_agent_id').notNull(),
-    name: text('name'),
-    profileName: text('profile_name'),
-    epicsCompleted: integer('epics_completed').default(0),
-    mergedAt: text('merged_at').notNull(),
-  },
-  (table) => ({
-    worktreeIdx: index('merged_agents_worktree_id_idx').on(table.worktreeId),
-    worktreeAgentUnique: uniqueIndex('merged_agents_worktree_agent_unique').on(
-      table.worktreeId,
-      table.devchainAgentId,
-    ),
   }),
 );
 

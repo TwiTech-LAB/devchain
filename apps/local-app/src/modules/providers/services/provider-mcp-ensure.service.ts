@@ -9,16 +9,33 @@ import {
   isMcpCli,
   isProjectProvisioningCapable,
   isProjectMcpSettingsCapable,
+  type ProjectProvisioningContext,
 } from '../../providers/adapters';
+import {
+  ProjectWriteAdmissionService,
+  type RemoteOwnedProject,
+} from '../../remotes/admission/project-write-admission.service';
+import { ProjectRemoteError, ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { Provider, UpdateProviderMcpMetadata } from '../../storage/models/domain.models';
 
 const logger = createLogger('ProviderMcpEnsureService');
 
-export type EnsureMcpAction = 'already_configured' | 'fixed_mismatch' | 'added' | 'error';
+export type EnsureMcpAction =
+  | 'already_configured'
+  | 'fixed_mismatch'
+  | 'added'
+  | 'skipped'
+  | 'error';
 
 export type EnsureMcpWarning = {
-  source: 'trusted_folders' | 'mcp_register' | 'claude_settings' | 'provisioning' | 'other';
+  source:
+    | 'trusted_folders'
+    | 'mcp_register'
+    | 'claude_settings'
+    | 'codex_project_trust'
+    | 'provisioning'
+    | 'other';
   level: 'info' | 'warn';
   message: string;
   code?: string;
@@ -52,13 +69,18 @@ export class ProviderMcpEnsureService {
     @Inject('STORAGE_SERVICE') private readonly storage: StorageService,
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly adapterFactory: ProviderAdapterFactory,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   /**
    * Ensure MCP is properly configured for a provider.
    * Uses per-provider locking to prevent concurrent ensure operations.
    */
-  async ensureMcp(provider: Provider, projectPath?: string): Promise<EnsureMcpResult> {
+  async ensureMcp(
+    provider: Provider,
+    projectPath?: string,
+    context?: ProjectProvisioningContext,
+  ): Promise<EnsureMcpResult> {
     // Check if provider is supported
     if (!this.adapterFactory.isSupported(provider.name)) {
       return {
@@ -78,6 +100,13 @@ export class ProviderMcpEnsureService {
           message: validationResult.message,
         };
       }
+      if (validationResult.remoteOwner) {
+        return {
+          success: true,
+          action: 'skipped',
+          message: `Skipped MCP configuration: the project runs on remote "${validationResult.remoteOwner.remoteName ?? validationResult.remoteOwner.remoteId}"; its project config files would carry home's MCP URL to the VM's agents.`,
+        };
+      }
     }
 
     // Key by provider + project to ensure project-specific side effects run
@@ -94,7 +123,7 @@ export class ProviderMcpEnsureService {
     }
 
     // Create new lock and execute
-    const promise = this.doEnsureMcp(provider, projectPath);
+    const promise = this.doEnsureMcp(provider, projectPath, context);
     this.ensureLocks.set(lockKey, promise);
 
     try {
@@ -113,6 +142,7 @@ export class ProviderMcpEnsureService {
   async ensureProjectProvisioning(
     provider: Provider,
     projectPath: string,
+    context?: ProjectProvisioningContext,
   ): Promise<EnsureProjectProvisioningResult> {
     if (!this.adapterFactory.isSupported(provider.name)) {
       const message = `Provisioning not supported for provider: ${provider.name}`;
@@ -143,6 +173,24 @@ export class ProviderMcpEnsureService {
         ],
       };
     }
+    if (validationResult.remoteOwner) {
+      const remote = validationResult.remoteOwner;
+      logger.info(
+        { providerId: provider.id, projectPath, remoteId: remote.remoteId },
+        'Trust-only provisioning skipped: project is remote-owned',
+      );
+      return {
+        success: true,
+        warnings: [
+          {
+            source: 'provisioning',
+            level: 'info',
+            message: `Skipped provisioning: the project runs on remote "${remote.remoteName ?? remote.remoteId}".`,
+            code: 'PROVISIONING_REMOTE_OWNED',
+          },
+        ],
+      };
+    }
 
     const lockKey = `provision:${provider.id}:${projectPath}`;
     const existingLock = this.provisionLocks.get(lockKey);
@@ -154,7 +202,7 @@ export class ProviderMcpEnsureService {
       return existingLock;
     }
 
-    const promise = this.doEnsureProjectProvisioning(provider, projectPath);
+    const promise = this.doEnsureProjectProvisioning(provider, projectPath, context);
     this.provisionLocks.set(lockKey, promise);
 
     try {
@@ -167,13 +215,17 @@ export class ProviderMcpEnsureService {
   private async doEnsureProjectProvisioning(
     provider: Provider,
     projectPath: string,
+    context?: ProjectProvisioningContext,
   ): Promise<EnsureProjectProvisioningResult> {
     try {
       const adapter = this.adapterFactory.getAdapter(provider.name);
       if (!isProjectProvisioningCapable(adapter)) {
         return { success: true, warnings: [] };
       }
-      const result = await adapter.provisionProjectPath(projectPath);
+      const result =
+        context === undefined
+          ? await adapter.provisionProjectPath(projectPath)
+          : await adapter.provisionProjectPath(projectPath, context);
       return {
         success: result.success,
         warnings: result.warnings.map((w) => ({
@@ -198,9 +250,13 @@ export class ProviderMcpEnsureService {
    * Internal method that performs the actual MCP ensure operation.
    * Wrapped in try/catch to ensure exceptions don't bypass error handling.
    */
-  private async doEnsureMcp(provider: Provider, projectPath?: string): Promise<EnsureMcpResult> {
+  private async doEnsureMcp(
+    provider: Provider,
+    projectPath?: string,
+    context?: ProjectProvisioningContext,
+  ): Promise<EnsureMcpResult> {
     try {
-      return await this.doEnsureMcpInternal(provider, projectPath);
+      return await this.doEnsureMcpInternal(provider, projectPath, context);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error during MCP ensure';
       logger.error(
@@ -217,6 +273,7 @@ export class ProviderMcpEnsureService {
   private async doEnsureMcpInternal(
     provider: Provider,
     projectPath?: string,
+    context?: ProjectProvisioningContext,
   ): Promise<EnsureMcpResult> {
     const adapter = this.adapterFactory.getAdapter(provider.name);
     if (!isMcpCli(adapter) && !projectPath) {
@@ -255,7 +312,10 @@ export class ProviderMcpEnsureService {
       try {
         const provAdapter = this.adapterFactory.getAdapter(provider.name);
         if (isProjectProvisioningCapable(provAdapter)) {
-          const provResult = await provAdapter.provisionProjectPath(projectPath);
+          const provResult =
+            context === undefined
+              ? await provAdapter.provisionProjectPath(projectPath)
+              : await provAdapter.provisionProjectPath(projectPath, context);
           for (const w of provResult.warnings) {
             warnings.push({ ...w, source: w.source as EnsureMcpWarning['source'] });
           }
@@ -311,6 +371,22 @@ export class ProviderMcpEnsureService {
   }
 
   /**
+   * Resolves a project root path and refuses it when a remote owns the
+   * project. Used by the manual registration route, where the user asked for
+   * the write explicitly and a 423 naming the remote is clearer than a skip.
+   */
+  async assertPathNotRemoteOwned(projectPath: string): Promise<void> {
+    const result = await this.validateProjectPath(projectPath);
+    if (!result.valid) {
+      throw new ValidationError(result.message, { projectPath });
+    }
+    if (result.remoteOwner) {
+      const owner = result.remoteOwner;
+      throw new ProjectRemoteError(owner.projectId, owner.remoteId, owner.remoteName);
+    }
+  }
+
+  /**
    * Validates that a projectPath is safe and corresponds to a registered project.
    * Security checks:
    * 1. Must be an absolute path
@@ -319,7 +395,9 @@ export class ProviderMcpEnsureService {
    */
   private async validateProjectPath(
     projectPath: string,
-  ): Promise<{ valid: true } | { valid: false; message: string }> {
+  ): Promise<
+    { valid: false; message: string } | { valid: true; remoteOwner?: RemoteOwnedProject }
+  > {
     // Check 1: Must be absolute path
     if (!isAbsolute(projectPath)) {
       logger.warn({ projectPath }, 'Rejected relative project path');
@@ -347,10 +425,14 @@ export class ProviderMcpEnsureService {
       return { valid: false, message: 'Project path is not a registered project' };
     }
 
+    // A remote-owned project's config files sync to the VM with home's URL;
+    // no provider configuration may be written into it from home.
+    const remoteOwner = this.admission.getRemoteOwner(matchingProject.id) ?? undefined;
+
     logger.debug(
       { projectPath, projectId: matchingProject.id, projectName: matchingProject.name },
       'Project path validated successfully',
     );
-    return { valid: true };
+    return { valid: true, remoteOwner };
   }
 }

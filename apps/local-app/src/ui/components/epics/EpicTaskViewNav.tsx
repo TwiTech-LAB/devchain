@@ -57,7 +57,7 @@ export function EpicTaskViewNav({
         className={cn(
           LINK_CLASS,
           devChainActive
-            ? 'bg-secondary text-secondary-foreground'
+            ? 'bg-selected text-selected-foreground'
             : 'text-muted-foreground hover:bg-muted',
         )}
       >
@@ -71,7 +71,7 @@ export function EpicTaskViewNav({
         className={cn(
           LINK_CLASS,
           providerActive
-            ? 'bg-secondary text-secondary-foreground'
+            ? 'bg-selected text-selected-foreground'
             : 'text-muted-foreground hover:bg-muted',
         )}
       >

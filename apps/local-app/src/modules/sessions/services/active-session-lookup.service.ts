@@ -14,6 +14,7 @@ interface ActiveSessionRow {
   last_activity_at: string | null;
   activity_state: 'idle' | 'busy' | null;
   name: string | null;
+  provider_name_at_launch: string | null;
 }
 
 @Injectable()
@@ -29,7 +30,7 @@ export class ActiveSessionLookup {
       .prepare(
         `
         SELECT s.id, s.agent_id, a.project_id, s.tmux_session_id, s.status,
-               s.started_at, s.last_activity_at, s.activity_state, s.name
+               s.started_at, s.last_activity_at, s.activity_state, s.name, s.provider_name_at_launch
         FROM sessions s
         JOIN agents a ON s.agent_id = a.id
         WHERE s.status = 'running' AND s.agent_id = ? AND a.project_id = ?
@@ -74,7 +75,7 @@ export class ActiveSessionLookup {
       .prepare(
         `
         SELECT s.id, s.agent_id, a.project_id, s.tmux_session_id, s.status,
-               s.started_at, s.last_activity_at, s.activity_state, s.name
+               s.started_at, s.last_activity_at, s.activity_state, s.name, s.provider_name_at_launch
         FROM sessions s
         JOIN agents a ON s.agent_id = a.id
         WHERE s.status = 'running' AND a.project_id = ?
@@ -84,6 +85,22 @@ export class ActiveSessionLookup {
       .all(projectId) as ActiveSessionRow[];
 
     return rows.map((row) => this.toActiveSessionInfo(row));
+  }
+
+  async listRunningProviderSessions(): Promise<
+    Pick<ActiveSessionInfo, 'sessionId' | 'providerNameAtLaunch'>[]
+  > {
+    const rows = this.sqlite
+      .prepare(
+        `
+      SELECT id, provider_name_at_launch FROM sessions WHERE status = 'running'
+    `,
+      )
+      .all() as { id: string; provider_name_at_launch: string | null }[];
+    return rows.map((row) => ({
+      sessionId: row.id,
+      providerNameAtLaunch: row.provider_name_at_launch,
+    }));
   }
 
   private toActiveSessionInfo(row: ActiveSessionRow): ActiveSessionInfo {
@@ -97,6 +114,7 @@ export class ActiveSessionLookup {
       lastActivityAt: row.last_activity_at,
       activityState: row.activity_state,
       name: row.name,
+      providerNameAtLaunch: row.provider_name_at_launch,
     };
   }
 }

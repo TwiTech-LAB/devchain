@@ -16,11 +16,9 @@ export interface UseBoardDragDropArgs {
 
 export interface UseBoardDragDropResult {
   draggedEpic: Epic | null;
-  activeDropStatusId: string | null;
   handleDragStart: (epic: Epic) => void;
   handleDragEnd: () => void;
-  handleDragOverStatus: (statusId: string) => void;
-  handleDrop: (statusId: string) => void;
+  handleDrop: (epic: Epic, statusId: string) => void;
 }
 
 export function useBoardDragDrop({
@@ -31,7 +29,6 @@ export function useBoardDragDrop({
 }: UseBoardDragDropArgs): UseBoardDragDropResult {
   const queryClient = useQueryClient();
   const [draggedEpic, setDraggedEpic] = useState<Epic | null>(null);
-  const [activeDropStatusId, setActiveDropStatusId] = useState<string | null>(null);
   const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -44,32 +41,16 @@ export function useBoardDragDrop({
 
   const handleDragStart = useCallback((epic: Epic) => {
     setDraggedEpic(epic);
-    setActiveDropStatusId(epic.statusId ?? null);
   }, []);
 
   const handleDragEnd = useCallback(() => {
     setDraggedEpic(null);
-    setActiveDropStatusId(null);
   }, []);
 
-  const handleDragOverStatus = useCallback(
-    (statusId: string) => {
-      if (activeDropStatusId !== statusId) {
-        setActiveDropStatusId(statusId);
-      }
-    },
-    [activeDropStatusId],
-  );
-
   const handleDrop = useCallback(
-    (statusId: string) => {
-      if (!draggedEpic || draggedEpic.statusId === statusId) {
-        setDraggedEpic(null);
-        setActiveDropStatusId(null);
-        return;
-      }
-
-      const epicToUpdate = draggedEpic;
+    (epicToUpdate: Epic, statusId: string) => {
+      setDraggedEpic(null);
+      if (epicToUpdate.statusId === statusId) return;
 
       // Optimistically update UI for current filter scope.
       queryClient.setQueryData(epicsKey, (old: EpicsQueryData | undefined) => ({
@@ -93,9 +74,6 @@ export function useBoardDragDrop({
         );
       }
 
-      setDraggedEpic(null);
-      setActiveDropStatusId(null);
-
       if (updateTimeoutRef.current) {
         clearTimeout(updateTimeoutRef.current);
       }
@@ -104,15 +82,13 @@ export function useBoardDragDrop({
         onDropStatusChange(epicToUpdate, statusId, { skipSuccessToast: true });
       }, debounceMs);
     },
-    [draggedEpic, queryClient, epicsKey, parentFilter, onDropStatusChange, debounceMs],
+    [queryClient, epicsKey, parentFilter, onDropStatusChange, debounceMs],
   );
 
   return {
     draggedEpic,
-    activeDropStatusId,
     handleDragStart,
     handleDragEnd,
-    handleDragOverStatus,
     handleDrop,
   };
 }

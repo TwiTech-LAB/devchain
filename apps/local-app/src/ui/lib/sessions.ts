@@ -1,6 +1,6 @@
+import type { FetchFn } from './api-transport';
 import type { PreflightResult, ProviderCheck } from './preflight';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
-import type { SourceChangeKind } from '@/modules/session-reader/services/session-cache.service';
 
 export interface ActiveSession {
   id: string;
@@ -59,29 +59,7 @@ export class SessionApiError extends Error {
   }
 }
 
-export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-const defaultFetch: FetchFn = (input, init) => {
-  if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
-    return window.fetch.call(window, input as RequestInfo, init);
-  }
-  return Promise.reject(new Error('fetch not available'));
-};
-
-function buildApiUrl(url: string, apiBase = ''): string {
-  const trimmedApiBase = apiBase.trim();
-  if (!trimmedApiBase) {
-    return url;
-  }
-
-  if (/^https?:\/\//.test(url)) {
-    return url;
-  }
-
-  const normalizedBase = trimmedApiBase.replace(/\/+$/, '');
-  const normalizedPath = url.startsWith('/') ? url : `/${url}`;
-  return `${normalizedBase}${normalizedPath}`;
-}
+export type { FetchFn };
 
 /**
  * Extract error message from API response payload.
@@ -108,10 +86,9 @@ export async function fetchJsonOrThrow<T>(
   url: string,
   options: RequestInit = {},
   fallbackError: string = 'Request failed',
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<T> {
-  const response = await fetchFn(buildApiUrl(url, apiBase), options);
+  const response = await fetchFn(url, options);
 
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
@@ -135,10 +112,9 @@ export async function fetchOrThrow(
   url: string,
   options: RequestInit = {},
   fallbackError: string = 'Request failed',
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<void> {
-  const response = await fetchFn(buildApiUrl(url, apiBase), options);
+  const response = await fetchFn(url, options);
 
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
@@ -192,27 +168,22 @@ export interface ProjectSummary {
 }
 
 export async function fetchActiveSessions(
-  projectId?: string,
-  fetchFn: FetchFn = defaultFetch,
+  projectId: string | undefined,
+  fetchFn: FetchFn,
 ): Promise<ActiveSession[]> {
   const params = new URLSearchParams();
   if (projectId) {
     params.set('projectId', projectId);
   }
   const url = `/api/sessions${params.size > 0 ? `?${params.toString()}` : ''}`;
-  return fetchJsonOrThrow<ActiveSession[]>(url, {}, 'Failed to fetch active sessions', '', fetchFn);
+  return fetchJsonOrThrow<ActiveSession[]>(url, {}, 'Failed to fetch active sessions', fetchFn);
 }
 
-export async function terminateSession(
-  sessionId: string,
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
-): Promise<void> {
+export async function terminateSession(sessionId: string, fetchFn: FetchFn): Promise<void> {
   return fetchOrThrow(
     `/api/sessions/${sessionId}`,
     { method: 'DELETE' },
     'Failed to terminate session',
-    apiBase,
     fetchFn,
   );
 }
@@ -224,9 +195,8 @@ export async function terminateSession(
 export async function launchSession(
   agentId: string,
   projectId: string,
-  options?: { silent?: boolean },
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  options: { silent?: boolean } | undefined,
+  fetchFn: FetchFn,
 ): Promise<ActiveSession> {
   const payload: { agentId: string; projectId: string; options?: { silent?: boolean } } = {
     agentId,
@@ -244,7 +214,6 @@ export async function launchSession(
       body: JSON.stringify(payload),
     },
     'Failed to launch session',
-    apiBase,
     fetchFn,
   );
 }
@@ -269,8 +238,7 @@ export async function restartSession(
   agentId: string,
   projectId: string,
   _currentSessionId: string,
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<RestartSessionResult> {
   const response = await fetchJsonOrThrow<RestartResponse>(
     `/api/agents/${agentId}/restart`,
@@ -280,7 +248,6 @@ export async function restartSession(
       body: JSON.stringify({ projectId }),
     },
     'Failed to restart session',
-    apiBase,
     fetchFn,
   );
 
@@ -293,8 +260,7 @@ export async function restartSession(
 export async function restoreSession(
   sessionId: string,
   projectId: string,
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<ActiveSession> {
   return fetchJsonOrThrow<ActiveSession>(
     `/api/sessions/${encodeURIComponent(sessionId)}/restore`,
@@ -304,7 +270,6 @@ export async function restoreSession(
       body: JSON.stringify({ projectId }),
     },
     'Failed to restore session',
-    apiBase,
     fetchFn,
   );
 }
@@ -313,7 +278,7 @@ export async function renameSession(
   id: string,
   projectId: string,
   name: string | null,
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<ActiveSession> {
   return fetchJsonOrThrow<ActiveSession>(
     `/api/sessions/${encodeURIComponent(id)}`,
@@ -323,7 +288,6 @@ export async function renameSession(
       body: JSON.stringify({ projectId, name }),
     },
     'Failed to rename session',
-    '',
     fetchFn,
   );
 }
@@ -331,13 +295,12 @@ export async function renameSession(
 export async function deleteSessionHistoryItem(
   id: string,
   projectId: string,
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<void> {
   return fetchOrThrow(
     `/api/sessions/${encodeURIComponent(id)}/record?projectId=${encodeURIComponent(projectId)}`,
     { method: 'DELETE' },
     'Failed to delete session record',
-    '',
     fetchFn,
   );
 }
@@ -346,57 +309,46 @@ export async function deleteSessionHistoryItem(
 export async function launchAgentSession(
   agentId: string,
   projectId: string,
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<ActiveSession> {
-  return launchSession(agentId, projectId, undefined, apiBase, fetchFn);
+  return launchSession(agentId, projectId, undefined, fetchFn);
 }
 
 export async function restartAgentSession(
   agentId: string,
   projectId: string,
   currentSessionId: string,
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<RestartSessionResult> {
-  return restartSession(agentId, projectId, currentSessionId, apiBase, fetchFn);
+  return restartSession(agentId, projectId, currentSessionId, fetchFn);
 }
 
-export async function fetchEpicSummary(
-  epicId: string,
-  fetchFn: FetchFn = defaultFetch,
-): Promise<EpicSummary> {
+export async function fetchEpicSummary(epicId: string, fetchFn: FetchFn): Promise<EpicSummary> {
   return fetchJsonOrThrow<EpicSummary>(
     `/api/epics/${epicId}`,
     {},
     'Failed to fetch epic details',
-    '',
     fetchFn,
   );
 }
 
-export async function fetchAgentSummary(
-  agentId: string,
-  fetchFn: FetchFn = defaultFetch,
-): Promise<AgentSummary> {
+export async function fetchAgentSummary(agentId: string, fetchFn: FetchFn): Promise<AgentSummary> {
   return fetchJsonOrThrow<AgentSummary>(
     `/api/agents/${agentId}`,
     {},
     'Failed to fetch agent details',
-    '',
     fetchFn,
   );
 }
 
 export async function fetchProjectSummary(
   projectId: string,
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<ProjectSummary> {
   return fetchJsonOrThrow<ProjectSummary>(
     `/api/projects/${projectId}`,
     {},
     'Failed to fetch project details',
-    '',
     fetchFn,
   );
 }
@@ -419,26 +371,24 @@ export interface ProviderSummary {
 
 export async function fetchProfileSummary(
   profileId: string,
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<ProfileSummary> {
   return fetchJsonOrThrow<ProfileSummary>(
     `/api/profiles/${profileId}`,
     {},
     'Failed to fetch profile details',
-    '',
     fetchFn,
   );
 }
 
 export async function fetchProviderSummary(
   providerId: string,
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<ProviderSummary> {
   return fetchJsonOrThrow<ProviderSummary>(
     `/api/providers/${providerId}`,
     {},
     'Failed to fetch provider details',
-    '',
     fetchFn,
   );
 }
@@ -467,50 +417,12 @@ export interface TranscriptSummary {
 
 export async function fetchTranscriptSummary(
   sessionId: string,
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<TranscriptSummary> {
   return fetchJsonOrThrow<TranscriptSummary>(
     `/api/sessions/${sessionId}/transcript/summary`,
     {},
     'Failed to fetch transcript summary',
-    apiBase,
-    fetchFn,
-  );
-}
-
-/** Incremental response from GET /api/sessions/:id/transcript/tail?since=<cursor>. */
-export interface TranscriptTailDeltaResponse {
-  kind: 'delta';
-  cursor: string;
-  replaceFromChunkIndex: number;
-  deltaChunks: unknown[];
-  deltaMessages: unknown[];
-  metrics: UnifiedMetrics;
-  totalChunkCount: number;
-  totalMessageCount: number;
-}
-
-/** Unsafe generations carry no cursor or partial transcript body. */
-export interface TranscriptTailFullRefetchRequiredResponse {
-  kind: 'full-refetch-required';
-  sourceChangeKind: SourceChangeKind;
-}
-
-export type TranscriptTailResponse =
-  | TranscriptTailDeltaResponse
-  | TranscriptTailFullRefetchRequiredResponse;
-
-export async function fetchTranscriptTail(
-  sessionId: string,
-  sinceCursor: string,
-  fetchFn: FetchFn = defaultFetch,
-): Promise<TranscriptTailResponse> {
-  return fetchJsonOrThrow<TranscriptTailResponse>(
-    `/api/sessions/${sessionId}/transcript/tail?since=${encodeURIComponent(sinceCursor)}`,
-    {},
-    'Failed to fetch transcript tail',
-    '',
     fetchFn,
   );
 }
@@ -552,8 +464,7 @@ export interface SerializedChunkedResponse {
 
 export async function fetchTranscriptIndex(
   sessionId: string,
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
   options: TranscriptIndexRequest = {},
 ): Promise<TranscriptIndex> {
   const params = new URLSearchParams();
@@ -565,18 +476,16 @@ export async function fetchTranscriptIndex(
     `/api/sessions/${sessionId}/transcript/index${qs}`,
     options.signal ? { signal: options.signal } : {},
     'Failed to fetch transcript index',
-    apiBase,
     fetchFn,
   );
 }
 
 export async function fetchTranscriptChunks(
   sessionId: string,
-  cursor?: string,
-  limit?: number,
-  direction?: 'forward' | 'backward',
-  apiBase = '',
-  fetchFn: FetchFn = defaultFetch,
+  cursor: string | undefined,
+  limit: number | undefined,
+  direction: 'forward' | 'backward' | undefined,
+  fetchFn: FetchFn,
 ): Promise<SerializedChunkedResponse> {
   const params = new URLSearchParams();
   if (cursor) params.set('cursor', cursor);
@@ -587,21 +496,19 @@ export async function fetchTranscriptChunks(
     `/api/sessions/${sessionId}/transcript/chunks${qs}`,
     {},
     'Failed to fetch transcript chunks',
-    apiBase,
     fetchFn,
   );
 }
 
 export async function fetchAgentPresence(
   projectId: string,
-  fetchFn: FetchFn = defaultFetch,
+  fetchFn: FetchFn,
 ): Promise<AgentPresenceMap> {
   const params = new URLSearchParams({ projectId });
   return fetchJsonOrThrow<AgentPresenceMap>(
     `/api/sessions/agents/presence?${params.toString()}`,
     {},
     'Failed to fetch agent presence',
-    '',
     fetchFn,
   );
 }

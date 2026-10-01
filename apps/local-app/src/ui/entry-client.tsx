@@ -3,8 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App';
-import { getStoredTheme, applyTheme } from '@/ui/components/ThemeSelect';
-import { WorktreeTabProvider } from '@/ui/hooks/useWorktreeTab';
+import { getStoredTheme, applyTheme, DEFAULT_THEME } from '@/ui/components/ThemeSelect';
 import './styles/global.css';
 
 const queryClient = new QueryClient({
@@ -16,10 +15,10 @@ const queryClient = new QueryClient({
   },
 });
 
-// Apply persisted theme before first paint to avoid flicker (default to Ocean)
+// Apply persisted theme before first paint to avoid flicker (default to Dark)
 try {
   const stored = getStoredTheme();
-  applyTheme(stored ?? 'ocean');
+  applyTheme(stored ?? DEFAULT_THEME);
 } catch {
   // ignore
 }
@@ -27,11 +26,9 @@ try {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <WorktreeTabProvider>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
-      </WorktreeTabProvider>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
     </QueryClientProvider>
   </React.StrictMode>,
 );

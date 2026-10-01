@@ -5,7 +5,6 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { Layout } from './Layout';
 import { RuntimeProvider } from '../hooks/useRuntime';
-import { WorktreeTabProvider } from '../hooks/useWorktreeTab';
 
 // Layer: UI component unit. Mocking project selection and the activity hook is the cheapest
 // reliable proof that Layout owns the wiring without duplicating the hook's event matrix.
@@ -99,14 +98,12 @@ async function renderLayout(initialEntries: string[] = ['/projects']) {
   const result = render(
     <QueryClientProvider client={queryClient}>
       <RuntimeProvider>
-        <WorktreeTabProvider>
-          <MemoryRouter initialEntries={initialEntries}>
-            <Layout>
-              <div>Layout Test Content</div>
-              <LocationProbe />
-            </Layout>
-          </MemoryRouter>
-        </WorktreeTabProvider>
+        <MemoryRouter initialEntries={initialEntries}>
+          <Layout>
+            <div>Layout Test Content</div>
+            <LocationProbe />
+          </Layout>
+        </MemoryRouter>
       </RuntimeProvider>
     </QueryClientProvider>,
   );
@@ -168,9 +165,6 @@ describe('Cloud sidebar navigation', () => {
           }),
         } as Response;
       }
-      if (url === '/api/worktrees') {
-        return { ok: true, json: async () => [] } as Response;
-      }
       return { ok: true, json: async () => ({}) } as Response;
     });
   });
@@ -214,7 +208,7 @@ describe('Cloud sidebar navigation', () => {
     cloudUiEnabled = true;
 
     await renderLayout();
-    // Cloud should render alongside other non-mainModeOnly items like Settings
+    // Cloud should render alongside other always-visible items like Settings
     expect(await screen.findByRole('link', { name: 'Cloud' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
   });

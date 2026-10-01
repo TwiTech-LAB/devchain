@@ -52,6 +52,7 @@ export interface DeliveryOptions {
   readonly confirm?: boolean;
   readonly confirmTimeoutMs?: number;
   readonly maxAttempts?: number;
+  readonly followNote?: boolean;
 }
 
 export interface DeliveryResult {

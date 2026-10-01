@@ -6,6 +6,8 @@ import { Textarea, type TextareaProps } from '@/ui/components/ui/textarea';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
 import { cn } from '@/ui/lib/utils';
 import { Loader2, ScrollText } from 'lucide-react';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 type PromptSummary = {
   id: string;
@@ -32,15 +34,18 @@ interface ActiveToken {
 const TOKEN_BOUNDARY = /[\s\[\]\(\)\{\}"'`~!$%^&*+=|\\;,.<>/?]/;
 const MAX_DEFAULT_SUGGESTIONS = 7;
 
-async function fetchPromptSuggestions({
-  value,
-  projectId,
-  limit,
-}: {
-  value: string;
-  projectId?: string | null;
-  limit: number;
-}): Promise<PromptSummary[]> {
+async function fetchPromptSuggestions(
+  fetchFn: FetchFn,
+  {
+    value,
+    projectId,
+    limit,
+  }: {
+    value: string;
+    projectId?: string | null;
+    limit: number;
+  },
+): Promise<PromptSummary[]> {
   // Prompts require projectId
   if (projectId === undefined) {
     return [];
@@ -52,7 +57,7 @@ async function fetchPromptSuggestions({
   params.set('limit', `${limit}`);
   params.set('offset', '0');
 
-  const response = await fetch(`/api/prompts?${params.toString()}`);
+  const response = await fetchFn(`/api/prompts?${params.toString()}`);
   if (!response.ok) {
     // Suggestions are decorative: a failed fetch yields an empty list instead
     // of blocking instruction editing.
@@ -125,6 +130,7 @@ export function MarkdownReferenceInput({
   className,
   ...textareaProps
 }: MarkdownReferenceInputProps) {
+  const fetchFn = useFetchFactory();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [activeToken, setActiveToken] = useState<ActiveToken | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -179,7 +185,7 @@ export function MarkdownReferenceInput({
     queryKey: ['markdown-reference-suggestions', debouncedValue, projectScopeKey, maxSuggestions],
     enabled: Boolean(debouncedValue),
     queryFn: () =>
-      fetchPromptSuggestions({
+      fetchPromptSuggestions(fetchFn, {
         value: debouncedValue!,
         projectId,
         limit: maxSuggestions,

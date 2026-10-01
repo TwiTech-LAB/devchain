@@ -2,6 +2,7 @@ import { MobileBoardRpcService } from './mobile-board-rpc.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { EpicsService } from '../../epics/services/epics.service';
 import type { Epic } from '../../storage/models/domain.models';
+import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import {
   NotFoundError,
   OptimisticLockError,
@@ -41,6 +42,7 @@ function build(
   overrides: {
     storage?: Partial<StorageService>;
     epicsService?: Partial<EpicsService>;
+    admission?: Partial<ProjectWriteAdmissionService>;
   } = {},
 ) {
   const storage = {
@@ -63,7 +65,13 @@ function build(
     ...overrides.epicsService,
   } as unknown as jest.Mocked<EpicsService>;
 
-  const service = new MobileBoardRpcService(storage, epicsService);
+  const admission = {
+    listRemoteOwnedProjectIds: () => [],
+    getRemoteOwner: () => null,
+    ...overrides.admission,
+  } as unknown as ProjectWriteAdmissionService;
+
+  const service = new MobileBoardRpcService(storage, epicsService, admission);
   return { service, storage, epicsService };
 }
 
@@ -310,6 +318,70 @@ describe('MobileBoardRpcService', () => {
           commentId: COMMENT_ID,
         }),
       ).rejects.toBeInstanceOf(NotFoundError);
+    });
+  });
+
+  // Home holds only a stale mirror of a remote-owned project; the phone reaches
+  // the live project on the host instance. Service unit tests prove the
+  // not-found answer and that no mirror read or write happens.
+  describe('remote-owned projects', () => {
+    const remoteOwned = () => ({
+      listRemoteOwnedProjectIds: () => [OTHER_PROJECT_ID],
+      getRemoteOwner: (projectId: string) =>
+        projectId === OTHER_PROJECT_ID
+          ? { projectId, remoteId: 'r1', remoteName: 'lab-vm', state: 'remote' }
+          : null,
+    });
+
+    it('updateEpicAssignment answers not-found without touching the epic', async () => {
+      const { service, storage, epicsService } = build({ admission: remoteOwned() });
+
+      await expect(
+        service.updateEpicAssignment({
+          projectId: OTHER_PROJECT_ID,
+          epicId: EPIC_ID,
+          agentId: AGENT_ID,
+          version: 3,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(storage.getEpic).not.toHaveBeenCalled();
+      expect(epicsService.updateEpic).not.toHaveBeenCalled();
+    });
+
+    it('listEpicComments answers not-found without reading the mirror', async () => {
+      const { service, storage } = build({ admission: remoteOwned() });
+
+      await expect(
+        service.listEpicComments({ projectId: OTHER_PROJECT_ID, epicId: EPIC_ID }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(storage.listEpicComments).not.toHaveBeenCalled();
+    });
+
+    it('addEpicComment answers not-found without creating anything', async () => {
+      const { service, epicsService } = build({ admission: remoteOwned() });
+
+      await expect(
+        service.addEpicComment({
+          projectId: OTHER_PROJECT_ID,
+          epicId: EPIC_ID,
+          authorName: 'User',
+          content: 'hi',
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(epicsService.addEpicCommentFromRest).not.toHaveBeenCalled();
+    });
+
+    it('deleteEpicComment answers not-found without deleting', async () => {
+      const { service, epicsService } = build({ admission: remoteOwned() });
+
+      await expect(
+        service.deleteEpicComment({
+          projectId: OTHER_PROJECT_ID,
+          epicId: EPIC_ID,
+          commentId: COMMENT_ID,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(epicsService.deleteEpicComment).not.toHaveBeenCalled();
     });
   });
 });

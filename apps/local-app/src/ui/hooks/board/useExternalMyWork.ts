@@ -35,7 +35,6 @@ export function fetchExternalMyWorkSnapshot(
     ),
     { signal },
     'Assigned work could not be loaded.',
-    '',
     apiFetch,
   );
 }

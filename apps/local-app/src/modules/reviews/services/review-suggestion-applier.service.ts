@@ -9,6 +9,7 @@ import {
   validateResolvedPathWithinRoot,
   validateLineBounds,
 } from '../../../common/validation/path-validation';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 export type SuggestionErrorCode =
   | 'COMMENT_NOT_IN_PROJECT'
@@ -52,6 +53,7 @@ export class ReviewSuggestionApplier {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly reviewsService: ReviewsService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   async apply(input: ApplySuggestionInput): Promise<ApplySuggestionResult> {
@@ -64,6 +66,7 @@ export class ReviewSuggestionApplier {
         `Comment ${input.commentId} does not belong to this project`,
       );
     }
+    this.admission.assertWritable(review.projectId);
 
     if (!comment.filePath || comment.lineStart === null) {
       throw new SuggestionApplicationError(

@@ -210,6 +210,7 @@ describe('EpicEstimateLoggingService project contributions and legacy recovery',
       storage,
       epicTime as unknown as EpicTimeService,
       timeMutations as unknown as ExternalTimeMutationService,
+      { pullNow: jest.fn().mockResolvedValue(undefined) },
     );
     contextA = await seedProject('Project A', '/tmp/estimate-service-a');
     contextB = await seedProject('Project B', '/tmp/estimate-service-b');

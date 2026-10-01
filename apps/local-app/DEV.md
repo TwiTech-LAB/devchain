@@ -10,7 +10,7 @@ This runbook covers Local App development modes and app-specific diagnostics. Re
 
 | Process | Default | Role |
 |---|---|---|
-| NestJS API | `http://127.0.0.1:3000` | REST, MCP, WebSocket, worktree proxy, health, Swagger |
+| NestJS API | `http://127.0.0.1:3000` | REST, MCP, WebSocket, health, Swagger |
 | Vite | `http://127.0.0.1:5175` | React UI, HMR, and proxying to the API |
 
 Use `dev:api` or `dev:ui` when only one side is needed. `vite.config.ts` is canonical for the UI port, proxy routes, and build directory.

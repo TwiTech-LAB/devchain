@@ -20,6 +20,7 @@ import {
 } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import {
   AgentProfileWithPrompts,
   AgentProfileWithPromptsSchema,
@@ -63,7 +64,10 @@ const ReplacePromptsSchema = z.object({
 
 @Controller('api/profiles')
 export class ProfilesController {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(
+    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    private readonly admission: ProjectWriteAdmissionService,
+  ) {}
 
   @Get()
   async listProfiles(@Query('projectId') projectId?: string) {
@@ -106,6 +110,7 @@ export class ProfilesController {
   async createProfile(@Body() body: unknown): Promise<AgentProfile> {
     logger.info('POST /api/profiles');
     const data = CreateProfileSchema.parse(body) as CreateAgentProfile;
+    this.admission.assertWritable(data.projectId);
     return this.storage.createAgentProfile(data);
   }
 
@@ -115,6 +120,7 @@ export class ProfilesController {
     const parsed = UpdateProfileSchema.parse(body) as UpdateAgentProfile & {
       projectId?: string | null;
     };
+    await this.assertProfileWritable(id);
 
     // Disallow moving profiles across projects
     if (parsed.projectId !== undefined) {
@@ -144,6 +150,7 @@ export class ProfilesController {
   }> {
     logger.info({ id }, 'PUT /api/profiles/:id/prompts');
     const { promptIds } = ReplacePromptsSchema.parse(body) as { promptIds: string[] };
+    await this.assertProfileWritable(id);
 
     // Idempotent: de-dupe while preserving order of first appearance
     const seen = new Set<string>();
@@ -180,6 +187,7 @@ export class ProfilesController {
 
     // Check if any agents are using this profile
     const profile = await this.storage.getAgentProfile(id);
+    this.admission.assertWritable(profile.projectId);
     if (profile.projectId) {
       const agents = await this.storage.listAgents(profile.projectId, {
         limit: 10000,
@@ -221,8 +229,7 @@ export class ProfilesController {
   ): Promise<ProfileProviderConfig> {
     logger.info({ profileId }, 'POST /api/profiles/:id/provider-configs');
 
-    // Verify profile exists first
-    await this.storage.getAgentProfile(profileId);
+    await this.assertProfileWritable(profileId);
 
     const data = CreateProviderConfigSchema.parse(body);
 
@@ -247,8 +254,7 @@ export class ProfilesController {
   ): Promise<{ success: boolean }> {
     logger.info({ profileId }, 'PUT /api/profiles/:id/provider-configs/order');
 
-    // Verify profile exists first
-    await this.storage.getAgentProfile(profileId);
+    await this.assertProfileWritable(profileId);
 
     // Validate request body
     const data = ReorderProviderConfigsSchema.parse(body);
@@ -293,5 +299,10 @@ export class ProfilesController {
     await this.storage.reorderProfileProviderConfigs(profileId, configIds);
 
     return { success: true };
+  }
+
+  /** Also verifies that the profile exists. */
+  private async assertProfileWritable(profileId: string): Promise<void> {
+    this.admission.assertWritable((await this.storage.getAgentProfile(profileId)).projectId);
   }
 }

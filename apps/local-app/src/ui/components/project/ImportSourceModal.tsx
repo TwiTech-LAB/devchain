@@ -82,7 +82,7 @@ export function ImportSourceModal({
                           className={`text-xs ${
                             t.source === 'bundled'
                               ? 'text-muted-foreground'
-                              : 'text-blue-600 border-blue-600/50'
+                              : 'text-status-info border-status-info/40'
                           }`}
                         >
                           {t.source === 'bundled' ? 'Built-in' : 'Downloaded'}

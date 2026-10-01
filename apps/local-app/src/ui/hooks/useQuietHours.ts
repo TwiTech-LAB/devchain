@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 export interface QuietHours {
   enabled: boolean;
@@ -16,7 +17,9 @@ export function useQuietHours() {
   const { data, isLoading } = useQuery<QuietHoursData>({
     queryKey: ['cloud', 'preferences', 'quiet-hours'],
     queryFn: async () => {
-      const res = await fetch('/api/cloud/preferences/quiet-hours');
+      const res = await apiFetch('/api/cloud/preferences/quiet-hours', undefined, {
+        backend: HOME_BACKEND,
+      });
       if (!res.ok) throw new Error(`quiet-hours:${res.status}`);
       return res.json();
     },
@@ -25,11 +28,15 @@ export function useQuietHours() {
 
   const upsert = useMutation({
     mutationFn: async (args: QuietHours) => {
-      const res = await fetch('/api/cloud/preferences/quiet-hours', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(args),
-      });
+      const res = await apiFetch(
+        '/api/cloud/preferences/quiet-hours',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(args),
+        },
+        { backend: HOME_BACKEND },
+      );
       if (!res.ok) throw new Error(`quiet-hours-upsert:${res.status}`);
     },
     onSuccess: (_, args) => {

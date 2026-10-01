@@ -53,9 +53,6 @@ async function installRoutes(page: import('@playwright/test').Page) {
   await page.route('**/api/runtime', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ mode: 'main', version: '1.0.0' }) }),
   );
-  await page.route('**/api/worktrees**', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) }),
-  );
   await page.route('**/api/projects', (route) =>
     route.fulfill({
       status: 200,

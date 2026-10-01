@@ -31,6 +31,7 @@ import { CommentDialog } from './CommentDialog';
 import { useCreateComment } from '@/ui/hooks/useCommentMutations';
 import { fetchReviewComments, isPendingComment, groupCommentsIntoThreads } from '@/ui/lib/reviews';
 import type { ReviewComment, Review, CommentType } from '@/ui/lib/reviews';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export type CommentFilter = 'all' | 'file' | 'review';
 
@@ -79,10 +80,10 @@ function FilterButton({
   const isActive = filter === currentFilter;
   return (
     <Button
-      variant={isActive ? 'secondary' : 'ghost'}
+      variant={isActive ? 'selected' : 'ghost'}
       size="sm"
       onClick={onClick}
-      className={cn('h-7 text-xs gap-1', isActive && 'bg-secondary')}
+      className="h-7 text-xs gap-1"
       aria-pressed={isActive}
       aria-label={`${label} filter${count !== undefined ? `, ${count} comments` : ''}`}
     >
@@ -183,8 +184,8 @@ function FileGroupHeader({
     <div
       className={cn(
         'flex items-center gap-1 w-full rounded-md',
-        'hover:bg-accent transition-colors',
-        isSelected && 'bg-accent/50 border-l-2 border-l-primary',
+        'transition-colors',
+        isSelected ? 'bg-selected border-l-2 border-l-primary' : 'hover:bg-accent',
       )}
       data-testid="file-group-header"
       // For test compatibility, mirror aria-expanded on the container
@@ -238,6 +239,7 @@ export function CommentPanel({
   isClosingReview,
   className,
 }: CommentPanelProps) {
+  const fetchFn = useFetchFactory();
   const [activeFilter, setActiveFilter] = useState<CommentFilter>('all');
   const [isCommentDialogOpen, setIsCommentDialogOpen] = useState(false);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
@@ -260,7 +262,7 @@ export function CommentPanel({
     isError,
   } = useQuery({
     queryKey: ['review-comments', reviewId],
-    queryFn: () => fetchReviewComments(reviewId),
+    queryFn: () => fetchReviewComments(fetchFn, reviewId),
     enabled: !!reviewId,
   });
 
@@ -525,7 +527,7 @@ export function CommentPanel({
                     <div className="space-y-2">
                       <p>Are you sure you want to close this review?</p>
                       {statusCounts.open > 0 && (
-                        <p className="text-amber-700 dark:text-amber-500">
+                        <p className="text-status-warn">
                           {statusCounts.open} open comment{statusCounts.open !== 1 ? 's' : ''} will
                           be deleted.
                         </p>

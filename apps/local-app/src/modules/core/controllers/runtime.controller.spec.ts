@@ -1,6 +1,53 @@
+import { homedir } from 'node:os';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resetEnvConfig } from '../../../common/config/env.config';
+import type { SyncthingManager, SyncthingState } from '../../file-sync/syncthing-manager.service';
+import type { HostEnvOverrideReportStorage } from '../../remotes/host/host-env-override-report';
+import { renderHostEnvFile } from '../../remotes/host/host-provider-auth.service';
 import { RuntimeController } from './runtime.controller';
-import { OrchestratorDockerService } from '../../orchestrator/docker/services/docker.service';
+
+const fileSyncState: SyncthingState = {
+  available: false,
+  version: null,
+  running: false,
+  deviceId: null,
+  apiPort: null,
+  error: 'Syncthing was not found on PATH or in ~/.devchain/bin.',
+};
+
+jest.mock('./host-cli-versions', () => ({ readHostCliVersions: () => null }));
+jest.mock('./docker-runtime', () => ({
+  readDockerRuntime: async () => ({
+    installed: false,
+    engineVersion: null,
+    composeVersion: null,
+    userInGroup: false,
+    dataRootFreeBytes: null,
+  }),
+}));
+
+function makeStorage(
+  overrides: Partial<HostEnvOverrideReportStorage> = {},
+): HostEnvOverrideReportStorage {
+  return {
+    listProviders: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
+    listEnvScopesByProviderIds: () => new Map(),
+    listAllProfileProviderConfigs: async () => [],
+    listProjects: async () => ({ items: [], total: 0, limit: 100, offset: 0 }),
+    ...overrides,
+  } as HostEnvOverrideReportStorage;
+}
+
+const cliStatus = {
+  desiredVersion: 'latest',
+  installedVersion: null,
+  state: 'idle',
+  error: null,
+  checkedAt: null,
+};
+const providerClis = { getStatus: () => cliStatus } as never;
 
 describe('RuntimeController', () => {
   const originalEnv = process.env;
@@ -8,15 +55,13 @@ describe('RuntimeController', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.DEVCHAIN_MODE;
     delete process.env.HOST;
-    delete process.env.CONTAINER_PROJECT_ID;
     delete process.env.DATABASE_URL;
-    delete process.env.REPO_ROOT;
     delete process.env.RUNTIME_TOKEN;
     delete process.env.DEVCHAIN_CLOUD_UI_ENABLED;
     resetEnvConfig();
-    controller = new RuntimeController();
+    const syncthing = { getState: () => fileSyncState } as unknown as SyncthingManager;
+    controller = new RuntimeController(syncthing, providerClis, makeStorage());
   });
 
   afterAll(() => {
@@ -24,14 +69,15 @@ describe('RuntimeController', () => {
     resetEnvConfig();
   });
 
-  it('returns runtime mode and version in normal mode', async () => {
+  it('returns version, bootId, features and admission for the local runtime', async () => {
     const result = await controller.getRuntime();
 
     expect(result).toEqual({
-      mode: 'normal',
       version: expect.any(String),
+      homePath: homedir(),
+      uid: process.getuid(),
+      gid: process.getgid(),
       bootId: expect.any(String),
-      dockerAvailable: false,
       features: {
         cloudUi: true,
       },
@@ -39,29 +85,31 @@ describe('RuntimeController', () => {
         allowed: true,
         reason: null,
       },
+      fileSync: fileSyncState,
+      cliVersions: null,
+      providerClis: {
+        claude: cliStatus,
+        codex: cliStatus,
+        copilot: cliStatus,
+        opencode: cliStatus,
+      },
+      build: null,
+      docker: {
+        installed: false,
+        engineVersion: null,
+        composeVersion: null,
+        userInGroup: false,
+        dataRootFreeBytes: null,
+      },
+      providerEnvOverrides: [],
     });
   });
 
-  it('returns runtime mode and version in main mode', async () => {
-    process.env.DEVCHAIN_MODE = 'main';
-    process.env.REPO_ROOT = process.cwd();
-    resetEnvConfig();
-
+  it('reports the real process account ids, the source of truth for a VM claim', async () => {
     const result = await controller.getRuntime();
 
-    expect(result).toEqual({
-      mode: 'main',
-      version: expect.any(String),
-      bootId: expect.any(String),
-      dockerAvailable: false,
-      features: {
-        cloudUi: true,
-      },
-      integrationAdmission: {
-        allowed: true,
-        reason: null,
-      },
-    });
+    expect(result.uid).toBe(process.getuid());
+    expect(result.gid).toBe(process.getgid());
   });
 
   it('returns the same bootId across multiple calls', async () => {
@@ -91,18 +139,6 @@ describe('RuntimeController', () => {
     expect(result.features).toEqual({ cloudUi: false });
   });
 
-  it('reports why integration operations are unavailable in a child runtime', async () => {
-    process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-    resetEnvConfig();
-
-    const result = await controller.getRuntime();
-
-    expect(result.integrationAdmission).toEqual({
-      allowed: false,
-      reason: 'child_runtime',
-    });
-  });
-
   it('reports why integration operations are unavailable on a non-loopback host', async () => {
     process.env.HOST = '0.0.0.0';
     resetEnvConfig();
@@ -124,35 +160,47 @@ describe('RuntimeController', () => {
     expect(result.runtimeToken).toBe('token-123');
   });
 
-  it('caches docker availability checks in non-normal mode', async () => {
-    const dockerService = {
-      ping: jest.fn(async () => true),
-    } as unknown as OrchestratorDockerService;
+  it('reports stored keys overriding host.env logins, with names only and never values', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'devchain-runtime-report-'));
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      mkdirSync(join(home, '.devchain'), { recursive: true });
+      writeFileSync(
+        join(home, '.devchain', 'host.env'),
+        renderHostEnvFile({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-host-secret-token-value' }),
+      );
+      const syncthing = { getState: () => fileSyncState } as unknown as SyncthingManager;
+      controller = new RuntimeController(
+        syncthing,
+        providerClis,
+        makeStorage({
+          listProviders: async () => ({
+            items: [
+              {
+                id: 'p-claude',
+                name: 'claude',
+                env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-shadow-secret-token-value' },
+              },
+            ],
+            total: 1,
+            limit: 100,
+            offset: 0,
+          }),
+        }),
+      );
 
-    controller = new RuntimeController(dockerService);
-    process.env.DEVCHAIN_MODE = 'main';
-    process.env.REPO_ROOT = process.cwd();
-    resetEnvConfig();
+      const result = await controller.getRuntime();
 
-    await controller.getRuntime();
-    await controller.getRuntime();
-
-    expect((dockerService.ping as unknown as jest.Mock).mock.calls).toHaveLength(1);
-  });
-
-  it('reports dockerAvailable=true when docker ping succeeds in main mode', async () => {
-    const dockerService = {
-      ping: jest.fn(async () => true),
-    } as unknown as OrchestratorDockerService;
-
-    controller = new RuntimeController(dockerService);
-    process.env.DEVCHAIN_MODE = 'main';
-    process.env.REPO_ROOT = process.cwd();
-    resetEnvConfig();
-
-    const result = await controller.getRuntime();
-
-    expect(result.dockerAvailable).toBe(true);
-    expect((dockerService.ping as unknown as jest.Mock).mock.calls).toHaveLength(1);
+      expect(result.providerEnvOverrides).toEqual([
+        { key: 'CLAUDE_CODE_OAUTH_TOKEN', source: 'provider-env', provider: 'claude' },
+      ]);
+      expect(JSON.stringify(result)).not.toContain('sk-shadow-secret-token-value');
+      expect(JSON.stringify(result)).not.toContain('sk-host-secret-token-value');
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

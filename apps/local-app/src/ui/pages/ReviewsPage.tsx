@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/ui/hooks/use-toast';
 import { Button } from '@/ui/components/ui/button';
 import { Badge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Skeleton } from '@/ui/components/ui/skeleton';
 import {
   Select,
@@ -137,6 +138,7 @@ function ReviewsPageSkeleton() {
 }
 
 export function ReviewsPage() {
+  const fetchFn = useFetchFactory();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -170,7 +172,7 @@ export function ReviewsPage() {
   // Fetch active review
   const { data: activeReview, isLoading: reviewLoading } = useQuery({
     queryKey: ['active-review', selectedProjectId],
-    queryFn: () => fetchActiveReview(selectedProjectId!),
+    queryFn: () => fetchActiveReview(fetchFn, selectedProjectId!),
     enabled: !!selectedProjectId,
   });
 
@@ -185,7 +187,7 @@ export function ReviewsPage() {
     refetch: refetchWorkingTree,
   } = useQuery({
     queryKey: ['working-tree', selectedProjectId, filter],
-    queryFn: () => fetchWorkingTree(selectedProjectId!, filter),
+    queryFn: () => fetchWorkingTree(fetchFn, selectedProjectId!, filter),
     enabled: !!selectedProjectId && mode === 'working-tree',
     refetchInterval: 5000, // Auto-refresh every 5 seconds
   });
@@ -197,14 +199,14 @@ export function ReviewsPage() {
     isError: commitError,
   } = useQuery({
     queryKey: ['commit-diff', selectedProjectId, selectedCommit?.sha],
-    queryFn: () => fetchCommitDiff(selectedProjectId!, selectedCommit!.sha),
+    queryFn: () => fetchCommitDiff(fetchFn, selectedProjectId!, selectedCommit!.sha),
     enabled: !!selectedProjectId && mode === 'commit' && !!selectedCommit,
   });
 
   // Fetch commits for commit selector
   const { data: commits = [] } = useQuery({
     queryKey: ['commits', selectedProjectId],
-    queryFn: () => fetchCommits(selectedProjectId!, { limit: 50 }),
+    queryFn: () => fetchCommits(fetchFn, selectedProjectId!, { limit: 50 }),
     enabled: !!selectedProjectId,
   });
 
@@ -229,14 +231,14 @@ export function ReviewsPage() {
   // Fetch branches for base selector
   const { data: branches = [] } = useQuery({
     queryKey: ['branches', selectedProjectId],
-    queryFn: () => fetchBranches(selectedProjectId!),
+    queryFn: () => fetchBranches(fetchFn, selectedProjectId!),
     enabled: !!selectedProjectId,
   });
 
   // Fetch comments for the active review
   const { data: commentsData } = useQuery({
     queryKey: ['review-comments', activeReview?.id],
-    queryFn: () => fetchReviewComments(activeReview!.id),
+    queryFn: () => fetchReviewComments(fetchFn, activeReview!.id),
     enabled: !!activeReview?.id,
   });
 
@@ -251,7 +253,7 @@ export function ReviewsPage() {
   // Fetch active sessions for terminal integration
   const { data: activeSessions = [] } = useQuery({
     queryKey: ['active-sessions', selectedProjectId],
-    queryFn: () => fetchActiveSessions(selectedProjectId!),
+    queryFn: () => fetchActiveSessions(selectedProjectId!, fetchFn),
     enabled: !!selectedProjectId,
     refetchInterval: 10000, // Refresh every 10 seconds
   });
@@ -271,7 +273,7 @@ export function ReviewsPage() {
 
   // Close review mutation
   const closeReviewMutation = useMutation({
-    mutationFn: () => closeReview(activeReview!.id, activeReview!.version),
+    mutationFn: () => closeReview(fetchFn, activeReview!.id, activeReview!.version),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['active-review', selectedProjectId] });
       queryClient.invalidateQueries({ queryKey: ['review-comments'] });
@@ -299,7 +301,7 @@ export function ReviewsPage() {
       // Convert UI mode (hyphenated) to API mode (underscored)
       const apiMode = mode === 'working-tree' ? 'working_tree' : 'commit';
 
-      return createReview({
+      return createReview(fetchFn, {
         projectId: selectedProjectId!,
         title,
         mode: apiMode,
@@ -340,7 +342,7 @@ export function ReviewsPage() {
           reviewId = newReview.id;
         } catch (error) {
           // If another request created the active review concurrently, recover by refetching it.
-          const existing = await fetchActiveReview(selectedProjectId!);
+          const existing = await fetchActiveReview(fetchFn, selectedProjectId!);
           if (!existing) throw error;
           queryClient.setQueryData(['active-review', selectedProjectId], existing);
           reviewId = existing.id;
@@ -366,6 +368,7 @@ export function ReviewsPage() {
       queryClient,
       selectedProjectId,
       selectedFile,
+      fetchFn,
     ],
   );
 
@@ -380,7 +383,7 @@ export function ReviewsPage() {
           const newReview = await createReviewMutation.mutateAsync();
           reviewId = newReview.id;
         } catch (error) {
-          const existing = await fetchActiveReview(selectedProjectId!);
+          const existing = await fetchActiveReview(fetchFn, selectedProjectId!);
           if (!existing) throw error;
           queryClient.setQueryData(['active-review', selectedProjectId], existing);
           reviewId = existing.id;
@@ -393,7 +396,14 @@ export function ReviewsPage() {
         content,
       });
     },
-    [activeReview?.id, createReviewMutation, replyMutation, queryClient, selectedProjectId],
+    [
+      activeReview?.id,
+      createReviewMutation,
+      replyMutation,
+      queryClient,
+      selectedProjectId,
+      fetchFn,
+    ],
   );
 
   // Handler for navigating to a comment (from sidebar click)
@@ -594,7 +604,7 @@ export function ReviewsPage() {
   if (!projectsLoading && !selectedProject) {
     return (
       <div className="flex flex-col items-center justify-center h-full py-16">
-        <FolderOpen className="h-12 w-12 text-muted-foreground/50 mb-4" />
+        <FolderOpen className="h-12 w-12 text-muted-foreground mb-4" />
         <h2 className="text-lg font-medium mb-2">No project selected</h2>
         <p className="text-muted-foreground mb-4">Select a project to view code reviews.</p>
         <Button onClick={() => navigate('/projects')}>Go to Projects</Button>
@@ -711,7 +721,7 @@ export function ReviewsPage() {
               {changedFiles.length} files
               {workingTreeData?.untrackedDiffsCapped && (
                 <span
-                  className="ml-1 text-amber-600"
+                  className="ml-1 text-status-warn"
                   title={`Showing diffs for ${workingTreeData.untrackedProcessed} of ${workingTreeData.untrackedTotal} untracked files`}
                 >
                   (diffs capped)
@@ -722,7 +732,7 @@ export function ReviewsPage() {
 
           {/* Active review indicator */}
           {activeReview && (
-            <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+            <Badge variant="outline" className={TONE_CLASSES.info}>
               Active Review
             </Badge>
           )}

@@ -15,6 +15,21 @@ describe('LocalSkillSourceAdapter', () => {
     updatedAt: '2026-01-01T00:00:00.000Z',
   });
 
+  it('includes the managed content hash even when file size and mtime are identical', async () => {
+    // Filesystem layer verifies the adapter fingerprint independently of tar timestamp precision.
+    const root = await fs.mkdtemp(join(tmpdir(), 'local-source-hash-'));
+    try {
+      await fs.mkdir(join(root, 'skills'), { recursive: true });
+      const adapter = new LocalSkillSourceAdapter(buildSource(root));
+      await fs.writeFile(join(root, '.devchain-content-hash'), 'hash1');
+      const first = await adapter.getLatestCommit();
+      await fs.writeFile(join(root, '.devchain-content-hash'), 'hash2');
+      expect(await adapter.getLatestCommit()).not.toBe(first);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('lists skills from skills/<name> and parses SKILL.md manifests', async () => {
     const root = await fs.mkdtemp(join(tmpdir(), 'local-source-adapter-'));
     const validSkillPath = join(root, 'skills', 'code-review');

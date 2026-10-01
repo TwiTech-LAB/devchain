@@ -1,3 +1,4 @@
+import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
 import type {
   ProviderAdapter,
@@ -11,8 +12,12 @@ import type {
   TranscriptDiscoveryCapability,
   EffortCapability,
   ProviderPluginCapability,
+  ProjectProvisioningCapability,
+  ProjectProvisioningContext,
+  ProvisioningResult,
 } from './capabilities';
 import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
+import { ensureCodexProjectTrusted } from '../../sessions/utils/codex-config';
 import {
   optionalBoolean,
   optionalString,
@@ -27,9 +32,11 @@ export class CodexAdapter
     McpCliCapability,
     TranscriptDiscoveryCapability,
     EffortCapability,
-    ProviderPluginCapability
+    ProviderPluginCapability,
+    ProjectProvisioningCapability
 {
   readonly providerName = 'codex';
+  readonly requiresProjectProvisioning = true as const;
 
   // Effort maps to the config key `model_reasoning_effort` (`-c
   // model_reasoning_effort=<value>`). Static seed/endpoint metadata.
@@ -37,6 +44,14 @@ export class CodexAdapter
 
   /** Codex config key carrying reasoning effort (set via `-c <key>=<value>`). */
   private static readonly EFFORT_CONFIG_KEY = 'model_reasoning_effort';
+
+  /**
+   * Keeps the TUI inline so finished output scrolls into tmux history. In its
+   * default alternate-screen mode Codex 0.159 redraws the transcript in place
+   * (0.156 did not), and tmux history, which xterm seeds from, then holds only
+   * the last screen. A Codex without this key ignores it.
+   */
+  private static readonly INLINE_SCREEN_OVERRIDE = ['-c', 'tui.alternate_screen="never"'];
   readonly transcriptDiscoveryStrategy = 'all' as const;
   readonly transcriptContentSearchMaxBytes = 65_536;
   readonly contentMatchMaxCandidates = 200;
@@ -46,24 +61,24 @@ export class CodexAdapter
     preDelayMs: 2000,
   };
 
-  /**
-   * Config overrides forced onto every interactive Codex launch via the global
-   * `-c/--config <key=value>` flag (parsed as TOML, so a bare `false` is a boolean).
-   *
-   * `check_for_update_on_startup` defaults to `true` in `~/.codex/config.toml`,
-   * which makes Codex self-update on startup and can break a session mid-launch.
-   * `-c` overrides the value that would otherwise be read from config.toml WITHOUT
-   * mutating that user-owned file — it is per-launch and reversible.
-   *
-   * Placed at the FRONT of argv (top-level global flag, before any subcommand) so
-   * it always beats the config.toml value; a profile that explicitly re-adds
-   * `-c check_for_update_on_startup=true` still wins under Codex's last-wins
-   * duplicate-`-c` resolution, preserving a power-user escape hatch.
-   */
-  private static readonly LAUNCH_CONFIG_OVERRIDES: readonly string[] = [
-    '-c',
-    'check_for_update_on_startup=false',
-  ];
+  async provisionProjectPath(
+    projectPath: string,
+    context?: ProjectProvisioningContext,
+  ): Promise<ProvisioningResult> {
+    const result = await ensureCodexProjectTrusted(projectPath, context);
+    if (result.success) return { success: true, warnings: [] };
+    return {
+      success: false,
+      warnings: [
+        {
+          source: 'codex_project_trust',
+          level: 'warn',
+          message: result.message,
+          code: result.code,
+        },
+      ],
+    };
+  }
 
   listProviderPlugins(): string[] {
     return ['plugin', 'list', '--available', '--json'];
@@ -149,13 +164,16 @@ export class CodexAdapter
   buildLaunchArgs({ mode, providerSessionId, profileOptionArgs }: BuildLaunchArgsInput): {
     argv: string[];
   } {
-    const overrides = CodexAdapter.LAUNCH_CONFIG_OVERRIDES;
+    const overrides = [
+      ...getProviderCliNoUpdateOptions(this.providerName).args,
+      ...CodexAdapter.INLINE_SCREEN_OVERRIDE,
+    ];
     if (mode === 'restore') {
       // Codex uses a `resume` subcommand; session ID goes LAST after profile args.
-      // Config overrides lead as top-level global flags, before the subcommand.
-      return { argv: [...overrides, 'resume', ...profileOptionArgs, providerSessionId!] };
+      // The final config override wins over profile args; the session ID stays last.
+      return { argv: ['resume', ...profileOptionArgs, ...overrides, providerSessionId!] };
     }
-    return { argv: [...overrides, ...profileOptionArgs] };
+    return { argv: [...profileOptionArgs, ...overrides] };
   }
 
   applyEffort(
@@ -163,16 +181,8 @@ export class CodexAdapter
     env: Record<string, string>,
     effortValue: string,
   ): { argv: string[]; env: Record<string, string> } {
-    // Codex effort is a `-c model_reasoning_effort=<v>` config override injected
-    // into profileOptionArgs. The forced update-check prelude is prepended later
-    // in buildLaunchArgs, so the injected effort lands after it — and codex's
-    // duplicate-`-c` LAST-wins resolution means the injected value beats any
-    // matching raw one (which we also strip first for a deterministic argv).
-    //
-    // KEY-TARGETED strip: only `-c/--config` pairs whose key is
-    // `model_reasoning_effort` are removed. A blanket `-c` strip would kill the
-    // forced `check_for_update_on_startup=false` prelude and any unrelated user
-    // `-c` keys.
+    // Strip only the effort key: unrelated config (including update policy) must
+    // survive. buildLaunchArgs appends the authoritative no-update override.
     const stripped = CodexAdapter.stripConfigKey(args, CodexAdapter.EFFORT_CONFIG_KEY);
     return {
       argv: ['-c', `${CodexAdapter.EFFORT_CONFIG_KEY}=${effortValue}`, ...stripped],
@@ -184,7 +194,7 @@ export class CodexAdapter
    * Remove every `-c`/`--config <key=value>` PAIR (the flag token AND its value
    * token) whose key equals `key`. Two-token form only — codex config overrides
    * are always `-c <key>=<value>`. Non-matching keys and every other token are
-   * preserved, so the update-check prelude and unrelated `-c` keys survive.
+   * preserved, so unrelated `-c` keys survive.
    */
   private static stripConfigKey(args: string[], key: string): string[] {
     const result: string[] = [];

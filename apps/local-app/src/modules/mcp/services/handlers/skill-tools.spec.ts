@@ -1,4 +1,11 @@
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { join } from 'node:path';
 import { ValidationError } from '../../../../common/errors/error-types';
+import type { SettingsService } from '../../../settings/services/settings.service';
+import type { SkillSourceRegistryService } from '../../../skills/services/skill-source-registry.service';
+import { SkillsService } from '../../../skills/services/skills.service';
 import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 import type { Skill } from '../../../storage/models/domain.models';
 import type { SkillToolContext } from './skill-context';
@@ -50,9 +57,12 @@ function createContext(): SkillToolContext {
       ]),
       resolveDiscoverableSkill: jest.fn().mockResolvedValue({ status: 'resolved', skill: SKILL }),
       logUsage: jest.fn().mockResolvedValue(undefined),
-      setSkillsEnabled: jest
-        .fn()
-        .mockResolvedValue({ updated: ['source/testing'], unchanged: [], notFound: [] }),
+      setSkillsEnabled: jest.fn().mockResolvedValue({
+        updated: ['source/testing'],
+        unchanged: [],
+        notFound: [],
+        locked: [],
+      }),
       setSourceProjectEnabledForMcp: jest.fn().mockResolvedValue({
         status: 'ok',
         name: 'source',
@@ -403,6 +413,7 @@ describe('skill-tools handlers', () => {
         updated: ['source/testing'],
         unchanged: ['source/other'],
         notFound: ['source/missing'],
+        locked: ['devchain/code-simplifier'],
       });
 
       await expect(
@@ -417,6 +428,7 @@ describe('skill-tools handlers', () => {
           updatedCount: 1,
           unchanged: ['source/other'],
           notFound: ['source/missing'],
+          locked: ['devchain/code-simplifier'],
         },
       });
       expect(ctx.skillsService.setSkillsEnabled).toHaveBeenCalledWith(
@@ -738,6 +750,96 @@ describe('skill-tools handlers', () => {
         success: false,
         error: { code: 'SERVICE_UNAVAILABLE' },
       });
+    });
+  });
+
+  describe('built-in devchain lock through the real skills service', () => {
+    const now = '2026-01-01T00:00:00.000Z';
+    let sqlite: Database.Database;
+    let ctx: SkillToolContext;
+
+    beforeEach(() => {
+      sqlite = new Database(':memory:');
+      const db = drizzle(sqlite);
+      migrate(db, { migrationsFolder: join(__dirname, '../../../../../drizzle') });
+      sqlite
+        .prepare(
+          `INSERT INTO projects (id, name, description, root_path, is_template, created_at, updated_at)
+           VALUES ('project-1', 'Project', NULL, '/project', 0, ?, ?)`,
+        )
+        .run(now, now);
+      const insertSkill = sqlite.prepare(
+        `INSERT INTO skills (id, slug, name, display_name, source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insertSkill.run(
+        'skill-dc',
+        'devchain/code-simplifier',
+        'code-simplifier',
+        'x',
+        'devchain',
+        now,
+        now,
+      );
+      insertSkill.run('skill-o', 'openai/review', 'review', 'x', 'openai', now, now);
+      ctx = createContext();
+      ctx.skillsService = new SkillsService(
+        db,
+        { getSkillSourcesEnabled: () => ({}) } as unknown as SettingsService,
+        {
+          listRegisteredSources: async () => [
+            { name: 'devchain', repoUrl: 'https://example.test/devchain', kind: 'builtin' },
+            { name: 'openai', repoUrl: 'https://example.test/openai', kind: 'builtin' },
+          ],
+        } as unknown as SkillSourceRegistryService,
+      );
+    });
+
+    afterEach(() => sqlite.close());
+
+    const disabledSkillIds = (): string[] =>
+      (
+        sqlite.prepare('SELECT skill_id FROM skill_project_disabled').all() as {
+          skill_id: string;
+        }[]
+      ).map((row) => row.skill_id);
+
+    it('refuses a devchain project disable with SKILL_SOURCE_ALWAYS_ENABLED', async () => {
+      const response = await handleSkillsSetSourceEnabled(ctx, {
+        sessionId: SESSION_ID,
+        sourceName: 'devchain',
+        enabled: false,
+      });
+
+      expect(response).toEqual({
+        success: false,
+        error: {
+          code: 'SKILL_SOURCE_ALWAYS_ENABLED',
+          message: 'Skill source devchain is always enabled and cannot be disabled.',
+        },
+      });
+      expect(sqlite.prepare('SELECT COUNT(*) AS n FROM source_project_enabled').get()).toEqual({
+        n: 0,
+      });
+    });
+
+    it('applies a mixed disable batch and lists devchain slugs under locked', async () => {
+      const response = await handleSkillsSetEnabled(ctx, {
+        sessionId: SESSION_ID,
+        slugs: ['devchain/code-simplifier', 'openai/review'],
+        enabled: false,
+      });
+
+      expect(response).toEqual({
+        success: true,
+        data: {
+          updatedCount: 1,
+          unchanged: [],
+          notFound: [],
+          locked: ['devchain/code-simplifier'],
+        },
+      });
+      expect(disabledSkillIds()).toEqual(['skill-o']);
     });
   });
 });

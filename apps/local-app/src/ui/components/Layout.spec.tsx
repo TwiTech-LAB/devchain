@@ -36,14 +36,6 @@ jest.mock('../lib/socket', () => ({
   releaseAppSocket: jest.fn(),
 }));
 
-jest.mock('../hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => ({
-    activeWorktree: null,
-    setActiveWorktree: jest.fn(),
-    apiBase: '',
-  }),
-}));
-
 jest.mock('../terminal-windows', () => ({
   TerminalWindowsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   TerminalWindowsLayer: () => null,
@@ -68,7 +60,6 @@ jest.mock('../hooks/useProjectSelection', () => ({
     workspaces: [],
     selectedWorkspaceId: undefined,
     setSelectedWorkspaceId: mockSetSelectedWorkspaceId,
-    isWorkspaceSelectionLocked: false,
     selectedProjectId: null,
     selectedProject: null,
     projects: [],
@@ -121,16 +112,8 @@ jest.mock('../hooks/useBreadcrumbs', () => ({
   useBreadcrumbs: () => ({ items: [] }),
 }));
 
-jest.mock('@/modules/orchestrator/ui/app/lib/worktrees', () => ({
-  listWorktrees: jest.fn().mockResolvedValue([]),
-}));
-
-jest.mock('@/ui/lib/worktree-fetch-interceptor', () => ({
-  WORKTREE_PROXY_UNAVAILABLE_EVENT: 'devchain:worktree-proxy-unavailable',
-}));
-
 jest.mock('../hooks/useRuntime', () => ({
-  useRuntime: () => ({ isMainMode: false, cloudUiEnabled: true }),
+  useRuntime: () => ({ cloudUiEnabled: true }),
 }));
 
 import { Layout } from './Layout';

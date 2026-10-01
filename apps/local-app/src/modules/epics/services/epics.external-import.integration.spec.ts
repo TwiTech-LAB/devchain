@@ -14,6 +14,7 @@ import type { CreateEpicWithExternalTaskLink } from '../../storage/models/domain
 import { IntegrationCredentialCipher } from '../../storage/local/integration-credential-cipher';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { EpicsService } from './epics.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
@@ -51,6 +52,9 @@ describe('EpicsService external task import', () => {
       eventsService as unknown as EventsService,
       { getAutoCleanStatusIds: jest.fn().mockReturnValue([]) } as unknown as SettingsService,
       { emit: jest.fn() } as unknown as EventEmitter2,
+      createProjectWriteAdmissionStub() as never,
+      {} as never,
+      { pullNow: jest.fn() } as never,
     );
 
     const project = await storage.createProject({

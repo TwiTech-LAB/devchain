@@ -11,7 +11,8 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { Button } from '@/ui/components/ui/button';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Switch } from '@/ui/components/ui/switch';
 import {
@@ -41,8 +42,10 @@ import {
   type WatcherTestResult,
 } from '@/ui/lib/watchers';
 import { WatcherDialog } from './WatcherDialog';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export function WatchersTab() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
@@ -58,13 +61,14 @@ export function WatchersTab() {
     error,
   } = useQuery({
     queryKey: ['watchers', selectedProjectId],
-    queryFn: () => fetchWatchers(selectedProjectId as string),
+    queryFn: () => fetchWatchers(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
 
   // Toggle mutation
   const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => toggleWatcher(id, enabled),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      toggleWatcher(fetchFn, id, enabled),
     onMutate: async ({ id, enabled }) => {
       await queryClient.cancelQueries({ queryKey: ['watchers', selectedProjectId] });
       const previousWatchers = queryClient.getQueryData<Watcher[]>(['watchers', selectedProjectId]);
@@ -92,7 +96,7 @@ export function WatchersTab() {
 
   // Delete mutation
   const deleteMutation = useMutation({
-    mutationFn: deleteWatcher,
+    mutationFn: (id: string) => deleteWatcher(fetchFn, id),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['watchers', selectedProjectId] });
       const previousWatchers = queryClient.getQueryData<Watcher[]>(['watchers', selectedProjectId]);
@@ -127,7 +131,7 @@ export function WatchersTab() {
 
   // Test mutation
   const testMutation = useMutation({
-    mutationFn: testWatcher,
+    mutationFn: (id: string) => testWatcher(fetchFn, id),
     onSuccess: (result) => {
       const matchCount = result.results.filter((r) => r.conditionMatched).length;
       if (matchCount > 0) {
@@ -426,16 +430,25 @@ export function WatchersTab() {
                   <div
                     key={index}
                     className={`p-3 rounded-lg border ${
-                      result.conditionMatched ? 'border-green-500 bg-green-500/10' : 'border-muted'
+                      result.conditionMatched
+                        ? 'border-status-ok/40 bg-status-ok/10'
+                        : 'border-muted'
                     }`}
                   >
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-mono text-sm">
                         Session: {result.sessionId.slice(0, 8)}...
                       </span>
-                      <Badge variant={result.conditionMatched ? 'default' : 'secondary'}>
+                      <OpaqueBadge
+                        variant="outline"
+                        className={
+                          result.conditionMatched
+                            ? TONE_CLASSES.ok
+                            : 'bg-muted text-muted-foreground'
+                        }
+                      >
                         {result.conditionMatched ? 'Matched' : 'No Match'}
-                      </Badge>
+                      </OpaqueBadge>
                     </div>
                     {result.viewport && (
                       <pre className="text-xs bg-muted p-2 rounded overflow-x-auto max-h-[100px]">

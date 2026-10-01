@@ -217,7 +217,7 @@ describe('useAgentAdminActions — delete', () => {
     });
 
     await waitFor(() => expect(result.current.pendingDeleteAgent).toBeNull());
-    expect(terminateSession).toHaveBeenCalledWith('s1', '', apiFetch);
+    expect(terminateSession).toHaveBeenCalledWith('s1', apiFetch);
     expect(apiFetch).toHaveBeenCalledWith('/api/agents/a1', { method: 'DELETE' });
     expect(toast).toHaveBeenCalledWith({ title: 'Agent deleted' });
   });

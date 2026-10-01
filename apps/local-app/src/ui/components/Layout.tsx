@@ -7,7 +7,6 @@ import { preloadReviewsPage } from '../pages/ReviewsPage.lazy';
 import { Button } from './ui/button';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Badge } from './ui/badge';
 import { Breadcrumbs, ToastHost, EpicSearchInput, type BreadcrumbItem } from './shared';
 import { TerminalDock, OPEN_TERMINAL_DOCK_EVENT } from './terminal-dock';
 import {
@@ -17,6 +16,7 @@ import {
   useTerminalWindows,
 } from '../terminal-windows';
 import { useAppSocket } from '../hooks/useAppSocket';
+import { ProjectGate, RemoteBadge } from './BackendBoundary';
 import {
   Dialog,
   DialogContent,
@@ -29,12 +29,15 @@ import { useToast } from '../hooks/use-toast';
 import { AutoCompactEnableModal } from './shared/AutoCompactEnableModal';
 import { BreadcrumbsProvider, useBreadcrumbs } from '../hooks/useBreadcrumbs';
 import { useRuntime } from '../hooks/useRuntime';
-import { useOptionalWorktreeTab } from '../hooks/useWorktreeTab';
 import { useEpicRelationsSync } from '../hooks/useEpicRelationsSync';
 import { useEpicTimeScopeSync } from '../hooks/useEpicTimeScopeSync';
 import { CloudStatusIndicator } from './cloud/CloudStatusIndicator';
+import { RemoteMetricsStrip } from './remote-metrics/RemoteMetricsStrip';
+import { useOptionalBackend } from '../lib/backend-context';
 import { cn } from '../lib/utils';
+import { TONE_CLASSES } from '../lib/status-tone';
 import { fetchPreflightChecks } from '../lib/preflight';
+import { HOME_BACKEND, apiFetch } from '../lib/api-transport';
 import { fetchActiveSessions, type ActiveSession } from '../lib/sessions';
 import type { WsEnvelope } from '../lib/socket';
 import {
@@ -65,18 +68,18 @@ import {
   Package,
   Sparkles,
   GitCompareArrows,
-  GitBranch,
   UsersRound,
   Cloud,
   Bell,
 } from 'lucide-react';
-import { ThemeSelect, type ThemeValue, getStoredTheme } from '@/ui/components/ThemeSelect';
-import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
-import { listWorktrees, type WorktreeSummary } from '@/modules/orchestrator/ui/app/lib/worktrees';
 import {
-  WORKTREE_PROXY_UNAVAILABLE_EVENT,
-  type WorktreeProxyUnavailableDetail,
-} from '@/ui/lib/worktree-fetch-interceptor';
+  ThemeSelect,
+  type ThemeValue,
+  getStoredTheme,
+  DEFAULT_THEME,
+} from '@/ui/components/ThemeSelect';
+import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface LayoutProps {
   children: ReactNode;
@@ -88,8 +91,6 @@ interface NavItem {
   icon: typeof FolderOpen;
   /** Temporarily hide this item from the sidebar without removing its route or shortcuts. */
   hidden?: boolean;
-  /** Only show this item when the app is running in main (orchestrator) mode */
-  mainModeOnly?: boolean;
   /** Only show this item when gated Cloud UI features are enabled. */
   cloudUiOnly?: boolean;
   /** Override active-state matching for paths with query strings (e.g. `/cloud?section=notifications`). */
@@ -115,7 +116,6 @@ interface RegistryUpdateStatusResponse {
 interface KeyboardShortcut {
   keys: string;
   description: string;
-  hideInMainMode?: boolean;
   cloudUiOnly?: boolean;
 }
 
@@ -126,13 +126,6 @@ const navSections: NavSection[] = [
     collapsible: false,
     items: [
       { label: 'Projects', path: '/projects', icon: FolderOpen },
-      {
-        label: 'Worktrees',
-        path: '/worktrees',
-        icon: GitBranch,
-        mainModeOnly: true,
-        hidden: true,
-      },
       { label: 'Chat', path: '/chat', icon: MessageSquare },
       {
         label: 'Board',
@@ -145,7 +138,7 @@ const navSections: NavSection[] = [
           loc.pathname.startsWith('/epics/'),
       },
       { label: 'Reviews', path: '/reviews', icon: GitCompareArrows },
-      { label: 'Registry', path: '/registry', icon: Package, mainModeOnly: true },
+      { label: 'Registry', path: '/registry', icon: Package },
       { label: 'Skills', path: '/skills', icon: Sparkles },
       { label: 'Plugins', path: '/plugins', icon: Package },
       {
@@ -194,17 +187,16 @@ const navSections: NavSection[] = [
 
 const SHORTCUTS: KeyboardShortcut[] = [
   { keys: 'g p', description: 'Go to Projects' },
-  { keys: 'g w', description: 'Go to Worktrees' },
   { keys: 'g c', description: 'Go to Chat' },
   { keys: 'g b', description: 'Go to Board' },
   { keys: 'g r', description: 'Go to Reviews' },
   { keys: 'g l', description: 'Go to Cloud', cloudUiOnly: true },
   { keys: 'g n', description: 'Go to Notifications', cloudUiOnly: true },
   { keys: 'g t', description: 'Go to Teams' },
-  { keys: 't', description: 'Toggle terminal dock', hideInMainMode: true },
-  { keys: 'Alt+Shift+X', description: 'Toggle all terminal windows', hideInMainMode: true },
-  { keys: 'Alt + `', description: 'Cycle terminal windows', hideInMainMode: true },
-  { keys: 'Enter', description: 'Focus active terminal input', hideInMainMode: true },
+  { keys: 't', description: 'Toggle terminal dock' },
+  { keys: 'Alt+Shift+X', description: 'Toggle all terminal windows' },
+  { keys: 'Alt + `', description: 'Cycle terminal windows' },
+  { keys: 'Enter', description: 'Focus active terminal input' },
   { keys: 'Alt+Shift+P', description: 'Open inline terminal custom prompts' },
   { keys: '/', description: 'Focus page search' },
   { keys: 'Cmd/Ctrl + ?', description: 'Open shortcuts help' },
@@ -227,17 +219,16 @@ const routeRedirectMap: Record<string, { label: string; href: string }> = {
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'devchain:sidebarCollapsed';
 const DOCK_EXPANDED_STORAGE_KEY = 'devchain:dockExpanded';
 const OPEN_SESSIONS_STORAGE_KEY = 'devchain:terminalOpenSessionIds';
-const WORKTREE_TAB_REFRESH_MS = 15_000;
 
 const preflightStatusStyles = {
-  pass: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20',
-  warn: 'border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20',
-  fail: 'border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20',
+  pass: `${TONE_CLASSES.ok} hover:bg-status-ok/20`,
+  warn: `${TONE_CLASSES.warn} hover:bg-status-warn/20`,
+  fail: `${TONE_CLASSES.error} hover:bg-destructive/20`,
 } as const;
 
 const preflightDotStyles = {
-  pass: 'bg-emerald-500',
-  warn: 'bg-amber-500',
+  pass: 'bg-status-ok',
+  warn: 'bg-status-warn',
   fail: 'bg-destructive',
 } as const;
 
@@ -246,66 +237,35 @@ const preflightIcons = {
   warn: AlertTriangle,
   fail: XCircle,
 } as const;
-const PROXYABLE_WORKTREE_STATUSES = new Set(['running', 'completed']);
 
-interface WorktreeVisualStatus {
-  label: string;
-  badgeClassName: string;
-  showSpinner?: boolean;
-}
-
-interface WorktreeStatusBanner {
-  title: string;
-  message: string;
-  tone: 'warning' | 'error';
-}
-
-function getWorktreeVisualStatus(status: string): WorktreeVisualStatus {
-  const normalized = status.toLowerCase();
-  if (normalized === 'running') {
-    return {
-      label: 'Running',
-      badgeClassName:
-        'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-    };
-  }
-  if (normalized === 'stopped') {
-    return {
-      label: 'Stopped',
-      badgeClassName: 'border-slate-400/40 bg-slate-500/10 text-slate-700 dark:text-slate-300',
-    };
-  }
-  if (normalized === 'error') {
-    return {
-      label: 'Error',
-      badgeClassName: 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300',
-    };
-  }
-  if (normalized === 'creating') {
-    return {
-      label: 'Creating',
-      badgeClassName: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
-      showSpinner: true,
-    };
-  }
-  return {
-    label: normalized.charAt(0).toUpperCase() + normalized.slice(1),
-    badgeClassName: 'border-slate-400/40 bg-slate-500/10 text-slate-700 dark:text-slate-300',
-  };
+/**
+ * Home-owned replacement for the terminal dock while its remote is unusable: the reason
+ * on the left, the dock's remote slot (metrics strip, compact Cloud icon) on the right. Renders
+ * no TerminalDock and starts no session queries — those belong to the gated dock.
+ */
+function RemoteGateStatusRow({ reason, children }: { reason: string; children: ReactNode }) {
+  return (
+    <div
+      role="alert"
+      data-testid="remote-status-row"
+      className="flex h-12 items-center justify-between gap-3 border-t border-border bg-shell px-4"
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-status-warn" aria-hidden="true" />
+        <span className="truncate text-sm text-muted-foreground">{reason}</span>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">{children}</div>
+    </div>
+  );
 }
 
 export function Layout(props: LayoutProps) {
-  const { isMainMode, cloudUiEnabled, runtimeInfo } = useRuntime();
+  const { cloudUiEnabled, runtimeInfo } = useRuntime();
 
   return (
     <BreadcrumbsProvider>
       <TerminalWindowsProvider>
-        <LayoutShell
-          {...props}
-          isMainMode={isMainMode}
-          cloudUiEnabled={cloudUiEnabled}
-          runtimeInfo={runtimeInfo}
-        />
+        <LayoutShell {...props} cloudUiEnabled={cloudUiEnabled} runtimeInfo={runtimeInfo} />
         <TerminalWindowsLayer />
       </TerminalWindowsProvider>
     </BreadcrumbsProvider>
@@ -314,21 +274,27 @@ export function Layout(props: LayoutProps) {
 
 function LayoutShell({
   children,
-  isMainMode,
   cloudUiEnabled,
   runtimeInfo,
 }: LayoutProps & {
-  isMainMode: boolean;
   cloudUiEnabled: boolean;
   runtimeInfo: import('@/ui/lib/runtime').RuntimeInfo | undefined;
 }) {
+  const fetchFn = useFetchFactory();
   const location = useLocation();
   const navigate = useNavigate();
+  const activeRemote = useOptionalBackend()?.activeRemote ?? null;
+  // A remote project's dock shows the VM metrics and a compact Cloud icon instead of the email.
+  const remoteDockSlot = activeRemote && (
+    <>
+      <RemoteMetricsStrip remoteId={activeRemote.id} remoteName={activeRemote.name} />
+      {cloudUiEnabled && <CloudStatusIndicator compact />}
+    </>
+  );
   const {
     workspaces = [],
     selectedWorkspaceId,
     setSelectedWorkspaceId,
-    isWorkspaceSelectionLocked = false,
     projects,
     projectsLoading,
     projectsError,
@@ -341,7 +307,6 @@ function LayoutShell({
   useEpicTimeScopeSync(selectedWorkspaceId);
   useProjectActivityReporter(selectedProjectId);
   const { toast } = useToast();
-  const { activeWorktree, setActiveWorktree } = useOptionalWorktreeTab();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -351,8 +316,8 @@ function LayoutShell({
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showThemeTerminalNotice, setShowThemeTerminalNotice] = useState(false);
   const [theme, setTheme] = useState<ThemeValue>(() => {
-    if (typeof window === 'undefined') return 'ocean';
-    return getStoredTheme() ?? 'ocean';
+    if (typeof window === 'undefined') return DEFAULT_THEME;
+    return getStoredTheme() ?? DEFAULT_THEME;
   });
   const [dockExpanded, setDockExpanded] = useState<boolean>(() => {
     if (typeof window === 'undefined') {
@@ -371,14 +336,11 @@ function LayoutShell({
 
   // Registry update indicator state
   const [hasRegistryUpdates, setHasRegistryUpdates] = useState(false);
-  const [proxyUnavailableDetail, setProxyUnavailableDetail] =
-    useState<WorktreeProxyUnavailableDetail | null>(null);
   const [autoCompactRec, setAutoCompactRec] = useState<{
     providerId: string;
     providerName: string;
     bootId: string;
   } | null>(null);
-  const switchedAwayWorktreeRef = useRef<string | null>(null);
   const themeWarnedBootIdsRef = useRef<Set<string>>(new Set());
 
   const handleThemeChange = useCallback(
@@ -403,7 +365,7 @@ function LayoutShell({
       // Mark immediately to prevent duplicate notices from concurrent fetches
       themeWarnedBootIdsRef.current.add(bootId);
 
-      fetchActiveSessions(selectedProjectId ?? undefined)
+      fetchActiveSessions(selectedProjectId ?? undefined, fetchFn)
         .then((sessions) => {
           const hasRunning = sessions.some((s) => s.status === 'running');
           if (!hasRunning) {
@@ -423,7 +385,7 @@ function LayoutShell({
           themeWarnedBootIdsRef.current.delete(bootId);
         });
     },
-    [runtimeInfo?.bootId, selectedProjectId],
+    [runtimeInfo?.bootId, selectedProjectId, fetchFn],
   );
 
   useAppSocket({
@@ -466,7 +428,9 @@ function LayoutShell({
   const { data: registryUpdateStatus } = useQuery({
     queryKey: ['registry-update-status'],
     queryFn: async (): Promise<RegistryUpdateStatusResponse> => {
-      const response = await fetch('/api/registry/update-status');
+      const response = await apiFetch('/api/registry/update-status', undefined, {
+        backend: HOME_BACKEND,
+      });
       if (!response.ok) {
         return { state: 'skipped', results: [] };
       }
@@ -510,92 +474,24 @@ function LayoutShell({
     }
   }, [location.pathname]);
 
-  // Redirect away from hidden pages when worktree tab becomes active
-  useEffect(() => {
-    if (!activeWorktree) return;
-    const path = location.pathname;
-    if (
-      path === '/worktrees' ||
-      path.startsWith('/worktrees/') ||
-      path === '/registry' ||
-      path.startsWith('/registry/')
-    ) {
-      navigate('/board', { replace: true });
-    }
-  }, [activeWorktree, location.pathname, navigate]);
-
   const availableShortcuts = useMemo(
     () =>
       SHORTCUTS.filter((shortcut) => {
-        if (isMainMode && shortcut.hideInMainMode) return false;
-        if (activeWorktree && shortcut.keys === 'g w') return false;
         if (shortcut.cloudUiOnly && !cloudUiEnabled) return false;
         return true;
       }),
-    [isMainMode, activeWorktree, cloudUiEnabled],
+    [cloudUiEnabled],
   );
   const visibleNavSections = useMemo(() => {
-    const hiddenPaths = new Set<string>();
-    if (activeWorktree) {
-      hiddenPaths.add('/worktrees');
-      hiddenPaths.add('/registry');
-    }
     return navSections.map((section) => {
       const filtered = section.items.filter((item) => {
         if (item.hidden) return false;
-        if (hiddenPaths.has(item.path)) return false;
-        if (item.mainModeOnly && !isMainMode) return false;
         if (item.cloudUiOnly && !cloudUiEnabled) return false;
         return true;
       });
       return filtered.length === section.items.length ? section : { ...section, items: filtered };
     });
-  }, [activeWorktree, isMainMode, cloudUiEnabled]);
-  const {
-    data: worktreesData,
-    isLoading: worktreesLoading,
-    error: worktreesError,
-  } = useQuery({
-    queryKey: ['worktree-tabs-worktrees'],
-    queryFn: () => listWorktrees(),
-    enabled: isMainMode,
-    refetchInterval: isMainMode ? WORKTREE_TAB_REFRESH_MS : false,
-    refetchOnWindowFocus: true,
-  });
-  const worktreeTabs = useMemo(() => worktreesData ?? [], [worktreesData]);
-  const worktreeOwnerScope = activeWorktree ? activeWorktree.ownerProjectId : selectedProjectId;
-  const visibleWorktreeTabs = useMemo(
-    () =>
-      worktreeOwnerScope
-        ? worktreeTabs.filter((worktree) => worktree.ownerProjectId === worktreeOwnerScope)
-        : worktreeTabs,
-    [worktreeOwnerScope, worktreeTabs],
-  );
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    const handleProxyUnavailable = (event: Event) => {
-      const detail = (event as CustomEvent<WorktreeProxyUnavailableDetail>).detail;
-      if (
-        !detail ||
-        typeof detail !== 'object' ||
-        typeof detail.worktreeName !== 'string' ||
-        detail.worktreeName.trim().length === 0
-      ) {
-        return;
-      }
-
-      setProxyUnavailableDetail(detail);
-    };
-
-    window.addEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, handleProxyUnavailable);
-    return () => {
-      window.removeEventListener(WORKTREE_PROXY_UNAVAILABLE_EVENT, handleProxyUnavailable);
-    };
-  }, []);
+  }, [cloudUiEnabled]);
 
   // Toggle section collapse state
   const toggleSection = useCallback((sectionId: string) => {
@@ -701,15 +597,12 @@ function LayoutShell({
     if (typeof window === 'undefined') {
       return;
     }
-    if (isMainMode) {
-      return;
-    }
     const handleOpenDock = () => setDockExpanded(true);
     window.addEventListener(OPEN_TERMINAL_DOCK_EVENT, handleOpenDock);
     return () => {
       window.removeEventListener(OPEN_TERMINAL_DOCK_EVENT, handleOpenDock);
     };
-  }, [isMainMode, setDockExpanded]);
+  }, [setDockExpanded]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -732,7 +625,6 @@ function LayoutShell({
 
       // Alt+Shift+X: Toggle all terminal windows (minimize if any visible, restore if all minimized)
       if (
-        !isMainMode &&
         !isEditable &&
         event.altKey &&
         event.shiftKey &&
@@ -757,7 +649,7 @@ function LayoutShell({
         return;
       }
 
-      if (!isMainMode && event.altKey && !event.metaKey && !event.ctrlKey && event.key === '`') {
+      if (event.altKey && !event.metaKey && !event.ctrlKey && event.key === '`') {
         if (visibleWindows.length > 0) {
           event.preventDefault();
           const sortedWindows = [...visibleWindows].sort((a, b) => a.zIndex - b.zIndex);
@@ -800,7 +692,7 @@ function LayoutShell({
 
       if (isEditable) {
         if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'Enter') {
-          if (!isMainMode && focusedWindow?.handle?.focus) {
+          if (focusedWindow?.handle?.focus) {
             event.preventDefault();
             focusedWindow.handle.focus();
             toast({
@@ -813,7 +705,7 @@ function LayoutShell({
       }
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'Enter') {
-        if (!isMainMode && focusedWindow?.handle?.focus) {
+        if (focusedWindow?.handle?.focus) {
           event.preventDefault();
           focusedWindow.handle.focus();
           toast({
@@ -831,7 +723,6 @@ function LayoutShell({
 
       if (
         (event.key === 'p' ||
-          event.key === 'w' ||
           event.key === 'b' ||
           event.key === 'c' ||
           event.key === 'r' ||
@@ -846,9 +737,6 @@ function LayoutShell({
           if (event.key === 'p') {
             navigate('/projects');
             announceShortcut('nav-projects', 'Navigated to Projects (shortcut g p)');
-          } else if (event.key === 'w' && !activeWorktree) {
-            navigate('/worktrees');
-            announceShortcut('nav-worktrees', 'Navigated to Worktrees (shortcut g w)');
           } else if (event.key === 'b') {
             navigate('/board');
             announceShortcut('nav-board', 'Navigated to Board (shortcut g b)');
@@ -885,7 +773,7 @@ function LayoutShell({
         return;
       }
 
-      if (!isMainMode && event.key === 't' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (event.key === 't' && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
         toggleTerminalDock();
         return;
@@ -904,14 +792,12 @@ function LayoutShell({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
-    activeWorktree,
     announceShortcut,
     focusPrimarySearch,
     focusWindow,
     focusedWindowId,
     minimizeWindow,
     navigate,
-    isMainMode,
     cloudUiEnabled,
     restoreWindow,
     terminalWindows,
@@ -951,7 +837,7 @@ function LayoutShell({
   const { data: healthData } = useQuery({
     queryKey: ['health'],
     queryFn: async () => {
-      const res = await fetch('/health');
+      const res = await apiFetch('/health', undefined, { backend: 'home' });
       if (!res.ok) return null;
       return res.json();
     },
@@ -964,7 +850,7 @@ function LayoutShell({
   const preflightBadgeClass = preflightStatus
     ? preflightStatusStyles[preflightStatus]
     : preflightError
-      ? 'border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20'
+      ? preflightStatusStyles.fail
       : 'border-border text-muted-foreground hover:bg-muted';
   const preflightBadgeLabel = preflightStatus
     ? `Preflight ${preflightStatus.toUpperCase()}`
@@ -984,9 +870,9 @@ function LayoutShell({
       : 'bg-muted-foreground';
   const preflightFooterTextClass = preflightStatus
     ? preflightStatus === 'pass'
-      ? 'text-emerald-600'
+      ? 'text-status-ok'
       : preflightStatus === 'warn'
-        ? 'text-amber-600'
+        ? 'text-status-warn'
         : 'text-destructive'
     : preflightError
       ? 'text-destructive'
@@ -995,147 +881,6 @@ function LayoutShell({
   const handleProjectChange = (projectId: string) => {
     setSelectedProjectId(projectId);
   };
-
-  const activeWorktreeName = activeWorktree?.name ?? null;
-  const activeWorktreeSummary = useMemo(
-    () =>
-      activeWorktreeName
-        ? (worktreeTabs.find((worktree) => worktree.name === activeWorktreeName) ?? null)
-        : null,
-    [activeWorktreeName, worktreeTabs],
-  );
-  const isProjectSelectorLocked = Boolean(activeWorktree);
-  const lockedProjectLabel =
-    selectedProject?.name ?? activeWorktree?.devchainProjectId ?? 'Worktree project';
-
-  const isWorktreeTabEnabled = useCallback((worktree: WorktreeSummary): boolean => {
-    const status = String(worktree.status).toLowerCase();
-    return (
-      PROXYABLE_WORKTREE_STATUSES.has(status) &&
-      typeof worktree.devchainProjectId === 'string' &&
-      worktree.devchainProjectId.trim().length > 0 &&
-      typeof worktree.containerPort === 'number' &&
-      worktree.containerPort > 0
-    );
-  }, []);
-
-  const selectMainTab = useCallback(() => {
-    setActiveWorktree(null);
-    setProxyUnavailableDetail(null);
-  }, [setActiveWorktree]);
-
-  const selectWorktreeTab = useCallback(
-    (worktree: WorktreeSummary) => {
-      setProxyUnavailableDetail(null);
-      setActiveWorktree({
-        id: worktree.id,
-        name: worktree.name,
-        ownerProjectId: worktree.ownerProjectId,
-        devchainProjectId: worktree.devchainProjectId ?? null,
-        status: worktree.status,
-      });
-    },
-    [setActiveWorktree],
-  );
-
-  useEffect(() => {
-    if (!activeWorktreeName) {
-      return;
-    }
-    if (worktreesLoading) {
-      return;
-    }
-
-    const stillExists = worktreeTabs.some((worktree) => worktree.name === activeWorktreeName);
-    if (stillExists) {
-      return;
-    }
-
-    setActiveWorktree(null);
-    setProxyUnavailableDetail(null);
-    if (switchedAwayWorktreeRef.current !== activeWorktreeName) {
-      switchedAwayWorktreeRef.current = activeWorktreeName;
-      toast({
-        title: 'Switched to Main',
-        description: `Worktree "${activeWorktreeName}" was removed and is no longer available.`,
-      });
-    }
-  }, [activeWorktreeName, setActiveWorktree, toast, worktreeTabs, worktreesLoading]);
-
-  useEffect(() => {
-    if (!activeWorktreeName || !proxyUnavailableDetail) {
-      return;
-    }
-    if (proxyUnavailableDetail.worktreeName !== activeWorktreeName) {
-      return;
-    }
-    if (proxyUnavailableDetail.statusCode !== 404) {
-      return;
-    }
-
-    setActiveWorktree(null);
-    setProxyUnavailableDetail(null);
-    if (switchedAwayWorktreeRef.current !== activeWorktreeName) {
-      switchedAwayWorktreeRef.current = activeWorktreeName;
-      toast({
-        title: 'Switched to Main',
-        description: `Worktree "${activeWorktreeName}" was removed and is no longer available.`,
-      });
-    }
-  }, [activeWorktreeName, proxyUnavailableDetail, setActiveWorktree, toast]);
-
-  const activeWorktreeBanner = useMemo<WorktreeStatusBanner | null>(() => {
-    if (!activeWorktreeName) {
-      return null;
-    }
-
-    if (proxyUnavailableDetail && proxyUnavailableDetail.worktreeName === activeWorktreeName) {
-      if (proxyUnavailableDetail.statusCode === 503) {
-        return {
-          tone: 'warning',
-          title: 'Worktree unavailable',
-          message:
-            proxyUnavailableDetail.message ??
-            `Worktree "${activeWorktreeName}" is temporarily unavailable.`,
-        };
-      }
-
-      if (proxyUnavailableDetail.statusCode === 404) {
-        return {
-          tone: 'error',
-          title: 'Worktree removed',
-          message:
-            proxyUnavailableDetail.message ??
-            `Worktree "${activeWorktreeName}" no longer exists and this tab cannot be used.`,
-        };
-      }
-    }
-
-    if (!activeWorktreeSummary) {
-      return null;
-    }
-
-    const normalizedStatus = String(activeWorktreeSummary.status).trim().toLowerCase();
-    if (normalizedStatus === 'error') {
-      return {
-        tone: 'error',
-        title: 'Worktree error',
-        message:
-          activeWorktreeSummary.errorMessage?.trim() ||
-          `Worktree "${activeWorktreeName}" is in an error state.`,
-      };
-    }
-
-    if (!PROXYABLE_WORKTREE_STATUSES.has(normalizedStatus)) {
-      return {
-        tone: 'warning',
-        title: 'Worktree unavailable',
-        message: `Worktree "${activeWorktreeName}" is ${normalizedStatus} and cannot serve proxied requests.`,
-      };
-    }
-
-    return null;
-  }, [activeWorktreeName, activeWorktreeSummary, proxyUnavailableDetail]);
 
   const handleDockSessionsChange = useCallback(
     (sessionsList: ActiveSession[]) => {
@@ -1217,7 +962,7 @@ function LayoutShell({
     <ToastHost>
       <div
         className={cn(
-          'flex h-screen overflow-hidden bg-background',
+          'flex h-screen overflow-hidden bg-canvas',
           sidebarCollapsed && 'sidebar-collapsed',
         )}
       >
@@ -1233,7 +978,7 @@ function LayoutShell({
         {/* Sidebar */}
         <aside
           className={cn(
-            'fixed inset-y-0 left-0 z-50 flex flex-col border-r border-border bg-card transition-all duration-300 lg:relative lg:translate-x-0',
+            'fixed inset-y-0 left-0 z-50 flex flex-col border-r border-border bg-shell transition-all duration-300 lg:relative lg:translate-x-0',
             sidebarOpen ? 'translate-x-0' : '-translate-x-full',
             sidebarCollapsed ? 'w-20' : 'w-64',
           )}
@@ -1397,11 +1142,10 @@ function LayoutShell({
                               onClick={() => setSidebarOpen(false)}
                               {...preloadHandlers}
                               className={cn(
-                                'flex items-center rounded-md text-sm font-medium transition-colors',
-                                'hover:bg-muted',
+                                'relative flex items-center rounded-md text-sm font-medium transition-colors',
                                 active
-                                  ? 'bg-secondary text-secondary-foreground'
-                                  : 'text-muted-foreground',
+                                  ? 'bg-selected text-selected-foreground before:absolute before:inset-y-1 before:left-0 before:w-[3px] before:rounded-full before:bg-primary'
+                                  : 'text-muted-foreground hover:bg-muted',
                                 sidebarCollapsed
                                   ? 'flex-col gap-0.5 px-1 py-1.5 text-center'
                                   : 'gap-3 px-3 py-2',
@@ -1410,7 +1154,7 @@ function LayoutShell({
                               title={item.label}
                             >
                               <Icon
-                                className={cn('h-5 w-5', hasUpdates && 'text-blue-500')}
+                                className={cn('h-5 w-5', hasUpdates && 'text-status-info')}
                                 aria-hidden="true"
                               />
                               <span
@@ -1467,7 +1211,7 @@ function LayoutShell({
         {/* Main Content Area */}
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Header */}
-          <header className="flex h-16 items-center justify-between border-b border-border bg-card px-4 lg:px-6">
+          <header className="flex h-16 items-center justify-between border-b border-border bg-shell px-4 lg:px-6">
             <div className="flex items-center gap-4">
               <Button
                 variant="ghost"
@@ -1487,10 +1231,10 @@ function LayoutShell({
             </div>
 
             <div className="flex items-center gap-2">
+              <RemoteBadge />
               <WorkspaceSwitcher
                 workspaces={workspaces}
                 selectedWorkspaceId={selectedWorkspaceId}
-                locked={isWorkspaceSelectionLocked}
                 onSelect={setSelectedWorkspaceId}
               />
               {/* Project selector placeholder */}
@@ -1505,40 +1249,22 @@ function LayoutShell({
               ) : projectsLoading ? (
                 <span className="text-sm text-muted-foreground">Loading projects...</span>
               ) : hasProjects ? (
-                isProjectSelectorLocked ? (
-                  <div
-                    data-testid="project-selector-locked"
-                    className="flex h-10 w-64 items-center rounded-md border border-input bg-muted/30 px-3 text-sm text-muted-foreground"
-                    aria-label="Worktree project locked"
+                <Select value={selectedProjectId} onValueChange={handleProjectChange}>
+                  <SelectTrigger
+                    data-testid="project-selector-select"
+                    className="w-64"
+                    aria-label={selectedProjectId ? 'Selected project' : 'Select a project'}
                   >
-                    <span className="truncate">{lockedProjectLabel}</span>
-                  </div>
-                ) : (
-                  <Select value={selectedProjectId} onValueChange={handleProjectChange}>
-                    <SelectTrigger
-                      data-testid="project-selector-select"
-                      className="w-64"
-                      aria-label={selectedProjectId ? 'Selected project' : 'Select a project'}
-                    >
-                      <SelectValue placeholder="Select a project" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {projects.map((project) => (
-                        <SelectItem key={project.id} value={project.id}>
-                          {project.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )
-              ) : isProjectSelectorLocked ? (
-                <span
-                  data-testid="project-selector-locked"
-                  className="text-sm text-muted-foreground"
-                  aria-label="Worktree project locked"
-                >
-                  {lockedProjectLabel}
-                </span>
+                    <SelectValue placeholder="Select a project" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               ) : (
                 <Link to="/projects" className="text-sm text-muted-foreground hover:underline">
                   No projects yet? Create one
@@ -1580,146 +1306,34 @@ function LayoutShell({
             </div>
           </header>
 
-          {isMainMode && (worktreeTabs.length > 0 || worktreesLoading) && (
-            <div className="border-b border-border bg-card/80">
-              <div
-                className="flex items-center gap-2 overflow-x-auto px-4 py-2 lg:px-6"
-                role="tablist"
-                aria-label="Worktree tabs"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeWorktreeName === null}
-                  onClick={selectMainTab}
-                  className={cn(
-                    'inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors',
-                    activeWorktreeName === null
-                      ? 'border-primary/50 bg-primary/10 text-primary'
-                      : 'border-border bg-background text-foreground hover:bg-muted',
-                  )}
-                >
-                  <span>Main</span>
-                  <Badge className="border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300">
-                    Main
-                  </Badge>
-                </button>
-
-                {worktreesLoading && worktreeTabs.length === 0 && (
-                  <div className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-sm text-muted-foreground">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Loading worktrees...
-                  </div>
-                )}
-
-                {worktreesError instanceof Error && (
-                  <div className="inline-flex shrink-0 items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-700 dark:text-red-300">
-                    <AlertCircle className="h-3.5 w-3.5" />
-                    Failed to load worktrees
-                  </div>
-                )}
-
-                {visibleWorktreeTabs.map((worktree) => {
-                  const isActive = activeWorktreeName === worktree.name;
-                  const enabled = isWorktreeTabEnabled(worktree);
-                  const visualStatus = getWorktreeVisualStatus(String(worktree.status));
-
-                  return (
-                    <button
-                      key={worktree.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={isActive}
-                      disabled={!enabled}
-                      onClick={() => selectWorktreeTab(worktree)}
-                      className={cn(
-                        'inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors',
-                        isActive
-                          ? 'border-primary/50 bg-primary/10 text-primary'
-                          : 'border-border bg-background text-foreground',
-                        enabled ? 'hover:bg-muted' : 'cursor-not-allowed opacity-60',
-                      )}
-                    >
-                      <span className="max-w-[180px] truncate">{worktree.name}</span>
-                      <Badge className={visualStatus.badgeClassName}>
-                        <span className="inline-flex items-center gap-1.5">
-                          {visualStatus.showSpinner && <Loader2 className="h-3 w-3 animate-spin" />}
-                          {visualStatus.label}
-                        </span>
-                      </Badge>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {isMainMode && activeWorktreeBanner && (
-            <div
-              data-testid="worktree-status-banner"
-              className={cn(
-                'border-b px-4 py-2 lg:px-6',
-                activeWorktreeBanner.tone === 'error'
-                  ? 'border-red-500/30 bg-red-500/10'
-                  : 'border-amber-500/30 bg-amber-500/10',
-              )}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex min-w-0 items-start gap-2">
-                  {activeWorktreeBanner.tone === 'error' ? (
-                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-300" />
-                  ) : (
-                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
-                  )}
-                  <div className="min-w-0">
-                    <p
-                      className={cn(
-                        'text-sm font-semibold',
-                        activeWorktreeBanner.tone === 'error'
-                          ? 'text-red-700 dark:text-red-300'
-                          : 'text-amber-700 dark:text-amber-300',
-                      )}
-                    >
-                      {activeWorktreeBanner.title}
-                    </p>
-                    <p
-                      className={cn(
-                        'text-xs',
-                        activeWorktreeBanner.tone === 'error'
-                          ? 'text-red-700/90 dark:text-red-200'
-                          : 'text-amber-700/90 dark:text-amber-200',
-                      )}
-                    >
-                      {activeWorktreeBanner.message}
-                    </p>
-                  </div>
-                </div>
-                <Button variant="outline" size="sm" onClick={selectMainTab} className="shrink-0">
-                  Switch to Main
-                </Button>
-              </div>
-            </div>
-          )}
-
           {/* Main Content */}
           <main className="flex-1 overflow-y-auto">
-            <div className="flex h-full min-h-0 flex-col px-4 py-3">{children}</div>
+            <div className="flex h-full min-h-0 flex-col px-4 py-3">
+              <ProjectGate scope="page">{children}</ProjectGate>
+            </div>
           </main>
 
-          <TerminalDock
-            expanded={dockExpanded}
-            sessions={dockSessions}
-            activeSessionId={activeWindowSessionId}
-            openSessionIds={openSessionIds}
-            onToggle={toggleTerminalDock}
-            onOpenSession={(session) => {
-              setDockExpanded(true);
-              openTerminalWindow(session);
-            }}
-            onSessionsChange={handleDockSessionsChange}
-            onSessionTerminated={handleDockSessionTerminated}
-            rightSlot={cloudUiEnabled ? <CloudStatusIndicator /> : null}
-          />
+          <ProjectGate
+            scope="terminal"
+            fallback={(reason) => (
+              <RemoteGateStatusRow reason={reason}>{remoteDockSlot}</RemoteGateStatusRow>
+            )}
+          >
+            <TerminalDock
+              expanded={dockExpanded}
+              sessions={dockSessions}
+              activeSessionId={activeWindowSessionId}
+              openSessionIds={openSessionIds}
+              onToggle={toggleTerminalDock}
+              onOpenSession={(session) => {
+                setDockExpanded(true);
+                openTerminalWindow(session);
+              }}
+              onSessionsChange={handleDockSessionsChange}
+              onSessionTerminated={handleDockSessionTerminated}
+              rightSlot={remoteDockSlot || (cloudUiEnabled ? <CloudStatusIndicator /> : null)}
+            />
+          </ProjectGate>
         </div>
       </div>
       <Dialog open={showShortcuts} onOpenChange={setShowShortcuts}>

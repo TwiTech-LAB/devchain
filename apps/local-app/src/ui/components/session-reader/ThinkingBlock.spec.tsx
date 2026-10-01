@@ -148,11 +148,11 @@ describe('ThinkingBlock', () => {
   // Step-level hotspot visual treatment
   // ---------------------------------------------------------------------------
 
-  it('shows amber border, flame icon, and percentage when isStepHot=true (diagnostic mode)', () => {
+  it('shows warning border, flame icon, and percentage when isStepHot=true (diagnostic mode)', () => {
     renderWithMode(<ThinkingBlock step={makeStep()} isStepHot percentOfChunk={45} />, 'diagnostic');
 
     const wrapper = screen.getByTestId('thinking-block-wrapper');
-    expect(wrapper.className).toContain('border-amber-500');
+    expect(wrapper).toHaveClass('border-status-warn');
     expect(wrapper.className).toContain('border-l-2');
 
     expect(screen.getByTestId('step-hotspot-flame')).toBeInTheDocument();
@@ -172,7 +172,7 @@ describe('ThinkingBlock', () => {
     render(<ThinkingBlock step={makeStep()} />);
 
     const wrapper = screen.getByTestId('thinking-block-wrapper');
-    expect(wrapper.className).not.toContain('border-amber-500');
+    expect(wrapper.className).not.toMatch(/border-status-warn/);
 
     expect(screen.queryByTestId('step-hotspot-flame')).not.toBeInTheDocument();
     expect(screen.queryByTestId('step-hotspot-pct')).not.toBeInTheDocument();

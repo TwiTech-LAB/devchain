@@ -12,6 +12,8 @@ import {
 } from '@/ui/components/ui/select';
 import { AlertCircle, Loader2 } from 'lucide-react';
 import { useSettingsData } from './useSettingsData';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface PromptSummary {
   id: string;
@@ -22,19 +24,20 @@ interface PromptsResponse {
   items: PromptSummary[];
 }
 
-async function fetchPrompts(projectId: string): Promise<PromptsResponse> {
-  const res = await fetch(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
+async function fetchPrompts(fetchFn: FetchFn, projectId: string): Promise<PromptsResponse> {
+  const res = await fetchFn(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch prompts');
   return res.json();
 }
 
 export function GeneralSection() {
+  const fetchFn = useFetchFactory();
   const { selectedProject } = useSelectedProject();
   const { settings, updateInitialPromptMutation } = useSettingsData();
 
   const { data: promptsData, isLoading: promptsLoading } = useQuery({
     queryKey: ['prompts', selectedProject?.id ?? null],
-    queryFn: () => fetchPrompts(selectedProject?.id as string),
+    queryFn: () => fetchPrompts(fetchFn, selectedProject?.id as string),
     enabled: !!selectedProject?.id,
   });
 

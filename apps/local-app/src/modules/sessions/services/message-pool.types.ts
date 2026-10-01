@@ -38,6 +38,8 @@ export interface PooledMessage {
   requiresProviderIdle?: boolean;
   /** Generation that caused this message to be held; counting/logging metadata only. */
   heldGeneration?: number;
+  /** See {@link EnqueueOptions.outsideText}. */
+  outsideText?: boolean;
 }
 
 export interface EnqueueOptions {
@@ -65,6 +67,12 @@ export interface EnqueueOptions {
   deferWhileHumanTyping?: boolean;
   /** Internal explicit-human-submit marker. */
   humanPromptSubmit?: boolean;
+  /**
+   * The text comes from outside this DevChain (a guest sender, or automation text bound to
+   * an event field). A delivery that holds such a message types no follow note, so the
+   * provider keeps treating the pasted text as untrusted.
+   */
+  outsideText?: boolean;
 }
 
 export interface EnqueueResult {

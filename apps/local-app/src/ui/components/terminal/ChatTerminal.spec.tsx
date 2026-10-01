@@ -354,7 +354,7 @@ describe('ChatTerminal', () => {
       view.unmount();
     }
 
-    releaseAppSocket();
+    releaseAppSocket('home');
     expect(socket.disconnect).toHaveBeenCalledTimes(1);
   });
 
@@ -368,7 +368,7 @@ describe('ChatTerminal', () => {
       <ChatTerminal sessionId="provided-path" socket={provided as unknown as Socket} />,
     );
     view.unmount();
-    releaseAppSocket();
+    releaseAppSocket('home');
 
     expect(baseline.disconnect).toHaveBeenCalledTimes(1);
     expect(provided.disconnect).not.toHaveBeenCalled();
@@ -1346,8 +1346,8 @@ describe('ChatTerminal', () => {
       );
       expect(themeCalls.length).toBeGreaterThan(0);
       expect(themeCalls[themeCalls.length - 1][1]).toEqual({
-        foregroundHex: '#1d2b3a',
-        backgroundHex: '#eaeff5',
+        foregroundHex: '#172b3a',
+        backgroundHex: '#eaf1f5',
       });
     });
 

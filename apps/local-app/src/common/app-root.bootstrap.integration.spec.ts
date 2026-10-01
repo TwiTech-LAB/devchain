@@ -2,10 +2,9 @@
  * Bootstrap integration test — full app root DI validation.
  *
  * Layer: backend-integration
- * Justification: NormalAppModule and MainAppModule root compilation is the
- * cheapest reliable layer that proves the Nest runtime container can resolve
- * the full app graph; metadata-only tests cannot catch provider visibility or
- * initialization-order regressions.
+ * Justification: AppModule root compilation is the cheapest reliable layer that
+ * proves the Nest runtime container can resolve the full app graph; metadata-only
+ * tests cannot catch provider visibility or initialization-order regressions.
  */
 
 import { AgentMessageDeliveryService } from '../modules/agent-message-delivery/agent-message-delivery.service';
@@ -16,7 +15,6 @@ import { SessionsMessagePoolService } from '../modules/sessions/services/session
 import { STORAGE_SERVICE } from '../modules/storage/interfaces/storage.interface';
 import { REALTIME_BROADCASTER } from '../modules/realtime/ports/realtime-broadcaster.port';
 import { TerminalIOService } from '../modules/terminal/services/terminal-io/terminal-io.service';
-import { OrchestratorProxyService } from '../modules/orchestrator/proxy/services/orchestrator-proxy.service';
 import { MobileChatRpcService } from '../modules/cloud-tunnel/services/mobile-chat-rpc.service';
 import { ExternalTaskProviderRegistry } from '../modules/external-integrations/external-task-provider.registry';
 import { AppBootstrapFixture, compileAppBootstrapFixture } from './test/app-bootstrap.helper';
@@ -32,8 +30,8 @@ describe('app root bootstrap fixtures', () => {
     }
   });
 
-  it('compiles NormalAppModule and exposes representative providers', async () => {
-    const fixture = await compileAppBootstrapFixture('normal');
+  it('compiles AppModule and exposes representative providers', async () => {
+    const fixture = await compileAppBootstrapFixture();
     fixtures.push(fixture);
     const { moduleRef } = fixture;
 
@@ -52,27 +50,8 @@ describe('app root bootstrap fixtures', () => {
     expect(moduleRef.get(MobileChatRpcService)).toBeInstanceOf(MobileChatRpcService);
   });
 
-  it('compiles MainAppModule and exposes representative providers', async () => {
-    const fixture = await compileAppBootstrapFixture('main');
-    fixtures.push(fixture);
-    const { moduleRef } = fixture;
-
-    expect(moduleRef.get(STORAGE_SERVICE)).toBeDefined();
-    expect(moduleRef.get(TerminalIOService)).toBeDefined();
-    expect(moduleRef.get(ProviderAdapterFactory)).toBeDefined();
-    expect(moduleRef.get(REALTIME_BROADCASTER)).toBeDefined();
-    expect(moduleRef.get(SessionsService)).toBeInstanceOf(SessionsService);
-    expect(moduleRef.get(McpService)).toBeInstanceOf(McpService);
-    expect(moduleRef.get(OrchestratorProxyService)).toBeInstanceOf(OrchestratorProxyService);
-    expect(moduleRef.get(MobileChatRpcService)).toBeInstanceOf(MobileChatRpcService);
-    expect(moduleRef.get(ExternalTaskProviderRegistry).getSupportedProviders()).toEqual([
-      'clickup',
-      'jira',
-    ]);
-  });
-
   it('awaits message-pool shutdown before TerminalIO begins closing', async () => {
-    const fixture = await compileAppBootstrapFixture('normal');
+    const fixture = await compileAppBootstrapFixture();
     const pool = fixture.moduleRef.get(SessionsMessagePoolService);
     const terminalIO = fixture.moduleRef.get(TerminalIOService) as TerminalIOService & {
       beforeApplicationShutdown: jest.Mock;

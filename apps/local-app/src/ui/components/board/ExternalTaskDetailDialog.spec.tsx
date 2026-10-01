@@ -147,7 +147,7 @@ function mountBodyTerminal(): HTMLButtonElement {
 
 function hasModalOverlay(baseElement: HTMLElement): boolean {
   return Array.from(baseElement.querySelectorAll('div')).some((node) =>
-    node.className.includes('bg-black/80'),
+    node.className.includes('bg-overlay'),
   );
 }
 

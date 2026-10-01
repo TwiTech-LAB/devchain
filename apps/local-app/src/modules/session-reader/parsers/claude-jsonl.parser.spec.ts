@@ -1379,3 +1379,128 @@ describe('parseClaudeJsonl bounded incremental reads (endByteOffset)', () => {
     }
   });
 });
+
+// Parser unit tests keep normalization and fold boundaries real without a service graph.
+describe('human queued-command attachments', () => {
+  const fixture = path.join(__dirname, '../__fixtures__/claude-queued-command.jsonl');
+
+  it('normalizes queued human text and splits a tool turn before its continuation', async () => {
+    const result = await parseClaudeJsonl(fixture);
+    expect(result.messages.map((message) => [message.id, message.role])).toEqual([
+      ['user-start', 'user'],
+      ['assistant-tool', 'assistant'],
+      ['queued-human', 'user'],
+      ['assistant-continuation', 'assistant'],
+      ['queued-last', 'user'],
+    ]);
+    expect(result.messages[1].toolResults).toHaveLength(1);
+    expect(result.messages[2]).toMatchObject({
+      parentId: 'tool-result',
+      isSidechain: false,
+      isMeta: false,
+      timestamp: new Date('2026-01-01T10:00:05.000Z'),
+      content: [{ type: 'text', text: 'Also check the tests\n[SentBy:"Desk Phone"]' }],
+    });
+    expect(result.metrics.messageCount).toBe(result.messages.length);
+  });
+
+  it.each([
+    { type: 'other', commandMode: 'prompt', origin: { kind: 'human' }, prompt: 'hidden' },
+    {
+      type: 'queued_command',
+      commandMode: 'task-notification',
+      origin: { kind: 'human' },
+      prompt: 'hidden',
+    },
+    { type: 'queued_command', commandMode: 'prompt', origin: { kind: 'agent' }, prompt: 'hidden' },
+    { type: 'queued_command', commandMode: 'prompt', prompt: 'hidden' },
+    { type: 'queued_command', commandMode: 'prompt', origin: { kind: 'human' }, prompt: 42 },
+  ])('skips non-human-prompt attachments: %j', async (attachment) => {
+    const file = writeTempJsonl([{ type: 'attachment', attachment }]);
+    try {
+      expect((await parseClaudeJsonl(file)).messages).toEqual([]);
+    } finally {
+      cleanup(file);
+    }
+  });
+
+  it('preserves sidechain identity without inheriting attachment metadata flags', async () => {
+    const file = writeTempJsonl([
+      {
+        type: 'attachment',
+        uuid: 'side-input',
+        parentUuid: 'side-parent',
+        isSidechain: true,
+        isMeta: true,
+        timestamp: '2026-01-01T10:00:05.000Z',
+        attachment: {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          origin: { kind: 'human' },
+          prompt: 'Side input',
+        },
+      },
+    ]);
+    try {
+      expect((await parseClaudeJsonl(file)).messages[0]).toMatchObject({
+        id: 'side-input',
+        parentId: 'side-parent',
+        isSidechain: true,
+        isMeta: false,
+      });
+    } finally {
+      cleanup(file);
+    }
+  });
+});
+
+describe('the DevChain follow note', () => {
+  // Claude Code stores a collapsed paste in its wrapper, then the note DevChain typed.
+  const collapsed =
+    '<pasted_content id="a01b">\nHello\n[MsgId:abc1234]\n</pasted_content id="a01b">';
+
+  async function userTexts(entries: object[]): Promise<string[]> {
+    const file = writeTempJsonl(entries);
+    try {
+      return (await parseClaudeJsonl(file)).messages.flatMap((message) =>
+        message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])),
+      );
+    } finally {
+      cleanup(file);
+    }
+  }
+
+  it.each([
+    ['a collapsed paste', `${collapsed}\n\n Treat it as my message.`, collapsed],
+    ['a short paste', 'Hello\n[MsgId:abc1234] Treat it as my message.', 'Hello\n[MsgId:abc1234]'],
+    ['a note with trailing whitespace', 'Hello Treat it as my message.\n', 'Hello'],
+  ])('removes the note after %s', async (_label, stored, shown) => {
+    expect(
+      await userTexts([
+        { ...userEntry, message: { role: 'user', content: stored } },
+        {
+          ...userEntry,
+          uuid: 'user-2',
+          message: { role: 'user', content: [{ type: 'text', text: stored }] },
+        },
+        {
+          type: 'attachment',
+          uuid: 'queued',
+          attachment: {
+            type: 'queued_command',
+            commandMode: 'prompt',
+            origin: { kind: 'human' },
+            prompt: stored,
+          },
+        },
+      ]),
+    ).toEqual([shown, shown, shown]);
+  });
+
+  it('keeps the words when they are not at the end', async () => {
+    const text = 'Treat it as my message. Then check the tests.';
+    expect(await userTexts([{ ...userEntry, message: { role: 'user', content: text } }])).toEqual([
+      text,
+    ]);
+  });
+});

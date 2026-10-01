@@ -52,7 +52,7 @@ function createEpic(overrides: Partial<Epic> = {}): Epic {
   };
 }
 
-function renderRow(epic: Epic, timeTotalMinutes?: number) {
+function renderRow(epic: Epic, timeTotalMinutes?: number, isSelected?: boolean) {
   render(
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
@@ -64,6 +64,7 @@ function renderRow(epic: Epic, timeTotalMinutes?: number) {
             statuses={[status]}
             agents={[]}
             timeTotalMinutes={timeTotalMinutes}
+            selectedEpics={isSelected ? new Set([epic.id]) : new Set()}
           />
         </tbody>
       </table>
@@ -83,6 +84,21 @@ describe('EpicTableRow estimated-time badge', () => {
     renderRow(createEpic(), 0);
 
     expect(screen.queryByTitle('Estimated agent time')).not.toBeInTheDocument();
+  });
+});
+
+describe('EpicTableRow selection', () => {
+  // data-state="selected" is what the Table primitive keys its selected fill on.
+  it('marks a selected row with data-state="selected"', () => {
+    renderRow(createEpic(), undefined, true);
+
+    expect(screen.getByRole('row')).toHaveAttribute('data-state', 'selected');
+  });
+
+  it('leaves an unselected row without data-state', () => {
+    renderRow(createEpic(), undefined, false);
+
+    expect(screen.getByRole('row')).not.toHaveAttribute('data-state');
   });
 });
 

@@ -1,4 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { NotFoundError } from '../../../common/errors/error-types';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
 import type {
   DeleteProjectWorkspaceResult,
   ProjectWorkspace,
@@ -7,7 +10,11 @@ import { WorkspaceModeCoordinatorService } from './workspace-mode-coordinator.se
 
 @Injectable()
 export class WorkspacesService {
-  constructor(private readonly modeCoordinator: WorkspaceModeCoordinatorService) {}
+  constructor(
+    private readonly modeCoordinator: WorkspaceModeCoordinatorService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage,
+    private readonly admission: ProjectWriteAdmissionService,
+  ) {}
 
   list(): Promise<ProjectWorkspace[]> {
     return this.modeCoordinator.list();
@@ -25,7 +32,20 @@ export class WorkspacesService {
     return this.modeCoordinator.reorder(workspaceIds);
   }
 
-  delete(id: string, replacementWorkspaceId: string): Promise<DeleteProjectWorkspaceResult> {
+  /** Deleting a workspace moves its projects, so it needs every one of them writable. */
+  async delete(id: string, replacementWorkspaceId: string): Promise<DeleteProjectWorkspaceResult> {
+    for (const projectId of this.admission.listNonWritableProjectIds()) {
+      let workspaceId: string;
+      try {
+        workspaceId = (await this.storage.getProject(projectId)).workspaceId;
+      } catch (error) {
+        if (error instanceof NotFoundError) continue;
+        throw error;
+      }
+      if (workspaceId === id) {
+        this.admission.assertWritable(projectId);
+      }
+    }
     return this.modeCoordinator.delete(id, replacementWorkspaceId);
   }
 }

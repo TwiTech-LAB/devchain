@@ -1,3 +1,4 @@
+import { BUILT_IN_SKILL_SOURCE_NAMES } from '../../../common/constants/built-in-skill-sources';
 import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { Injectable } from '@nestjs/common';
@@ -14,7 +15,7 @@ const SKILLS_DIRECTORY = '.github/skills';
 export class MicrosoftSkillSource extends GitHubSkillSourceBase implements SkillSourceAdapter {
   constructor() {
     super({
-      sourceName: 'microsoft',
+      sourceName: BUILT_IN_SKILL_SOURCE_NAMES.microsoft,
       repoOwner: 'microsoft',
       repoName: 'skills',
       timeoutMs: 90_000,

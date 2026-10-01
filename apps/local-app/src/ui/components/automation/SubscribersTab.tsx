@@ -47,6 +47,7 @@ import {
   type Subscriber,
 } from '@/ui/lib/subscribers';
 import { SubscriberDialog } from './SubscriberDialog';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /** Grouped subscribers with group metadata */
 interface SubscriberGroup {
@@ -56,6 +57,7 @@ interface SubscriberGroup {
 }
 
 export function SubscribersTab() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
@@ -70,14 +72,14 @@ export function SubscribersTab() {
     error,
   } = useQuery({
     queryKey: ['subscribers', selectedProjectId],
-    queryFn: () => fetchSubscribers(selectedProjectId as string),
+    queryFn: () => fetchSubscribers(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
 
   // Fetch subscribable events for friendly labels
   const { data: subscribableEvents } = useQuery({
     queryKey: ['subscribableEvents'],
-    queryFn: fetchSubscribableEvents,
+    queryFn: () => fetchSubscribableEvents(fetchFn),
   });
 
   // Group and sort subscribers
@@ -131,7 +133,7 @@ export function SubscribersTab() {
   // Toggle mutation
   const toggleMutation = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      toggleSubscriber(id, enabled),
+      toggleSubscriber(fetchFn, id, enabled),
     onMutate: async ({ id, enabled }) => {
       await queryClient.cancelQueries({ queryKey: ['subscribers', selectedProjectId] });
       const previousSubscribers = queryClient.getQueryData<Subscriber[]>([
@@ -162,7 +164,7 @@ export function SubscribersTab() {
 
   // Delete mutation
   const deleteMutation = useMutation({
-    mutationFn: deleteSubscriber,
+    mutationFn: (id: string) => deleteSubscriber(fetchFn, id),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['subscribers', selectedProjectId] });
       const previousSubscribers = queryClient.getQueryData<Subscriber[]>([
@@ -203,7 +205,7 @@ export function SubscribersTab() {
     mutationFn: async ({ updates }: { updates: Array<{ id: string; position: number }> }) => {
       // Apply updates sequentially to avoid request races.
       for (const u of updates) {
-        await updateSubscriber(u.id, { position: u.position });
+        await updateSubscriber(fetchFn, u.id, { position: u.position });
       }
     },
     onMutate: async ({ updates }) => {

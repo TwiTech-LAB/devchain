@@ -36,26 +36,15 @@ function workspaceColorFamily(button: HTMLElement): (typeof colorFamilies)[numbe
 }
 
 describe('WorkspaceSwitcher', () => {
-  it('renders nothing for one workspace or while selection is locked', () => {
-    const { rerender } = render(
+  it('renders nothing for a single workspace', () => {
+    render(
       <WorkspaceSwitcher
         workspaces={[workspaces[0]]}
         selectedWorkspaceId="alpha"
-        locked={false}
         onSelect={jest.fn()}
       />,
     );
 
-    expect(screen.queryByRole('toolbar', { name: 'Switch workspace' })).not.toBeInTheDocument();
-
-    rerender(
-      <WorkspaceSwitcher
-        workspaces={workspaces}
-        selectedWorkspaceId="alpha"
-        locked
-        onSelect={jest.fn()}
-      />,
-    );
     expect(screen.queryByRole('toolbar', { name: 'Switch workspace' })).not.toBeInTheDocument();
   });
 
@@ -65,7 +54,6 @@ describe('WorkspaceSwitcher', () => {
       <WorkspaceSwitcher
         workspaces={workspaces}
         selectedWorkspaceId="archive"
-        locked={false}
         onSelect={jest.fn()}
       />,
     );
@@ -89,12 +77,7 @@ describe('WorkspaceSwitcher', () => {
     const user = userEvent.setup();
     const onSelect = jest.fn();
     render(
-      <WorkspaceSwitcher
-        workspaces={workspaces}
-        selectedWorkspaceId="alpha"
-        locked={false}
-        onSelect={onSelect}
-      />,
+      <WorkspaceSwitcher workspaces={workspaces} selectedWorkspaceId="alpha" onSelect={onSelect} />,
     );
 
     const alpha = screen.getByRole('button', { name: 'Switch to workspace Alpha' });
@@ -120,7 +103,6 @@ describe('WorkspaceSwitcher', () => {
       <WorkspaceSwitcher
         workspaces={colorWorkspaces}
         selectedWorkspaceId="archive"
-        locked={false}
         onSelect={jest.fn()}
       />,
     );
@@ -145,7 +127,6 @@ describe('WorkspaceSwitcher', () => {
       <WorkspaceSwitcher
         workspaces={[colorWorkspaces[2], colorWorkspaces[1], colorWorkspaces[0]]}
         selectedWorkspaceId="archive"
-        locked={false}
         onSelect={jest.fn()}
       />,
     );
@@ -170,7 +151,6 @@ describe('WorkspaceSwitcher', () => {
           workspace('alpha-full-width', 'ＡＬＰＨＡ', 2),
         ]}
         selectedWorkspaceId="alpha-lower"
-        locked={false}
         onSelect={jest.fn()}
       />,
     );
@@ -184,7 +164,6 @@ describe('WorkspaceSwitcher', () => {
       <WorkspaceSwitcher
         workspaces={workspaces}
         selectedWorkspaceId="alpha"
-        locked={false}
         onSelect={jest.fn()}
       />,
     );
@@ -222,7 +201,6 @@ describe('WorkspaceSwitcher', () => {
       <WorkspaceSwitcher
         workspaces={workspaces}
         selectedWorkspaceId="archive"
-        locked={false}
         onSelect={jest.fn()}
       />,
     );

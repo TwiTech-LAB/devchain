@@ -94,7 +94,7 @@ function AppDownloadDialogBody({ store }: { store: AppDownloadStore }) {
   return (
     <div className="space-y-4">
       <div className="flex justify-center">
-        {/* Explicit white container so the QR never floats as a bare square in dark mode. */}
+        {/* The QR quiet zone must stay white to match the black-on-white code in every theme. */}
         <div
           className="rounded-xl bg-white p-4 shadow-sm"
           data-testid={`app-download-qr-${store.id}`}
@@ -134,7 +134,7 @@ function AppDownloadDialogBody({ store }: { store: AppDownloadStore }) {
         >
           {copied ? (
             <>
-              <Check className="mr-2 h-4 w-4 text-green-600" aria-hidden="true" />
+              <Check className="mr-2 h-4 w-4 text-status-ok" aria-hidden="true" />
               Copied
             </>
           ) : (

@@ -307,4 +307,111 @@ describe('TerminalActivityService', () => {
       );
     });
   });
+
+  describe('idle timeout refresh', () => {
+    it('starts at the default when no setting is stored', () => {
+      expect(service.idleTimeoutMs).toBe(30000);
+    });
+
+    it('picks up a replica-written setting on the remote sync wake-up', () => {
+      mockSettings.getSetting.mockReturnValue('45000');
+
+      service.handleRemoteProjectSynced();
+
+      expect(service.idleTimeoutMs).toBe(45000);
+      expect(mockSettings.getSetting).toHaveBeenCalledWith('activity.idleTimeoutMs');
+    });
+
+    it('keeps the default when the stored value is not a positive number', () => {
+      mockSettings.getSetting.mockReturnValue('not-a-number');
+
+      service.handleRemoteProjectSynced();
+
+      expect(service.idleTimeoutMs).toBe(30000);
+    });
+
+    it('applies a refreshed timeout to newly scheduled idle transitions', () => {
+      jest.useFakeTimers();
+      mockSettings.getSetting.mockReturnValue('45000');
+      service.handleRemoteProjectSynced();
+      const stream = makeStream();
+      mockRegistry.get.mockReturnValue(makeSession('s1', stream));
+      prepareStmt.get
+        .mockReturnValueOnce({ status: 'running' })
+        .mockReturnValueOnce({ activity_state: null })
+        .mockReturnValueOnce({ status: 'running' });
+
+      service.watchSession('s1');
+      stream.emit('frame', { type: 'data', sessionId: 's1', payload: { data: 'hello' } });
+
+      jest.advanceTimersByTime(44999);
+      expect(mockEventEmitter.emit).not.toHaveBeenCalledWith(
+        'session.activity.changed',
+        expect.objectContaining({ state: 'idle' }),
+      );
+      jest.advanceTimersByTime(1);
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
+        'session.activity.changed',
+        expect.objectContaining({ sessionId: 's1', state: 'idle' }),
+      );
+    });
+
+    describe('with an idle transition already pending', () => {
+      const idleEvent = expect.objectContaining({ sessionId: 's1', state: 'idle' });
+      const idleEmits = () =>
+        mockEventEmitter.emit.mock.calls.filter(
+          ([name, payload]) =>
+            name === 'session.activity.changed' && (payload as { state?: string }).state === 'idle',
+        ).length;
+
+      beforeEach(() => {
+        jest.useFakeTimers();
+        const stream = makeStream();
+        mockRegistry.get.mockReturnValue(makeSession('s1', stream));
+        prepareStmt.get
+          .mockReturnValueOnce({ status: 'running' })
+          .mockReturnValueOnce({ activity_state: null })
+          .mockReturnValue({ status: 'running' });
+        service.watchSession('s1');
+        stream.emit('frame', { type: 'data', sessionId: 's1', payload: { data: 'hello' } });
+        jest.advanceTimersByTime(1000);
+      });
+
+      it('moves the pending deadline out when the timeout grows', () => {
+        mockSettings.getSetting.mockReturnValue('45000');
+        service.handleRemoteProjectSynced();
+
+        jest.advanceTimersByTime(29000);
+        expect(mockEventEmitter.emit).not.toHaveBeenCalledWith(
+          'session.activity.changed',
+          idleEvent,
+        );
+        jest.advanceTimersByTime(15000);
+        expect(idleEmits()).toBe(1);
+      });
+
+      it('moves the pending deadline in when the timeout shrinks', () => {
+        mockSettings.getSetting.mockReturnValue('10000');
+        service.handleRemoteProjectSynced();
+
+        jest.advanceTimersByTime(8999);
+        expect(mockEventEmitter.emit).not.toHaveBeenCalledWith(
+          'session.activity.changed',
+          idleEvent,
+        );
+        jest.advanceTimersByTime(1);
+        expect(idleEmits()).toBe(1);
+      });
+
+      it('does not re-arm a transition that already fired', () => {
+        jest.advanceTimersByTime(29000);
+        expect(idleEmits()).toBe(1);
+
+        mockSettings.getSetting.mockReturnValue('45000');
+        service.handleRemoteProjectSynced();
+        jest.advanceTimersByTime(60000);
+        expect(idleEmits()).toBe(1);
+      });
+    });
+  });
 });

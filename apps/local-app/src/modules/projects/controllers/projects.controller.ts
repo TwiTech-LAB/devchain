@@ -14,14 +14,11 @@ import {
   BadRequestException,
   NotFoundException,
   ConflictException,
-  ForbiddenException,
 } from '@nestjs/common';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { UpdateProject, Project } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { getContainerScopedProjectId } from '../../../common/config/container-scope';
-import { NotFoundError as StorageNotFoundError } from '../../../common/errors/error-types';
 import {
   SLUG_PATTERN,
   SEMVER_PATTERN,
@@ -43,6 +40,7 @@ import {
 } from '../dtos/template-upgrade.dto';
 import { ProjectRegistryImportService } from '../services/project-registry-import.service';
 import { ProjectTemplateUpgradeService } from '../services/project-template-upgrade.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 const logger = createLogger('ProjectsController');
 const WorkspaceIdSchema = z.string().uuid();
@@ -201,6 +199,7 @@ export class ProjectsController {
     private readonly settings: SettingsService,
     private readonly templateUpgrade: ProjectTemplateUpgradeService,
     private readonly registryImport: ProjectRegistryImportService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   /**
@@ -256,40 +255,15 @@ export class ProjectsController {
     logger.info('GET /api/projects');
     const resolvedWorkspaceId =
       workspaceId === undefined ? undefined : WorkspaceIdSchema.parse(workspaceId);
-    const scopedProjectId = getContainerScopedProjectId();
-    let projects: Project[];
-    let total: number;
-    let resolvedLimit: number;
-    let resolvedOffset: number;
-
-    if (scopedProjectId) {
-      let scopedProject: Project | null = null;
-      try {
-        scopedProject = await this.storage.getProject(scopedProjectId);
-      } catch (error) {
-        if (!(error instanceof StorageNotFoundError)) {
-          throw error;
-        }
-      }
-
-      projects =
-        scopedProject && (!resolvedWorkspaceId || scopedProject.workspaceId === resolvedWorkspaceId)
-          ? [scopedProject]
-          : [];
-      total = projects.length;
-      resolvedLimit = 1;
-      resolvedOffset = 0;
-    } else {
-      const result = await this.storage.listProjects({
-        limit: limit ? parseInt(limit, 10) : undefined,
-        offset: offset ? parseInt(offset, 10) : undefined,
-        ...(resolvedWorkspaceId ? { workspaceId: resolvedWorkspaceId } : {}),
-      });
-      projects = result.items;
-      total = result.total;
-      resolvedLimit = result.limit;
-      resolvedOffset = result.offset;
-    }
+    const result = await this.storage.listProjects({
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+      ...(resolvedWorkspaceId ? { workspaceId: resolvedWorkspaceId } : {}),
+    });
+    const projects = result.items;
+    const total = result.total;
+    const resolvedLimit = result.limit;
+    const resolvedOffset = result.offset;
 
     // Batch-load all template metadata in one query (avoids N+1)
     const metadataMap = this.settings.getAllProjectTemplateMetadataMap();
@@ -719,7 +693,6 @@ export class ProjectsController {
   @Put(':id')
   async updateProject(@Param('id') id: string, @Body() body: unknown) {
     logger.info({ id }, 'PUT /api/projects/:id');
-    this.assertMutationAllowedForScopedProject(id);
     const data = UpdateProjectSchema.parse(body) as UpdateProject;
     return this.projects.updateProject(id, data);
   }
@@ -727,7 +700,6 @@ export class ProjectsController {
   @Delete(':id')
   async deleteProject(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/projects/:id');
-    this.assertMutationAllowedForScopedProject(id);
     await this.projects.deleteProject(id);
   }
 
@@ -967,6 +939,7 @@ export class ProjectsController {
 
     // Verify project exists - let NestJS error filter handle NotFoundError → 404
     await this.storage.getProject(id);
+    this.admission.assertWritable(id);
 
     // Create the preset via SettingsService
     try {
@@ -1018,6 +991,7 @@ export class ProjectsController {
 
     // Verify project exists - let NestJS error filter handle NotFoundError → 404
     await this.storage.getProject(id);
+    this.admission.assertWritable(id);
 
     // Update the preset via SettingsService
     try {
@@ -1077,6 +1051,7 @@ export class ProjectsController {
 
     // Verify project exists - let NestJS error filter handle NotFoundError → 404
     await this.storage.getProject(id);
+    this.admission.assertWritable(id);
 
     // Delete the preset via SettingsService
     try {
@@ -1090,14 +1065,5 @@ export class ProjectsController {
     }
 
     return { deleted: true };
-  }
-
-  private assertMutationAllowedForScopedProject(projectId: string): void {
-    const scopedProjectId = getContainerScopedProjectId();
-    if (scopedProjectId && scopedProjectId !== projectId) {
-      throw new ForbiddenException(
-        'Project mutation is restricted to CONTAINER_PROJECT_ID in container mode',
-      );
-    }
   }
 }

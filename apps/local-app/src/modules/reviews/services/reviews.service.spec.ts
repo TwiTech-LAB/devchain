@@ -5,6 +5,8 @@ import { EventsService } from '../../events/services/events.service';
 import { GitService } from '../../git/services/git.service';
 import type { Review, ReviewComment } from '../../storage/models/domain.models';
 import { ValidationError, NotFoundError, ForbiddenError } from '../../../common/errors/error-types';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('ReviewsService', () => {
   let service: ReviewsService;
@@ -63,6 +65,7 @@ describe('ReviewsService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         ReviewsService,
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: EventsService, useValue: eventsService },

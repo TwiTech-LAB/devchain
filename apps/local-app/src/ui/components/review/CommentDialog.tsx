@@ -37,6 +37,8 @@ import { cn } from '@/ui/lib/utils';
 import { useMentionAutocomplete } from '@/ui/hooks/useMentionAutocomplete';
 import { parseMentions } from '@/ui/lib/mentions';
 import type { CommentType } from '@/ui/lib/reviews';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /**
  * Simple markdown to HTML converter for preview.
@@ -71,7 +73,7 @@ function renderMarkdown(text: string): string {
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, url) => {
       // Validate URL scheme to prevent javascript: and other dangerous protocols
       const safeUrl = /^(https?:|mailto:|#|\/)/i.test(url) ? url : '#';
-      return `<a href="${safeUrl}" class="text-blue-600 underline" target="_blank" rel="noopener noreferrer">${linkText}</a>`;
+      return `<a href="${safeUrl}" class="text-primary underline" target="_blank" rel="noopener noreferrer">${linkText}</a>`;
     })
     // Line breaks
     .replace(/\n/g, '<br />');
@@ -119,8 +121,8 @@ const COMMENT_TYPES: { value: CommentType; label: string; icon: React.ElementTyp
   { value: 'approval', label: 'Approval', icon: CheckCircle2 },
 ];
 
-async function fetchAgents(projectId: string): Promise<{ items: Agent[] }> {
-  const res = await fetch(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
+async function fetchAgents(fetchFn: FetchFn, projectId: string): Promise<{ items: Agent[] }> {
+  const res = await fetchFn(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
@@ -137,6 +139,7 @@ export function CommentDialog({
   onSubmit,
   isSubmitting = false,
 }: CommentDialogProps) {
+  const fetchFn = useFetchFactory();
   const [content, setContent] = useState('');
   const [commentType, setCommentType] = useState<CommentType>('comment');
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
@@ -148,7 +151,7 @@ export function CommentDialog({
   // Fetch agents for the project
   const { data: agentsData } = useQuery({
     queryKey: ['agents', projectId],
-    queryFn: () => fetchAgents(projectId),
+    queryFn: () => fetchAgents(fetchFn, projectId),
     enabled: open && !!projectId,
   });
 
@@ -327,8 +330,10 @@ export function CommentDialog({
                         key={agent.id}
                         type="button"
                         className={cn(
-                          'w-full px-3 py-1.5 text-sm text-left flex items-center gap-2 hover:bg-accent',
-                          index === selectedIndex && 'bg-accent',
+                          'w-full px-3 py-1.5 text-sm text-left flex items-center gap-2',
+                          index === selectedIndex
+                            ? 'bg-selected text-selected-foreground'
+                            : 'hover:bg-accent',
                         )}
                         onClick={() => handleMentionSelect(agent)}
                       >

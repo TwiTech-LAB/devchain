@@ -1,3 +1,4 @@
+import { applyProviderCliNoUpdate } from '../../adapters/provider-cli-policy';
 import { Injectable } from '@nestjs/common';
 import * as path from 'path';
 import type { Provider } from '../../../storage/models/domain.models';
@@ -56,7 +57,7 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
       alias: options.alias,
       extraArgs: options.extraArgs,
     });
-    return this.execute(resolution.binaryPath, args, execOptions);
+    return this.execute(provider.name, resolution.binaryPath, args, execOptions);
   }
 
   async list(provider: Provider, execOptions?: McpExecOptions): Promise<McpListResult> {
@@ -74,7 +75,7 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
 
     const cliAdapter = this.getCliAdapter(provider);
     const args = cliAdapter.listMcpServers();
-    const result = await this.execute(resolution.binaryPath, args, execOptions);
+    const result = await this.execute(provider.name, resolution.binaryPath, args, execOptions);
 
     if (!result.success) {
       return {
@@ -116,7 +117,7 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
 
     const cliAdapter = this.getCliAdapter(provider);
     const args = cliAdapter.removeMcpServer(alias);
-    return this.execute(resolution.binaryPath, args, {
+    return this.execute(provider.name, resolution.binaryPath, args, {
       timeoutMs: execOptions?.timeoutMs ?? 10_000,
       cwd: execOptions?.cwd,
     });
@@ -275,14 +276,17 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
   }
 
   private async execute(
+    providerName: string,
     binaryPath: string,
     args: string[],
     options?: McpExecOptions,
   ): Promise<McpCommandResult> {
     // MCP CLI commands (add/list/remove) all run pipe-safe: they exit 0/non-zero
     // reliably and emit machine-readable output without requiring a TTY.
+    const command = applyProviderCliNoUpdate(providerName, [binaryPath, ...args], process.env);
     const result = await this.executor.run({
-      argv: [binaryPath, ...args],
+      argv: command.argv,
+      env: command.env,
       mode: 'pipe',
       cwd: options?.cwd,
       timeout: options?.timeoutMs,

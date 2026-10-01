@@ -2,6 +2,7 @@ import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { createHash, randomUUID } from 'node:crypto';
 import { BusyError, ConflictError, NotFoundError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import type { RemoteProjectSyncedEventPayload } from '../../events/catalog/remote.project.synced';
 import type { CommittedEvent } from '../../events/services/durable-event-registry.service';
 import { EventsService } from '../../events/services/events.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
@@ -96,6 +97,7 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
         'integration.connection.created',
         'integration.connection.updated',
         'integration.connection.deleted',
+        'remote.project.synced',
       ],
       handle: (event) => this.handleCommittedEvent(event),
     });
@@ -131,6 +133,17 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
         event.payload.provider,
         event.payload.connectionId,
       );
+    } else if (event.name === 'remote.project.synced') {
+      // Mirror writes publish no `epic.*` events, so this is the only wake-up
+      // for mirrored sub-epic changes. A null remoteId means this instance is
+      // the host receiving an attach import: connections live at home only,
+      // so there is nothing to reconcile here.
+      const payload = event.payload as RemoteProjectSyncedEventPayload;
+      if (payload.remoteId !== null) {
+        for (const epicId of [...payload.changedEpicIds, ...payload.deletedEpicIds]) {
+          results.push(...(await this.reconcileEpic(epicId)));
+        }
+      }
     }
 
     const retryCount = results.filter((result) => result.outcome === 'retry').length;

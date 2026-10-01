@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { getContainerScopedProjectId } from '../../common/config/container-scope';
 import { NotFoundError } from '../../common/errors/error-types';
 import { AgentMessageDeliveryService } from '../agent-message-delivery/agent-message-delivery.service';
+import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
 import { STORAGE_SERVICE, type StorageService } from '../storage/interfaces/storage.interface';
 import type { Agent, Project } from '../storage/models/domain.models';
 import type {
@@ -25,6 +25,7 @@ export class ProjectCommunicationService {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly delivery: AgentMessageDeliveryService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   async listTargets(
@@ -39,12 +40,6 @@ export class ProjectCommunicationService {
         return authorized;
       }
       resolvedCallerAgentId = authorized.context.caller.id;
-      if (getContainerScopedProjectId()) {
-        return this.failure(
-          'CROSS_PROJECT_UNAVAILABLE',
-          'Cross-project communication is unavailable in this runtime',
-        );
-      }
 
       const sourceWorkspaceId = authorized.context.sourceProject.workspaceId;
       const projects = await this.collectProjectSnapshot(sourceWorkspaceId);
@@ -52,7 +47,8 @@ export class ProjectCommunicationService {
         (project) =>
           this.sameId(project.workspaceId, sourceWorkspaceId) &&
           !project.isTemplate &&
-          !this.sameId(project.id, authorized.context.sourceProject.id),
+          !this.sameId(project.id, authorized.context.sourceProject.id) &&
+          this.admission.getRemoteOwner(project.id) === null,
       );
       const owners = await this.storage.listProjectOwners(candidates.map(({ id }) => id));
       const ownerProjectIds = new Set(
@@ -108,12 +104,6 @@ export class ProjectCommunicationService {
       const { caller, sourceProject } = authorized.context;
       resolvedCallerAgentId = caller.id;
 
-      if (getContainerScopedProjectId()) {
-        return this.failure(
-          'CROSS_PROJECT_UNAVAILABLE',
-          'Cross-project communication is unavailable in this runtime',
-        );
-      }
       if (sourceProject.isTemplate) {
         return this.failure(
           'SOURCE_TEMPLATE_NOT_ALLOWED',
@@ -146,6 +136,10 @@ export class ProjectCommunicationService {
           'TARGET_TEMPLATE_NOT_ALLOWED',
           'Template projects cannot receive cross-project messages',
         );
+      }
+      const notWritable = this.checkTargetWritable(targetProject.id);
+      if (notWritable) {
+        return notWritable;
       }
 
       const owners = await this.storage.listProjectOwners([targetProject.id]);
@@ -219,6 +213,28 @@ export class ProjectCommunicationService {
         'Unable to deliver the cross-project message',
       );
     }
+  }
+
+  /** A remote-owned or frozen project cannot run its Project Owner here. */
+  private checkTargetWritable(
+    projectId: string,
+  ): { readonly error: ProjectCommunicationError } | null {
+    const remote = this.admission.getRemoteOwner(projectId);
+    if (remote) {
+      return this.failure(
+        'PROJECT_REMOTE',
+        'The target project is connected to a remote; message it there',
+        { projectId, remoteId: remote.remoteId, remoteName: remote.remoteName },
+      );
+    }
+    if (!this.admission.isWritable(projectId)) {
+      return this.failure(
+        'PROJECT_FROZEN',
+        'The target project is frozen for a remote handoff; try again later',
+        { projectId },
+      );
+    }
+    return null;
   }
 
   private async authorizeCaller(

@@ -47,10 +47,23 @@ interface MobileRpcCatalogEntry {
 const uuidSchema = z.string().uuid();
 const isoTimestampSchema = z.string().datetime({ offset: true });
 
+/** The owning remote of a remote-owned placeholder project row. */
+const remoteProjectOwnerSchema = z
+  .object({
+    name: z.string().nullable(),
+    state: z.enum(['attaching', 'remote', 'detaching']),
+  })
+  .passthrough();
+
 const projectSchema = z
   .object({
     id: uuidSchema,
     name: z.string(),
+    /** Optional until the minimum supported Local App version emits it. */
+    workspaceId: uuidSchema.optional(),
+    /** Present only on remote-owned placeholder rows (includeRemotePlaceholders). */
+    placeholder: z.boolean().optional(),
+    remote: remoteProjectOwnerSchema.optional(),
   })
   .passthrough();
 
@@ -704,7 +717,13 @@ const boardCatalog = {
     cryptoMode: conditionalSeal,
   },
   'board.listProjects': {
-    paramsSchema: z.object({ workspaceId: uuidSchema.optional() }).passthrough(),
+    paramsSchema: z
+      .object({
+        workspaceId: uuidSchema.optional(),
+        /** Opt-in: append home's remote-owned projects as placeholder rows. */
+        includeRemotePlaceholders: z.boolean().optional(),
+      })
+      .passthrough(),
     resultSchema: z.array(projectSchema),
     paramsMode: passthrough,
     cryptoMode: conditionalSeal,

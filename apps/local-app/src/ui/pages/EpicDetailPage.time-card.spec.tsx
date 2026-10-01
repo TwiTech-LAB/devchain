@@ -1,12 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { EpicDetailPage } from './EpicDetailPage';
 
 // Layer: page unit. Transport, routing, toasts, and terminal-window
 // dependencies are stubbed because this spec owns the estimated-time card
 // wiring: admitted runtimes render the summary from the time-logs endpoint,
-// worktree runtimes render no card and send no request.
+// disabled runtimes render no card and send no request.
 const fetchMock = jest.fn();
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({
@@ -49,19 +49,6 @@ jest.mock('@/ui/components/shared/SubEpicsBoard', () => ({
 
 jest.mock('@/ui/components/shared/ConfirmDialog', () => ({
   ConfirmDialog: () => null,
-}));
-
-const worktreeRuntime = {
-  activeWorktree: null,
-  setActiveWorktree: () => undefined,
-  apiBase: '',
-  worktrees: [],
-  worktreesLoading: false,
-  runtimeResolved: true,
-};
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => worktreeRuntime,
 }));
 
 function jsonResponse(data: unknown): Response {
@@ -145,8 +132,6 @@ function renderAt(path: string) {
 describe('EpicDetailPage estimated-time card', () => {
   beforeEach(() => {
     fetchMock.mockReset();
-    worktreeRuntime.runtimeResolved = true;
-    worktreeRuntime.apiBase = '';
   });
 
   it('renders the root summary with inclusive total, direct subtotal, and rows', async () => {
@@ -179,21 +164,5 @@ describe('EpicDetailPage estimated-time card', () => {
     expect(screen.queryByText('Direct')).not.toBeInTheDocument();
     expect(screen.getByText('1h 30m')).toBeInTheDocument();
     expect(screen.getByText('1h 15m')).toBeInTheDocument();
-  });
-
-  it('sends no time request and renders no card in a worktree context', async () => {
-    mockPageFetches(rootEpic());
-    worktreeRuntime.apiBase = '/wt/demo';
-
-    renderAt('/epics/epic-1');
-
-    // The window title is exposed twice: the sr-only dialog name and the
-    // editable title button; the button is the visible identity.
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Parent Epic' })).toBeInTheDocument(),
-    );
-    await waitFor(() => expect(screen.queryByTestId('epic-time-card')).not.toBeInTheDocument());
-    const requestedUrls = fetchMock.mock.calls.map(([input]) => String(input));
-    expect(requestedUrls.some((url) => url.includes('time-logs'))).toBe(false);
   });
 });

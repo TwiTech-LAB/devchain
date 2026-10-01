@@ -117,7 +117,7 @@ const DEFAULT_BOUNDS: WindowBounds = {
 const MIN_WIDTH = 480;
 const MIN_HEIGHT = 280;
 export const MAX_PERSISTED_TERMINAL_LAYOUTS = 50;
-// Five supports a primary session plus several worktree sessions while bounding costly xterm trees.
+// Cap concurrently mounted terminal windows so their costly xterm trees stay bounded.
 export const MAX_MOUNTED_TERMINAL_WINDOWS = 5;
 const MAX_PERSISTED_LAYOUT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 

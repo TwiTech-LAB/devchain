@@ -10,6 +10,9 @@ import { Waves, Moon } from 'lucide-react';
 
 export type ThemeValue = 'dark' | 'ocean';
 
+/** Theme for a browser with no stored choice. A stored choice always wins. */
+export const DEFAULT_THEME: ThemeValue = 'dark';
+
 const THEME_STORAGE_KEY = 'devchain:theme';
 
 export function getStoredTheme(): ThemeValue | null {

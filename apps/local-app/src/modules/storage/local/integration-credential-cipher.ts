@@ -41,50 +41,75 @@ export class IntegrationCredentialCipher {
 
   encrypt(credentials: IntegrationCredentials): string {
     try {
-      const key = this.getEncryptionKey();
-      const iv = randomBytes(IV_LENGTH);
-      const cipher = createCipheriv('aes-256-gcm', key, iv, {
-        authTagLength: AUTH_TAG_LENGTH,
-      });
-      cipher.setAAD(CIPHER_CONTEXT);
-      const encrypted = Buffer.concat([
-        cipher.update(JSON.stringify(credentials), 'utf8'),
-        cipher.final(),
-      ]);
-      return `v1:${Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64')}`;
-    } catch (error) {
-      if (error instanceof StorageError) {
-        throw error;
-      }
+      return this.encryptValue(JSON.stringify(credentials));
+    } catch {
       throw new StorageError('Unable to encrypt integration credentials.');
     }
   }
 
   decrypt(ciphertext: string): IntegrationCredentials {
+    let plaintext: string;
+    try {
+      plaintext = this.decryptValue(ciphertext);
+    } catch {
+      throw new StorageError('Unable to decrypt integration credentials.');
+    }
+    try {
+      return this.parseCredentials(plaintext);
+    } catch {
+      throw new StorageError('Unable to decrypt integration credentials.');
+    }
+  }
+
+  /**
+   * Seals one arbitrary text payload (a provider-auth vault entry). The
+   * caller-chosen AAD context keeps ciphertexts from one protection domain
+   * from being replayed into another column that shares this key file.
+   */
+  encryptValue(value: string, context: string | Buffer = CIPHER_CONTEXT): string {
+    try {
+      const key = this.getEncryptionKey();
+      const aad = Buffer.isBuffer(context) ? context : Buffer.from(context, 'utf8');
+      const iv = randomBytes(IV_LENGTH);
+      const cipher = createCipheriv('aes-256-gcm', key, iv, {
+        authTagLength: AUTH_TAG_LENGTH,
+      });
+      cipher.setAAD(aad);
+      const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+      return `v1:${Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64')}`;
+    } catch (error) {
+      if (error instanceof StorageError) {
+        throw error;
+      }
+      throw new StorageError('Unable to encrypt the stored value.');
+    }
+  }
+
+  decryptValue(ciphertext: string, context: string | Buffer = CIPHER_CONTEXT): string {
     try {
       if (!ciphertext.startsWith('v1:')) {
-        throw new Error('Unsupported credential ciphertext version');
+        throw new Error('Unsupported ciphertext version');
       }
       const data = Buffer.from(ciphertext.slice(3), 'base64');
       if (data.length <= IV_LENGTH + AUTH_TAG_LENGTH) {
-        throw new Error('Credential ciphertext is incomplete');
+        throw new Error('Ciphertext is incomplete');
       }
 
+      const aad = Buffer.isBuffer(context) ? context : Buffer.from(context, 'utf8');
       const decipher = createDecipheriv(
         'aes-256-gcm',
         this.getEncryptionKey(),
         data.subarray(0, IV_LENGTH),
         { authTagLength: AUTH_TAG_LENGTH },
       );
-      decipher.setAAD(CIPHER_CONTEXT);
+      decipher.setAAD(aad);
       decipher.setAuthTag(data.subarray(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH));
-      const plaintext = Buffer.concat([
+      return Buffer.concat([
         decipher.update(data.subarray(IV_LENGTH + AUTH_TAG_LENGTH)),
         decipher.final(),
       ]).toString('utf8');
-      return this.parseCredentials(plaintext);
     } catch {
-      throw new StorageError('Unable to decrypt integration credentials.');
+      throw new StorageError('Unable to decrypt the stored value.');
     }
   }
 

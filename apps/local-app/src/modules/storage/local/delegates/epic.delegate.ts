@@ -567,7 +567,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
         const updateData: Record<string, unknown> = { ...scalarData };
         delete updateData.createdBy;
         if (data.data !== undefined) {
-          updateData.data = JSON.stringify(data.data);
+          updateData.data = keepIdempotencyKey(data.data, current.data);
         }
         if (data.skillsRequired !== undefined) {
           updateData.skillsRequired = serializeSkillsRequired(data.skillsRequired);
@@ -973,6 +973,13 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
     const { epicComments } = await import('../../db/schema');
     const { eq } = await import('drizzle-orm');
     await this.db.delete(epicComments).where(eq(epicComments.id, id));
+  }
+
+  async findEpicCommentEpicId(commentId: string): Promise<string | null> {
+    const row = this.rawClient
+      .prepare('SELECT epic_id FROM epic_comments WHERE id = ?')
+      .get(commentId) as { epic_id: string } | undefined;
+    return row?.epic_id ?? null;
   }
 
   async deleteEpicCommentScoped(epicId: string, commentId: string): Promise<boolean> {
@@ -2141,4 +2148,17 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
 
     return tagsMap;
   }
+}
+
+/**
+ * The idempotency key is the epic's identity for retried creates (an import
+ * finds its epic by it), so a `data` replacement keeps the stored key.
+ */
+function keepIdempotencyKey(
+  next: Record<string, unknown> | null,
+  current: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const key = current?.idempotencyKey;
+  if (key === undefined) return next;
+  return { ...next, idempotencyKey: key };
 }

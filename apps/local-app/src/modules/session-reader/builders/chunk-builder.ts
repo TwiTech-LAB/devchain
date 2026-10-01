@@ -14,8 +14,9 @@
 
 import type { UnifiedMessage } from '../dtos/unified-session.types';
 import type { UnifiedChunk, ChunkMetrics, MessageCategory } from '../dtos/unified-chunk.types';
-import { extractSemanticSteps } from './semantic-step-extractor';
-import { buildTurns } from './turn-builder';
+import { extractSemanticStepWork } from './semantic-step-extractor';
+import { buildTurnSteps } from './turn-builder';
+import { runSteps, runStepsCooperatively } from '../services/cooperative-work';
 
 // ---------------------------------------------------------------------------
 // Hard-noise detection tags
@@ -98,16 +99,24 @@ function getTextContent(msg: UnifiedMessage): string {
  * their own chunk.
  */
 export function buildChunks(messages: UnifiedMessage[]): UnifiedChunk[] {
-  const mainMessages = messages.filter((m) => !m.isSidechain);
+  return runSteps(buildChunkSteps(messages));
+}
 
+export async function buildChunksCooperatively(
+  messages: UnifiedMessage[],
+): Promise<UnifiedChunk[]> {
+  return runStepsCooperatively(buildChunkSteps(messages));
+}
+
+function* buildChunkSteps(messages: UnifiedMessage[]): Generator<void, UnifiedChunk[]> {
   const chunks: UnifiedChunk[] = [];
   let aiBuffer: UnifiedMessage[] = [];
   let chunkIndex = 0;
 
-  const flushAiBuffer = () => {
+  const flushAiBuffer = function* (): Generator<void> {
     if (aiBuffer.length === 0) return;
-    const steps = extractSemanticSteps(aiBuffer);
-    const turns = buildTurns(steps, aiBuffer);
+    const steps = yield* extractSemanticStepWork(aiBuffer);
+    const turns = yield* buildTurnSteps(steps, aiBuffer);
     chunks.push({
       id: `chunk-${chunkIndex++}`,
       type: 'ai',
@@ -121,7 +130,9 @@ export function buildChunks(messages: UnifiedMessage[]): UnifiedChunk[] {
     aiBuffer = [];
   };
 
-  for (const msg of mainMessages) {
+  for (const msg of messages) {
+    yield;
+    if (msg.isSidechain) continue;
     const category = classifyMessage(msg);
 
     if (category === 'hardNoise') continue;
@@ -132,7 +143,7 @@ export function buildChunks(messages: UnifiedMessage[]): UnifiedChunk[] {
     }
 
     // Non-AI message: flush any buffered AI messages first
-    flushAiBuffer();
+    yield* flushAiBuffer();
 
     chunks.push({
       id: `chunk-${chunkIndex++}`,
@@ -145,7 +156,7 @@ export function buildChunks(messages: UnifiedMessage[]): UnifiedChunk[] {
   }
 
   // Flush remaining AI buffer
-  flushAiBuffer();
+  yield* flushAiBuffer();
 
   return chunks;
 }

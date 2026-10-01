@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Socket } from 'socket.io-client';
-import { getAppSocket, releaseAppSocket, type WsEnvelope } from '@/ui/lib/socket';
+import { type WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import {
   type RealtimeInvalidationRegistry,
@@ -187,17 +186,7 @@ export function useMessagePools(projectId: string | null) {
     [poolsRegistry, queryClient],
   );
 
-  // Root-project pool broadcasts arrive on the main instance socket; pin this
-  // subscription to it even while a worktree tab is active. Passing an override
-  // makes useAppSocket skip its own acquire/release, so this hook owns the
-  // shared socket's refcount for its lifetime.
-  const rootSocketRef = useRef<Socket | null>(null);
-  if (rootSocketRef.current === null) {
-    rootSocketRef.current = getAppSocket();
-  }
-  useEffect(() => () => releaseAppSocket(), []);
-
-  useAppSocket({ message: handleEnvelope }, [handleEnvelope], rootSocketRef.current);
+  useAppSocket({ message: handleEnvelope }, [handleEnvelope]);
 
   return {
     pools,

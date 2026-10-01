@@ -15,6 +15,9 @@ const { homedir, platform } = require('os');
 const { spawn, execSync, execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
 const { InteractiveCLI } = require('./lib/interactive-cli');
+const { runHostInstallCommand } = require('./lib/host-install');
+const { runHostApiKeyReset } = require('./lib/host-api-key');
+const { QUEUE_NAME, runExclusive } = require('./lib/exclusive-run');
 const readline = require('readline');
 
 // Resolve @devchain/shared across packed (dist/node_modules) and workspace (packages/shared
@@ -94,38 +97,6 @@ function isNewerVersion(latest, current) {
   return false;
 }
 
-// ── Host helpers (delegated to @devchain/shared) ──────────────────────────────
-
-async function _getHostResolver() {
-  const { HostResolver } = await import(resolveSharedModuleSpecifier());
-  return HostResolver;
-}
-
-async function resolveDevchainApiBaseUrlForRestart({
-  readPidFileFn = readPidFile,
-  isProcessRunningFn = isProcessRunning,
-} = {}) {
-  const pidData = readPidFileFn();
-  if (!pidData || !Number.isFinite(Number(pidData.pid)) || !Number.isFinite(Number(pidData.port))) {
-    throw new Error(
-      'Image was rebuilt, but Devchain is not running. Start container mode first, then retry with --restart.',
-    );
-  }
-
-  const pid = Number(pidData.pid);
-  const port = Number(pidData.port);
-  if (!isProcessRunningFn(pid)) {
-    throw new Error(
-      'Image was rebuilt, but Devchain is not running. Start container mode first, then retry with --restart.',
-    );
-  }
-
-  const HostResolver = await _getHostResolver();
-  return HostResolver.buildInternalBaseUrl({ host: pidData.host || '127.0.0.1', port });
-}
-
-// ── End host helpers ──────────────────────────────────────────────────────────
-
 function getChangelogBetweenVersions(changelog, fromVersion, toVersion) {
   if (!changelog || typeof changelog !== 'object') return [];
 
@@ -159,49 +130,6 @@ function getChangelogBetweenVersions(changelog, fromVersion, toVersion) {
 
   return changes;
 }
-
-function normalizeCliArgv(argv) {
-  const rawArgs = argv.slice(2);
-  const hasContainerFlag = rawArgs.includes('--container');
-  if (!hasContainerFlag) {
-    return argv;
-  }
-
-  const knownCommands = new Set(['start', 'stop', 'help']);
-  const hasKnownCommand = rawArgs.some((arg) => knownCommands.has(arg));
-  if (hasKnownCommand) {
-    return argv;
-  }
-
-  const passthrough = rawArgs.filter((arg) => arg !== '--container');
-  return [argv[0], argv[1], 'start', '--container', ...passthrough];
-}
-
-const WORKTREE_RUNTIME_TYPES = new Set(['container', 'process']);
-
-function normalizeWorktreeRuntimeType(rawRuntimeType) {
-  if (typeof rawRuntimeType !== 'string') {
-    return null;
-  }
-
-  const normalized = rawRuntimeType.trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-
-  if (!WORKTREE_RUNTIME_TYPES.has(normalized)) {
-    throw new Error(
-      `Invalid --worktree-runtime value "${rawRuntimeType}". Expected one of: container, process.`,
-    );
-  }
-
-  return normalized;
-}
-
-function isWorktreeRuntimeModeEnabled(worktreeRuntimeType) {
-  return worktreeRuntimeType === 'container' || worktreeRuntimeType === 'process';
-}
-
 /**
  * Detect which global package manager owns the devchain install.
  *
@@ -270,7 +198,16 @@ function detectGlobalPackageManager(packageName, {
   }
 }
 
+// The parent process checks once; dev mode and --no-update-check skip it (a local
+// build would otherwise be offered the public version).
+function shouldCheckForUpdates(opts) {
+  return !opts.internalDetachedChild && !opts.dev && opts.updateCheck !== false;
+}
+
 async function checkForUpdates(cli, askYesNoFn) {
+  // Without a terminal (a systemd service) nobody can answer, and an unattended
+  // update would move the installed version away from the one chosen for it.
+  if (!process.stdin.isTTY) return;
   try {
     const pkg = require('../package.json');
     const currentVersion = pkg.version;
@@ -368,392 +305,9 @@ function detectInstalledProviders() {
   return detected; // Map<name, absolutePath>
 }
 
-const ORCHESTRATOR_WORKTREE_IMAGE_REPO = 'ghcr.io/twitech-lab/devchain';
-const WORKTREE_IMAGE_BUILD_TIMEOUT_MS = 30 * 60 * 1000;
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-function ensureDockerAvailable(execSyncFn = execSync) {
-  try {
-    execSyncFn('docker info --format "{{.ID}}"', {
-      stdio: 'pipe',
-      timeout: 10000,
-    });
-  } catch (_) {
-    throw new Error('Container mode requires Docker. Please install Docker and try again.');
-  }
-}
-
-function isDockerAvailable(execSyncFn = execSync) {
-  try {
-    ensureDockerAvailable(execSyncFn);
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-function deriveRepoRootFromGit(execSyncFn = execSync) {
-  try {
-    const gitTopLevel = execSyncFn('git rev-parse --show-toplevel', {
-      encoding: 'utf8',
-      stdio: 'pipe',
-      timeout: 5000,
-    }).trim();
-
-    if (!gitTopLevel) {
-      throw new Error('empty-git-top-level');
-    }
-
-    process.env.REPO_ROOT = gitTopLevel;
-    return gitTopLevel;
-  } catch (_) {
-    throw new Error('Container mode must be run from within a git repository.');
-  }
-}
-
-function isInsideGitRepo(execSyncFn = execSync) {
-  const previousRepoRoot = process.env.REPO_ROOT;
-  try {
-    deriveRepoRootFromGit(execSyncFn);
-    return true;
-  } catch (_) {
-    return false;
-  } finally {
-    if (typeof previousRepoRoot === 'string') {
-      process.env.REPO_ROOT = previousRepoRoot;
-    } else {
-      delete process.env.REPO_ROOT;
-    }
-  }
-}
-
-function ensureProjectGitignoreIncludesDevchain(repoRoot) {
-  const normalizedRepoRoot = typeof repoRoot === 'string' ? repoRoot.trim() : '';
-  if (!normalizedRepoRoot || !existsSync(normalizedRepoRoot)) {
-    return;
-  }
-
-  const gitignorePath = join(normalizedRepoRoot, '.gitignore');
-
-  try {
-    const existingContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : '';
-    const alreadyIgnored = existingContent.split(/\r?\n/).some((line) => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) {
-        return false;
-      }
-      return (
-        trimmed === '.devchain/' ||
-        trimmed === '/.devchain/' ||
-        trimmed === '.devchain' ||
-        trimmed === '/.devchain'
-      );
-    });
-
-    if (alreadyIgnored) {
-      return;
-    }
-
-    const delimiter = existingContent.length > 0 && !existingContent.endsWith('\n') ? '\n' : '';
-    writeFileSync(gitignorePath, `${existingContent}${delimiter}.devchain/\n`, 'utf8');
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`Warning: unable to update project .gitignore with .devchain/ (${message})`);
-  }
-}
-
-function resolveRepoRootForDockerBuild(execSyncFn = execSync) {
-  const repoRootFromEnv = typeof process.env.REPO_ROOT === 'string' ? process.env.REPO_ROOT.trim() : '';
-  if (repoRootFromEnv) {
-    return repoRootFromEnv;
-  }
-  try {
-    return deriveRepoRootFromGit(execSyncFn);
-  } catch (_) {
-    return join(__dirname, '..');
-  }
-}
-
-function shouldSkipHostPreflights() {
-  // Parent process always runs host preflights (tmux, providers).
-  // Worktree children bypass runHostPreflightChecks() entirely via worktreeRuntimeMode guard.
-  return false;
-}
-
-function resolveWorktreeImageFromPackageVersion() {
-  const pkg = require('../package.json');
-  const version = typeof pkg?.version === 'string' ? pkg.version.trim() : '';
-  if (!version) {
-    throw new Error('Unable to resolve CLI package version for worktree image provisioning.');
-  }
-  return `${ORCHESTRATOR_WORKTREE_IMAGE_REPO}:${version}`;
-}
-
-function hasWorktreeImageLocally(imageRef, execSyncFn = execSync) {
-  try {
-    execSyncFn(`docker image inspect ${imageRef}`, {
-      stdio: 'pipe',
-      timeout: 15000,
-    });
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-function buildWorktreeImage({
-  imageRef = resolveWorktreeImageFromPackageVersion(),
-  execSyncFn = execSync,
-} = {}) {
-  const repoRoot = resolveRepoRootForDockerBuild(execSyncFn);
-  const dockerfilePath = join(repoRoot, 'apps', 'local-app', 'Dockerfile');
-  console.log(`Building worktree image: ${imageRef}`);
-  try {
-    execSyncFn(
-      `docker build -f "${dockerfilePath}" -t ${imageRef} "${repoRoot}"`,
-      {
-        stdio: 'inherit',
-        timeout: WORKTREE_IMAGE_BUILD_TIMEOUT_MS,
-      },
-    );
-    console.log(`Built worktree image: ${imageRef}`);
-    return imageRef;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      [
-        `Failed to build worktree image: ${imageRef}`,
-        `Reason: ${message}`,
-        `Try manually: docker build -f "${dockerfilePath}" -t ${imageRef} "${repoRoot}"`,
-      ].join('\n'),
-    );
-  }
-}
-
-function normalizeWorktreeListPayload(payload) {
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-  if (payload && typeof payload === 'object' && Array.isArray(payload.items)) {
-    return payload.items;
-  }
-  throw new Error('Unexpected response shape from /api/worktrees.');
-}
-
-async function restartRunningWorktrees({
-  baseUrl,
-  fetchFn = fetch,
-} = {}) {
-  if (!baseUrl || typeof baseUrl !== 'string') {
-    throw new Error('A baseUrl is required to restart running worktrees.');
-  }
-
-  const listRes = await fetchFn(`${baseUrl}/api/worktrees`);
-  if (!listRes.ok) {
-    throw new Error(`Failed to list worktrees for restart (HTTP ${listRes.status}).`);
-  }
-
-  const worktrees = normalizeWorktreeListPayload(await listRes.json());
-  const runningWorktrees = worktrees.filter(
-    (worktree) => String(worktree?.status || '').toLowerCase() === 'running',
-  );
-
-  if (runningWorktrees.length === 0) {
-    console.log('No running worktrees found. Build completed without restarts.');
-    return 0;
-  }
-
-  console.log(`Restarting ${runningWorktrees.length} running worktree(s)...`);
-  for (const worktree of runningWorktrees) {
-    const worktreeId = typeof worktree?.id === 'string' ? worktree.id.trim() : '';
-    const worktreeName =
-      typeof worktree?.name === 'string' && worktree.name.trim()
-        ? worktree.name.trim()
-        : worktreeId || 'unknown';
-
-    if (!worktreeId) {
-      throw new Error('Cannot restart worktree without an id from /api/worktrees response.');
-    }
-
-    console.log(`Stopping worktree "${worktreeName}"...`);
-    const stopRes = await fetchFn(`${baseUrl}/api/worktrees/${encodeURIComponent(worktreeId)}/stop`, {
-      method: 'POST',
-    });
-    if (!stopRes.ok) {
-      throw new Error(`Failed stopping worktree "${worktreeName}" (HTTP ${stopRes.status}).`);
-    }
-
-    console.log(`Starting worktree "${worktreeName}"...`);
-    const startRes = await fetchFn(`${baseUrl}/api/worktrees/${encodeURIComponent(worktreeId)}/start`, {
-      method: 'POST',
-    });
-    if (!startRes.ok) {
-      throw new Error(`Failed starting worktree "${worktreeName}" (HTTP ${startRes.status}).`);
-    }
-  }
-
-  console.log('Worktree restart complete.');
-  return runningWorktrees.length;
-}
-
-async function ensureWorktreeImage({
-  execSyncFn = execSync,
-  onMissing = 'pull',
-} = {}) {
-  const existingImageOverride =
-    typeof process.env.ORCHESTRATOR_CONTAINER_IMAGE === 'string'
-      ? process.env.ORCHESTRATOR_CONTAINER_IMAGE.trim()
-      : '';
-  if (existingImageOverride) {
-    process.env.ORCHESTRATOR_CONTAINER_IMAGE = existingImageOverride;
-    console.log(`Using worktree image override: ${existingImageOverride}`);
-    return existingImageOverride;
-  }
-
-  const imageRef = resolveWorktreeImageFromPackageVersion();
-
-  if (hasWorktreeImageLocally(imageRef, execSyncFn)) {
-    console.log(`Using local worktree image: ${imageRef}`);
-  } else if (onMissing === 'build') {
-    console.log(`Local worktree image missing: ${imageRef}`);
-    buildWorktreeImage({ imageRef, execSyncFn });
-  } else if (onMissing === 'pull') {
-    console.log(`Pulling worktree image: ${imageRef}`);
-    try {
-      execSyncFn(`docker pull ${imageRef}`, {
-        stdio: 'inherit',
-        timeout: 300000,
-      });
-      console.log(`Pulled worktree image: ${imageRef}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        [
-          `Failed to pull worktree image: ${imageRef}`,
-          `Reason: ${message}`,
-          `Try manually: docker pull ${imageRef}`,
-          `Or build locally: docker build -t ${imageRef} -f apps/local-app/Dockerfile .`,
-        ].join('\n'),
-      );
-    }
-  } else {
-    throw new Error(`Invalid ensureWorktreeImage onMissing strategy: ${onMissing}`);
-  }
-
-  process.env.ORCHESTRATOR_CONTAINER_IMAGE = imageRef;
-  return imageRef;
-}
-
-function ensureWorktreeImageRefFromPackageVersion() {
-  const existingImageOverride =
-    typeof process.env.ORCHESTRATOR_CONTAINER_IMAGE === 'string'
-      ? process.env.ORCHESTRATOR_CONTAINER_IMAGE.trim()
-      : '';
-  if (existingImageOverride) {
-    process.env.ORCHESTRATOR_CONTAINER_IMAGE = existingImageOverride;
-    return existingImageOverride;
-  }
-
-  const imageRef = resolveWorktreeImageFromPackageVersion();
-  process.env.ORCHESTRATOR_CONTAINER_IMAGE = imageRef;
-  return imageRef;
-}
-
-async function bootstrapContainerMode({
-  execSyncFn = execSync,
-} = {}) {
-  let repoRoot;
-  try {
-    repoRoot = deriveRepoRootFromGit(execSyncFn);
-  } catch (_) {
-    // Not inside a git repo — skip repo-specific setup, orchestration still works
-  }
-  if (repoRoot) {
-    ensureProjectGitignoreIncludesDevchain(repoRoot);
-  }
-  ensureWorktreeImageRefFromPackageVersion();
-}
-
-function formatOrchestrationDetectionFailureReason({
-  skippedByEnvNormal = false,
-  dockerAvailable = false,
-  insideGitRepo = false,
-} = {}) {
-  if (skippedByEnvNormal) {
-    return 'DEVCHAIN_MODE=normal override is active';
-  }
-
-  const missing = [];
-  if (!dockerAvailable) {
-    missing.push('Docker is unavailable');
-  }
-  if (!insideGitRepo) {
-    missing.push('current directory is not inside a git repository');
-  }
-
-  if (missing.length === 0) {
-    return 'orchestration prerequisites are not met';
-  }
-  if (missing.length === 1) {
-    return missing[0];
-  }
-  return `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}`;
-}
-
-async function resolveStartupOrchestration({
-  forceContainer = false,
-  env = process.env,
-  execSyncFn = execSync,
-  bootstrapContainerModeFn = bootstrapContainerMode,
-  warnFn = (message) => console.warn(message),
-} = {}) {
-  const modeOverride = typeof env.DEVCHAIN_MODE === 'string' ? env.DEVCHAIN_MODE.trim() : '';
-  const skippedByEnvNormal = modeOverride.toLowerCase() === 'normal';
-  if (skippedByEnvNormal) {
-    if (forceContainer) {
-      throw new Error(
-        `--container requires orchestration, but ${formatOrchestrationDetectionFailureReason({ skippedByEnvNormal })}.`,
-      );
-    }
-    return {
-      enableOrchestration: false,
-      skippedByEnvNormal,
-      dockerAvailable: false,
-      insideGitRepo: false,
-    };
-  }
-
-  const dockerAvailable = isDockerAvailable(execSyncFn);
-  const insideGitRepo = isInsideGitRepo(execSyncFn);
-
-  if (!dockerAvailable && forceContainer) {
-    throw new Error(
-      `--container requires Docker, but ${formatOrchestrationDetectionFailureReason({ dockerAvailable, insideGitRepo })}.`,
-    );
-  }
-
-  try {
-    await bootstrapContainerModeFn({
-      execSyncFn,
-    });
-  } catch (error) {
-    // Bootstrap is best-effort (e.g. non-git directory); log but don't block orchestration
-    const message = error instanceof Error ? error.message : String(error);
-    warnFn(`Orchestration bootstrap note: ${message}`);
-  }
-
-  env.DEVCHAIN_MODE = 'main';
-  return {
-    enableOrchestration: true,
-    skippedByEnvNormal: false,
-    dockerAvailable,
-    insideGitRepo,
-  };
-}
-
 async function ensureProvidersInDb(baseUrl, detected, log) {
   try {
     const res = await fetch(`${baseUrl}/api/providers`);
@@ -902,6 +456,8 @@ async function validateMcpForProviders(baseUrl, cli, opts, log, projectPath) {
 }
 
 function askYesNo(question, defaultYes = false) {
+  // End of input would read as Ctrl+D and exit; without a terminal take the default.
+  if (!process.stdin.isTTY) return Promise.resolve(defaultYes);
   return new Promise((resolve) => {
     const rl = readline.createInterface({
       input: process.stdin,
@@ -1028,6 +584,35 @@ function removePidFile() {
   }
 }
 
+// A claimed VM has the claim record; home never does.
+function getMachineRole(env = process.env) {
+  const etcDir = env.DEVCHAIN_HOST_ETC_DIR || '/etc/devchain-host';
+  return existsSync(join(etcDir, 'claim.json')) ? 'remote VM' : 'home';
+}
+
+const SUDO_CHECK_TIMEOUT_MS = 5000;
+
+/**
+ * Whether an agent can run `sudo` here without a person. `sudo -n` never
+ * prompts: it fails when a password would be needed.
+ */
+function getSudoStatus({
+  platformName = platform(),
+  getuid = process.getuid,
+  execFileSyncFn = execFileSync,
+} = {}) {
+  if (platformName === 'win32') return 'not available on Windows';
+  if (typeof getuid === 'function' && getuid() === 0) return 'yes (running as root)';
+  try {
+    execFileSyncFn('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: SUDO_CHECK_TIMEOUT_MS });
+    return 'yes (no password)';
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return 'not installed';
+    if (error && error.code === 'ETIMEDOUT') return 'unknown (sudo did not answer in 5 s)';
+    return 'needs a password';
+  }
+}
+
 function isProcessRunning(pid) {
   try {
     // Sending signal 0 checks if process exists without killing it
@@ -1120,7 +705,6 @@ function getTmuxErrorMessage(osType) {
 
 async function runHostPreflightChecks(
   {
-    enableOrchestration,
     opts,
     cli,
     log,
@@ -1135,17 +719,9 @@ async function runHostPreflightChecks(
     platformFn = platform,
   } = {},
 ) {
-  const skipHostPreflights = shouldSkipHostPreflights(enableOrchestration);
-
   // Tmux preflight check
   const skipTmuxCheck = process.env.DEVCHAIN_SKIP_TMUX_CHECK === '1';
-  if (skipHostPreflights) {
-    if (opts.foreground) {
-      log('info', 'Skipping tmux check in container mode', { skipReason: 'container_mode' });
-    } else {
-      cli.info('Skipping tmux check in container mode');
-    }
-  } else if (skipTmuxCheck) {
+  if (skipTmuxCheck) {
     if (opts.foreground) {
       log('info', 'Skipping tmux check (DEVCHAIN_SKIP_TMUX_CHECK=1)', { skipReason: 'env_var' });
     } else {
@@ -1196,13 +772,7 @@ async function runHostPreflightChecks(
   // Provider detection (Linux/macOS only)
   const skipProviderCheck = process.env.DEVCHAIN_SKIP_PROVIDER_CHECK === '1';
   const plat = platformFn();
-  if (skipHostPreflights) {
-    if (opts.foreground) {
-      log('info', 'Skipping provider check in container mode', { skipReason: 'container_mode' });
-    } else {
-      cli.info('Skipping provider check in container mode');
-    }
-  } else if (skipProviderCheck) {
+  if (skipProviderCheck) {
     if (opts.foreground) {
       log('info', 'Skipping provider check (DEVCHAIN_SKIP_PROVIDER_CHECK=1)', {
         skipReason: 'env_var',
@@ -1270,16 +840,7 @@ async function runHostPreflightChecks(
   }
 }
 
-function getDevUiConfig(containerMode) {
-  if (containerMode) {
-    return {
-      script: 'dev:ui',
-      startMessage: 'Starting UI (dev mode)...',
-      logLabel: 'UI dev server',
-      url: 'http://127.0.0.1:5175',
-    };
-  }
-
+function getDevUiConfig() {
   return {
     script: 'dev:ui',
     startMessage: 'Starting UI (dev mode)...',
@@ -1288,29 +849,15 @@ function getDevUiConfig(containerMode) {
   };
 }
 
-function applyContainerModeDefaults(containerMode, opts = {}, env = process.env) {
-  if (!containerMode) {
-    return;
-  }
-
-  const hasExplicitPortEnv = typeof env.PORT === 'string' && env.PORT.trim() !== '';
-  if (!opts.port && !hasExplicitPortEnv) {
-    env.PORT = '3000';
-  }
-}
-
-function getPreferredDevApiPort(optsPort, containerMode, env = process.env) {
+function getPreferredDevApiPort(optsPort) {
   if (optsPort) {
     return Number(optsPort);
-  }
-  if (containerMode) {
-    return Number(env.PORT || 3000);
   }
   return 3000;
 }
 
-function getDevModeSpawnConfig({ containerMode, port, env = process.env }) {
-  const ui = getDevUiConfig(containerMode);
+function getDevModeSpawnConfig({ port, env = process.env }) {
+  const ui = getDevUiConfig();
   return {
     ui,
     nest: {
@@ -1332,8 +879,7 @@ async function main(argv) {
   program
     .name('devchain')
     .description('Devchain — Local-first AI agent orchestration')
-    .version(pkg.version)
-    .option('--container', 'Shorthand for "start --container"');
+    .version(pkg.version);
 
   const startCommand = program
     .command('start [args...]')
@@ -1346,14 +892,6 @@ async function main(argv) {
     .option('--db <path>', 'Path to database directory or file (overrides DB_PATH/DB_FILENAME)')
     .option('--project <path>', 'Initial project root path; creates project if missing')
     .option(
-      '--container',
-      'Force orchestration startup (errors if Docker or git repository prerequisites are missing)'
-    )
-    .option(
-      '--worktree-runtime <type>',
-      '[internal] Worktree runtime context (container|process); bypasses singleton and interactive startup flows',
-    )
-    .option(
       '--log-level <level>',
       'Set log verbosity: error (errors only), warn, info, debug, or trace. ' +
       'Default: "error" (clean) in interactive mode, "info" in foreground. ' +
@@ -1361,25 +899,11 @@ async function main(argv) {
     )
     .option('--dev', 'Development mode with hot reload (spawns nest --watch + vite)')
     .option('--no-cloud', 'Disable Cloud and Notifications UI features for this run')
+    .option('--no-update-check', 'Do not check npm for a newer devchain at start')
     .option('--internal-detached-child', '[internal] Marker for detached child process')
     .action(async (rawArgs, opts) => {
       const { HostResolver } = await import(resolveSharedModuleSpecifier());
       const args = Array.isArray(rawArgs) ? [...rawArgs] : [];
-      const usesContainerSubcommand = args[0] === 'container';
-      if (usesContainerSubcommand) {
-        args.shift();
-      }
-      const forceContainer = Boolean(
-        opts.container || program.opts().container || usesContainerSubcommand,
-      );
-      let worktreeRuntimeType = null;
-      try {
-        worktreeRuntimeType = normalizeWorktreeRuntimeType(opts.worktreeRuntime);
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : 'Invalid --worktree-runtime value.');
-        process.exit(1);
-      }
-      const worktreeRuntimeMode = isWorktreeRuntimeModeEnabled(worktreeRuntimeType);
       // Cloud UI is on by default. Commander defaults opts.cloud to `true`
       // and sets it to `false` only when --no-cloud is passed.
       if (opts.cloud === false) {
@@ -1393,7 +917,7 @@ async function main(argv) {
       }
 
       // Check if already running (skip for detached child - parent already checked)
-      if (!opts.internalDetachedChild && !worktreeRuntimeMode) {
+      if (!opts.internalDetachedChild) {
         const existingPid = readPidFile();
         if (existingPid && isProcessRunning(existingPid.pid)) {
           console.error(`Devchain is already running (PID ${existingPid.pid}, port ${existingPid.port})`);
@@ -1409,19 +933,16 @@ async function main(argv) {
 
       // Normalize defaults for negatable options (Commander may leave undefined)
       if (typeof opts.open === 'undefined') {
-        opts.open = worktreeRuntimeMode ? false : forceContainer ? false : true;
-      }
-      if (worktreeRuntimeMode) {
-        opts.open = false;
+        opts.open = true;
       }
       // Detached mode by default, unless foreground is explicitly requested
       // Don't detach again if we're already the detached child process
       const isDetachedChild = Boolean(opts.internalDetachedChild);
-      const shouldDetach = opts.foreground !== true && !isDetachedChild && !worktreeRuntimeMode;
+      const shouldDetach = opts.foreground !== true && !isDetachedChild;
 
       // Initialize interactive CLI (user-friendly output unless in foreground mode)
       const cli = new InteractiveCLI({
-        interactive: !opts.foreground && !isDetachedChild && !worktreeRuntimeMode,
+        interactive: !opts.foreground && !isDetachedChild,
         colors: true,
         spinners: true
       });
@@ -1431,69 +952,26 @@ async function main(argv) {
         console.log(JSON.stringify(entry));
       };
 
-      let enableOrchestration = false;
-      if (worktreeRuntimeMode) {
-        enableOrchestration = worktreeRuntimeType === 'container';
-      } else {
-        try {
-          const orchestrationResolution = await resolveStartupOrchestration({
-            forceContainer,
-            env: process.env,
-            warnFn: (message) => {
-              if (opts.foreground) {
-                log('warn', message);
-              } else {
-                cli.warn(message);
-              }
-            },
-          });
-          enableOrchestration = orchestrationResolution.enableOrchestration;
-        } catch (error) {
-          console.error(
-            error instanceof Error
-              ? error.message
-              : 'Failed to resolve orchestration startup prerequisites.',
-          );
-          process.exit(1);
-        }
-      }
-
-      applyContainerModeDefaults(enableOrchestration, opts, process.env);
-
-      // Check for updates (parent process only, skip in dev mode)
-      if (!isDetachedChild && !opts.dev && !worktreeRuntimeMode) {
+      if (shouldCheckForUpdates(opts)) {
         await checkForUpdates(cli, askYesNo);
       }
 
       // Show startup banner (interactive mode only)
-      if (!opts.foreground && !worktreeRuntimeMode) {
+      if (!opts.foreground) {
         cli.blank();
         cli.info('Starting Devchain...');
         cli.blank();
       }
 
-      if (!worktreeRuntimeMode) {
-        await runHostPreflightChecks({
-          enableOrchestration,
-          opts,
-          cli,
-          log,
-          isDetachedChild,
-        });
-      }
+      await runHostPreflightChecks({
+        opts,
+        cli,
+        log,
+        isDetachedChild,
+      });
 
-      const preferPort = getPreferredDevApiPort(opts.port, enableOrchestration, process.env);
-
-      // In worktree runtime mode, bind strictly to the requested port.
-      // getPort() silently picks a different port when the requested one is unavailable,
-      // which causes the parent orchestrator to talk to the wrong instance.
-      // Let NestJS fail fast with EADDRINUSE instead of silently rebinding.
-      let port;
-      if (worktreeRuntimeMode && preferPort) {
-        port = preferPort;
-      } else {
-        port = await getPort({ port: preferPort });
-      }
+      const preferPort = getPreferredDevApiPort(opts.port);
+      const port = await getPort({ port: preferPort });
 
       // Resolve effective host before detach so child inherits normalized HOST env.
       // The --host flag also flows through childArgs (detach filter only strips --port
@@ -1508,12 +986,13 @@ async function main(argv) {
       process.env.HOST = effectiveHost;
 
       // Security warning for non-loopback bind (before detach so parent terminal sees it)
-      if (!worktreeRuntimeMode && HostResolver.isNonLoopbackHost(effectiveHost)) {
+      if (HostResolver.isNonLoopbackHost(effectiveHost)) {
         console.error('');
-        console.error(`⚠  DevChain is binding to ${effectiveHost}. There is no remote authentication`);
-        console.error('   boundary; the API, terminals, MCP, and project files are exposed');
-        console.error('   to anyone who can reach this address. Use only on a trusted');
-        console.error('   network, VPN, or behind firewall rules.');
+        console.error(`⚠  DevChain is binding to ${effectiveHost}. This hand-started instance has`);
+        console.error('   no caller authentication; the API, terminals, MCP, and project files');
+        console.error('   are exposed to anyone who can reach this address. The VM API key');
+        console.error('   protects claimed remote VMs, not a hand-started instance. Use only on');
+        console.error('   a trusted network, VPN, or behind firewall rules.');
         if (opts.dev) {
           console.error('');
           console.error('   Note: --dev mode runs the UI on a separate Vite dev server bound to');
@@ -1626,7 +1105,6 @@ async function main(argv) {
 
         // Spawn NestJS in watch mode (detached to create process group)
         const devSpawnConfig = getDevModeSpawnConfig({
-          containerMode: enableOrchestration,
           port,
           env: process.env,
         });
@@ -1655,11 +1133,7 @@ async function main(argv) {
         cli.info(`API docs: ${displayUrl}/api/docs`);
 
         // Ensure provider rows exist
-        if (
-          !worktreeRuntimeMode
-          && opts.__providersDetected
-          && opts.__providersDetected.size > 0
-        ) {
+        if (opts.__providersDetected && opts.__providersDetected.size > 0) {
           await ensureProvidersInDb(internalBaseUrl, opts.__providersDetected, log);
         }
 
@@ -1669,9 +1143,7 @@ async function main(argv) {
           : process.cwd();
 
         // Validate MCP for all providers
-        if (!worktreeRuntimeMode) {
-          await validateMcpForProviders(internalBaseUrl, cli, opts, log, startupPath);
-        }
+        await validateMcpForProviders(internalBaseUrl, cli, opts, log, startupPath);
 
         // Note: Claude bypass prompt already handled before server start
 
@@ -1694,10 +1166,8 @@ async function main(argv) {
         cli.info(`API: ${displayUrl}`);
         cli.blank();
 
-        // Write PID file for top-level runtime only
-        if (!worktreeRuntimeMode) {
-          writePidFile(port, effectiveHost);
-        }
+        // Write PID file for stop command
+        writePidFile(port, effectiveHost);
 
         // Handle cleanup on exit - kill entire process groups, then wait for
         // children to actually exit before removing the PID file and exiting.
@@ -1734,9 +1204,7 @@ async function main(argv) {
             await waitWithTimeout(Promise.all([nestExited, viteExited]), SIGKILL_GRACE_MS);
           }
 
-          if (!worktreeRuntimeMode) {
-            removePidFile();
-          }
+          removePidFile();
           process.exit(0);
         };
 
@@ -1805,11 +1273,7 @@ async function main(argv) {
       }
 
       // Ensure provider rows exist (idempotent) before opening UI
-      if (
-        !worktreeRuntimeMode
-        && opts.__providersDetected
-        && opts.__providersDetected.size > 0
-      ) {
+      if (opts.__providersDetected && opts.__providersDetected.size > 0) {
         await ensureProvidersInDb(internalBaseUrl, opts.__providersDetected, log);
       }
 
@@ -1819,9 +1283,7 @@ async function main(argv) {
         : process.cwd();
 
       // Validate MCP for all providers (with project context)
-      if (!worktreeRuntimeMode) {
-        await validateMcpForProviders(internalBaseUrl, cli, opts, log, startupPath);
-      }
+      await validateMcpForProviders(internalBaseUrl, cli, opts, log, startupPath);
 
       // Note: Claude bypass prompt already handled before server start (in parent process for detach mode)
 
@@ -1871,15 +1333,13 @@ async function main(argv) {
         cli.blank();
       }
 
-      if (!worktreeRuntimeMode) {
-        // Write PID file for stop command
-        writePidFile(port, effectiveHost);
+      // Write PID file for stop command
+      writePidFile(port, effectiveHost);
 
-        // Clean up PID file on exit (main.ts handles SIGINT/SIGTERM and graceful shutdown)
-        process.on('exit', () => {
-          removePidFile();
-        });
-      }
+      // Clean up PID file on exit (main.ts handles SIGINT/SIGTERM and graceful shutdown)
+      process.on('exit', () => {
+        removePidFile();
+      });
 
       if (opts.open) {
         if (!opts.foreground) {
@@ -1910,41 +1370,76 @@ async function main(argv) {
     });
 
   program
-    .command('dev:image')
-    .description('Rebuild worktree image for Docker-enabled development')
-    .option('--restart', 'After rebuild, restart running worktrees via orchestrator API')
-    .action(async (opts) => {
-      try {
-        ensureDockerAvailable();
-        const imageRef = buildWorktreeImage();
-        process.env.ORCHESTRATOR_CONTAINER_IMAGE = imageRef;
-
-        if (!opts.restart) {
-          console.log('Build complete. Running worktrees were not restarted.');
-          process.exit(0);
-        }
-
-        const baseUrl = await resolveDevchainApiBaseUrlForRestart();
-        const ready = await waitForHealth(`${baseUrl}/health`, {
-          timeoutMs: 5000,
-          intervalMs: 250,
-        });
-        if (!ready) {
-          throw new Error(
-            `Image was rebuilt, but orchestrator is not reachable at ${baseUrl}. Start it and retry --restart.`,
-          );
-        }
-
-        await restartRunningWorktrees({ baseUrl });
-        process.exit(0);
-      } catch (error) {
-        console.error(
-          error instanceof Error
-            ? error.message
-            : 'Failed to rebuild worktree image.',
-        );
-        process.exit(1);
+    .command('queue <name> [command...]')
+    .usage('<name> -- <command> [args…]')
+    .description('Run a command when no other command holds this queue for the OS user')
+    .action(async (name, commandArgs, _options, queueCommand) => {
+      if (!QUEUE_NAME.test(name)) {
+        queueCommand.error(`queue name must match ${QUEUE_NAME.source}.`);
       }
+      const input = program.rawArgs.slice(2);
+      if (input[2] !== '--' || commandArgs.length === 0) {
+        queueCommand.error('usage: devchain queue <name> -- <command> [args…]');
+      }
+      process.exitCode = await runExclusive({
+        name,
+        command: commandArgs[0],
+        args: commandArgs.slice(1),
+      });
+    });
+
+  const host = program.command('host').description('Manage DevChain hosts');
+
+  host
+    .command('install')
+    .description('Install DevChain on an Ubuntu or Debian VM over SSH')
+    .option('--address <address>', 'VM address (for example, 192.168.1.20:3000)')
+    .option('--ssh-user <user>', 'SSH account on the VM')
+    .option('--password-stdin', 'Read the SSH password from one line of stdin')
+    .option('--key <path>', 'SSH private key file')
+    .option('--passphrase-stdin', 'Read the SSH key passphrase from one line of stdin')
+    .option('--sudo-password-stdin', 'Read the optional sudo password from one line of stdin')
+    .option('--projects <project-ids...>', 'Project ids to include in the disk estimate')
+    .option('--no-docker', 'Do not install Docker Engine and Compose on the VM (installed by default)')
+    .option(
+      '--provider-auth <provider=choice>',
+      'Provider login choice: skip, generate, or reuse:<entry-id> (repeatable)',
+      (value, previous) => [...(previous || []), value],
+    )
+    .action(async (options) => {
+      const exitCode = await runHostInstallCommand(options, {
+        getLocalApiBaseUrl: async () => {
+          const pidData = readPidFile();
+          if (!pidData || !isProcessRunning(pidData.pid)) return null;
+          const { HostResolver } = await import(resolveSharedModuleSpecifier());
+          return HostResolver.buildInternalBaseUrl({
+            host: pidData.host || '127.0.0.1',
+            port: pidData.port,
+          });
+        },
+      });
+      process.exitCode = exitCode;
+    });
+
+  host
+    .command('api-key')
+    .description('Manage this VM host API key')
+    .command('reset')
+    .description(
+      'Generate a new host API key, store its SHA-256 hash on this VM, and print the key once',
+    )
+    .action(() => {
+      process.exitCode = runHostApiKeyReset();
+    });
+
+  program
+    .command('status')
+    .description(
+      'Show whether this machine is home or a remote DevChain VM, and whether sudo works without a password',
+    )
+    .action(() => {
+      console.log(getMachineRole());
+      console.log(`sudo: ${getSudoStatus()}`);
     });
 
   program
@@ -2000,7 +1495,7 @@ async function main(argv) {
       process.exit(0);
     });
 
-  await program.parseAsync(normalizeCliArgv(argv));
+  await program.parseAsync(argv);
 }
 
 if (require.main === module) {
@@ -2012,32 +1507,18 @@ if (require.main === module) {
 
 module.exports = {
   main,
-  normalizeCliArgv,
   __test__: {
     waitForHealth,
-    ensureDockerAvailable,
-    isDockerAvailable,
-    deriveRepoRootFromGit,
-    isInsideGitRepo,
-    ensureProjectGitignoreIncludesDevchain,
-    shouldSkipHostPreflights,
     runHostPreflightChecks,
     getDevUiConfig,
-    applyContainerModeDefaults,
     getPreferredDevApiPort,
     getDevModeSpawnConfig,
-    hasWorktreeImageLocally,
-    buildWorktreeImage,
-    resolveDevchainApiBaseUrlForRestart,
-    restartRunningWorktrees,
-    ensureWorktreeImage,
-    bootstrapContainerMode,
-    ensureWorktreeImageRefFromPackageVersion,
-    formatOrchestrationDetectionFailureReason,
-    resolveStartupOrchestration,
-    normalizeWorktreeRuntimeType,
-    isWorktreeRuntimeModeEnabled,
     detectGlobalPackageManager,
     detectInstalledProviders,
+    checkForUpdates,
+    shouldCheckForUpdates,
+    askYesNo,
+    getMachineRole,
+    getSudoStatus,
   },
 };

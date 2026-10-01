@@ -10,6 +10,7 @@ import {
 import { Button } from '@/ui/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 import { AlertTriangle, Loader2 } from 'lucide-react';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export interface AutoCompactEnableModalProps {
   open: boolean;
@@ -40,6 +41,7 @@ export function AutoCompactEnableModal({
   onEnabled,
   onSkipped,
 }: AutoCompactEnableModalProps) {
+  const fetchFn = useFetchFactory();
   const [isEnabling, setIsEnabling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,7 +50,7 @@ export function AutoCompactEnableModal({
     setError(null);
 
     try {
-      const response = await fetch(`/api/providers/${providerId}/auto-compact/enable`, {
+      const response = await fetchFn(`/api/providers/${providerId}/auto-compact/enable`, {
         method: 'POST',
       });
 
@@ -91,8 +93,8 @@ export function AutoCompactEnableModal({
       >
         <DialogHeader>
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/10">
-              <AlertTriangle className="h-5 w-5 text-amber-500" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-status-warn/10">
+              <AlertTriangle className="h-5 w-5 text-status-warn" />
             </div>
             <DialogTitle>Enable Auto-Compact for Claude</DialogTitle>
           </div>

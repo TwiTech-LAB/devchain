@@ -80,8 +80,16 @@ describe('SignInMobileDeviceDialog', () => {
   it('mounts QrDisplayPanel with provision mode when dialog is open', () => {
     render(<SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" />);
     fireEvent.click(screen.getByTestId('sign-in-mobile-device-button'));
-    expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'provision');
+    expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'provision', undefined);
     expect(screen.getByTestId('qr-display-panel')).toBeInTheDocument();
+  });
+
+  it('pairs against the given backend when one is passed', () => {
+    render(
+      <SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" backend="remote-1" />,
+    );
+    fireEvent.click(screen.getByTestId('sign-in-mobile-device-button'));
+    expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'provision', 'remote-1');
   });
 
   it('calls start on mount', () => {

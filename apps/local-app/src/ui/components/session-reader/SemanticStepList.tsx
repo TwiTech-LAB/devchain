@@ -74,7 +74,7 @@ export const SemanticStepList = memo(function SemanticStepList({
             return step.content.outputText?.trim() ? (
               <div
                 key={step.id}
-                className="border-l-2 border-emerald-400/40 bg-card/40 rounded-md px-3 py-2"
+                className="border-l-2 border-status-ok/40 bg-card/40 rounded-md px-3 py-2"
               >
                 <MarkdownRenderer
                   content={step.content.outputText}

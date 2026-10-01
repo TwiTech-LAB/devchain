@@ -1,6 +1,7 @@
 packages:
   - 'apps/local-app'
   - 'packages/shared'
+  - 'packages/proxmox-client'
 
 enablePrePostScripts: true
 injectWorkspacePackages: true

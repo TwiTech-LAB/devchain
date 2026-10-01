@@ -806,12 +806,13 @@ describe('ScheduleEditorDialog', () => {
 
       // First result starts selected (index 0)
       const alphaButton = screen.getByText('Alpha Epic').closest('button')!;
-      expect(alphaButton.className).toContain('bg-accent');
+      expect(alphaButton).toHaveClass('bg-selected');
 
       // ArrowDown moves to second
       fireEvent.keyDown(searchInput, { key: 'ArrowDown' });
       const betaButton = screen.getByText('Beta Epic').closest('button')!;
-      expect(betaButton.className).toContain('bg-accent');
+      expect(betaButton).toHaveClass('bg-selected');
+      expect(alphaButton).not.toHaveClass('bg-selected');
     });
 
     it('Enter selects the highlighted result without navigating', async () => {

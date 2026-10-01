@@ -3,6 +3,8 @@ import { ZodError } from 'zod';
 import { EpicCommentsController } from './epic-comments.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { EpicsService } from '../services/epics.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('EpicCommentsController', () => {
   let controller: EpicCommentsController;
@@ -12,12 +14,14 @@ describe('EpicCommentsController', () => {
   };
   const epicsService = {
     addEpicCommentFromRest: jest.fn(),
+    deleteEpicCommentById: jest.fn(),
   };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [EpicCommentsController],
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: EpicsService, useValue: epicsService },
       ],
@@ -64,11 +68,12 @@ describe('EpicCommentsController', () => {
     expect(result).toEqual(comments);
   });
 
-  it('keeps delete behavior unchanged (delegates to storage)', async () => {
-    storage.deleteEpicComment.mockResolvedValue(undefined);
+  it('deletes comments via EpicsService so the write is admitted there', async () => {
+    epicsService.deleteEpicCommentById.mockResolvedValue(undefined);
 
     await controller.deleteEpicComment('comment-1');
 
-    expect(storage.deleteEpicComment).toHaveBeenCalledWith('comment-1');
+    expect(epicsService.deleteEpicCommentById).toHaveBeenCalledWith('comment-1');
+    expect(storage.deleteEpicComment).not.toHaveBeenCalled();
   });
 });

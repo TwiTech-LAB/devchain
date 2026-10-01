@@ -1,3 +1,4 @@
+import { applyProviderCliNoUpdate } from '../adapters/provider-cli-policy';
 import { Inject, Injectable } from '@nestjs/common';
 import { IOError, TimeoutError, ValidationError } from '../../../common/errors/error-types';
 import { resolveBinary } from '../../../common/resolve-binary';
@@ -72,8 +73,14 @@ export class ProviderPluginsService {
     }
 
     const binaryPath = await this.resolveProviderBinary(provider);
+    const command = applyProviderCliNoUpdate(
+      provider.name,
+      [binaryPath, ...adapter.installProviderPlugin(normalizedPluginId)],
+      process.env,
+    );
     const result = await this.executor.run({
-      argv: [binaryPath, ...adapter.installProviderPlugin(normalizedPluginId)],
+      argv: command.argv,
+      env: command.env,
       mode: 'pipe',
       timeout: PLUGIN_COMMAND_TIMEOUT_MS,
       outputLimits: { maxBytes: PLUGIN_COMMAND_MAX_BYTES },
@@ -106,8 +113,14 @@ export class ProviderPluginsService {
     }
 
     const binaryPath = await this.resolveProviderBinary(provider);
+    const command = applyProviderCliNoUpdate(
+      provider.name,
+      [binaryPath, ...adapter.listProviderPlugins()],
+      process.env,
+    );
     const result = await this.executor.run({
-      argv: [binaryPath, ...adapter.listProviderPlugins()],
+      argv: command.argv,
+      env: command.env,
       mode: 'pipe',
       timeout: PLUGIN_COMMAND_TIMEOUT_MS,
       outputLimits: { maxBytes: PLUGIN_COMMAND_MAX_BYTES },

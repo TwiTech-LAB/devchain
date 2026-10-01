@@ -150,10 +150,7 @@ export function ExternalBoardMyWorkPage({ provider }: ExternalBoardMyWorkPagePro
             </div>
 
             {landing.isStale ? (
-              <Alert
-                variant="default"
-                className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-              >
+              <Alert variant="warn" className="bg-status-warn/10">
                 <AlertTriangle className="h-4 w-4" aria-hidden="true" />
                 <AlertTitle>Showing previous data</AlertTitle>
                 <AlertDescription>

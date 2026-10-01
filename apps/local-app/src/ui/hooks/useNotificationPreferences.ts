@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 export interface Preference {
   category: string;
@@ -290,7 +291,7 @@ export function useNotificationPreferences() {
   const { data, isLoading } = useQuery<PreferencesData>({
     queryKey: ['cloud', 'preferences'],
     queryFn: async () => {
-      const res = await fetch('/api/cloud/preferences');
+      const res = await apiFetch('/api/cloud/preferences', undefined, { backend: HOME_BACKEND });
       if (!res.ok) throw new Error(`preferences:${res.status}`);
       return res.json();
     },
@@ -300,7 +301,9 @@ export function useNotificationPreferences() {
   const catalogQuery = useQuery<PreferencesCatalogData>({
     queryKey: ['cloud', 'preferences', 'catalog'],
     queryFn: async () => {
-      const res = await fetch('/api/cloud/preferences/catalog');
+      const res = await apiFetch('/api/cloud/preferences/catalog', undefined, {
+        backend: HOME_BACKEND,
+      });
       if (!res.ok) {
         return { version: 'static', categories: STATIC_NOTIFICATION_CATALOG };
       }
@@ -312,13 +315,14 @@ export function useNotificationPreferences() {
 
   const upsert = useMutation({
     mutationFn: async (args: UpsertArgs) => {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/cloud/preferences/categories/${encodeURIComponent(args.category)}`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ channel: 'push', enabled: args.enabled }),
         },
+        { backend: HOME_BACKEND },
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

@@ -2,6 +2,7 @@
  * Subscribers API functions
  * Provides centralized API layer for subscriber management.
  */
+import type { FetchFn } from '@/ui/lib/api-transport';
 
 // ============================================
 // TYPES
@@ -104,8 +105,10 @@ export interface SubscribableEventDefinition {
 /**
  * Fetch all subscribable events with their field definitions.
  */
-export async function fetchSubscribableEvents(): Promise<SubscribableEventDefinition[]> {
-  const response = await fetch('/api/subscribers/events');
+export async function fetchSubscribableEvents(
+  fetchFn: FetchFn,
+): Promise<SubscribableEventDefinition[]> {
+  const response = await fetchFn('/api/subscribers/events');
   if (!response.ok) {
     throw new Error('Failed to fetch subscribable events');
   }
@@ -116,9 +119,9 @@ export async function fetchSubscribableEvents(): Promise<SubscribableEventDefini
 /**
  * Fetch all subscribers for a project.
  */
-export async function fetchSubscribers(projectId: string): Promise<Subscriber[]> {
+export async function fetchSubscribers(fetchFn: FetchFn, projectId: string): Promise<Subscriber[]> {
   const params = new URLSearchParams({ projectId });
-  const response = await fetch(`/api/subscribers?${params.toString()}`);
+  const response = await fetchFn(`/api/subscribers?${params.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch subscribers');
   }
@@ -128,8 +131,8 @@ export async function fetchSubscribers(projectId: string): Promise<Subscriber[]>
 /**
  * Fetch a single subscriber by ID.
  */
-export async function fetchSubscriber(id: string): Promise<Subscriber> {
-  const response = await fetch(`/api/subscribers/${id}`);
+export async function fetchSubscriber(fetchFn: FetchFn, id: string): Promise<Subscriber> {
+  const response = await fetchFn(`/api/subscribers/${id}`);
   if (!response.ok) {
     throw new Error('Failed to fetch subscriber');
   }
@@ -139,8 +142,11 @@ export async function fetchSubscriber(id: string): Promise<Subscriber> {
 /**
  * Create a new subscriber.
  */
-export async function createSubscriber(data: CreateSubscriberData): Promise<Subscriber> {
-  const response = await fetch('/api/subscribers', {
+export async function createSubscriber(
+  fetchFn: FetchFn,
+  data: CreateSubscriberData,
+): Promise<Subscriber> {
+  const response = await fetchFn('/api/subscribers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -156,10 +162,11 @@ export async function createSubscriber(data: CreateSubscriberData): Promise<Subs
  * Update an existing subscriber.
  */
 export async function updateSubscriber(
+  fetchFn: FetchFn,
   id: string,
   data: UpdateSubscriberData,
 ): Promise<Subscriber> {
-  const response = await fetch(`/api/subscribers/${id}`, {
+  const response = await fetchFn(`/api/subscribers/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -174,8 +181,8 @@ export async function updateSubscriber(
 /**
  * Delete a subscriber.
  */
-export async function deleteSubscriber(id: string): Promise<void> {
-  const response = await fetch(`/api/subscribers/${id}`, {
+export async function deleteSubscriber(fetchFn: FetchFn, id: string): Promise<void> {
+  const response = await fetchFn(`/api/subscribers/${id}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -186,8 +193,12 @@ export async function deleteSubscriber(id: string): Promise<void> {
 /**
  * Toggle a subscriber's enabled status.
  */
-export async function toggleSubscriber(id: string, enabled: boolean): Promise<Subscriber> {
-  const response = await fetch(`/api/subscribers/${id}/toggle`, {
+export async function toggleSubscriber(
+  fetchFn: FetchFn,
+  id: string,
+  enabled: boolean,
+): Promise<Subscriber> {
+  const response = await fetchFn(`/api/subscribers/${id}/toggle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),

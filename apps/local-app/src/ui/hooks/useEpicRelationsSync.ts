@@ -13,20 +13,20 @@ import { useAppSocket } from './useAppSocket';
 export function createEpicRelationsInvalidationRegistry(
   workspaceId: string,
 ): RealtimeInvalidationRegistry {
+  const match = exactTopic(`workspace/${workspaceId}/epic-relations`);
+  const entries: RealtimeInvalidationRegistry[number]['entries'] = [
+    { kind: 'invalidate', queryKey: epicRelationQueryKeys.detailRoot() },
+    { kind: 'invalidate', queryKey: epicRelationQueryKeys.candidateRoot() },
+    { kind: 'invalidate', queryKey: epicRelationQueryKeys.batchRoot() },
+    // A route change reshapes related-time rollups, so the Epic-time
+    // families ride the same invalidation.
+    { kind: 'invalidate', queryKey: epicTimeQueryKeys.detailRoot() },
+    { kind: 'invalidate', queryKey: epicTimeQueryKeys.batchRoot() },
+  ];
+  // `remote-synced`: a replica apply from a remote may have changed any relation.
   return [
-    {
-      match: exactTopic(`workspace/${workspaceId}/epic-relations`),
-      type: 'invalidated',
-      entries: [
-        { kind: 'invalidate', queryKey: epicRelationQueryKeys.detailRoot() },
-        { kind: 'invalidate', queryKey: epicRelationQueryKeys.candidateRoot() },
-        { kind: 'invalidate', queryKey: epicRelationQueryKeys.batchRoot() },
-        // A route change reshapes related-time rollups, so the Epic-time
-        // families ride the same invalidation.
-        { kind: 'invalidate', queryKey: epicTimeQueryKeys.detailRoot() },
-        { kind: 'invalidate', queryKey: epicTimeQueryKeys.batchRoot() },
-      ],
-    },
+    { match, type: 'invalidated', entries },
+    { match, type: 'remote-synced', entries },
   ];
 }
 

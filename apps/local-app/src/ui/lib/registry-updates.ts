@@ -1,4 +1,5 @@
 import { isLessThan } from '@devchain/shared';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 /**
  * Template info from the unified templates API
@@ -34,7 +35,9 @@ export type TemplateUpdateStatus =
  * Throws on network errors to distinguish from "not found".
  */
 export async function fetchRemoteTemplateInfo(slug: string): Promise<RemoteTemplateInfo | null> {
-  const res = await fetch(`/api/registry/templates/${encodeURIComponent(slug)}`);
+  const res = await apiFetch(`/api/registry/templates/${encodeURIComponent(slug)}`, undefined, {
+    backend: HOME_BACKEND,
+  });
   if (!res.ok) {
     throw new Error(`Registry request failed: ${res.status}`);
   }

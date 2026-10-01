@@ -148,6 +148,67 @@ export class RelationConfirmationRequiredError extends AppError {
 }
 
 /**
+ * A replica apply step failed. The whole apply transaction has rolled back.
+ * `message` never includes row content: payloads carry secrets.
+ */
+export class ReplicaApplyError extends AppError {
+  constructor(
+    public readonly table: string,
+    public readonly rowId: string,
+    reason: string,
+  ) {
+    super(`Replica apply failed at ${table} row ${rowId}: ${reason}`, 'replica_apply_error', 422, {
+      table,
+      rowId,
+    });
+  }
+}
+
+/** Built-in DevChain skills are always on; a targeted disable is refused. */
+export class SkillSourceAlwaysEnabledError extends AppError {
+  constructor(sourceName: string, details?: Record<string, unknown>) {
+    super(
+      `Skill source ${sourceName} is always enabled and cannot be disabled.`,
+      'SKILL_SOURCE_ALWAYS_ENABLED',
+      409,
+      { sourceName, ...details },
+    );
+  }
+}
+
+/** A remote handoff has frozen the project; writes resume after thaw or release. */
+export class ProjectFrozenError extends AppError {
+  constructor(public readonly projectId: string) {
+    super('Project is frozen for a remote handoff.', 'PROJECT_FROZEN', 423, { projectId });
+  }
+}
+
+/** The project is bound to a remote, which is its only writer until it is taken back. */
+export class ProjectRemoteError extends AppError {
+  constructor(
+    public readonly projectId: string,
+    public readonly remoteId: string,
+    public readonly remoteName: string | null,
+  ) {
+    super(
+      remoteName
+        ? `Project is connected to remote "${remoteName}"; change it there.`
+        : 'Project is connected to a remote; change it there.',
+      'PROJECT_REMOTE',
+      423,
+      { projectId, remoteId, remoteName },
+    );
+  }
+}
+
+/** A replica could not be built; `details.errors` lists the preflight failures. */
+export class ReplicaPreflightError extends AppError {
+  constructor(errors: readonly Record<string, unknown>[]) {
+    super('Project replica preflight failed.', 'REPLICA_PREFLIGHT_FAILED', 422, { errors });
+  }
+}
+
+/**
  * Wraps a relation error from composite Epic creation so the failing input
  * index travels with it. The wrapped error keeps its own code, status, and
  * details; surfaces should project the cause and merge in `relationIndex`.

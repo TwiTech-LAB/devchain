@@ -1,3 +1,4 @@
+import { ProviderCliInstallerService } from './provider-cli-installer.service';
 /**
  * Layer: module-unit
  * Why: ProviderStateManager coordinates provider mutation, auto-compact config, and binary validation.
@@ -54,6 +55,7 @@ function makeProvider(overrides: Partial<Provider> = {}): Provider {
 
 describe('ProviderStateManager', () => {
   let service: ProviderStateManager;
+  let managedInstaller: { editBinaryPath: jest.Mock };
   let mockStorage: Record<string, jest.Mock>;
   let mockExecutor: jest.Mocked<Pick<ProcessExecutor, 'run'>>;
   let mockSyncService: { syncProviderToAllProjects: jest.Mock };
@@ -95,9 +97,11 @@ describe('ProviderStateManager', () => {
     mockDisableClaudeAutoCompact.mockReset();
     mockEnableClaudeAutoCompact.mockReset();
 
+    managedInstaller = { editBinaryPath: jest.fn((_name, _path, edit) => edit()) };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ProviderStateManager,
+        { provide: ProviderCliInstallerService, useValue: managedInstaller },
         { provide: STORAGE_SERVICE, useValue: mockStorage },
         { provide: ProviderProjectSyncService, useValue: mockSyncService },
         { provide: ProcessExecutor, useValue: mockExecutor },
@@ -106,6 +110,19 @@ describe('ProviderStateManager', () => {
     }).compile();
 
     service = module.get(ProviderStateManager);
+  });
+
+  it('routes a changed Binary Path through the managed installer fence', async () => {
+    mockStorage.getProvider.mockResolvedValue(makeProvider());
+    await service.update('provider-1', { binPath: '/custom/claude' });
+    expect(managedInstaller.editBinaryPath).toHaveBeenCalledWith(
+      'claude',
+      '/custom/claude',
+      expect.any(Function),
+    );
+    managedInstaller.editBinaryPath.mockClear();
+    await service.update('provider-1', { binPath: '/usr/local/bin/claude' });
+    expect(managedInstaller.editBinaryPath).not.toHaveBeenCalled();
   });
 
   it('creates, seeds, and syncs a provider', async () => {

@@ -4,6 +4,8 @@ import { WatchersService } from './watchers.service';
 import { WatcherRunnerService } from './watcher-runner.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import type { Watcher, CreateWatcher, UpdateWatcher } from '../../storage/models/domain.models';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('WatchersService', () => {
   let service: WatchersService;
@@ -60,6 +62,7 @@ describe('WatchersService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         WatchersService,
         {
           provide: STORAGE_SERVICE,

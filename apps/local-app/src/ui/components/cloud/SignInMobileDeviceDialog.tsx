@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../ui/button';
 import { cn } from '@/ui/lib/utils';
+import type { BackendId } from '@/ui/lib/api-transport';
 import {
   Dialog,
   DialogContent,
@@ -18,12 +19,15 @@ interface SignInMobileDeviceDialogProps {
   triggerClassName?: string;
   /** Size variant for the trigger button. Defaults to 'sm' (existing behaviour). */
   triggerSize?: 'sm' | 'default' | 'lg';
+  /** Whose instance the paired phone gets access to; defaults to this PC. */
+  backend?: BackendId;
 }
 
 export function SignInMobileDeviceDialog({
   identityServiceUrl,
   triggerClassName,
   triggerSize = 'sm',
+  backend,
 }: SignInMobileDeviceDialogProps) {
   const [open, setOpen] = useState(false);
 
@@ -49,6 +53,7 @@ export function SignInMobileDeviceDialog({
         {open && (
           <QrAuthDialogBody
             identityServiceUrl={identityServiceUrl}
+            backend={backend}
             onClose={() => setOpen(false)}
           />
         )}
@@ -59,12 +64,14 @@ export function SignInMobileDeviceDialog({
 
 function QrAuthDialogBody({
   identityServiceUrl,
+  backend,
   onClose,
 }: {
   identityServiceUrl: string;
+  backend?: BackendId;
   onClose: () => void;
 }) {
-  const qr = useQrAuth(identityServiceUrl, 'provision');
+  const qr = useQrAuth(identityServiceUrl, 'provision', backend);
 
   useEffect(() => {
     qr.start();

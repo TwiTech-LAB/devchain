@@ -147,6 +147,7 @@ describe('SessionsService.terminateSession — size_bytes', () => {
           .mockReturnValue({ trackingStartedAt: null, idleTimeoutMs: 30_000 }),
         runTerminationResetSync: jest.fn(),
       } as unknown as EpicTimeStore,
+      { listRemoteOwnedProjectIds: () => [] } as never,
     );
   });
 

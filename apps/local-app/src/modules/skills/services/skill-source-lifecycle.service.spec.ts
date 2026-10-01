@@ -129,6 +129,23 @@ describe('SkillSourceLifecycleService', () => {
     );
   });
 
+  it('returns from an always-deferred create while sync is still running and serializes exclusive jobs', async () => {
+    // Unit layer isolates FIFO admission; the sync executor supplies a controlled completion barrier.
+    const sync = deferred<SyncResult>();
+    syncExecutor.syncSource.mockReturnValueOnce(sync.promise);
+    const source = await service.createCommunitySource(
+      { name: 'community-source', repoOwner: 'owner', repoName: 'repo', branch: 'main' },
+      { deferInitialSync: true },
+    );
+    expect(source.name).toBe('community-source');
+    const job = jest.fn().mockResolvedValue(undefined);
+    const pending = service.enqueueExclusiveJob(job);
+    expect(job).not.toHaveBeenCalled();
+    sync.resolve(completedResult());
+    await pending;
+    expect(job).toHaveBeenCalledTimes(1);
+  });
+
   it('delegates community and local listing through the lifecycle seam', async () => {
     storage.listCommunitySkillSources.mockResolvedValue([communitySource()]);
     storage.listLocalSkillSources.mockResolvedValue([localSource()]);

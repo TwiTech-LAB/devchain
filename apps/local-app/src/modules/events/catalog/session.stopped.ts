@@ -5,6 +5,7 @@ export const sessionStoppedSourceSchema = z.enum([
   'mobile-rpc',
   'subscriber',
   'team-management',
+  'remote-operation',
 ]);
 
 export const sessionStoppedReasonSchema = z.enum(['user-requested', 'restart', 'agent-deletion']);

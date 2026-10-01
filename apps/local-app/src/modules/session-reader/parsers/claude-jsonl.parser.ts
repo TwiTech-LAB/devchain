@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as readline from 'node:readline';
+import { withoutFollowNote } from '../../../common/follow-note';
 import { createLogger } from '../../../common/logging/logger';
 import type {
   UnifiedMessage,
@@ -55,6 +56,12 @@ interface RawClaudeEntry {
   parentUuid?: string | null;
   isSidechain?: boolean;
   timestamp?: string;
+  attachment?: {
+    type?: string;
+    commandMode?: string;
+    origin?: { kind?: string };
+    prompt?: unknown;
+  };
   message?: {
     role?: string;
     content?: string | RawContentBlock[];
@@ -245,6 +252,26 @@ export async function parseClaudeJsonl(
 
       // Skip system entries (extract nothing for now)
       if (entry.type === 'system') continue;
+
+      const attachment = entry.attachment;
+      if (
+        entry.type === 'attachment' &&
+        attachment?.type === 'queued_command' &&
+        attachment.commandMode === 'prompt' &&
+        attachment.origin?.kind === 'human' &&
+        typeof attachment.prompt === 'string'
+      ) {
+        // Human input queued during a tool turn must break the assistant fold just
+        // like ordinary user input; task notifications must never enter this path.
+        entry = {
+          type: 'user',
+          uuid: entry.uuid,
+          parentUuid: entry.parentUuid,
+          isSidechain: entry.isSidechain,
+          timestamp: entry.timestamp,
+          message: { role: 'user', content: attachment.prompt },
+        };
+      }
 
       // Only process user and assistant
       if (entry.type !== 'user' && entry.type !== 'assistant') continue;
@@ -586,7 +613,7 @@ function buildUnifiedMessage(
   } else if (entry.type === 'user') {
     if (typeof msg.content === 'string') {
       // Plain text user message
-      content = [{ type: 'text', text: msg.content }];
+      content = [{ type: 'text', text: withoutFollowNote(msg.content) }];
     } else if (Array.isArray(msg.content)) {
       // Tool results or structured content
       const extracted = extractUserContent(msg.content as RawContentBlock[]);
@@ -707,7 +734,7 @@ function extractUserContent(rawContent: RawContentBlock[]): {
         isError: block.is_error ?? false,
       });
     } else if (block.type === 'text' && block.text !== undefined) {
-      content.push({ type: 'text', text: block.text });
+      content.push({ type: 'text', text: withoutFollowNote(block.text) });
     }
   }
 

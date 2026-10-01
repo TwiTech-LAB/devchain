@@ -1,5 +1,6 @@
 import type { UnifiedMessage } from '../dtos/unified-session.types';
 import type { TurnSummary, UnifiedSemanticStep, UnifiedTurn } from '../dtos/unified-chunk.types';
+import { runSteps } from '../services/cooperative-work';
 
 function makeEmptySummary(): TurnSummary {
   return {
@@ -61,6 +62,13 @@ export function buildTurns(
   steps: UnifiedSemanticStep[],
   messages: UnifiedMessage[],
 ): UnifiedTurn[] {
+  return runSteps(buildTurnSteps(steps, messages));
+}
+
+export function* buildTurnSteps(
+  steps: UnifiedSemanticStep[],
+  messages: UnifiedMessage[],
+): Generator<void, UnifiedTurn[]> {
   const assistantMessages = messages.filter((msg) => msg.role === 'assistant');
   if (assistantMessages.length === 0) return [];
 
@@ -81,6 +89,7 @@ export function buildTurns(
 
   const toolCallToTurnIndex = new Map<string, number>();
   for (const step of steps) {
+    yield;
     if (step.type !== 'tool_call' && step.type !== 'subagent') continue;
     if (!step.content.toolCallId || !step.sourceMessageId) continue;
     const turnIndex = sourceMessageToTurnIndex.get(step.sourceMessageId);
@@ -90,6 +99,7 @@ export function buildTurns(
 
   const tokenSourceByTurn = turns.map(() => new Set<string>());
   for (const step of steps) {
+    yield;
     let turnIndex: number | undefined;
 
     if (step.type === 'tool_result' && step.content.toolCallId) {
@@ -114,6 +124,7 @@ export function buildTurns(
     messages[messages.length - 1]?.timestamp ??
     assistantMessages[assistantMessages.length - 1].timestamp;
   for (let i = 0; i < turns.length; i += 1) {
+    yield;
     const nextTurnStart = i < turns.length - 1 ? turns[i + 1].timestamp : chunkEndTime;
     turns[i].durationMs = Math.max(0, nextTurnStart.getTime() - turns[i].timestamp.getTime());
 

@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ProviderMcpEnsureService } from './provider-mcp-ensure.service';
 import { McpProviderRegistrationService } from './mcp-provider-registration.service';
 import { ProviderAdapterFactory } from '../adapters';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectRemoteError, ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { Provider } from '../../storage/models/domain.models';
 import * as envConfig from '../../../common/config/env.config';
@@ -32,6 +34,7 @@ describe('ProviderMcpEnsureService', () => {
     ensure: jest.Mock;
   };
   let mockClaudeEnsureProjectSettings: jest.Mock;
+  let mockAdmission: { getRemoteOwner: jest.Mock };
 
   const createProvider = (overrides: Partial<Provider> = {}): Provider => ({
     id: 'provider-1',
@@ -103,6 +106,8 @@ describe('ProviderMcpEnsureService', () => {
 
     mockClaudeEnsureProjectSettings = jest.fn().mockResolvedValue(undefined);
 
+    mockAdmission = { getRemoteOwner: jest.fn().mockReturnValue(null) };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ProviderMcpEnsureService,
@@ -117,6 +122,10 @@ describe('ProviderMcpEnsureService', () => {
         {
           provide: ProviderAdapterFactory,
           useValue: mockAdapterFactory,
+        },
+        {
+          provide: ProjectWriteAdmissionService,
+          useValue: mockAdmission,
         },
       ],
     }).compile();
@@ -876,6 +885,20 @@ describe('ProviderMcpEnsureService', () => {
       expect(callOrder).toEqual(['provision', 'ensure']);
     });
 
+    it('passes the provisioning environment through the full MCP ensure path', async () => {
+      const context = { env: { CODEX_HOME: '/custom/codex-home' } };
+      mockMcpRegistration.ensureRegistration.mockResolvedValue({
+        success: true,
+        action: 'added',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
+      });
+
+      await service.ensureMcp(agyProvider, projectPath, context);
+
+      expect(mockTrustProvisioner.provisionProjectPath).toHaveBeenCalledWith(projectPath, context);
+    });
+
     it('trust-folder distrusted_warning → ensure proceeds with warning', async () => {
       mockTrustProvisioner.provisionProjectPath.mockResolvedValue({
         success: true,
@@ -1167,10 +1190,11 @@ describe('ProviderMcpEnsureService', () => {
     });
 
     it('delegates to provisionProjectPath for a validated registered root', async () => {
-      const result = await service.ensureProjectProvisioning(claudeProvider, projectPath);
+      const context = { env: { CODEX_HOME: '/custom/codex-home' } };
+      const result = await service.ensureProjectProvisioning(claudeProvider, projectPath, context);
 
       expect(result).toEqual({ success: true, warnings: [] });
-      expect(claudeProvisionProjectPath).toHaveBeenCalledWith(projectPath);
+      expect(claudeProvisionProjectPath).toHaveBeenCalledWith(projectPath, context);
     });
 
     it('performs zero MCP registration calls and no project-local settings writes', async () => {
@@ -1286,6 +1310,85 @@ describe('ProviderMcpEnsureService', () => {
 
       expect(result).toEqual({ success: true, warnings: [] });
       expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remote-owned project skip', () => {
+    const remoteOwner = {
+      projectId: 'project-1',
+      remoteId: 'remote-9',
+      remoteName: 'vm-01',
+      state: 'remote' as const,
+    };
+
+    beforeEach(() => {
+      mockAdmission.getRemoteOwner.mockReturnValue(remoteOwner);
+    });
+
+    afterEach(() => {
+      mockAdmission.getRemoteOwner.mockReturnValue(null);
+    });
+
+    it('ensureMcp skips a remote-owned project without registering', async () => {
+      const provider = createProvider({ name: 'claude' });
+
+      const result = await service.ensureMcp(provider, '/home/user/project');
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('skipped');
+      expect(result.message).toContain('vm-01');
+      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
+      expect(mockClaudeEnsureProjectSettings).not.toHaveBeenCalled();
+    });
+
+    it('ensureMcp still registers for a home-owned project', async () => {
+      mockAdmission.getRemoteOwner.mockReturnValue(null);
+      const provider = createProvider({ name: 'claude' });
+      mockMcpRegistration.ensureRegistration.mockResolvedValue({
+        success: true,
+        action: 'added',
+      });
+
+      const result = await service.ensureMcp(provider, '/home/user/project');
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('added');
+      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
+        provider,
+        expect.anything(),
+        expect.objectContaining({ cwd: '/home/user/project' }),
+      );
+    });
+
+    it('ensureProjectProvisioning skips a remote-owned project', async () => {
+      const provider = createProvider({ name: 'agy' });
+
+      const result = await service.ensureProjectProvisioning(provider, '/home/user/project');
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({ code: 'PROVISIONING_REMOTE_OWNED' }),
+      ]);
+    });
+
+    it('assertPathNotRemoteOwned throws ProjectRemoteError for a remote-owned path', async () => {
+      await expect(service.assertPathNotRemoteOwned('/home/user/project')).rejects.toBeInstanceOf(
+        ProjectRemoteError,
+      );
+    });
+
+    it('assertPathNotRemoteOwned accepts a home-owned path', async () => {
+      mockAdmission.getRemoteOwner.mockReturnValue(null);
+
+      await expect(service.assertPathNotRemoteOwned('/home/user/project')).resolves.toBeUndefined();
+    });
+
+    it('assertPathNotRemoteOwned rejects an unregistered path', async () => {
+      mockAdmission.getRemoteOwner.mockReturnValue(null);
+
+      await expect(service.assertPathNotRemoteOwned('/nowhere/at/all')).rejects.toBeInstanceOf(
+        ValidationError,
+      );
     });
   });
 });

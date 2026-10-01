@@ -599,3 +599,33 @@ describe('computeChunkMetrics', () => {
     expect(metrics.durationMs).toBe(0);
   });
 });
+
+// The builder unit layer can compare every derived field and force a yield inside one AI run.
+describe('cooperative chunk building', () => {
+  it('matches synchronous chunks while yielding within a large single AI chunk', async () => {
+    const { buildChunksCooperatively } = await import('./chunk-builder');
+    const messages = [
+      makeMsg({ id: 'user', role: 'user', content: [textBlock('question')] }),
+      ...Array.from({ length: 20000 }, (_, i) =>
+        makeMsg({
+          id: `assistant-${i}`,
+          role: 'assistant',
+          content: [textBlock(`answer ${i}`)],
+          usage: usage(10, 20),
+        }),
+      ),
+      makeMsg({ id: 'side', role: 'assistant', isSidechain: true }),
+      makeMsg({ id: 'compact', role: 'user', isCompactSummary: true }),
+    ];
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 0);
+    let result;
+    try {
+      result = await buildChunksCooperatively(messages);
+    } finally {
+      clearInterval(timer);
+    }
+    expect(ticks).toBeGreaterThan(0);
+    expect(result).toEqual(buildChunks(messages));
+  });
+});

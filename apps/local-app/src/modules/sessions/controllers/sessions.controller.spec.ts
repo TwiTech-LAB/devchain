@@ -9,6 +9,7 @@ import type {
   PoolDetails,
 } from '../services/sessions-message-pool.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 // Valid UUIDs for testing
 const VALID_PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
@@ -84,6 +85,7 @@ describe('SessionsController', () => {
       mockMessagePoolService as unknown as SessionsMessagePoolService,
       mockSessionRuntime as SessionRuntime,
       mockStorage as unknown as StorageService,
+      createProjectWriteAdmissionStub() as never,
     );
   });
 

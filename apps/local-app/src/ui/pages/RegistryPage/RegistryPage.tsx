@@ -7,6 +7,7 @@ import { TemplateGrid, TemplateGridSkeleton } from './TemplateGrid';
 import { TemplateDetailDrawer } from './TemplateDetailDrawer';
 import { DownloadedTemplates } from './DownloadedTemplates';
 import type { TemplateCardData } from './TemplateCard';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 /**
  * Feature flag to show/hide search and category filters.
@@ -28,7 +29,7 @@ interface TemplateListResponse {
 }
 
 async function fetchRegistryStatus(): Promise<RegistryStatusResponse> {
-  const res = await fetch('/api/registry/status');
+  const res = await apiFetch('/api/registry/status', undefined, { backend: HOME_BACKEND });
   if (!res.ok) throw new Error('Failed to check registry status');
   return res.json();
 }
@@ -42,7 +43,7 @@ async function fetchRegistryTemplates(params: {
   if (params.category) searchParams.set('category', params.category);
 
   const url = `/api/registry/templates${searchParams.toString() ? `?${searchParams}` : ''}`;
-  const res = await fetch(url);
+  const res = await apiFetch(url, undefined, { backend: HOME_BACKEND });
   if (!res.ok) throw new Error('Failed to fetch templates');
   return res.json();
 }

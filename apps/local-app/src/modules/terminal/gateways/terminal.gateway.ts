@@ -91,6 +91,15 @@ const INPUT_RATE_BYTES_THRESHOLD = 512000; // >100KB/sec sustained over 5s = 500
 export const PROMPT_PASTE_RETRY_WINDOW_MS = 60000;
 export const PROMPT_PASTE_MAX_REQUESTS_PER_SESSION = 64;
 
+type TerminalInputPayload =
+  | { sessionId: string; data: string; ttyMode?: boolean; kind?: never }
+  | TerminalPromptPasteInput;
+
+interface InputQueue {
+  tail?: Promise<void>;
+  retired: boolean;
+}
+
 interface InputRateEntry {
   messages: number;
   bytes: number;
@@ -164,6 +173,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     { session: TerminalSession; listener: (frame: FrameEvent) => void }
   >();
   private heartbeatInterval?: NodeJS.Timeout;
+  private readonly inputQueues = new Map<string, InputQueue>();
   private inputRateTracker = new Map<string, InputRateEntry>();
   private readonly themeCache = new Map<string, ThemeStyle>();
   /** Last viewport-mode-restore redraw per session — coalesces concurrent viewers. */
@@ -966,9 +976,37 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   async handleInput(
     @ConnectedSocket() client: Socket,
     @MessageBody()
-    payload:
-      | { sessionId: string; data: string; ttyMode?: boolean; kind?: never }
-      | TerminalPromptPasteInput,
+    payload: TerminalInputPayload,
+  ): Promise<void | TerminalPromptPasteAck> {
+    const { sessionId } = payload;
+    const queue = this.inputQueues.get(sessionId) ?? { retired: false };
+    this.inputQueues.set(sessionId, queue);
+    const run = () => {
+      if (queue.retired) {
+        return payload.kind === 'prompt-paste'
+          ? this.promptPasteFailure(payload.requestId, 'UNKNOWN_SESSION')
+          : undefined;
+      }
+      return this.processInput(client, payload);
+    };
+    // Serialize before liveness and prompt activation, not just at the pane write.
+    const result = queue.tail ? queue.tail.then(run) : Promise.resolve(run());
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    queue.tail = tail;
+    void tail.then(() => {
+      if (this.inputQueues.get(sessionId) === queue && queue.tail === tail) {
+        this.inputQueues.delete(sessionId);
+      }
+    });
+    return result;
+  }
+
+  private async processInput(
+    client: Socket,
+    payload: TerminalInputPayload,
   ): Promise<void | TerminalPromptPasteAck> {
     if (payload.kind === 'prompt-paste') {
       return this.handlePromptPasteInput(client, payload);
@@ -1520,6 +1558,18 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.emit('message', createEnvelope('sessions', 'stopped', ep));
   }
 
+  /**
+   * Ends a terminal that has no `sessions` row (see StandaloneTerminalService):
+   * stops its PTY, drops its registry entry and replay, and tells attached views.
+   */
+  endStandaloneTerminal(sessionId: string, message: string): void {
+    this.cleanupSessionLifecycle(sessionId, { replayRetentionMs: 0, disposeTerminalState: true });
+    const ep: SessionStatePayload = { sessionId, status: 'ended', message };
+    this.server
+      ?.to(`session:${sessionId}`)
+      .emit('message', createEnvelope(`session/${sessionId}`, 'state_change', ep));
+  }
+
   // ── Heartbeat ───────────────────────────────────────────────────────
 
   private startHeartbeat(): void {
@@ -1608,6 +1658,9 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   private cleanupSessionLifecycle(sessionId: string, policy: LifecycleCleanupPolicy): void {
     this.cancelReplayCleanup(sessionId);
+    const inputQueue = this.inputQueues.get(sessionId);
+    if (inputQueue) inputQueue.retired = true;
+    this.inputQueues.delete(sessionId);
 
     this.unwireFrameListener(sessionId);
     this.seedService.invalidateCache(sessionId);
@@ -1739,6 +1792,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.themeCache.clear();
     this.viewportRestoreAt.clear();
     this.inputRateTracker.clear();
+    for (const queue of this.inputQueues.values()) queue.retired = true;
+    this.inputQueues.clear();
     this.recoveries.clear();
     for (const timer of this.promptPasteExpiryTimers.values()) clearTimeout(timer);
     this.promptPasteExpiryTimers.clear();

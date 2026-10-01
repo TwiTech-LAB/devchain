@@ -27,10 +27,13 @@ import {
   TableHeader,
   TableRow,
 } from '@/ui/components/ui/table';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { cn } from '@/ui/lib/utils';
 import { RefreshCw, Clock } from 'lucide-react';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface EventHandlerLog {
   id: string;
@@ -85,7 +88,7 @@ const TIME_RANGE_OPTIONS = [
   { label: 'All time', value: 'all' },
 ] as const;
 
-async function fetchEvents(params: FetchEventsParams): Promise<EventsListResult> {
+async function fetchEvents(fetchFn: FetchFn, params: FetchEventsParams): Promise<EventsListResult> {
   const search = new URLSearchParams();
 
   if (params.name) search.set('name', params.name);
@@ -96,7 +99,7 @@ async function fetchEvents(params: FetchEventsParams): Promise<EventsListResult>
   if (params.limit !== undefined) search.set('limit', String(params.limit));
   if (params.offset !== undefined) search.set('offset', String(params.offset));
 
-  const res = await fetch(`/api/events?${search.toString()}`);
+  const res = await fetchFn(`/api/events?${search.toString()}`);
   if (!res.ok) {
     throw new Error('Failed to fetch events');
   }
@@ -178,6 +181,7 @@ function summarizeHandlers(handlers: EventHandlerLog[]): {
 }
 
 export function EventsPage() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [pagination, setPagination] = useState({ limit: 50, offset: 0 });
@@ -227,7 +231,7 @@ export function EventsPage() {
   const { data, isLoading, refetch, error } = useQuery<EventsListResult, Error>({
     queryKey: ['eventLogs', filters, pagination],
     queryFn: () =>
-      fetchEvents({
+      fetchEvents(fetchFn, {
         name: filters.name.trim() || undefined,
         handler: filters.handler.trim() || undefined,
         status: filters.status === 'all' ? undefined : filters.status,
@@ -427,18 +431,12 @@ export function EventsPage() {
                             </TableCell>
                             <TableCell className="text-center">
                               <div className="flex items-center justify-center gap-2">
-                                <Badge
-                                  variant="outline"
-                                  className="border-emerald-500 text-emerald-600"
-                                >
+                                <OpaqueBadge variant="outline" className={TONE_CLASSES.ok}>
                                   {summary.success} OK
-                                </Badge>
-                                <Badge
-                                  variant="outline"
-                                  className="border-destructive text-destructive"
-                                >
+                                </OpaqueBadge>
+                                <OpaqueBadge variant="outline" className={TONE_CLASSES.error}>
                                   {summary.failure} Fail
-                                </Badge>
+                                </OpaqueBadge>
                               </div>
                             </TableCell>
                             <TableCell className="font-mono text-xs">
@@ -525,18 +523,12 @@ export function EventsPage() {
                         <div>
                           <div className="text-xs text-muted-foreground">Handlers</div>
                           <div className="flex items-center gap-2">
-                            <Badge
-                              variant="outline"
-                              className="border-emerald-500 text-emerald-600"
-                            >
+                            <OpaqueBadge variant="outline" className={TONE_CLASSES.ok}>
                               {handlerSummary.success} OK
-                            </Badge>
-                            <Badge
-                              variant="outline"
-                              className="border-destructive text-destructive"
-                            >
+                            </OpaqueBadge>
+                            <OpaqueBadge variant="outline" className={TONE_CLASSES.error}>
                               {handlerSummary.failure} Fail
-                            </Badge>
+                            </OpaqueBadge>
                           </div>
                         </div>
                       )}

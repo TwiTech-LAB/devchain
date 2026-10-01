@@ -74,11 +74,29 @@ export function createBoardInvalidationRegistry({
     },
   ];
 
-  return ['created', 'updated', 'deleted'].map((type) => ({
-    match: (candidateTopic: string) => candidateTopic === topic,
-    type,
-    entries,
-  }));
+  const match = (candidateTopic: string) => candidateTopic === topic;
+  return [
+    ...['created', 'updated', 'deleted'].map((type) => ({ match, type, entries })),
+    {
+      // A replica apply may touch any epic of the project, so every board cache is stale.
+      match,
+      type: 'remote-synced',
+      entries: [
+        { kind: 'invalidate', queryKey: [...boardCacheKeys.project(projectId)] },
+        {
+          kind: 'custom-handler',
+          handler: (_payload, queryClient) => {
+            invalidateSubEpicCounts(queryClient);
+            if (parentFilter) {
+              void queryClient.invalidateQueries({
+                queryKey: boardCacheKeys.children(parentFilter),
+              });
+            }
+          },
+        },
+      ],
+    },
+  ];
 }
 
 export function refreshBoardCache(

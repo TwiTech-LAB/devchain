@@ -64,11 +64,10 @@ interface BoardKanbanColumnBase {
   readonly status: Status;
   readonly epics: Epic[];
   readonly activeParentId: string | null;
-  readonly isActiveDrop: boolean;
+  readonly draggedEpic: Epic | null;
   readonly statusOrder: Status[];
   readonly subEpicCounts: Readonly<Record<string, number>>;
   readonly subEpicStatusCountsByEpicId: Readonly<Record<string, Readonly<Record<string, number>>>>;
-  readonly hasRunningWorktrees: boolean;
   /** Root-Epic estimated-time totals; collapsed rows badge them too. */
   readonly timeTotals?: BoardEpicTimeTotalsMap;
   /** Relation counts for the loaded context; collapsed rows badge the total. */
@@ -80,11 +79,6 @@ interface BoardKanbanColumnBase {
   openBulkEdit(epic: Epic): void;
   openEpicDetails(epic: Epic): void;
   toggleParentFilter(epic: Epic): void;
-  moveToWorktree(epic: Epic): void;
-  dragStart(epic: Epic): void;
-  dragEnd(): void;
-  dragOver(): void;
-  drop(): void;
 }
 
 export interface BoardCollapsedColumnModel extends BoardKanbanColumnBase {
@@ -94,7 +88,6 @@ export interface BoardCollapsedColumnModel extends BoardKanbanColumnBase {
 
 export interface BoardExpandedColumnModel extends BoardKanbanColumnBase {
   readonly kind: 'expanded';
-  readonly draggedEpic: Epic | null;
   /** Sources for this column's imported Epics; collapsed columns show none. */
   readonly externalSources: BoardExternalSourceMap;
   collapse(): void;
@@ -103,8 +96,15 @@ export interface BoardExpandedColumnModel extends BoardKanbanColumnBase {
 
 export type BoardKanbanColumnModel = BoardCollapsedColumnModel | BoardExpandedColumnModel;
 
+export interface BoardCardDragModel {
+  start(epic: Epic): void;
+  drop(epic: Epic, statusId: string): void;
+  cancel(): void;
+}
+
 export interface BoardKanbanContentModel {
   readonly kind: 'kanban';
+  readonly cardDrag: BoardCardDragModel;
   readonly columns: readonly BoardKanbanColumnModel[];
 }
 
@@ -116,7 +116,6 @@ export interface BoardListContentModel {
   readonly pageSize: number;
   readonly currentPage: number;
   readonly subEpicCounts: Readonly<Record<string, number>>;
-  readonly hasRunningWorktrees: boolean;
   changePage(page: number): void;
   changePageSize(pageSize: number): void;
   editEpic(epic: Epic): void;
@@ -127,7 +126,6 @@ export interface BoardListContentModel {
   toggleParentFilter(epic: Epic): void;
   changeStatus(epic: Epic, statusId: string): Promise<void>;
   changeAgent(epic: Epic, agentId: string | null): Promise<void>;
-  moveToWorktree(epic: Epic): void;
   /** Sources for main rows; lazily expanded sub-epic rows show none. */
   readonly externalSources: BoardExternalSourceMap;
   /** Root-Epic estimated-time totals for main rows. */
@@ -172,13 +170,6 @@ export interface BoardBulkDeleteDialogModel {
   confirm(): void;
 }
 
-export interface BoardMoveToWorktreeDialogModel {
-  readonly epic: Epic | null;
-  readonly statuses: Status[];
-  readonly agents: Agent[];
-  changeOpen(open: boolean): void;
-}
-
 export interface BoardDialogsModel {
   readonly create: BoardCreateDialogModel;
   readonly deleteEpic: BoardDeleteDialogModel;
@@ -188,7 +179,6 @@ export interface BoardDialogsModel {
     readonly statuses: Status[];
     readonly agents: Agent[];
   };
-  readonly moveToWorktree: BoardMoveToWorktreeDialogModel;
 }
 
 export interface BoardPagePresentation {

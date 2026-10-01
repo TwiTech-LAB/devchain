@@ -14,7 +14,7 @@ import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Copy, Check, Clock, User, Zap, Hash, AlertCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-import type { MessageLogEntry, MessageLogPreview } from './MessageActivityList';
+import { StatusBadge, type MessageLogEntry, type MessageLogPreview } from './MessageActivityList';
 
 interface MessageDetailDrawerProps {
   /** Message preview (from list endpoint) - will fetch full content when opened */
@@ -40,25 +40,6 @@ function formatDateTime(timestamp: number): string {
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString();
-}
-
-interface StatusBadgeProps {
-  status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';
-}
-
-function StatusBadge({ status }: StatusBadgeProps) {
-  const variants: Record<string, string> = {
-    queued: 'bg-muted text-muted-foreground',
-    delivered: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/40',
-    failed: 'bg-destructive/10 text-destructive border-destructive/40',
-    unconfirmed: 'bg-amber-500/10 text-amber-600 border-amber-500/40',
-  };
-
-  return (
-    <Badge variant="outline" className={cn('text-xs uppercase font-medium', variants[status])}>
-      {status}
-    </Badge>
-  );
 }
 
 /** Section wrapper for visual grouping */
@@ -109,7 +90,7 @@ function ContentBlock({ text }: { text: string }) {
           aria-label="Copy content"
         >
           {copied ? (
-            <Check className="h-4 w-4 text-emerald-500" />
+            <Check className="h-4 w-4 text-status-ok" />
           ) : (
             <Copy className="h-4 w-4 text-muted-foreground" />
           )}
@@ -161,7 +142,7 @@ export function MessageDetailDrawer({ message, onClose }: MessageDetailDrawerPro
               {/* Status & Delivery Info */}
               <Section icon={Clock} title="Status">
                 <div className="flex items-center gap-3">
-                  <StatusBadge status={message.status} />
+                  <StatusBadge status={message.status} className="font-medium" />
                   {message.deliveredAt && (
                     <span className="text-sm text-muted-foreground">
                       Delivered at {formatTime(message.deliveredAt)}

@@ -143,6 +143,10 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     env = Object.keys(autoCompactResult.env).length > 0 ? autoCompactResult.env : null;
   }
 
+  if (input.adapter.launchEnv && Object.keys(input.adapter.launchEnv).length > 0) {
+    env = { ...(env ?? {}), ...input.adapter.launchEnv };
+  }
+
   if (input.runtimeEnv && Object.keys(input.runtimeEnv).length > 0) {
     env = { ...(env ?? {}), ...input.runtimeEnv };
   }

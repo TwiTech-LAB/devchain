@@ -29,6 +29,7 @@ import {
   type TemplateAgent,
   type TemplateProfile,
 } from './agentPlan';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
 const DEFAULT_EFFORT_OVERRIDE = '__default_effort_override__';
@@ -146,6 +147,7 @@ export function Step2Agents({
   onApplyPreset,
   onClearPreset,
 }: Step2AgentsProps) {
+  const fetchFn = useFetchFactory();
   const payload = preview.payload;
   const agents = useMemo<TemplateAgent[]>(() => payload.agents ?? [], [payload.agents]);
   const profiles = useMemo<TemplateProfile[]>(() => payload.profiles ?? [], [payload.profiles]);
@@ -182,7 +184,7 @@ export function Step2Agents({
     queries: selectedProviderIds.map((providerId) => ({
       queryKey: providerModelQueryKeys.main(providerId),
       queryFn: async () => {
-        const res = await fetch(`/api/providers/${providerId}/models`);
+        const res = await fetchFn(`/api/providers/${providerId}/models`);
         if (!res.ok) return [] as ProviderModelCatalogOption[];
         return parseModelOptions((await res.json().catch(() => [])) as unknown, providerId);
       },
@@ -194,7 +196,7 @@ export function Step2Agents({
     queries: selectedProviderIds.map((providerId) => ({
       queryKey: ['provider-efforts', providerId],
       queryFn: async () => {
-        const res = await fetch(`/api/providers/${providerId}/efforts`);
+        const res = await fetchFn(`/api/providers/${providerId}/efforts`);
         if (!res.ok) return EMPTY_EFFORTS;
         return parseEfforts((await res.json().catch(() => null)) as unknown);
       },

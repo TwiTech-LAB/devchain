@@ -85,9 +85,10 @@ export function PresetPopover({
               type="button"
               className={cn(
                 'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm',
-                'hover:bg-accent hover:text-accent-foreground',
+                activePreset === preset.name
+                  ? 'bg-selected text-selected-foreground'
+                  : 'hover:bg-accent hover:text-accent-foreground',
                 !available && 'opacity-50',
-                activePreset === preset.name && 'bg-accent/50',
               )}
               disabled={!available || applying}
               onClick={() => {
@@ -96,12 +97,12 @@ export function PresetPopover({
               }}
             >
               {available ? (
-                <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0 text-green-500" />
+                <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0 text-status-ok" />
               ) : (
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 text-yellow-500" />
+                      <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 text-status-warn" />
                     </TooltipTrigger>
                     <TooltipContent side="right" className="max-w-xs">
                       <p className="mb-1 font-medium">Missing configs:</p>

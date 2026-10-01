@@ -9,21 +9,6 @@ jest.mock('socket.io-client', () => ({
   io: (...args: unknown[]) => ioMock(...args),
 }));
 
-const mockWorktreeTab = { activeWorktree: null as { name: string } | null };
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => ({
-    activeWorktree: mockWorktreeTab.activeWorktree,
-    setActiveWorktree: jest.fn(),
-    apiBase: mockWorktreeTab.activeWorktree
-      ? `/wt/${encodeURIComponent(mockWorktreeTab.activeWorktree.name)}`
-      : '',
-    worktrees: [],
-    worktreesLoading: false,
-    runtimeResolved: true,
-  }),
-}));
-
 let socketHandlers: Record<string, ((payload: unknown) => void)[]>;
 
 function makePool(overrides: Partial<PoolDetails> = {}): PoolDetails {
@@ -54,7 +39,6 @@ describe('useMessagePools', () => {
   const fetchMock = jest.fn();
 
   beforeEach(() => {
-    mockWorktreeTab.activeWorktree = null;
     socketHandlers = {};
     ioMock.mockReturnValue({
       on: jest.fn((event: string, handler: (payload: unknown) => void) => {
@@ -214,43 +198,7 @@ describe('useMessagePools', () => {
     expect((result.current.error as Error).message).toBe('Failed to fetch pools');
   });
 
-  describe('worktree tab active', () => {
-    it('stays subscribed to the root app socket and invalidates on a root pools envelope', async () => {
-      mockWorktreeTab.activeWorktree = { name: 'feature-auth' };
-      const { Wrapper, queryClient } = createWrapper();
-      const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
-      renderHook(() => useMessagePools('project-1'), { wrapper: Wrapper });
-
-      const fetchedPools = () =>
-        fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/sessions/pools'));
-      await waitFor(() => expect(fetchedPools()).toBe(true));
-
-      // No worktree socket may be created: the hook pins the root socket.
-      const worktreeIoCalls = ioMock.mock.calls.filter(
-        (call) =>
-          typeof call[1] === 'object' &&
-          String((call[1] as { path?: string }).path).startsWith('/wt/'),
-      );
-      expect(worktreeIoCalls).toHaveLength(0);
-
-      const messageHandlers = socketHandlers['message'] || [];
-      expect(messageHandlers.length).toBeGreaterThan(0);
-      act(() => {
-        messageHandlers.forEach((handler) => {
-          handler({
-            topic: 'messages/pools',
-            type: 'updated',
-            payload: [],
-            ts: new Date().toISOString(),
-          });
-        });
-      });
-
-      await waitFor(() => {
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pools', 'project-1'] });
-      });
-    });
-
+  describe('shared app socket', () => {
     it('shares one root socket across instances and disconnects only after the last releases', async () => {
       const { Wrapper } = createWrapper();
       const first = renderHook(() => useMessagePools('project-1'), { wrapper: Wrapper });

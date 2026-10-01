@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe } from 'jest-axe';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -96,8 +96,7 @@ function renderCard(epic = createEpic(), isActiveParent = false) {
     epic,
     onEdit: jest.fn(),
     onDelete: jest.fn(),
-    onDragStart: jest.fn(),
-    onDragEnd: jest.fn(),
+    cardDrag: { pointerDown: jest.fn() },
     isDragging: false,
     onKeyboardMove: jest.fn(),
     onToggleParentFilter: jest.fn(),
@@ -125,8 +124,7 @@ function renderSourcedCard(epic = createEpic(), overrides: Partial<EpicCardProps
     epic,
     onEdit: jest.fn(),
     onDelete: jest.fn(),
-    onDragStart: jest.fn(),
-    onDragEnd: jest.fn(),
+    cardDrag: { pointerDown: jest.fn() },
     isDragging: false,
     onKeyboardMove: jest.fn(),
     onToggleParentFilter: jest.fn(),
@@ -200,8 +198,7 @@ describe('EpicCard estimated-time badge', () => {
       epic,
       onEdit: jest.fn(),
       onDelete: jest.fn(),
-      onDragStart: jest.fn(),
-      onDragEnd: jest.fn(),
+      cardDrag: { pointerDown: jest.fn() },
       isDragging: false,
       onKeyboardMove: jest.fn(),
       onToggleParentFilter: jest.fn(),
@@ -264,8 +261,7 @@ describe('EpicCard relation badges', () => {
       epic,
       onEdit: jest.fn(),
       onDelete: jest.fn(),
-      onDragStart: jest.fn(),
-      onDragEnd: jest.fn(),
+      cardDrag: { pointerDown: jest.fn() },
       isDragging: false,
       onKeyboardMove: jest.fn(),
       onToggleParentFilter: jest.fn(),
@@ -340,8 +336,7 @@ describe('EpicCard relation badges', () => {
       epic,
       onEdit: jest.fn(),
       onDelete: jest.fn(),
-      onDragStart: jest.fn(),
-      onDragEnd: jest.fn(),
+      cardDrag: { pointerDown: jest.fn() },
       isDragging: false,
       onKeyboardMove: jest.fn(),
       onToggleParentFilter: jest.fn(),
@@ -421,7 +416,7 @@ describe('EpicCard relation badges', () => {
     const props = renderCardWithRelations();
     const previewTrigger = screen.getByTestId('epic-relation-badges');
 
-    previewTrigger.focus();
+    act(() => previewTrigger.focus());
     fireEvent.focus(previewTrigger);
 
     const link = screen.getByRole('link', { name: 'Related epic' });
@@ -429,8 +424,12 @@ describe('EpicCard relation badges', () => {
 
     // The preview portal still bubbles through the card's React tree, so the
     // title must stop both the native drag and the activation intents.
-    fireEvent.dragStart(link);
-    expect(props.onDragStart).not.toHaveBeenCalled();
+    const containsTarget = jest.fn((_epic: Epic, event: React.PointerEvent<HTMLElement>) =>
+      event.currentTarget.contains(event.target as Node),
+    );
+    props.cardDrag!.pointerDown = containsTarget;
+    firePointer(link, 'pointerdown', { pointerId: 1 });
+    expect(containsTarget).toHaveReturnedWith(false);
 
     fireEvent.click(link);
     expect(props.onOpenEpicDetails).not.toHaveBeenCalled();
@@ -445,14 +444,59 @@ describe('EpicCard relation badges', () => {
     const previewTrigger = screen.getByTestId('epic-relation-badges');
 
     firePointer(previewTrigger, 'pointerdown', { pointerId: 11 });
-    expect(fireEvent.dragStart(card)).toBe(false);
-    expect(props.onDragStart).not.toHaveBeenCalled();
+    firePointer(card, 'pointerdown', { pointerId: 1 });
+    expect(props.cardDrag!.pointerDown).toHaveBeenLastCalledWith(
+      props.epic,
+      expect.anything(),
+      expect.objectContaining({ current: true }),
+    );
 
     // Pointer capture keeps the release on the trigger even outside it; the
     // release clears the fence so a later ordinary card drag starts.
     firePointer(previewTrigger, 'pointerup', { pointerId: 11 });
-    expect(fireEvent.dragStart(card)).toBe(true);
-    expect(props.onDragStart).toHaveBeenCalledWith(props.epic);
+    firePointer(card, 'pointerdown', { pointerId: 1 });
+    expect(props.cardDrag!.pointerDown).toHaveBeenLastCalledWith(
+      props.epic,
+      expect.anything(),
+      expect.objectContaining({ current: false }),
+    );
+  });
+
+  it('closes relation previews and disables card hover when another card is dragging', () => {
+    const props: EpicCardProps = {
+      epic: createEpic(),
+      onEdit: jest.fn(),
+      onDelete: jest.fn(),
+      cardDrag: { pointerDown: jest.fn() },
+      isDragging: false,
+      isBoardDragging: false,
+      onKeyboardMove: jest.fn(),
+      onToggleParentFilter: jest.fn(),
+      isActiveParent: false,
+      onOpenEpicDetails: jest.fn(),
+      statuses: [status],
+      relationCounts: { related: 1, blocks: 0, blockedBy: 0, total: 1 },
+    };
+    const queryClient = new QueryClient();
+    const tree = (dragging: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <EpicCard {...props} isBoardDragging={dragging} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    const view = render(tree(false));
+    const trigger = screen.getByTestId('epic-relation-badges');
+    fireEvent.focus(trigger);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    view.rerender(tree(true));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: /^Epic: Parent epic/ })).toHaveClass(
+      'pointer-events-none',
+    );
+    expect(screen.getByRole('group', { name: /^Epic: Parent epic/ })).not.toHaveClass('opacity-50');
+    fireEvent.focus(trigger);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('restores card drag when the armed preview badge unmounts', () => {
@@ -460,8 +504,7 @@ describe('EpicCard relation badges', () => {
       epic: createEpic(),
       onEdit: jest.fn(),
       onDelete: jest.fn(),
-      onDragStart: jest.fn(),
-      onDragEnd: jest.fn(),
+      cardDrag: { pointerDown: jest.fn() },
       isDragging: false,
       onKeyboardMove: jest.fn(),
       onToggleParentFilter: jest.fn(),
@@ -483,8 +526,13 @@ describe('EpicCard relation badges', () => {
     const previewTrigger = screen.getByTestId('epic-relation-badges');
 
     firePointer(previewTrigger, 'pointerdown', { pointerId: 13 });
-    expect(fireEvent.dragStart(screen.getByRole('group', { name: /^Epic: Parent epic/ }))).toBe(
-      false,
+    firePointer(screen.getByRole('group', { name: /^Epic: Parent epic/ }), 'pointerdown', {
+      pointerId: 1,
+    });
+    expect(props.cardDrag!.pointerDown).toHaveBeenLastCalledWith(
+      props.epic,
+      expect.anything(),
+      expect.objectContaining({ current: true }),
     );
 
     view.rerender(
@@ -501,22 +549,14 @@ describe('EpicCard relation badges', () => {
     );
 
     expect(screen.queryByTestId('epic-relation-badges')).not.toBeInTheDocument();
-    expect(fireEvent.dragStart(screen.getByRole('group', { name: /^Epic: Parent epic/ }))).toBe(
-      true,
+    firePointer(screen.getByRole('group', { name: /^Epic: Parent epic/ }), 'pointerdown', {
+      pointerId: 1,
+    });
+    expect(props.cardDrag!.pointerDown).toHaveBeenLastCalledWith(
+      props.epic,
+      expect.anything(),
+      expect.objectContaining({ current: false }),
     );
-    expect(props.onDragStart).toHaveBeenCalledWith(props.epic);
-  });
-
-  it('clears the drag fence on card drag-end', () => {
-    const props = renderCardWithRelations();
-    const card = screen.getByRole('group', { name: /^Epic: Parent epic/ });
-    const previewTrigger = screen.getByTestId('epic-relation-badges');
-
-    firePointer(previewTrigger, 'pointerdown', { pointerId: 12 });
-    fireEvent.dragEnd(card);
-
-    expect(props.onDragEnd).toHaveBeenCalledTimes(1);
-    expect(fireEvent.dragStart(card)).toBe(true);
   });
 });
 
@@ -525,7 +565,7 @@ describe('EpicCard sourced composition', () => {
     return screen.getByRole('group', { name: /^Epic: Parent epic/ });
   }
 
-  it('renders the draggable group and source footer as siblings inside one wrapper', () => {
+  it('renders the pointer gesture group and source footer as siblings inside one wrapper', () => {
     const { view } = renderSourcedCard();
 
     const group = cardGroup();
@@ -533,11 +573,13 @@ describe('EpicCard sourced composition', () => {
     expect(wrapper.tagName).toBe('DIV');
     // Exactly two children: the card group and the source footer.
     expect(wrapper.children).toHaveLength(2);
-    expect(group).toHaveAttribute('draggable', 'true');
+    expect(group).not.toHaveAttribute('draggable');
+    expect(group).toHaveClass('select-none');
+    expect(fireEvent.dragStart(group)).toBe(false);
     expect(
       screen.getByRole('link', { name: 'Open linked task ENG-1 in DevChain' }),
     ).toBeInTheDocument();
-    // The source anchor never lives inside the draggable group.
+    // The source anchor never lives inside the card group.
     expect(group.contains(screen.getByRole('link'))).toBe(false);
     void view;
   });
@@ -577,10 +619,12 @@ describe('EpicCard sourced composition', () => {
 
     fireEvent.click(anchor);
     fireEvent.keyDown(anchor, { key: 'Enter' });
+    fireEvent.pointerDown(anchor, { pointerId: 1 });
+    fireEvent.pointerMove(anchor, { pointerId: 1 });
     const drag = fireEvent.dragStart(anchor);
 
     expect(props.onOpenEpicDetails).not.toHaveBeenCalled();
-    expect(props.onDragStart).not.toHaveBeenCalled();
+    expect(props.cardDrag!.pointerDown).not.toHaveBeenCalled();
     expect(drag).toBe(false);
   });
 
@@ -609,13 +653,12 @@ describe('EpicCard sourced composition', () => {
     expect(await axe(view.baseElement)).toHaveNoViolations();
   });
 
-  it('keeps the unsourced card directly draggable without a wrapper', () => {
+  it('keeps the unsourced pointer gesture card without a wrapper', () => {
     const props: EpicCardProps = {
       epic: createEpic(),
       onEdit: jest.fn(),
       onDelete: jest.fn(),
-      onDragStart: jest.fn(),
-      onDragEnd: jest.fn(),
+      cardDrag: { pointerDown: jest.fn() },
       isDragging: false,
       onKeyboardMove: jest.fn(),
       onToggleParentFilter: jest.fn(),
@@ -630,7 +673,9 @@ describe('EpicCard sourced composition', () => {
     );
 
     const group = cardGroup();
-    expect(group).toHaveAttribute('draggable', 'true');
+    expect(group).not.toHaveAttribute('draggable');
+    expect(group).toHaveClass('select-none');
+    expect(fireEvent.dragStart(group)).toBe(false);
     expect(group.parentElement!.tagName).toBe('MAIN');
   });
 });
@@ -658,8 +703,7 @@ describe('EpicCard relation quick-link connector', () => {
       epic: createEpic(),
       onEdit: jest.fn(),
       onDelete: jest.fn(),
-      onDragStart: jest.fn(),
-      onDragEnd: jest.fn(),
+      cardDrag: { pointerDown: jest.fn() },
       isDragging: false,
       onKeyboardMove: jest.fn(),
       onToggleParentFilter: jest.fn(),
@@ -676,18 +720,26 @@ describe('EpicCard relation quick-link connector', () => {
     return { props, bindings, view };
   }
 
-  it('synchronously suppresses native status drag after connector pointer-down', () => {
+  it('passes the connector fence into the card gesture until pointer-up', () => {
     const { props } = renderQuickLinkCard();
     const handle = screen.getByRole('button', { name: 'Link Parent epic to another epic' });
     const card = screen.getByRole('group', { name: /^Epic: Parent epic/ });
 
     fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 10, clientY: 10 });
-    expect(fireEvent.dragStart(card)).toBe(false);
-    expect(props.onDragStart).not.toHaveBeenCalled();
+    fireEvent.pointerDown(card, { pointerId: 1 });
+    expect(props.cardDrag!.pointerDown).toHaveBeenLastCalledWith(
+      props.epic,
+      expect.anything(),
+      expect.objectContaining({ current: true }),
+    );
 
     fireEvent.pointerUp(handle, { pointerId: 7, clientX: 10, clientY: 10 });
-    expect(fireEvent.dragStart(card)).toBe(true);
-    expect(props.onDragStart).toHaveBeenCalledWith(props.epic);
+    fireEvent.pointerDown(card, { pointerId: 1 });
+    expect(props.cardDrag!.pointerDown).toHaveBeenLastCalledWith(
+      props.epic,
+      expect.anything(),
+      expect.objectContaining({ current: false }),
+    );
   });
 
   it('keeps connector activation and keys out of card shortcuts', () => {

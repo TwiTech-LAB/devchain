@@ -5,7 +5,7 @@ import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import { useExternalWorkArea } from './useExternalWorkArea';
 
 // Layer: hook unit. The fetch factory is mocked because this spec owns the URL,
-// query-key, and board-derivation contract; worktree-aware fetch has its own suite.
+// query-key, and board-derivation contract.
 const fetchMock = jest.fn();
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 

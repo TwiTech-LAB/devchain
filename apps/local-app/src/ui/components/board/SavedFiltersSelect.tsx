@@ -293,8 +293,8 @@ export function SavedFiltersSelect({
                       <div
                         key={filter.id}
                         className={cn(
-                          'group flex items-center gap-2 px-3 py-2 hover:bg-accent cursor-pointer',
-                          isActive && 'bg-accent border-l-2 border-l-primary',
+                          'group flex items-center gap-2 px-3 py-2 cursor-pointer',
+                          isActive ? 'bg-selected border-l-2 border-l-primary' : 'hover:bg-accent',
                         )}
                       >
                         <button
@@ -313,7 +313,9 @@ export function SavedFiltersSelect({
                           <Star
                             className={cn(
                               'h-3.5 w-3.5',
-                              isDefault ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground',
+                              isDefault
+                                ? 'fill-status-warn text-status-warn'
+                                : 'text-muted-foreground',
                             )}
                           />
                         </button>
@@ -323,7 +325,7 @@ export function SavedFiltersSelect({
                         >
                           <span className="truncate">{filter.name}</span>
                           {isDefault && (
-                            <span className="inline-flex items-center gap-0.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 shrink-0">
+                            <span className="inline-flex items-center gap-0.5 rounded bg-status-warn/10 px-1 py-0.5 text-[10px] font-medium text-status-warn shrink-0">
                               ★ Default
                             </span>
                           )}

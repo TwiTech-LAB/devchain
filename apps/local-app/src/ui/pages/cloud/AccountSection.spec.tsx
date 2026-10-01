@@ -4,12 +4,49 @@ import { AccountSection } from './AccountSection';
 
 const mockUseCloudConnection = jest.fn();
 jest.mock('@/ui/hooks/useCloudConnection', () => ({
-  useCloudConnection: () => mockUseCloudConnection(),
+  useCloudConnection: (backend?: string) => mockUseCloudConnection(backend),
 }));
 
+const mockUseCloudTarget = jest.fn();
+jest.mock('@/ui/hooks/useCloudTarget', () => ({
+  useCloudTarget: () => mockUseCloudTarget(),
+}));
+
+function remoteDto(id: string, name: string) {
+  return {
+    id,
+    name,
+    baseUrl: `http://${id}:4000`,
+    kind: 'address' as const,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+    online: true,
+    version: '1.0.0',
+    versionMatches: true,
+    stats: null,
+    lastSeenAt: null,
+  };
+}
+
+const HOME_TARGET = {
+  backend: 'home',
+  remoteName: null,
+  eligible: [],
+  selectorVisible: false,
+  selectTarget: jest.fn(),
+};
+
 jest.mock('@/ui/components/cloud/CloudAuthForm', () => ({
-  CloudAuthForm: ({ identityServiceUrl }: { identityServiceUrl: string }) => (
-    <div data-testid="cloud-auth-form">Connect {identityServiceUrl}</div>
+  CloudAuthForm: ({
+    identityServiceUrl,
+    backend,
+  }: {
+    identityServiceUrl: string;
+    backend?: string;
+  }) => (
+    <div data-testid="cloud-auth-form" data-backend={backend ?? 'home'}>
+      Connect {identityServiceUrl}
+    </div>
   ),
 }));
 
@@ -86,6 +123,7 @@ function renderSection() {
 describe('AccountSection', () => {
   beforeEach(() => {
     mockUseCloudConnection.mockReset();
+    mockUseCloudTarget.mockReset().mockReturnValue(HOME_TARGET);
   });
 
   it('shows loading state while checking connection', () => {
@@ -175,13 +213,84 @@ describe('AccountSection', () => {
       expect(card).toHaveTextContent(/Download the app on your phone/);
       expect(card).toHaveTextContent(/Sign in your phone via QR/);
     });
-
     it('signed-out: shows the card without the connected-only setup steps', () => {
       mockUseCloudConnection.mockReturnValue(DISCONNECTED);
+      mockUseCloudTarget.mockReturnValue(HOME_TARGET);
+
       renderSection();
 
       expect(screen.getByTestId('app-download-card')).toBeInTheDocument();
       expect(screen.queryByText(/Sign in your phone via QR/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Target selector', () => {
+    it('is hidden when no online, version-matching remote exists', () => {
+      mockUseCloudConnection.mockReturnValue(DISCONNECTED);
+      mockUseCloudTarget.mockReturnValue(HOME_TARGET);
+
+      renderSection();
+
+      expect(screen.queryByTestId('cloud-target-selector')).not.toBeInTheDocument();
+    });
+
+    it('offers This PC and each usable remote when one exists', () => {
+      mockUseCloudConnection.mockReturnValue(DISCONNECTED);
+      mockUseCloudTarget.mockReturnValue({
+        ...HOME_TARGET,
+        eligible: [remoteDto('r-1', 'lab-vm')],
+        selectorVisible: true,
+      });
+
+      renderSection();
+
+      const selector = screen.getByTestId('cloud-target-selector') as HTMLSelectElement;
+      expect(selector).toBeInTheDocument();
+      expect(
+        Array.from(selector.options).map((option) => [option.value, option.textContent]),
+      ).toEqual([
+        ['home', 'This PC'],
+        ['r-1', 'lab-vm'],
+      ]);
+      expect(
+        screen.getByText(
+          /Sign-in, QR pairing, devices and workspace grants apply to the selected instance only/,
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('selecting a remote hands the backend to the connection and auth form', () => {
+      mockUseCloudConnection.mockReturnValue(DISCONNECTED);
+      mockUseCloudTarget.mockReturnValue({
+        ...HOME_TARGET,
+        backend: 'r-1',
+        remoteName: 'lab-vm',
+        eligible: [remoteDto('r-1', 'lab-vm')],
+        selectorVisible: true,
+      });
+
+      renderSection();
+
+      expect(mockUseCloudConnection).toHaveBeenCalledWith('r-1');
+      expect(screen.getByTestId('cloud-auth-form')).toHaveAttribute('data-backend', 'r-1');
+    });
+
+    it('falls back to This PC when the selected remote is no longer eligible', () => {
+      mockUseCloudConnection.mockReturnValue(CONNECTED);
+      // The hook owns the fallback; the section renders whatever it resolves to —
+      // the still-usable other remote keeps the selector visible with This PC chosen.
+      mockUseCloudTarget.mockReturnValue({
+        ...HOME_TARGET,
+        backend: 'home',
+        eligible: [remoteDto('r-2', 'other-vm')],
+        selectorVisible: true,
+      });
+
+      renderSection();
+
+      expect(mockUseCloudConnection).toHaveBeenCalledWith('home');
+      const selector = screen.getByTestId('cloud-target-selector') as HTMLSelectElement;
+      expect(selector.value).toBe('home');
     });
   });
 });

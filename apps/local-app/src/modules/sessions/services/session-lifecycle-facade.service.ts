@@ -3,6 +3,7 @@ import { ConflictError } from '../../../common/errors/error-types';
 import { SessionRuntime } from './session-runtime';
 import { SessionsService } from './sessions.service';
 import type { SessionDetailDto, SessionDto, SessionHistoryResponseDto } from '../dtos/sessions.dto';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 /**
  * Narrow facade over the session lifecycle primitives needed by mobile chat:
@@ -20,6 +21,7 @@ export class SessionLifecycleFacade {
   constructor(
     private readonly sessionRuntime: SessionRuntime,
     private readonly sessionsService: SessionsService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   /** Launch a new independent session for an agent. */
@@ -33,6 +35,8 @@ export class SessionLifecycleFacade {
    * no outer/composite lock because the coordinator is non-reentrant.
    */
   async restart(agentId: string, projectId: string): Promise<SessionDetailDto> {
+    // Refuse before the terminate so a refused launch never leaves the agent stopped.
+    this.admission.assertWritable(projectId);
     const activeSessions = await this.sessionsService.listActiveSessions(projectId);
     const existing = activeSessions.find((s) => s.agentId === agentId);
     if (existing) {
@@ -91,6 +95,7 @@ export class SessionLifecycleFacade {
    */
   async deleteSessionRecord(sessionId: string, projectId: string): Promise<{ deleted: boolean }> {
     const session = await this.sessionsService.validateSessionInProject(sessionId, projectId);
+    this.admission.assertWritable(projectId);
     if (session.status === 'running') {
       throw new ConflictError('Cannot delete a running session', {
         code: 'STATUS_RUNNING',
@@ -110,6 +115,7 @@ export class SessionLifecycleFacade {
     name: string | null,
   ): Promise<SessionDto> {
     await this.sessionsService.validateSessionInProject(sessionId, projectId);
+    this.admission.assertWritable(projectId);
     return this.sessionsService.updateName(sessionId, name);
   }
 }

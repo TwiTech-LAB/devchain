@@ -1,11 +1,11 @@
-import { AlertCircle, Edit, GitBranch, ListChecks, Plus, Search, Trash2 } from 'lucide-react';
+import { AlertCircle, Edit, ListChecks, Plus, Search, Trash2 } from 'lucide-react';
 import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
 import { Button } from '@/ui/components/ui/button';
 import EpicPreview from '@/ui/components/shared/EpicPreview';
-import { EpicContextMenu } from '@/ui/components/board/EpicContextMenu';
 import { EpicCard } from '@/ui/components/board/EpicCard';
 import { cn } from '@/ui/lib/utils';
 import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
+import type { BoardCardDragBindings } from '@/ui/hooks/useBoardCardDrag';
 import type { BoardRelationQuickLinkBindings } from '@/ui/hooks/useBoardRelationQuickLink';
 import type { Epic, Status } from './types';
 
@@ -15,11 +15,7 @@ export interface BoardColumnProps {
   onAddEpic: (statusId: string) => void;
   onEditEpic: (epic: Epic) => void;
   onDeleteEpic: (epic: Epic) => void;
-  onDragStart: (epic: Epic) => void;
-  onDragEnd: () => void;
-  onDragOver: () => void;
-  onDrop: () => void;
-  isActiveDrop: boolean;
+  cardDrag?: BoardCardDragBindings;
   draggedEpic: Epic | null;
   onKeyboardMove: (epic: Epic, direction: 'left' | 'right') => void;
   onToggleParentFilter: (epic: Epic) => void;
@@ -29,8 +25,6 @@ export interface BoardColumnProps {
   onCollapseColumn: () => void;
   onBulkEdit: (epic: Epic) => void;
   onOpenEpicDetails: (epic: Epic) => void;
-  onMoveToWorktree?: (epic: Epic) => void;
-  hasRunningWorktrees?: boolean;
   isLightColor: (hex: string) => boolean;
   getSubEpicCountsByStatus?: (epicId: string) => Record<string, number> | undefined;
   /** Stored external sources by Epic ID for imported cards in this column. */
@@ -48,11 +42,7 @@ export function BoardColumn({
   onAddEpic,
   onEditEpic,
   onDeleteEpic,
-  onDragStart,
-  onDragEnd,
-  onDragOver,
-  onDrop,
-  isActiveDrop,
+  cardDrag,
   draggedEpic,
   onKeyboardMove,
   onToggleParentFilter,
@@ -62,8 +52,6 @@ export function BoardColumn({
   onCollapseColumn,
   onBulkEdit,
   onOpenEpicDetails,
-  onMoveToWorktree,
-  hasRunningWorktrees = false,
   isLightColor,
   getSubEpicCountsByStatus,
   externalSources,
@@ -73,20 +61,16 @@ export function BoardColumn({
 }: BoardColumnProps) {
   return (
     <div
-      onDragOver={(event) => {
-        event.preventDefault();
-        onDragOver();
-      }}
-      onDrop={onDrop}
+      data-board-drop-status-id={status.id}
       className={cn(
-        'flex flex-col bg-muted/30 rounded-lg border transition-colors snap-start',
-        (draggedEpic || isActiveDrop) && 'border-primary/50',
-        isActiveDrop && 'bg-primary/5',
+        'flex flex-col bg-group rounded-lg border transition-colors snap-start',
+        draggedEpic && 'border-primary/50',
+        'data-[board-drop-active]:border-primary/50 data-[board-drop-active]:bg-primary/5',
       )}
       style={{ minWidth: '280px', maxWidth: '480px', flex: '1 1 300px', height: '100%' }}
     >
       <div
-        className="flex items-center justify-between p-3 border-b bg-card rounded-t-lg cursor-pointer select-none"
+        className="flex items-center justify-between p-3 border-b bg-muted rounded-t-lg cursor-pointer select-none"
         onDoubleClick={onCollapseColumn}
         title="Double-click to collapse this column"
       >
@@ -135,132 +119,101 @@ export function BoardColumn({
           </div>
         )}
         {epics.map((epic) => (
-          <EpicContextMenu
+          <EpicCard
             key={epic.id}
             epic={epic}
-            onMoveToWorktree={onMoveToWorktree ?? (() => {})}
-            hasRunningWorktrees={hasRunningWorktrees}
-          >
-            <EpicCard
-              epic={epic}
-              onEdit={onEditEpic}
-              onDelete={onDeleteEpic}
-              onDragStart={onDragStart}
-              onDragEnd={onDragEnd}
-              isDragging={draggedEpic?.id === epic.id}
-              onKeyboardMove={onKeyboardMove}
-              onToggleParentFilter={onToggleParentFilter}
-              isActiveParent={activeParentId === epic.id}
-              onOpenEpicDetails={onOpenEpicDetails}
-              statuses={statusOrder}
-              subEpicCountsByStatus={getSubEpicCountsByStatus?.(epic.id)}
-              source={externalSources?.get(epic.id)}
-              timeTotalMinutes={timeTotals?.get(epic.id)}
-              relationCounts={relationCounts?.get(epic.id)}
-              relationQuickLink={relationQuickLink}
-              data-relation-epic-id={epic.id}
-              renderPreview={() => {
-                const agentName = getAgentName(epic.agentId);
-                const showFilterToggle = epic.parentId === null;
-                const showMoveToWorktree =
-                  showFilterToggle && hasRunningWorktrees && onMoveToWorktree;
-                const actions = (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 w-6 p-0"
-                      aria-label="Open epic details"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenEpicDetails(epic);
-                      }}
-                    >
-                      <Search className="h-4 w-4" />
-                    </Button>
-                    {showFilterToggle && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        title="Bulk edit parent and sub-epic status/assignee"
-                        aria-label="Bulk edit parent and sub-epics"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onBulkEdit(epic);
-                        }}
-                      >
-                        <ListChecks className="h-3 w-3" />
-                      </Button>
-                    )}
-                    {showMoveToWorktree && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        title="Move to worktree"
-                        aria-label="Move to worktree"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onMoveToWorktree(epic);
-                        }}
-                      >
-                        <GitBranch className="h-3 w-3" />
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 w-6 p-0"
-                      aria-label="Edit epic"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEditEpic(epic);
-                      }}
-                    >
-                      <Edit className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 w-6 p-0 text-destructive hover:text-destructive"
-                      aria-label="Delete epic"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteEpic(epic);
-                      }}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </>
-                );
-                return (
-                  <EpicPreview
-                    agentName={agentName}
-                    description={epic.description}
-                    tags={epic.tags}
-                    maxLines={5}
-                    metaRight={actions}
-                  />
-                );
-              }}
-              statusLabel={status.label}
-              statusColor={status.color}
-              agentName={getAgentName(epic.agentId)}
-              onBulkEdit={(e) => {
-                e.stopPropagation();
-                onBulkEdit(epic);
-              }}
-              onMoveToWorktree={
-                epic.parentId === null && hasRunningWorktrees && onMoveToWorktree
-                  ? (e) => {
+            onEdit={onEditEpic}
+            onDelete={onDeleteEpic}
+            cardDrag={cardDrag}
+            isBoardDragging={draggedEpic !== null}
+            isDragging={draggedEpic?.id === epic.id}
+            onKeyboardMove={onKeyboardMove}
+            onToggleParentFilter={onToggleParentFilter}
+            isActiveParent={activeParentId === epic.id}
+            onOpenEpicDetails={onOpenEpicDetails}
+            statuses={statusOrder}
+            subEpicCountsByStatus={getSubEpicCountsByStatus?.(epic.id)}
+            source={externalSources?.get(epic.id)}
+            timeTotalMinutes={timeTotals?.get(epic.id)}
+            relationCounts={relationCounts?.get(epic.id)}
+            relationQuickLink={relationQuickLink}
+            data-relation-epic-id={epic.id}
+            renderPreview={() => {
+              const agentName = getAgentName(epic.agentId);
+              const showFilterToggle = epic.parentId === null;
+              const actions = (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0"
+                    aria-label="Open epic details"
+                    onClick={(e) => {
                       e.stopPropagation();
-                      onMoveToWorktree(epic);
-                    }
-                  : undefined
-              }
-            />
-          </EpicContextMenu>
+                      onOpenEpicDetails(epic);
+                    }}
+                  >
+                    <Search className="h-4 w-4" />
+                  </Button>
+                  {showFilterToggle && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 p-0"
+                      title="Bulk edit parent and sub-epic status/assignee"
+                      aria-label="Bulk edit parent and sub-epics"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onBulkEdit(epic);
+                      }}
+                    >
+                      <ListChecks className="h-3 w-3" />
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0"
+                    aria-label="Edit epic"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditEpic(epic);
+                    }}
+                  >
+                    <Edit className="h-3 w-3" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                    aria-label="Delete epic"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteEpic(epic);
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </>
+              );
+              return (
+                <EpicPreview
+                  agentName={agentName}
+                  description={epic.description}
+                  tags={epic.tags}
+                  maxLines={5}
+                  metaRight={actions}
+                />
+              );
+            }}
+            statusLabel={status.label}
+            statusColor={status.color}
+            agentName={getAgentName(epic.agentId)}
+            onBulkEdit={(e) => {
+              e.stopPropagation();
+              onBulkEdit(epic);
+            }}
+          />
         ))}
       </div>
     </div>

@@ -289,7 +289,7 @@ export function PreviousSessionsTable({
                         onClick={() => startEditing(item)}
                       >
                         {item.name ?? shortSessionId(visibleSessionId)}
-                        <Pencil className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                        <Pencil className="h-3 w-3 shrink-0 text-muted-foreground" />
                       </button>
                     )}
                   </TableCell>
@@ -351,7 +351,7 @@ export function PreviousSessionsTable({
                         onClick={() => copySessionId(visibleSessionId, visibleSessionLabel)}
                       >
                         {copiedId === visibleSessionId ? (
-                          <Check className="h-3.5 w-3.5 text-emerald-500" />
+                          <Check className="h-3.5 w-3.5 text-status-ok" />
                         ) : (
                           <Copy className="h-3.5 w-3.5" />
                         )}

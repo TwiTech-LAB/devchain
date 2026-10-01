@@ -46,6 +46,7 @@ import { HumanPromptStateService } from '../terminal/services/human-prompt-state
 import { createMockAgent } from '../../../test/factories/agent';
 import { createMockProject } from '../../../test/factories/project';
 import { ProjectCommunicationService } from './project-communication.service';
+import { createProjectWriteAdmissionStub } from '../remotes/admission/testing/project-write-admission.stub';
 
 const SOURCE_ID = '11111111-1111-4111-8111-111111111111';
 const TARGET_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -101,8 +102,6 @@ describe('project delivery failure redaction workflow', () => {
     });
     nestLoggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation();
 
-    process.env.DEVCHAIN_MODE = 'main';
-    delete process.env.CONTAINER_PROJECT_ID;
     resetEnvConfig();
 
     const storage = {
@@ -178,9 +177,13 @@ describe('project delivery failure redaction workflow', () => {
     const activityStream = new MessageActivityStreamService(broadcaster as never);
     const messageLog = new MessageLogService();
     const providerAdapterFactory = {
-      getPostPasteDelayMsForAgent: jest.fn().mockResolvedValue(undefined),
+      getRuntimePromptBehaviorForAgent: jest.fn().mockResolvedValue({}),
     };
-    const notifier = new DeliveryFailureNotifierService(terminalIO as never, sessions as never);
+    const notifier = new DeliveryFailureNotifierService(
+      terminalIO as never,
+      sessions as never,
+      providerAdapterFactory as never,
+    );
     pool = new SessionsMessagePoolService(
       sessions as never,
       coordinator as never,
@@ -216,14 +219,16 @@ describe('project delivery failure redaction workflow', () => {
       { getActiveSession: jest.fn() } as never,
       { publish: jest.fn().mockResolvedValue('event-1') } as never,
     );
-    projectCommunication = new ProjectCommunicationService(storage as never, delivery);
+    projectCommunication = new ProjectCommunicationService(
+      storage as never,
+      delivery,
+      createProjectWriteAdmissionStub() as never,
+    );
   });
 
   afterEach(async () => {
     await pool.flushAll();
     nestLoggerError.mockRestore();
-    delete process.env.DEVCHAIN_MODE;
-    delete process.env.CONTAINER_PROJECT_ID;
     resetEnvConfig();
   });
 

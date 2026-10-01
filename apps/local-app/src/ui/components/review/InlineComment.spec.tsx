@@ -116,12 +116,12 @@ describe('CommentIndicator', () => {
     expect(onClick).toHaveBeenCalled();
   });
 
-  it('has amber style when hasUnresolved is true', () => {
+  it('has warning tokens when hasUnresolved is true', () => {
     const onClick = jest.fn();
     render(<CommentIndicator commentCount={1} hasUnresolved={true} onClick={onClick} />);
 
     const button = screen.getByTitle('1 comment');
-    expect(button).toHaveClass('bg-amber-100');
+    expect(button).toHaveClass('bg-status-warn/10', 'text-status-warn', 'border-status-warn/40');
   });
 });
 

@@ -7,12 +7,14 @@ import {
   exactTopic,
   type RealtimeInvalidationRegistry,
 } from '@/ui/lib/realtime-invalidation-registry';
-import { useAppSocket } from './useAppSocket';
+import { useHomeSocket } from './useHomeSocket';
 
 /**
  * Reacts to workspace-scoped Epic-time scope hints: committed parent or
  * external-link-boundary changes that reshape related-time rollups without
  * touching any relation row, so the relation invalidation topic never fires.
+ * The hint is broadcast on the home socket — epic-time reads are home-always
+ * regardless of the active project's backend — so this subscribes there too.
  */
 export function createEpicTimeScopeInvalidationRegistry(
   workspaceId: string,
@@ -52,7 +54,7 @@ export function useEpicTimeScopeSync(workspaceId: string | null | undefined): vo
     [queryClient, registry, workspaceId],
   );
 
-  useAppSocket({ message: handleEnvelope, connect: invalidateAll }, [
+  useHomeSocket({ message: handleEnvelope, connect: invalidateAll }, [
     handleEnvelope,
     invalidateAll,
   ]);

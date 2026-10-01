@@ -14,6 +14,7 @@ import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { parseCodexJsonl, type TokenSnapshot } from '../parsers/codex-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
+import { isSyncthingMarker } from '../../../common/constants/syncthing-markers';
 
 const CODEX_ROOT = '.codex/sessions/';
 const PROVIDER_SESSION_ID_HEAD_BYTES = 8 * 1024;
@@ -340,6 +341,7 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
     try {
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
       for (const entry of entries) {
+        if (isSyncthingMarker(entry.name)) continue;
         const fullPath = path.join(dirPath, entry.name);
         if (entry.isDirectory()) {
           await this.scanDateDirectories(fullPath, results, depth + 1);

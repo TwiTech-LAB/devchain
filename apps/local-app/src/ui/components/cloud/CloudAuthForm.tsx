@@ -4,6 +4,8 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { useQrAuth } from '../../hooks/useQrAuth';
 import { QrDisplayPanel } from './QrDisplayPanel';
+import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
+import { completeCloudSignIn, openCloudOAuthPopup } from '@/ui/lib/cloud-target';
 
 type AuthMode = 'idle' | 'sending' | 'sent' | 'error' | 'qr';
 
@@ -11,12 +13,18 @@ interface CloudAuthFormProps {
   identityServiceUrl: string;
   onMagicLinkSent?: () => void;
   onOAuthStarted?: () => void;
+  /** Backend this form signs in and pairs with; defaults to This PC. */
+  backend?: BackendId;
+  /** The remote's name at home; sent as the instance label on a remote sign-in. */
+  remoteName?: string | null;
 }
 
 export function CloudAuthForm({
   identityServiceUrl,
   onMagicLinkSent,
   onOAuthStarted,
+  backend = HOME_BACKEND,
+  remoteName = null,
 }: CloudAuthFormProps) {
   const [email, setEmail] = useState('');
   const [magicLinkState, setMagicLinkState] = useState<'idle' | 'sending' | 'sent' | 'error'>(
@@ -26,11 +34,9 @@ export function CloudAuthForm({
   const [authMode, setAuthMode] = useState<AuthMode>('idle');
 
   const handleOAuth = useCallback(() => {
-    const redirectUri = window.location.origin + '/auth/cloud/callback';
-    const url = `${identityServiceUrl}/auth/github?response_mode=fragment_full&redirect_uri=${encodeURIComponent(redirectUri)}`;
-    window.open(url, 'devchain-cloud-auth', 'width=600,height=700');
+    openCloudOAuthPopup(identityServiceUrl, { backend, remoteName });
     onOAuthStarted?.();
-  }, [identityServiceUrl, onOAuthStarted]);
+  }, [identityServiceUrl, onOAuthStarted, backend, remoteName]);
 
   const handleMagicLink = useCallback(
     async (e: React.FormEvent) => {
@@ -42,14 +48,18 @@ export function CloudAuthForm({
 
       try {
         const redirectUri = window.location.origin + '/auth/cloud/callback';
-        const response = await fetch(`${identityServiceUrl}/auth/magic-link/request`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: email.trim(),
-            redirect_uri: redirectUri,
-          }),
-        });
+        const response = await apiFetch(
+          `${identityServiceUrl}/auth/magic-link/request`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: email.trim(),
+              redirect_uri: redirectUri,
+            }),
+          },
+          { backend: 'home' },
+        );
 
         if (!response.ok) {
           throw new Error('Failed to send magic link');
@@ -76,6 +86,8 @@ export function CloudAuthForm({
         </div>
         <QrAuthInline
           identityServiceUrl={identityServiceUrl}
+          backend={backend}
+          remoteName={remoteName}
           onCancel={() => setAuthMode('idle')}
         />
       </div>
@@ -151,12 +163,16 @@ export function CloudAuthForm({
 
 function QrAuthInline({
   identityServiceUrl,
+  backend,
+  remoteName,
   onCancel,
 }: {
   identityServiceUrl: string;
+  backend: BackendId;
+  remoteName: string | null;
   onCancel: () => void;
 }) {
-  const qr = useQrAuth(identityServiceUrl, 'claim');
+  const qr = useQrAuth(identityServiceUrl, 'claim', backend);
 
   useEffect(() => {
     qr.start();
@@ -164,16 +180,14 @@ function QrAuthInline({
 
   useEffect(() => {
     if (qr.status === 'success' && qr.tokens) {
-      fetch('/api/auth/cloud/tokens', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          accessToken: qr.tokens.accessToken,
-          refreshToken: qr.tokens.refreshToken,
-        }),
+      completeCloudSignIn({
+        backend,
+        remoteName,
+        accessToken: qr.tokens.accessToken,
+        refreshToken: qr.tokens.refreshToken ?? '',
       }).catch(() => {});
     }
-  }, [qr.status, qr.tokens]);
+  }, [qr.status, qr.tokens, backend, remoteName]);
 
   return <QrDisplayPanel {...qr} onCancel={onCancel} onRetry={qr.retry} />;
 }

@@ -220,6 +220,7 @@ describe('TeamQuickAddButton', () => {
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/profiles/profile-1/provider-configs'),
+        undefined,
       );
     });
   });

@@ -17,10 +17,6 @@ jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => ({ selectedProjectId: 'project-1' }),
 }));
 
-jest.mock('@/ui/hooks/useWorktreeSocket', () => ({
-  useWorktreeSocket: () => ({ socket: null }),
-}));
-
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
   renameSession: jest.fn().mockResolvedValue({}),

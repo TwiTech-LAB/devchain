@@ -3,7 +3,6 @@ import {
   useMemo,
   useRef,
   type ComponentPropsWithoutRef,
-  type DragEvent,
   type KeyboardEvent,
 } from 'react';
 import { Link2 } from 'lucide-react';
@@ -16,6 +15,7 @@ import { EpicRelationBadges } from '@/ui/components/board/EpicRelationBadges';
 import { EpicTimeBadge } from '@/ui/components/board/EpicTimeBadge';
 import { cn } from '@/ui/lib/utils';
 import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
+import type { BoardCardDragBindings } from '@/ui/hooks/useBoardCardDrag';
 import type { BoardRelationQuickLinkBindings } from '@/ui/hooks/useBoardRelationQuickLink';
 import type { Epic, Status } from './types';
 
@@ -24,8 +24,8 @@ export interface EpicCardProps
   epic: Epic;
   onEdit: (epic: Epic) => void;
   onDelete: (epic: Epic) => void;
-  onDragStart: (epic: Epic) => void;
-  onDragEnd: () => void;
+  cardDrag?: BoardCardDragBindings;
+  isBoardDragging?: boolean;
   isDragging: boolean;
   onKeyboardMove: (epic: Epic, direction: 'left' | 'right') => void;
   onToggleParentFilter: (epic: Epic) => void;
@@ -37,7 +37,6 @@ export interface EpicCardProps
   statusColor?: string;
   agentName?: string | null;
   onBulkEdit?: (e: React.MouseEvent) => void;
-  onMoveToWorktree?: (e: React.MouseEvent) => void;
   subEpicCountsByStatus?: Record<string, number>;
   /** Estimated-time total in whole minutes; rendered for root epics only. */
   timeTotalMinutes?: number;
@@ -63,9 +62,9 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
     epic,
     onEdit,
     onDelete,
-    onDragStart,
-    onDragEnd,
+    cardDrag,
     isDragging,
+    isBoardDragging = isDragging,
     onKeyboardMove,
     onToggleParentFilter,
     isActiveParent,
@@ -76,7 +75,6 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
     statusColor,
     agentName,
     onBulkEdit,
-    onMoveToWorktree,
     subEpicCountsByStatus,
     timeTotalMinutes,
     relationCounts,
@@ -166,7 +164,6 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
                 showBulkEdit={showFilterToggle}
                 showOpenDetails
                 onBulkEdit={onBulkEdit}
-                onMoveToWorktree={onMoveToWorktree}
                 onEdit={(e) => {
                   e.stopPropagation();
                   onEdit(epic);
@@ -210,8 +207,10 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
             <button
               type="button"
               className={cn(
-                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                isRelationSource && 'bg-primary/10 text-primary',
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                isRelationSource
+                  ? 'bg-selected text-selected-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground',
               )}
               aria-label={`Link ${epic.title} to another epic`}
               aria-pressed={isRelationSource}
@@ -293,7 +292,7 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
                   focalProjectId={epic.projectId}
                   focalIsRoot={epic.parentId === null}
                   dragFenceRef={relationPointerDownRef}
-                  isDragging={isDragging}
+                  isDragging={isBoardDragging}
                 />
               ) : null}
               {showTimeBadge ? <EpicTimeBadge minutes={timeTotalMinutes} /> : null}
@@ -308,7 +307,7 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
               focalProjectId={epic.projectId}
               focalIsRoot={epic.parentId === null}
               dragFenceRef={relationPointerDownRef}
-              isDragging={isDragging}
+              isDragging={isBoardDragging}
             />
           </div>
         ) : null}
@@ -317,29 +316,18 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
   );
 
   const cardClassName = cn(
-    'cursor-move transition-all duration-200 hover:shadow-md group',
+    'select-none cursor-move transition-all duration-200 hover:shadow-md group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+    isBoardDragging && 'pointer-events-none',
     !source && isDragging && 'opacity-50 scale-95 shadow-lg',
     // The wrapper carries the joined border for sourced cards; the card keeps
     // its top corners only.
     source && 'rounded-b-none border-b-0',
   );
 
-  const handleNativeDragStart = (event: DragEvent<HTMLElement>): void => {
-    if (relationPointerDownRef.current) {
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    onDragStart(epic);
-  };
-
   const cardRootProps = {
-    draggable: true,
-    onDragStart: handleNativeDragStart,
-    onDragEnd: () => {
-      relationPointerDownRef.current = false;
-      onDragEnd();
-    },
+    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) =>
+      cardDrag?.pointerDown(epic, event, relationPointerDownRef),
+    onDragStartCapture: (event: React.DragEvent<HTMLDivElement>) => event.preventDefault(),
     tabIndex: 0,
     role: 'group' as const,
     'aria-label': ariaLabel,
@@ -349,20 +337,25 @@ export const EpicCard = forwardRef<HTMLDivElement, EpicCardProps>(function EpicC
 
   if (!source) {
     return (
-      <Card ref={ref} {...rest} {...cardRootProps}>
+      <Card ref={ref} {...rest} {...cardRootProps} data-board-card-drag-source>
         {cardChildren}
       </Card>
     );
   }
 
   // Sourced card: one neutral wrapper (the Radix context-menu trigger target)
-  // with the draggable group and the source footer as siblings. Drag visuals
+  // with the card group and the source footer as siblings. Drag visuals
   // apply to the complete card so the footer never detaches from it.
   return (
     <div
       ref={ref}
       {...rest}
-      className={cn('transition-all duration-200', isDragging && 'opacity-50 scale-95 shadow-lg')}
+      data-board-card-drag-source
+      className={cn(
+        'transition-all duration-200',
+        isBoardDragging && 'pointer-events-none',
+        isDragging && 'opacity-50 scale-95 shadow-lg',
+      )}
     >
       <Card {...cardRootProps}>{cardChildren}</Card>
       <EpicExternalSourceNote source={source} epicId={epic.id} />

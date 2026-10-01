@@ -214,7 +214,7 @@ describe('SessionNavigationToolbar', () => {
 
     const filterBtn = screen.getByTestId('nav-toggle-hotspot-filter');
     expect(filterBtn).toHaveAttribute('aria-pressed', 'true');
-    expect(filterBtn).toHaveClass('bg-amber-500/10');
+    expect(filterBtn).toHaveClass('bg-status-warn/10');
   });
 
   // ---------------------------------------------------------------------------

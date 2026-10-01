@@ -21,7 +21,6 @@ export type PromptFetch = (input: RequestInfo | URL, init?: RequestInit) => Prom
 
 export interface CustomPromptApiTarget {
   projectId: string;
-  apiBase: string;
   fetchFn: PromptFetch;
 }
 
@@ -39,11 +38,11 @@ function promptListUrl(target: CustomPromptApiTarget, offset: number): string {
     limit: String(PROMPT_PAGE_LIMIT),
     offset: String(offset),
   });
-  return `${target.apiBase}/api/prompts?${params.toString()}`;
+  return `/api/prompts?${params.toString()}`;
 }
 
-function promptDetailUrl(target: CustomPromptApiTarget, promptId: string): string {
-  return `${target.apiBase}/api/prompts/${encodeURIComponent(promptId)}`;
+function promptDetailUrl(_target: CustomPromptApiTarget, promptId: string): string {
+  return `/api/prompts/${encodeURIComponent(promptId)}`;
 }
 
 async function readJson<T>(response: Response, fallbackMessage: string): Promise<T> {

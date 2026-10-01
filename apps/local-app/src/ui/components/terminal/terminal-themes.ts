@@ -50,9 +50,9 @@ function createExtendedAnsiPalette(overrides: Partial<Record<number, string>> = 
 
 const DEFAULT_EXTENDED_ANSI = createExtendedAnsiPalette();
 const OCEAN_EXTENDED_ANSI = createExtendedAnsiPalette({
-  253: '#d0dce8',
-  254: '#dde6ef',
-  255: '#eaeff5',
+  253: '#d2dee8',
+  254: '#dfe8ef',
+  255: '#eaf1f5',
 });
 
 export const DARK_XTERM_THEME: ITheme = {
@@ -82,12 +82,12 @@ export const DARK_XTERM_THEME: ITheme = {
 };
 
 export const OCEAN_XTERM_THEME: ITheme = {
-  background: '#eaeff5',
-  foreground: '#1d2b3a',
-  cursor: '#1677b5',
-  cursorAccent: '#eaeff5',
+  background: '#eaf1f5',
+  foreground: '#172b3a',
+  cursor: '#0b6e99',
+  cursorAccent: '#eaf1f5',
   selectionBackground: '#b3d5f0',
-  selectionForeground: '#1d2b3a',
+  selectionForeground: '#172b3a',
   black: '#24292f',
   red: '#cf222e',
   green: '#116329',
@@ -95,14 +95,14 @@ export const OCEAN_XTERM_THEME: ITheme = {
   blue: '#0550ae',
   magenta: '#7c3aed',
   cyan: '#0969da',
-  white: '#6e7781',
+  white: '#666e78',
   brightBlack: '#57606a',
   brightRed: '#a40e26',
-  brightGreen: '#1a7f37',
+  brightGreen: '#1a7e37',
   brightYellow: '#633c01',
-  brightBlue: '#2f81d6',
+  brightBlue: '#256fbc',
   brightMagenta: '#6639ba',
-  brightCyan: '#1b7c83',
+  brightCyan: '#1a787f',
   brightWhite: '#393b40',
   extendedAnsi: OCEAN_EXTENDED_ANSI,
 };
@@ -113,8 +113,8 @@ const DARK_TMUX_STYLE: TmuxStyle = {
 };
 
 const OCEAN_TMUX_STYLE: TmuxStyle = {
-  foreground: '#1d2b3a',
-  background: '#eaeff5',
+  foreground: '#172b3a',
+  background: '#eaf1f5',
 };
 
 export function resolveTerminalTheme(theme: ThemeValue): TerminalThemeOutput {

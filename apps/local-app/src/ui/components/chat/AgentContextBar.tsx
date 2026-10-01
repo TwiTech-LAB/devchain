@@ -27,8 +27,8 @@ function getContextTier(contextPercent: number): ContextTier {
 
 const contextTierFillClass: Record<ContextTier, string> = {
   healthy: 'bg-primary',
-  medium: 'bg-amber-500',
-  high: 'bg-orange-500',
+  medium: 'bg-status-warn',
+  high: 'bg-destructive',
   critical: 'bg-destructive',
 };
 

@@ -719,6 +719,46 @@ describe('TeamsPage', () => {
       queryClient.clear();
     });
 
+    it('keeps unsaved ticks when the page re-renders while the window is open', async () => {
+      const { queryClient } = await openConfigModal();
+
+      await screen.findByLabelText('Select all claude configs');
+      fireEvent.click(screen.getByLabelText('Config Two'));
+      expect(screen.getByLabelText('Config Two')).toHaveAttribute('data-state', 'checked');
+
+      // Stands in for a VM status update, which re-renders the whole page.
+      await act(async () => {
+        queryClient.setQueryData(['teams-page-agents', 'project-1'], {
+          items: [...mockAgents, { id: 'agent-5', name: 'Agent Epsilon' }],
+          total: mockAgents.length + 1,
+          limit: 100,
+          offset: 0,
+        });
+      });
+      await waitFor(() => expect(document.getElementById('member-agent-5')).not.toBeNull());
+
+      expect(screen.getByLabelText('Config Two')).toHaveAttribute('data-state', 'checked');
+
+      queryClient.clear();
+    });
+
+    it('loads the saved selections again when the window is reopened after Cancel', async () => {
+      const { queryClient } = await openConfigModal();
+
+      await screen.findByLabelText('Select all claude configs');
+      fireEvent.click(screen.getByLabelText('Config Two'));
+      fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+      await waitFor(() =>
+        expect(screen.queryByText('Configure Allowed Configs')).not.toBeInTheDocument(),
+      );
+
+      fireEvent.click(within(screen.getByRole('dialog')).getByText(/Configure allowed configs/));
+      await screen.findByLabelText('Select all claude configs');
+      expect(screen.getByLabelText('Config Two')).toHaveAttribute('data-state', 'unchecked');
+
+      queryClient.clear();
+    });
+
     it('deselecting all providers emits remove (Rule 3 — no silent allow-all)', async () => {
       const { queryClient, fetchMock } = await openConfigModal();
 

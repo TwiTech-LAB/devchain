@@ -44,7 +44,10 @@ jest.mock('../../utils/tmux-naming.util', () => ({
 
 // ── Imports ────────────────────────────────────────────────────────────
 
-import { createLaunchPipelineHarness } from './__test-utils__/pipeline-harness';
+import {
+  createLaunchPipelineHarness,
+  fakeProfileProviderConfig,
+} from './__test-utils__/pipeline-harness';
 import { isProjectProvisioningCapable } from '../../../providers/adapters/capabilities';
 
 const mockIsProjectProvisioningCapable = isProjectProvisioningCapable as unknown as jest.Mock;
@@ -798,8 +801,29 @@ describe('SessionLaunchPipeline', () => {
         expect.objectContaining({ initialPrompt: undefined }),
       );
       // Existing out-of-band paste still happens
-      expect(mocks.terminalIO.deliver).toHaveBeenCalled();
+      expect(mocks.terminalIO.deliver).toHaveBeenCalledWith(
+        { name: expect.any(String) },
+        expect.stringContaining('Hello test-agent'),
+        expect.objectContaining({ followNote: false }),
+      );
       expect(mocks.terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    });
+
+    it('types the follow note after the initial prompt when the adapter asks for it', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      (
+        mocks.adapter as { runtimePromptBehavior?: { followNote?: boolean } }
+      ).runtimePromptBehavior = { followNote: true };
+      mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Hello {{agent_name}}' });
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mocks.terminalIO.deliver).toHaveBeenCalledWith(
+        { name: expect.any(String) },
+        expect.stringContaining('Hello test-agent'),
+        expect.objectContaining({ followNote: true }),
+      );
     });
   });
 
@@ -831,6 +855,7 @@ describe('SessionLaunchPipeline', () => {
       expect(mocks.mcpEnsureService.ensureProjectProvisioning).toHaveBeenCalledWith(
         provider,
         '/tmp/project',
+        { env: {} },
       );
       // No MCP drift (preflight mcpStatus pass): the full ensureMcp must not run.
       expect(mocks.mcpEnsureService.ensureMcp).not.toHaveBeenCalled();
@@ -849,6 +874,36 @@ describe('SessionLaunchPipeline', () => {
         mocks.providerRuntimePreparation.createPlan.mock.invocationCallOrder[0],
       );
       expect(provisionOrder).toBeLessThan(mocks.terminalIO.typeCommand.mock.invocationCallOrder[0]);
+    });
+
+    it('passes the effective provider and profile environment to project provisioning', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mockIsProjectProvisioningCapable.mockReturnValue(true);
+      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+      mocks.storage.getProviderEnvForProject.mockReturnValue({
+        CODEX_HOME: '/provider/codex-home',
+        PROVIDER_ONLY: 'provider',
+      });
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({
+          env: { CODEX_HOME: '/profile/codex-home', CONFIG_ONLY: 'profile' },
+        }),
+      ]);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      const provider = await mocks.storage.getProvider.mock.results[0].value;
+      expect(mocks.mcpEnsureService.ensureProjectProvisioning).toHaveBeenCalledWith(
+        provider,
+        '/tmp/project',
+        {
+          env: {
+            CODEX_HOME: '/profile/codex-home',
+            PROVIDER_ONLY: 'provider',
+            CONFIG_ONLY: 'profile',
+          },
+        },
+      );
     });
 
     it('logs provisioning warnings with their fixed code and startup continues', async () => {

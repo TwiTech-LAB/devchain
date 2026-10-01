@@ -1,6 +1,7 @@
 import type { ProjectTemplate, ProjectWithStats, ProjectWorkspace } from './lib/project-contracts';
 import {
   buildProjectsTableModel,
+  describeRemoteLock,
   filterAndSortProjects,
   getProjectUpgradeVersion,
   type ProjectsTableActions,
@@ -244,6 +245,39 @@ describe('projects-page-model', () => {
     expect(actions.upgradeProject).toHaveBeenCalledWith(configurable, '2.0.0');
     expect(actions.requestProjectMove).toHaveBeenCalledWith(configurable, 'default');
     expect(row.actionsButtonId).toBe('project-actions-beta');
+  });
+
+  it('locks delete, move, import and upgrade on a remote-owned project', () => {
+    const owned = projects[0];
+    const model = build({
+      data: { items: [owned] },
+      remoteOwners: new Map([
+        [
+          owned.id,
+          { projectId: owned.id, remoteId: 'remote-1', remoteName: 'vm-1', state: 'remote' },
+        ],
+      ]),
+    });
+    if (model.content.kind !== 'ready') throw new Error('expected ready');
+    const [row] = model.content.groups[1]!.rows;
+
+    expect(row.remoteLock).toEqual({
+      message: 'Connected to remote "vm-1"; change this project there.',
+    });
+    expect(row.moveTargets).toEqual([]);
+    expect(row.upgrade).toBeUndefined();
+    model.requestProjectMove(owned.id, 'default');
+    expect(actions.requestProjectMove).not.toHaveBeenCalled();
+  });
+
+  it('describes each remote-owned state', () => {
+    const owner = { projectId: 'p', remoteId: 'r', remoteName: null } as const;
+    expect(describeRemoteLock({ ...owner, state: 'attaching' })).toBe(
+      'Connecting to a remote; changes are paused.',
+    );
+    expect(describeRemoteLock({ ...owner, state: 'detaching' })).toBe(
+      'Disconnecting from a remote; changes are paused.',
+    );
   });
 
   it('binds workspace actions and shares WorkspaceSwitcher identity styling', () => {

@@ -45,7 +45,7 @@ export class EpicCommentsController {
   @Delete('comments/:id')
   async deleteEpicComment(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/comments/:id');
-    await this.storage.deleteEpicComment(id);
+    await this.epicsService.deleteEpicCommentById(id);
   }
 
   private parseListOptions(limit?: string, offset?: string): ListOptions {

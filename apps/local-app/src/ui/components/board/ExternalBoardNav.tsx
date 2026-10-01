@@ -147,7 +147,7 @@ export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
           className={cn(
             'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
             pathname === '/board'
-              ? 'bg-secondary text-secondary-foreground'
+              ? 'bg-selected text-selected-foreground'
               : 'text-muted-foreground hover:bg-muted',
           )}
         >
@@ -168,7 +168,7 @@ export function ExternalBoardNav({ className }: ExternalBoardNavProps) {
               className={cn(
                 'inline-flex items-center rounded-md transition-colors',
                 active
-                  ? 'bg-secondary text-secondary-foreground'
+                  ? 'bg-selected text-selected-foreground'
                   : 'text-muted-foreground hover:bg-muted',
               )}
             >

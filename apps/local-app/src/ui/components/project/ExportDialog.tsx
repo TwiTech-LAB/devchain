@@ -22,6 +22,7 @@ import {
 import { useToast } from '@/ui/hooks/use-toast';
 import { Loader2, Upload, X, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 import type { Preset as PresetData } from '@/ui/lib/preset-types';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 interface ManifestData {
   slug?: string;
@@ -127,7 +128,9 @@ export function ExportDialog({
   useEffect(() => {
     const fetchExportData = async () => {
       try {
-        const response = await fetch(`/api/projects/${projectId}/export`);
+        const response = await apiFetch(`/api/projects/${projectId}/export`, undefined, {
+          backend: HOME_BACKEND,
+        });
         if (response.ok) {
           const data = await response.json();
           // Load existing presets from export data
@@ -171,11 +174,15 @@ export function ExportDialog({
       };
 
       // Call POST endpoint with manifest overrides
-      const response = await fetch(`/api/projects/${projectId}/export`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(exportPayload),
-      });
+      const response = await apiFetch(
+        `/api/projects/${projectId}/export`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(exportPayload),
+        },
+        { backend: HOME_BACKEND },
+      );
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ message: 'Export failed' }));

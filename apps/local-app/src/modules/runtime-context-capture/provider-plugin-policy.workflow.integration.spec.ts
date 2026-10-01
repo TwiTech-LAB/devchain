@@ -127,23 +127,27 @@ describe('provider plugin policy preparation workflow integration', () => {
     expect(prepared.config.argv).toEqual(
       mode === 'new'
         ? [
-            '-c',
-            'check_for_update_on_startup=false',
             '--profile',
             profileName,
             '--model',
             'gpt model with spaces',
             '--search',
-          ]
-        : [
             '-c',
             'check_for_update_on_startup=false',
+            '-c',
+            'tui.alternate_screen="never"',
+          ]
+        : [
             'resume',
             '--profile',
             profileName,
             '--model',
             'gpt model with spaces',
             '--search',
+            '-c',
+            'check_for_update_on_startup=false',
+            '-c',
+            'tui.alternate_screen="never"',
             RESTORE_PROVIDER_SESSION_ID,
           ],
     );
@@ -166,13 +170,22 @@ describe('provider plugin policy preparation workflow integration', () => {
       });
       const expectedArgv =
         mode === 'new'
-          ? ['-c', 'check_for_update_on_startup=false', '--model', 'gpt-5']
-          : [
+          ? [
+              '--model',
+              'gpt-5',
               '-c',
               'check_for_update_on_startup=false',
+              '-c',
+              'tui.alternate_screen="never"',
+            ]
+          : [
               'resume',
               '--model',
               'gpt-5',
+              '-c',
+              'check_for_update_on_startup=false',
+              '-c',
+              'tui.alternate_screen="never"',
               RESTORE_PROVIDER_SESSION_ID,
             ];
 

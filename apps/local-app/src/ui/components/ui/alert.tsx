@@ -10,6 +10,9 @@ const alertVariants = cva(
         default: 'bg-background text-foreground',
         destructive:
           'border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive',
+        // The root sets the icon color; an icon class alone loses to `[&>svg]:text-foreground`.
+        warn: 'bg-background border-status-warn/40 text-status-warn [&>svg]:text-status-warn',
+        ok: 'bg-background border-status-ok/40 text-status-ok [&>svg]:text-status-ok',
       },
     },
     defaultVariants: {

@@ -10,6 +10,17 @@ function main() {
   const templatesDest = join(__dirname, '..', 'dist', 'templates');
   const sharedSrc = join(__dirname, '..', 'packages', 'shared', 'dist');
   const sharedDest = join(__dirname, '..', 'dist', 'node_modules', '@devchain', 'shared');
+  const proxmoxRoot = join(__dirname, '..', 'packages', 'proxmox-client');
+  const proxmoxDist = join(proxmoxRoot, 'dist');
+  const proxmoxPackage = join(proxmoxRoot, 'package.json');
+  const proxmoxDest = join(
+    __dirname,
+    '..',
+    'dist',
+    'node_modules',
+    '@devchain',
+    'proxmox-client',
+  );
   const overviewDest = join(
     __dirname,
     '..',
@@ -18,6 +29,11 @@ function main() {
     '@devchain',
     'codebase-overview',
   );
+  if (!existsSync(proxmoxDist) || !existsSync(proxmoxPackage)) {
+    throw new Error(
+      'Build @devchain/proxmox-client before packaging the Local App.',
+    );
+  }
 
   // This type-only package no longer exists, but dirty incremental builds may
   // still contain a previously materialized copy that must not reach npm packages.
@@ -75,6 +91,12 @@ function main() {
     console.log(`Copied @devchain/shared to ${sharedDest}`);
   }
 
+  rmSync(proxmoxDest, { recursive: true, force: true });
+  mkdirSync(proxmoxDest, { recursive: true });
+  cpSync(proxmoxDist, join(proxmoxDest, 'dist'), { recursive: true });
+  cpSync(proxmoxPackage, join(proxmoxDest, 'package.json'));
+  // eslint-disable-next-line no-console
+  console.log(`Copied @devchain/proxmox-client to ${proxmoxDest}`);
 }
 
 main();

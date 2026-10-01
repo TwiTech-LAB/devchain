@@ -205,7 +205,6 @@ export function useExternalTaskController(
         ),
         { signal },
         'Task comments could not be loaded.',
-        '',
         apiFetch,
       ),
     enabled: admitted && connectionEpoch !== null && taskId !== null && identityAccepted,
@@ -277,7 +276,6 @@ export function useExternalTaskController(
           body: JSON.stringify(request.input),
         },
         'The remote action could not be completed.',
-        '',
         capturedFetch,
       );
     },

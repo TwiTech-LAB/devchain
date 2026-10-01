@@ -105,6 +105,38 @@ describe('McpRegistrationPort', () => {
     mkdirMock.mockResolvedValue(undefined);
   });
 
+  it.each(['claude', 'copilot', 'codex'])(
+    'applies update policy to every %s MCP command',
+    async (name) => {
+      accessMock.mockResolvedValue(undefined);
+      const provider = { ...claudeProvider, name, binPath: `/usr/local/bin/${name}` };
+      fakeExecutor.enqueueResponse(
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: '' },
+      );
+      const saved = { ...process.env };
+      process.env.DISABLE_AUTOUPDATER = '0';
+      process.env.COPILOT_AUTO_UPDATE = 'true';
+      try {
+        await port.register(provider, { endpoint: 'http://localhost:3000/mcp' });
+        await port.list(provider);
+        await port.remove(provider, 'devchain');
+        expect(fakeExecutor.calls).toHaveLength(3);
+        for (const call of fakeExecutor.calls) {
+          if (name === 'codex')
+            expect(call.argv.slice(1, 3)).toEqual(['-c', 'check_for_update_on_startup=false']);
+          else
+            expect(call.env).toMatchObject(
+              name === 'claude' ? { DISABLE_AUTOUPDATER: '1' } : { COPILOT_AUTO_UPDATE: 'false' },
+            );
+        }
+      } finally {
+        process.env = saved;
+      }
+    },
+  );
+
   describe('CLI adapter routing (Claude)', () => {
     it('register delegates to CLI adapter and spawns process', async () => {
       accessMock.mockResolvedValue(undefined);

@@ -98,8 +98,8 @@ export function ProviderMappingModal({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/10">
-              <AlertTriangle className="h-5 w-5 text-amber-500" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-status-warn/10">
+              <AlertTriangle className="h-5 w-5 text-status-warn" />
             </div>
             <DialogTitle>Provider Configuration Required</DialogTitle>
           </div>
@@ -111,14 +111,10 @@ export function ProviderMappingModal({
 
         <div className="space-y-4">
           {/* Missing providers alert */}
-          <Alert variant="default" className="border-amber-500/50 bg-amber-500/10">
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
-            <AlertTitle className="text-amber-600 dark:text-amber-400">
-              Missing Providers
-            </AlertTitle>
-            <AlertDescription className="text-amber-600 dark:text-amber-400">
-              {missingProviders.join(', ')}
-            </AlertDescription>
+          <Alert variant="warn" className="bg-status-warn/10">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Missing Providers</AlertTitle>
+            <AlertDescription>{missingProviders.join(', ')}</AlertDescription>
           </Alert>
 
           {/* Family mapping table */}
@@ -162,7 +158,7 @@ export function ProviderMappingModal({
                             </SelectContent>
                           </Select>
                         ) : (
-                          <span className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                          <span className="flex items-center gap-2 text-status-warn">
                             <AlertTriangle className="h-4 w-4" />
                             No alternatives
                           </span>

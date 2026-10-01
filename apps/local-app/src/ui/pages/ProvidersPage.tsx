@@ -4,7 +4,7 @@ import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Textarea } from '@/ui/components/ui/textarea';
 import { Label } from '@/ui/components/ui/label';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
 import {
   Tooltip,
   TooltipContent,
@@ -32,6 +32,7 @@ import {
   DialogDescription,
 } from '@/ui/components/ui/dialog';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 import {
   Plus,
   Server,
@@ -42,6 +43,7 @@ import {
   Loader2,
   Search,
 } from 'lucide-react';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { cn } from '@/ui/lib/utils';
 import { EnvEditor, type EnvEditorHandle } from '@/ui/components/EnvEditor';
 import { ProviderEnvScopePopover } from '@/ui/components/ProviderEnvScopePopover';
@@ -59,8 +61,19 @@ import {
 import { getMcpEndpointUrl } from '@/ui/lib/mcp-endpoint';
 import {
   DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+  PROVIDER_CLI_NAMES,
   validateClaudeLaunchSettingsJson,
+  type ProviderCliName,
 } from '@devchain/shared';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { markProviderCliOwnInstall, useProviderClisOverview } from '@/ui/hooks/useProviderClis';
+import { ProviderCliVersionsSection } from '@/ui/components/providers/ProviderCliVersionsSection';
+import { CountBadge } from '@/ui/components/shared/CountBadge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
+import { useSubNavSearchParam } from '@/ui/hooks/useSubNavSearchParam';
+import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
+import { useOptionalBackend } from '@/ui/lib/backend-context';
 
 type ProviderType = 'codex' | 'claude' | 'opencode' | 'agy' | 'copilot';
 
@@ -131,20 +144,23 @@ interface ProvidersQueryData {
   offset?: number;
 }
 
-async function fetchProviders() {
-  const res = await fetch('/api/providers');
+async function fetchProviders(fetchFn: FetchFn) {
+  const res = await fetchFn('/api/providers');
   if (!res.ok) throw new Error('Failed to fetch providers');
   return res.json();
 }
 
-async function createProvider(data: {
-  name: string;
-  binPath: string | null;
-  autoCompactThreshold?: number;
-  claudeLaunchSettingsJson?: string | null;
-  env?: Record<string, string> | null;
-}) {
-  const res = await fetch('/api/providers', {
+async function createProvider(
+  fetchFn: FetchFn,
+  data: {
+    name: string;
+    binPath: string | null;
+    autoCompactThreshold?: number;
+    claudeLaunchSettingsJson?: string | null;
+    env?: Record<string, string> | null;
+  },
+) {
+  const res = await fetchFn('/api/providers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -163,6 +179,7 @@ async function createProvider(data: {
 }
 
 async function updateProvider(
+  fetchFn: FetchFn,
   id: string,
   data: {
     binPath?: string | null;
@@ -172,7 +189,7 @@ async function updateProvider(
     envScopes?: Record<string, string[]>;
   },
 ) {
-  const res = await fetch(`/api/providers/${id}`, {
+  const res = await fetchFn(`/api/providers/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -190,8 +207,8 @@ async function updateProvider(
   return res.json();
 }
 
-async function deleteProvider(id: string) {
-  const res = await fetch(`/api/providers/${id}`, { method: 'DELETE' });
+async function deleteProvider(fetchFn: FetchFn, id: string) {
+  const res = await fetchFn(`/api/providers/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to delete provider' }));
     // Use the detailed message from the backend if available
@@ -200,9 +217,9 @@ async function deleteProvider(id: string) {
   }
 }
 
-async function ensureProviderMcp(id: string, projectPath?: string) {
+async function ensureProviderMcp(fetchFn: FetchFn, id: string, projectPath?: string) {
   const body = projectPath ? JSON.stringify({ projectPath }) : JSON.stringify({});
-  const res = await fetch(`/api/providers/${id}/mcp/ensure`, {
+  const res = await fetchFn(`/api/providers/${id}/mcp/ensure`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body,
@@ -214,8 +231,8 @@ async function ensureProviderMcp(id: string, projectPath?: string) {
   return res.json();
 }
 
-async function fetchProviderModels(providerId: string): Promise<ProviderModel[]> {
-  const res = await fetch(`/api/providers/${providerId}/models`);
+async function fetchProviderModels(fetchFn: FetchFn, providerId: string): Promise<ProviderModel[]> {
+  const res = await fetchFn(`/api/providers/${providerId}/models`);
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to fetch provider models' }));
     throw new Error(error.message || 'Failed to fetch provider models');
@@ -223,8 +240,12 @@ async function fetchProviderModels(providerId: string): Promise<ProviderModel[]>
   return res.json();
 }
 
-async function addProviderModel(providerId: string, name: string): Promise<ProviderModel> {
-  const res = await fetch(`/api/providers/${providerId}/models`, {
+async function addProviderModel(
+  fetchFn: FetchFn,
+  providerId: string,
+  name: string,
+): Promise<ProviderModel> {
+  const res = await fetchFn(`/api/providers/${providerId}/models`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
@@ -236,8 +257,14 @@ async function addProviderModel(providerId: string, name: string): Promise<Provi
   return res.json();
 }
 
-async function removeProviderModel(providerId: string, modelId: string): Promise<void> {
-  const res = await fetch(`/api/providers/${providerId}/models/${modelId}`, { method: 'DELETE' });
+async function removeProviderModel(
+  fetchFn: FetchFn,
+  providerId: string,
+  modelId: string,
+): Promise<void> {
+  const res = await fetchFn(`/api/providers/${providerId}/models/${modelId}`, {
+    method: 'DELETE',
+  });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to delete model' }));
     throw new Error(error.message || 'Failed to delete model');
@@ -245,9 +272,10 @@ async function removeProviderModel(providerId: string, modelId: string): Promise
 }
 
 async function discoverProviderModels(
+  fetchFn: FetchFn,
   providerId: string,
 ): Promise<{ added: string[]; existing: string[]; total: number }> {
-  const res = await fetch(`/api/providers/${providerId}/models/discover`, { method: 'POST' });
+  const res = await fetchFn(`/api/providers/${providerId}/models/discover`, { method: 'POST' });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to auto-discover models' }));
     throw new Error(error.message || 'Failed to auto-discover models');
@@ -255,8 +283,11 @@ async function discoverProviderModels(
   return res.json();
 }
 
-async function fetchProviderEfforts(providerId: string): Promise<ProviderEffortsResponse> {
-  const res = await fetch(`/api/providers/${providerId}/efforts`);
+async function fetchProviderEfforts(
+  fetchFn: FetchFn,
+  providerId: string,
+): Promise<ProviderEffortsResponse> {
+  const res = await fetchFn(`/api/providers/${providerId}/efforts`);
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to fetch provider efforts' }));
     throw new Error(error.message || 'Failed to fetch provider efforts');
@@ -264,8 +295,12 @@ async function fetchProviderEfforts(providerId: string): Promise<ProviderEfforts
   return res.json();
 }
 
-async function addProviderEffort(providerId: string, name: string): Promise<ProviderEffort> {
-  const res = await fetch(`/api/providers/${providerId}/efforts`, {
+async function addProviderEffort(
+  fetchFn: FetchFn,
+  providerId: string,
+  name: string,
+): Promise<ProviderEffort> {
+  const res = await fetchFn(`/api/providers/${providerId}/efforts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
@@ -277,8 +312,12 @@ async function addProviderEffort(providerId: string, name: string): Promise<Prov
   return res.json();
 }
 
-async function removeProviderEffort(providerId: string, effortId: string): Promise<void> {
-  const res = await fetch(`/api/providers/${providerId}/efforts/${effortId}`, {
+async function removeProviderEffort(
+  fetchFn: FetchFn,
+  providerId: string,
+  effortId: string,
+): Promise<void> {
+  const res = await fetchFn(`/api/providers/${providerId}/efforts/${effortId}`, {
     method: 'DELETE',
   });
   if (!res.ok) {
@@ -303,8 +342,8 @@ interface RescanResult {
   syncResults: SyncResult[];
 }
 
-async function rescanProviders(): Promise<RescanResult> {
-  const res = await fetch('/api/providers/rescan', { method: 'POST' });
+async function rescanProviders(fetchFn: FetchFn): Promise<RescanResult> {
+  const res = await fetchFn('/api/providers/rescan', { method: 'POST' });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Rescan failed' }));
     throw new Error(error.message || 'Failed to rescan providers');
@@ -320,8 +359,7 @@ function invalidateProviderConfigQueries(queryClient: ReturnType<typeof useQuery
         k === 'providers' ||
         k === 'provider-configs' ||
         k === 'profile-provider-configs' ||
-        k === 'provider-configs-by-profile' ||
-        k === 'worktree-profile-provider-configs'
+        k === 'provider-configs-by-profile'
       );
     },
   });
@@ -330,6 +368,7 @@ function invalidateProviderConfigQueries(queryClient: ReturnType<typeof useQuery
 }
 
 function ProviderModelsSection({ provider }: { provider: Provider }) {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast, showSuccess, showError } = useToastHelpers();
   const [isOpen, setIsOpen] = useState(false);
@@ -345,12 +384,12 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
     error,
   } = useQuery({
     queryKey: modelsQueryKey,
-    queryFn: () => fetchProviderModels(provider.id),
+    queryFn: () => fetchProviderModels(fetchFn, provider.id),
     enabled: true,
   });
 
   const addModelMutation = useMutation({
-    mutationFn: (name: string) => addProviderModel(provider.id, name),
+    mutationFn: (name: string) => addProviderModel(fetchFn, provider.id, name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
       setNewModelName('');
@@ -368,7 +407,7 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
   });
 
   const deleteModelMutation = useMutation({
-    mutationFn: (modelId: string) => removeProviderModel(provider.id, modelId),
+    mutationFn: (modelId: string) => removeProviderModel(fetchFn, provider.id, modelId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
       setModelDeleteConfirm(null);
@@ -387,7 +426,7 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
   });
 
   const discoverModelsMutation = useMutation({
-    mutationFn: () => discoverProviderModels(provider.id),
+    mutationFn: () => discoverProviderModels(fetchFn, provider.id),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
       showSuccess({
@@ -523,6 +562,7 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
 }
 
 function ProviderEffortsSection({ provider }: { provider: Provider }) {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast, showSuccess, showError } = useToastHelpers();
   const [isOpen, setIsOpen] = useState(false);
@@ -532,7 +572,7 @@ function ProviderEffortsSection({ provider }: { provider: Provider }) {
 
   const { data, isLoading, isFetching, isError, error } = useQuery({
     queryKey: effortsQueryKey,
-    queryFn: () => fetchProviderEfforts(provider.id),
+    queryFn: () => fetchProviderEfforts(fetchFn, provider.id),
     enabled: true,
   });
 
@@ -541,7 +581,7 @@ function ProviderEffortsSection({ provider }: { provider: Provider }) {
   const requiresModelForEffort = data?.requiresModelForEffort ?? false;
 
   const addEffortMutation = useMutation({
-    mutationFn: (name: string) => addProviderEffort(provider.id, name),
+    mutationFn: (name: string) => addProviderEffort(fetchFn, provider.id, name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: providerEffortQueryKeys.all });
       setNewEffortName('');
@@ -559,7 +599,7 @@ function ProviderEffortsSection({ provider }: { provider: Provider }) {
   });
 
   const deleteEffortMutation = useMutation({
-    mutationFn: (effortId: string) => removeProviderEffort(provider.id, effortId),
+    mutationFn: (effortId: string) => removeProviderEffort(fetchFn, provider.id, effortId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: providerEffortQueryKeys.all });
       setEffortDeleteConfirm(null);
@@ -699,13 +739,34 @@ function ProviderEffortsSection({ provider }: { provider: Provider }) {
   );
 }
 
+const TAB_KEYS = ['providers', 'cli-versions'] as const;
+type TabKey = (typeof TAB_KEYS)[number];
+
 export function ProvidersPage() {
+  const [tab, setTab] = useSubNavSearchParam([...TAB_KEYS], 'providers', 'tab');
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
+  const homeQueryClient = useHomeQueryClient();
   const { toast, showSuccess, showError } = useToastHelpers();
   const { selectedProject } = useSelectedProject();
+  // The provider cards follow the selected project's backend; the CLI-version
+  // setting always belongs to home. `cardsAreHome` gates every home-managed
+  // hint so a VM's cards never display home's managed state.
+  const backend = useOptionalBackend();
+  const cardsAreHome = !backend || backend.activeBackend === HOME_BACKEND;
+  const { data: clisOverview } = useProviderClisOverview();
+  const isManaged = (name: string): name is ProviderCliName =>
+    PROVIDER_CLI_NAMES.some(
+      (cli) => cli === name && clisOverview?.providers?.[cli]?.setting.homeManaged === true,
+    );
   const [showDialog, setShowDialog] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
+  const [pendingOwnInstallUpdate, setPendingOwnInstallUpdate] = useState<{
+    id: string;
+    data: Parameters<typeof updateProvider>[2];
+    cliProvider: ProviderCliName;
+  } | null>(null);
   const [formData, setFormData] = useState({
     binPath: '',
     autoCompactThreshold: '',
@@ -723,12 +784,15 @@ export function ProvidersPage() {
 
   const { data: providersData, isLoading } = useQuery({
     queryKey: providersQueryKeys.list(),
-    queryFn: fetchProviders,
+    queryFn: () => fetchProviders(fetchFn),
   });
 
   const { data: allProjectsData } = useQuery({
     queryKey: ['projects', 'all'],
-    queryFn: () => fetch('/api/projects?limit=10000').then((r) => r.json()),
+    queryFn: () =>
+      apiFetch('/api/projects?limit=10000', undefined, { backend: HOME_BACKEND }).then((r) =>
+        r.json(),
+      ),
     staleTime: 60000,
   });
   const allProjectsForScope: Array<{ id: string; name: string }> = useMemo(
@@ -761,10 +825,10 @@ export function ProvidersPage() {
 
   const createMutation = useCrudMutation<
     { provider: Provider; sync: SyncResult | null; syncError?: string },
-    Parameters<typeof createProvider>[0],
+    Parameters<typeof createProvider>[1],
     void
   >({
-    mutationFn: createProvider,
+    mutationFn: (data) => createProvider(fetchFn, data),
     optimistic: {
       queryKey: providersListKey,
       // temp-id prepend. total is server-owned and corrected on invalidate, so
@@ -844,10 +908,13 @@ export function ProvidersPage() {
         env?: Record<string, string> | null;
         envScopes?: Record<string, string[]>;
       };
+      // Set only when the save went through the own-install confirmation; it
+      // names the home CLI whose cached overview must flip to own install.
+      cliProvider?: ProviderCliName;
     },
     void
   >({
-    mutationFn: ({ id, data }) => updateProvider(id, data),
+    mutationFn: ({ id, data }) => updateProvider(fetchFn, id, data),
     optimistic: {
       queryKey: providersListKey,
       // in-place merge — per-field spread + server-authored updatedAt.
@@ -867,7 +934,10 @@ export function ProvidersPage() {
         description: getErrorMessage(error, 'Failed to update provider'),
       }),
     },
-    onSuccessSideEffects: () => {
+    onSuccessSideEffects: (_data, vars) => {
+      if (vars.cliProvider) {
+        markProviderCliOwnInstall(homeQueryClient, vars.cliProvider);
+      }
       setShowDialog(false);
       setEditingProvider(null);
       setFormData({
@@ -899,7 +969,7 @@ export function ProvidersPage() {
   });
 
   const deleteMutation = useCrudMutation<void, string, void>({
-    mutationFn: deleteProvider,
+    mutationFn: (id: string) => deleteProvider(fetchFn, id),
     optimistic: {
       queryKey: providersListKey,
       // filter-out the matched id.
@@ -928,7 +998,7 @@ export function ProvidersPage() {
   });
 
   const configureMutation = useMutation({
-    mutationFn: (id: string) => ensureProviderMcp(id, selectedProject?.rootPath),
+    mutationFn: (id: string) => ensureProviderMcp(fetchFn, id, selectedProject?.rootPath),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: providersListKey });
       // Refresh preflight so MCP badge updates immediately
@@ -957,7 +1027,7 @@ export function ProvidersPage() {
   });
 
   const rescanMutation = useMutation({
-    mutationFn: rescanProviders,
+    mutationFn: () => rescanProviders(fetchFn),
     onSuccess: (result) => {
       invalidateProviderConfigQueries(queryClient);
       queryClient.invalidateQueries({ queryKey: ['preflight'] });
@@ -1015,16 +1085,24 @@ export function ProvidersPage() {
 
     if (editingProvider) {
       const autoCompactThreshold: number | null = thresholdStr === '' ? null : Number(thresholdStr);
-      updateMutation.mutate({
-        id: editingProvider.id,
-        data: {
-          binPath,
-          autoCompactThreshold,
-          ...(isClaude ? { claudeLaunchSettingsJson } : {}),
-          env: Object.keys(env).length > 0 ? env : null,
-          envScopes: formData.envScopes,
-        },
-      });
+      const updateData = {
+        binPath,
+        autoCompactThreshold,
+        ...(isClaude ? { claudeLaunchSettingsJson } : {}),
+        env: Object.keys(env).length > 0 ? env : null,
+        envScopes: formData.envScopes,
+      };
+      // A custom Binary Path on a DevChain-managed provider switches it back to
+      // the own install; the switch is server-side, the confirmation is here.
+      if (cardsAreHome && isManaged(providerName) && binPath !== editingProvider.binPath) {
+        setPendingOwnInstallUpdate({
+          id: editingProvider.id,
+          data: updateData,
+          cliProvider: providerName,
+        });
+        return;
+      }
+      updateMutation.mutate({ id: editingProvider.id, data: updateData });
     } else {
       const payload: {
         name: string;
@@ -1119,239 +1197,257 @@ export function ProvidersPage() {
 
   return (
     <div>
-      <div className="mb-6 flex justify-between items-start">
-        <div>
-          <h1 className="text-3xl font-bold mb-2">Providers</h1>
-          <p className="text-muted-foreground">
-            Manage AI provider configurations for agent profiles
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => rescanMutation.mutate()}
-            disabled={rescanMutation.isPending}
-          >
-            {rescanMutation.isPending ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <Search className="h-4 w-4 mr-2" />
-            )}
-            Rescan
-          </Button>
-          <Button onClick={handleOpenDialog}>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Provider
-          </Button>
-        </div>
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold mb-2">Providers</h1>
+        <p className="text-muted-foreground">
+          Manage AI provider configurations for agent profiles
+        </p>
       </div>
-
-      {isLoading && <p className="text-muted-foreground">Loading providers...</p>}
-
-      {providersData && (
-        <div className="space-y-4">
-          {providersData.items.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-12 text-center border rounded-lg">
-              <Server className="h-12 w-12 text-muted-foreground mb-4" />
-              <p className="text-lg font-medium mb-2">No Providers Yet</p>
-              <p className="text-muted-foreground mb-4">
-                Add your first AI provider (Claude, Codex, etc.) to get started
-              </p>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as TabKey)}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <TabsList className="h-auto flex-wrap">
+            <TabsTrigger value="providers">
+              Providers
+              {providersData && <CountBadge count={providersData.items.length} />}
+            </TabsTrigger>
+            <TabsTrigger value="cli-versions">CLI versions</TabsTrigger>
+          </TabsList>
+          {tab === 'providers' && (
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => rescanMutation.mutate()}
+                disabled={rescanMutation.isPending}
+              >
+                {rescanMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Search className="h-4 w-4 mr-2" />
+                )}
+                Rescan
+              </Button>
               <Button onClick={handleOpenDialog}>
                 <Plus className="h-4 w-4 mr-2" />
                 Add Provider
               </Button>
             </div>
           )}
+        </div>
 
-          {providersData.items.map((provider: Provider) => {
-            const isSupported = supportedProviders.includes(provider.name);
-            const pf = preflightResult?.providers?.find((p) => p.id === provider.id);
-            const mcpStatus = pf?.mcpStatus;
+        <TabsContent value="providers" className="mt-4">
+          {isLoading && <p className="text-muted-foreground">Loading providers...</p>}
 
-            let mcpBadge: React.ReactNode;
-            if (isPreflightLoading && !preflightResult) {
-              mcpBadge = (
-                <Badge
-                  variant="secondary"
-                  className="text-xs border border-muted-foreground/30 text-muted-foreground"
-                >
-                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                  Checking…
-                </Badge>
-              );
-            } else if (isPreflightError) {
-              mcpBadge = (
-                <Badge
-                  variant="secondary"
-                  className="text-xs border border-destructive bg-destructive/10 text-destructive"
-                >
-                  MCP Check failed
-                </Badge>
-              );
-            } else if (mcpStatus === 'pass') {
-              mcpBadge = (
-                <Badge
-                  variant="secondary"
-                  className="text-xs border border-emerald-500/40 bg-emerald-500/10 text-emerald-600"
-                >
-                  MCP OK
-                </Badge>
-              );
-            } else if (mcpStatus === 'fail') {
-              mcpBadge = (
-                <Badge
-                  variant="secondary"
-                  className="text-xs border border-destructive bg-destructive/10 text-destructive"
-                >
-                  MCP FAIL
-                </Badge>
-              );
-            } else if (
-              mcpStatus === 'warn' &&
-              pf?.requiresProjectContext === true &&
-              !selectedProject
-            ) {
-              mcpBadge = (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Badge
-                        variant="secondary"
-                        className="text-xs border border-amber-500/40 bg-amber-500/10 text-amber-600"
-                      >
+          {providersData && (
+            <div className="space-y-4">
+              {providersData.items.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-12 text-center border rounded-lg">
+                  <Server className="h-12 w-12 text-muted-foreground mb-4" />
+                  <p className="text-lg font-medium mb-2">No Providers Yet</p>
+                  <p className="text-muted-foreground mb-4">
+                    Add your first AI provider (Claude, Codex, etc.) to get started
+                  </p>
+                  <Button onClick={handleOpenDialog}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Provider
+                  </Button>
+                </div>
+              )}
+
+              {providersData.items.map((provider: Provider) => {
+                const isSupported = supportedProviders.includes(provider.name);
+                const pf = preflightResult?.providers?.find((p) => p.id === provider.id);
+                const mcpStatus = pf?.mcpStatus;
+
+                let mcpBadge: React.ReactNode;
+                if (isPreflightLoading && !preflightResult) {
+                  mcpBadge = (
+                    <Badge
+                      variant="secondary"
+                      className="text-xs border border-muted-foreground/30 text-muted-foreground"
+                    >
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                      Checking…
+                    </Badge>
+                  );
+                } else if (isPreflightError) {
+                  mcpBadge = (
+                    <OpaqueBadge variant="outline" className={cn('text-xs', TONE_CLASSES.error)}>
+                      MCP Check failed
+                    </OpaqueBadge>
+                  );
+                } else if (mcpStatus === 'pass') {
+                  mcpBadge = (
+                    <OpaqueBadge variant="outline" className={cn('text-xs', TONE_CLASSES.ok)}>
+                      MCP OK
+                    </OpaqueBadge>
+                  );
+                } else if (mcpStatus === 'fail') {
+                  mcpBadge = (
+                    <OpaqueBadge variant="outline" className={cn('text-xs', TONE_CLASSES.error)}>
+                      MCP FAIL
+                    </OpaqueBadge>
+                  );
+                } else if (
+                  mcpStatus === 'warn' &&
+                  pf?.requiresProjectContext === true &&
+                  !selectedProject
+                ) {
+                  mcpBadge = (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex w-fit rounded-full bg-background">
+                            <Badge variant="outline" className={cn('text-xs', TONE_CLASSES.warn)}>
+                              MCP WARN
+                            </Badge>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>Select a project to verify</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  );
+                } else if (mcpStatus === 'warn') {
+                  const warnBadge = (
+                    <span className="inline-flex w-fit rounded-full bg-background">
+                      <Badge variant="outline" className={cn('text-xs', TONE_CLASSES.warn)}>
                         MCP WARN
                       </Badge>
-                    </TooltipTrigger>
-                    <TooltipContent>Select a project to verify</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              );
-            } else if (mcpStatus === 'warn') {
-              const warnBadge = (
-                <Badge
-                  variant="secondary"
-                  className="text-xs border border-amber-500/40 bg-amber-500/10 text-amber-600"
-                >
-                  MCP WARN
-                </Badge>
-              );
-              mcpBadge = pf?.mcpMessage ? (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>{warnBadge}</TooltipTrigger>
-                    <TooltipContent>{pf.mcpMessage}</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                warnBadge
-              );
-            } else if (pf?.status === 'fail') {
-              // Defensive: allSettled rejection set status:'fail' but mcpStatus was not populated.
-              // Render FAIL badge so this anomaly is never silently dropped to neutral "—".
-              mcpBadge = (
-                <Badge
-                  variant="secondary"
-                  className="text-xs border border-destructive bg-destructive/10 text-destructive"
-                >
-                  MCP FAIL
-                </Badge>
-              );
-            } else {
-              mcpBadge = (
-                <Badge variant="outline" className="text-xs text-muted-foreground">
-                  MCP —
-                </Badge>
-              );
-            }
+                    </span>
+                  );
+                  mcpBadge = pf?.mcpMessage ? (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>{warnBadge}</TooltipTrigger>
+                        <TooltipContent>{pf.mcpMessage}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    warnBadge
+                  );
+                } else if (pf?.status === 'fail') {
+                  // Defensive: allSettled rejection set status:'fail' but mcpStatus was not populated.
+                  // Render FAIL badge so this anomaly is never silently dropped to neutral "—".
+                  mcpBadge = (
+                    <OpaqueBadge variant="outline" className={cn('text-xs', TONE_CLASSES.error)}>
+                      MCP FAIL
+                    </OpaqueBadge>
+                  );
+                } else {
+                  mcpBadge = (
+                    <Badge variant="outline" className="text-xs text-muted-foreground">
+                      MCP —
+                    </Badge>
+                  );
+                }
 
-            return (
-              <div key={provider.id} className="border rounded-lg p-4 bg-card">
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Server className="h-5 w-5 text-muted-foreground" />
-                      <h3 className="text-lg font-semibold">{provider.name}</h3>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <span className="text-sm">Binary Path:</span>
-                      <code className="text-sm bg-muted px-2 py-0.5 rounded">
-                        {provider.binPath || 'Not configured'}
-                      </code>
-                    </div>
-                    {provider.name.toLowerCase() === 'claude' && (
-                      <div className="text-sm text-muted-foreground">
-                        Default threshold:{' '}
-                        {provider.autoCompactThreshold != null
-                          ? `${provider.autoCompactThreshold}%`
-                          : 'disabled'}
+                return (
+                  <div key={provider.id} className="border rounded-lg p-4 bg-card">
+                    <div className="flex justify-between items-start gap-4">
+                      <div className="flex-1 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Server className="h-5 w-5 text-muted-foreground" />
+                          <h3 className="text-lg font-semibold">{provider.name}</h3>
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <span className="text-sm">Binary Path:</span>
+                          {cardsAreHome && isManaged(provider.name) ? (
+                            <Badge
+                              variant="secondary"
+                              className="text-xs border border-primary/30 bg-primary/10 text-primary"
+                            >
+                              Managed by DevChain
+                            </Badge>
+                          ) : (
+                            <code className="text-sm bg-muted px-2 py-0.5 rounded">
+                              {provider.binPath || 'Not configured'}
+                            </code>
+                          )}
+                        </div>
+                        {provider.name.toLowerCase() === 'claude' && (
+                          <div className="text-sm text-muted-foreground">
+                            Default threshold:{' '}
+                            {provider.autoCompactThreshold != null
+                              ? `${provider.autoCompactThreshold}%`
+                              : 'disabled'}
+                          </div>
+                        )}
+                        {provider.env && Object.keys(provider.env).length > 0 && (
+                          <div className="text-sm">
+                            <span className="text-muted-foreground">Env:</span>{' '}
+                            <span className="font-mono">
+                              {Object.keys(provider.env).join(', ')}
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          {mcpBadge}
+                          {provider.mcpRegisteredAt && (
+                            <span className="text-xs text-muted-foreground">
+                              Registered {new Date(provider.mcpRegisteredAt).toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Created {new Date(provider.createdAt).toLocaleDateString()}
+                        </p>
                       </div>
-                    )}
-                    {provider.env && Object.keys(provider.env).length > 0 && (
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">Env:</span>{' '}
-                        <span className="font-mono">{Object.keys(provider.env).join(', ')}</span>
-                      </div>
-                    )}
-                    <div className="flex flex-wrap items-center gap-2">
-                      {mcpBadge}
-                      {provider.mcpRegisteredAt && (
-                        <span className="text-xs text-muted-foreground">
-                          Registered {new Date(provider.mcpRegisteredAt).toLocaleString()}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Created {new Date(provider.createdAt).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    {isSupported &&
-                      pf &&
-                      (pf.mcpStatus === 'warn' || pf.mcpStatus === 'fail') &&
-                      (pf.requiresProjectContext === true && !selectedProject ? (
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  disabled
-                                  style={{ pointerEvents: 'none' }}
-                                >
-                                  Configure MCP
-                                </Button>
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>Select a project first</TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleConfigure(provider)}
-                          disabled={configureMutation.isPending}
-                        >
-                          Configure MCP
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        {isSupported &&
+                          pf &&
+                          (pf.mcpStatus === 'warn' || pf.mcpStatus === 'fail') &&
+                          (pf.requiresProjectContext === true && !selectedProject ? (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      disabled
+                                      style={{ pointerEvents: 'none' }}
+                                    >
+                                      Configure MCP
+                                    </Button>
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent>Select a project first</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleConfigure(provider)}
+                              disabled={configureMutation.isPending}
+                            >
+                              Configure MCP
+                            </Button>
+                          ))}
+                        <Button variant="outline" size="sm" onClick={() => handleEdit(provider)}>
+                          Edit
                         </Button>
-                      ))}
-                    <Button variant="outline" size="sm" onClick={() => handleEdit(provider)}>
-                      Edit
-                    </Button>
-                    <Button variant="destructive" size="sm" onClick={() => handleDelete(provider)}>
-                      Delete
-                    </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => handleDelete(provider)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                    <ProviderModelsSection provider={provider} />
+                    <ProviderEffortsSection provider={provider} />
                   </div>
-                </div>
-                <ProviderModelsSection provider={provider} />
-                <ProviderEffortsSection provider={provider} />
-              </div>
-            );
-          })}
-        </div>
-      )}
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="cli-versions" className="mt-4">
+          <ProviderCliVersionsSection />
+        </TabsContent>
+      </Tabs>
 
       {/* Create/Edit Provider Dialog */}
       <Dialog
@@ -1611,6 +1707,45 @@ export function ProvidersPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Own-install switch confirmation: saving a custom path on a managed provider */}
+      <Dialog
+        open={!!pendingOwnInstallUpdate}
+        onOpenChange={(open) => !open && setPendingOwnInstallUpdate(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Switch to your own install?</DialogTitle>
+            <DialogDescription>
+              Saving a custom Binary Path turns off <strong>Managed by DevChain</strong> for{' '}
+              <strong>{editingProvider?.name}</strong>. New sessions will launch with your path; the
+              managed copy stays on disk.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="bg-status-warn/10 border border-status-warn/40 rounded-lg p-3 flex items-start gap-2">
+            <AlertCircle className="h-5 w-5 text-status-warn mt-0.5 flex-shrink-0" />
+            <p className="text-sm text-status-warn">
+              You can turn Managed by DevChain back on in the CLI versions section.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingOwnInstallUpdate(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (pendingOwnInstallUpdate) {
+                  updateMutation.mutate(pendingOwnInstallUpdate);
+                  setPendingOwnInstallUpdate(null);
+                }
+              }}
+              disabled={updateMutation.isPending}
+            >
+              Save and switch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
         <DialogContent>
@@ -1621,9 +1756,9 @@ export function ProvidersPage() {
               profiles using this provider will be affected.
             </DialogDescription>
           </DialogHeader>
-          <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-3 flex items-start gap-2">
-            <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-500 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-amber-800 dark:text-amber-200">
+          <div className="bg-status-warn/10 border border-status-warn/40 rounded-lg p-3 flex items-start gap-2">
+            <AlertCircle className="h-5 w-5 text-status-warn mt-0.5 flex-shrink-0" />
+            <p className="text-sm text-status-warn">
               This action cannot be undone. Make sure no profiles are currently using this provider.
             </p>
           </div>

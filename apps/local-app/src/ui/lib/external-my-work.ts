@@ -61,7 +61,7 @@ export const externalMyWorkQueryKeys = {
     projectId: string,
     taskId: string,
     remoteScopeKey: string,
-    runtimeScope: 'main' | 'isolated',
+    runtimeScope: 'active' | 'disabled',
   ) =>
     [
       ...externalMyWorkQueryKeys.epoch(provider, connectionEpoch),

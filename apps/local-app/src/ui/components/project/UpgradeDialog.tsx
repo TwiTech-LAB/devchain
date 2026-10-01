@@ -18,6 +18,7 @@ import {
   isProjectPreMutationFailure,
 } from '@/ui/pages/projects/lib/project-failures';
 import type { UpgradeProjectResponse } from '@/ui/pages/projects/lib/project-contracts';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 interface UpgradeDialogProps {
   projectId: string;
@@ -30,11 +31,15 @@ interface UpgradeDialogProps {
 }
 
 async function restoreBackup(projectId: string, backupId: string): Promise<{ success: boolean }> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/restore-backup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ backupId }),
-  });
+  const res = await apiFetch(
+    `/api/projects/${encodeURIComponent(projectId)}/restore-backup`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backupId }),
+    },
+    { backend: HOME_BACKEND },
+  );
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Restore failed' }));
     throw new Error(error.message || 'Restore failed');
@@ -83,7 +88,7 @@ export function UpgradeDialog({
         {result.success ? (
           <>
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-green-600">
+              <DialogTitle className="flex items-center gap-2 text-status-ok">
                 <CheckCircle2 className="h-5 w-5" />
                 {actionVerb} Complete
               </DialogTitle>
@@ -92,7 +97,7 @@ export function UpgradeDialog({
               </DialogDescription>
             </DialogHeader>
             <div className="flex flex-col items-center justify-center gap-4 py-8">
-              <CheckCircle2 className="h-16 w-16 text-green-500" />
+              <CheckCircle2 className="h-16 w-16 text-status-ok" />
               <p className="text-sm text-muted-foreground">
                 All configured changes have been applied successfully.
               </p>

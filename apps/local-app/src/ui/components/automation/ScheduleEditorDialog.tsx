@@ -39,6 +39,7 @@ import {
 } from '@/ui/lib/scheduled-epics';
 import { fetchStatuses, fetchAgents } from '@/ui/pages/board/lib/board-api';
 import type { Status, Agent, Epic } from '@/ui/types';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface ScheduleEditorDialogProps {
   open: boolean;
@@ -188,6 +189,7 @@ function ParentEpicPicker({
   resolvedEpic,
   isResolving,
 }: ParentEpicPickerProps) {
+  const fetchFn = useFetchFactory();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -211,7 +213,7 @@ function ParentEpicPicker({
     queryKey: ['schedule-parent-epic-search', projectId, debouncedSearch],
     queryFn: async () => {
       const params = new URLSearchParams({ projectId, q: debouncedSearch, limit: '10' });
-      const res = await fetch(`/api/epics?${params.toString()}`);
+      const res = await fetchFn(`/api/epics?${params.toString()}`);
       if (!res.ok) throw new Error('Failed to search epics');
       const data: { items: Epic[] } = await res.json();
       return data.items.filter((e) => e.parentId == null);
@@ -338,7 +340,7 @@ function ParentEpicPicker({
                 type="button"
                 role="option"
                 aria-selected={index === selectedIndex}
-                className={`w-full rounded px-2 py-1.5 text-left text-sm hover:bg-accent transition-colors cursor-pointer ${index === selectedIndex && debouncedSearch ? 'bg-accent' : ''}`}
+                className={`w-full rounded px-2 py-1.5 text-left text-sm transition-colors cursor-pointer ${index === selectedIndex && debouncedSearch ? 'bg-selected text-selected-foreground' : 'hover:bg-accent'}`}
                 onClick={() => handleSelect(epic)}
                 onMouseEnter={() => setSelectedIndex(index)}
               >
@@ -363,6 +365,7 @@ export function ScheduleEditorDialog({
   schedule,
   projectId,
 }: ScheduleEditorDialogProps) {
+  const fetchFn = useFetchFactory();
   const isEdit = !!schedule;
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -385,7 +388,7 @@ export function ScheduleEditorDialog({
     isError: statusesError,
   } = useQuery({
     queryKey: ['schedule-statuses', projectId],
-    queryFn: () => fetchStatuses(projectId),
+    queryFn: () => fetchStatuses(projectId, fetchFn),
     enabled: open && !!projectId,
     staleTime: 5 * 60 * 1000,
   });
@@ -399,7 +402,7 @@ export function ScheduleEditorDialog({
     isError: agentsError,
   } = useQuery({
     queryKey: ['schedule-agents', projectId],
-    queryFn: () => fetchAgents(projectId),
+    queryFn: () => fetchAgents(projectId, fetchFn),
     enabled: open && !!projectId,
     staleTime: 5 * 60 * 1000,
     select: (data) => ({
@@ -424,7 +427,7 @@ export function ScheduleEditorDialog({
   } = useQuery({
     queryKey: ['schedule-resolve-parent', parentIdToResolve],
     queryFn: async () => {
-      const res = await fetch(`/api/epics/${parentIdToResolve}`);
+      const res = await fetchFn(`/api/epics/${parentIdToResolve}`);
       if (!res.ok) return null;
       const epic: Epic = await res.json();
       if (epic.projectId !== projectId) return null;
@@ -448,7 +451,7 @@ export function ScheduleEditorDialog({
 
   // --- Mutations ---
   const createMutation = useMutation({
-    mutationFn: (data: CreateScheduledEpicData) => createScheduledEpic(data),
+    mutationFn: (data: CreateScheduledEpicData) => createScheduledEpic(fetchFn, data),
     onSuccess: () => {
       toast({ title: 'Schedule created' });
       queryClient.invalidateQueries({ queryKey: ['scheduled-epics', projectId] });
@@ -465,7 +468,7 @@ export function ScheduleEditorDialog({
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: UpdateScheduledEpicData }) =>
-      updateScheduledEpic(id, data),
+      updateScheduledEpic(fetchFn, id, data),
     onSuccess: () => {
       toast({ title: 'Schedule updated' });
       queryClient.invalidateQueries({ queryKey: ['scheduled-epics', projectId] });

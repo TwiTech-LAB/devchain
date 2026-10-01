@@ -162,14 +162,14 @@ describe('type-guards', () => {
   });
 
   describe('isProjectProvisioningCapable', () => {
-    it('returns true for Claude, Antigravity, and Copilot (ProjectProvisioningCapability adopters)', () => {
+    it('returns true for Claude, Antigravity, Copilot, and Codex (ProjectProvisioningCapability adopters)', () => {
       expect(isProjectProvisioningCapable(claude)).toBe(true);
       expect(isProjectProvisioningCapable(antigravity)).toBe(true);
       expect(isProjectProvisioningCapable(copilot)).toBe(true);
+      expect(isProjectProvisioningCapable(codex)).toBe(true);
     });
 
     it('returns false for adapters without project provisioning', () => {
-      expect(isProjectProvisioningCapable(codex)).toBe(false);
       expect(isProjectProvisioningCapable(opencode)).toBe(false);
     });
 

@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ProjectsController } from './controllers/projects.controller';
-import { MainProjectBootstrapService } from './services/main-project-bootstrap.service';
 import { ProjectsService } from './services/projects.service';
 import { ProjectProviderProvisioningService } from './services/project-provider-provisioning.service';
 import { ProjectTemplateUpgradeService } from './services/project-template-upgrade.service';
@@ -16,6 +15,7 @@ import { CoreNormalModule } from '../core/core-normal.module';
 import { ProvidersModule } from '../providers/providers.module';
 import { ScheduledEpicsModule } from '../scheduled-epics/scheduled-epics.module';
 import { EventsCoreModule } from '../events/events-core.module';
+import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
   imports: [
@@ -29,21 +29,16 @@ import { EventsCoreModule } from '../events/events-core.module';
     ProvidersModule,
     ScheduledEpicsModule,
     EventsCoreModule,
+    ProjectWriteAdmissionModule,
   ],
   controllers: [ProjectsController],
   providers: [
     ProjectsService,
-    MainProjectBootstrapService,
     ProjectProviderProvisioningService,
     ProjectTemplateUpgradeService,
     ProjectRegistryImportService,
     TemplatePipeline,
   ],
-  exports: [
-    ProjectsService,
-    MainProjectBootstrapService,
-    ProjectTemplateUpgradeService,
-    ProjectRegistryImportService,
-  ],
+  exports: [ProjectsService, ProjectTemplateUpgradeService, ProjectRegistryImportService],
 })
 export class ProjectsModule {}

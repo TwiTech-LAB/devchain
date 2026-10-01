@@ -186,7 +186,7 @@ describe('MessageFiltersPanel', () => {
     });
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/agents'));
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/agents'), undefined);
     });
 
     const agentSelect = screen.getByLabelText('Filter by agent');
@@ -329,6 +329,7 @@ describe('MessageFiltersPanel', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining('/api/agents?projectId=my-project'),
+        undefined,
       );
     });
   });

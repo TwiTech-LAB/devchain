@@ -10,6 +10,8 @@ import {
   fetchTranscriptIndex,
 } from './sessions';
 
+const globalFetch = (input: RequestInfo | URL, init?: RequestInit) => global.fetch(input, init);
+
 describe('ui/lib/sessions helpers', () => {
   const originalFetch = global.fetch;
 
@@ -48,7 +50,7 @@ describe('ui/lib/sessions helpers', () => {
       },
     );
 
-    const sess = await launchAgentSession('agent-1', 'project-1');
+    const sess = await launchAgentSession('agent-1', 'project-1', globalFetch);
     expect(sess.id).toBe('session-1');
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/sessions/launch',
@@ -65,7 +67,7 @@ describe('ui/lib/sessions helpers', () => {
       },
     );
 
-    await launchSession('agent-1', 'project-1', { silent: true });
+    await launchSession('agent-1', 'project-1', { silent: true }, globalFetch);
 
     expect(JSON.parse(capturedBody!)).toEqual({
       agentId: 'agent-1',
@@ -74,32 +76,16 @@ describe('ui/lib/sessions helpers', () => {
     });
   });
 
-  it('launchSession routes through apiBase when provided', async () => {
+  it('launchSession posts to the sessions launch route', async () => {
     (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
       ok: true,
       json: async () => makeSessionPayload(),
     }));
 
-    await launchSession('agent-1', 'project-1', undefined, '/wt/feature-auth');
-
-    expect(global.fetch).toHaveBeenCalledWith(
-      '/wt/feature-auth/api/sessions/launch',
-      expect.objectContaining({ method: 'POST' }),
-    );
-  });
-
-  it('launchSession keeps existing route when apiBase is omitted or empty', async () => {
-    (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
-      ok: true,
-      json: async () => makeSessionPayload(),
-    }));
-
-    await launchSession('agent-1', 'project-1');
-    await launchSession('agent-1', 'project-1', undefined, '');
-    await launchSession('agent-1', 'project-1', undefined, '   ');
+    await launchSession('agent-1', 'project-1', undefined, globalFetch);
 
     const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-    expect(urls).toEqual(['/api/sessions/launch', '/api/sessions/launch', '/api/sessions/launch']);
+    expect(urls).toEqual(['/api/sessions/launch']);
   });
 
   it('launchAgentSession propagates error message on failure', async () => {
@@ -116,7 +102,7 @@ describe('ui/lib/sessions helpers', () => {
       },
     );
 
-    await expect(launchAgentSession('agent-1', 'project-1')).rejects.toThrow(
+    await expect(launchAgentSession('agent-1', 'project-1', globalFetch)).rejects.toThrow(
       /Preflight checks failed|Failed to launch session/,
     );
   });
@@ -155,7 +141,7 @@ describe('ui/lib/sessions helpers', () => {
         },
       );
 
-      const result = await restartAgentSession('agent-1', 'project-1', 'old-session');
+      const result = await restartAgentSession('agent-1', 'project-1', 'old-session', globalFetch);
       expect(result.session.id).toBe('session-new');
       expect(result.terminateWarning).toBeUndefined();
       expect(global.fetch).toHaveBeenCalledWith(
@@ -174,7 +160,7 @@ describe('ui/lib/sessions helpers', () => {
           }),
       }));
 
-      const result = await restartAgentSession('agent-1', 'project-1', 'nonexistent');
+      const result = await restartAgentSession('agent-1', 'project-1', 'nonexistent', globalFetch);
       expect(result.session.id).toBe('session-fresh');
       expect(result.terminateWarning).toBeUndefined();
     });
@@ -190,7 +176,12 @@ describe('ui/lib/sessions helpers', () => {
           }),
       }));
 
-      const result = await restartAgentSession('agent-1', 'project-1', 'failing-session');
+      const result = await restartAgentSession(
+        'agent-1',
+        'project-1',
+        'failing-session',
+        globalFetch,
+      );
       expect(result.session.id).toBe('session-after-error');
       expect(result.terminateWarning).toContain('Previous session may still be running');
     });
@@ -202,9 +193,9 @@ describe('ui/lib/sessions helpers', () => {
         json: async () => ({ message: 'Internal server error' }),
       }));
 
-      await expect(restartAgentSession('agent-1', 'project-1', 'any-session')).rejects.toThrow(
-        /Internal server error|Failed to restart session/,
-      );
+      await expect(
+        restartAgentSession('agent-1', 'project-1', 'any-session', globalFetch),
+      ).rejects.toThrow(/Internal server error|Failed to restart session/);
     });
 
     it('sends projectId in request body', async () => {
@@ -219,11 +210,11 @@ describe('ui/lib/sessions helpers', () => {
         },
       );
 
-      await restartAgentSession('agent-1', 'project-123', 'old-session');
+      await restartAgentSession('agent-1', 'project-123', 'old-session', globalFetch);
       expect(JSON.parse(capturedBody!)).toEqual({ projectId: 'project-123' });
     });
 
-    it('restartSession routes through apiBase when provided', async () => {
+    it('restartSession posts to the agent restart route', async () => {
       (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
         ok: true,
         json: async () =>
@@ -233,65 +224,74 @@ describe('ui/lib/sessions helpers', () => {
           }),
       }));
 
-      await restartSession('agent-1', 'project-1', 'old-session', '/wt/feature-auth');
-
-      expect(global.fetch).toHaveBeenCalledWith(
-        '/wt/feature-auth/api/agents/agent-1/restart',
-        expect.objectContaining({ method: 'POST' }),
-      );
-    });
-
-    it('restartSession keeps existing route when apiBase is omitted or empty', async () => {
-      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
-        ok: true,
-        json: async () =>
-          makeRestartResponse({
-            session: { id: 'session-restarted' },
-            terminateStatus: 'success',
-          }),
-      }));
-
-      await restartSession('agent-1', 'project-1', 'old-session');
-      await restartSession('agent-1', 'project-1', 'old-session', '');
-      await restartSession('agent-1', 'project-1', 'old-session', '   ');
+      await restartSession('agent-1', 'project-1', 'old-session', globalFetch);
 
       const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-      expect(urls).toEqual([
-        '/api/agents/agent-1/restart',
-        '/api/agents/agent-1/restart',
-        '/api/agents/agent-1/restart',
-      ]);
+      expect(urls).toEqual(['/api/agents/agent-1/restart']);
     });
   });
 
   describe('terminateSession', () => {
-    it('routes through apiBase when provided', async () => {
+    it('sends a DELETE to the session route', async () => {
       (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
         ok: true,
       }));
 
-      await terminateSession('session-1', '/wt/feature-auth');
+      await terminateSession('session-1', globalFetch);
 
-      expect(global.fetch).toHaveBeenCalledWith('/wt/feature-auth/api/sessions/session-1', {
+      expect(global.fetch).toHaveBeenCalledWith('/api/sessions/session-1', {
         method: 'DELETE',
       });
     });
+  });
 
-    it('keeps existing route when apiBase is omitted or empty', async () => {
-      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
+  // The trailing fetchFn argument is the sole transport seam these lifecycle APIs
+  // expose. These prove an injected fetchFn — not the ambient global — carries each
+  // call to its local /api URL, so callers can supply a scoped fetch without routing.
+  describe('injected fetchFn transport', () => {
+    it('launchSession posts to the local launch route through the injected fetchFn', async () => {
+      (global as unknown as { fetch: unknown }).fetch = jest.fn();
+      const fetchFn = jest.fn().mockResolvedValue({
         ok: true,
-      }));
+        json: async () => makeSessionPayload(),
+      });
 
-      await terminateSession('session-1');
-      await terminateSession('session-1', '');
-      await terminateSession('session-1', '   ');
+      await launchSession('agent-1', 'project-1', undefined, fetchFn);
 
-      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-      expect(urls).toEqual([
-        '/api/sessions/session-1',
-        '/api/sessions/session-1',
-        '/api/sessions/session-1',
-      ]);
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(fetchFn).toHaveBeenCalledWith(
+        '/api/sessions/launch',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    it('restartSession posts to the local agent restart route through the injected fetchFn', async () => {
+      (global as unknown as { fetch: unknown }).fetch = jest.fn();
+      const fetchFn = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ session: makeSessionPayload(), terminateStatus: 'success' }),
+      });
+
+      await restartSession('agent-1', 'project-1', 'old-session', fetchFn);
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(fetchFn).toHaveBeenCalledWith(
+        '/api/agents/agent-1/restart',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    it('terminateSession sends a DELETE to the local session route through the injected fetchFn', async () => {
+      (global as unknown as { fetch: unknown }).fetch = jest.fn();
+      const fetchFn = jest.fn().mockResolvedValue({ ok: true });
+
+      await terminateSession('session-1', fetchFn);
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(fetchFn).toHaveBeenCalledWith('/api/sessions/session-1', { method: 'DELETE' });
     });
   });
 
@@ -340,7 +340,7 @@ describe('ui/lib/sessions helpers', () => {
     it('keeps ordinary requests compatible', async () => {
       const payload = { cursor: 'snapshot', chunkIds: [] };
       const fetchFn = jest.fn().mockResolvedValue({ ok: true, json: async () => payload });
-      await expect(fetchTranscriptIndex('session-1', '', fetchFn)).resolves.toBe(payload);
+      await expect(fetchTranscriptIndex('session-1', fetchFn)).resolves.toBe(payload);
       expect(fetchFn).toHaveBeenCalledWith('/api/sessions/session-1/transcript/index', {});
     });
 
@@ -351,7 +351,7 @@ describe('ui/lib/sessions helpers', () => {
         const payload = { cursor: 'snapshot', pages: [] };
         const fetchFn = jest.fn().mockResolvedValue({ ok: true, json: async () => payload });
         await expect(
-          fetchTranscriptIndex('session-1', '/worktree/test', fetchFn, {
+          fetchTranscriptIndex('session-1', fetchFn, {
             pageSize: 10,
             firstVirtualIndex: 0,
             lastVirtualIndex: 19,
@@ -360,7 +360,7 @@ describe('ui/lib/sessions helpers', () => {
           }),
         ).resolves.toBe(payload);
         expect(fetchFn).toHaveBeenCalledWith(
-          `/worktree/test/api/sessions/session-1/transcript/index?pageSize=10&firstVirtualIndex=0&lastVirtualIndex=19&live=${live}`,
+          `/api/sessions/session-1/transcript/index?pageSize=10&firstVirtualIndex=0&lastVirtualIndex=19&live=${live}`,
           { signal: controller.signal },
         );
       },
@@ -368,7 +368,7 @@ describe('ui/lib/sessions helpers', () => {
 
     it('omits unmeasured indices for the server initial-window defaults', async () => {
       const fetchFn = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ pages: [] }) });
-      await fetchTranscriptIndex('session-1', '', fetchFn, { pageSize: 10, live: true });
+      await fetchTranscriptIndex('session-1', fetchFn, { pageSize: 10, live: true });
       expect(fetchFn).toHaveBeenCalledWith(
         '/api/sessions/session-1/transcript/index?pageSize=10&live=true',
         {},
@@ -382,14 +382,14 @@ describe('ui/lib/sessions helpers', () => {
         json: async () => ({ message: 'Transcript window exceeds 200 chunk bodies' }),
       });
       await expect(
-        fetchTranscriptIndex('session-1', '', fetchFn, { pageSize: 100 }),
+        fetchTranscriptIndex('session-1', fetchFn, { pageSize: 100 }),
       ).rejects.toMatchObject({
         status: 400,
         message: 'Transcript window exceeds 200 chunk bodies',
       });
       const aborted = new DOMException('Aborted', 'AbortError');
       fetchFn.mockRejectedValueOnce(aborted);
-      await expect(fetchTranscriptIndex('session-1', '', fetchFn)).rejects.toBe(aborted);
+      await expect(fetchTranscriptIndex('session-1', fetchFn)).rejects.toBe(aborted);
     });
   });
 
@@ -401,7 +401,12 @@ describe('ui/lib/sessions helpers', () => {
         json: async () => mockData,
       }));
 
-      const result = await fetchJsonOrThrow<typeof mockData>('/api/test');
+      const result = await fetchJsonOrThrow<typeof mockData>(
+        '/api/test',
+        undefined,
+        undefined,
+        globalFetch,
+      );
       expect(result).toEqual(mockData);
     });
 
@@ -412,12 +417,12 @@ describe('ui/lib/sessions helpers', () => {
         json: async () => ({ message: 'Bad request from server' }),
       }));
 
-      await expect(fetchJsonOrThrow('/api/test', {}, 'Fallback error')).rejects.toThrow(
-        SessionApiError,
-      );
-      await expect(fetchJsonOrThrow('/api/test', {}, 'Fallback error')).rejects.toThrow(
-        'Bad request from server',
-      );
+      await expect(
+        fetchJsonOrThrow('/api/test', {}, 'Fallback error', globalFetch),
+      ).rejects.toThrow(SessionApiError);
+      await expect(
+        fetchJsonOrThrow('/api/test', {}, 'Fallback error', globalFetch),
+      ).rejects.toThrow('Bad request from server');
     });
 
     it('uses fallback message when server response has no message', async () => {
@@ -427,9 +432,9 @@ describe('ui/lib/sessions helpers', () => {
         json: async () => ({}),
       }));
 
-      await expect(fetchJsonOrThrow('/api/test', {}, 'Custom fallback')).rejects.toThrow(
-        'Custom fallback',
-      );
+      await expect(
+        fetchJsonOrThrow('/api/test', {}, 'Custom fallback', globalFetch),
+      ).rejects.toThrow('Custom fallback');
     });
 
     it('uses fallback message when response body cannot be parsed', async () => {
@@ -441,9 +446,9 @@ describe('ui/lib/sessions helpers', () => {
         },
       }));
 
-      await expect(fetchJsonOrThrow('/api/test', {}, 'Network error fallback')).rejects.toThrow(
-        'Network error fallback',
-      );
+      await expect(
+        fetchJsonOrThrow('/api/test', {}, 'Network error fallback', globalFetch),
+      ).rejects.toThrow('Network error fallback');
     });
 
     it('includes status code in thrown error', async () => {
@@ -454,7 +459,7 @@ describe('ui/lib/sessions helpers', () => {
       }));
 
       try {
-        await fetchJsonOrThrow('/api/test');
+        await fetchJsonOrThrow('/api/test', undefined, undefined, globalFetch);
         fail('Expected error to be thrown');
       } catch (error) {
         expect(error).toBeInstanceOf(SessionApiError);
@@ -484,7 +489,7 @@ describe('ui/lib/sessions helpers', () => {
       }));
 
       try {
-        await fetchJsonOrThrow('/api/sessions/launch');
+        await fetchJsonOrThrow('/api/sessions/launch', undefined, undefined, globalFetch);
         fail('Expected error to be thrown');
       } catch (error) {
         expect(error).toBeInstanceOf(SessionApiError);
@@ -502,7 +507,9 @@ describe('ui/lib/sessions helpers', () => {
         ok: true,
       }));
 
-      await expect(fetchOrThrow('/api/test', { method: 'DELETE' })).resolves.toBeUndefined();
+      await expect(
+        fetchOrThrow('/api/test', { method: 'DELETE' }, undefined, globalFetch),
+      ).resolves.toBeUndefined();
     });
 
     it('throws SessionApiError with server message on failure', async () => {
@@ -513,10 +520,10 @@ describe('ui/lib/sessions helpers', () => {
       }));
 
       await expect(
-        fetchOrThrow('/api/test', { method: 'DELETE' }, 'Delete failed'),
+        fetchOrThrow('/api/test', { method: 'DELETE' }, 'Delete failed', globalFetch),
       ).rejects.toThrow(SessionApiError);
       await expect(
-        fetchOrThrow('/api/test', { method: 'DELETE' }, 'Delete failed'),
+        fetchOrThrow('/api/test', { method: 'DELETE' }, 'Delete failed', globalFetch),
       ).rejects.toThrow('Forbidden');
     });
 
@@ -528,7 +535,7 @@ describe('ui/lib/sessions helpers', () => {
       }));
 
       try {
-        await fetchOrThrow('/api/test');
+        await fetchOrThrow('/api/test', undefined, undefined, globalFetch);
         fail('Expected error to be thrown');
       } catch (error) {
         expect(error).toBeInstanceOf(SessionApiError);

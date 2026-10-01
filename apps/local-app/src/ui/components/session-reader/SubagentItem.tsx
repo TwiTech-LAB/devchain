@@ -30,10 +30,10 @@ export function SubagentItem({ step }: SubagentItemProps) {
         data-testid="subagent-trigger"
       >
         <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-        <Layers className="h-3 w-3 text-blue-400" />
+        <Layers className="h-3 w-3 text-status-info" />
         <span className="font-medium">{description}</span>
         {step.durationMs > 0 && (
-          <span className="text-muted-foreground/60 text-[10px] tabular-nums">
+          <span className="text-muted-foreground text-[10px] tabular-nums">
             {formatDuration(step.durationMs)}
           </span>
         )}

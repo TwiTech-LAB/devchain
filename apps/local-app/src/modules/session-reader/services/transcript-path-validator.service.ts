@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
@@ -14,7 +14,7 @@ const ENCODED_TRAVERSAL_RE = /%2e%2e/i;
  * Provider-specific allowed root directories for transcript files.
  * Each root is relative to the user's home directory.
  */
-const PROVIDER_ROOTS: Record<string, string[]> = {
+export const PROVIDER_ROOTS: Record<string, string[]> = {
   claude: ['.claude/projects/'],
   codex: ['.codex/sessions/'],
   // OpenCode stores all sessions in a single SQLite container under this root;
@@ -29,20 +29,35 @@ const PROVIDER_ROOTS: Record<string, string[]> = {
   copilot: ['.copilot/'],
 };
 
+export const TRANSCRIPT_PROVIDER_ROOTS = Symbol('TRANSCRIPT_PROVIDER_ROOTS');
+
+/** Whether `target` is `root` or lies inside it; both must be absolute and normalized. */
+export function isWithin(root: string, target: string): boolean {
+  return target === root || target.startsWith(root + path.sep);
+}
+
 @Injectable()
 export class TranscriptPathValidator {
   private readonly homeDir: string;
   private readonly resolvedRoots: Map<string, string[]>;
 
-  constructor() {
+  constructor(
+    @Optional() @Inject(TRANSCRIPT_PROVIDER_ROOTS) providerRoots?: Record<string, string[]>,
+  ) {
     this.homeDir = os.homedir();
     this.resolvedRoots = new Map();
-    for (const [provider, roots] of Object.entries(PROVIDER_ROOTS)) {
+    for (const [provider, roots] of Object.entries(providerRoots ?? PROVIDER_ROOTS)) {
       this.resolvedRoots.set(
         provider,
-        roots.map((r) => path.join(this.homeDir, r)),
+        roots.map((r) => path.resolve(this.homeDir, r)),
       );
     }
+  }
+
+  root(provider: string): string {
+    const root = this.resolvedRoots.get(provider)?.[0];
+    if (!root) throw new ValidationError('Unknown transcript provider');
+    return root;
   }
 
   /**
@@ -101,7 +116,7 @@ export class TranscriptPathValidator {
 
     // Reject directory traversal after normalization
     // path.resolve already collapses .. but we verify the result stays within roots
-    const withinRoot = allowedRoots.some((root) => resolved.startsWith(root));
+    const withinRoot = allowedRoots.some((root) => isWithin(root, resolved));
     if (!withinRoot) {
       throw new ValidationError(
         'Transcript path is outside allowed root directories for this provider',
@@ -140,7 +155,7 @@ export class TranscriptPathValidator {
     // Re-validate the resolved real path against allowed roots
     const provider = providerName.toLowerCase();
     const allowedRoots = this.resolvedRoots.get(provider)!;
-    const withinRoot = allowedRoots.some((root) => realPath.startsWith(root));
+    const withinRoot = allowedRoots.some((root) => isWithin(root, realPath));
     if (!withinRoot) {
       throw new ValidationError(
         'Transcript real path (after symlink resolution) is outside allowed root directories',

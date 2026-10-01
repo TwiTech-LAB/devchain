@@ -2,6 +2,7 @@ import { TerminalIOService } from './terminal-io.service';
 import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
 import { TypeCommandFailedError } from './delivery';
 import type { EventsService } from '../../../events/services/events.service';
+import type { SettingsService } from '../../../settings/services/settings.service';
 import { HumanPromptStateService } from '../human-prompt-state.service';
 
 describe('TerminalIOService', () => {
@@ -13,7 +14,8 @@ describe('TerminalIOService', () => {
     fake = new FakeProcessExecutor();
     const events = { publish: jest.fn() } as unknown as EventsService;
     humanPromptState = new HumanPromptStateService();
-    svc = new TerminalIOService(fake, events, humanPromptState);
+    const settings = { getFollowNoteEnabled: () => true } as unknown as SettingsService;
+    svc = new TerminalIOService(fake, events, humanPromptState, settings);
   });
 
   // ── Lifecycle ───────────────────────────────────────────────────────────

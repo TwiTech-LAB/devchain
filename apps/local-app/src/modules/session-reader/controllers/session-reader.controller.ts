@@ -7,6 +7,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
   OnModuleInit,
+  UseInterceptors,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { SessionReaderService } from '../services/session-reader.service';
@@ -15,12 +16,16 @@ import { DEFAULT_MAX_TOOL_RESULT_LENGTH } from '../services/transcript-truncatio
 import {
   serializeChunk as serializeChunkToWire,
   serializeMessage as serializeMessageToWire,
+  serializeChunksCooperatively,
 } from '../services/transcript-serialization';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { MetricsService } from '../../metrics/services/metrics.service';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { SessionCacheService } from '../services/session-cache.service';
+
+import { cooperativeMap } from '../services/cooperative-work';
+import { TranscriptJsonInterceptor } from './transcript-json.interceptor';
 
 const logger = createLogger('SessionReaderController');
 
@@ -261,6 +266,7 @@ export class SessionReaderController implements OnModuleInit {
    * Returns metadata and optional pages from one parsed session.
    */
   @Get(':id/transcript/index')
+  @UseInterceptors(TranscriptJsonInterceptor)
   async getTranscriptIndex(
     @Param('id') id: string,
     @Query('pageSize') pageSize?: string,
@@ -281,16 +287,17 @@ export class SessionReaderController implements OnModuleInit {
         ...query,
         pageSize: query.pageSize,
       });
-      return {
-        ...index,
-        pages: index.pages?.map((page) => ({
+      const pages = [];
+      for (const page of index.pages ?? []) {
+        pages.push({
           ...page,
           response: {
             ...page.response,
-            chunks: page.response.chunks.map(serializeChunkToWire),
+            chunks: await serializeChunksCooperatively(page.response.chunks),
           },
-        })),
-      };
+        });
+      }
+      return { ...index, pages: index.pages ? pages : undefined };
     } catch (error) {
       if (error instanceof z.ZodError) {
         throw new BadRequestException(error.errors.map((e) => e.message).join(', '));
@@ -304,6 +311,7 @@ export class SessionReaderController implements OnModuleInit {
    * Returns paginated UnifiedChunk[] with cursor-stable chunk IDs.
    */
   @Get(':id/transcript/chunks')
+  @UseInterceptors(TranscriptJsonInterceptor)
   async getTranscriptChunks(
     @Param('id') id: string,
     @Query('cursor') cursor?: string,
@@ -328,7 +336,7 @@ export class SessionReaderController implements OnModuleInit {
 
       return {
         ...response,
-        chunks: response.chunks.map((chunk) => serializeChunkToWire(chunk)),
+        chunks: await serializeChunksCooperatively(response.chunks),
       };
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -366,6 +374,7 @@ export class SessionReaderController implements OnModuleInit {
    * Used for cursor-mismatch recovery in the WS push-delta protocol.
    */
   @Get(':id/transcript/tail')
+  @UseInterceptors(TranscriptJsonInterceptor)
   async getTranscriptTail(@Param('id') id: string, @Query('since') since?: string) {
     logger.info({ sessionId: id, since }, 'GET /api/sessions/:id/transcript/tail');
 
@@ -388,8 +397,8 @@ export class SessionReaderController implements OnModuleInit {
 
       return {
         ...result,
-        deltaChunks: result.deltaChunks.map((chunk) => serializeChunkToWire(chunk)),
-        deltaMessages: result.deltaMessages.map((msg) => serializeMessageToWire(msg)),
+        deltaChunks: await serializeChunksCooperatively(result.deltaChunks),
+        deltaMessages: await cooperativeMap(result.deltaMessages, serializeMessageToWire),
       };
     } catch (error) {
       this.handleServiceError(error);

@@ -34,7 +34,7 @@ export function JsonViewer({ data, className, maxHeight = '400px' }: JsonViewerP
           className="h-8 w-8 p-0"
           aria-label="Copy JSON"
         >
-          {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+          {copied ? <Check className="h-4 w-4 text-status-ok" /> : <Copy className="h-4 w-4" />}
         </Button>
       </div>
       <pre

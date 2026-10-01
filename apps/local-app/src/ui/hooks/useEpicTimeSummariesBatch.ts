@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import { epicTimeQueryKeys, resolveEpicTimeZone } from '@/ui/lib/epic-time';
 
 export type EpicTimeTotalsMap = ReadonlyMap<string, number>;
@@ -13,10 +12,10 @@ interface BatchTimeSummaryPayload {
 /**
  * One guarded batch read of estimated-time totals. Any Epic ID may join
  * the request: a root focal total carries its sub-Epic and Related
- * rollups, a sub-Epic focal total stays self-only. Worktree and
- * unresolved runtimes issue no request, key under an isolated cache scope,
- * and never see main-scope cached data through any returned field. A
- * failed read leaves the map empty: time badges are decoration, never a
+ * rollups, a sub-Epic focal total stays self-only. A disabled caller
+ * (passed `enabled: false`) issues no request, keys under the disabled cache
+ * scope, and never sees active-scope cached data through any returned field.
+ * A failed read leaves the map empty: time badges are decoration, never a
  * Board blocker.
  */
 export function useEpicTimeSummariesBatch(
@@ -24,9 +23,8 @@ export function useEpicTimeSummariesBatch(
   { enabled = true }: { enabled?: boolean } = {},
 ): { totals: EpicTimeTotalsMap | undefined; query: ReturnType<typeof useQuery> } {
   const apiFetch = useFetchFactory();
-  const { runtimeResolved, apiBase } = useOptionalWorktreeTab();
-  const admitted = enabled && runtimeResolved && apiBase === '';
-  const scope = admitted ? 'main' : 'isolated';
+  const admitted = enabled;
+  const scope = admitted ? 'active' : 'disabled';
   const timeZone = useMemo(() => resolveEpicTimeZone(), []);
   // Sort before keying: any arrival order of the same Board context must
   // resolve to one cache entry.
@@ -60,7 +58,6 @@ export function useEpicTimeSummariesBatch(
     [query.data],
   );
 
-  // Disabled contexts (worktree, unresolved runtime) never see a main-tab
-  // cache entry's data.
+  // A disabled caller never sees an active-scope cache entry's data.
   return { totals: admitted ? totals : undefined, query };
 }

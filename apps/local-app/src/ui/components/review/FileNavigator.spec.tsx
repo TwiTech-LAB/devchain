@@ -122,7 +122,7 @@ describe('FileNavigator', () => {
     renderFileNavigator({ selectedFile: 'src/auth/login.ts' });
 
     const loginButton = screen.getByText('login.ts').closest('button');
-    expect(loginButton).toHaveClass('bg-accent');
+    expect(loginButton).toHaveClass('bg-selected', 'text-selected-foreground');
   });
 
   it('calls onSelectFile when file is clicked', async () => {

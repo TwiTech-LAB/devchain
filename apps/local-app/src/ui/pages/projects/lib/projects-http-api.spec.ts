@@ -80,9 +80,9 @@ describe('ProjectsHttpApi', () => {
       total: 2,
     });
     expect(result.items[1]).not.toHaveProperty('stats');
-    expect(window.fetch).toHaveBeenNthCalledWith(1, '/api/projects');
-    expect(window.fetch).toHaveBeenNthCalledWith(2, '/api/projects/one/stats');
-    expect(window.fetch).toHaveBeenNthCalledWith(3, '/api/projects/two/stats');
+    expect(window.fetch).toHaveBeenNthCalledWith(1, '/api/projects', undefined);
+    expect(window.fetch).toHaveBeenNthCalledWith(2, '/api/projects/one/stats', undefined);
+    expect(window.fetch).toHaveBeenNthCalledWith(3, '/api/projects/two/stats', undefined);
   });
 
   it('resolves the current window.fetch at call time', async () => {

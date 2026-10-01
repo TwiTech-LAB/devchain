@@ -237,4 +237,49 @@ describe('SkillsSettingsDelegate', () => {
       expect(parsed['test-source']).toBe(true);
     });
   });
+
+  describe('Invariant: the built-in devchain source is always enabled', () => {
+    const storedRow = (): Record<string, boolean> =>
+      JSON.parse(
+        (
+          db.prepare("SELECT value FROM settings WHERE key = 'skills.sources'").get() as {
+            value: string;
+          }
+        ).value,
+      );
+
+    it('normalization drops the devchain key and keeps devchain-local', () => {
+      expect(
+        delegate.normalizeSkillSourcesMap({ DevChain: false, 'devchain-local': false, a: true }),
+      ).toEqual({ 'devchain-local': false, a: true });
+    });
+
+    it('reads a legacy stored devchain=false as absent; the stored read keeps it', () => {
+      upsert(db, 'skills.sources', JSON.stringify({ devchain: false, other: false }));
+
+      expect(delegate.getSkillSourcesEnabled()).toEqual({ other: false });
+      expect(delegate.getStoredSkillSourcesEnabled()).toEqual({ devchain: false, other: false });
+    });
+
+    it('setSkillSourceEnabled never stores devchain=false and drops a legacy value', async () => {
+      upsert(db, 'skills.sources', JSON.stringify({ devchain: false }));
+
+      await delegate.setSkillSourceEnabled('DevChain', false);
+      expect(storedRow()).toEqual({});
+
+      await delegate.setSkillSourceEnabled('other', false);
+      expect(storedRow()).toEqual({ other: false });
+    });
+
+    it('mergeSkillSourcesEnabled rewrites a legacy devchain=false as true', () => {
+      upsert(db, 'skills.sources', JSON.stringify({ devchain: false, vm: false }));
+
+      delegate.mergeSkillSourcesEnabled({ devchain: true, home: true });
+      expect(storedRow()).toEqual({ devchain: true, vm: false, home: true });
+
+      upsert(db, 'skills.sources', JSON.stringify({ devchain: false }));
+      delegate.mergeSkillSourcesEnabled({ devchain: false });
+      expect(storedRow()).toEqual({ devchain: true });
+    });
+  });
 });

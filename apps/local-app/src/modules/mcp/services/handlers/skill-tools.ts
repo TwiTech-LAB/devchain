@@ -265,6 +265,7 @@ export async function handleSkillsSetEnabled(
       updatedCount: result.updated.length,
       unchanged: result.unchanged,
       notFound: result.notFound,
+      locked: result.locked,
     };
     return { success: true, data: response };
   } catch (error) {
@@ -310,6 +311,16 @@ export async function handleSkillsSetSourceEnabled(
         error: {
           code: 'SOURCE_NOT_FOUND',
           message: `Skill source "${validated.sourceName}" was not found.`,
+        },
+      };
+    }
+
+    if (result.status === 'source_always_enabled') {
+      return {
+        success: false,
+        error: {
+          code: 'SKILL_SOURCE_ALWAYS_ENABLED',
+          message: `Skill source ${result.name} is always enabled and cannot be disabled.`,
         },
       };
     }

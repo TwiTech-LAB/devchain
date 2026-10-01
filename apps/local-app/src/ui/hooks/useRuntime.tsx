@@ -5,8 +5,6 @@ import { fetchRuntimeInfo, type RuntimeInfo } from '@/ui/lib/runtime';
 export interface RuntimeContextValue {
   runtimeInfo: RuntimeInfo | undefined;
   runtimeLoading: boolean;
-  isMainMode: boolean;
-  dockerAvailable: boolean;
   cloudUiEnabled: boolean;
 }
 
@@ -23,8 +21,6 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     () => ({
       runtimeInfo,
       runtimeLoading,
-      isMainMode: runtimeInfo?.mode === 'main',
-      dockerAvailable: runtimeInfo?.dockerAvailable === true,
       cloudUiEnabled: runtimeInfo?.features?.cloudUi === true,
     }),
     [runtimeInfo, runtimeLoading],

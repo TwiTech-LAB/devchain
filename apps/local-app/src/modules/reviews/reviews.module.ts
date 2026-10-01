@@ -8,9 +8,17 @@ import { EventsCoreModule } from '../events/events-core.module';
 import { GitModule } from '../git/git.module';
 import { AgentMessageDeliveryModule } from '../agent-message-delivery/agent-message-delivery.module';
 import { TeamsModule } from '../teams/teams.module';
+import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
-  imports: [StorageModule, EventsCoreModule, GitModule, AgentMessageDeliveryModule, TeamsModule],
+  imports: [
+    StorageModule,
+    EventsCoreModule,
+    GitModule,
+    AgentMessageDeliveryModule,
+    TeamsModule,
+    ProjectWriteAdmissionModule,
+  ],
   controllers: [ReviewsController],
   providers: [ReviewsService, ReviewSuggestionApplier, ReviewCommentNotifierSubscriber],
   exports: [ReviewsService, ReviewSuggestionApplier],

@@ -16,7 +16,6 @@ function createTarget(
   return {
     sessionId: 'session-1',
     projectId: 'project-1',
-    apiBase: '',
     fetchFn,
     terminalHandle: {
       clear: jest.fn(),
@@ -265,7 +264,6 @@ describe('CustomPromptPicker', () => {
       ...createTarget(newFetch),
       sessionId: 'session-2',
       projectId: 'project-2',
-      apiBase: '/wt/new-target',
     };
     const onOpenChange = jest.fn();
 

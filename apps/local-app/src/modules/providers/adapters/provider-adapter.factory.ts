@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { ProviderAdapter } from './provider-adapter.interface';
+import type { ProviderAdapter, RuntimePromptBehavior } from './provider-adapter.interface';
 import { ClaudeAdapter } from './claude.adapter';
 import { CodexAdapter } from './codex.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
@@ -70,10 +70,11 @@ export class ProviderAdapterFactory {
     return Array.from(this.adapters.keys());
   }
 
-  async getPostPasteDelayMsForAgent(agentId: string): Promise<number | undefined> {
+  /** The agent's provider prompt behavior; empty when the provider cannot be resolved. */
+  async getRuntimePromptBehaviorForAgent(agentId: string): Promise<RuntimePromptBehavior> {
     try {
       const agent = await this.storage.getAgent(agentId);
-      if (!agent.providerConfigId) return undefined;
+      if (!agent.providerConfigId) return {};
 
       const config = await this.storage.getProfileProviderConfig(agent.providerConfigId);
 
@@ -82,12 +83,11 @@ export class ProviderAdapterFactory {
         const provider = await this.storage.getProvider(config.providerId);
         providerName = provider.name;
       }
-      if (!providerName) return undefined;
+      if (!providerName) return {};
 
-      const adapter = this.adapters.get(providerName.toLowerCase());
-      return adapter?.runtimePromptBehavior?.postPasteDelayMs;
+      return this.adapters.get(providerName.toLowerCase())?.runtimePromptBehavior ?? {};
     } catch {
-      return undefined;
+      return {};
     }
   }
 }

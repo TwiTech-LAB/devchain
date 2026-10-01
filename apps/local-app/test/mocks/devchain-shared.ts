@@ -15,6 +15,20 @@ export {
   ExportSchema,
   ManifestSchema,
 } from '../../../../packages/shared/src/schemas/export-schema';
+export {
+  PROJECT_REPLICA_VERSION,
+  PROJECT_REPLICA_SETTING_KEYS,
+  ProjectReplicaScopeSchema,
+  ProjectReplicaV1Schema,
+  ProjectReplicaLiveTablesSchema,
+  ProjectReplicaAttachTablesSchema,
+  ProjectReplicaDetachTablesSchema,
+  ProjectReplicaPreflightErrorSchema,
+  PROJECT_REPLICA_CONTENT_TYPE,
+  ProjectReplicaIdSetsSchema,
+  ProjectReplicaChangesSchema,
+  ProjectReplicaImportResultSchema,
+} from '../../../../packages/shared/src/schemas/project-replica';
 
 export {
   parseSemVer,
@@ -145,3 +159,8 @@ export {
   type E2eeNegotiationReason,
   type E2eeNegotiationResult,
 } from '../../../../packages/shared/src/e2ee/negotiation';
+
+export * from '../../../../packages/shared/src/schemas/host-skill-settings';
+export * from '../../../../packages/shared/src/schemas/provider-clis';
+
+export * from '../../../../packages/shared/src/schemas/host-provider-clis';

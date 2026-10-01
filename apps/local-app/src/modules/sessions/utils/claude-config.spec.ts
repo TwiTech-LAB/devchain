@@ -22,6 +22,7 @@ import {
   checkAutoCompactConfig,
   disableClaudeAutoCompact,
   enableClaudeAutoCompact,
+  ensureClaudeConfigKeys,
   ensureClaudeProjectTrusted,
 } from './claude-config';
 
@@ -652,6 +653,47 @@ describe('claude-config utils', () => {
       expect(result.success).toBe(false);
       expect(result.errorType).toBe('io_error');
       expect(result.error).toContain('EACCES');
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(mockRename).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensureClaudeConfigKeys', () => {
+    it('creates a missing config with the requested keys', async () => {
+      mockConfigBackingStore(null);
+
+      await expect(ensureClaudeConfigKeys({ hasCompletedOnboarding: true })).resolves.toEqual({
+        success: true,
+      });
+
+      const written = mockWriteFile.mock.calls[0]?.[1] as string;
+      expect(JSON.parse(written)).toEqual({ hasCompletedOnboarding: true });
+      expect(mockRename).toHaveBeenCalledWith(mockWriteFile.mock.calls[0]?.[0], CLAUDE_CONFIG_PATH);
+    });
+
+    it('preserves unrelated keys and skips a write when the baseline already matches', async () => {
+      mockConfigBackingStore(JSON.stringify({ hasCompletedOnboarding: false, theme: 'dark' }));
+
+      await expect(ensureClaudeConfigKeys({ hasCompletedOnboarding: true })).resolves.toEqual({
+        success: true,
+      });
+      await expect(ensureClaudeConfigKeys({ hasCompletedOnboarding: true })).resolves.toEqual({
+        success: true,
+      });
+
+      expect(mockWriteFile).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(mockWriteFile.mock.calls[0]?.[1] as string)).toEqual({
+        hasCompletedOnboarding: true,
+        theme: 'dark',
+      });
+    });
+
+    it('leaves malformed JSON unchanged', async () => {
+      mockConfigBackingStore('{ malformed');
+
+      const result = await ensureClaudeConfigKeys({ hasCompletedOnboarding: true });
+
+      expect(result).toMatchObject({ success: false, errorType: 'invalid_config' });
       expect(mockWriteFile).not.toHaveBeenCalled();
       expect(mockRename).not.toHaveBeenCalled();
     });

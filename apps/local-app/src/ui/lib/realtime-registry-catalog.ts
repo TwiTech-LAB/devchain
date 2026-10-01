@@ -75,6 +75,15 @@ export const nonRegistryBroadcastCatalog: RegistryCatalogEntry[] = [
     owner: 'useMessagePools',
   },
 
+  // ── Remotes ──
+  { topicPattern: 'remotes', type: 'state', kind: 'invalidate', owner: 'BackendProvider' },
+  {
+    topicPattern: 'remote-operations',
+    type: 'progress',
+    kind: 'invalidate',
+    owner: 'useRemoteOperations',
+  },
+
   // ── System ──
   { topicPattern: 'system', type: 'ping', kind: 'custom-handler', owner: 'socket.ts' },
 ];

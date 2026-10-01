@@ -4,6 +4,7 @@ import type {
   ImportDryRunResponse,
   ImportProjectResponse,
   PathStatResult,
+  ProjectRemoteOwner,
   ProjectWorkspace,
   DeleteProjectWorkspaceResult,
   ProjectPreMutationFailure,
@@ -20,13 +21,18 @@ import type {
 import { isProjectPreMutationFailure } from '@/ui/pages/projects/lib/project-failures';
 import type { ProjectsPageApi } from '@/ui/pages/projects/lib/projects-page-api';
 import type { WorkspaceTransitionDevice } from '@/ui/pages/projects/lib/projects-page-api';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 async function postConfiguredReplace<T>(url: string, body: Record<string, unknown>): Promise<T> {
-  const response = await window.fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const response = await apiFetch(
+    url,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    { backend: HOME_BACKEND },
+  );
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(
@@ -38,14 +44,16 @@ async function postConfiguredReplace<T>(url: string, body: Record<string, unknow
 
 export class ProjectsHttpApi implements ProjectsPageApi {
   async listProjects(): Promise<ProjectsQueryData> {
-    const response = await window.fetch('/api/projects');
+    const response = await apiFetch('/api/projects', undefined, { backend: HOME_BACKEND });
     if (!response.ok) throw new Error('Failed to fetch projects');
     const data = (await response.json()) as ProjectsQueryData;
 
     const items = await Promise.all(
       data.items.map(async (project: Project) => {
         try {
-          const statsResponse = await window.fetch(`/api/projects/${project.id}/stats`);
+          const statsResponse = await apiFetch(`/api/projects/${project.id}/stats`, undefined, {
+            backend: HOME_BACKEND,
+          });
           if (statsResponse.ok) {
             return { ...project, stats: await statsResponse.json() };
           }
@@ -60,13 +68,13 @@ export class ProjectsHttpApi implements ProjectsPageApi {
   }
 
   async listWorkspaces(): Promise<ProjectWorkspace[]> {
-    const response = await window.fetch('/api/workspaces');
+    const response = await apiFetch('/api/workspaces', undefined, { backend: HOME_BACKEND });
     if (!response.ok) throw new Error('Failed to fetch workspaces');
     return response.json();
   }
 
   async listPairedDevices(): Promise<WorkspaceTransitionDevice[]> {
-    const response = await window.fetch('/api/e2ee/devices');
+    const response = await apiFetch('/api/e2ee/devices', undefined, { backend: HOME_BACKEND });
     if (!response.ok) throw new Error('Failed to fetch paired devices');
     return response.json();
   }
@@ -99,11 +107,15 @@ export class ProjectsHttpApi implements ProjectsPageApi {
     method: 'POST' | 'PATCH' | 'PUT' | 'DELETE',
     body: Record<string, unknown>,
   ): Promise<T> {
-    const response = await window.fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const response = await apiFetch(
+      url,
+      {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      { backend: HOME_BACKEND },
+    );
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.message || error.error || 'Workspace request failed');
@@ -112,18 +124,22 @@ export class ProjectsHttpApi implements ProjectsPageApi {
   }
 
   async statPath(path: string): Promise<PathStatResult> {
-    const response = await window.fetch('/api/fs/stat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
-    });
+    const response = await apiFetch(
+      '/api/fs/stat',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      },
+      { backend: HOME_BACKEND },
+    );
     if (!response.ok) return { exists: false, isFile: false };
     const stat = (await response.json()) as Partial<PathStatResult>;
     return { exists: stat.exists === true, isFile: stat.isFile === true };
   }
 
   async listTemplates(): Promise<ProjectTemplate[]> {
-    const response = await window.fetch('/api/templates');
+    const response = await apiFetch('/api/templates', undefined, { backend: HOME_BACKEND });
     if (!response.ok) throw new Error('Failed to fetch templates');
     const data = (await response.json()) as { templates: ProjectTemplate[] };
     return data.templates.map(({ slug, name, source, versions, latestVersion }) => ({
@@ -137,7 +153,9 @@ export class ProjectsHttpApi implements ProjectsPageApi {
 
   async readTemplateManifest(projectId: string): Promise<TemplateManifest | null> {
     try {
-      const response = await window.fetch(`/api/projects/${projectId}/template-manifest`);
+      const response = await apiFetch(`/api/projects/${projectId}/template-manifest`, undefined, {
+        backend: HOME_BACKEND,
+      });
       if (!response.ok) return null;
       return (await response.json()) as TemplateManifest | null;
     } catch {
@@ -146,11 +164,15 @@ export class ProjectsHttpApi implements ProjectsPageApi {
   }
 
   async createFromTemplate(input: CreateFromTemplateInput): Promise<CreateFromTemplateResponse> {
-    const response = await window.fetch('/api/projects/from-template', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...input, version: input.version || null }),
-    });
+    const response = await apiFetch(
+      '/api/projects/from-template',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...input, version: input.version || null }),
+      },
+      { backend: HOME_BACKEND },
+    );
     if (!response.ok) {
       const error = await response
         .json()
@@ -164,11 +186,15 @@ export class ProjectsHttpApi implements ProjectsPageApi {
     projectId: string,
     input: UpdateProjectInput,
   ): Promise<UpdateProjectResponse> {
-    const response = await window.fetch(`/api/projects/${projectId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
+    const response = await apiFetch(
+      `/api/projects/${projectId}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+      { backend: HOME_BACKEND },
+    );
     if (!response.ok) {
       const error = await response.json().catch(() => ({ message: 'Failed to update project' }));
       throw new Error(error.message || 'Failed to update project');
@@ -177,7 +203,11 @@ export class ProjectsHttpApi implements ProjectsPageApi {
   }
 
   async deleteProject(projectId: string): Promise<void> {
-    const response = await window.fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+    const response = await apiFetch(
+      `/api/projects/${projectId}`,
+      { method: 'DELETE' },
+      { backend: HOME_BACKEND },
+    );
     if (!response.ok) {
       const error = await response.json().catch(() => ({ message: 'Failed to delete project' }));
       throw new Error(error.message || 'Failed to delete project');
@@ -185,11 +215,15 @@ export class ProjectsHttpApi implements ProjectsPageApi {
   }
 
   async loadSetupPreview(request: SetupPreviewRequest): Promise<SetupPreviewResponse> {
-    const response = await window.fetch('/api/projects/setup-preview', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      '/api/projects/setup-preview',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      { backend: HOME_BACKEND },
+    );
     if (!response.ok) {
       const error = await response
         .json()
@@ -203,13 +237,14 @@ export class ProjectsHttpApi implements ProjectsPageApi {
     projectId: string,
     targetVersion: string,
   ): Promise<SetupPreviewResponse> {
-    const response = await window.fetch(
+    const response = await apiFetch(
       `/api/projects/${encodeURIComponent(projectId)}/upgrade-template/preview`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetVersion }),
       },
+      { backend: HOME_BACKEND },
     );
     const result = (await response.json().catch(() => ({
       success: false,
@@ -244,6 +279,41 @@ export class ProjectsHttpApi implements ProjectsPageApi {
       input,
     );
   }
+
+  async listRemoteOwners(): Promise<ProjectRemoteOwner[]> {
+    const [bindingsResponse, remotesResponse] = await Promise.all([
+      apiFetch('/api/remotes/bindings', undefined, { backend: HOME_BACKEND }),
+      apiFetch('/api/remotes', undefined, { backend: HOME_BACKEND }),
+    ]);
+    if (!bindingsResponse.ok) throw new Error('Failed to fetch remote bindings');
+    const bindings = (
+      (await bindingsResponse.json()) as {
+        items?: Array<{ projectId: string; remoteId: string; state: string }>;
+      }
+    ).items;
+    // Names only label the lock; an unavailable remote list still disables the actions.
+    const remotes = remotesResponse.ok
+      ? (((await remotesResponse.json()) as { items?: Array<{ id: string; name: string }> })
+          .items ?? [])
+      : [];
+    const names = new Map(remotes.map((remote) => [remote.id, remote.name]));
+    return (bindings ?? []).flatMap((binding) =>
+      isRemoteOwnedState(binding.state)
+        ? [
+            {
+              projectId: binding.projectId,
+              remoteId: binding.remoteId,
+              remoteName: names.get(binding.remoteId) ?? null,
+              state: binding.state,
+            },
+          ]
+        : [],
+    );
+  }
+}
+
+function isRemoteOwnedState(state: string): state is ProjectRemoteOwner['state'] {
+  return state === 'attaching' || state === 'remote' || state === 'detaching';
 }
 
 export const projectsHttpApi = new ProjectsHttpApi();

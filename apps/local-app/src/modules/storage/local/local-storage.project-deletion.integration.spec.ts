@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -167,5 +168,96 @@ describe('LocalStorageService project deletion transactions', () => {
     expect(verify).toHaveBeenCalledTimes(1);
     expect(sqlite.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)).toBeUndefined();
     expect(sqlite.prepare('SELECT id FROM integration_connections').all()).toEqual([]);
+  });
+
+  function seedProviderEnv(env: Record<string, string>): string {
+    const providerId = randomUUID();
+    const now = new Date().toISOString();
+    sqlite
+      .prepare(
+        `INSERT INTO providers (id, name, mcp_configured, env, created_at, updated_at)
+         VALUES (?, ?, 0, ?, ?, ?)`,
+      )
+      .run(providerId, `provider-${providerId.slice(0, 6)}`, JSON.stringify(env), now, now);
+    return providerId;
+  }
+
+  function insertScopeRow(providerId: string, envKey: string, projectId: string): void {
+    sqlite
+      .prepare(
+        'INSERT INTO provider_env_scopes (provider_id, env_key, project_id, created_at) VALUES (?, ?, ?, ?)',
+      )
+      .run(providerId, envKey, projectId, new Date().toISOString());
+  }
+
+  function providerEnvKeys(providerId: string): string[] {
+    const row = sqlite.prepare('SELECT env FROM providers WHERE id = ?').get(providerId) as {
+      env: string | null;
+    };
+    return Object.keys(JSON.parse(row.env ?? '{}')).sort();
+  }
+
+  function scopeRows(providerId: string): Array<{ env_key: string; project_id: string }> {
+    return sqlite
+      .prepare(
+        'SELECT env_key, project_id FROM provider_env_scopes WHERE provider_id = ? ORDER BY env_key, project_id',
+      )
+      .all(providerId) as Array<{ env_key: string; project_id: string }>;
+  }
+
+  it('drops a provider env key whose last scope row belonged to the deleted project', async () => {
+    const providerId = seedProviderEnv({
+      SOLO_KEY: 'solo-value',
+      SHARED_KEY: 'shared-value',
+      GLOBAL_KEY: 'global-value',
+    });
+    const deleted = await seedProject('Env scoped deleted');
+    const survivor = await seedProject('Env scoped survivor');
+    const unrelated = await seedProject('Env unrelated survivor');
+    insertScopeRow(providerId, 'SOLO_KEY', deleted);
+    insertScopeRow(providerId, 'SHARED_KEY', deleted);
+    insertScopeRow(providerId, 'SHARED_KEY', survivor);
+
+    await service.deleteProject(deleted);
+
+    expect(providerEnvKeys(providerId)).toEqual(['GLOBAL_KEY', 'SHARED_KEY']);
+    expect(scopeRows(providerId)).toEqual([{ env_key: 'SHARED_KEY', project_id: survivor }]);
+    const survivorEnv = service.getProviderEnvForProject(providerId, survivor);
+    expect(Object.keys(survivorEnv ?? {}).sort()).toEqual(['GLOBAL_KEY', 'SHARED_KEY']);
+    expect(survivorEnv?.SHARED_KEY === 'shared-value').toBe(true);
+    expect(survivorEnv?.GLOBAL_KEY === 'global-value').toBe(true);
+    const unrelatedEnv = service.getProviderEnvForProject(providerId, unrelated);
+    expect(Object.keys(unrelatedEnv ?? {})).toEqual(['GLOBAL_KEY']);
+    expect(unrelatedEnv?.GLOBAL_KEY === 'global-value').toBe(true);
+  });
+
+  it('leaves a provider env key global on purpose when the deleted project had no scope rows', async () => {
+    const providerId = seedProviderEnv({ GLOBAL_KEY: 'global-value' });
+    const deleted = await seedProject('Env global deleted');
+
+    await service.deleteProject(deleted);
+
+    expect(providerEnvKeys(providerId)).toEqual(['GLOBAL_KEY']);
+    expect(scopeRows(providerId)).toEqual([]);
+  });
+
+  it('rolls back the provider env change and the scope rows when the project delete fails after it', async () => {
+    const providerId = seedProviderEnv({ SOLO_KEY: 'solo-value', GLOBAL_KEY: 'global-value' });
+    const deleted = await seedProject('Env scoped rollback');
+    insertScopeRow(providerId, 'SOLO_KEY', deleted);
+    sqlite.exec(`
+      CREATE TRIGGER reject_env_project_delete
+      BEFORE DELETE ON projects
+      WHEN OLD.id = '${deleted}'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced env rollback failure');
+      END;
+    `);
+
+    await expect(service.deleteProject(deleted)).rejects.toThrow('forced env rollback failure');
+
+    expect(providerEnvKeys(providerId)).toEqual(['GLOBAL_KEY', 'SOLO_KEY']);
+    expect(scopeRows(providerId)).toEqual([{ env_key: 'SOLO_KEY', project_id: deleted }]);
+    expect(sqlite.prepare('SELECT id FROM projects WHERE id = ?').get(deleted)).toBeDefined();
   });
 });

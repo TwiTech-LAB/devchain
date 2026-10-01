@@ -6,11 +6,10 @@ import {
   useSessionTranscript,
   transcriptQueryKeys,
   computeAdaptiveDebounceMs,
-  type SerializedSession,
   type TranscriptSummary,
 } from './useSessionTranscript';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
-import { fetchTranscriptSummary, fetchTranscriptTail } from '@/ui/lib/sessions';
+import { fetchTranscriptSummary } from '@/ui/lib/sessions';
 import type { WsEnvelope } from '@/ui/lib/socket';
 
 // ---------------------------------------------------------------------------
@@ -24,15 +23,11 @@ jest.mock('@/ui/hooks/useAppSocket', () => ({
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
   fetchTranscriptSummary: jest.fn(),
-  fetchTranscriptTail: jest.fn(),
 }));
 
 const useAppSocketMock = useAppSocket as jest.MockedFunction<typeof useAppSocket>;
 const fetchTranscriptSummaryMock = fetchTranscriptSummary as jest.MockedFunction<
   typeof fetchTranscriptSummary
->;
-const fetchTranscriptTailMock = fetchTranscriptTail as jest.MockedFunction<
-  typeof fetchTranscriptTail
 >;
 
 const fetchMock = jest.fn() as jest.MockedFunction<typeof fetch>;
@@ -61,86 +56,6 @@ function createQueryClient(): QueryClient {
 function createWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
-  };
-}
-
-function mockTranscriptResponse(session: SerializedSession): void {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    text: () => Promise.resolve(JSON.stringify(session)),
-    json: () => Promise.resolve(session),
-  } as Response);
-}
-
-function mockTranscriptError(status: number, message: string): void {
-  fetchMock.mockResolvedValue({
-    ok: false,
-    status,
-    json: () => Promise.resolve({ message }),
-  } as Response);
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-function makeSession(overrides: Partial<SerializedSession> = {}): SerializedSession {
-  return {
-    id: 'session-1',
-    providerName: 'claude-code',
-    filePath: '/tmp/session.jsonl',
-    messages: [
-      {
-        id: 'msg-1',
-        parentId: null,
-        role: 'user',
-        timestamp: '2026-02-24T10:00:00.000Z',
-        content: [{ type: 'text', text: 'Hello' }],
-        toolCalls: [],
-        toolResults: [],
-        isMeta: false,
-        isSidechain: false,
-      },
-      {
-        id: 'msg-2',
-        parentId: 'msg-1',
-        role: 'assistant',
-        timestamp: '2026-02-24T10:00:05.000Z',
-        content: [{ type: 'text', text: 'Hi there!' }],
-        model: 'claude-sonnet-4-6',
-        toolCalls: [],
-        toolResults: [],
-        isMeta: false,
-        isSidechain: false,
-      },
-    ],
-    metrics: {
-      inputTokens: 100,
-      outputTokens: 200,
-      cacheReadTokens: 50,
-      cacheCreationTokens: 10,
-      totalTokens: 360,
-      totalContextConsumption: 300,
-      compactionCount: 0,
-      phaseBreakdowns: [],
-      visibleContextTokens: 10_000,
-      totalContextTokens: 0,
-      contextWindowTokens: 200_000,
-      costUsd: 0.005,
-      primaryModel: 'claude-sonnet-4-6',
-      durationMs: 5000,
-      messageCount: 2,
-      isOngoing: true,
-    },
-    isOngoing: true,
-    ...overrides,
   };
 }
 
@@ -232,6 +147,7 @@ describe('useSessionTranscript', () => {
       wrapper: createWrapper(queryClient),
     });
 
+    expect(fetchTranscriptSummaryMock).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -240,261 +156,73 @@ describe('useSessionTranscript', () => {
       wrapper: createWrapper(queryClient),
     });
 
-    expect(result.current.session).toBeUndefined();
-    expect(result.current.messages).toEqual([]);
-    expect(result.current.chunks).toEqual([]);
     expect(result.current.metrics).toBeUndefined();
     expect(result.current.isLive).toBe(false);
-    expect(result.current.error).toBeNull();
   });
 
   // -------------------------------------------------------------------------
-  // Data fetching
+  // Data fetching — summary only; the full transcript route must never be called
   // -------------------------------------------------------------------------
 
-  it('should fetch transcript and summary when sessionId is provided', async () => {
-    const session = makeSession();
+  it('should fetch only the summary when sessionId is provided', async () => {
     const summary = makeSummary();
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
     });
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toEqual(summary.metrics);
     });
 
-    expect(result.current.session).toEqual(session);
-    expect(result.current.messages).toHaveLength(2);
-    expect(result.current.metrics).toEqual(summary.metrics);
+    expect(fetchTranscriptSummaryMock).toHaveBeenCalledWith('session-1', expect.any(Function));
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(result.current.isLive).toBe(true);
-    expect(result.current.error).toBeNull();
   });
 
-  it('should fetch summary only when transcript is disabled', async () => {
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
+  it('should never issue a full-transcript request across WS events', async () => {
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
 
     const { result } = renderHook(
-      () => useSessionTranscript('session-1', { enableTranscript: false }),
+      () => useSessionTranscript('session-1', { wsInvalidationDebounceMs: 10 }),
       {
         wrapper: createWrapper(queryClient),
       },
     );
-
-    await waitFor(() => {
-      expect(result.current.metrics).toEqual(summary.metrics);
-    });
-
-    expect(fetchTranscriptSummaryMock).toHaveBeenCalledWith('session-1', '', expect.any(Function));
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(result.current.session).toBeUndefined();
-    expect(result.current.messages).toEqual([]);
-    expect(result.current.chunks).toEqual([]);
-    expect(result.current.isLoading).toBe(false);
-  });
-
-  it('should fetch transcript when transcript mode is enabled after being disabled', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
-
-    const { result, rerender } = renderHook(
-      ({ enableTranscript }: { enableTranscript: boolean }) =>
-        useSessionTranscript('session-1', { enableTranscript }),
-      {
-        wrapper: createWrapper(queryClient),
-        initialProps: { enableTranscript: false },
-      },
-    );
-
-    await waitFor(() => {
-      expect(result.current.metrics).toEqual(summary.metrics);
-    });
-
-    const urlsBeforeActivation = fetchMock.mock.calls.map(([url]) => String(url));
-    expect(urlsBeforeActivation.some((url) => url.endsWith('/transcript'))).toBe(false);
-
-    rerender({ enableTranscript: true });
-
-    await waitFor(() => {
-      expect(result.current.session).toEqual(session);
-    });
-
-    const urlsAfterActivation = fetchMock.mock.calls.map(([url]) => String(url));
-    expect(urlsAfterActivation.some((url) => url.endsWith('/transcript'))).toBe(true);
-    expect(result.current.messages).toHaveLength(session.messages.length);
-  });
-
-  it('should prefer summary metrics over session metrics', async () => {
-    const session = makeSession({
-      metrics: {
-        ...makeSession().metrics,
-        totalTokens: 100,
-      },
-    });
-    const summary = makeSummary({
-      metrics: {
-        ...makeSummary().metrics,
-        totalTokens: 999,
-      },
-    });
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
-
-    const { result } = renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
-    });
 
     await waitFor(() => {
       expect(result.current.metrics).toBeDefined();
     });
 
-    expect(result.current.metrics?.totalTokens).toBe(999);
-  });
-
-  it('should fall back to session metrics when summary is not available', async () => {
-    const session = makeSession();
-
-    fetchTranscriptSummaryMock.mockRejectedValue(new Error('Not found'));
-    mockTranscriptResponse(session);
-
-    const { result } = renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    await waitFor(() => {
-      expect(result.current.session).toBeDefined();
-    });
-
-    expect(result.current.metrics).toEqual(session.metrics);
-  });
-
-  it('should expose chunks from session data', async () => {
-    const session = makeSession({
-      chunks: [
-        {
-          id: 'chunk-0',
-          type: 'user',
-          startTime: '2026-02-24T10:00:00.000Z',
-          endTime: '2026-02-24T10:00:01.000Z',
-          messages: [],
-          metrics: {
-            inputTokens: 50,
-            outputTokens: 0,
-            cacheReadTokens: 0,
-            cacheCreationTokens: 0,
-            totalTokens: 50,
-            messageCount: 1,
-            durationMs: 1000,
-            costUsd: 0.001,
-          },
-        },
-      ],
-    });
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
-
-    const { result } = renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    await waitFor(() => {
-      expect(result.current.chunks).toHaveLength(1);
-    });
-
-    expect(result.current.chunks[0].id).toBe('chunk-0');
-  });
-
-  it('should keep messages/chunks references stable on summary-only updates', async () => {
-    const session = makeSession({ chunks: undefined });
-    const summary = makeSummary({
-      metrics: {
-        ...makeSummary().metrics,
-        totalTokens: 360,
-      },
-    });
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
-
-    const { result } = renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    await waitFor(() => {
-      expect(result.current.session).toBeDefined();
-    });
-
-    const initialMessagesRef = result.current.messages;
-    const initialChunksRef = result.current.chunks;
-
+    const handler = captureWsHandler();
     act(() => {
-      queryClient.setQueryData(
-        transcriptQueryKeys.summary('session-1'),
-        makeSummary({
-          metrics: {
-            ...makeSummary().metrics,
-            totalTokens: 999,
-          },
-        }),
-      );
+      handler({
+        topic: 'session/session-1/transcript',
+        type: 'updated',
+        payload: { kind: 'delta', sessionId: 'session-1', newMessageCount: 3, metrics: {} },
+        ts: new Date().toISOString(),
+      });
+      handler({
+        topic: 'session/session-1/transcript',
+        type: 'discovered',
+        payload: { sessionId: 'session-1', providerName: 'claude-code' },
+        ts: new Date().toISOString(),
+      });
+      handler({
+        topic: 'session/session-1/transcript',
+        type: 'ended',
+        payload: { sessionId: 'session-1', finalMetrics: {}, endReason: 'session.stopped' },
+        ts: new Date().toISOString(),
+      });
     });
 
     await waitFor(() => {
-      expect(result.current.metrics?.totalTokens).toBe(999);
-    });
-    expect(result.current.messages).toBe(initialMessagesRef);
-    expect(result.current.chunks).toBe(initialChunksRef);
-  });
-
-  // -------------------------------------------------------------------------
-  // Error handling
-  // -------------------------------------------------------------------------
-
-  it('should expose error when transcript fetch fails', async () => {
-    mockTranscriptError(500, 'Network error');
-
-    const { result } = renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
+      expect(fetchTranscriptSummaryMock.mock.calls.length).toBeGreaterThan(1);
     });
 
-    await waitFor(() => {
-      expect(result.current.error).toBeTruthy();
-    });
-
-    expect(result.current.error?.message).toBe('Network error');
-  });
-
-  it('should not expose error when only summary fetch fails (non-fatal)', async () => {
-    const session = makeSession();
-
-    fetchTranscriptSummaryMock.mockRejectedValue(new Error('500 Internal Server Error'));
-    mockTranscriptResponse(session);
-
-    const { result } = renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    await waitFor(() => {
-      expect(result.current.session).toBeDefined();
-    });
-
-    // Summary error should NOT cause panel error
-    expect(result.current.error).toBeNull();
-    // Metrics should degrade to session.metrics
-    expect(result.current.metrics).toEqual(session.metrics);
-    // isLoading should be false (transcript loaded)
-    expect(result.current.isLoading).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
@@ -502,7 +230,7 @@ describe('useSessionTranscript', () => {
   // -------------------------------------------------------------------------
 
   it('should register a WS message handler via useAppSocket', () => {
-    mockTranscriptResponse(makeSession());
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
 
     renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -516,11 +244,10 @@ describe('useSessionTranscript', () => {
 
   it('refreshes only the summary for an addressed runtime-context update', async () => {
     fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
-    mockTranscriptResponse(makeSession());
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
     });
-    await waitFor(() => expect(result.current.session).toBeDefined());
+    await waitFor(() => expect(result.current.metrics).toBeDefined());
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
     invalidateSpy.mockClear();
 
@@ -537,17 +264,10 @@ describe('useSessionTranscript', () => {
       queryKey: transcriptQueryKeys.summary('session-1'),
       exact: true,
     });
-    expect(invalidateSpy).not.toHaveBeenCalledWith({
-      queryKey: transcriptQueryKeys.transcript('session-1'),
-    });
   });
 
-  it('should invalidate queries on WS "updated" event after debounce', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
+  it('should invalidate the summary on WS "updated" event after debounce', async () => {
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
 
     const { result } = renderHook(
       () => useSessionTranscript('session-1', { wsInvalidationDebounceMs: 10 }),
@@ -557,7 +277,7 @@ describe('useSessionTranscript', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
@@ -574,20 +294,13 @@ describe('useSessionTranscript', () => {
 
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith({
-        queryKey: transcriptQueryKeys.transcript('session-1'),
-      });
-      expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: transcriptQueryKeys.summary('session-1'),
       });
     });
   });
 
   it('should coalesce burst WS "updated" events into one invalidation cycle', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
 
     const { result } = renderHook(
       () => useSessionTranscript('session-1', { wsInvalidationDebounceMs: 10 }),
@@ -597,7 +310,7 @@ describe('useSessionTranscript', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
@@ -625,23 +338,19 @@ describe('useSessionTranscript', () => {
     });
 
     await waitFor(() => {
-      expect(invalidateSpy).toHaveBeenCalledTimes(2);
+      expect(invalidateSpy).toHaveBeenCalledTimes(1);
     });
   });
 
-  it('should invalidate queries on WS "discovered" event', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
+  it('should invalidate the summary on WS "discovered" event', async () => {
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
     });
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
@@ -657,26 +366,19 @@ describe('useSessionTranscript', () => {
     });
 
     expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: transcriptQueryKeys.transcript('session-1'),
-    });
-    expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: transcriptQueryKeys.summary('session-1'),
     });
   });
 
-  it('should invalidate queries on WS "ended" event', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
+  it('should invalidate the summary on WS "ended" event', async () => {
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
     });
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
@@ -692,26 +394,19 @@ describe('useSessionTranscript', () => {
     });
 
     expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: transcriptQueryKeys.transcript('session-1'),
-    });
-    expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: transcriptQueryKeys.summary('session-1'),
     });
   });
 
   it('should ignore WS events for different sessions', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
     });
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
@@ -734,11 +429,9 @@ describe('useSessionTranscript', () => {
   // -------------------------------------------------------------------------
 
   it('should set isLive=true when session is ongoing', async () => {
-    const session = makeSession({ isOngoing: true });
     const summary = makeSummary({ isOngoing: true });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
@@ -750,29 +443,25 @@ describe('useSessionTranscript', () => {
   });
 
   it('should set isLive=false when session is not ongoing', async () => {
-    const session = makeSession({ isOngoing: false });
     const summary = makeSummary({ isOngoing: false });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
     });
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     expect(result.current.isLive).toBe(false);
   });
 
   it('keeps a running DevChain session live after a completed transcript turn', async () => {
-    const session = makeSession({ isOngoing: false });
     const summary = makeSummary({ isOngoing: false });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
 
     const { result } = renderHook(
       () => useSessionTranscript('session-1', { isSessionRunning: true }),
@@ -782,7 +471,7 @@ describe('useSessionTranscript', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     expect(result.current.isLive).toBe(true);
@@ -802,12 +491,10 @@ describe('useSessionTranscript', () => {
     ).toBe(5_000);
   });
 
-  it('stops transcript polling when DevChain lifecycle reports the session stopped', async () => {
-    const session = makeSession({ isOngoing: true });
+  it('stops summary polling when DevChain lifecycle reports the session stopped', async () => {
     const summary = makeSummary({ isOngoing: true });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
 
     const { result } = renderHook(
       () => useSessionTranscript('session-1', { isSessionRunning: false }),
@@ -817,7 +504,7 @@ describe('useSessionTranscript', () => {
     );
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     expect(result.current.isLive).toBe(false);
@@ -842,9 +529,15 @@ describe('useSessionTranscript', () => {
   // -------------------------------------------------------------------------
 
   it('should export correct query keys', () => {
-    expect(transcriptQueryKeys.transcript('abc')).toEqual(['transcript', 'abc']);
     expect(transcriptQueryKeys.summary('abc')).toEqual(['transcript-summary', 'abc']);
-    expect(transcriptQueryKeys.transcript(null)).toEqual(['transcript', null]);
+    expect(transcriptQueryKeys.index('abc')).toEqual(['transcript-index', 'abc']);
+    expect(transcriptQueryKeys.chunkPage('abc', null, 10)).toEqual([
+      'transcript-chunk-page',
+      'abc',
+      null,
+      10,
+    ]);
+    expect(transcriptQueryKeys.summary(null)).toEqual(['transcript-summary', null]);
   });
 
   // -------------------------------------------------------------------------
@@ -852,18 +545,14 @@ describe('useSessionTranscript', () => {
   // -------------------------------------------------------------------------
 
   it('should provide a refetch function', async () => {
-    const session = makeSession();
-    const summary = makeSummary();
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-    mockTranscriptResponse(session);
+    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
 
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
     });
 
     await waitFor(() => {
-      expect(result.current.session).toBeDefined();
+      expect(result.current.metrics).toBeDefined();
     });
 
     const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
@@ -884,576 +573,5 @@ describe('useSessionTranscript', () => {
     });
 
     expect(() => result.current.refetch()).not.toThrow();
-  });
-
-  // -------------------------------------------------------------------------
-  // WS push-delta: cursor-match → inline merge (zero HTTP refetch)
-  // -------------------------------------------------------------------------
-
-  describe('WS push-delta cursor paths', () => {
-    const INITIAL_CURSOR = 'aW5pdGlhbC1jdXJzb3I';
-    const NEXT_CURSOR = 'bmV4dC1jdXJzb3I';
-
-    function makeStableEmptyTail(cursor: string) {
-      return {
-        kind: 'delta' as const,
-        cursor,
-        replaceFromChunkIndex: 0,
-        deltaChunks: [],
-        deltaMessages: [],
-        metrics: makeSession().metrics,
-        totalChunkCount: 0,
-        totalMessageCount: 0,
-      };
-    }
-
-    function makeSessionWithCursor(): SerializedSession {
-      return makeSession({
-        cursor: INITIAL_CURSOR,
-        chunks: [
-          {
-            id: 'chunk-0',
-            type: 'user',
-            startTime: '2026-02-24T10:00:00.000Z',
-            endTime: '2026-02-24T10:00:00.000Z',
-            messages: [
-              {
-                id: 'msg-1',
-                parentId: null,
-                role: 'user',
-                timestamp: '2026-02-24T10:00:00.000Z',
-                content: [{ type: 'text', text: 'Hello' }],
-                toolCalls: [],
-                toolResults: [],
-                isMeta: false,
-                isSidechain: false,
-              },
-            ],
-            metrics: {
-              inputTokens: 50,
-              outputTokens: 0,
-              cacheReadTokens: 0,
-              cacheCreationTokens: 0,
-              totalTokens: 50,
-              messageCount: 1,
-              durationMs: 0,
-              costUsd: 0,
-            },
-          },
-          {
-            id: 'chunk-1',
-            type: 'ai',
-            startTime: '2026-02-24T10:00:05.000Z',
-            endTime: '2026-02-24T10:00:05.000Z',
-            messages: [
-              {
-                id: 'msg-2',
-                parentId: 'msg-1',
-                role: 'assistant',
-                timestamp: '2026-02-24T10:00:05.000Z',
-                content: [{ type: 'text', text: 'Hi there!' }],
-                model: 'claude-sonnet-4-6',
-                toolCalls: [],
-                toolResults: [],
-                isMeta: false,
-                isSidechain: false,
-              },
-            ],
-            semanticSteps: [],
-            metrics: {
-              inputTokens: 50,
-              outputTokens: 200,
-              cacheReadTokens: 50,
-              cacheCreationTokens: 10,
-              totalTokens: 310,
-              messageCount: 1,
-              durationMs: 5000,
-              costUsd: 0.004,
-            },
-          },
-        ],
-      });
-    }
-
-    function makeDeltaPayload(prevCursor: string) {
-      return {
-        kind: 'delta' as const,
-        sessionId: 'session-1',
-        cursor: NEXT_CURSOR,
-        prevCursor,
-        replaceFromChunkIndex: 1,
-        deltaChunks: [
-          {
-            id: 'chunk-1',
-            type: 'ai',
-            startTime: '2026-02-24T10:00:05.000Z',
-            endTime: '2026-02-24T10:00:10.000Z',
-            messages: [
-              {
-                id: 'msg-2',
-                parentId: 'msg-1',
-                role: 'assistant',
-                timestamp: '2026-02-24T10:00:05.000Z',
-                content: [{ type: 'text', text: 'Hi there!' }],
-                toolCalls: [],
-                toolResults: [],
-                isMeta: false,
-                isSidechain: false,
-              },
-              {
-                id: 'msg-3',
-                parentId: 'msg-2',
-                role: 'assistant',
-                timestamp: '2026-02-24T10:00:10.000Z',
-                content: [{ type: 'text', text: 'How can I help?' }],
-                toolCalls: [],
-                toolResults: [],
-                isMeta: false,
-                isSidechain: false,
-              },
-            ],
-            semanticSteps: [],
-            metrics: {
-              inputTokens: 50,
-              outputTokens: 300,
-              cacheReadTokens: 50,
-              cacheCreationTokens: 10,
-              totalTokens: 410,
-              messageCount: 2,
-              durationMs: 5000,
-              costUsd: 0.005,
-            },
-          },
-        ],
-        deltaMessages: [
-          {
-            id: 'msg-3',
-            parentId: 'msg-2',
-            role: 'assistant',
-            timestamp: '2026-02-24T10:00:10.000Z',
-            content: [{ type: 'text', text: 'How can I help?' }],
-            toolCalls: [],
-            toolResults: [],
-            isMeta: false,
-            isSidechain: false,
-          },
-        ],
-        newMessageCount: 1,
-        metrics: {
-          totalTokens: 500,
-          inputTokens: 150,
-          outputTokens: 300,
-          costUsd: 0.01,
-          messageCount: 3,
-        },
-      };
-    }
-
-    async function renderWithInitialSession(
-      onRender?: (session: SerializedSession | undefined) => void,
-    ) {
-      const session = makeSessionWithCursor();
-      const summary = makeSummary();
-      fetchTranscriptSummaryMock.mockResolvedValue(summary);
-      mockTranscriptResponse(session);
-
-      const hook = renderHook(
-        () => {
-          const value = useSessionTranscript('session-1');
-          onRender?.(value.session);
-          return value;
-        },
-        {
-          wrapper: createWrapper(queryClient),
-        },
-      );
-
-      await waitFor(() => {
-        expect(hook.result.current.session).toBeDefined();
-        expect(hook.result.current.session?.cursor).toBe(INITIAL_CURSOR);
-      });
-
-      fetchMock.mockClear();
-      return hook;
-    }
-
-    it('cursor match → applies delta merge via setQueryData (zero full-refetch)', async () => {
-      const { result } = await renderWithInitialSession();
-
-      const setQueryDataSpy = jest.spyOn(queryClient, 'setQueryData');
-      const handler = captureWsHandler();
-
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: makeDeltaPayload(INITIAL_CURSOR),
-          ts: new Date().toISOString(),
-        });
-      });
-
-      await waitFor(() => {
-        expect(setQueryDataSpy).toHaveBeenCalled();
-      });
-
-      expect(result.current.messages).toHaveLength(3);
-      expect(result.current.chunks).toHaveLength(2);
-      expect(result.current.chunks[0].id).toBe('chunk-0');
-      expect(result.current.chunks[1].id).toBe('chunk-1');
-      expect(result.current.session?.cursor).toBe(NEXT_CURSOR);
-
-      const transcriptFetches = fetchMock.mock.calls.filter(([url]) =>
-        String(url).includes('/transcript'),
-      );
-      expect(transcriptFetches).toHaveLength(0);
-    });
-
-    it('cursor match preserves identity for unchanged chunks', async () => {
-      const { result } = await renderWithInitialSession();
-
-      const chunk0Before = result.current.chunks[0];
-      const handler = captureWsHandler();
-
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: makeDeltaPayload(INITIAL_CURSOR),
-          ts: new Date().toISOString(),
-        });
-      });
-
-      await waitFor(() => {
-        expect(result.current.messages).toHaveLength(3);
-      });
-
-      expect(result.current.chunks[0]).toBe(chunk0Before);
-    });
-
-    it('consecutive cursor-match events produce zero full-transcript refetches', async () => {
-      await renderWithInitialSession();
-
-      const handler = captureWsHandler();
-      let currentCursor = INITIAL_CURSOR;
-
-      for (let i = 0; i < 10; i++) {
-        const nextCursor = `cursor-${i + 1}`;
-        const delta = makeDeltaPayload(currentCursor);
-        delta.cursor = nextCursor;
-        delta.prevCursor = currentCursor;
-
-        act(() => {
-          handler({
-            topic: 'session/session-1/transcript',
-            type: 'updated',
-            payload: delta,
-            ts: new Date().toISOString(),
-          });
-        });
-
-        currentCursor = nextCursor;
-      }
-
-      const transcriptFetches = fetchMock.mock.calls.filter(([url]) =>
-        String(url).includes('/transcript'),
-      );
-      expect(transcriptFetches).toHaveLength(0);
-    });
-
-    it('cursor mismatch → fetches tail endpoint', async () => {
-      await renderWithInitialSession();
-
-      fetchTranscriptTailMock.mockResolvedValue({
-        kind: 'delta',
-        cursor: NEXT_CURSOR,
-        replaceFromChunkIndex: 1,
-        deltaChunks: [],
-        deltaMessages: [],
-        metrics: makeSession().metrics,
-        totalChunkCount: 2,
-        totalMessageCount: 3,
-      });
-
-      const handler = captureWsHandler();
-
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: makeDeltaPayload('wrong-cursor'),
-          ts: new Date().toISOString(),
-        });
-      });
-
-      await waitFor(() => {
-        expect(fetchTranscriptTailMock).toHaveBeenCalledWith(
-          'session-1',
-          INITIAL_CURSOR,
-          expect.any(Function),
-        );
-      });
-
-      const transcriptFetches = fetchMock.mock.calls.filter(([url]) =>
-        String(url).endsWith('/transcript'),
-      );
-      expect(transcriptFetches).toHaveLength(0);
-    });
-
-    it('tail failure → starts owned canonical recovery', async () => {
-      await renderWithInitialSession();
-
-      fetchTranscriptTailMock
-        .mockRejectedValueOnce(new Error('Cursor expired'))
-        .mockResolvedValueOnce(makeStableEmptyTail(INITIAL_CURSOR));
-
-      const handler = captureWsHandler();
-
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: makeDeltaPayload('wrong-cursor'),
-          ts: new Date().toISOString(),
-        });
-      });
-
-      await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledTimes(1);
-      });
-    });
-
-    it('rejects a dirty canonical candidate and atomically renders only the latest complete generation', async () => {
-      const renderedGenerations: string[] = [];
-      const { result } = await renderWithInitialSession((rendered) => {
-        if (!rendered?.cursor) return;
-        renderedGenerations.push(
-          `${rendered.cursor}:${rendered.messages.map((message) => message.id).join(',')}`,
-        );
-      });
-      const oldSession = result.current.session;
-      const staleCandidate = makeSessionWithCursor();
-      staleCandidate.cursor = 'stale-candidate-cursor';
-      staleCandidate.messages = staleCandidate.messages.map((message, index) => ({
-        ...message,
-        id: `stale-message-${index}`,
-        content: [{ type: 'text', text: `stale-${index}` }],
-      }));
-      staleCandidate.chunks = staleCandidate.chunks?.map((chunk, index) => ({
-        ...chunk,
-        id: `stale-chunk-${index}`,
-        messages: [staleCandidate.messages[index]],
-      }));
-      const replacement = makeSessionWithCursor();
-      replacement.cursor = NEXT_CURSOR;
-      replacement.messages = replacement.messages.map((message, index) => ({
-        ...message,
-        id: `replacement-message-${index}`,
-        content: [{ type: 'text', text: `replacement-${index}` }],
-      }));
-      replacement.chunks = replacement.chunks?.map((chunk, index) => ({
-        ...chunk,
-        id: `replacement-chunk-${index}`,
-        messages: [replacement.messages[index]],
-      }));
-
-      const pending = deferred<Response>();
-      fetchMock
-        .mockImplementationOnce(() => pending.promise)
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          text: () => Promise.resolve(JSON.stringify(replacement)),
-          json: () => Promise.resolve(replacement),
-        } as Response);
-      fetchTranscriptTailMock.mockResolvedValue(makeStableEmptyTail(NEXT_CURSOR));
-      const handler = captureWsHandler();
-
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: {
-            kind: 'full-refetch-required',
-            sessionId: 'session-1',
-            sourceChangeKind: 'file-replacement',
-          },
-          ts: new Date().toISOString(),
-        });
-      });
-
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      expect(result.current.session).toBe(oldSession);
-      expect(result.current.session?.cursor).toBe(INITIAL_CURSOR);
-
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: makeDeltaPayload(INITIAL_CURSOR),
-          ts: new Date().toISOString(),
-        });
-      });
-
-      expect(result.current.session).toBe(oldSession);
-      expect(result.current.messages.map((message) => message.id)).toEqual(['msg-1', 'msg-2']);
-      expect(
-        queryClient
-          .getQueryData<SerializedSession>(transcriptQueryKeys.transcript('session-1'))
-          ?.messages.map((message) => message.id),
-      ).toEqual(['msg-1', 'msg-2']);
-
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: {
-            kind: 'full-refetch-required',
-            sessionId: 'session-1',
-            sourceChangeKind: 'same-file-rewrite',
-          },
-          ts: new Date().toISOString(),
-        });
-      });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-
-      await act(async () => {
-        pending.resolve({
-          ok: true,
-          status: 200,
-          text: () => Promise.resolve(JSON.stringify(staleCandidate)),
-          json: () => Promise.resolve(staleCandidate),
-        } as Response);
-      });
-
-      await waitFor(() => expect(result.current.session?.cursor).toBe(NEXT_CURSOR));
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(fetchTranscriptTailMock).toHaveBeenCalledWith(
-        'session-1',
-        NEXT_CURSOR,
-        expect.any(Function),
-      );
-      expect(result.current.messages.map((message) => message.id)).toEqual([
-        'replacement-message-0',
-        'replacement-message-1',
-      ]);
-      expect(result.current.chunks.map((chunk) => chunk.id)).toEqual([
-        'replacement-chunk-0',
-        'replacement-chunk-1',
-      ]);
-      expect(new Set(renderedGenerations)).toEqual(
-        new Set([
-          `${INITIAL_CURSOR}:msg-1,msg-2`,
-          `${NEXT_CURSOR}:replacement-message-0,replacement-message-1`,
-        ]),
-      );
-      expect(renderedGenerations.some((generation) => generation.includes('stale-message'))).toBe(
-        false,
-      );
-    });
-
-    it('tail unsafe generation replaces a growing generation without appending stale messages', async () => {
-      const { result } = await renderWithInitialSession();
-      const oldSession = result.current.session;
-      const replacement = makeSessionWithCursor();
-      replacement.cursor = NEXT_CURSOR;
-      replacement.messages = [
-        ...replacement.messages.map((message, index) => ({
-          ...message,
-          id: `new-message-${index}`,
-          content: [{ type: 'text' as const, text: `new-${index}` }],
-        })),
-        {
-          ...replacement.messages[1],
-          id: 'new-message-2',
-          parentId: 'new-message-1',
-          content: [{ type: 'text' as const, text: 'new-2' }],
-        },
-      ];
-      replacement.metrics = { ...replacement.metrics, messageCount: 3 };
-
-      fetchTranscriptTailMock
-        .mockResolvedValueOnce({
-          kind: 'full-refetch-required',
-          sourceChangeKind: 'same-file-rewrite',
-        })
-        .mockResolvedValueOnce(makeStableEmptyTail(NEXT_CURSOR));
-      const pending = deferred<Response>();
-      fetchMock.mockImplementation(() => pending.promise);
-      const handler = captureWsHandler();
-
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: makeDeltaPayload('wrong-cursor'),
-          ts: new Date().toISOString(),
-        });
-      });
-
-      await waitFor(() => expect(fetchTranscriptTailMock).toHaveBeenCalled());
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      expect(result.current.session).toBe(oldSession);
-      expect(result.current.messages.map((message) => message.id)).toEqual(['msg-1', 'msg-2']);
-
-      await act(async () => {
-        pending.resolve({
-          ok: true,
-          status: 200,
-          text: () => Promise.resolve(JSON.stringify(replacement)),
-          json: () => Promise.resolve(replacement),
-        } as Response);
-      });
-
-      await waitFor(() => expect(result.current.session?.cursor).toBe(NEXT_CURSOR));
-      expect(result.current.messages.map((message) => message.id)).toEqual([
-        'new-message-0',
-        'new-message-1',
-        'new-message-2',
-      ]);
-      expect(result.current.messages).toHaveLength(3);
-    });
-
-    it('failed canonical refetch preserves the old cursor and retries on the next unsafe signal', async () => {
-      const { result } = await renderWithInitialSession();
-      const oldSession = result.current.session;
-      const handler = captureWsHandler();
-
-      fetchMock.mockRejectedValueOnce(new Error('network down'));
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: {
-            kind: 'full-refetch-required',
-            sessionId: 'session-1',
-            sourceChangeKind: 'file-replacement',
-          },
-          ts: new Date().toISOString(),
-        });
-      });
-
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-      expect(result.current.session).toBe(oldSession);
-      expect(result.current.session?.cursor).toBe(INITIAL_CURSOR);
-
-      const replacement = makeSessionWithCursor();
-      replacement.cursor = NEXT_CURSOR;
-      fetchTranscriptTailMock.mockResolvedValue(makeStableEmptyTail(NEXT_CURSOR));
-      mockTranscriptResponse(replacement);
-      act(() => {
-        handler({
-          topic: 'session/session-1/transcript',
-          type: 'updated',
-          payload: {
-            kind: 'full-refetch-required',
-            sessionId: 'session-1',
-            sourceChangeKind: 'file-replacement',
-          },
-          ts: new Date().toISOString(),
-        });
-      });
-
-      await waitFor(() => expect(result.current.session?.cursor).toBe(NEXT_CURSOR));
-    });
   });
 });

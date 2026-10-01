@@ -1,3 +1,4 @@
+import { BUILT_IN_SKILL_SOURCE_NAMES } from '../../../common/constants/built-in-skill-sources';
 import type { Dirent } from 'node:fs';
 import { join, relative } from 'node:path';
 import { Injectable } from '@nestjs/common';
@@ -14,7 +15,7 @@ const SKILLS_DIRECTORY = 'skills';
 export class VercelSkillSource extends GitHubSkillSourceBase implements SkillSourceAdapter {
   constructor() {
     super({
-      sourceName: 'vercel',
+      sourceName: BUILT_IN_SKILL_SOURCE_NAMES.vercel,
       repoOwner: 'vercel-labs',
       repoName: 'agent-skills',
     });

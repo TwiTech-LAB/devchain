@@ -7,6 +7,7 @@ import type {
 } from './types';
 import { captureStrict } from './capture';
 import { generateDeliveryNonce } from '../../../../common/delivery-nonce';
+import { FOLLOW_NOTE } from '../../../../common/follow-note';
 
 const DEFAULT_POST_PASTE_DELAY_MS = 250;
 const MAX_POST_PASTE_DELAY_MS = 5000;
@@ -14,6 +15,7 @@ const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_CONFIRM_TIMEOUT_MS = 2000;
 const CONFIRM_POLL_INTERVAL_MS = 150;
 const CONFIRM_TAIL_LINES = 10;
+const MIN_FOLLOW_NOTE_DELAY_MS = 100;
 
 interface ConfirmationBaseline {
   readonly output: string | undefined;
@@ -132,6 +134,32 @@ async function sendKeys(
   }
 }
 
+// Provider (`/compact`) and shell (`!git status`) commands would absorb the note.
+function shouldTypeFollowNote(
+  text: string,
+  options: { followNote?: boolean; bracketed: boolean; submitKeys: readonly string[] },
+): boolean {
+  return (
+    options.followNote === true &&
+    options.bracketed &&
+    options.submitKeys.length > 0 &&
+    !/^\s*[/!]/.test(text)
+  );
+}
+
+async function typeFollowNote(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  postPasteDelayMs: number,
+): Promise<void> {
+  try {
+    await sendKeys(executor, target, ['-l', '--', FOLLOW_NOTE]);
+  } catch {
+    return;
+  }
+  await new Promise((r) => setTimeout(r, Math.max(postPasteDelayMs, MIN_FOLLOW_NOTE_DELAY_MS)));
+}
+
 async function sendSubmitKeysWithRetry(
   executor: ProcessExecutor,
   target: SessionTarget,
@@ -161,6 +189,7 @@ async function pasteAndSubmit(
     confirmTimeoutMs: number;
     confirmationBaseline?: ConfirmationBaseline;
     preparedBuffer?: PreparedBuffer;
+    followNote?: boolean;
   },
 ): Promise<{ method?: 'nonce' | 'paste_indicator' | 'paste_changed' }> {
   let preparedBufferNeedsCleanup = Boolean(options.preparedBuffer);
@@ -191,6 +220,7 @@ async function pasteAndSubmit(
     await deleteBuffer(executor, preparedBuffer.name);
     preparedBufferNeedsCleanup = false;
 
+    let method: 'nonce' | 'paste_indicator' | 'paste_changed' | undefined;
     if (options.confirm && options.nonce) {
       const confirmation = await confirmPasteDelivery(
         executor,
@@ -209,19 +239,17 @@ async function pasteAndSubmit(
       } else {
         throw new PasteNotConfirmedError(target.name, options.nonce);
       }
-
-      await sendSubmitKeysWithRetry(executor, target, options.submitKeys);
-
-      return { method: confirmation.method };
-    }
-
-    if (options.postPasteDelayMs > 0) {
+      method = confirmation.method;
+    } else if (options.postPasteDelayMs > 0) {
       await new Promise((r) => setTimeout(r, options.postPasteDelayMs));
     }
 
+    if (shouldTypeFollowNote(text, options)) {
+      await typeFollowNote(executor, target, options.postPasteDelayMs);
+    }
     await sendSubmitKeysWithRetry(executor, target, options.submitKeys);
 
-    return {};
+    return { method };
   } catch (error) {
     if (preparedBufferNeedsCleanup && options.preparedBuffer) {
       await deleteBuffer(executor, options.preparedBuffer.name);
@@ -345,6 +373,7 @@ async function deliverWithFirstMutationGuard(
         confirmTimeoutMs,
         confirmationBaseline,
         preparedBuffer,
+        followNote: options.followNote,
       });
 
       return { confirmed: true, nonce: lastNonce, retryCount: attempt, method: result.method };
@@ -416,6 +445,7 @@ export async function deliverImmediate(
     confirm,
     nonce: confirm ? nonce : undefined,
     confirmTimeoutMs,
+    followNote: options.followNote,
   });
 
   return { confirmed: true, nonce, retryCount: 0, method: result.method };

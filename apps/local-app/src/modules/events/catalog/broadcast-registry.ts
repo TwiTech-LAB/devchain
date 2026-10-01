@@ -220,6 +220,37 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
       clientReaction: { kind: 'invalidate', owner: 'useBoardSync' },
     },
   ],
+  // Mirror applies publish no `epic.*` or relation events; boards and relation
+  // views refetch the whole project and workspace instead.
+  'remote.project.synced': [
+    {
+      topic: (p) => `project/${p.projectId}/epics`,
+      type: 'remote-synced',
+      payloadProjection: (p) => ({ projectId: p.projectId }),
+      clientReaction: { kind: 'invalidate', owner: 'useBoardSync' },
+    },
+    {
+      topic: (p) => `workspace/${p.workspaceId}/epic-relations`,
+      type: 'remote-synced',
+      payloadProjection: (p) => ({ workspaceId: p.workspaceId }),
+      clientReaction: { kind: 'invalidate', owner: 'useEpicRelationsSync' },
+    },
+  ],
+  // Instance-level: re-routes the project's backend and refreshes the remotes lists.
+  'remote.binding.changed': [
+    {
+      topic: 'remotes',
+      type: 'binding',
+      payloadProjection: (p) => ({
+        projectId: p.projectId,
+        remoteId: p.remoteId,
+        state: p.state,
+        hostCursor: p.hostCursor,
+        syncError: p.syncError,
+      }),
+      clientReaction: { kind: 'invalidate', owner: 'BackendProvider' },
+    },
+  ],
 
   // ── Claude hooks: AskUserQuestion (normalized questions only — never raw toolInput) ──
   'claude.hooks.ask_user_question.pending': [
@@ -511,16 +542,6 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
         sessionId: p.sessionId,
       }),
       clientReaction: { kind: 'custom-handler', owner: 'session metrics hooks' },
-    },
-  ],
-
-  // ── Worktree (Option A: added to catalog) ──
-  'orchestrator.worktree.changed': [
-    {
-      topic: 'worktrees',
-      type: 'changed',
-      payloadProjection: () => ({}),
-      clientReaction: { kind: 'invalidate', owner: 'useWorktreeTab' },
     },
   ],
 

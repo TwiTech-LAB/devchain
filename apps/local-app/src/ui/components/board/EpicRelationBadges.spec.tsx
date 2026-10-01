@@ -10,11 +10,11 @@ import {
 import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
 import type { EpicRelation } from '@/ui/lib/epic-relations';
 
-// Layer: component unit. The data hook, worktree runtime, and project
-// selection are stubbed because this spec owns resting-badge presentation, the
-// hover/keyboard/touch mode machine, the card drag fence, the preview's
-// rendering states over the first detail page, the title navigation and focus
-// contract, and the shared removal flow from the preview rows.
+// Layer: component unit. The data hook and project selection are stubbed
+// because this spec owns resting-badge presentation, the hover/keyboard/touch
+// mode machine, the card drag fence, the preview's rendering states over the
+// first detail page, the title navigation and focus contract, and the shared
+// removal flow from the preview rows.
 const useEpicRelationsMock = jest.fn();
 const useDeleteEpicRelationMock = jest.fn();
 jest.mock('@/ui/hooks/useEpicRelations', () => ({
@@ -34,19 +34,6 @@ const mockProjectSelection = {
 
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => mockProjectSelection,
-}));
-
-const worktreeRuntime = {
-  activeWorktree: null,
-  setActiveWorktree: () => undefined,
-  apiBase: '',
-  worktrees: [],
-  worktreesLoading: false,
-  runtimeResolved: true,
-};
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => worktreeRuntime,
 }));
 
 function relationTarget(id: string, title: string, projectName = 'Current Project') {
@@ -283,8 +270,6 @@ function mockDeleteRelation() {
 beforeEach(() => {
   jest.clearAllMocks();
   mockQuery();
-  worktreeRuntime.runtimeResolved = true;
-  worktreeRuntime.apiBase = '';
   mockDeleteRelation();
   mockProjectSelection.selectedWorkspace = { id: 'workspace-1', name: 'Workspace One' };
   // The removal dialog resolves target eligibility through the shared
@@ -747,7 +732,7 @@ describe('EpicRelationBadges card drag fence', () => {
 });
 
 describe('EpicRelationBadges preview content', () => {
-  it('loads details only in the resolved main runtime', () => {
+  it('loads detail rows only while the preview is open', () => {
     renderBadges({
       counts: countsFixture({
         related: 1,
@@ -761,25 +746,6 @@ describe('EpicRelationBadges preview content', () => {
 
     openKeyboardPreview();
     expect(useEpicRelationsMock).toHaveBeenLastCalledWith(FOCAL_ID, { enabled: true });
-  });
-
-  it('renders no cached main detail rows in a non-main runtime', () => {
-    mockQuery(firstPage([sourceRow]));
-    worktreeRuntime.apiBase = '/wt/demo';
-    renderBadges({
-      counts: countsFixture({
-        related: 1,
-        total: 1,
-        relatedSources: 1,
-        relatedTargets: 0,
-        relatedNeutral: 0,
-      }),
-    });
-    openKeyboardPreview();
-
-    expect(useEpicRelationsMock).toHaveBeenLastCalledWith(FOCAL_ID, { enabled: false });
-    expect(previewHeading()).toBeInTheDocument();
-    expect(screen.queryByText('Design API')).not.toBeInTheDocument();
   });
 
   it('groups the first page by role and type and hides empty groups', () => {

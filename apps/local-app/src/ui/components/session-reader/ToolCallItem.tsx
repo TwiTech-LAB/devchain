@@ -14,6 +14,7 @@ import {
   truncateText,
 } from '@/ui/utils/session-reader-formatters';
 import { useSessionViewMode } from '@/ui/hooks/useSessionViewMode';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 const INPUT_TRUNCATE = 500;
 const RESULT_TRUNCATE = 500;
@@ -88,6 +89,7 @@ export function ToolCallItem({
   isStepHot,
   percentOfChunk,
 }: ToolCallItemProps) {
+  const fetchFn = useFetchFactory();
   const { mode } = useSessionViewMode();
   const toolName = step.content.toolName ?? 'Unknown';
   const isTask = toolName === 'Task';
@@ -157,6 +159,7 @@ export function ToolCallItem({
         `/api/sessions/${sessionId}/transcript/tool-result/${encodeURIComponent(toolCallId)}`,
         {},
         'Failed to fetch full tool result',
+        fetchFn,
       );
       const fullText =
         typeof response.content === 'string'
@@ -169,11 +172,18 @@ export function ToolCallItem({
     } finally {
       setIsFetchingFullResult(false);
     }
-  }, [expandedServerResult, isFetchingFullResult, isServerTruncated, sessionId, toolCallId]);
+  }, [
+    expandedServerResult,
+    fetchFn,
+    isFetchingFullResult,
+    isServerTruncated,
+    sessionId,
+    toolCallId,
+  ]);
 
   return (
     <div
-      className={cn(isStepHot && 'border-l-2 border-amber-500 pl-1.5')}
+      className={cn(isStepHot && 'border-l-2 border-status-warn pl-1.5')}
       data-testid="tool-call-wrapper"
     >
       <Collapsible>
@@ -183,18 +193,18 @@ export function ToolCallItem({
         >
           <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
           {isTask ? (
-            <Layers className="h-3 w-3 text-blue-400" />
+            <Layers className="h-3 w-3 text-status-info" />
           ) : (
-            <Wrench className="h-3 w-3 text-amber-400" />
+            <Wrench className="h-3 w-3 text-status-warn" />
           )}
           <span className="font-mono font-medium">{oneLiner}</span>
           <span className="ml-auto flex items-center gap-1.5">
             {isStepHot && mode === 'diagnostic' && (
-              <Flame className="h-3 w-3 text-amber-500" data-testid="step-hotspot-flame" />
+              <Flame className="h-3 w-3 text-status-warn" data-testid="step-hotspot-flame" />
             )}
             {isStepHot && mode === 'diagnostic' && percentOfChunk != null && percentOfChunk > 0 && (
               <span
-                className="text-amber-600 font-medium text-[10px] tabular-nums"
+                className="text-status-warn font-medium text-[10px] tabular-nums"
                 data-testid="step-hotspot-pct"
               >
                 {Math.round(percentOfChunk)}%
@@ -202,7 +212,7 @@ export function ToolCallItem({
             )}
             {estimatedTokens > 0 && (
               <span
-                className="text-muted-foreground/70 text-[10px] tabular-nums"
+                className="text-muted-foreground text-[10px] tabular-nums"
                 data-testid="tool-call-token-estimate"
               >
                 ~{formatTokens(estimatedTokens)}
@@ -211,12 +221,12 @@ export function ToolCallItem({
             {computedDuration > 0 && (
               <>
                 <span
-                  className="inline-block h-1.5 w-1.5 rounded-full bg-green-500"
+                  className="inline-block h-1.5 w-1.5 rounded-full bg-status-ok"
                   aria-hidden="true"
                   data-testid="tool-call-duration-dot"
                 />
                 <span
-                  className="text-muted-foreground/70 text-[10px] tabular-nums"
+                  className="text-muted-foreground text-[10px] tabular-nums"
                   data-testid="tool-call-duration"
                 >
                   {formatDuration(computedDuration)}
@@ -243,7 +253,7 @@ export function ToolCallItem({
                       e.stopPropagation();
                       setShowFullInput((prev) => !prev);
                     }}
-                    className="mt-0.5 text-[10px] text-primary/80 hover:text-primary transition-colors"
+                    className="mt-0.5 text-[10px] text-primary hover:underline"
                     data-testid="tool-input-show-more"
                   >
                     {showFullInput ? 'Show less' : 'Show more'}
@@ -269,7 +279,7 @@ export function ToolCallItem({
                       e.stopPropagation();
                       void handleLoadFullResult();
                     }}
-                    className="mt-0.5 text-[10px] text-primary/80 hover:text-primary transition-colors disabled:opacity-60"
+                    className="mt-0.5 text-[10px] text-primary hover:underline disabled:opacity-60"
                     disabled={isFetchingFullResult}
                     data-testid="tool-result-load-full"
                   >
@@ -283,7 +293,7 @@ export function ToolCallItem({
                       e.stopPropagation();
                       setShowFullResult((prev) => !prev);
                     }}
-                    className="mt-0.5 text-[10px] text-primary/80 hover:text-primary transition-colors"
+                    className="mt-0.5 text-[10px] text-primary hover:underline"
                     data-testid="tool-result-show-more"
                   >
                     {showFullResult ? 'Show less' : 'Show more'}

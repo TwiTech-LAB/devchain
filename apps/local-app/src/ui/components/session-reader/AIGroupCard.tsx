@@ -101,7 +101,7 @@ export const AIGroupCard = memo(function AIGroupCard({
       className={cn(
         'border-l-2 py-1 pl-3',
         isHot
-          ? 'border-amber-500/70 hover:border-amber-500'
+          ? 'border-status-warn/70 hover:border-status-warn'
           : 'border-primary/30 hover:border-primary/50',
       )}
       data-testid="ai-group-card"
@@ -120,21 +120,18 @@ export const AIGroupCard = memo(function AIGroupCard({
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Bot className="h-3 w-3" />
             {isHot && mode === 'diagnostic' && (
-              <Flame className="h-3 w-3 text-amber-500" data-testid="ai-group-flame" />
+              <Flame className="h-3 w-3 text-status-warn" data-testid="ai-group-flame" />
             )}
             <span>{model}</span>
-            <span className="text-muted-foreground/50">·</span>
+            <span className="text-muted-foreground">·</span>
             <span className="truncate">{summary}</span>
           </div>
-          <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground/70">
+          <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
             {headerTokens && (
               <span className="tabular-nums">
                 in {formatTokens(getHeaderInputTotal(chunk) ?? 0)}
                 {mode === 'diagnostic' && inputDelta != null && inputDelta > 0 && (
-                  <span
-                    className="text-muted-foreground/70 ml-0.5"
-                    data-testid="ai-group-input-delta"
-                  >
+                  <span className="text-muted-foreground ml-0.5" data-testid="ai-group-input-delta">
                     (+{formatTokens(inputDelta)})
                   </span>
                 )}
@@ -146,7 +143,7 @@ export const AIGroupCard = memo(function AIGroupCard({
             <span>{formatTimestamp(timestampIso)}</span>
             {isHot && mode === 'diagnostic' && contextPct != null && (
               <span
-                className="text-amber-600 font-medium tabular-nums"
+                className="text-status-warn font-medium tabular-nums"
                 data-testid="ai-group-ctx-pct"
               >
                 {contextPct < 1 ? '<1%' : `${Math.round(contextPct)}%`}

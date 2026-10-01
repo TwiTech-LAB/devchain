@@ -56,6 +56,7 @@ import { ConflictError } from '../../../common/errors/error-types';
 import { PROMPT_TRANSFER_POLICY } from '../../../common/prompt-transfer';
 import { ProjectTemplateUpgradeService } from './project-template-upgrade.service';
 import type { ProjectsService } from './projects.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 // ---------------------------------------------------------------------------
 // Test harness: real :memory: SQLite + real storage-backed services.
@@ -757,6 +758,7 @@ function createRealStorageUpgradeService(
     {} as never,
     h.settings,
     sessions as never,
+    createProjectWriteAdmissionStub() as never,
   );
 
   return {
@@ -1023,6 +1025,7 @@ describe('template round-trip contract safety net (real storage)', () => {
         {} as never,
         h.settings,
         { getActiveSessionsForProject: jest.fn().mockReturnValue([]) } as never,
+        createProjectWriteAdmissionStub() as never,
       );
 
       const result = await upgradeService.upgradeProject({
@@ -1385,6 +1388,7 @@ describe('template round-trip contract safety net (real storage)', () => {
         {} as never,
         h.settings,
         { getActiveSessionsForProject: jest.fn().mockReturnValue([]) } as never,
+        createProjectWriteAdmissionStub() as never,
       );
 
       const backupId = await upgradeService.createBackup(projectId);
@@ -1442,6 +1446,7 @@ describe('template round-trip contract safety net (real storage)', () => {
         {} as never,
         h.settings,
         { getActiveSessionsForProject: jest.fn().mockReturnValue([]) } as never,
+        createProjectWriteAdmissionStub() as never,
       );
 
       const backupId = await upgradeService.createBackup(projectId);

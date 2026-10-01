@@ -3,6 +3,13 @@ import prettierRecommended from 'eslint-plugin-prettier/recommended';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
+// UI files that still call fetch directly. The list only shrinks: migrate a file to
+// apiFetch and delete its line; never add one.
+const LEGACY_BARE_FETCH_FILES = [];
+
+const BARE_FETCH_MESSAGE =
+  'Use apiFetch/useFetchFactory from src/ui/lib/api-transport.ts so the request reaches the right backend.';
+
 export default defineConfig(
   {
     ignores: ['dist/**', 'node_modules/**', 'test/**'],
@@ -33,6 +40,24 @@ export default defineConfig(
         },
       ],
       'no-loss-of-precision': 'error',
+    },
+  },
+  {
+    files: ['src/ui/**/*.{ts,tsx}'],
+    ignores: [
+      'src/ui/lib/api-transport.ts',
+      'src/ui/**/*.spec.{ts,tsx}',
+      'src/ui/**/*.test.{ts,tsx}',
+      ...LEGACY_BARE_FETCH_FILES,
+    ],
+    rules: {
+      'no-restricted-globals': ['error', { name: 'fetch', message: BARE_FETCH_MESSAGE }],
+      'no-restricted-properties': [
+        'error',
+        { object: 'window', property: 'fetch', message: BARE_FETCH_MESSAGE },
+        { object: 'globalThis', property: 'fetch', message: BARE_FETCH_MESSAGE },
+        { object: 'self', property: 'fetch', message: BARE_FETCH_MESSAGE },
+      ],
     },
   },
 );

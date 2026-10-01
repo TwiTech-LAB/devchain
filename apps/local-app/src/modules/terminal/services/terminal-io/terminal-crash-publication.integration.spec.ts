@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { EventsService } from '../../../events/services/events.service';
+import type { SettingsService } from '../../../settings/services/settings.service';
 import { SessionTerminalRuntimeService } from '../../../session-terminal-runtime/session-terminal-runtime.service';
 import { TerminalGateway } from '../../gateways/terminal.gateway';
 import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
@@ -59,7 +60,8 @@ describe('terminal crash publication retry', () => {
     const events = new EventsService(emitter, eventLogService as never);
     const executor = new FakeProcessExecutor();
     executor.setDefaultResponse({ type: 'failure', stderr: `can't find session: tmux-1` });
-    terminalIO = new TerminalIOService(executor, events, new HumanPromptStateService());
+    const settings = { getFollowNoteEnabled: () => true } as unknown as SettingsService;
+    terminalIO = new TerminalIOService(executor, events, new HumanPromptStateService(), settings);
 
     const sessionTerminalRuntime = new SessionTerminalRuntimeService(
       db,

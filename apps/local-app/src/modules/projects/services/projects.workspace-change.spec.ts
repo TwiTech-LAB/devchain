@@ -1,5 +1,6 @@
 import { ProjectsService } from './projects.service';
 import { PROJECT_WORKSPACE_CHANGED_EVENT } from '../events/project-workspace-changed.events';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('ProjectsService workspace-change event', () => {
   it('publishes the project move synchronously after storage commits it', async () => {
@@ -24,6 +25,7 @@ describe('ProjectsService workspace-change event', () => {
       {} as never,
       {} as never,
       provisioning as never,
+      createProjectWriteAdmissionStub() as never,
       eventEmitter as never,
     );
 

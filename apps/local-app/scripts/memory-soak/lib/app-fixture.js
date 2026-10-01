@@ -159,17 +159,13 @@ class DisposableAppFixture {
       DB_PATH: this.storageDir,
       DB_FILENAME: 'devchain.db',
       DEVCHAIN_CLOUD_UI_ENABLED: 'false',
-      DEVCHAIN_MODE: 'normal',
       HOST: '127.0.0.1',
       LOG_LEVEL: 'error',
       NODE_ENV: 'production',
       PORT: '0',
-      REPO_ROOT: this.workspaceDir,
       RUNTIME_PORT_FILE: this.runtimePortFile,
       RUNTIME_TOKEN: this.runtimeToken,
       TMUX_TMPDIR: this.tmuxRoot,
-      WORKTREES_DATA_ROOT: path.join(this.tempRoot, 'worktrees-data'),
-      WORKTREES_ROOT: path.join(this.tempRoot, 'worktrees'),
     });
     if (this.transportStallToken) {
       const preload = path.join(__dirname, '..', 'fixtures', 'stall-engine-transport.js');

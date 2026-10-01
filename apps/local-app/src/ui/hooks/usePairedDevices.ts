@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
 
 /**
  * Renderer hook for the desktop "Paired devices" surface (E2EE trust).
@@ -7,6 +8,10 @@ import { useCallback, useEffect, useState } from 'react';
  * an on-demand `fetchSafetyNumber(kid)` so the order-independent safety number is computed
  * by the backend ONLY when the user asks to compare it (it is never bulk-loaded). The number
  * the PC renders is identical to the one the phone's "Validate this device" screen shows.
+ *
+ * Pairing is per instance: `backend` selects whose devices and workspace grants
+ * are listed; workspaces come from the same backend because grants name that
+ * instance's workspace ids.
  */
 export interface PairedDevice {
   kid: string;
@@ -41,7 +46,7 @@ export interface UsePairedDevices {
   updateWorkspaceAccess: (kid: string, workspaceIds: string[]) => Promise<void>;
 }
 
-export function usePairedDevices(): UsePairedDevices {
+export function usePairedDevices(backend: BackendId = HOME_BACKEND): UsePairedDevices {
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [workspaces, setWorkspaces] = useState<PairedDeviceWorkspace[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,8 +57,8 @@ export function usePairedDevices(): UsePairedDevices {
     setError(null);
     try {
       const [devicesResponse, workspacesResponse] = await Promise.all([
-        fetch('/api/e2ee/devices'),
-        fetch('/api/workspaces'),
+        apiFetch('/api/e2ee/devices', undefined, { backend }),
+        apiFetch('/api/workspaces', undefined, { backend }),
       ]);
       if (!devicesResponse.ok) throw new Error(`devices:${devicesResponse.status}`);
       if (!workspacesResponse.ok) throw new Error(`workspaces:${workspacesResponse.status}`);
@@ -67,8 +72,10 @@ export function usePairedDevices(): UsePairedDevices {
         normalizedWorkspaces.length > 1
           ? await Promise.all(
               normalizedDevices.map(async (device) => {
-                const response = await fetch(
+                const response = await apiFetch(
                   `/api/e2ee/devices/${encodeURIComponent(device.kid)}/workspaces`,
+                  undefined,
+                  { backend },
                 );
                 if (!response.ok) throw new Error(`device-workspaces:${response.status}`);
                 return (await response.json()) as {
@@ -94,23 +101,36 @@ export function usePairedDevices(): UsePairedDevices {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [backend]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
-  const fetchSafetyNumber = useCallback(async (kid: string): Promise<string> => {
-    const res = await fetch(`/api/e2ee/devices/${encodeURIComponent(kid)}/safety-number`);
-    if (!res.ok) throw new Error(`safety-number:${res.status}`);
-    const { safetyNumber } = (await res.json()) as { safetyNumber?: string };
-    if (!safetyNumber) throw new Error('No safety number returned');
-    return safetyNumber;
-  }, []);
+  const fetchSafetyNumber = useCallback(
+    async (kid: string): Promise<string> => {
+      const res = await apiFetch(
+        `/api/e2ee/devices/${encodeURIComponent(kid)}/safety-number`,
+        undefined,
+        { backend },
+      );
+      if (!res.ok) throw new Error(`safety-number:${res.status}`);
+      const { safetyNumber } = (await res.json()) as { safetyNumber?: string };
+      if (!safetyNumber) throw new Error('No safety number returned');
+      return safetyNumber;
+    },
+    [backend],
+  );
 
   const unpairDevice = useCallback(
     async (kid: string): Promise<void> => {
-      const res = await fetch(`/api/e2ee/devices/${encodeURIComponent(kid)}`, { method: 'DELETE' });
+      const res = await apiFetch(
+        `/api/e2ee/devices/${encodeURIComponent(kid)}`,
+        {
+          method: 'DELETE',
+        },
+        { backend },
+      );
       if (!res.ok) throw new Error(`unpair:${res.status}`);
       await reload();
     },
@@ -119,11 +139,15 @@ export function usePairedDevices(): UsePairedDevices {
 
   const updateLocalAlias = useCallback(
     async (kid: string, localAlias: string | null): Promise<void> => {
-      const response = await fetch(`/api/e2ee/devices/${encodeURIComponent(kid)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ localAlias }),
-      });
+      const response = await apiFetch(
+        `/api/e2ee/devices/${encodeURIComponent(kid)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ localAlias }),
+        },
+        { backend },
+      );
       if (!response.ok) throw new Error(`device-alias:${response.status}`);
       const updated = (await response.json()) as Omit<
         PairedDevice,
@@ -143,16 +167,20 @@ export function usePairedDevices(): UsePairedDevices {
         ),
       );
     },
-    [],
+    [backend],
   );
 
   const updateWorkspaceAccess = useCallback(
     async (kid: string, workspaceIds: string[]): Promise<void> => {
-      const response = await fetch(`/api/e2ee/devices/${encodeURIComponent(kid)}/workspaces`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceIds }),
-      });
+      const response = await apiFetch(
+        `/api/e2ee/devices/${encodeURIComponent(kid)}/workspaces`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceIds }),
+        },
+        { backend },
+      );
       if (!response.ok) throw new Error(`device-workspaces:${response.status}`);
       const updated = (await response.json()) as { workspaceIds: string[]; explicit: boolean };
       setDevices((current) =>
@@ -167,7 +195,7 @@ export function usePairedDevices(): UsePairedDevices {
         ),
       );
     },
-    [],
+    [backend],
   );
 
   return {

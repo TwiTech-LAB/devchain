@@ -50,6 +50,8 @@ export interface ProjectTableRowModel {
   readonly configure?: () => void;
   readonly upgrade?: () => void;
   readonly actionsButtonId: string;
+  /** Set while a remote owns the project: delete, move, import and upgrade are refused. */
+  readonly remoteLock: { readonly message: string } | null;
   readonly moveTargets: ReadonlyArray<{
     readonly workspaceId: string;
     readonly workspaceName: string;

@@ -1,17 +1,24 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo } from 'react';
+import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
 import { useRealtimeDispatch } from './useRealtimeDispatch';
 import { exactTopic } from '../lib/realtime-invalidation-registry';
 import type { RealtimeInvalidationRegistry } from '../lib/realtime-invalidation-registry';
 import type { CloudConnectionStatus } from '@/modules/cloud/types';
 
-export function useCloudConnection() {
+/**
+ * Connection status of one backend. The backend id leads the query key so
+ * switching the Cloud page target never shows another instance's cached status.
+ */
+export function useCloudConnection(backend: BackendId = HOME_BACKEND) {
   const queryClient = useQueryClient();
 
+  const statusKey = useMemo(() => [backend, 'cloud', 'status'] as const, [backend]);
+
   const { data: status, isLoading } = useQuery<CloudConnectionStatus>({
-    queryKey: ['cloud', 'status'],
+    queryKey: statusKey,
     queryFn: async () => {
-      const response = await fetch('/api/auth/cloud/status');
+      const response = await apiFetch('/api/auth/cloud/status', undefined, { backend });
       if (!response.ok) throw new Error('Failed to fetch cloud status');
       return response.json();
     },
@@ -19,42 +26,53 @@ export function useCloudConnection() {
     staleTime: 30_000,
   });
 
+  // Home's cloud broadcasts describe this PC only, so they invalidate the home
+  // key only. A remote target refetches on focus and after its own mutations.
   const registry: RealtimeInvalidationRegistry = useMemo(
-    () => [
-      {
-        match: exactTopic('cloud'),
-        type: 'connected',
-        entries: [{ kind: 'invalidate' as const, queryKey: ['cloud', 'status'] }],
-      },
-      {
-        match: exactTopic('cloud'),
-        type: 'disconnected',
-        entries: [{ kind: 'invalidate' as const, queryKey: ['cloud', 'status'] }],
-      },
-      {
-        match: exactTopic('cloud'),
-        type: 'egress_disconnected',
-        entries: [{ kind: 'invalidate' as const, queryKey: ['cloud', 'status'] }],
-      },
-    ],
-    [],
+    () =>
+      backend === HOME_BACKEND
+        ? [
+            {
+              match: exactTopic('cloud'),
+              type: 'connected',
+              entries: [
+                { kind: 'invalidate' as const, queryKey: [HOME_BACKEND, 'cloud', 'status'] },
+              ],
+            },
+            {
+              match: exactTopic('cloud'),
+              type: 'disconnected',
+              entries: [
+                { kind: 'invalidate' as const, queryKey: [HOME_BACKEND, 'cloud', 'status'] },
+              ],
+            },
+            {
+              match: exactTopic('cloud'),
+              type: 'egress_disconnected',
+              entries: [
+                { kind: 'invalidate' as const, queryKey: [HOME_BACKEND, 'cloud', 'status'] },
+              ],
+            },
+          ]
+        : [],
+    [backend],
   );
 
-  useRealtimeDispatch(registry);
+  useRealtimeDispatch(registry, { socket: 'home' });
 
   // Listen for the popup/tab callback completing
   useEffect(() => {
     const handler = () => {
-      queryClient.invalidateQueries({ queryKey: ['cloud', 'status'] });
+      queryClient.invalidateQueries({ queryKey: statusKey });
     };
     window.addEventListener('focus', handler);
     return () => window.removeEventListener('focus', handler);
-  }, [queryClient]);
+  }, [queryClient, statusKey]);
 
   const disconnect = useCallback(async () => {
-    await fetch('/api/auth/cloud/session', { method: 'DELETE' });
-    queryClient.invalidateQueries({ queryKey: ['cloud', 'status'] });
-  }, [queryClient]);
+    await apiFetch('/api/auth/cloud/session', { method: 'DELETE' }, { backend });
+    queryClient.invalidateQueries({ queryKey: statusKey });
+  }, [backend, queryClient, statusKey]);
 
   return {
     status: status ?? {

@@ -16,6 +16,7 @@ export class GuestDeliveryService {
     options?: Pick<TerminalDeliveryOptions, 'submitKeys'>,
   ): Promise<TerminalDeliveryResult> {
     try {
+      // No follow note: a guest's provider is unknown, and the note is only for Claude.
       await this.terminalIO.deliverImmediate(sessionRef, message, {
         submitKeys: options?.submitKeys ?? ['Enter'],
         confirm: false,

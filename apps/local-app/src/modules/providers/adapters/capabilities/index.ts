@@ -9,6 +9,7 @@ export type {
   HookCapability,
   HookEnvContext,
   ProjectProvisioningCapability,
+  ProjectProvisioningContext,
   ProvisioningResult,
   ProvisioningWarningItem,
   ProjectMcpSettingsCapability,

@@ -31,6 +31,10 @@ jest.mock('./cloud/AccountSection', () => ({
   AccountSection: () => <div data-testid="account-section">Account</div>,
 }));
 
+jest.mock('./cloud/RemoteVmSection', () => ({
+  RemoteVmSection: () => <div data-testid="remote-vm-section">Remote VM</div>,
+}));
+
 // NotificationsSection is NOT mocked for disconnected-path tests — we want real rendering.
 // Import it explicitly for the disconnection tests below.
 
@@ -60,10 +64,10 @@ describe('CloudPage', () => {
     mockSetActiveSection.mockReset();
   });
 
-  it('renders the Cloud page with header and sidebar brand', () => {
+  it('renders the Cloud page with the sidebar brand and no page header', () => {
     mockUseSubNavSearchParam.mockReturnValue(['account', jest.fn()]);
     renderCloudPage();
-    expect(screen.getByText('Cloud Settings')).toBeInTheDocument();
+    expect(screen.queryByText('Cloud Settings')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Cloud navigation')).toBeInTheDocument();
     expect(screen.getByText('Cloud')).toBeInTheDocument();
   });
@@ -113,6 +117,26 @@ describe('CloudPage', () => {
     await user.keyboard('{Enter}');
 
     expect(setActiveSection).toHaveBeenCalledWith('notifications');
+  });
+
+  it('renders the Remote VMs tab and its section when active', () => {
+    mockUseSubNavSearchParam.mockReturnValue(['remote-vm', jest.fn()]);
+    renderCloudPage();
+    expect(screen.getByRole('tab', { name: 'Remote VMs' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('remote-vm-section')).toBeInTheDocument();
+    expect(screen.queryByTestId('account-section')).not.toBeInTheDocument();
+  });
+
+  it('switches to Remote VMs with the section=remote-vm key', async () => {
+    const setActiveSection = jest.fn();
+    mockUseSubNavSearchParam.mockReturnValue(['account', setActiveSection]);
+    renderCloudPage();
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Remote VMs' }));
+    expect(setActiveSection).toHaveBeenCalledWith('remote-vm');
   });
 });
 

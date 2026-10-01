@@ -4,6 +4,7 @@ import type {
   ImportDryRunResponse,
   ImportProjectResponse,
   PathStatResult,
+  ProjectRemoteOwner,
   ProjectWorkspace,
   DeleteProjectWorkspaceResult,
   ProjectsQueryData,
@@ -45,6 +46,7 @@ export interface InMemoryProjectsPageApiOverrides {
   runImportDryRun?: Override<[string, Record<string, unknown>], ImportDryRunResponse>;
   commitImport?: Override<[string, Record<string, unknown>], ImportProjectResponse>;
   commitUpgrade?: Override<[string, Record<string, unknown>], UpgradeProjectResponse>;
+  listRemoteOwners?: Override<[], ProjectRemoteOwner[]>;
 }
 
 export interface InMemoryProjectsPageApiSeed {
@@ -61,6 +63,7 @@ export interface InMemoryProjectsPageApiSeed {
   importDryRunResult?: ImportDryRunResponse;
   importResult?: ImportProjectResponse;
   upgradeResult?: UpgradeProjectResponse;
+  remoteOwners?: ProjectRemoteOwner[];
   overrides?: InMemoryProjectsPageApiOverrides;
 }
 
@@ -84,6 +87,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     runImportDryRun: [] as Array<readonly [string, Record<string, unknown>]>,
     commitImport: [] as Array<readonly [string, Record<string, unknown>]>,
     commitUpgrade: [] as Array<readonly [string, Record<string, unknown>]>,
+    listRemoteOwners: [] as Array<readonly []>,
   };
 
   readonly overrides: InMemoryProjectsPageApiOverrides;
@@ -100,6 +104,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   private readonly importDryRunResult?: ImportDryRunResponse;
   private readonly importResult?: ImportProjectResponse;
   private readonly upgradeResult?: UpgradeProjectResponse;
+  private readonly remoteOwners: ProjectRemoteOwner[];
 
   constructor(seed: InMemoryProjectsPageApiSeed = {}) {
     this.projects = seed.projects ?? { items: [] };
@@ -135,6 +140,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     this.importDryRunResult = seed.importDryRunResult;
     this.importResult = seed.importResult;
     this.upgradeResult = seed.upgradeResult;
+    this.remoteOwners = seed.remoteOwners ?? [];
     this.overrides = seed.overrides ?? {};
   }
 
@@ -146,6 +152,11 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   async listWorkspaces(): Promise<ProjectWorkspace[]> {
     this.calls.listWorkspaces.push([]);
     return this.resolve(this.overrides.listWorkspaces, [], this.workspaces);
+  }
+
+  async listRemoteOwners(): Promise<ProjectRemoteOwner[]> {
+    this.calls.listRemoteOwners.push([]);
+    return this.resolve(this.overrides.listRemoteOwners, [], this.remoteOwners);
   }
 
   async listPairedDevices(): Promise<WorkspaceTransitionDevice[]> {

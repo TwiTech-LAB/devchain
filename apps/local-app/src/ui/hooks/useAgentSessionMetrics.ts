@@ -13,8 +13,6 @@ import type { RealtimeInvalidationRegistry } from '@/ui/lib/realtime-invalidatio
 export interface AgentSessionEntry {
   agentId: string;
   sessionId: string;
-  /** undefined = local, string = worktree base URL */
-  apiBase?: string;
 }
 
 export interface AgentContextMetrics {
@@ -30,23 +28,13 @@ const METRICS_WATCHDOG_STAGGER_MS = 30_000;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Build a lookup key for agent metrics.
- * Local agents use agentId; worktree agents use `${apiBase}:${agentId}`.
- */
-export function getMetricsKey(agentId: string, apiBase?: string): string {
-  return apiBase ? `${apiBase}:${agentId}` : agentId;
-}
-
-function buildQueryKey(sessionId: string, apiBase?: string) {
-  if (apiBase) {
-    return ['transcript-summary', apiBase, sessionId] as const;
-  }
-  return transcriptQueryKeys.summary(sessionId);
+/** Build a lookup key for agent metrics. */
+export function getMetricsKey(agentId: string): string {
+  return agentId;
 }
 
 export function getMetricsWatchdogInterval(entry: AgentSessionEntry): number {
-  const key = getMetricsKey(entry.agentId, entry.apiBase);
+  const key = getMetricsKey(entry.agentId);
   let hash = 0;
   for (let index = 0; index < key.length; index += 1) {
     hash = (hash * 31 + key.charCodeAt(index)) >>> 0;
@@ -64,7 +52,7 @@ export function useAgentSessionMetrics(
   const apiFetch = useFetchFactory();
   const queryClient = useQueryClient();
   const localSessionIds = useMemo(
-    () => new Set(entries.filter((entry) => !entry.apiBase).map((entry) => entry.sessionId)),
+    () => new Set(entries.map((entry) => entry.sessionId)),
     [entries],
   );
   const realtimeRegistry = useMemo<RealtimeInvalidationRegistry>(() => {
@@ -100,8 +88,8 @@ export function useAgentSessionMetrics(
     queries: entries.map((entry) => {
       const watchdogInterval = getMetricsWatchdogInterval(entry);
       return {
-        queryKey: buildQueryKey(entry.sessionId, entry.apiBase),
-        queryFn: () => fetchTranscriptSummary(entry.sessionId, entry.apiBase, apiFetch),
+        queryKey: transcriptQueryKeys.summary(entry.sessionId),
+        queryFn: () => fetchTranscriptSummary(entry.sessionId, apiFetch),
         staleTime: 10_000,
         retry: false,
         refetchInterval: (query: { state: { data?: { isOngoing: boolean } } }) => {
@@ -129,7 +117,7 @@ export function useAgentSessionMetrics(
       );
 
       if (contextPercent > 0) {
-        map.set(getMetricsKey(entry.agentId, entry.apiBase), {
+        map.set(getMetricsKey(entry.agentId), {
           contextPercent,
           totalContextTokens,
           contextWindowTokens,

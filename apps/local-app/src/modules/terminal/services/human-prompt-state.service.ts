@@ -3,7 +3,6 @@ import { Injectable } from '@nestjs/common';
 interface HumanPromptStateBase {
   readonly generation: number;
   readonly executedInputEpoch: number;
-  readonly meaningfulOutputEpoch: number;
 }
 
 export interface InactiveHumanPromptState extends HumanPromptStateBase {
@@ -26,7 +25,6 @@ export type HumanPromptState =
 export interface HumanPromptQuietSnapshot {
   readonly expectedGeneration: number;
   readonly executedInputEpoch: number;
-  readonly meaningfulOutputEpoch: number;
 }
 
 export interface ForcePromptSnapshot {
@@ -62,7 +60,6 @@ const INITIAL_STATE: InactiveHumanPromptState = Object.freeze({
   phase: 'inactive',
   generation: 0,
   executedInputEpoch: 0,
-  meaningfulOutputEpoch: 0,
 });
 
 export function sanitizeTmuxSessionName(name: string): string {
@@ -209,11 +206,14 @@ export class HumanPromptStateService {
   }
 
   recordExecutedInput(tmuxSessionName: string): HumanPromptState {
-    return this.updateEpoch(tmuxSessionName, 'executedInputEpoch');
-  }
-
-  recordMeaningfulOutput(tmuxSessionName: string): HumanPromptState {
-    return this.updateEpoch(tmuxSessionName, 'meaningfulOutputEpoch');
+    const key = this.keyFor(tmuxSessionName);
+    const current = this.states.get(key) ?? INITIAL_STATE;
+    const next = {
+      ...current,
+      executedInputEpoch: nextEpoch(current.executedInputEpoch),
+    } satisfies HumanPromptState;
+    this.states.set(key, next);
+    return next;
   }
 
   getQuietSnapshot(tmuxSessionName: string): HumanPromptQuietSnapshot | null {
@@ -222,7 +222,6 @@ export class HumanPromptStateService {
     return {
       expectedGeneration: current.generation,
       executedInputEpoch: current.executedInputEpoch,
-      meaningfulOutputEpoch: current.meaningfulOutputEpoch,
     };
   }
 
@@ -232,8 +231,7 @@ export class HumanPromptStateService {
     if (
       current.phase !== 'awaiting_stable_idle' ||
       current.generation !== snapshot.expectedGeneration ||
-      current.executedInputEpoch !== snapshot.executedInputEpoch ||
-      current.meaningfulOutputEpoch !== snapshot.meaningfulOutputEpoch
+      current.executedInputEpoch !== snapshot.executedInputEpoch
     ) {
       return false;
     }
@@ -283,17 +281,6 @@ export class HumanPromptStateService {
   clear(): void {
     this.states.clear();
     this.draftTracking.clear();
-  }
-
-  private updateEpoch(
-    tmuxSessionName: string,
-    epoch: 'executedInputEpoch' | 'meaningfulOutputEpoch',
-  ): HumanPromptState {
-    const key = this.keyFor(tmuxSessionName);
-    const current = this.states.get(key) ?? INITIAL_STATE;
-    const next = { ...current, [epoch]: nextEpoch(current[epoch]) } satisfies HumanPromptState;
-    this.states.set(key, next);
-    return next;
   }
 
   private moveToAwaiting(

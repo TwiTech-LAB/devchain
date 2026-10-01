@@ -17,6 +17,8 @@ jest.mock('../../../common/logging/logger', () => ({
 }));
 
 import { createMockProject } from '../../../../test/factories';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('ProjectsService', () => {
   let service: ProjectsService;
@@ -196,6 +198,7 @@ describe('ProjectsService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         ProjectsService,
         {
           provide: STORAGE_SERVICE,
@@ -2383,6 +2386,7 @@ describe('ProjectsService', () => {
       // Get the runner refresh mock from the module
       const module = await Test.createTestingModule({
         providers: [
+          { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
           ProjectsService,
           { provide: STORAGE_SERVICE, useValue: storage },
           { provide: SessionsService, useValue: sessions },

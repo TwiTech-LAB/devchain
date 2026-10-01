@@ -4,6 +4,8 @@ import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { SettingsService } from '../../settings/services/settings.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { NotFoundError } from '../../../common/errors/error-types';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 function makeProvider(overrides?: Partial<{ id: string; name: string }>) {
   return { id: 'provider-1', name: 'Claude', ...overrides };
@@ -42,6 +44,7 @@ describe('ProviderProjectSyncService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         ProviderProjectSyncService,
         { provide: STORAGE_SERVICE, useValue: mockStorage },
         { provide: SettingsService, useValue: mockSettings },

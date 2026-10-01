@@ -113,7 +113,7 @@ export function TimezoneSelector({
               <button
                 key={tz}
                 type="button"
-                className={`w-full rounded px-2 py-1 text-left text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${tz === value ? 'bg-accent font-medium' : ''}`}
+                className={`w-full rounded px-2 py-1 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${tz === value ? 'bg-selected font-medium text-selected-foreground' : 'hover:bg-accent'}`}
                 onClick={() => {
                   onChange(tz);
                   setOpen(false);
@@ -161,7 +161,7 @@ export function TimezoneSelector({
               <button
                 key={tz}
                 type="button"
-                className={`w-full rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${tz === value ? 'bg-accent font-medium' : ''}`}
+                className={`w-full rounded px-2 py-1.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${tz === value ? 'bg-selected font-medium text-selected-foreground' : 'hover:bg-accent'}`}
                 onClick={() => {
                   onChange(tz);
                   setOpen(false);

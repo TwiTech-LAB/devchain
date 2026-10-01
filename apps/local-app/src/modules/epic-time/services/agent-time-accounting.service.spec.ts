@@ -1,4 +1,5 @@
 import type { EventsService } from '../../events/services/events.service';
+import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import {
   AgentTimeAccountingService,
   EPIC_TIME_DELIVERY_KEY,
@@ -27,6 +28,7 @@ describe('AgentTimeAccountingService', () => {
   let events: { registerDurableSubscriber: jest.Mock };
   let unregister: jest.Mock;
   let service: AgentTimeAccountingService;
+  let remoteOwned: string[];
 
   beforeEach(() => {
     jest.useFakeTimers();
@@ -52,9 +54,11 @@ describe('AgentTimeAccountingService', () => {
     };
     unregister = jest.fn();
     events = { registerDurableSubscriber: jest.fn().mockReturnValue(unregister) };
+    remoteOwned = [];
     service = new AgentTimeAccountingService(
       store as unknown as EpicTimeStore,
       events as unknown as EventsService,
+      { listRemoteOwnedProjectIds: () => remoteOwned } as unknown as ProjectWriteAdmissionService,
     );
   });
 
@@ -74,18 +78,22 @@ describe('AgentTimeAccountingService', () => {
         ordered: true,
       }),
     );
-    expect(store.listReconciliationSessionIds).toHaveBeenCalledWith(activation.trackingStartedAt);
+    expect(store.listReconciliationSessionIds).toHaveBeenCalledWith(
+      activation.trackingStartedAt,
+      [],
+    );
     expect(store.reconcileSession).toHaveBeenCalledWith(
       'session-sweep',
       activation.trackingStartedAt,
       activation.idleTimeoutMs,
       expect.any(Date),
-      { forceCloseOpenSegment: true },
+      { forceCloseOpenSegment: true, excludedProjectIds: [] },
     );
     expect(store.processTeamBatches).toHaveBeenCalledWith(
       EPIC_TIME_DELIVERY_KEY,
       activation.idleTimeoutMs,
       expect.any(Date),
+      { excludedProjectIds: [] },
     );
 
     store.listReconciliationSessionIds.mockClear();
@@ -97,8 +105,32 @@ describe('AgentTimeAccountingService', () => {
       activation.trackingStartedAt,
       activation.idleTimeoutMs,
       expect.any(Date),
-      { forceCloseOpenSegment: false },
+      { forceCloseOpenSegment: false, excludedProjectIds: [] },
     );
+  });
+
+  it('passes remote-owned projects to every sweep, hint and batch pass as exclusions', async () => {
+    remoteOwned = ['project-remote'];
+    await service.onModuleInit();
+    await service.requestSessionReconciliation('session-hint');
+    await service.handleCommittedTaskTouch({
+      id: 'event-1',
+      name: 'epic.updated',
+      payload: { projectId: 'project-home', epicId: 'epic-1', epicTitle: 'Epic' },
+      publishedAt: '2026-01-01T00:01:00.000Z',
+    } as never);
+
+    expect(store.listReconciliationSessionIds).toHaveBeenCalledWith(activation.trackingStartedAt, [
+      'project-remote',
+    ]);
+    for (const call of store.reconcileSession.mock.calls) {
+      expect(call[4]).toEqual(expect.objectContaining({ excludedProjectIds: ['project-remote'] }));
+    }
+    expect(store.reconcileSession).toHaveBeenCalledTimes(2);
+    expect(store.processTeamBatches).toHaveBeenCalledTimes(3);
+    for (const call of store.processTeamBatches.mock.calls) {
+      expect(call[3]).toEqual({ excludedProjectIds: ['project-remote'] });
+    }
   });
 
   it('records agent task touches without inspecting update changes', async () => {

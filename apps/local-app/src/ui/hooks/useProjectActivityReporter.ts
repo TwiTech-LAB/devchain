@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 export const PROJECT_ACTIVITY_TOUCH_THROTTLE_MS = 60_000;
 
@@ -27,7 +28,10 @@ export async function touchProjectActivity(
   const normalizedProjectId = projectId?.trim();
   const documentRef =
     options.documentRef ?? (typeof document === 'undefined' ? undefined : document);
-  const fetchImpl = options.fetchImpl ?? (typeof fetch === 'undefined' ? undefined : fetch);
+  const fetchImpl =
+    options.fetchImpl ??
+    ((input: RequestInfo | URL, init?: RequestInit) =>
+      apiFetch(input, init, { backend: HOME_BACKEND }));
 
   if (!normalizedProjectId || !fetchImpl || !isProjectActivityDocumentActive(documentRef)) {
     return false;

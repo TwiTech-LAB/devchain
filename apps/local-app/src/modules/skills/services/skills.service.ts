@@ -1,8 +1,30 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gte, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lte,
+  notInArray,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { NotFoundError, StorageError, ValidationError } from '../../../common/errors/error-types';
+import {
+  NotFoundError,
+  SkillSourceAlwaysEnabledError,
+  StorageError,
+  ValidationError,
+} from '../../../common/errors/error-types';
+import {
+  ALWAYS_ENABLED_SKILL_SOURCE_NAMES,
+  isAlwaysEnabledSkillSource,
+} from '../../../common/constants/built-in-skill-sources';
 import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
@@ -70,7 +92,8 @@ export type ResolveDiscoverableSkillResult =
 export type SetSourceProjectEnabledResult =
   | { status: 'ok'; name: string; projectId: string; projectEnabled: boolean }
   | { status: 'source_not_found'; name: string }
-  | { status: 'source_disabled_globally'; name: string };
+  | { status: 'source_disabled_globally'; name: string }
+  | { status: 'source_always_enabled'; name: string };
 
 export interface UpsertSkillData {
   name?: string;
@@ -131,6 +154,8 @@ export interface SetSkillsEnabledResult {
   updated: string[];
   unchanged: string[];
   notFound: string[];
+  /** Slugs of always-enabled sources a disable skipped. */
+  locked: string[];
 }
 
 export interface SkillUsageLogOptions {
@@ -266,13 +291,7 @@ export class SkillsService {
     const query = this.db
       .select({ skill: skills })
       .from(skills)
-      .leftJoin(
-        skillProjectDisabled,
-        and(
-          eq(skillProjectDisabled.skillId, skills.id),
-          eq(skillProjectDisabled.projectId, normalizedProjectId),
-        ),
-      );
+      .leftJoin(skillProjectDisabled, this.skillDisabledJoin(normalizedProjectId));
 
     const conditions: SQL<unknown>[] = [isNull(skillProjectDisabled.id)];
     conditions.push(inArray(skills.source, enabledSources));
@@ -553,6 +572,16 @@ export class SkillsService {
   async disableSkill(projectId: string, skillId: string): Promise<void> {
     const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
     const normalizedSkillId = this.requireNonEmpty(skillId, 'skillId');
+    const [target] = await this.db
+      .select({ source: skills.source })
+      .from(skills)
+      .where(eq(skills.id, normalizedSkillId))
+      .limit(1);
+    if (target && isAlwaysEnabledSkillSource(target.source)) {
+      throw new SkillSourceAlwaysEnabledError(target.source.trim().toLowerCase(), {
+        skillId: normalizedSkillId,
+      });
+    }
     const now = new Date().toISOString();
 
     try {
@@ -622,10 +651,16 @@ export class SkillsService {
     const updated: string[] = [];
     const unchanged: string[] = [];
     const notFound: string[] = [];
+    const locked: string[] = [];
     for (const slug of normalizedSlugs) {
       const skill = skillBySlug.get(slug);
       if (!skill) {
         notFound.push(slug);
+        continue;
+      }
+
+      if (!enabled && isAlwaysEnabledSkillSource(skill.source)) {
+        locked.push(slug);
         continue;
       }
 
@@ -642,7 +677,7 @@ export class SkillsService {
       updated.push(slug);
     }
 
-    return { updated, unchanged, notFound };
+    return { updated, unchanged, notFound, locked };
   }
 
   async listDisabled(projectId: string): Promise<string[]> {
@@ -650,14 +685,22 @@ export class SkillsService {
     const rows = await this.db
       .select({ skillId: skillProjectDisabled.skillId })
       .from(skillProjectDisabled)
-      .where(eq(skillProjectDisabled.projectId, normalizedProjectId))
+      .innerJoin(skills, eq(skills.id, skillProjectDisabled.skillId))
+      .where(
+        and(
+          eq(skillProjectDisabled.projectId, normalizedProjectId),
+          notInArray(skills.source, [...ALWAYS_ENABLED_SKILL_SOURCE_NAMES]),
+        ),
+      )
       .orderBy(asc(skillProjectDisabled.createdAt));
 
     return rows.map((row) => row.skillId);
   }
 
   async disableAll(projectId: string): Promise<number> {
-    const enabledSources = await this.getEnabledSources();
+    const enabledSources = (await this.getEnabledSources()).filter(
+      (sourceName) => !isAlwaysEnabledSkillSource(sourceName),
+    );
     if (enabledSources.length === 0) {
       return 0;
     }
@@ -783,6 +826,9 @@ export class SkillsService {
     enabled: boolean;
   }> {
     const normalizedSourceName = await this.requireKnownSourceName(sourceName);
+    if (!enabled && isAlwaysEnabledSkillSource(normalizedSourceName)) {
+      throw new SkillSourceAlwaysEnabledError(normalizedSourceName);
+    }
     await this.settingsService.setSkillSourceEnabled(normalizedSourceName, enabled);
     return { name: normalizedSourceName, enabled };
   }
@@ -798,6 +844,11 @@ export class SkillsService {
   }> {
     const normalizedSourceName = await this.requireKnownSourceName(sourceName);
     const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
+    if (!enabled && isAlwaysEnabledSkillSource(normalizedSourceName)) {
+      throw new SkillSourceAlwaysEnabledError(normalizedSourceName, {
+        projectId: normalizedProjectId,
+      });
+    }
     const now = new Date().toISOString();
 
     try {
@@ -879,6 +930,10 @@ export class SkillsService {
         return { status: 'source_not_found', name: normalizedSourceName };
       }
       throw error;
+    }
+
+    if (!enabled && isAlwaysEnabledSkillSource(normalizedSourceName)) {
+      return { status: 'source_always_enabled', name: normalizedSourceName };
     }
 
     const sourceSettings = this.settingsService.getSkillSourcesEnabled();
@@ -1153,13 +1208,7 @@ export class SkillsService {
         disabled: sql<number>`case when ${skillProjectDisabled.id} is null then 0 else 1 end`,
       })
       .from(skills)
-      .leftJoin(
-        skillProjectDisabled,
-        and(
-          eq(skillProjectDisabled.skillId, skills.id),
-          eq(skillProjectDisabled.projectId, projectId),
-        ),
-      );
+      .leftJoin(skillProjectDisabled, this.skillDisabledJoin(projectId));
 
     const parsed = this.appendProjectSkillFilterConditions(conditions, options);
 
@@ -1412,7 +1461,18 @@ export class SkillsService {
       .where(eq(sourceProjectEnabled.projectId, normalizedProjectId));
 
     return new Map(
-      rows.map((row) => [row.sourceName.trim().toLowerCase(), Boolean(row.enabled)] as const),
+      rows
+        .map((row) => [row.sourceName.trim().toLowerCase(), Boolean(row.enabled)] as const)
+        .filter(([sourceName]) => !isAlwaysEnabledSkillSource(sourceName)),
+    );
+  }
+
+  /** Disable rows of always-enabled sources never join, so their skills read as enabled. */
+  private skillDisabledJoin(projectId: string): SQL<unknown> | undefined {
+    return and(
+      eq(skillProjectDisabled.skillId, skills.id),
+      eq(skillProjectDisabled.projectId, projectId),
+      notInArray(skills.source, [...ALWAYS_ENABLED_SKILL_SOURCE_NAMES]),
     );
   }
 

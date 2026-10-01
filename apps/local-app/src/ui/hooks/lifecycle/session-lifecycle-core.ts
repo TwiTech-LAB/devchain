@@ -3,10 +3,10 @@ import { SessionApiError } from '@/ui/lib/sessions';
 
 /**
  * Lifecycle thin core (Seam 1). Owns ONLY the parts that are verified-identical
- * across the two session consumers (chat sidebar, worktree chat controls): the
- * pending-action tracker, SessionApiError classification, and the plain-async
- * operation skeleton. Every divergence between the consumers lives in a typed
- * adapter method, never here — see `docs/ui-session-lifecycle-matrix.md`.
+ * across the chat session consumers: the pending-action tracker, SessionApiError
+ * classification, and the plain-async operation skeleton. Every divergence
+ * between consumers lives in a typed adapter method, never here — see
+ * `docs/ui-session-lifecycle-matrix.md`.
  */
 
 export type LifecycleAction = 'launching' | 'restarting' | 'terminating';
@@ -23,7 +23,7 @@ export function isMcpNotConfigured(error: unknown): error is SessionApiError {
 /**
  * Provider fields carried on an MCP_NOT_CONFIGURED error. Values are only present
  * when the payload actually carried a string — callers apply their own defaults
- * (chat → `'Unknown'`/`''`; worktree → leave undefined).
+ * (chat → `'Unknown'`/`''`).
  */
 export function getMcpProviderDetails(error: unknown): {
   providerId?: string;
@@ -55,7 +55,7 @@ export function restoreConflictTitle(error: unknown): string {
 // ============================================
 
 export interface LifecyclePendingTracker {
-  /** Raw composite-key → action map (worktree consumes this shape directly). */
+  /** Raw composite-key → action map. */
   actions: Record<string, LifecycleAction>;
   setAction: (key: string, action: LifecycleAction | null) => void;
   clear: (key: string) => void;
@@ -114,7 +114,7 @@ export function useLifecyclePendingTracker(): LifecyclePendingTracker {
 
 /**
  * The guard → set-pending → run → outcome → clear-pending skeleton shared by the
- * plain-async consumers (chat, worktree). The caller runs its own guard BEFORE
+ * plain-async chat consumers. The caller runs its own guard BEFORE
  * calling this; `run` performs the fetch plus success side effects and returns the
  * result; `onError` performs the adapter's error dispatch (including any MCP
  * branch). The pending action is always cleared in `finally`.

@@ -4,6 +4,7 @@ import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-
 import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
 import { SettingsService } from '../../settings/services/settings.service';
+import { DEFAULT_EPIC_ASSIGNED_TEMPLATE } from '../../settings/services/settings.constants';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../../teams/services/teams.service';
 import { renderTemplate } from '../../../common/template/handlebars-renderer';
@@ -15,8 +16,6 @@ import type {
 } from '../../agent-message-delivery/dtos/delivery.types';
 
 const TEMPLATE_SETTING_KEY = 'events.epicAssigned.template';
-const DEFAULT_TEMPLATE =
-  '[Epic Assignment]\n{epic_title} is now assigned to {agent_name} in {project_name}. Status: {epic_status}. (Epic ID: {epic_id})';
 
 const UNKNOWN_STATUS = 'Unknown';
 
@@ -359,12 +358,12 @@ export class EpicAssignmentNotifierSubscriber {
   private resolveTemplate(): string {
     const raw = this.settingsService.getSetting(TEMPLATE_SETTING_KEY);
     if (!raw) {
-      return DEFAULT_TEMPLATE;
+      return DEFAULT_EPIC_ASSIGNED_TEMPLATE;
     }
 
     const trimmed = raw.trim();
     if (!trimmed) {
-      return DEFAULT_TEMPLATE;
+      return DEFAULT_EPIC_ASSIGNED_TEMPLATE;
     }
 
     try {

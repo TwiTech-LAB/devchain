@@ -9,9 +9,8 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { Test, TestingModule } from '@nestjs/testing';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
-import { MainAppModule } from '../../app.main.module';
+import { AppModule } from '../../app.module';
 import { resetEnvConfig } from '../../common/config/env.config';
-import { ORCHESTRATOR_DB_CONNECTION } from '../orchestrator/orchestrator-storage/db/orchestrator.provider';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { getRawSqliteClient } from '../storage/db/sqlite-raw';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
@@ -84,9 +83,7 @@ function seedSession(
 
 describe('PATCH /api/sessions/:id (rename)', () => {
   const originalEnv = {
-    DEVCHAIN_MODE: process.env.DEVCHAIN_MODE,
     DATABASE_URL: process.env.DATABASE_URL,
-    REPO_ROOT: process.env.REPO_ROOT,
     DB_PATH: process.env.DB_PATH,
     DB_FILENAME: process.env.DB_FILENAME,
     TEMPLATES_DIR: process.env.TEMPLATES_DIR,
@@ -99,19 +96,14 @@ describe('PATCH /api/sessions/:id (rename)', () => {
 
   beforeEach(async () => {
     dbDir = await mkdtemp(join(tmpdir(), 'devchain-sessions-rename-'));
-    process.env.DEVCHAIN_MODE = 'main';
     process.env.DATABASE_URL = 'postgres://devchain:devchain@127.0.0.1:5432/devchain_test';
-    process.env.REPO_ROOT = process.cwd();
     process.env.DB_PATH = dbDir;
     process.env.DB_FILENAME = 'test.db';
     resetEnvConfig();
 
     moduleRef = await Test.createTestingModule({
-      imports: [MainAppModule],
-    })
-      .overrideProvider(ORCHESTRATOR_DB_CONNECTION)
-      .useValue({})
-      .compile();
+      imports: [AppModule],
+    }).compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
       logger: false,
@@ -289,9 +281,7 @@ describe('PATCH /api/sessions/:id (rename)', () => {
 
 describe('DELETE /api/sessions/:id/record (hard delete)', () => {
   const originalEnv = {
-    DEVCHAIN_MODE: process.env.DEVCHAIN_MODE,
     DATABASE_URL: process.env.DATABASE_URL,
-    REPO_ROOT: process.env.REPO_ROOT,
     DB_PATH: process.env.DB_PATH,
     DB_FILENAME: process.env.DB_FILENAME,
     TEMPLATES_DIR: process.env.TEMPLATES_DIR,
@@ -304,19 +294,14 @@ describe('DELETE /api/sessions/:id/record (hard delete)', () => {
 
   beforeEach(async () => {
     dbDir = await mkdtemp(join(tmpdir(), 'devchain-sessions-delete-'));
-    process.env.DEVCHAIN_MODE = 'main';
     process.env.DATABASE_URL = 'postgres://devchain:devchain@127.0.0.1:5432/devchain_test';
-    process.env.REPO_ROOT = process.cwd();
     process.env.DB_PATH = dbDir;
     process.env.DB_FILENAME = 'test.db';
     resetEnvConfig();
 
     moduleRef = await Test.createTestingModule({
-      imports: [MainAppModule],
-    })
-      .overrideProvider(ORCHESTRATOR_DB_CONNECTION)
-      .useValue({})
-      .compile();
+      imports: [AppModule],
+    }).compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
       logger: false,
@@ -534,9 +519,7 @@ describe('DELETE /api/sessions/:id/record (hard delete)', () => {
 
 describe('SELECT mapper coverage: name field', () => {
   const originalEnv = {
-    DEVCHAIN_MODE: process.env.DEVCHAIN_MODE,
     DATABASE_URL: process.env.DATABASE_URL,
-    REPO_ROOT: process.env.REPO_ROOT,
     DB_PATH: process.env.DB_PATH,
     DB_FILENAME: process.env.DB_FILENAME,
     TEMPLATES_DIR: process.env.TEMPLATES_DIR,
@@ -549,19 +532,14 @@ describe('SELECT mapper coverage: name field', () => {
 
   beforeEach(async () => {
     dbDir = await mkdtemp(join(tmpdir(), 'devchain-sessions-mapper-'));
-    process.env.DEVCHAIN_MODE = 'main';
     process.env.DATABASE_URL = 'postgres://devchain:devchain@127.0.0.1:5432/devchain_test';
-    process.env.REPO_ROOT = process.cwd();
     process.env.DB_PATH = dbDir;
     process.env.DB_FILENAME = 'test.db';
     resetEnvConfig();
 
     moduleRef = await Test.createTestingModule({
-      imports: [MainAppModule],
-    })
-      .overrideProvider(ORCHESTRATOR_DB_CONNECTION)
-      .useValue({})
-      .compile();
+      imports: [AppModule],
+    }).compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
       logger: false,

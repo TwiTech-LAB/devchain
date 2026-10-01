@@ -1,0 +1,627 @@
+{
+  "config": {
+    "fileMiB": 55,
+    "textKiB": 256,
+    "rounds": 3,
+    "report": "apps/local-app/scripts/transcript-load/evidence/paged-event-loop/large-after.json"
+  },
+  "fixture": {
+    "bytes": 57726624,
+    "turns": 206,
+    "messages": 412
+  },
+  "provenance": {
+    "node": "v24.21.0",
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "head": "afc4af1a373925f5a6e78747e9b5c2b69ed13c1a",
+    "sourceDiffSha256": "5d7f461d9810f5f9a28676a7e03f5a85959507e26097ff5907f170181fbbacf2",
+    "harnessSha256": "f680214d8ce290e707e72c240dbc2700dc72f4d9eecd693215ba005631b3ef95",
+    "sourceSha256": "350ef37869eac91ec5ab6003e2ea6e6e5ee9bf0e6eefe11616c8fae9afb62d95",
+    "productionDistSha256": "c77f388e07c5fade42f9a4e1a5cf99b3a6bc4cd5089a3ec97db7eb0497eee383",
+    "baselineRef": null
+  },
+  "operations": [
+    {
+      "round": 0,
+      "route": "index",
+      "query": "?pageSize=40&firstVirtualIndex=0&lastVirtualIndex=39&live=true",
+      "durationMs": 415.34012099999995,
+      "maxEventLoopDelayMs": 17.186815,
+      "status": 200,
+      "bodyBytes": 37010012,
+      "sha256": "b9783e77e3b6388da4444384d49498adcccdc00cb896d8ffa55aa803e8ac132e",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 170.77505399999995
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 29.53979800000002
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.36763800000017
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.04818999999997686
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.04334100000005492
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.012760000000071159
+        },
+        {
+          "name": "projectIndexPages",
+          "durationMs": 0.6873140000000149
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.39333699999997407
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.1712840000000142
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.14573199999995268
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.044731000000183485
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 198.8850440000001
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 2,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 2
+      },
+      "rssBytes": 310398976,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 0,
+      "route": "chunks",
+      "query": "?limit=100",
+      "durationMs": 309.58607200000006,
+      "maxEventLoopDelayMs": 17.055743,
+      "status": 200,
+      "bodyBytes": 28033442,
+      "sha256": "21c9386d1a2efca4c38a6ee184786122e62ec3a501b0bb08b84f359fde6e1da2",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 161.94212100000004
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 33.809933
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.07322199999998702
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.22983399999998255
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 101.36403499999983
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 4,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 4
+      },
+      "rssBytes": 369639424,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 0,
+      "route": "tail",
+      "query": "?since=NjE4MzgzMTg1ODQzODMwNzo0MTI6NDEy",
+      "durationMs": 211.9068589999997,
+      "maxEventLoopDelayMs": 16.842751,
+      "status": 200,
+      "bodyBytes": 640,
+      "sha256": "ae17f2be70fc9a9c9e1ec22cd8a10d1a56e63288c38d72d7aa4796eb79937534",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 183.02876300000025
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 25.27551399999993
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.007008999999925436
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 0.5758920000002945
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 6,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 6
+      },
+      "rssBytes": 417783808,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 0,
+      "route": "tail",
+      "query": "?since=NjE4MzgzMTg1ODQzODMwNzowOjA",
+      "durationMs": 862.1515509999999,
+      "maxEventLoopDelayMs": 16.957439,
+      "status": 200,
+      "bodyBytes": 173220491,
+      "sha256": "c30da1e20f0fdb9f257b7606b85ce7de77cf5b8e4f78db3e12b509b17e58732d",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 160.17013600000018
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 25.544279000000188
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 1.767214999999851
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 664.591962
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 8,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 8
+      },
+      "rssBytes": 399032320,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 1,
+      "route": "index",
+      "query": "?pageSize=40&firstVirtualIndex=0&lastVirtualIndex=39&live=true",
+      "durationMs": 315.56223800000043,
+      "maxEventLoopDelayMs": 16.506879,
+      "status": 200,
+      "bodyBytes": 37010012,
+      "sha256": "b9783e77e3b6388da4444384d49498adcccdc00cb896d8ffa55aa803e8ac132e",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 151.41358499999933
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 27.810945000000174
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.039791000000150234
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.02055000000018481
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.023000999999567284
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.006099999999605643
+        },
+        {
+          "name": "projectIndexPages",
+          "durationMs": 0.2541049999999814
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.09762200000022858
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.08569200000056298
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.1518529999993916
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.05492099999992206
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 123.020579
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 10,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 10
+      },
+      "rssBytes": 464957440,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 1,
+      "route": "chunks",
+      "query": "?limit=100",
+      "durationMs": 296.5836879999997,
+      "maxEventLoopDelayMs": 16.736255,
+      "status": 200,
+      "bodyBytes": 28033442,
+      "sha256": "21c9386d1a2efca4c38a6ee184786122e62ec3a501b0bb08b84f359fde6e1da2",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 168.7646249999998
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 24.89061799999945
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.05573000000003958
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.23285399999986112
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 93.34375799999998
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 12,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 12
+      },
+      "rssBytes": 428376064,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 1,
+      "route": "tail",
+      "query": "?since=NjE4MzgzMTg1ODQzODMwNzo0MTI6NDEy",
+      "durationMs": 180.5511660000002,
+      "maxEventLoopDelayMs": 16.326655,
+      "status": 200,
+      "bodyBytes": 640,
+      "sha256": "ae17f2be70fc9a9c9e1ec22cd8a10d1a56e63288c38d72d7aa4796eb79937534",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 148.76803199999995
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 26.287505999999667
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.0032710000004954054
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 0.4131790000001274
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 14,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 14
+      },
+      "rssBytes": 431669248,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 1,
+      "route": "tail",
+      "query": "?since=NjE4MzgzMTg1ODQzODMwNzowOjA",
+      "durationMs": 812.847538,
+      "maxEventLoopDelayMs": 16.678911,
+      "status": 200,
+      "bodyBytes": 173220491,
+      "sha256": "c30da1e20f0fdb9f257b7606b85ce7de77cf5b8e4f78db3e12b509b17e58732d",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 153.4026240000003
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 25.438498999999865
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 1.3179559999998673
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 623.8590569999997
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 16,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 16
+      },
+      "rssBytes": 411799552,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 2,
+      "route": "index",
+      "query": "?pageSize=40&firstVirtualIndex=0&lastVirtualIndex=39&live=true",
+      "durationMs": 326.51386300000013,
+      "maxEventLoopDelayMs": 18.186239,
+      "status": 200,
+      "bodyBytes": 37010012,
+      "sha256": "b9783e77e3b6388da4444384d49498adcccdc00cb896d8ffa55aa803e8ac132e",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 162.0720939999992
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 24.224424
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.027421000000686035
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.021200000001044828
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.022711000001436332
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.005670000000463915
+        },
+        {
+          "name": "projectIndexPages",
+          "durationMs": 0.28911599999992177
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.09245199999895704
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.09047199999986333
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.08925099999942177
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.02768099999957485
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 129.60636800000066
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 18,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 18
+      },
+      "rssBytes": 466784256,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 2,
+      "route": "chunks",
+      "query": "?limit=100",
+      "durationMs": 287.9127189999999,
+      "maxEventLoopDelayMs": 17.022975,
+      "status": 200,
+      "bodyBytes": 28033442,
+      "sha256": "21c9386d1a2efca4c38a6ee184786122e62ec3a501b0bb08b84f359fde6e1da2",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 157.0650459999997
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 24.667983000001186
+        },
+        {
+          "name": "projectChunkPage",
+          "durationMs": 0.044621000000915956
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.19292400000085763
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 96.38575700000001
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 20,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 20
+      },
+      "rssBytes": 429346816,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 2,
+      "route": "tail",
+      "query": "?since=NjE4MzgzMTg1ODQzODMwNzo0MTI6NDEy",
+      "durationMs": 170.16786300000058,
+      "maxEventLoopDelayMs": 16.941055,
+      "status": 200,
+      "bodyBytes": 640,
+      "sha256": "ae17f2be70fc9a9c9e1ec22cd8a10d1a56e63288c38d72d7aa4796eb79937534",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 143.0094709999994
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 24.400488999999652
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.0027200000004086178
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 0.43809800000053656
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 22,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 22
+      },
+      "rssBytes": 440926208,
+      "wireMatchesControllerJson": true
+    },
+    {
+      "round": 2,
+      "route": "tail",
+      "query": "?since=NjE4MzgzMTg1ODQzODMwNzowOjA",
+      "durationMs": 845.2223040000008,
+      "maxEventLoopDelayMs": 17.055743,
+      "status": 200,
+      "bodyBytes": 173220491,
+      "sha256": "c30da1e20f0fdb9f257b7606b85ce7de77cf5b8e4f78db3e12b509b17e58732d",
+      "stages": [
+        {
+          "name": "parseFullSession",
+          "durationMs": 170.05077099999835
+        },
+        {
+          "name": "buildChunksCooperatively",
+          "durationMs": 25.494370000000345
+        },
+        {
+          "name": "serializeChunksCooperatively",
+          "durationMs": 0.7888550000006944
+        },
+        {
+          "name": "encodeAndStreamResponse",
+          "durationMs": 637.815681
+        }
+      ],
+      "cache": {
+        "entries": 0,
+        "bytesEstimated": 0,
+        "hits": 0,
+        "misses": 24,
+        "hitRate": 0,
+        "bytesMethod": "deferred-to-aggregate",
+        "budgetUsedBytes": 0,
+        "budgetBytes": 67108864,
+        "evictions": 24
+      },
+      "rssBytes": 421666816,
+      "wireMatchesControllerJson": true
+    }
+  ],
+  "passed": true,
+  "fixturesRemoved": true
+}

@@ -219,7 +219,7 @@ async function resolveWriteMode(
  * abandoned `<config>.tmp.<8 lowercase hex>` files on its own cleanup passes, so
  * a crash between write and rename must use exactly this form.
  */
-async function writeConfigAtomically(
+export async function writeConfigAtomically(
   configPath: string,
   output: string,
   mode: number,
@@ -463,6 +463,48 @@ async function mutateProjectTrust(projectPath: string): Promise<ClaudeWriteOutco
   );
 }
 
+async function writeConfigKeysUnderLock(
+  configPath: string,
+  keys: Readonly<Record<string, unknown>>,
+): Promise<ClaudeWriteOutcome> {
+  const read = await readConfigForMutation(configPath);
+  if (!('parsed' in read)) {
+    return read;
+  }
+
+  const current = read.parsed ?? {};
+  const updated: Record<string, unknown> = { ...current };
+  let changed = false;
+  for (const [key, value] of Object.entries(keys)) {
+    if (current[key] !== value) {
+      updated[key] = value;
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return { success: true };
+  }
+
+  const mode = await resolveWriteMode(configPath, read.parsed !== null);
+  if (typeof mode !== 'number') {
+    return mode;
+  }
+
+  try {
+    await writeConfigAtomically(configPath, `${JSON.stringify(updated, null, 2)}\n`, mode);
+  } catch (error) {
+    return ioErrorResult(error);
+  }
+  return { success: true };
+}
+
+async function mutateClaudeConfigKeys(
+  keys: Readonly<Record<string, unknown>>,
+): Promise<ClaudeWriteOutcome> {
+  const configPath = getClaudeConfigPath();
+  return runLockedConfigMutation(configPath, () => writeConfigKeysUnderLock(configPath, keys));
+}
+
 /**
  * Record `projects[path].hasTrustDialogAccepted = true` for the registered
  * project root (and its realpath identity when they differ) in ~/.claude.json,
@@ -471,4 +513,11 @@ async function mutateProjectTrust(projectPath: string): Promise<ClaudeWriteOutco
  */
 export function ensureClaudeProjectTrusted(projectPath: string): Promise<ClaudeProjectTrustResult> {
   return enqueueConfigMutation(() => mutateProjectTrust(projectPath));
+}
+
+/** Enforce the supplied top-level Claude config keys without changing other state. */
+export function ensureClaudeConfigKeys(
+  keys: Readonly<Record<string, unknown>>,
+): Promise<ClaudeConfigWriteResult> {
+  return enqueueConfigMutation(() => mutateClaudeConfigKeys(keys));
 }

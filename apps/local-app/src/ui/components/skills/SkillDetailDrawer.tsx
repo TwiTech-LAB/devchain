@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertCircle, ExternalLink } from 'lucide-react';
 import { MarkdownRenderer } from '@/ui/components/shared';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
 import {
   Drawer,
@@ -16,29 +16,15 @@ import {
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Separator } from '@/ui/components/ui/separator';
 import { Skeleton } from '@/ui/components/ui/skeleton';
-import { fetchSkill, type Skill, type SkillStatus } from '@/ui/lib/skills';
+import { fetchSkill, SKILL_STATUS_BADGES, type Skill } from '@/ui/lib/skills';
 import { cn } from '@/ui/lib/utils';
 import { CategoryBadge } from './CategoryBadge';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 export interface SkillDetailDrawerProps {
   skillId: string | null;
   onClose: () => void;
 }
-
-const STATUS_BADGE: Record<SkillStatus, { label: string; className: string }> = {
-  available: {
-    label: 'Available',
-    className: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-  },
-  outdated: {
-    label: 'Outdated',
-    className: 'border-amber-200 bg-amber-50 text-amber-800',
-  },
-  sync_error: {
-    label: 'Sync Error',
-    className: 'border-red-200 bg-red-50 text-red-800',
-  },
-};
 
 function formatDateTime(value: string | null): string {
   if (!value) {
@@ -85,17 +71,18 @@ function renderResources(skill: Skill): React.ReactNode {
 }
 
 export function SkillDetailDrawer({ skillId, onClose }: SkillDetailDrawerProps) {
+  const fetchFn = useFetchFactory();
   const {
     data: skill,
     isLoading,
     error,
   } = useQuery({
     queryKey: ['skill', skillId],
-    queryFn: () => fetchSkill(skillId as string),
+    queryFn: () => fetchSkill(fetchFn, skillId as string),
     enabled: Boolean(skillId),
   });
 
-  const statusBadge = useMemo(() => (skill ? STATUS_BADGE[skill.status] : null), [skill]);
+  const statusBadge = useMemo(() => (skill ? SKILL_STATUS_BADGES[skill.status] : null), [skill]);
 
   return (
     <Drawer open={Boolean(skillId)} onOpenChange={(open) => !open && onClose()}>
@@ -131,9 +118,9 @@ export function SkillDetailDrawer({ skillId, onClose }: SkillDetailDrawerProps) 
                   <p className="text-sm text-muted-foreground">{skill.description}</p>
                 )}
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className={cn(statusBadge?.className)}>
+                  <OpaqueBadge variant="outline" className={cn(statusBadge?.className)}>
                     {statusBadge?.label ?? skill.status}
-                  </Badge>
+                  </OpaqueBadge>
                   <CategoryBadge category={skill.category} />
                   <Badge variant="outline">{skill.source}</Badge>
                 </div>

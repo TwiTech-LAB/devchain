@@ -30,6 +30,7 @@ import { CodexPluginProfileMaterializerService } from '../../runtime-context-cap
 import { EpicTimeStore } from '../../epic-time/services/epic-time.store';
 import { EPIC_TIME_DELIVERY_KEY } from '../../epic-time/services/agent-time-accounting.service';
 import type { SessionTerminationContext } from '../../events/catalog/session.stopped';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 const logger = createLogger('SessionsService');
 
@@ -95,6 +96,7 @@ export class SessionsService {
     private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
     private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
     private readonly epicTimeStore: EpicTimeStore,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {
     this.sqlite = getRawSqliteClient(this.db);
     this.txRunner = new TransactionRunner(this.sqlite);
@@ -216,6 +218,7 @@ export class SessionsService {
           idleTimeoutMs: settings.idleTimeoutMs,
           deliveryKey: EPIC_TIME_DELIVERY_KEY,
           now: stoppedAt,
+          excludedProjectIds: this.admission.listRemoteOwnedProjectIds(),
         });
       });
 
@@ -752,7 +755,8 @@ export class SessionsService {
 
     const agentId = session.agentId ?? undefined;
     const postPasteDelayMs = agentId
-      ? await this.providerAdapterFactory.getPostPasteDelayMsForAgent(agentId)
+      ? (await this.providerAdapterFactory.getRuntimePromptBehaviorForAgent(agentId))
+          .postPasteDelayMs
       : undefined;
 
     if (!agentId) {

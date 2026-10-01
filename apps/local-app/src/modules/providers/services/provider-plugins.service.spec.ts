@@ -75,7 +75,11 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
     binPath: '/usr/local/bin/opencode',
   });
 
+  let savedAutoUpdater: string | undefined;
+
   beforeEach(async () => {
+    savedAutoUpdater = process.env.DISABLE_AUTOUPDATER;
+    process.env.DISABLE_AUTOUPDATER = '0';
     executor = new FakeProcessExecutor();
     storage = {
       listProviders: jest.fn().mockResolvedValue({
@@ -116,6 +120,8 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
   });
 
   afterEach(() => {
+    if (savedAutoUpdater === undefined) delete process.env.DISABLE_AUTOUPDATER;
+    else process.env.DISABLE_AUTOUPDATER = savedAutoUpdater;
     jest.clearAllMocks();
   });
 
@@ -127,6 +133,7 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
 
     const result = await service.listCatalog();
 
+    expect(executor.calls[0].env).toMatchObject({ DISABLE_AUTOUPDATER: '1' });
     expect(result.total).toBe(3);
     expect(result.items).toEqual(
       expect.arrayContaining([
@@ -152,7 +159,15 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
     );
     expect(executor.calls.map((call) => call.argv)).toEqual([
       ['/usr/local/bin/claude', 'plugin', 'list', '--available', '--json'],
-      ['/usr/local/bin/codex', 'plugin', 'list', '--available', '--json'],
+      [
+        '/usr/local/bin/codex',
+        '-c',
+        'check_for_update_on_startup=false',
+        'plugin',
+        'list',
+        '--available',
+        '--json',
+      ],
     ]);
   });
 
@@ -239,6 +254,7 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
     });
     await service.listCatalog();
 
+    expect(executor.calls[1].env).toMatchObject({ DISABLE_AUTOUPDATER: '1' });
     expect(executor.calls[1].argv).toEqual([
       '/usr/local/bin/claude',
       'plugin',
@@ -258,6 +274,8 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
 
     expect(executor.calls[0].argv).toEqual([
       '/usr/local/bin/codex',
+      '-c',
+      'check_for_update_on_startup=false',
       'plugin',
       'add',
       'sample@codex-market',

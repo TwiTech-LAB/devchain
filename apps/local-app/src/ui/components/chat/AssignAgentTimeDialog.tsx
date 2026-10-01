@@ -350,7 +350,7 @@ export function AssignAgentTimeDialog({
         <p className="text-xs text-muted-foreground">{AUTOMATIC_ATTRIBUTION_HINT}</p>
 
         {staleNotice && !depleted && (
-          <p className="text-xs text-amber-600 dark:text-amber-400" role="status">
+          <p className="text-xs text-status-warn" role="status">
             Buffered time changed since this dialog opened. Review the updated amount and confirm
             again.
           </p>

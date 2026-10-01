@@ -5,6 +5,7 @@ import { NotFoundError } from '../../../common/errors/error-types';
 import type { Epic, EpicComment } from '../../storage/models/domain.models';
 import type { ListResult } from '../../storage/interfaces/storage.interface';
 import { toEpicDto, toStatusMap } from './epic-dto.util';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 /**
  * Single composition point for the mobile `board.*` MUTATION + comment RPCs
@@ -28,6 +29,7 @@ export class MobileBoardRpcService {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly epicsService: EpicsService,
+    private readonly admission?: ProjectWriteAdmissionService,
   ) {}
 
   /**
@@ -46,6 +48,7 @@ export class MobileBoardRpcService {
     const agentId = params['agentId'] as string | null;
     const version = params['version'] as number;
 
+    this.assertProjectNotRemoteOwned(projectId);
     await this.assertEpicInProject(epicId, projectId);
     const updated = await this.epicsService.updateEpic(epicId, { agentId }, version);
 
@@ -74,6 +77,7 @@ export class MobileBoardRpcService {
     const limit = params['limit'] as number | undefined;
     const offset = params['offset'] as number | undefined;
 
+    this.assertProjectNotRemoteOwned(projectId);
     await this.assertEpicInProject(epicId, projectId);
     return this.storage.listEpicComments(epicId, { limit, offset });
   }
@@ -90,6 +94,7 @@ export class MobileBoardRpcService {
     const authorName = params['authorName'] as string;
     const content = params['content'] as string;
 
+    this.assertProjectNotRemoteOwned(projectId);
     await this.assertEpicInProject(epicId, projectId);
     return this.epicsService.addEpicCommentFromRest(epicId, authorName, content);
   }
@@ -104,6 +109,7 @@ export class MobileBoardRpcService {
     const epicId = params['epicId'] as string;
     const commentId = params['commentId'] as string;
 
+    this.assertProjectNotRemoteOwned(projectId);
     await this.epicsService.deleteEpicComment(projectId, epicId, commentId);
     return { deleted: true };
   }
@@ -118,5 +124,16 @@ export class MobileBoardRpcService {
       throw new NotFoundError('Epic', epicId);
     }
     return epic;
+  }
+
+  /**
+   * A remote-owned project's mirror here is a stale copy; the phone reaches the
+   * live project on the host instance. Such projects answer with the same
+   * not-found as a missing project, before any epic existence is checked.
+   */
+  private assertProjectNotRemoteOwned(projectId: string): void {
+    if (this.admission?.getRemoteOwner(projectId)) {
+      throw new NotFoundError('Project', projectId);
+    }
   }
 }

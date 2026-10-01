@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { useDevicesQuery } from '@/ui/hooks/useDevicesQuery';
+import type { BackendId } from '@/ui/lib/api-transport';
 import { TestPushButton } from './TestPushButton';
 
 function formatRelativeTime(dateString: string | null | undefined): string {
@@ -58,8 +59,8 @@ function DeviceRow({
   );
 }
 
-export function DevicesPanel() {
-  const state = useDevicesQuery();
+export function DevicesPanel({ backend }: { backend?: BackendId }) {
+  const state = useDevicesQuery(backend);
 
   if (state.status === 'loading') {
     return (

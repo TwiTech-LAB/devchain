@@ -13,6 +13,7 @@ import type { SkillSourceLifecycleService } from '../../skills/services/skill-so
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { TeamsService } from '../../teams/services/teams.service';
 import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import type { InstructionsResolver } from '../services/instructions-resolver';
 
 export type ContextualMcpToolHandler<TContext> = (
@@ -37,6 +38,7 @@ export interface McpBindingRuntime {
   readonly terminalIO?: TerminalIOService;
   readonly agentMessageDelivery?: AgentMessageDeliveryService;
   readonly projectCommunicationService?: ProjectCommunicationService;
+  readonly projectWriteAdmission?: ProjectWriteAdmissionService;
   readonly instructionsResolver: InstructionsResolver;
   readonly defaultInlineMaxBytes: number;
   readonly resolveSessionContext: (sessionId: string) => Promise<McpResponse>;

@@ -65,11 +65,15 @@ describe('useTeamQuickEdit', () => {
     act(() => result.current.submit());
 
     await waitFor(() => expect(result.current.quickEditTeam).toBeNull());
-    expect(updateTeam).toHaveBeenCalledWith('t1', {
-      maxMembers: 6,
-      maxConcurrentTasks: 3,
-      allowTeamLeadCreateAgents: true,
-    });
+    expect(updateTeam).toHaveBeenCalledWith(
+      't1',
+      {
+        maxMembers: 6,
+        maxConcurrentTasks: 3,
+        allowTeamLeadCreateAgents: true,
+      },
+      expect.any(Function),
+    );
     expect(toast).toHaveBeenCalledWith({ title: "Team 'Core' updated" });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['teams', 'p1'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['teams', 'detail', 't1'] });

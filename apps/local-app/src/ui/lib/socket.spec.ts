@@ -1,13 +1,5 @@
 import { io } from 'socket.io-client';
-import {
-  getAppSocket,
-  getSocket,
-  getWorktreeSocket,
-  releaseAppSocket,
-  releaseSocket,
-  releaseWorktreeSocket,
-  setAppSocket,
-} from './socket';
+import { getAppSocket, releaseAppSocket, setAppSocket } from './socket';
 
 jest.mock('socket.io-client', () => ({
   io: jest.fn(),
@@ -39,38 +31,25 @@ function createMockSocket(path = '/socket.io'): MockSocket {
   };
 }
 
-describe('socket unified pool', () => {
+describe('app socket pool', () => {
   const ioMock = io as unknown as jest.Mock;
 
   beforeEach(() => {
     ioMock.mockReset();
     setAppSocket(null);
-    releaseWorktreeSocket('feature-auth');
-    releaseWorktreeSocket('feature-billing');
-    releaseWorktreeSocket('feature-search');
-    releaseWorktreeSocket('feature/auth');
-    releaseWorktreeSocket('x');
-    releaseWorktreeSocket('test-wt');
   });
 
   afterEach(() => {
-    releaseAppSocket();
     setAppSocket(null);
-    releaseWorktreeSocket('feature-auth');
-    releaseWorktreeSocket('feature-billing');
-    releaseWorktreeSocket('feature-search');
-    releaseWorktreeSocket('feature/auth');
-    releaseWorktreeSocket('x');
-    releaseWorktreeSocket('test-wt');
     ioMock.mockReset();
   });
 
-  describe('backward compat: app socket', () => {
-    it('always uses default app socket path for singleton connection', () => {
+  describe('connection', () => {
+    it('always uses the default app socket path for the singleton connection', () => {
       const socket = createMockSocket('/socket.io');
       ioMock.mockReturnValue(socket);
 
-      const connected = getAppSocket();
+      const connected = getAppSocket('home');
 
       expect(connected).toBe(socket);
       expect(ioMock).toHaveBeenCalledTimes(1);
@@ -78,121 +57,12 @@ describe('socket unified pool', () => {
         '',
         expect.objectContaining({
           path: '/socket.io',
-        }),
-      );
-    });
-  });
-
-  describe('backward compat: worktree sockets', () => {
-    it('creates and reuses pooled worktree sockets with ref-counting', () => {
-      const socket = createMockSocket('/wt/feature-auth/socket.io');
-      ioMock.mockReturnValue(socket);
-
-      const first = getWorktreeSocket('feature-auth');
-      const second = getWorktreeSocket('feature-auth');
-
-      expect(first).toBe(socket);
-      expect(second).toBe(socket);
-      expect(ioMock).toHaveBeenCalledTimes(1);
-      expect(ioMock).toHaveBeenCalledWith(
-        '',
-        expect.objectContaining({
-          path: '/wt/feature-auth/socket.io',
           transports: ['websocket'],
           reconnection: true,
           reconnectionDelay: 1000,
           reconnectionAttempts: 10,
         }),
       );
-
-      releaseWorktreeSocket('feature-auth');
-      expect(socket.disconnect).not.toHaveBeenCalled();
-
-      releaseWorktreeSocket('feature-auth');
-      expect(socket.disconnect).toHaveBeenCalledTimes(1);
-    });
-
-    it('supports multiple concurrent worktree sockets without interfering with global socket', () => {
-      const globalSocket = createMockSocket('/socket.io');
-      const authSocket = createMockSocket('/wt/feature-auth/socket.io');
-      const billingSocket = createMockSocket('/wt/feature-billing/socket.io');
-      ioMock
-        .mockReturnValueOnce(globalSocket)
-        .mockReturnValueOnce(authSocket)
-        .mockReturnValueOnce(billingSocket);
-
-      const appSocket = getAppSocket();
-      const worktreeAuth = getWorktreeSocket('feature-auth');
-      const worktreeBilling = getWorktreeSocket('feature-billing');
-
-      expect(appSocket).toBe(globalSocket);
-      expect(worktreeAuth).toBe(authSocket);
-      expect(worktreeBilling).toBe(billingSocket);
-      expect(ioMock).toHaveBeenCalledTimes(3);
-
-      releaseWorktreeSocket('feature-auth');
-      expect(authSocket.disconnect).toHaveBeenCalledTimes(1);
-      expect(billingSocket.disconnect).not.toHaveBeenCalled();
-      expect(globalSocket.disconnect).not.toHaveBeenCalled();
-
-      releaseWorktreeSocket('feature-billing');
-      expect(billingSocket.disconnect).toHaveBeenCalledTimes(1);
-      expect(globalSocket.disconnect).not.toHaveBeenCalled();
-    });
-
-    it('encodes worktree name when building socket path', () => {
-      const socket = createMockSocket('/wt/feature%2Fauth/socket.io');
-      ioMock.mockReturnValue(socket);
-
-      getWorktreeSocket('feature/auth');
-
-      expect(ioMock).toHaveBeenCalledWith(
-        '',
-        expect.objectContaining({
-          path: '/wt/feature%2Fauth/socket.io',
-        }),
-      );
-    });
-  });
-
-  describe('unified getSocket / releaseSocket', () => {
-    it('acquires and releases main socket via unified API', () => {
-      const socket = createMockSocket('/socket.io');
-      ioMock.mockReturnValue(socket);
-
-      const s = getSocket('main');
-      expect(s).toBe(socket);
-      expect(ioMock).toHaveBeenCalledTimes(1);
-
-      releaseSocket('main');
-      expect(socket.disconnect).toHaveBeenCalledTimes(1);
-    });
-
-    it('acquires and releases worktree socket via unified API', () => {
-      const socket = createMockSocket('/wt/test-wt/socket.io');
-      ioMock.mockReturnValue(socket);
-
-      const s = getSocket({ worktree: 'test-wt' });
-      expect(s).toBe(socket);
-
-      releaseSocket({ worktree: 'test-wt' });
-      expect(socket.disconnect).toHaveBeenCalledTimes(1);
-    });
-
-    it('main and worktree sockets are independent', () => {
-      const mainSocket = createMockSocket('/socket.io');
-      const wtSocket = createMockSocket('/wt/x/socket.io');
-      ioMock.mockReturnValueOnce(mainSocket).mockReturnValueOnce(wtSocket);
-
-      getSocket('main');
-      getSocket({ worktree: 'x' });
-
-      releaseSocket('main');
-      expect(mainSocket.disconnect).toHaveBeenCalledTimes(1);
-      expect(wtSocket.disconnect).not.toHaveBeenCalled();
-
-      releaseSocket({ worktree: 'x' });
-      expect(wtSocket.disconnect).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -201,28 +71,28 @@ describe('socket unified pool', () => {
       const socket = createMockSocket('/socket.io');
       ioMock.mockReturnValue(socket);
 
-      getAppSocket();
-      getAppSocket();
-      getAppSocket();
+      getAppSocket('home');
+      getAppSocket('home');
+      getAppSocket('home');
 
       expect(ioMock).toHaveBeenCalledTimes(1);
 
-      releaseAppSocket();
-      releaseAppSocket();
+      releaseAppSocket('home');
+      releaseAppSocket('home');
       expect(socket.disconnect).not.toHaveBeenCalled();
 
-      releaseAppSocket();
+      releaseAppSocket('home');
       expect(socket.disconnect).toHaveBeenCalledTimes(1);
     });
 
-    it('re-acquires after full release creates new socket', () => {
+    it('re-acquires after full release creates a new socket', () => {
       const first = createMockSocket('/socket.io');
       const second = createMockSocket('/socket.io');
       ioMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
 
-      const s1 = getAppSocket();
-      releaseAppSocket();
-      const s2 = getAppSocket();
+      const s1 = getAppSocket('home');
+      releaseAppSocket('home');
+      const s2 = getAppSocket('home');
 
       expect(s1).toBe(first);
       expect(s2).toBe(second);
@@ -231,39 +101,31 @@ describe('socket unified pool', () => {
   });
 
   describe('refcount underflow recovery', () => {
-    it('recovers from non-positive refCount on acquire', () => {
+    it('recovers when re-acquiring after a full release', () => {
       const socket = createMockSocket('/socket.io');
       ioMock.mockReturnValue(socket);
 
-      getWorktreeSocket('feature-auth');
-      releaseWorktreeSocket('feature-auth');
-
+      getAppSocket('home');
+      releaseAppSocket('home');
       expect(socket.disconnect).toHaveBeenCalledTimes(1);
 
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       try {
-        // Simulate pool entry with refCount = 0 by re-acquiring
-        // The socket was disconnected and removed from pool, so re-acquire creates new
-        const newSocket = createMockSocket('/wt/feature-auth/socket.io');
+        const newSocket = createMockSocket('/socket.io');
         ioMock.mockReturnValue(newSocket);
 
-        getWorktreeSocket('feature-auth');
+        getAppSocket('home');
         expect(ioMock).toHaveBeenCalledTimes(2);
       } finally {
         warnSpy.mockRestore();
       }
     });
 
-    it('warns on release when refCount is already zero', () => {
-      const socket = createMockSocket('/socket.io');
-      ioMock.mockReturnValue(socket);
-
-      getWorktreeSocket('feature-auth');
-      releaseWorktreeSocket('feature-auth');
-
+    it('warns on release when there is no live socket', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       try {
-        releaseWorktreeSocket('feature-auth');
+        // No socket acquired: release is a no-op with no warning.
+        releaseAppSocket('home');
         expect(warnSpy).not.toHaveBeenCalled();
       } finally {
         warnSpy.mockRestore();
@@ -272,48 +134,48 @@ describe('socket unified pool', () => {
   });
 
   describe('ping-pong listener lifecycle', () => {
-    it('registers message listener on first acquire', () => {
+    it('registers the message listener on first acquire', () => {
       const socket = createMockSocket('/socket.io');
       ioMock.mockReturnValue(socket);
 
-      getAppSocket();
+      getAppSocket('home');
 
       expect(socket.on).toHaveBeenCalledWith('message', expect.any(Function));
       expect(socket.on).toHaveBeenCalledTimes(1);
     });
 
-    it('does not register additional message listener on subsequent acquires', () => {
+    it('does not register additional message listeners on subsequent acquires', () => {
       const socket = createMockSocket('/socket.io');
       ioMock.mockReturnValue(socket);
 
-      getAppSocket();
-      getAppSocket();
-      getAppSocket();
+      getAppSocket('home');
+      getAppSocket('home');
+      getAppSocket('home');
 
       expect(socket.on).toHaveBeenCalledWith('message', expect.any(Function));
       expect(socket.on).toHaveBeenCalledTimes(1);
     });
 
-    it('removes message listener on last release', () => {
+    it('removes the message listener on last release', () => {
       const socket = createMockSocket('/socket.io');
       ioMock.mockReturnValue(socket);
 
-      getAppSocket();
-      getAppSocket();
+      getAppSocket('home');
+      getAppSocket('home');
 
-      releaseAppSocket();
+      releaseAppSocket('home');
       expect(socket.off).not.toHaveBeenCalled();
 
-      releaseAppSocket();
+      releaseAppSocket('home');
       expect(socket.off).toHaveBeenCalledWith('message', expect.any(Function));
       expect(socket.off).toHaveBeenCalledTimes(1);
     });
 
-    it('ping-pong handler responds to system ping with pong', () => {
+    it('responds to a system ping with pong and ignores other topics', () => {
       const socket = createMockSocket('/socket.io');
       ioMock.mockReturnValue(socket);
 
-      getAppSocket();
+      getAppSocket('home');
 
       const handler = socket.on.mock.calls.find(
         (call: [string, (...args: unknown[]) => void]) => call[0] === 'message',
@@ -329,84 +191,61 @@ describe('socket unified pool', () => {
     });
   });
 
-  describe('non-accumulation of message listener across reconnects', () => {
+  describe('non-accumulation of message listeners across reconnects', () => {
     it('re-acquiring after full release registers exactly one listener', () => {
       const first = createMockSocket('/socket.io');
       const second = createMockSocket('/socket.io');
       ioMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
 
-      getAppSocket();
+      getAppSocket('home');
       expect(first.on).toHaveBeenCalledTimes(1);
 
-      releaseAppSocket();
+      releaseAppSocket('home');
       expect(first.off).toHaveBeenCalledTimes(1);
 
-      getAppSocket();
+      getAppSocket('home');
       expect(second.on).toHaveBeenCalledTimes(1);
-    });
-
-    it('worktree socket: re-acquire after full release has single listener', () => {
-      const first = createMockSocket('/wt/x/socket.io');
-      const second = createMockSocket('/wt/x/socket.io');
-      ioMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
-
-      getWorktreeSocket('x');
-      releaseWorktreeSocket('x');
-
-      getWorktreeSocket('x');
-      expect(second.on).toHaveBeenCalledTimes(1);
-      expect(first.on).toHaveBeenCalledTimes(1);
     });
   });
 
-  describe('disconnect cleanup', () => {
-    it('disconnects socket on last release', () => {
-      const socket = createMockSocket('/socket.io');
-      ioMock.mockReturnValue(socket);
+  describe('setAppSocket override', () => {
+    it('installs a test double that getAppSocket returns without opening a connection', () => {
+      const injected = createMockSocket('/socket.io');
+      setAppSocket(injected as unknown as Parameters<typeof setAppSocket>[0]);
 
-      getAppSocket();
-      releaseAppSocket();
-
-      expect(socket.disconnect).toHaveBeenCalledTimes(1);
-    });
-
-    it('does not disconnect while refs remain', () => {
-      const socket = createMockSocket('/socket.io');
-      ioMock.mockReturnValue(socket);
-
-      getAppSocket();
-      getAppSocket();
-      releaseAppSocket();
-
-      expect(socket.disconnect).not.toHaveBeenCalled();
+      const s = getAppSocket('home');
+      expect(s).toBe(injected);
+      // io is never called when a socket is injected.
+      expect(ioMock).not.toHaveBeenCalled();
     });
   });
 
-  describe('worktree pool deletion', () => {
-    it('removes worktree entry from pool on last release', () => {
-      const socket1 = createMockSocket('/wt/x/socket.io');
-      const socket2 = createMockSocket('/wt/x/socket.io');
-      ioMock.mockReturnValueOnce(socket1).mockReturnValueOnce(socket2);
+  describe('per-backend pool', () => {
+    const REMOTE_ID = '11111111-1111-4111-8111-111111111111';
 
-      getWorktreeSocket('x');
-      releaseWorktreeSocket('x');
+    it('connects a remote socket through the /r proxy path, separate from home', () => {
+      const home = createMockSocket('/socket.io');
+      const remote = createMockSocket(`/r/${REMOTE_ID}/socket.io`);
+      ioMock.mockReturnValueOnce(home).mockReturnValueOnce(remote);
 
-      // Re-acquire should create a new socket (pool entry was deleted)
-      getWorktreeSocket('x');
+      expect(getAppSocket('home')).toBe(home);
+      expect(getAppSocket(REMOTE_ID)).toBe(remote);
+      expect(getAppSocket(REMOTE_ID)).toBe(remote);
+
       expect(ioMock).toHaveBeenCalledTimes(2);
-    });
+      expect(ioMock).toHaveBeenLastCalledWith(
+        '',
+        expect.objectContaining({ path: `/r/${REMOTE_ID}/socket.io`, transports: ['websocket'] }),
+      );
 
-    it('does not delete worktree entry while refs remain', () => {
-      const socket = createMockSocket('/wt/x/socket.io');
-      ioMock.mockReturnValue(socket);
+      releaseAppSocket(REMOTE_ID);
+      expect(remote.disconnect).not.toHaveBeenCalled();
+      releaseAppSocket(REMOTE_ID);
+      expect(remote.disconnect).toHaveBeenCalledTimes(1);
+      expect(home.disconnect).not.toHaveBeenCalled();
 
-      getWorktreeSocket('x');
-      getWorktreeSocket('x');
-      releaseWorktreeSocket('x');
-
-      // Should reuse (not create new)
-      getWorktreeSocket('x');
-      expect(ioMock).toHaveBeenCalledTimes(1);
+      releaseAppSocket('home');
+      expect(home.disconnect).toHaveBeenCalledTimes(1);
     });
   });
 });

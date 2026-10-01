@@ -90,6 +90,34 @@ describe('board cache ownership', () => {
     },
   );
 
+  it('invalidates the selected project, every sub-count and the selected parent on synced', () => {
+    const queryClient = createQueryClient();
+    const registry = createBoardInvalidationRegistry({
+      projectId: 'project-1',
+      parentFilter: 'root-1',
+    });
+    const selectedProjectKey = boardCacheKeys.project('project-1');
+    const otherProjectKey = boardCacheKeys.project('project-2');
+    const selectedParentKey = boardCacheKeys.children('root-1');
+    const anyCountKey = boardCacheKeys.subCounts('root-9');
+    [selectedProjectKey, otherProjectKey, selectedParentKey, anyCountKey].forEach((key) =>
+      seedQuery(queryClient, key),
+    );
+
+    dispatchEpicEvent(
+      queryClient,
+      registry,
+      { projectId: 'project-1' },
+      'project/project-1/epics',
+      'remote-synced',
+    );
+
+    expect(isInvalidated(queryClient, selectedProjectKey)).toBe(true);
+    expect(isInvalidated(queryClient, selectedParentKey)).toBe(true);
+    expect(isInvalidated(queryClient, anyCountKey)).toBe(true);
+    expect(isInvalidated(queryClient, otherProjectKey)).toBe(false);
+  });
+
   it.each([
     ['project/project-2/epics', 'updated'],
     ['project/project-1/epics/extra', 'updated'],

@@ -291,7 +291,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       expect(view.container.querySelectorAll('[data-generation="combined"]')).toHaveLength(3),
     );
     expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1);
-    expect(fetchTranscriptIndexMock).toHaveBeenCalledWith('session-1', '', expect.any(Function), {
+    expect(fetchTranscriptIndexMock).toHaveBeenCalledWith('session-1', expect.any(Function), {
       pageSize: 10,
       live: true,
       signal: expect.any(AbortSignal),
@@ -483,7 +483,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     fetchTranscriptIndexMock.mockReturnValueOnce(response.promise);
     const view = renderPagedList(queryClient);
     await waitFor(() => expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1));
-    const signal = fetchTranscriptIndexMock.mock.calls[0][3]!.signal!;
+    const signal = fetchTranscriptIndexMock.mock.calls[0][2]!.signal!;
     view.unmount();
     expect(signal.aborted).toBe(true);
     await act(async () => {
@@ -502,7 +502,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       .mockResolvedValueOnce(combinedIndex(makeIndex(), 'new-session'));
     const view = renderPagedList(queryClient);
     await waitFor(() => expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1));
-    const signal = fetchTranscriptIndexMock.mock.calls[0][3]!.signal!;
+    const signal = fetchTranscriptIndexMock.mock.calls[0][2]!.signal!;
     view.rerender(
       <QueryClientProvider client={queryClient}>
         <PagedSessionMessageList
@@ -557,7 +557,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       expect(view.container.querySelectorAll('[data-generation="combined"]')).toHaveLength(150),
     );
     expect(fetchTranscriptIndexMock).toHaveBeenCalledTimes(1);
-    expect(fetchTranscriptIndexMock.mock.calls[0][3]).toMatchObject({
+    expect(fetchTranscriptIndexMock.mock.calls[0][2]).toMatchObject({
       pageSize: 10,
       firstVirtualIndex: 0,
       lastVirtualIndex: 139,
@@ -622,7 +622,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
     const scroll = view.getByTestId('paged-session-viewer-scroll');
     scroll.scrollTop = 3000;
     await act(async () => requireCanonicalRefresh());
-    expect(fetchTranscriptIndexMock.mock.calls[0][3]).toMatchObject({
+    expect(fetchTranscriptIndexMock.mock.calls[0][2]).toMatchObject({
       pageSize: 10,
       firstVirtualIndex: 25,
       lastVirtualIndex: 32,

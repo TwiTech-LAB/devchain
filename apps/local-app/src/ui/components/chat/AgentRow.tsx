@@ -63,7 +63,7 @@ interface AgentRowProps {
   activityBadge?: ReactNode;
   /**
    * Whole minutes of settled unlogged time for this main-project agent.
-   * Undefined on guest and worktree rows; values at the shared visibility
+   * Undefined on guest rows; values at the shared visibility
    * threshold render a fading amber overlay on the existing right-side rail.
    */
   unloggedTimeMinutes?: number;
@@ -98,7 +98,11 @@ interface AgentIdentityProps {
 }
 
 const HELD_BADGE_CLASS =
-  'inline-flex h-6 shrink-0 items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 text-[10px] font-medium leading-none text-amber-600 dark:text-amber-400';
+  'inline-flex h-6 shrink-0 items-center rounded-full border border-status-warn/40 bg-status-warn/10 px-2 text-[10px] font-medium leading-none text-status-warn';
+const HELD_BADGE_BUTTON_CLASS = cn(
+  HELD_BADGE_CLASS,
+  'transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-60',
+);
 
 export function AgentIdentity({
   agentName,
@@ -232,7 +236,7 @@ export function AgentRow({
               <span
                 aria-hidden="true"
                 data-unlogged-time-marker=""
-                className="pointer-events-none absolute -right-0.5 top-0 h-1/2 w-0.5 bg-gradient-to-b from-amber-700 to-transparent dark:from-amber-500"
+                className="pointer-events-none absolute -right-0.5 top-0 h-1/2 w-0.5 bg-gradient-to-b from-status-warn to-transparent"
               />
             )}
             {providerIconUri ? (
@@ -264,7 +268,7 @@ export function AgentRow({
               <Circle
                 className={cn(
                   'h-2 w-2 shrink-0 fill-current',
-                  isOnline ? 'text-green-500' : 'text-muted-foreground',
+                  isOnline ? 'text-status-ok' : 'text-muted-foreground',
                 )}
                 aria-hidden="true"
               />
@@ -285,7 +289,7 @@ export function AgentRow({
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <AlertTriangle className="ml-1 h-4 w-4 flex-shrink-0 text-yellow-500" />
+                    <AlertTriangle className="ml-1 h-4 w-4 flex-shrink-0 text-status-warn" />
                   </TooltipTrigger>
                   <TooltipContent>Restart to apply config changes</TooltipContent>
                 </Tooltip>
@@ -298,10 +302,7 @@ export function AgentRow({
             type="button"
             onClick={onReleaseHeldMessages}
             disabled={releasingHeldMessages}
-            className={cn(
-              HELD_BADGE_CLASS,
-              'transition-colors hover:bg-amber-500/20 disabled:cursor-wait disabled:opacity-60',
-            )}
+            className={HELD_BADGE_BUTTON_CLASS}
             title={heldWaitingText}
             aria-label={`Release ${humanHeldMessageCount} queued message${humanHeldMessageCount === 1 ? '' : 's'} for ${agent.name}`}
           >
@@ -321,10 +322,7 @@ export function AgentRow({
             type="button"
             onClick={onForceSend}
             disabled={forceSending}
-            className={cn(
-              HELD_BADGE_CLASS,
-              'transition-colors hover:bg-blue-500/20 disabled:cursor-wait disabled:opacity-60',
-            )}
+            className={HELD_BADGE_BUTTON_CLASS}
             aria-label={`Send now for ${agent.name}`}
           >
             {forceSending ? (

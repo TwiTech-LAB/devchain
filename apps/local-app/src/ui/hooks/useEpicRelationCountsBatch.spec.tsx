@@ -4,26 +4,13 @@ import type { ReactNode } from 'react';
 import { epicRelationQueryKeys } from '@/ui/lib/epic-relations';
 import { useEpicRelationCountsBatch } from './useEpicRelationCountsBatch';
 
-// Layer: hook unit. The fetch factory and worktree runtime are mocked
-// because this spec owns the batch URL, body, key stability, runtime-scope
-// isolation, and the decorative-failure counts-map contract.
+// Layer: hook unit. The fetch factory is mocked because this spec owns the
+// batch URL, body, key stability, active/disabled scope isolation, and the
+// decorative-failure counts-map contract.
 const fetchMock = jest.fn();
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({
   useFetchFactory: () => fetchMock,
-}));
-
-const worktreeRuntime = {
-  activeWorktree: null,
-  setActiveWorktree: () => undefined,
-  apiBase: '',
-  worktrees: [],
-  worktreesLoading: false,
-  runtimeResolved: true,
-};
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => worktreeRuntime,
 }));
 
 function wrapper(client: QueryClient) {
@@ -54,13 +41,11 @@ describe('useEpicRelationCountsBatch', () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     fetchMock.mockReset();
     fetchMock.mockResolvedValue(batchResponse([]));
-    worktreeRuntime.runtimeResolved = true;
-    worktreeRuntime.apiBase = '';
   });
 
   afterEach(() => client.clear());
 
-  it('posts the sorted deduplicated ID set and caches under the main scope', async () => {
+  it('posts the sorted deduplicated ID set and caches under the active scope', async () => {
     const { result } = renderHook(
       () => useEpicRelationCountsBatch(['epic-2', 'epic-1', 'epic-2']),
       { wrapper: wrapper(client) },
@@ -75,9 +60,9 @@ describe('useEpicRelationCountsBatch', () => {
       signal: expect.any(AbortSignal),
     });
     expect(result.current.counts).toEqual(new Map());
-    expect(client.getQueryData(epicRelationQueryKeys.batch(['epic-1', 'epic-2'], 'main'))).toEqual(
-      new Map(),
-    );
+    expect(
+      client.getQueryData(epicRelationQueryKeys.batch(['epic-1', 'epic-2'], 'active')),
+    ).toEqual(new Map());
   });
 
   it('keeps one stable key regardless of input order and maps counts per Epic', async () => {
@@ -115,56 +100,37 @@ describe('useEpicRelationCountsBatch', () => {
     expect(first.result.current.counts?.get('epic-3')).toBeUndefined();
   });
 
-  it('returns a stable empty map and issues no request while the runtime is unresolved', async () => {
-    worktreeRuntime.runtimeResolved = false;
-    const { result, rerender } = renderHook(() => useEpicRelationCountsBatch(['epic-1']), {
-      wrapper: wrapper(client),
-    });
-
-    expect(result.current.counts).toEqual(new Map());
-    expect(result.current.query.data).toBeUndefined();
-    const disabledCounts = result.current.counts;
-    rerender();
-    // The empty map is reference-stable across disabled renders.
-    expect(result.current.counts).toBe(disabledCounts);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('returns empty maps through any returned field after main-to-worktree and main-to-unresolved transitions', async () => {
+  it('warms the active cache, then leaks no stale data to a disabled observer', async () => {
     fetchMock.mockResolvedValue(
       batchResponse([{ epicId: 'epic-1', related: 1, blocks: 1, blockedBy: 0, total: 2 }]),
     );
-    const { result, rerender } = renderHook(() => useEpicRelationCountsBatch(['epic-1']), {
-      wrapper: wrapper(client),
-    });
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useEpicRelationCountsBatch(['epic-1'], { enabled }),
+      { wrapper: wrapper(client), initialProps: { enabled: true } },
+    );
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
     expect(result.current.counts?.get('epic-1')?.total).toBe(2);
     expect(result.current.query.data?.get('epic-1')?.total).toBe(2);
 
-    worktreeRuntime.apiBase = '/wt/demo';
-    rerender();
+    // Disable the consumer: it must expose no active-scope data through any
+    // returned field.
+    rerender({ enabled: false });
     expect(result.current.counts).toEqual(new Map());
     expect(result.current.query.data).toBeUndefined();
     expect(result.current.query.isSuccess).toBe(false);
 
-    worktreeRuntime.runtimeResolved = false;
-    worktreeRuntime.apiBase = '';
-    rerender();
-    expect(result.current.counts).toEqual(new Map());
-    expect(result.current.query.data).toBeUndefined();
-
-    // Only the admitted main-scope observer issued a request.
+    // Only the admitted active-scope observer issued a request.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    // The main cache entry itself survives for re-admission.
-    expect(client.getQueryData(epicRelationQueryKeys.batch(['epic-1'], 'main'))).toBeDefined();
-    // A worktree observer keys under an isolated scope, never the main one.
-    expect(epicRelationQueryKeys.batch(['epic-1'], 'isolated')).not.toEqual(
-      epicRelationQueryKeys.batch(['epic-1'], 'main'),
+    // The active cache entry itself survives for re-admission.
+    expect(client.getQueryData(epicRelationQueryKeys.batch(['epic-1'], 'active'))).toBeDefined();
+    // A disabled observer keys under a disabled scope, never the active one.
+    expect(epicRelationQueryKeys.batch(['epic-1'], 'disabled')).not.toEqual(
+      epicRelationQueryKeys.batch(['epic-1'], 'active'),
     );
     // Every variant stays under the batch-family prefix so one workspace
     // invalidation refreshes all of them.
-    for (const scope of ['main', 'isolated'] as const) {
+    for (const scope of ['active', 'disabled'] as const) {
       const key = epicRelationQueryKeys.batch(['epic-1'], scope);
       expect(key.slice(0, epicRelationQueryKeys.batchRoot().length)).toEqual(
         epicRelationQueryKeys.batchRoot(),
@@ -172,24 +138,23 @@ describe('useEpicRelationCountsBatch', () => {
     }
   });
 
-  it('re-admits to the primed main cache immediately after a disabled stretch', async () => {
+  it('re-admits to the primed active cache immediately after a disabled stretch', async () => {
     fetchMock.mockResolvedValue(
       batchResponse([{ epicId: 'epic-1', related: 0, blocks: 0, blockedBy: 1, total: 1 }]),
     );
-    const { result, rerender } = renderHook(() => useEpicRelationCountsBatch(['epic-1']), {
-      wrapper: wrapper(client),
-    });
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useEpicRelationCountsBatch(['epic-1'], { enabled }),
+      { wrapper: wrapper(client), initialProps: { enabled: true } },
+    );
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
 
-    worktreeRuntime.apiBase = '/wt/demo';
-    rerender();
+    rerender({ enabled: false });
     expect(result.current.counts).toEqual(new Map());
 
-    worktreeRuntime.apiBase = '';
-    rerender();
-    // The main cache entry serves the badge again right away; any later
-    // refresh is a fresh main-scope request, not a disabled-scope leak.
+    rerender({ enabled: true });
+    // The active cache entry serves the badge again right away; any later
+    // refresh is a fresh active-scope request, not a disabled-scope leak.
     expect(result.current.counts?.get('epic-1')?.blockedBy).toBe(1);
   });
 
@@ -323,15 +288,18 @@ describe('useEpicRelationCountsBatch', () => {
     }
   });
 
-  it('returns an empty map and issues no request when explicitly disabled', async () => {
-    const { result } = renderHook(
+  it('returns a reference-stable empty map and issues no request when disabled', async () => {
+    const { result, rerender } = renderHook(
       () => useEpicRelationCountsBatch(['epic-1'], { enabled: false }),
-      {
-        wrapper: wrapper(client),
-      },
+      { wrapper: wrapper(client) },
     );
 
     expect(result.current.counts).toEqual(new Map());
+    expect(result.current.query.data).toBeUndefined();
+    const disabledCounts = result.current.counts;
+    rerender();
+    // The empty map is reference-stable across disabled renders.
+    expect(result.current.counts).toBe(disabledCounts);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

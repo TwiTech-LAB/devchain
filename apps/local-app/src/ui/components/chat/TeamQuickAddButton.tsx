@@ -20,6 +20,7 @@ import {
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
 import { getProviderIconDataUri } from '@/ui/lib/providers';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface ProviderConfigItem {
   id: string;
@@ -91,6 +92,7 @@ export function TeamQuickAddButton({
   agents,
   onAddAgent,
 }: TeamQuickAddButtonProps) {
+  const fetchFn = useFetchFactory();
   const [open, setOpen] = useState(false);
 
   const noProfiles = profileIds.length === 0;
@@ -101,7 +103,9 @@ export function TeamQuickAddButton({
     queries: profileIds.map((profileId) => ({
       queryKey: ['profile-provider-configs', '', profileId] as const,
       queryFn: async () => {
-        const res = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/provider-configs`);
+        const res = await fetchFn(
+          `/api/profiles/${encodeURIComponent(profileId)}/provider-configs`,
+        );
         if (!res.ok) throw new Error('Failed to fetch configs');
         return res.json() as Promise<ProviderConfigItem[]>;
       },

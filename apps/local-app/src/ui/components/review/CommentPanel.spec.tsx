@@ -322,7 +322,11 @@ describe('CommentPanel', () => {
       });
 
       // Files filter button should be present with label "Files"
-      expect(screen.getByRole('button', { name: /files filter/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /files filter/i })).toHaveClass(
+        'bg-selected',
+        'text-selected-foreground',
+        'hover:bg-selected',
+      );
     });
   });
 
@@ -471,8 +475,8 @@ describe('CommentPanel', () => {
 
       // The selected comment should have the selected styling
       const commentItems = screen.getAllByTestId('comment-reference-item');
-      // First item (comment-1 is pending so it's sorted first) should have bg-accent class
-      expect(commentItems[0]).toHaveClass('bg-accent');
+      // First item (comment-1 is pending so it's sorted first) should have bg-selected class
+      expect(commentItems[0]).toHaveClass('bg-selected');
     });
   });
 
@@ -501,11 +505,11 @@ describe('CommentPanel', () => {
         expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
       });
 
-      // The pending comment should have amber border styling
+      // The pending comment should have warning border styling
       const commentItems = screen.getAllByTestId('comment-reference-item');
       // Find the pending one (comment-1)
       const pendingItem = commentItems.find((item) =>
-        item.classList.contains('border-l-amber-500'),
+        item.classList.contains('border-l-status-warn/40'),
       );
       expect(pendingItem).toBeDefined();
     });

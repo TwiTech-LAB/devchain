@@ -31,21 +31,21 @@ function SessionTab({ session, isActive, agentName, shortcutNumber, onClick }: S
       }}
       className={cn(
         'flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors',
-        'hover:bg-muted/70 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
         isActive
-          ? 'bg-primary text-primary-foreground'
-          : 'bg-muted/40 text-muted-foreground hover:text-foreground',
+          ? 'bg-selected text-selected-foreground'
+          : 'bg-muted/40 text-muted-foreground hover:bg-accent hover:text-foreground',
       )}
       title={`Switch to ${displayName}${shortcutKey ? ` (${shortcutKey})` : ''}`}
     >
       <div
         className={cn(
           'h-1.5 w-1.5 rounded-full',
-          session.status === 'running' ? 'bg-emerald-500' : 'bg-muted-foreground',
+          session.status === 'running' ? 'bg-status-ok' : 'bg-muted-foreground',
         )}
       />
       <span className="truncate max-w-[80px]">{displayName}</span>
-      {shortcutKey && <span className="text-[10px] opacity-75 ml-1">{shortcutNumber}</span>}
+      {shortcutKey && <span className="text-[10px] ml-1">{shortcutNumber}</span>}
     </button>
   );
 }
@@ -177,7 +177,7 @@ export function SessionSwitcher({ currentSessionId, onSessionSwitch }: SessionSw
       <div className="h-4 w-px bg-border" />
       <div className="flex items-center gap-1 flex-wrap">
         {/* Debug indicator */}
-        <span className="text-[10px] text-red-500 mr-1">
+        <span className="text-[10px] text-destructive mr-1">
           KB:Ctrl+Shift+1-{Math.min(activeSessions.length, 9)}
         </span>
         {activeSessions.map((session, index) => (

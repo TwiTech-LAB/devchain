@@ -2,7 +2,6 @@ import React from 'react';
 import { Badge, badgeVariants } from '@/ui/components/ui/badge';
 import { User } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
-import { getMergedWorktree, isMergedTag } from '@/ui/lib/epic-tags';
 import { useToast } from '@/ui/hooks/use-toast';
 
 export type EpicPreviewProps = {
@@ -29,11 +28,9 @@ export function EpicPreview({
   const { toast } = useToast();
   const showMeta = Boolean(statusLabel) || Boolean(agentName);
   const showSub = typeof subCount === 'number' && subCount > 0;
-  const mergedFromWorktree = getMergedWorktree(tags);
-  const visibleTags = tags.filter((tag) => !isMergedTag(tag));
-  const shownTags = visibleTags.slice(0, 3);
-  const hiddenTags = visibleTags.slice(shownTags.length);
-  const hasTags = visibleTags.length > 0 || Boolean(mergedFromWorktree);
+  const shownTags = tags.slice(0, 3);
+  const hiddenTags = tags.slice(shownTags.length);
+  const hasTags = tags.length > 0;
 
   const copyTag = async (tag: string): Promise<void> => {
     try {
@@ -109,15 +106,6 @@ export function EpicPreview({
             <Badge variant="secondary" className="shrink-0 gap-0.5">
               <span className="opacity-60">↳</span>
               {subCount}
-            </Badge>
-          )}
-          {mergedFromWorktree && (
-            <Badge
-              variant="secondary"
-              className="min-w-0 max-w-36 border border-amber-400/40 bg-amber-500/10"
-              title={`Merged from ${mergedFromWorktree}`}
-            >
-              <span className="truncate">Merged from {mergedFromWorktree}</span>
             </Badge>
           )}
           {shownTags.map((tag) => (

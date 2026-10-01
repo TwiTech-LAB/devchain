@@ -110,8 +110,8 @@ export function McpConfigurationModal({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/10">
-              <AlertTriangle className="h-5 w-5 text-amber-500" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-status-warn/10">
+              <AlertTriangle className="h-5 w-5 text-status-warn" />
             </div>
             <DialogTitle>Manual MCP Configuration Required</DialogTitle>
           </div>
@@ -144,7 +144,7 @@ export function McpConfigurationModal({
               <Button
                 size="sm"
                 variant="ghost"
-                className={cn('absolute right-1 top-1 h-7 w-7 p-0', copied && 'text-green-500')}
+                className={cn('absolute right-1 top-1 h-7 w-7 p-0', copied && 'text-status-ok')}
                 onClick={handleCopy}
                 title={copied ? 'Copied!' : 'Copy to clipboard'}
               >

@@ -265,10 +265,10 @@ interface SubscriberDialogProps {
 }
 
 export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberDialogProps) {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
-  const apiFetch = useFetchFactory();
   const isEditMode = !!subscriber;
 
   const [formData, setFormData] = useState<SubscriberFormData>(defaultFormData);
@@ -279,21 +279,21 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
   // Fetch subscribable events from catalog
   const { data: subscribableEvents } = useQuery({
     queryKey: ['subscribableEvents'],
-    queryFn: fetchSubscribableEvents,
+    queryFn: () => fetchSubscribableEvents(fetchFn),
     enabled: open,
   });
 
   // Fetch watchers for event name suggestions (for terminal.watcher.triggered custom events)
   const { data: watchers } = useQuery({
     queryKey: ['watchers', selectedProjectId],
-    queryFn: () => fetchWatchers(selectedProjectId as string),
+    queryFn: () => fetchWatchers(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId && open,
   });
 
   // Fetch available actions
   const { data: actions, isLoading: actionsLoading } = useQuery({
     queryKey: ['actions'],
-    queryFn: fetchActions,
+    queryFn: () => fetchActions(fetchFn),
     enabled: open,
   });
 
@@ -304,7 +304,7 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
   // the options it validates against. Shares the board's query key.
   const { data: statusesData } = useQuery({
     queryKey: ['statuses', selectedProjectId],
-    queryFn: () => fetchStatuses(selectedProjectId as string, apiFetch),
+    queryFn: () => fetchStatuses(selectedProjectId as string, fetchFn),
     enabled: !!selectedProjectId && open,
   });
 
@@ -434,7 +434,7 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
 
   // Create mutation
   const createMutation = useMutation({
-    mutationFn: (data: CreateSubscriberData) => createSubscriber(data),
+    mutationFn: (data: CreateSubscriberData) => createSubscriber(fetchFn, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['subscribers', selectedProjectId] });
       onOpenChange(false);
@@ -455,7 +455,7 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
   // Update mutation
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: UpdateSubscriberData }) =>
-      updateSubscriber(id, data),
+      updateSubscriber(fetchFn, id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['subscribers', selectedProjectId] });
       onOpenChange(false);

@@ -2,7 +2,6 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { useAgentConfigSwitch, type UseAgentConfigSwitchOptions } from './useAgentConfigSwitch';
-import type { WorktreeAgentGroup } from '@/ui/hooks/useWorktreeAgents';
 
 const showSuccess = jest.fn();
 const showError = jest.fn();
@@ -13,7 +12,6 @@ jest.mock('@/ui/lib/toast-helpers', () => ({
 
 jest.mock('@/ui/lib/restart-keys', () => ({
   restartKeyForMain: (agentId: string) => `main:${agentId}`,
-  restartKeyForWorktree: (apiBase: string, agentId: string) => `wt:${apiBase}:${agentId}`,
 }));
 
 function wrapper(client: QueryClient) {
@@ -31,7 +29,6 @@ function baseOptions(
     apiFetch: jest.fn().mockResolvedValue(okJson({ id: 'a1' })),
     projectId: 'p1',
     agentPresence: { a1: { online: true } },
-    worktreeAgentGroups: [],
     markAgentsForRestart: jest.fn(),
     ...overrides,
   };
@@ -167,44 +164,5 @@ describe('useAgentConfigSwitch — main agents', () => {
     await expect(result.current.fetchProviderConfigsForProfile('prof1')).rejects.toThrow(
       'Failed to fetch provider configs',
     );
-  });
-});
-
-describe('useAgentConfigSwitch — worktree agents', () => {
-  const group = {
-    apiBase: 'http://wt',
-    agentPresence: { a1: { online: true } },
-  } as unknown as WorktreeAgentGroup;
-
-  beforeEach(() => jest.clearAllMocks());
-
-  it('switches worktree config via absolute apiBase, marks worktree restart key, invalidates group query', async () => {
-    const fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue(okJson({ id: 'a1' }) as unknown as Response);
-    const markAgentsForRestart = jest.fn();
-    const client = makeClient();
-    const invalidate = jest.spyOn(client, 'invalidateQueries');
-    const { result } = renderHook(
-      () =>
-        useAgentConfigSwitch(baseOptions({ markAgentsForRestart, worktreeAgentGroups: [group] })),
-      { wrapper: wrapper(client) },
-    );
-
-    await act(async () => {
-      await result.current.handleSwitchWorktreeConfig(group, 'a1', 'cfg-2');
-    });
-
-    expect(fetchSpy).toHaveBeenCalledWith(
-      'http://wt/api/agents/a1',
-      expect.objectContaining({ method: 'PUT' }),
-    );
-    expect(markAgentsForRestart).toHaveBeenCalledWith(['wt:http://wt:a1']);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['chat-worktree-agent-groups'] });
-    expect(showSuccess).toHaveBeenCalledWith({
-      title: 'Config updated',
-      description: 'Restart to apply changes.',
-    });
-    fetchSpy.mockRestore();
   });
 });

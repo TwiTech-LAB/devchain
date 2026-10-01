@@ -291,3 +291,11 @@ export interface UpdateProjectResponse {
 }
 
 export type TemplateManifest = Partial<ManifestData>;
+
+/** A home project whose writes belong to a remote (binding `attaching`, `remote` or `detaching`). */
+export interface ProjectRemoteOwner {
+  projectId: string;
+  remoteId: string;
+  remoteName: string | null;
+  state: 'attaching' | 'remote' | 'detaching' | 'failed';
+}

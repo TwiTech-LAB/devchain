@@ -280,6 +280,37 @@ describe('CoreSettingsDelegate', () => {
     });
   });
 
+  describe('Invariant: the built-in devchain source is always enabled', () => {
+    const storedSources = (): Record<string, boolean> =>
+      JSON.parse(
+        (
+          db.prepare("SELECT value FROM settings WHERE key = 'skills.sources'").get() as {
+            value: string;
+          }
+        ).value,
+      );
+
+    it('normalization drops the devchain key and keeps devchain-local', () => {
+      expect(
+        delegate.normalizeSkillSourcesMap({ ' DEVCHAIN ': false, 'devchain-local': false }),
+      ).toEqual({ 'devchain-local': false });
+    });
+
+    it('the settings GET omits a legacy devchain=false', () => {
+      upsert(db, 'skills.sources', JSON.stringify({ devchain: false, other: false }));
+
+      expect(delegate.getSettings().skills?.sources).toEqual({ other: false });
+    });
+
+    it('the settings PUT round-trips a legacy devchain=false without storing it', async () => {
+      await delegate.updateSettings({
+        skills: { sources: { devchain: false, 'devchain-local': false, other: true } },
+      });
+
+      expect(storedSources()).toEqual({ 'devchain-local': false, other: true });
+    });
+  });
+
   describe('Invariant: extractPromptId', () => {
     it('extracts promptId from simple string value', () => {
       upsert(db, 'initialSessionPromptId', JSON.stringify('prompt-123'));

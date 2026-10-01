@@ -10,7 +10,8 @@ import {
   X,
   MessageCircle,
 } from 'lucide-react';
-import { Badge } from '@/ui/components/ui/badge';
+import { OpaqueBadge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { cn } from '@/ui/lib/utils';
 import type { ReviewComment, CommentType, CommentStatus } from '@/ui/lib/reviews';
 
@@ -31,44 +32,38 @@ const COMMENT_TYPE_CONFIG: Record<
   comment: {
     icon: MessageSquare,
     label: 'Comment',
-    className: 'text-gray-500',
+    className: 'text-muted-foreground',
   },
   suggestion: {
     icon: Lightbulb,
     label: 'Suggestion',
-    className: 'text-blue-500',
+    className: 'text-status-info',
   },
   issue: {
     icon: AlertCircle,
     label: 'Issue',
-    className: 'text-orange-500',
+    className: 'text-status-warn',
   },
   approval: {
     icon: CheckCircle2,
     label: 'Approval',
-    className: 'text-green-500',
+    className: 'text-status-ok',
   },
 };
 
 // Status configuration for badges
-const STATUS_CONFIG: Record<
-  CommentStatus,
-  { icon: React.ElementType; label: string; badgeVariant: 'default' | 'secondary' | 'outline' }
-> = {
+const STATUS_CONFIG: Record<CommentStatus, { icon: React.ElementType; label: string }> = {
   open: {
     icon: AlertCircle,
     label: 'Open',
-    badgeVariant: 'secondary',
   },
   resolved: {
     icon: Check,
     label: 'Resolved',
-    badgeVariant: 'outline',
   },
   wont_fix: {
     icon: X,
     label: "Won't Fix",
-    badgeVariant: 'outline',
   },
 };
 
@@ -155,14 +150,13 @@ export function CommentReferenceItem({
       onClick={onClick}
       className={cn(
         'w-full text-left p-2 rounded-md border transition-colors',
-        'hover:bg-accent hover:border-accent-foreground/20',
+        !isSelected && 'hover:bg-accent hover:border-accent-foreground/20',
         'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
-        // Pending state: amber highlight
-        isPending && 'border-l-4 border-l-amber-500 bg-amber-50/50 dark:bg-amber-950/20',
+        isPending && 'border-l-4 border-l-status-warn/40 bg-status-warn/10',
         // Selected state
-        isSelected && 'bg-accent border-accent-foreground/30',
+        isSelected && 'bg-selected border-accent-foreground/30',
         // Resolved/won't fix: muted appearance
-        comment.status !== 'open' && !isSelected && 'opacity-60',
+        comment.status !== 'open' && !isSelected && 'text-muted-foreground',
         className,
       )}
       aria-label={ariaLabel}
@@ -191,19 +185,19 @@ export function CommentReferenceItem({
         <div className="flex-1" />
 
         {/* Status badge */}
-        <Badge
-          variant={statusConfig.badgeVariant}
+        <OpaqueBadge
+          fit={false}
+          variant="outline"
           className={cn(
             'text-[10px] px-1.5 py-0 h-4 flex-shrink-0',
-            comment.status === 'open' &&
-              'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-400',
-            comment.status === 'resolved' && 'text-green-600 dark:text-green-400',
-            comment.status === 'wont_fix' && 'text-gray-500',
+            comment.status === 'open' && TONE_CLASSES.warn,
+            comment.status === 'resolved' && TONE_CLASSES.ok,
+            comment.status === 'wont_fix' && 'bg-muted text-muted-foreground border-border',
           )}
         >
           <StatusIcon className="h-2.5 w-2.5 mr-0.5" aria-hidden="true" />
           {statusConfig.label}
-        </Badge>
+        </OpaqueBadge>
       </div>
 
       {/* Row 2: Content snippet */}
@@ -230,9 +224,7 @@ export function CommentReferenceItem({
         )}
 
         {/* Pending indicator */}
-        {isPending && (
-          <span className="text-amber-600 dark:text-amber-400 flex-shrink-0">Pending</span>
-        )}
+        {isPending && <span className="text-status-warn flex-shrink-0">Pending</span>}
       </div>
     </button>
   );

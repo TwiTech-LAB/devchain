@@ -13,6 +13,7 @@ import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { parseClaudeJsonl } from '../parsers/claude-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
+import { isSyncthingMarker } from '../../../common/constants/syncthing-markers';
 
 const CLAUDE_ROOT = '.claude/projects/';
 
@@ -57,6 +58,7 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
     try {
       const entries = await fs.readdir(scanDir, { withFileTypes: true });
       for (const entry of entries) {
+        if (isSyncthingMarker(entry.name)) continue;
         if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
         const filePath = path.join(scanDir, entry.name);
         const info = await this.statFile(filePath);
@@ -214,11 +216,20 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
   // ---------------------------------------------------------------------------
 
   /**
-   * Encode project root path to Claude's directory naming scheme.
-   * Claude replaces `/` with `-` (e.g., /home/user/repo → -home-user-repo).
+   * Encode project root path to Claude Code's directory naming scheme: every
+   * character outside [a-zA-Z0-9] becomes "-", and a result over 200 characters
+   * is truncated with a base-36 hash of the ORIGINAL path appended (Claude Code
+   * 2.1.280). Matching Claude exactly is what makes fallback discovery and the
+   * watcher look in the folder Claude actually writes.
    */
   private encodeProjectPath(projectRoot: string): string {
-    return projectRoot.replace(/\//g, '-');
+    const encoded = projectRoot.replace(/[^a-zA-Z0-9]/g, '-');
+    if (encoded.length <= 200) return encoded;
+    let hash = 0;
+    for (let index = 0; index < projectRoot.length; index += 1) {
+      hash = ((hash << 5) - hash + projectRoot.charCodeAt(index)) | 0;
+    }
+    return `${encoded.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
   }
 
   private async statFile(filePath: string): Promise<SessionFileInfo | null> {

@@ -44,6 +44,7 @@ import {
   ScheduledEpicApiError,
   type ScheduledEpic,
 } from '@/ui/lib/scheduled-epics';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 function formatNextRun(nextRunAt: string | null): string {
   if (!nextRunAt) return '—';
@@ -59,6 +60,7 @@ function lastOutcomeBadge(status: string | null) {
 }
 
 export function ScheduledEpicsTab() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
@@ -70,7 +72,7 @@ export function ScheduledEpicsTab() {
     error,
   } = useQuery({
     queryKey: ['scheduled-epics', selectedProjectId],
-    queryFn: () => fetchScheduledEpics(selectedProjectId as string),
+    queryFn: () => fetchScheduledEpics(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
 
@@ -83,7 +85,7 @@ export function ScheduledEpicsTab() {
       id: string;
       enabled: boolean;
       configVersion: number;
-    }) => toggleScheduledEpic(id, enabled, configVersion),
+    }) => toggleScheduledEpic(fetchFn, id, enabled, configVersion),
     onMutate: async ({ id, enabled }) => {
       await queryClient.cancelQueries({ queryKey: ['scheduled-epics', selectedProjectId] });
       const previous = queryClient.getQueryData<ScheduledEpic[]>([
@@ -119,7 +121,7 @@ export function ScheduledEpicsTab() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: deleteScheduledEpic,
+    mutationFn: (id: string) => deleteScheduledEpic(fetchFn, id),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['scheduled-epics', selectedProjectId] });
       const previous = queryClient.getQueryData<ScheduledEpic[]>([
@@ -151,7 +153,7 @@ export function ScheduledEpicsTab() {
   });
 
   const runNowMutation = useMutation({
-    mutationFn: runScheduledEpicNow,
+    mutationFn: (id: string) => runScheduledEpicNow(fetchFn, id),
     onSuccess: (result) => {
       toast({
         title: result.claimed ? 'Run started' : 'Already running',

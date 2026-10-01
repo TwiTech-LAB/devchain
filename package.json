@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.23.4",
+  "version": "0.24.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,15 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.24.0": [
+      "https://devchain.cc/releases/0.24.0/",
+      "",
+      "Remote VMs: run a project's agents on your own Proxmox or Ubuntu/Debian VM, from the same app, over an encrypted connection.",
+      "Stability: smoother terminals and transcripts, and full Codex history",
+      "Look: Dark is the default theme, and Ocean has higher contrast",
+      "Dev Template: renamed to DevChain Development Flow",
+      "Mobile app 1.10.0: one project list across home and your VMs, and the last chat reopens at launch"
+    ],
     "0.23.4": [
       "[New] MCP: agents can patch epic descriptions and add several relations on create",
       "[New] Board: remove an epic relation from the Board preview",
@@ -417,7 +426,8 @@
     "templates:build": "node scripts/templates/index.js build",
     "templates:extract": "node scripts/templates/index.js extract",
     "check:templates": "node scripts/templates/index.js build --check",
-    "prepack": "npm run build",
+    "prepack": "npm run build && npm run verify:packed-cli-runtime",
+    "verify:packed-cli-runtime": "node scripts/verify-packed-cli-runtime.js",
     "postinstall": "node scripts/postinstall.js",
     "lint": "pnpm --recursive --if-present lint",
     "format": "pnpm --filter local-app format",
@@ -489,7 +499,6 @@
     "clsx": "2.1.1",
     "commander": "^12.1.0",
     "croner": "10.0.1",
-    "dockerode": "5.0.1",
     "dompurify": "3.3.1",
     "dotenv": "^16.4.5",
     "drizzle-orm": "0.44.6",
@@ -518,11 +527,14 @@
     "refractor": "5.0.0",
     "rxjs": "^7.8.1",
     "semver": "^7.6.0",
+    "smol-toml": "1.9.0",
     "socket.io": "4.8.1",
     "socket.io-client": "4.8.1",
+    "ssh2": "1.17.0",
     "swagger-ui-dist": "5.17.14",
     "tailwind-merge": "3.3.1",
     "tar": "^7.5.22",
+    "undici": "5.29.0",
     "ws": "8.20.0",
     "zod": "^3.22.4"
   },

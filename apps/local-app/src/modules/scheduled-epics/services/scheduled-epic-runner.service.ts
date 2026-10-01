@@ -13,6 +13,7 @@ import type {
 import { EpicsService } from '../../epics/services/epics.service';
 import { EventsService } from '../../events/services/events.service';
 import { createLogger } from '../../../common/logging/logger';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import { getNextRunAt } from '../helpers/cron-helpers';
 import { renderScheduledEpicTemplate } from '../helpers/template-helpers';
 import type { ScheduledEpicRunnerRefresh } from './scheduled-epics.service';
@@ -32,11 +33,14 @@ export class ScheduledEpicRunnerService
 {
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private scanning = false;
+  /** Projects already logged as skipped; cleared once they are writable again. */
+  private readonly skippedProjects = new Set<string>();
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly epicsService: EpicsService,
     private readonly eventsService: EventsService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   onModuleInit(): void {
@@ -87,6 +91,7 @@ export class ScheduledEpicRunnerService
     const projects = await this.storage.listProjects({ limit: 500 });
 
     for (const project of projects.items) {
+      if (!this.admitProject(project.id)) continue;
       try {
         await this.scanProject(project.id);
       } catch (error) {
@@ -96,6 +101,19 @@ export class ScheduledEpicRunnerService
         );
       }
     }
+  }
+
+  /** Runs of a frozen or remote-owned project wait, unclaimed, until it is writable. */
+  private admitProject(projectId: string): boolean {
+    if (this.admission.isWritable(projectId)) {
+      this.skippedProjects.delete(projectId);
+      return true;
+    }
+    if (!this.skippedProjects.has(projectId)) {
+      this.skippedProjects.add(projectId);
+      logger.info({ projectId }, 'Skipping schedules of a project that is not writable here');
+    }
+    return false;
   }
 
   private async scanProject(projectId: string): Promise<void> {
@@ -281,6 +299,8 @@ export class ScheduledEpicRunnerService
       });
       return;
     }
+
+    if (!this.admitProject(schedule.projectId)) return;
 
     const claimResult = await this.atomicClaim(schedule, run.id);
     if (!claimResult.claimed) return;

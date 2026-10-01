@@ -70,7 +70,6 @@ async function installRoutes(page: Page) {
   await page.route('**/api/runtime', (route) =>
     route.fulfill(json({ mode: 'main', version: '1.0.0' })),
   );
-  await page.route('**/api/worktrees**', (route) => route.fulfill(json([])));
   await page.route('**/api/projects', (route) =>
     route.fulfill(
       json({

@@ -38,12 +38,12 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
 
   return (
     <div
-      className={cn(isStepHot && 'border-l-2 border-amber-500 pl-1.5')}
+      className={cn(isStepHot && 'border-l-2 border-status-warn pl-1.5')}
       data-testid="thinking-block-wrapper"
     >
       <Collapsible>
         <CollapsibleTrigger
-          className="group flex items-center gap-1.5 text-[11px] text-muted-foreground/70 hover:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+          className="group flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
           data-testid="thinking-block-trigger"
         >
           <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
@@ -51,7 +51,7 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
           <span>Thinking</span>
           {text && (
             <span
-              className="truncate max-w-[300px] text-muted-foreground/70 font-mono italic"
+              className="truncate max-w-[300px] text-muted-foreground font-mono italic"
               data-testid="thinking-preview"
             >
               — {previewText}
@@ -59,11 +59,11 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
           )}
           <span className="ml-auto flex items-center gap-1.5">
             {isStepHot && mode === 'diagnostic' && (
-              <Flame className="h-3 w-3 text-amber-500" data-testid="step-hotspot-flame" />
+              <Flame className="h-3 w-3 text-status-warn" data-testid="step-hotspot-flame" />
             )}
             {isStepHot && mode === 'diagnostic' && percentOfChunk != null && percentOfChunk > 0 && (
               <span
-                className="text-amber-600 font-medium text-[10px] tabular-nums"
+                className="text-status-warn font-medium text-[10px] tabular-nums"
                 data-testid="step-hotspot-pct"
               >
                 {Math.round(percentOfChunk)}%
@@ -71,7 +71,7 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
             )}
             {estimatedTokens > 0 && (
               <span
-                className="text-muted-foreground/70 text-[10px] tabular-nums"
+                className="text-muted-foreground text-[10px] tabular-nums"
                 data-testid="thinking-token-badge"
               >
                 ~{formatTokens(estimatedTokens)}
@@ -79,7 +79,7 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
             )}
             {step.durationMs > 0 && (
               <span
-                className="text-muted-foreground/70 text-[10px] tabular-nums"
+                className="text-muted-foreground text-[10px] tabular-nums"
                 data-testid="thinking-duration"
               >
                 {formatDuration(step.durationMs)}
@@ -101,7 +101,7 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
                 e.stopPropagation();
                 setShowFull((prev) => !prev);
               }}
-              className="mt-1 text-[10px] text-primary/80 hover:text-primary transition-colors"
+              className="mt-1 text-[10px] text-primary hover:underline"
               data-testid="thinking-show-more"
             >
               {showFull ? 'Show less' : 'Show more'}

@@ -32,4 +32,22 @@ const Badge = React.forwardRef<HTMLDivElement, BadgeProps>(
 );
 Badge.displayName = 'Badge';
 
-export { Badge, badgeVariants };
+/**
+ * A Badge on an opaque surface, so its tint looks the same on any parent (card, selected row,
+ * hover). `wrapperClassName` styles the wrapper, for example its margin.
+ */
+function OpaqueBadge({
+  fit = true,
+  wrapperClassName,
+  ...props
+}: BadgeProps & { fit?: boolean; wrapperClassName?: string }) {
+  return (
+    <span
+      className={cn('inline-flex rounded-full bg-background', fit && 'w-fit', wrapperClassName)}
+    >
+      <Badge {...props} />
+    </span>
+  );
+}
+
+export { Badge, OpaqueBadge, badgeVariants };

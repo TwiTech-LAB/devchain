@@ -11,13 +11,6 @@ const mockAppSocket = {
   off: jest.fn(),
   emit: socketEmitSpy,
 };
-const mockWorktreeSocket = {
-  connected: true,
-  on: jest.fn(),
-  off: jest.fn(),
-  emit: jest.fn(),
-};
-
 jest.mock('@xterm/xterm/css/xterm.css', () => ({}), { virtual: true });
 jest.mock('@xterm/xterm', () => {
   const fake = {
@@ -49,7 +42,6 @@ jest.mock('@/ui/components/chat/InlineTerminalPanel', () => ({
 }));
 jest.mock('@/ui/terminal-windows', () => ({
   useTerminalWindowManager: () => jest.fn(),
-  useWorktreeTerminalWindowManager: () => jest.fn(),
   useTerminalWindows: () => ({
     windows: [],
     closeWindow: jest.fn(),
@@ -71,24 +63,12 @@ jest.mock('@/ui/hooks/useProjectSelection', () => ({
     projects: [],
   }),
 }));
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => ({
-    activeWorktree: null,
-    setActiveWorktree: jest.fn(),
-    apiBase: '',
-    worktrees: [],
-    worktreesLoading: false,
-    runtimeResolved: true,
-  }),
-}));
 jest.mock('@/ui/hooks/useAppSocket', () => ({
   useAppSocket: jest.fn(() => mockAppSocket),
 }));
 jest.mock('@/ui/lib/socket', () => ({
   getAppSocket: jest.fn(() => mockAppSocket),
-  getWorktreeSocket: jest.fn(() => mockWorktreeSocket),
   releaseAppSocket: jest.fn(),
-  releaseWorktreeSocket: jest.fn(),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports

@@ -394,7 +394,7 @@ describe('TerminalSession', () => {
       expect(frames).toHaveLength(0);
     });
 
-    it('records input and meaningful output on gate-owned clocks', () => {
+    it('records human input on the gate clock and leaves provider output out of it', () => {
       const promptState = new HumanPromptStateService();
       const session = new TerminalSession({
         sessionId: 'session-1',
@@ -406,20 +406,17 @@ describe('TerminalSession', () => {
       session.pushFrame('\x1b[31m');
       session.pushFrame('ready');
 
-      expect(promptState.getState('tmux-session-1')).toEqual(
-        expect.objectContaining({ executedInputEpoch: 1, meaningfulOutputEpoch: 1 }),
-      );
+      expect(promptState.getState('tmux-session-1')).toEqual({
+        phase: 'inactive',
+        generation: 0,
+        executedInputEpoch: 1,
+      });
     });
 
-    it('records meaningful output before resize activity suppression', () => {
+    it('does not record output activity during resize suppression', () => {
       jest.useFakeTimers();
       try {
-        const promptState = new HumanPromptStateService();
-        const session = new TerminalSession({
-          sessionId: 'session-1',
-          tmuxSessionName: 'tmux-session-1',
-          humanPromptState: promptState,
-        });
+        const session = createSession();
         session.subscribe('client-1');
         session.resize('client-1', { cols: 100, rows: 30 });
         jest.runOnlyPendingTimers();
@@ -427,7 +424,6 @@ describe('TerminalSession', () => {
         session.pushFrame('provider response');
 
         expect(session.getActivityState().lastDataAt).toBeNull();
-        expect(promptState.getState('tmux-session-1').meaningfulOutputEpoch).toBe(1);
       } finally {
         jest.useRealTimers();
       }
@@ -449,32 +445,12 @@ describe('TerminalSession', () => {
       }
     });
 
-    it('does not advance prompt output epoch for particle-only frames', () => {
-      const promptState = new HumanPromptStateService();
-      const session = new TerminalSession({
-        sessionId: 'session-1',
-        tmuxSessionName: 'tmux-session-1',
-        humanPromptState: promptState,
-      });
-
-      session.pushFrame('\x1b[38;5;245m⠁\x1b[0m');
-      session.pushFrame('⠐⠠⡀⢀');
-
-      expect(promptState.getState('tmux-session-1').meaningfulOutputEpoch).toBe(0);
-    });
-
-    it('advances busy and epoch when real text is mixed with particles', () => {
-      const promptState = new HumanPromptStateService();
-      const session = new TerminalSession({
-        sessionId: 'session-1',
-        tmuxSessionName: 'tmux-session-1',
-        humanPromptState: promptState,
-      });
+    it('advances busy when real text is mixed with particles', () => {
+      const session = createSession();
 
       session.pushFrame('⠁ ready');
 
       expect(session.getActivityState().lastDataAt).not.toBeNull();
-      expect(promptState.getState('tmux-session-1').meaningfulOutputEpoch).toBe(1);
     });
 
     it('expires busy at configured timeout while particle redraws continue', () => {

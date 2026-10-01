@@ -1,16 +1,21 @@
 import { useState, useCallback } from 'react';
-import { Cloud, LogOut, RefreshCw } from 'lucide-react';
+import { Cloud, LogOut, Monitor, RefreshCw } from 'lucide-react';
 import { Button } from '@/ui/components/ui/button';
+import { Label } from '@/ui/components/ui/label';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { CloudAuthForm } from '@/ui/components/cloud/CloudAuthForm';
 import { SignInMobileDeviceDialog } from '@/ui/components/cloud/SignInMobileDeviceDialog';
 import { PairedDevicesCard } from '@/ui/components/cloud/PairedDevicesCard';
 import { AppDownloadCard } from '@/ui/components/cloud/AppDownloadCard';
 import { useCloudConnection } from '@/ui/hooks/useCloudConnection';
+import { useCloudTarget, type CloudTarget } from '@/ui/hooks/useCloudTarget';
+import { HOME_BACKEND } from '@/ui/lib/api-transport';
+import { openCloudOAuthPopup } from '@/ui/lib/cloud-target';
 import type { CloudConnectionStatus } from '@/modules/cloud/types';
 
 export function AccountSection() {
-  const { status, isLoading, disconnect } = useCloudConnection();
+  const target = useCloudTarget();
+  const { status, isLoading, disconnect } = useCloudConnection(target.backend);
 
   if (isLoading) {
     return (
@@ -21,51 +26,119 @@ export function AccountSection() {
     );
   }
 
-  if (!status.connected) {
-    return (
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="min-w-0">
-          <div className="rounded-xl border border-border bg-card shadow-sm p-6 lg:p-8 space-y-5">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Cloud className="h-5 w-5 text-muted-foreground" />
-                <span className="text-base font-semibold">Connect to DevChain Cloud</span>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                Sign in to enable cloud notifications, project forwarding, and mobile access.
-              </p>
-            </div>
-            <CloudAuthForm identityServiceUrl={status.identityServiceUrl} />
-          </div>
+  return (
+    <div className="space-y-6">
+      <CloudTargetSelector target={target} />
+      {status.connected ? (
+        <ConnectedAccountSection
+          status={status}
+          disconnect={disconnect}
+          backend={target.backend}
+          remoteName={target.remoteName}
+        />
+      ) : (
+        <SignedOutAccountSection status={status} target={target} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Chooses which instance sign-in, pairing and devices apply to. Offered only
+ * when a usable remote exists; a selected remote that goes offline falls back
+ * to This PC inside `useCloudTarget`, and this select follows that resolution.
+ */
+function CloudTargetSelector({ target }: { target: CloudTarget }) {
+  if (!target.selectorVisible) return null;
+
+  return (
+    <div
+      className="rounded-xl border border-border bg-card shadow-sm p-4 sm:p-5 space-y-2"
+      data-testid="cloud-target-selector-card"
+    >
+      <div className="space-y-1">
+        <Label htmlFor="cloud-target-selector">Configure</Label>
+        <div className="relative">
+          <select
+            id="cloud-target-selector"
+            data-testid="cloud-target-selector"
+            value={target.backend}
+            onChange={(event) => target.selectTarget(event.target.value)}
+            className="h-9 w-full max-w-md appearance-none rounded-md border border-border bg-background pl-9 pr-8 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value={HOME_BACKEND}>This PC</option>
+            {target.eligible.map((remote) => (
+              <option key={remote.id} value={remote.id}>
+                {remote.name}
+              </option>
+            ))}
+          </select>
+          <Monitor
+            className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
         </div>
-        {/* Signed-out: a device check is impossible/irrelevant, so always offer the download CTA. */}
-        <div className="min-w-0">
-          <AppDownloadCard />
+        <p className="text-xs text-muted-foreground">
+          Sign-in, QR pairing, devices and workspace grants apply to the selected instance only —
+          each instance pairs separately.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SignedOutAccountSection({
+  status,
+  target,
+}: {
+  status: CloudConnectionStatus;
+  target: CloudTarget;
+}) {
+  return (
+    <div className="grid gap-6 lg:grid-cols-2">
+      <div className="min-w-0">
+        <div className="rounded-xl border border-border bg-card shadow-sm p-6 lg:p-8 space-y-5">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Cloud className="h-5 w-5 text-muted-foreground" />
+              <span className="text-base font-semibold">Connect to DevChain Cloud</span>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Sign in to enable cloud notifications, project forwarding, and mobile access.
+            </p>
+          </div>
+          <CloudAuthForm
+            identityServiceUrl={status.identityServiceUrl}
+            backend={target.backend}
+            remoteName={target.remoteName}
+          />
         </div>
       </div>
-    );
-  }
-
-  return <ConnectedAccountSection status={status} disconnect={disconnect} />;
+      {/* Signed-out: a device check is impossible/irrelevant, so always offer the download CTA. */}
+      <div className="min-w-0">
+        <AppDownloadCard />
+      </div>
+    </div>
+  );
 }
 
 function ConnectedAccountSection({
   status,
   disconnect,
+  backend,
+  remoteName,
 }: {
   status: CloudConnectionStatus;
   disconnect: () => void;
+  backend: string;
+  remoteName: string | null;
 }) {
   const [showDisconnect, setShowDisconnect] = useState(false);
 
   const handleSwitch = useCallback(() => {
     disconnect();
-    const redirectUri = window.location.origin + '/auth/cloud/callback';
-    const url = `${status.identityServiceUrl}/auth/github?response_mode=fragment_full&redirect_uri=${encodeURIComponent(redirectUri)}`;
-    setTimeout(() => {
-      window.open(url, 'devchain-cloud-auth', 'width=600,height=700');
-    }, 100);
-  }, [status.identityServiceUrl, disconnect]);
+    setTimeout(() => openCloudOAuthPopup(status.identityServiceUrl, { backend, remoteName }), 100);
+  }, [status.identityServiceUrl, disconnect, backend, remoteName]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -76,7 +149,7 @@ function ConnectedAccountSection({
             aria-label="Cloud account connected"
             className="flex items-center gap-2"
           >
-            <Cloud className="h-5 w-5 text-green-500" />
+            <Cloud className="h-5 w-5 text-status-ok" />
             <span className="text-base font-semibold">Connected</span>
           </div>
           <dl className="divide-y divide-border border-y border-border">
@@ -124,12 +197,13 @@ function ConnectedAccountSection({
 
           <SignInMobileDeviceDialog
             identityServiceUrl={status.identityServiceUrl}
+            backend={backend}
             triggerSize="default"
             triggerClassName="w-full sm:w-[480px] border-primary text-primary hover:bg-primary/5"
           />
         </div>
 
-        <PairedDevicesCard />
+        <PairedDevicesCard backend={backend} />
 
         <ConfirmDialog
           open={showDisconnect}

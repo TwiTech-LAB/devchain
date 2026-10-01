@@ -34,6 +34,7 @@ import {
   STATUS_LABELS,
 } from '@/ui/lib/reviews';
 import type { CommentType, ReviewComment } from '@/ui/lib/reviews';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // Group IDs for persisting panel layouts
 const FILE_NAV_GROUP_ID = 'review-file-nav';
@@ -86,6 +87,7 @@ function ReviewDetailSkeleton() {
 }
 
 export function ReviewDetailPage() {
+  const fetchFn = useFetchFactory();
   const { reviewId } = useParams<{ reviewId: string }>();
   const navigate = useNavigate();
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -110,7 +112,7 @@ export function ReviewDetailPage() {
     isError: reviewError,
   } = useQuery({
     queryKey: ['review', reviewId],
-    queryFn: () => fetchReview(reviewId!),
+    queryFn: () => fetchReview(fetchFn, reviewId!),
     enabled: !!reviewId,
   });
 
@@ -128,7 +130,7 @@ export function ReviewDetailPage() {
       if (!review?.projectId || !review.baseSha || !review.headSha) {
         throw new Error('Review SHAs are not available');
       }
-      return fetchChangedFiles(review.projectId, review.baseSha, review.headSha);
+      return fetchChangedFiles(fetchFn, review.projectId, review.baseSha, review.headSha);
     },
     enabled: !!review?.projectId && !!review?.baseSha && !!review?.headSha,
   });
@@ -144,7 +146,7 @@ export function ReviewDetailPage() {
       if (!review?.projectId || !review.baseSha || !review.headSha) {
         throw new Error('Review SHAs are not available');
       }
-      return fetchDiff(review.projectId, review.baseSha, review.headSha);
+      return fetchDiff(fetchFn, review.projectId, review.baseSha, review.headSha);
     },
     enabled: !!review?.projectId && !!review?.baseSha && !!review?.headSha && !!selectedFile,
   });
@@ -152,7 +154,7 @@ export function ReviewDetailPage() {
   // Fetch comments for the review (shared with CommentPanel via query key)
   const { data: commentsData } = useQuery({
     queryKey: ['review-comments', reviewId],
-    queryFn: () => fetchReviewComments(reviewId!),
+    queryFn: () => fetchReviewComments(fetchFn, reviewId!),
     enabled: !!reviewId,
   });
 
@@ -229,7 +231,6 @@ export function ReviewDetailPage() {
     );
   }
 
-  const statusColor = STATUS_COLORS[review.status];
   const statusLabel = STATUS_LABELS[review.status];
 
   return (
@@ -243,10 +244,7 @@ export function ReviewDetailPage() {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-semibold truncate">{review.title}</h1>
-              <Badge
-                variant="secondary"
-                className={cn('shrink-0', statusColor.bg, statusColor.text)}
-              >
+              <Badge variant="secondary" className={cn('shrink-0', STATUS_COLORS[review.status])}>
                 {statusLabel}
               </Badge>
             </div>

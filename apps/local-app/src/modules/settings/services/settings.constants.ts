@@ -24,6 +24,18 @@ export const MIN_MESSAGE_POOL_MAX_MESSAGES = 1;
 export const MAX_MESSAGE_POOL_MAX_MESSAGES = 100;
 export const DEFAULT_MESSAGE_POOL_SEPARATOR = '\n---\n';
 export const DEFAULT_SKILLS_SYNC_ON_STARTUP = true;
+export const DEFAULT_MESSAGING_FOLLOW_NOTE = true;
+
+/**
+ * Used when `events.epicAssigned.template` has no stored value. Lives here so
+ * every reader (settings delegates, the assignment notifier, the replica read
+ * side) resolves the same default.
+ */
+export const DEFAULT_EPIC_ASSIGNED_TEMPLATE =
+  '[Epic Assignment]\n{epic_title} is now assigned to {agent_name} in {project_name}. Status: {epic_status}. (Epic ID: {epic_id})';
+
+/** Fallback of `activity.idleTimeoutMs` shared by its readers. */
+export const DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS = 30000;
 
 export interface ProjectPoolSettings {
   enabled?: boolean;

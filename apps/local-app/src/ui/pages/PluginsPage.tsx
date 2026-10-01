@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, Loader2, RefreshCw, Search } from 'lucide-react';
-import { Badge } from '@/ui/components/ui/badge';
+import { OpaqueBadge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import {
@@ -36,6 +37,7 @@ import {
 } from '@/ui/lib/provider-plugins';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { cn } from '@/ui/lib/utils';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 type StatusFilter = 'all' | 'installed' | 'available';
 type PolicyScope = ProviderPluginPolicySource;
@@ -142,6 +144,7 @@ function PolicyControl({
 }
 
 export function PluginsPage() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { showSuccess, showError } = useToastHelpers();
   const { selectedProjectId, selectedProject } = useSelectedProject();
@@ -151,12 +154,13 @@ export function PluginsPage() {
 
   const pluginsQuery = useQuery({
     queryKey: providerPluginsKey,
-    queryFn: ({ signal }) => fetchProviderPlugins({ signal }),
+    queryFn: ({ signal }) => fetchProviderPlugins(fetchFn, { signal }),
     enabled: Boolean(selectedProjectId),
   });
   const policiesQuery = useQuery({
     queryKey: policiesKey,
-    queryFn: ({ signal }) => fetchProviderPluginPolicies(selectedProjectId as string, { signal }),
+    queryFn: ({ signal }) =>
+      fetchProviderPluginPolicies(fetchFn, selectedProjectId as string, { signal }),
     enabled: Boolean(selectedProjectId),
   });
 
@@ -215,13 +219,19 @@ export function PluginsPage() {
 
       if (scope === 'default') {
         return reset
-          ? resetProviderPluginDefault(plugin.providerId, plugin.pluginId)
-          : setProviderPluginDefault(plugin.providerId, plugin.pluginId, enabled === true);
+          ? resetProviderPluginDefault(fetchFn, plugin.providerId, plugin.pluginId)
+          : setProviderPluginDefault(fetchFn, plugin.providerId, plugin.pluginId, enabled === true);
       }
 
       return reset
-        ? resetProjectProviderPluginPolicy(selectedProjectId, plugin.providerId, plugin.pluginId)
+        ? resetProjectProviderPluginPolicy(
+            fetchFn,
+            selectedProjectId,
+            plugin.providerId,
+            plugin.pluginId,
+          )
         : setProjectProviderPluginPolicy(
+            fetchFn,
             selectedProjectId,
             plugin.providerId,
             plugin.pluginId,
@@ -244,7 +254,7 @@ export function PluginsPage() {
   });
 
   const refreshMutation = useMutation({
-    mutationFn: refreshProviderPlugins,
+    mutationFn: () => refreshProviderPlugins(fetchFn),
     onSuccess: async (plugins) => {
       await queryClient.cancelQueries({ queryKey: providerPluginsKey });
       queryClient.setQueryData(providerPluginsKey, plugins);
@@ -492,14 +502,14 @@ export function PluginsPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col items-start gap-1">
-                        <Badge
+                        <OpaqueBadge
                           variant="outline"
                           className={cn(
                             plugin.installed
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                              ? TONE_CLASSES.ok
                               : plugin.available
-                                ? 'border-blue-200 bg-blue-50 text-blue-800'
-                                : 'border-slate-200 bg-slate-50 text-slate-700',
+                                ? TONE_CLASSES.info
+                                : 'border-border bg-muted text-muted-foreground',
                           )}
                         >
                           {plugin.installed
@@ -507,9 +517,11 @@ export function PluginsPage() {
                             : plugin.available
                               ? 'Available'
                               : 'Unavailable'}
-                        </Badge>
+                        </OpaqueBadge>
                         {plugin.installed && !plugin.providerEnabled ? (
-                          <span className="text-xs text-amber-700">Provider capability is off</span>
+                          <span className="text-xs text-status-warn">
+                            Provider capability is off
+                          </span>
                         ) : null}
                       </div>
                     </TableCell>

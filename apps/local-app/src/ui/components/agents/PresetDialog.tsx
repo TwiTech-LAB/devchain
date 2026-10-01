@@ -26,6 +26,8 @@ import { Loader2, Save, AlertCircle, Pencil } from 'lucide-react';
 import type { Preset, PresetAgentConfig } from '@/ui/lib/preset-types';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { shortModelName } from '@/ui/lib/model-utils';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface Agent {
   id: string;
@@ -148,11 +150,15 @@ function parseProviderEfforts(payload: unknown, providerId: string): ProviderEff
 }
 
 async function createPreset(projectId: string, preset: Preset): Promise<CreatePresetResponse> {
-  const res = await fetch(`/api/projects/${projectId}/presets`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(preset),
-  });
+  const res = await apiFetch(
+    `/api/projects/${projectId}/presets`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(preset),
+    },
+    { backend: HOME_BACKEND },
+  );
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to create preset' }));
     throw new Error(error.message || 'Failed to create preset');
@@ -169,11 +175,15 @@ async function updatePreset(
     agentConfigs?: PresetAgentConfig[];
   },
 ): Promise<UpdatePresetResponse> {
-  const res = await fetch(`/api/projects/${projectId}/presets`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ presetName, updates }),
-  });
+  const res = await apiFetch(
+    `/api/projects/${projectId}/presets`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ presetName, updates }),
+    },
+    { backend: HOME_BACKEND },
+  );
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to update preset' }));
     throw new Error(error.message || 'Failed to update preset');
@@ -189,6 +199,7 @@ export function PresetDialog({
   existingPresetNames = [],
   presetToEdit,
 }: PresetDialogProps) {
+  const fetchFn = useFetchFactory();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isSaving, setIsSaving] = useState(false);
@@ -249,7 +260,7 @@ export function PresetDialog({
       const results = await Promise.all(
         Array.from(profileIds).map(async (profileId) => {
           try {
-            const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+            const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
             if (!res.ok) return { profileId, configs: [] };
             const configs = await res.json();
             return { profileId, configs };
@@ -295,7 +306,7 @@ export function PresetDialog({
     queries: selectedProviderIds.map((providerId) => ({
       queryKey: providerModelQueryKeys.main(providerId),
       queryFn: async () => {
-        const res = await fetch(`/api/providers/${providerId}/models`);
+        const res = await fetchFn(`/api/providers/${providerId}/models`);
         if (!res.ok) {
           return [] as ProviderModelOption[];
         }
@@ -321,7 +332,7 @@ export function PresetDialog({
     queries: selectedProviderIds.map((providerId) => ({
       queryKey: ['provider-efforts', providerId],
       queryFn: async () => {
-        const res = await fetch(`/api/providers/${providerId}/efforts`);
+        const res = await fetchFn(`/api/providers/${providerId}/efforts`);
         if (!res.ok) {
           return {
             efforts: [],

@@ -497,8 +497,12 @@ describe('tool-descriptors', () => {
     it('documents the count-only response and how to derive the changed slugs', () => {
       const metadata = allMetadata.find((m) => m.name === 'devchain_skills_set_enabled');
 
-      expect(metadata?.description).toContain('{ updatedCount, unchanged, notFound }');
-      expect(metadata?.description).toContain('request minus unchanged and notFound');
+      expect(metadata?.description).toContain(
+        'Built-in DevChain skills (devchain/*) are always enabled',
+      );
+
+      expect(metadata?.description).toContain('{ updatedCount, unchanged, notFound, locked }');
+      expect(metadata?.description).toContain('request minus unchanged, notFound and locked');
     });
 
     it('documents devchain_skills_set_source_enabled with project scope and refusal cases', () => {
@@ -515,6 +519,7 @@ describe('tool-descriptors', () => {
       expect(metadata?.description).toContain('global source state');
       expect(metadata?.description).toContain('SOURCE_NOT_FOUND');
       expect(metadata?.description).toContain('SOURCE_DISABLED_GLOBALLY');
+      expect(metadata?.description).toContain('SKILL_SOURCE_ALWAYS_ENABLED');
       expect(metadata?.paramsSchema).not.toBeNull();
       expect(schema.required).toEqual(['sessionId', 'sourceName', 'enabled']);
       expect(schema.additionalProperties).toBe(false);

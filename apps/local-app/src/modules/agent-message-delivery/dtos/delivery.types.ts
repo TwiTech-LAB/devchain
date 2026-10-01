@@ -29,6 +29,12 @@ export interface DeliveryMessage {
    * no wrapper; `'sender-footer'` appends the authenticated sender display name.
    */
   readonly framing?: 'agent-banner' | 'plain' | 'sender-footer';
+  /**
+   * The body holds text from outside this DevChain, for example automation text bound to
+   * an event field. Such a message gets no follow note. A guest sender always counts as
+   * outside text.
+   */
+  readonly outsideText?: boolean;
 }
 
 export interface DeliveryPolicy {

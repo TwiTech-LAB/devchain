@@ -12,6 +12,10 @@ import { MAX_TIME_ENTRY_DURATION_MS } from '../../external-integrations/models/e
 import type { ExternalTimeOperationInspection } from '../../external-integrations/models/external-time-mutation.models';
 import { timeEntryNoteFingerprint } from '../../external-integrations/sessions/external-time-mutation.store';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  REMOTE_MIRROR_SYNC_PORT,
+  type RemoteMirrorSyncPort,
+} from '../../remotes/ports/remote-mirror-sync.port';
 import type {
   Epic,
   ExternalEstimateLogDailyCheckpoint,
@@ -91,6 +95,7 @@ export class EpicEstimateLoggingService {
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly epicTime: EpicTimeService,
     private readonly timeMutations: ExternalTimeMutationService,
+    @Inject(REMOTE_MIRROR_SYNC_PORT) private readonly mirrorSync: RemoteMirrorSyncPort,
   ) {}
 
   async getState(input: ExternalEstimateTaskContext): Promise<ExternalEstimateLogSnapshot> {
@@ -103,6 +108,9 @@ export class EpicEstimateLoggingService {
   async setLoggedMinutes(
     input: SetExternalEstimateLoggedMinutesInput,
   ): Promise<ExternalEstimateLogSnapshot> {
+    // A connected project's projection is mirror data: pull first so the
+    // rebuilt baseline reflects the same home source the preview showed.
+    await this.mirrorSync.pullNow(input.projectId);
     const context = await this.resolveContext(input);
     await this.assertNoUnassignedLegacyHistory(context);
     // Set logged rebuilds the dated baseline from the live projection in the
@@ -122,6 +130,8 @@ export class EpicEstimateLoggingService {
   async createTimeEntry(
     input: CreateExternalEstimateTimeEntryInput,
   ): Promise<CreateExternalEstimateTimeEntryResult> {
+    // A connected project's time lives on its remote: validate against a fresh mirror.
+    await this.mirrorSync.pullNow(input.projectId);
     const context = await this.resolveContext(input);
     await this.assertNoUnassignedLegacyHistory(context);
     const requestKey = this.requireRequestKey(input.requestKey);

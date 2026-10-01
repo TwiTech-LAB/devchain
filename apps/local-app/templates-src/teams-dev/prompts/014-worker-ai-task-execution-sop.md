@@ -82,7 +82,12 @@ devchain_add_epic_comment(task_id, "STATUS: STARTED — Confirmed scope; reading
    * Make sure to address the last review feedback if it's the case
    * Update/author tests alongside code.
 4. **Quality Gate (local)**:
-   * Run type checks/lints/tests (e.g., `mypy`, `ruff/flake8`, `pytest`, `npm test`, etc.).
+   * Run type checks and linters (e.g., `mypy`, `ruff/flake8`, etc.).
+   * While you work, run only the tests for the code you changed.
+   * Before REVIEW, run the full test suite once:
+     `devchain queue full-tests -- <test command> > /tmp/full-tests-<task-id>.log 2>&1; echo "exit=$?"; tail -n 40 /tmp/full-tests-<task-id>.log`
+   * If `devchain queue` is not available, run the same command without `devchain queue full-tests --`.
+   * After a failure: fix it, run the failing tests, then run the full suite once more.
    * Ensure no regressions; ensure coverage for changed areas.
 5. **Already implemented elsewhere**:
 
@@ -106,7 +111,7 @@ Upon completing implementation **or** upon hitting a blocker, prepare a structur
 * Tests:
 
   * Added/updated: `<test_file>::<test_name>` …
-  * How to run: `<command>`
+  * Full suite: `<command>` → `<passed/failed counts>`, log `<path>`
 * Docs:
 
   * Updated: `<doc-slug or path>`

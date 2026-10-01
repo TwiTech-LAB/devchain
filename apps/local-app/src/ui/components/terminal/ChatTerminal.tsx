@@ -16,6 +16,7 @@ import { Button } from '@/ui/components/ui/button';
 import '@xterm/xterm/css/xterm.css';
 import { termLog } from '@/ui/lib/debug';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
+import { useHomeSocket } from '@/ui/hooks/useHomeSocket';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppTheme } from '@/ui/hooks/useAppTheme';
 import {
@@ -48,6 +49,7 @@ import type {
   TerminalPromptPasteInput,
 } from '@/modules/terminal/dtos/ws-envelope.dto';
 import { TerminalPromptPasteAckSchema } from '@/modules/terminal/dtos/ws-envelope.dto';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 const RECOVERY_ABORT_ACK_TIMEOUT_MS = 5000;
 export const PROMPT_PASTE_ACK_TIMEOUT_MS = 5000;
@@ -91,14 +93,15 @@ function createPromptPasteRequestId(): string {
 export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(function ChatTerminal(
   {
     sessionId,
-    socket: _providedSocket,
     className,
     chrome = 'default',
     ariaLabel = 'Agent terminal',
     onSessionEnded,
+    socket: socketTarget = 'project',
   }: ChatTerminalProps,
   ref,
 ) {
+  const fetchFn = useFetchFactory();
   const appTheme = useAppTheme();
   const [input, setInput] = useState<string>('');
   const [inputMode, setInputMode] = useState<'form' | 'tty' | null>(null); // null = loading
@@ -127,13 +130,14 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     chrome === 'none' ? 'bg-transparent' : 'rounded-xl border border-border bg-terminal shadow-sm',
     className,
   );
-  const socket = useAppSocket({}, [], _providedSocket);
+  const useSocket = socketTarget === 'home' ? useHomeSocket : useAppSocket;
+  const socket = useSocket({}, []);
   const livePromptInsertRef = useRef({ input, inputMode, sessionId, socket });
   livePromptInsertRef.current = { input, inputMode, sessionId, socket };
 
   // Fetch terminal settings BEFORE mounting terminal
   useEffect(() => {
-    fetch('/api/settings')
+    fetchFn('/api/settings')
       .then((res) => res.json())
       .then((json) => {
         const mode = json?.terminal?.inputMode;

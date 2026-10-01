@@ -1,3 +1,9 @@
+import { Test } from '@nestjs/testing';
+import type { Provider } from '@nestjs/common';
+import { SkillSourceRegistryService } from './services/skill-source-registry.service';
+import { SkillsService } from './services/skills.service';
+import { STORAGE_SERVICE } from '../storage/interfaces/storage.interface';
+import { BUILT_IN_SKILL_SOURCE_NAMES } from '../../common/constants/built-in-skill-sources';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { AnthropicSkillSource } from './adapters/anthropic-skill-source.adapter';
 import type { SkillSourceAdapter } from './adapters/skill-source.adapter';
@@ -89,4 +95,23 @@ describe('SkillsModule', () => {
       GitHubDirectorySkillSourceAdapter,
     ]);
   });
+});
+
+/** Unit layer composes real adapter providers without storage or network sync. */
+it('declares every built-in adapter in the shared source names', async () => {
+  const providers = (
+    Reflect.getMetadata(MODULE_METADATA.PROVIDERS, SkillsModule) as Provider[]
+  ).filter(
+    (provider) =>
+      ![SkillSourceLifecycleService, SkillSyncService, SkillsService].includes(
+        provider as typeof SkillsService,
+      ),
+  );
+  const module = await Test.createTestingModule({
+    providers: [...providers, { provide: STORAGE_SERVICE, useValue: {} }],
+  }).compile();
+  expect(module.get(SkillSourceRegistryService).getBuiltInSourceNames()).toEqual(
+    Object.values(BUILT_IN_SKILL_SOURCE_NAMES).sort(),
+  );
+  await module.close();
 });

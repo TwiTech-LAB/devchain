@@ -40,7 +40,6 @@ export function readRichDescription(
     ),
     { signal },
     'The description could not be loaded.',
-    '',
     fetchFn,
   );
 }
@@ -58,7 +57,6 @@ export function createDescriptionSession(
     ),
     { method: 'POST' },
     'The editing session could not be opened.',
-    '',
     fetchFn,
   );
 }
@@ -72,7 +70,6 @@ export function touchSession(
     withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}/touch`, projectId),
     { method: 'POST' },
     'The editing session could not be refreshed.',
-    '',
     fetchFn,
   );
 }
@@ -92,7 +89,6 @@ export function saveSession(
       body: JSON.stringify({ document, revision }),
     },
     'The description could not be saved.',
-    '',
     fetchFn,
   );
 }
@@ -106,7 +102,6 @@ export function verifySession(
     withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}/verify`, projectId),
     { method: 'POST' },
     'The remote content could not be verified.',
-    '',
     fetchFn,
   );
 }
@@ -120,7 +115,6 @@ export function reloadSession(
     withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}/reload`, projectId),
     { method: 'POST' },
     'The remote content could not be reloaded.',
-    '',
     fetchFn,
   );
 }
@@ -144,7 +138,6 @@ export function createCommentEditSession(
       body: JSON.stringify({ ...(lookupToken !== null ? { lookupToken } : {}) }),
     },
     'The comment editing session could not be opened.',
-    '',
     fetchFn,
   );
 }
@@ -168,7 +161,6 @@ export function createCommentDeleteSession(
       body: JSON.stringify({ ...(lookupToken !== null ? { pageProof: lookupToken } : {}) }),
     },
     'The comment deletion session could not be opened.',
-    '',
     fetchFn,
   );
 }
@@ -182,7 +174,6 @@ export function executeCommentDelete(
     withIntegrationProjectId(`${SESSION_BASE}/${encodeURIComponent(sessionId)}`, projectId),
     { method: 'DELETE' },
     'The comment could not be deleted.',
-    '',
     fetchFn,
   );
 }

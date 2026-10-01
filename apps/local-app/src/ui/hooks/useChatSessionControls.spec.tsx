@@ -290,7 +290,7 @@ describe('useChatSessionControls', () => {
         await result.current.handleRestoreSession(sessionId, agentId);
       });
 
-      expect(mockRestore).toHaveBeenCalledWith(sessionId, 'proj-1', '', expect.any(Function));
+      expect(mockRestore).toHaveBeenCalledWith(sessionId, 'proj-1', expect.any(Function));
     });
 
     it('shows success toast after restore', async () => {
@@ -521,7 +521,7 @@ describe('useChatSessionControls', () => {
         await result.current.handleTerminateSession('agent-1', 'sess-old');
       });
 
-      expect(mockTerminate).toHaveBeenCalledWith('sess-old', '', expect.any(Function));
+      expect(mockTerminate).toHaveBeenCalledWith('sess-old', expect.any(Function));
       expect(mockToast).toHaveBeenCalledWith({
         title: 'Session terminated',
         description: 'The session was terminated.',

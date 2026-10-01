@@ -4,6 +4,10 @@
  * Fetches https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
  * Filters to Claude, OpenAI, and Gemini models, validates entries, writes to session-reader/data/pricing.json.
  *
+ * Entries already in pricing.json that LiteLLM no longer lists are kept: LiteLLM drops
+ * retired direct-API models, and old transcripts still need their prices. Upstream
+ * values win for models LiteLLM still lists. CONTEXT_WINDOW_OVERRIDES apply last.
+ *
  * On failure: logs a warning and keeps the existing pricing.json when present.
  * Usage: pnpm --filter local-app pricing:update
  */
@@ -25,6 +29,15 @@ const OUTPUT_PATH = path.join(
 );
 
 const FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Documented default windows where LiteLLM records the opt-in extended-context maximum.
+ * Sonnet 4.5 reaches 1M only with a beta header; without one, the API window is 200K.
+ */
+const CONTEXT_WINDOW_OVERRIDES: Record<string, number> = {
+  'claude-sonnet-4-5': 200_000,
+  'claude-sonnet-4-5-20250929': 200_000,
+};
 
 interface LiteLLMEntry {
   input_cost_per_token?: number;
@@ -64,6 +77,16 @@ function isValidPricing(entry: unknown): entry is LiteLLMEntry {
   if (!entry || typeof entry !== 'object') return false;
   const e = entry as Record<string, unknown>;
   return typeof e.input_cost_per_token === 'number' && typeof e.output_cost_per_token === 'number';
+}
+
+function readExistingSnapshot(): Record<string, LiteLLMEntry> {
+  if (!fs.existsSync(OUTPUT_PATH)) return {};
+  const data = JSON.parse(fs.readFileSync(OUTPUT_PATH, 'utf8')) as Record<string, unknown>;
+  const existing: Record<string, LiteLLMEntry> = {};
+  for (const [key, entry] of Object.entries(data)) {
+    if (isValidPricing(entry)) existing[key] = entry;
+  }
+  return existing;
 }
 
 async function main(): Promise<void> {
@@ -123,6 +146,17 @@ async function main(): Promise<void> {
       accepted++;
     }
 
+    let retained = 0;
+    for (const [key, entry] of Object.entries(readExistingSnapshot())) {
+      if (key in filtered) continue;
+      filtered[key] = entry;
+      retained++;
+    }
+
+    for (const [key, maxInputTokens] of Object.entries(CONTEXT_WINDOW_OVERRIDES)) {
+      if (filtered[key]) filtered[key].max_input_tokens = maxInputTokens;
+    }
+
     // Ensure output directory exists
     const outputDir = path.dirname(OUTPUT_PATH);
     if (!fs.existsSync(outputDir)) {
@@ -131,7 +165,7 @@ async function main(): Promise<void> {
 
     fs.writeFileSync(OUTPUT_PATH, JSON.stringify(filtered, null, 2) + '\n', 'utf8');
     console.log(
-      `[fetch-pricing] Done: ${accepted} models (Claude/OpenAI/Gemini) from ${total} total entries → ${OUTPUT_PATH}`,
+      `[fetch-pricing] Done: ${accepted} models (Claude/OpenAI/Gemini) from ${total} total entries, ${retained} retired models kept → ${OUTPUT_PATH}`,
     );
   } catch (error) {
     clearTimeout(timeout);

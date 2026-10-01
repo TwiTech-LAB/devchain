@@ -262,7 +262,7 @@ export function InlineTerminalHeader({
                       className="h-7 px-2 text-xs"
                     >
                       <ClockArrowDown
-                        className="mr-1 h-3.5 w-3.5 text-amber-700 dark:text-amber-500"
+                        className="mr-1 h-3.5 w-3.5 text-status-warn"
                         aria-hidden="true"
                       />
                       <span className="tabular-nums">{unloggedDurationLabel}</span>

@@ -40,8 +40,8 @@ function PoolCard({ pool, onClick, isSelected }: PoolCardProps) {
       onClick={onClick}
       className={cn(
         'p-3 border rounded-lg text-left transition-colors',
-        'hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-        isSelected && 'bg-accent border-primary',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        isSelected ? 'bg-selected border-primary' : 'hover:bg-accent',
       )}
       aria-pressed={isSelected}
       aria-label={`${pool.agentName}: ${pool.messageCount} message${pool.messageCount !== 1 ? 's' : ''}, waiting ${waitSeconds} seconds${holdLabel ? `, ${holdLabel.toLowerCase()}` : ''}`}
@@ -135,7 +135,7 @@ export function CurrentPoolsPanel({
                       type="button"
                       onClick={() => handleOpenForce(pool)}
                       disabled={forcingAgentId === pool.agentId}
-                      className="text-xs px-2 py-1 rounded border transition-colors hover:bg-blue-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-60"
+                      className="text-xs px-2 py-1 rounded border transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-60"
                       aria-label={`Send now for ${pool.agentName}`}
                     >
                       {forcingAgentId === pool.agentId ? (

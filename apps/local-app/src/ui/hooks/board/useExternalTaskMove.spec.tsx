@@ -1137,7 +1137,6 @@ describe('useExternalTaskMove landing reconciliation', () => {
               '/api/integrations/my-work/jira?includeCompleted=false',
               { signal },
               'Assigned work could not be loaded.',
-              '',
               fetchMock as unknown as FetchFn,
             ),
         }),

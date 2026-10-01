@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui
 import { Input } from '../ui/input';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { cn } from '@/ui/lib/utils';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 import { ProjectForwardingRow } from './ProjectForwardingRow';
 
 type FilterMode = 'all' | 'enabled' | 'disabled';
@@ -27,7 +28,9 @@ export function ProjectForwardingList() {
     queries: projects.map((p) => ({
       queryKey: ['cloud', 'egress', p.id] as const,
       queryFn: async () => {
-        const res = await fetch(`/api/cloud/egress/projects/${p.id}`);
+        const res = await apiFetch(`/api/cloud/egress/projects/${p.id}`, undefined, {
+          backend: HOME_BACKEND,
+        });
         if (!res.ok) throw new Error('Failed to fetch egress config');
         return res.json() as Promise<{ enabled: boolean }>;
       },
@@ -66,11 +69,15 @@ export function ProjectForwardingList() {
     );
     const results = await Promise.allSettled(
       projects.map((p) =>
-        fetch(`/api/cloud/egress/projects/${p.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: targetState }),
-        }).then((res) => {
+        apiFetch(
+          `/api/cloud/egress/projects/${p.id}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: targetState }),
+          },
+          { backend: HOME_BACKEND },
+        ).then((res) => {
           if (!res.ok) throw new Error(`egress:${res.status}`);
         }),
       ),

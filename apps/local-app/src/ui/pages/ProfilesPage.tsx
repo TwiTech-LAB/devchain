@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
-import { Badge } from '@/ui/components/ui/badge';
+import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
+import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Textarea } from '@/ui/components/ui/textarea';
 import {
   Dialog,
@@ -41,6 +42,8 @@ import { EnvEditor, type EnvEditorHandle } from '@/ui/components/EnvEditor';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { MarkdownReferenceInput } from '@/ui/components/shared';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface Prompt {
   id: string;
@@ -86,34 +89,37 @@ interface ProviderConfig {
   updatedAt: string;
 }
 
-async function fetchProfiles(projectId: string) {
-  const res = await fetch(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
+async function fetchProfiles(fetchFn: FetchFn, projectId: string) {
+  const res = await fetchFn(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch profiles');
   return res.json();
 }
 
-async function fetchPrompts(projectId: string) {
-  const res = await fetch(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
+async function fetchPrompts(fetchFn: FetchFn, projectId: string) {
+  const res = await fetchFn(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch prompts');
   return res.json();
 }
 
-async function fetchProviders() {
-  const res = await fetch('/api/providers');
+async function fetchProviders(fetchFn: FetchFn) {
+  const res = await fetchFn('/api/providers');
   if (!res.ok) throw new Error('Failed to fetch providers');
   return res.json();
 }
 
 // Note: providerId and options removed in Phase 4
 // Provider configuration now managed via ProviderConfigsSection
-async function createProfile(data: {
-  projectId: string;
-  name: string;
-  familySlug?: string | null;
-  promptIds?: string[];
-  instructions?: string | null;
-}) {
-  const res = await fetch('/api/profiles', {
+async function createProfile(
+  fetchFn: FetchFn,
+  data: {
+    projectId: string;
+    name: string;
+    familySlug?: string | null;
+    promptIds?: string[];
+    instructions?: string | null;
+  },
+) {
+  const res = await fetchFn('/api/profiles', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -123,6 +129,7 @@ async function createProfile(data: {
 }
 
 async function updateProfile(
+  fetchFn: FetchFn,
   id: string,
   data: {
     name?: string;
@@ -131,7 +138,7 @@ async function updateProfile(
     instructions?: string | null;
   },
 ) {
-  const res = await fetch(`/api/profiles/${id}`, {
+  const res = await fetchFn(`/api/profiles/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -140,8 +147,8 @@ async function updateProfile(
   return res.json();
 }
 
-async function replaceProfilePrompts(id: string, promptIds: string[]) {
-  const res = await fetch(`/api/profiles/${id}/prompts`, {
+async function replaceProfilePrompts(fetchFn: FetchFn, id: string, promptIds: string[]) {
+  const res = await fetchFn(`/api/profiles/${id}/prompts`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ promptIds }),
@@ -150,19 +157,23 @@ async function replaceProfilePrompts(id: string, promptIds: string[]) {
   return res.json();
 }
 
-async function deleteProfile(id: string) {
-  const res = await fetch(`/api/profiles/${id}`, { method: 'DELETE' });
+async function deleteProfile(fetchFn: FetchFn, id: string) {
+  const res = await fetchFn(`/api/profiles/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete profile');
 }
 
 // Provider Config API functions
-async function fetchProviderConfigs(profileId: string): Promise<ProviderConfig[]> {
-  const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+async function fetchProviderConfigs(
+  fetchFn: FetchFn,
+  profileId: string,
+): Promise<ProviderConfig[]> {
+  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
   if (!res.ok) throw new Error('Failed to fetch provider configs');
   return res.json();
 }
 
 async function createProviderConfig(
+  fetchFn: FetchFn,
   profileId: string,
   data: {
     providerId: string;
@@ -174,7 +185,7 @@ async function createProviderConfig(
     effort?: string | null;
   },
 ): Promise<ProviderConfig> {
-  const res = await fetch(`/api/profiles/${profileId}/provider-configs`, {
+  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -187,6 +198,7 @@ async function createProviderConfig(
 }
 
 async function updateProviderConfig(
+  fetchFn: FetchFn,
   id: string,
   data: {
     name?: string;
@@ -197,7 +209,7 @@ async function updateProviderConfig(
     effort?: string | null;
   },
 ): Promise<ProviderConfig> {
-  const res = await fetch(`/api/provider-configs/${id}`, {
+  const res = await fetchFn(`/api/provider-configs/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -209,8 +221,8 @@ async function updateProviderConfig(
   return res.json();
 }
 
-async function deleteProviderConfig(id: string): Promise<void> {
-  const res = await fetch(`/api/provider-configs/${id}`, { method: 'DELETE' });
+async function deleteProviderConfig(fetchFn: FetchFn, id: string): Promise<void> {
+  const res = await fetchFn(`/api/provider-configs/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
     throw new Error(error.message || 'Failed to delete provider config');
@@ -227,14 +239,20 @@ interface ProviderEffortsCatalog {
   requiresModelForEffort: boolean;
 }
 
-async function fetchProviderModels(providerId: string): Promise<ProviderCatalogModel[]> {
-  const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}/models`);
+async function fetchProviderModels(
+  fetchFn: FetchFn,
+  providerId: string,
+): Promise<ProviderCatalogModel[]> {
+  const res = await fetchFn(`/api/providers/${encodeURIComponent(providerId)}/models`);
   if (!res.ok) throw new Error('Failed to fetch provider models');
   return res.json();
 }
 
-async function fetchProviderEfforts(providerId: string): Promise<ProviderEffortsCatalog> {
-  const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}/efforts`);
+async function fetchProviderEfforts(
+  fetchFn: FetchFn,
+  providerId: string,
+): Promise<ProviderEffortsCatalog> {
+  const res = await fetchFn(`/api/providers/${encodeURIComponent(providerId)}/efforts`);
   if (!res.ok) throw new Error('Failed to fetch provider efforts');
   return res.json();
 }
@@ -271,15 +289,16 @@ export function ProviderConfigDefaultsFields({
   onModelChange: (value: string | null) => void;
   onEffortChange: (value: string | null) => void;
 }) {
+  const fetchFn = useFetchFactory();
   const { data: models } = useQuery({
     queryKey: ['provider-models', providerId],
-    queryFn: () => fetchProviderModels(providerId),
+    queryFn: () => fetchProviderModels(fetchFn, providerId),
     enabled: !!providerId,
   });
 
   const { data: effortsCatalog } = useQuery({
     queryKey: ['provider-efforts', providerId],
-    queryFn: () => fetchProviderEfforts(providerId),
+    queryFn: () => fetchProviderEfforts(fetchFn, providerId),
     enabled: !!providerId,
   });
 
@@ -337,7 +356,7 @@ export function ProviderConfigDefaultsFields({
         )}
       </div>
       {showWarning && (
-        <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-500">
+        <div className="flex items-start gap-2 text-xs text-status-warn">
           <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <span>
             The flag in options will be overridden by the structured selection
@@ -488,6 +507,7 @@ function ProviderConfigsSection({
   providersById: Map<string, Provider>;
   onConfigChange?: () => void;
 }) {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { toast, showSuccess, showError } = useToastHelpers();
   const [expanded, setExpanded] = useState(true);
@@ -510,7 +530,7 @@ function ProviderConfigsSection({
 
   const { data: configs, isLoading } = useQuery({
     queryKey: ['provider-configs', profileId],
-    queryFn: () => fetchProviderConfigs(profileId),
+    queryFn: () => fetchProviderConfigs(fetchFn, profileId),
     enabled: !!profileId,
   });
 
@@ -530,7 +550,7 @@ function ProviderConfigsSection({
       env?: Record<string, string> | null;
       model?: string | null;
       effort?: string | null;
-    }) => createProviderConfig(profileId, data),
+    }) => createProviderConfig(fetchFn, profileId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
       setShowAddForm(false);
@@ -561,7 +581,7 @@ function ProviderConfigsSection({
         model?: string | null;
         effort?: string | null;
       };
-    }) => updateProviderConfig(id, data),
+    }) => updateProviderConfig(fetchFn, id, data),
     onSuccess: (updatedConfig, variables) => {
       queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
       if (variables.oldName.trim() !== updatedConfig.name.trim()) {
@@ -593,7 +613,7 @@ function ProviderConfigsSection({
   });
 
   const deleteMutation = useMutation({
-    mutationFn: deleteProviderConfig,
+    mutationFn: (id: string) => deleteProviderConfig(fetchFn, id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
       showSuccess({ title: 'Success', description: 'Provider configuration deleted' });
@@ -609,7 +629,7 @@ function ProviderConfigsSection({
 
   const reorderMutation = useMutation({
     mutationFn: async (configIds: string[]) => {
-      const res = await fetch(`/api/profiles/${profileId}/provider-configs/order`, {
+      const res = await fetchFn(`/api/profiles/${profileId}/provider-configs/order`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ configIds }),
@@ -1111,6 +1131,7 @@ function ProviderConfigsSection({
 }
 
 export function ProfilesPage() {
+  const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
   const { showError, showSuccess } = useToastHelpers();
   const { selectedProjectId } = useSelectedProject();
@@ -1129,19 +1150,19 @@ export function ProfilesPage() {
 
   const { data: profilesData, isLoading: profilesLoading } = useQuery({
     queryKey: ['profiles', selectedProjectId],
-    queryFn: () => fetchProfiles(selectedProjectId as string),
+    queryFn: () => fetchProfiles(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
 
   const { data: promptsData } = useQuery({
     queryKey: ['prompts', selectedProjectId],
-    queryFn: () => fetchPrompts(selectedProjectId as string),
+    queryFn: () => fetchPrompts(fetchFn, selectedProjectId as string),
     enabled: !!selectedProjectId,
   });
 
   const { data: providersData } = useQuery({
     queryKey: providersQueryKeys.list(),
-    queryFn: fetchProviders,
+    queryFn: () => fetchProviders(fetchFn),
   });
 
   const providersById = useMemo(() => {
@@ -1157,8 +1178,8 @@ export function ProfilesPage() {
   const profilesKey = ['profiles', selectedProjectId] as const;
   type ProfilesList = ListContainer<AgentProfile>;
 
-  const createMutation = useCrudMutation<AgentProfile, Parameters<typeof createProfile>[0], void>({
-    mutationFn: createProfile,
+  const createMutation = useCrudMutation<AgentProfile, Parameters<typeof createProfile>[1], void>({
+    mutationFn: (data) => createProfile(fetchFn, data),
     optimistic: {
       queryKey: profilesKey,
       // temp-id add — Profiles prepends the new row.
@@ -1191,7 +1212,7 @@ export function ProfilesPage() {
     onSuccessSideEffects: async (created) => {
       try {
         if (formData.orderedPromptIds.length > 0 && created?.id) {
-          await replaceProfilePrompts(created.id, formData.orderedPromptIds);
+          await replaceProfilePrompts(fetchFn, created.id, formData.orderedPromptIds);
         }
       } catch (e) {
         showError({
@@ -1223,7 +1244,7 @@ export function ProfilesPage() {
   };
 
   const updateMutation = useCrudMutation<unknown, UpdateProfileVars, void>({
-    mutationFn: ({ id, data }) => updateProfile(id, data),
+    mutationFn: ({ id, data }) => updateProfile(fetchFn, id, data),
     optimistic: {
       queryKey: profilesKey,
       // in-place merge — same per-field precedence as before.
@@ -1249,7 +1270,7 @@ export function ProfilesPage() {
     onSuccessSideEffects: async (_updated, variables) => {
       try {
         if (formData.orderedPromptIds.length >= 0 && variables?.id) {
-          await replaceProfilePrompts(variables.id, formData.orderedPromptIds);
+          await replaceProfilePrompts(fetchFn, variables.id, formData.orderedPromptIds);
         }
       } catch (e) {
         showError({
@@ -1269,7 +1290,7 @@ export function ProfilesPage() {
   });
 
   const deleteMutation = useCrudMutation<void, string, void>({
-    mutationFn: deleteProfile,
+    mutationFn: (id: string) => deleteProfile(fetchFn, id),
     optimistic: {
       queryKey: profilesKey,
       // filter-out.
@@ -1407,10 +1428,10 @@ export function ProfilesPage() {
                     {profile.provider?.name ? (
                       <Badge variant="secondary">{profile.provider.name}</Badge>
                     ) : (
-                      <Badge variant="outline" className="text-amber-600 border-amber-400 gap-1">
+                      <OpaqueBadge variant="outline" className={cn('gap-1', TONE_CLASSES.warn)}>
                         <AlertCircle className="h-3 w-3" />
                         No provider config
-                      </Badge>
+                      </OpaqueBadge>
                     )}
                     {/* Options are now managed via ProviderConfigsSection, not shown here */}
                     {profile.agentCount && profile.agentCount > 0 && (

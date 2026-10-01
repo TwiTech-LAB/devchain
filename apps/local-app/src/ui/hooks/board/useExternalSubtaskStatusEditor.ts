@@ -359,7 +359,6 @@ export function useExternalSubtaskStatusEditor(
               body: JSON.stringify({ status: selected.actionValue }),
             },
             'The subtask status could not be updated.',
-            '',
             apiFetch,
           );
         } catch (error) {

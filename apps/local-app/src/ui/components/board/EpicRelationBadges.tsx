@@ -17,7 +17,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popo
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { useEpicRelations } from '@/ui/hooks/useEpicRelations';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
-import { useOptionalWorktreeTab } from '@/ui/hooks/useWorktreeTab';
 import { EpicRelationRemoveDialog } from '@/ui/components/epics/EpicRelationRemoveDialog';
 import type { EpicRelationCounts } from '@/ui/hooks/useEpicRelationCountsBatch';
 import {
@@ -415,7 +414,6 @@ export function EpicRelationBadges({
     counts.blockedBy > 0 ||
     (pieces?.some((piece) => piece.count > 0) ?? false);
 
-  const { runtimeResolved, apiBase } = useOptionalWorktreeTab();
   const { selectedWorkspace, activateProject } = useSelectedProject();
   // Relations never cross workspaces, so the selected focal workspace is also
   // the workspace of every cross-project target shown here; activating a
@@ -429,9 +427,9 @@ export function EpicRelationBadges({
     },
     [activateProject, crossProjectWorkspaceId],
   );
-  // Detail rows load and render only in the resolved main runtime; any other
-  // context keeps the preview free of cached main-scope data.
-  const admitted = open && runtimeResolved && apiBase === '';
+  // Detail rows load only while the preview is open; a closed preview issues
+  // no request.
+  const admitted = open;
   const query = useEpicRelations(epicId, { enabled: admitted });
   const firstPage = admitted ? query.data?.pages[0] : undefined;
   const rows = firstPage?.items ?? [];

@@ -11,7 +11,6 @@ import {
   type EpicRelationDragOverlayHandle,
 } from '@/ui/components/board/EpicRelationDragOverlay';
 import { EpicRelationQuickLinkDialog } from '@/ui/components/board/EpicRelationQuickLinkDialog';
-import { MoveToWorktreeDialog } from '@/ui/components/board/MoveToWorktreeDialog';
 import { Button } from '@/ui/components/ui/button';
 import {
   Dialog,
@@ -26,6 +25,11 @@ import type {
   BoardKanbanContentModel,
   BoardPagePresentation,
 } from '@/ui/pages/board/board-page-presentation';
+import {
+  BoardCardDragPreview,
+  type BoardCardDragPreviewHandle,
+} from '@/ui/components/board/BoardCardDragPreview';
+import { useBoardCardDrag } from '@/ui/hooks/useBoardCardDrag';
 import { useBoardRelationQuickLink } from '@/ui/hooks/useBoardRelationQuickLink';
 
 function isLightColor(hex: string): boolean {
@@ -42,6 +46,13 @@ export interface BoardPageViewProps {
 }
 
 function KanbanBoardContent({ content }: { content: BoardKanbanContentModel }) {
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const previewRef = useRef<BoardCardDragPreviewHandle | null>(null);
+  const visibleEpics = useMemo(
+    () => content.columns.flatMap((column) => column.epics),
+    [content.columns],
+  );
+  const cardDrag = useBoardCardDrag(visibleEpics, content.cardDrag, previewRef, scrollContainerRef);
   const overlayRef = useRef<EpicRelationDragOverlayHandle | null>(null);
   const visibleExpandedEpics = useMemo(
     () => content.columns.flatMap((column) => (column.kind === 'expanded' ? column.epics : [])),
@@ -52,6 +63,7 @@ function KanbanBoardContent({ content }: { content: BoardKanbanContentModel }) {
   return (
     <>
       <div
+        ref={scrollContainerRef}
         className="overflow-x-auto flex-1 min-h-0 snap-x snap-mandatory"
         onScrollCapture={quickLink.bindings.cancel}
       >
@@ -75,11 +87,8 @@ function KanbanBoardContent({ content }: { content: BoardKanbanContentModel }) {
                 onEpicToggleParentFilter={column.toggleParentFilter}
                 onExpand={column.expand}
                 onAddEpic={column.addEpic}
-                onDragOver={column.dragOver}
-                onDrop={column.drop}
-                isActiveDrop={column.isActiveDrop}
-                onDragStartEpic={column.dragStart}
-                onDragEndEpic={column.dragEnd}
+                cardDrag={cardDrag}
+                draggedEpic={column.draggedEpic}
               />
             ) : (
               <BoardColumn
@@ -89,11 +98,7 @@ function KanbanBoardContent({ content }: { content: BoardKanbanContentModel }) {
                 onAddEpic={column.addEpic}
                 onEditEpic={column.editEpic}
                 onDeleteEpic={column.deleteEpic}
-                onDragStart={column.dragStart}
-                onDragEnd={column.dragEnd}
-                onDragOver={column.dragOver}
-                onDrop={column.drop}
-                isActiveDrop={column.isActiveDrop}
+                cardDrag={cardDrag}
                 draggedEpic={column.draggedEpic}
                 onKeyboardMove={column.keyboardMove}
                 onToggleParentFilter={column.toggleParentFilter}
@@ -103,8 +108,6 @@ function KanbanBoardContent({ content }: { content: BoardKanbanContentModel }) {
                 onCollapseColumn={column.collapse}
                 onBulkEdit={column.openBulkEdit}
                 onOpenEpicDetails={column.openEpicDetails}
-                onMoveToWorktree={column.hasRunningWorktrees ? column.moveToWorktree : undefined}
-                hasRunningWorktrees={column.hasRunningWorktrees}
                 isLightColor={isLightColor}
                 getSubEpicCountsByStatus={(epicId) => column.subEpicStatusCountsByEpicId[epicId]}
                 externalSources={column.externalSources}
@@ -116,6 +119,7 @@ function KanbanBoardContent({ content }: { content: BoardKanbanContentModel }) {
           )}
         </div>
       </div>
+      <BoardCardDragPreview ref={previewRef} />
       <EpicRelationDragOverlay ref={overlayRef} />
       <EpicRelationQuickLinkDialog
         confirmation={quickLink.confirmation}
@@ -177,8 +181,6 @@ function BoardContent({ content }: { content: BoardContentModel }) {
           onStatusChange={content.changeStatus}
           onAgentChange={content.changeAgent}
           subEpicCounts={content.subEpicCounts}
-          onMoveToWorktree={content.hasRunningWorktrees ? content.moveToWorktree : undefined}
-          hasRunningWorktrees={content.hasRunningWorktrees}
           externalSources={content.externalSources}
           timeTotals={content.timeTotals}
           className="flex-1 min-h-0"
@@ -332,14 +334,6 @@ export function BoardPageView({ presentation }: BoardPageViewProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <MoveToWorktreeDialog
-        epic={dialogs.moveToWorktree.epic}
-        open={dialogs.moveToWorktree.epic !== null}
-        onOpenChange={dialogs.moveToWorktree.changeOpen}
-        sourceStatuses={dialogs.moveToWorktree.statuses}
-        sourceAgents={dialogs.moveToWorktree.agents}
-      />
     </div>
   );
 }

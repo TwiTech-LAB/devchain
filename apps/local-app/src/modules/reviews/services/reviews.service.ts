@@ -15,6 +15,7 @@ import type {
 import { EventsService } from '../../events/services/events.service';
 import { GitService } from '../../git/services/git.service';
 import { ValidationError, NotFoundError, ForbiddenError } from '../../../common/errors/error-types';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 export interface CreateReviewInput {
   projectId: string;
@@ -96,6 +97,7 @@ export class ReviewsService {
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly eventsService: EventsService,
     private readonly gitService: GitService,
+    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   /**
@@ -106,6 +108,7 @@ export class ReviewsService {
   async createReview(input: CreateReviewInput): Promise<Review> {
     // Validate project exists
     const project = await this.storage.getProject(input.projectId);
+    this.admission.assertWritable(project.id);
 
     const mode = input.mode ?? 'working_tree';
 
@@ -246,6 +249,7 @@ export class ReviewsService {
     expectedVersion: number,
   ): Promise<Review> {
     const before = await this.storage.getReview(reviewId);
+    this.admission.assertWritable(before.projectId);
 
     const updated = await this.storage.updateReview(
       reviewId,
@@ -424,7 +428,7 @@ export class ReviewsService {
    * Delete a review.
    */
   async deleteReview(reviewId: string): Promise<void> {
-    await this.storage.getReview(reviewId);
+    this.admission.assertWritable((await this.storage.getReview(reviewId)).projectId);
     await this.storage.deleteReview(reviewId);
   }
 
@@ -440,6 +444,7 @@ export class ReviewsService {
    */
   async createComment(reviewId: string, input: CreateCommentInput): Promise<ReviewComment> {
     const review = await this.storage.getReview(reviewId);
+    this.admission.assertWritable(review.projectId);
 
     // For replies, inherit file context from parent to maintain file association
     let filePath = input.filePath ?? null;
@@ -642,6 +647,7 @@ export class ReviewsService {
     this.verifyUserAuthored(before);
 
     const review = await this.storage.getReview(reviewId);
+    this.admission.assertWritable(review.projectId);
 
     const updated = await this.storage.updateReviewComment(commentId, input, expectedVersion);
 
@@ -695,6 +701,7 @@ export class ReviewsService {
     // SECURITY: Verify comment belongs to review before resolve
     const comment = await this.verifyCommentOwnership(commentId, reviewId);
     const review = await this.storage.getReview(comment.reviewId);
+    this.admission.assertWritable(review.projectId);
 
     const updated = await this.storage.updateReviewComment(commentId, { status }, expectedVersion);
 
@@ -740,6 +747,7 @@ export class ReviewsService {
     this.verifyUserAuthored(comment);
 
     const review = await this.storage.getReview(reviewId);
+    this.admission.assertWritable(review.projectId);
 
     await this.storage.deleteReviewComment(commentId);
 

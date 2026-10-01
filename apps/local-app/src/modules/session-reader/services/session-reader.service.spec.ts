@@ -14,7 +14,8 @@ import { OpenCodeSessionReaderAdapter } from '../adapters/opencode-session-reade
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
 import type { PricingServiceInterface } from './pricing.interface';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
-import { decodeCursor } from './transcript-cursor';
+import { decodeCursor, TRANSCRIPT_PARSER_GENERATION } from './transcript-cursor';
+import { buildChunks } from '../builders/chunk-builder';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -787,6 +788,60 @@ describe('SessionReaderService', () => {
   });
 
   describe('getTranscriptTail — window-safe merge contract', () => {
+    // Service unit coverage isolates cursor admission while retaining real positional chunks.
+    it.each(['cache-hit', 'same-file-append', 'db-update'] as const)(
+      'forces a full refetch for an old parser generation on %s even with the old anchor present',
+      async (sourceChangeKind) => {
+        setupResolveChain();
+        const session = makeSession();
+        mockAdapter.parseFullSession.mockResolvedValue(session);
+        const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+        const cursorData = decodeCursor(summary.cursor)!;
+        const oldAnchor = buildChunks(session.messages)[cursorData.chunkCount - 1].id;
+        const nextSession =
+          sourceChangeKind === 'same-file-append'
+            ? makeSession([
+                ...session.messages,
+                makeMessage('appended', 'assistant', '2026-01-01T10:00:20.000Z'),
+              ])
+            : session;
+        expect(buildChunks(nextSession.messages).some((chunk) => chunk.id === oldAnchor)).toBe(
+          true,
+        );
+        const sourceVersion =
+          sourceChangeKind === 'cache-hit' ? cursorData.fileSize : cursorData.fileSize + 1;
+        mockSessionCacheService.getOrParseWithMeta.mockResolvedValue({
+          session: nextSession,
+          cacheHit: sourceChangeKind === 'cache-hit',
+          sourceChangeKind,
+          lastOffset: 1024,
+          lastSize: 1024,
+          lastMtime: Date.now(),
+          sourceVersion,
+        });
+        const oldCursor = Buffer.from(
+          `${cursorData.fileSize}:${cursorData.messageCount}:${cursorData.chunkCount}:${TRANSCRIPT_PARSER_GENERATION - 1}`,
+        ).toString('base64url');
+        expect(await service.getTranscriptTail('sess-1', oldCursor)).toEqual({
+          kind: 'full-refetch-required',
+          sourceChangeKind,
+        });
+      },
+    );
+
+    it('forces a full refetch for a legacy cursor and a different future generation', async () => {
+      setupResolveChain();
+      mockAdapter.parseFullSession.mockResolvedValue(makeSession());
+      const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+      const fields = Buffer.from(summary.cursor, 'base64url').toString().split(':').slice(0, 3);
+      for (const parts of [fields, [...fields, String(TRANSCRIPT_PARSER_GENERATION + 1)]]) {
+        const cursor = Buffer.from(parts.join(':')).toString('base64url');
+        expect(await service.getTranscriptTail('sess-1', cursor)).toMatchObject({
+          kind: 'full-refetch-required',
+        });
+      }
+    });
+
     it('no-op poll (no new messages) returns true-empty delta and the unchanged cursor', async () => {
       setupResolveChain();
       const session = makeSession(); // 3 messages

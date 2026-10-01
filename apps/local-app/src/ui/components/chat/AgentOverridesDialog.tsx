@@ -21,6 +21,7 @@ import { Button } from '@/ui/components/ui/button';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { shortModelName } from '@/ui/lib/model-utils';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Types
@@ -65,8 +66,6 @@ interface AgentOverridesDialogProps {
   agent: AgentOrGuest;
   /** Whether the agent currently has an online session (drives the restart warning). */
   isOnline: boolean;
-  /** Worktree apiBase; omitted/empty for main agents. */
-  apiBase?: string;
   isSaving: boolean;
   fetchProviderConfigsForProfile: (profileId: string) => Promise<OverridesConfigOption[]>;
   onSave: (payload: AgentOverridesSavePayload) => Promise<unknown> | void;
@@ -139,12 +138,9 @@ function useOverridesController(
   agent: AgentOrGuest,
   open: boolean,
   isOnline: boolean,
-  apiBase: string | undefined,
   fetchProviderConfigsForProfile: (profileId: string) => Promise<OverridesConfigOption[]>,
 ): OverridesController {
-  const context = apiBase && apiBase.length > 0 ? apiBase : 'main';
-  const base = apiBase ?? '';
-
+  const fetchFn = useFetchFactory();
   const currentConfigId = agent.providerConfigId ?? '';
   const currentModel = agent.modelOverride ?? null;
   const currentEffort = agent.effortOverride ?? null;
@@ -158,7 +154,7 @@ function useOverridesController(
     isLoading: configsLoading,
     isError: configsError,
   } = useQuery({
-    queryKey: ['profile-provider-configs', context, agent.profileId],
+    queryKey: ['profile-provider-configs', 'main', agent.profileId],
     queryFn: () => fetchProviderConfigsForProfile(agent.profileId!),
     enabled: open && Boolean(agent.profileId),
     staleTime: 5 * 60 * 1000,
@@ -169,9 +165,9 @@ function useOverridesController(
   const providerId = selectedConfig?.providerId ?? null;
 
   const { data: modelsData, isLoading: modelsLoading } = useQuery({
-    queryKey: providerModelQueryKeys.byContext(context, providerId ?? 'none'),
+    queryKey: providerModelQueryKeys.byContext('main', providerId ?? 'none'),
     queryFn: async () => {
-      const res = await fetch(`${base}/api/providers/${providerId}/models`);
+      const res = await fetchFn(`/api/providers/${providerId}/models`);
       if (!res.ok) {
         return [] as CatalogOption[];
       }
@@ -191,9 +187,9 @@ function useOverridesController(
     isLoading: effortsLoading,
     isError: effortsError,
   } = useQuery({
-    queryKey: ['provider-efforts', context, providerId ?? 'none'],
+    queryKey: ['provider-efforts', 'main', providerId ?? 'none'],
     queryFn: async () => {
-      const res = await fetch(`${base}/api/providers/${providerId}/efforts`);
+      const res = await fetchFn(`/api/providers/${providerId}/efforts`);
       if (!res.ok) {
         return { efforts: [], supportsEffort: false, requiresModelForEffort: false };
       }
@@ -298,19 +294,12 @@ export function AgentOverridesDialog({
   onOpenChange,
   agent,
   isOnline,
-  apiBase,
   isSaving,
   fetchProviderConfigsForProfile,
   onSave,
   triggerEl,
 }: AgentOverridesDialogProps) {
-  const controller = useOverridesController(
-    agent,
-    open,
-    isOnline,
-    apiBase,
-    fetchProviderConfigsForProfile,
-  );
+  const controller = useOverridesController(agent, open, isOnline, fetchProviderConfigsForProfile);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -452,7 +441,7 @@ export function AgentOverridesDialog({
           {/* Restart warning */}
           {showRestartWarning && (
             <div
-              className="flex items-start gap-2 rounded-md border border-yellow-600/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-500"
+              className="flex items-start gap-2 rounded-md border border-status-warn/40 bg-status-warn/10 px-3 py-2 text-xs text-status-warn"
               role="status"
             >
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />

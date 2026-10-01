@@ -150,11 +150,12 @@ describe('CommentThread', () => {
       expect(screen.getByText('1m ago')).toBeInTheDocument();
     });
 
-    it('applies opacity when not open', () => {
+    it('uses readable muted text when not open', () => {
       const resolvedComment: ReviewComment = { ...baseComment, status: 'resolved' };
       render(<CommentThread comment={resolvedComment} />);
       const thread = screen.getByTestId('comment-thread');
-      expect(thread).toHaveClass('opacity-75');
+      expect(thread).toHaveClass('text-muted-foreground');
+      expect(thread).not.toHaveClass('opacity-75');
     });
   });
 

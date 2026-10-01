@@ -12,6 +12,7 @@
 import type { UnifiedMessage } from '../dtos/unified-session.types';
 import type { UnifiedSemanticStep, UnifiedSemanticStepType } from '../dtos/unified-chunk.types';
 import { estimateStepTokens } from '../adapters/utils/estimate-content-tokens';
+import { runSteps } from '../services/cooperative-work';
 
 const INTERRUPTION_PATTERN = /\[Request interrupted by user\]/i;
 
@@ -25,19 +26,26 @@ const INTERRUPTION_PATTERN = /\[Request interrupted by user\]/i;
  * no preceding assistant). Steps are returned in message order, results after their calls.
  */
 export function extractSemanticSteps(messages: UnifiedMessage[]): UnifiedSemanticStep[] {
+  return runSteps(extractSemanticStepWork(messages));
+}
+
+export function* extractSemanticStepWork(
+  messages: UnifiedMessage[],
+): Generator<void, UnifiedSemanticStep[]> {
   const steps: UnifiedSemanticStep[] = [];
   let stepIndex = 0;
 
   for (const msg of messages) {
+    yield;
     if (msg.role === 'assistant') {
-      extractAssistantSteps(msg, steps, stepIndex);
+      yield* extractAssistantSteps(msg, steps, stepIndex);
       stepIndex = steps.length;
       // Folded tool results live on the assistant message's toolResults — emit them right
       // after the call steps so the result still renders within the turn.
-      extractToolResultSteps(msg, steps, stepIndex);
+      yield* extractToolResultSteps(msg, steps, stepIndex);
       stepIndex = steps.length;
     } else if (msg.role === 'user') {
-      extractToolResultSteps(msg, steps, stepIndex);
+      yield* extractToolResultSteps(msg, steps, stepIndex);
       stepIndex = steps.length;
     }
   }
@@ -49,14 +57,15 @@ export function extractSemanticSteps(messages: UnifiedMessage[]): UnifiedSemanti
 // Assistant message step extraction
 // ---------------------------------------------------------------------------
 
-function extractAssistantSteps(
+function* extractAssistantSteps(
   msg: UnifiedMessage,
   steps: UnifiedSemanticStep[],
   baseIndex: number,
-): void {
+): Generator<void> {
   let idx = baseIndex;
 
   for (const block of msg.content) {
+    yield;
     switch (block.type) {
       case 'thinking': {
         steps.push(
@@ -121,14 +130,15 @@ function extractAssistantSteps(
 // Tool result step extraction (from user messages within AI buffer)
 // ---------------------------------------------------------------------------
 
-function extractToolResultSteps(
+function* extractToolResultSteps(
   msg: UnifiedMessage,
   steps: UnifiedSemanticStep[],
   baseIndex: number,
-): void {
+): Generator<void> {
   let idx = baseIndex;
 
   for (const result of msg.toolResults) {
+    yield;
     steps.push(
       makeStep(`step-${idx++}`, 'tool_result', msg, {
         toolCallId: result.toolCallId,

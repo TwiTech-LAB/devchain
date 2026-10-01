@@ -3,6 +3,7 @@ import type { EventsService } from '../../events/services/events.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { ProjectsService } from './projects.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('ProjectsService relation invalidation on deletion', () => {
   const PROJECT_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
@@ -36,6 +37,7 @@ describe('ProjectsService relation invalidation on deletion', () => {
       {} as never,
       {} as never,
       {} as never,
+      createProjectWriteAdmissionStub() as never,
       { emit: jest.fn() } as unknown as EventEmitter2,
       undefined,
       undefined,

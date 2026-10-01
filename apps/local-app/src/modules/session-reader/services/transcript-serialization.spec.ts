@@ -1,5 +1,6 @@
 import {
   serializeChunk,
+  serializeChunksCooperatively,
   serializeMessage,
   serializeRpcChunk,
   serializeRpcTranscriptChunks,
@@ -199,4 +200,10 @@ describe('transcript-serialization', () => {
       });
     });
   });
+});
+
+// Wire projection parity belongs at the pure serializer boundary, including legacy field omissions.
+it('cooperative REST chunk projection exactly matches the synchronous wire projection', async () => {
+  const chunks = [makeAIChunk([makeMessage('one'), makeMessage('two')])];
+  expect(await serializeChunksCooperatively(chunks)).toEqual(chunks.map(serializeChunk));
 });

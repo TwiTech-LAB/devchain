@@ -64,7 +64,7 @@ function parseInline(text: string): string {
       // Links - only allow safe URL schemes
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, url) => {
         const safeUrl = /^(https?:|mailto:|#|\/)/i.test(url) ? url : '#';
-        return `<a href="${safeUrl}" class="text-primary underline hover:text-primary/80" target="_blank" rel="noopener noreferrer">${linkText}</a>`;
+        return `<a href="${safeUrl}" class="text-primary underline" target="_blank" rel="noopener noreferrer">${linkText}</a>`;
       })
   );
 }

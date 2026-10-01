@@ -5,13 +5,9 @@ import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import { useExternalEstimateTimeLog } from './useExternalEstimateTimeLog';
 
 const fetchMock = jest.fn();
-const runtime = { runtimeResolved: true, apiBase: '' };
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({
   useFetchFactory: () => fetchMock,
-}));
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => runtime,
 }));
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -69,8 +65,6 @@ describe('useExternalEstimateTimeLog', () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     fetchMock.mockReset();
-    runtime.runtimeResolved = true;
-    runtime.apiBase = '';
     uuidSpy = jest.spyOn(window.crypto, 'randomUUID').mockReturnValue('estimate-operation-1');
   });
 
@@ -96,22 +90,27 @@ describe('useExternalEstimateTimeLog', () => {
     );
   });
 
-  it('never exposes a primed main checkpoint in worktree, unresolved, or disabled scope', async () => {
+  it('never exposes a primed active checkpoint to a disabled observer', async () => {
     fetchMock.mockResolvedValue(jsonResponse(readyState));
-    const { result, rerender } = renderEstimateLog(client);
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useExternalEstimateTimeLog('jira', 'ENG-1', {
+          enabled,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+          remoteScopeKey: scopeKey,
+        }),
+      { wrapper: wrapper(client), initialProps: { enabled: true } },
+    );
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
 
-    runtime.apiBase = '/wt/demo';
-    rerender();
+    rerender({ enabled: false });
     expect(result.current.admitted).toBe(false);
     expect(result.current.state).toBeUndefined();
     expect(result.current.query.data).toBeUndefined();
     expect(result.current.query.isSuccess).toBe(false);
 
-    runtime.apiBase = '';
-    runtime.runtimeResolved = false;
-    rerender();
-    expect(result.current.state).toBeUndefined();
+    // Only the admitted active-scope observer issued a request.
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const disabled = renderEstimateLog(client, false);
@@ -197,7 +196,7 @@ describe('useExternalEstimateTimeLog', () => {
         PROJECT_ID,
         'ENG-1',
         scopeKey,
-        'main',
+        'active',
       ),
       exact: true,
     });
@@ -274,7 +273,7 @@ describe('useExternalEstimateTimeLog', () => {
         PROJECT_ID,
         'ENG-1',
         scopeKey,
-        'main',
+        'active',
       ),
       exact: true,
     });
@@ -341,7 +340,7 @@ describe('useExternalEstimateTimeLog', () => {
         PROJECT_ID,
         'ENG-1',
         scopeKey,
-        'main',
+        'active',
       ),
       pendingState,
     );
@@ -540,7 +539,7 @@ describe('useExternalEstimateTimeLog', () => {
       PROJECT_ID,
       'ENG-1',
       scopeKey,
-      'main',
+      'active',
     );
     expect(reset).toHaveBeenCalledWith({ queryKey: stateKey, exact: true });
     expect(invalidate).toHaveBeenCalledWith({
@@ -604,7 +603,7 @@ describe('useExternalEstimateTimeLog', () => {
         PROJECT_ID,
         'ENG-1',
         scopeKey,
-        'main',
+        'active',
       );
       for (const [filters] of invalidate.mock.calls) {
         expect((filters as { queryKey: readonly unknown[] }).queryKey).not.toEqual(stateKey);
@@ -700,7 +699,7 @@ describe('useExternalEstimateTimeLog', () => {
           PROJECT_ID,
           'ENG-1',
           scopeKey,
-          'main',
+          'active',
         ),
         pendingState,
       );

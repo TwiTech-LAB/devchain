@@ -16,6 +16,7 @@ import {
   teamProfileConfigs,
   statuses,
   epics,
+  teams,
 } from '../../storage/db/schema';
 import {
   ConflictError,
@@ -350,6 +351,32 @@ describe('TeamsStore', () => {
       const teamB = result.items.find((t) => t.name === 'Team B');
       expect(teamA!.memberCount).toBe(2);
       expect(teamB!.memberCount).toBe(1);
+    });
+
+    // The store is the cheapest layer that sees rowid order: a replica inserts a project's teams
+    // sorted by id, so on a host the insertion order differs from the creation order.
+    it('orders teams by creation time even when rows were inserted in another order', async () => {
+      const earlier = {
+        id: 'ffffffff-0000-4000-8000-000000000001',
+        createdAt: '2026-09-23T16:17:53.559Z',
+      };
+      const later = {
+        id: '00000000-0000-4000-8000-000000000002',
+        createdAt: '2026-09-23T16:17:53.562Z',
+      };
+      for (const team of [later, earlier]) {
+        await db.insert(teams).values({
+          id: team.id,
+          projectId,
+          name: `Team ${team.id.slice(0, 8)}`,
+          createdAt: team.createdAt,
+          updatedAt: team.createdAt,
+        });
+      }
+
+      const result = await store.listTeams(projectId);
+
+      expect(result.items.map((team) => team.id)).toEqual([earlier.id, later.id]);
     });
 
     it('returns teams with mixed null and non-null leads', async () => {

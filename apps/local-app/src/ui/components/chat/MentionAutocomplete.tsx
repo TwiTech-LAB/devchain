@@ -65,8 +65,9 @@ export function MentionAutocomplete({
             onClick={() => onSelect(agent)}
             className={cn(
               'flex cursor-pointer items-center gap-2 rounded-sm px-3 py-2 text-sm transition-colors',
-              'hover:bg-accent hover:text-accent-foreground',
-              index === selectedIndex && 'bg-accent text-accent-foreground',
+              index === selectedIndex
+                ? 'bg-selected text-selected-foreground'
+                : 'hover:bg-accent hover:text-accent-foreground',
             )}
           >
             <span className="font-medium">@{agent.name}</span>

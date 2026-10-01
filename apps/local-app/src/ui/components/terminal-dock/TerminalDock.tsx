@@ -72,7 +72,7 @@ function SessionRow({
       <span
         className={cn(
           'h-2 w-2 shrink-0 rounded-full',
-          isRunning ? 'bg-emerald-500' : 'bg-muted-foreground',
+          isRunning ? 'bg-status-ok' : 'bg-muted-foreground',
         )}
         title={session.status}
       />
@@ -219,7 +219,7 @@ export function TerminalDock({
 
   const terminateMutation = useMutation({
     mutationFn: async (sessionId: string) => {
-      await terminateSession(sessionId, '', apiFetch);
+      await terminateSession(sessionId, apiFetch);
       await queryClient.invalidateQueries({ queryKey: sessionsQueryKey });
     },
     onSuccess: (_, sessionId) => {
@@ -249,13 +249,7 @@ export function TerminalDock({
       if (!session?.agentId || !selectedProjectId) {
         throw new Error('Cannot restart: missing agent or project');
       }
-      const result = await restartSession(
-        session.agentId,
-        selectedProjectId,
-        sessionId,
-        '',
-        apiFetch,
-      );
+      const result = await restartSession(session.agentId, selectedProjectId, sessionId, apiFetch);
       await queryClient.invalidateQueries({ queryKey: sessionsQueryKey });
       return result;
     },
@@ -330,12 +324,12 @@ export function TerminalDock({
   const openWindows = useMemo(() => terminalWindows.filter((w) => w.sessionId), [terminalWindows]);
 
   const collapsedLabel = `${displayedSessions.length} ${displayedSessions.length === 1 ? 'session' : 'sessions'}`;
-  const statusDotColor = isFetching || error ? 'text-muted-foreground' : 'text-emerald-500';
+  const statusDotColor = isFetching || error ? 'text-muted-foreground' : 'text-status-ok';
 
   return (
     <section
       className={cn(
-        'border-t border-border bg-card transition-[height] duration-200 ease-out',
+        'border-t border-border bg-shell transition-[height] duration-200 ease-out',
         expanded ? 'h-[320px]' : 'h-12',
       )}
       aria-label="Terminal session dock"
@@ -426,7 +420,7 @@ export function TerminalDock({
                           <span
                             className={cn(
                               'h-2 w-2 shrink-0 rounded-full',
-                              isRunning ? 'bg-emerald-500' : 'bg-muted-foreground',
+                              isRunning ? 'bg-status-ok' : 'bg-muted-foreground',
                             )}
                           />
                           {providerIcon && (

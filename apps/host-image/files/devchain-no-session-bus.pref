@@ -1,0 +1,6 @@
+# The image stays headless: with a user-session D-Bus or a keyring, Antigravity
+# (agy) keeps its login in the Secret Service instead of the file the DevChain
+# vault writes and watches. Priority -1 keeps apt from ever installing these.
+Package: dbus-user-session dbus-x11 gnome-keyring
+Pin: release *
+Pin-Priority: -1

@@ -118,6 +118,34 @@ describe('useQrAuth', () => {
       expect(result.current.status).toBe('waiting');
       expect(result.current.crossCheckCode).toBe('WXYZ');
     });
+
+    it('mints the QR and the E2EE pairing material on the selected remote backend', async () => {
+      mockFetch([
+        initiateOk({
+          qrPayload: validPayload({ m: 'provision', c: 'WXYZ' }),
+          crossCheckCode: 'WXYZ',
+          channelId: 'ch-2',
+          pollToken: 'pt-2',
+        }),
+        beginOk,
+      ]);
+
+      const { result } = renderHook(() => useQrAuth(IDENTITY_URL, 'provision', 'remote-1'));
+
+      await act(async () => {
+        await result.current.start();
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/r/remote-1/api/cloud/qr/initiate',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/r/remote-1/api/e2ee/pairing/begin',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(result.current.status).toBe('waiting');
+    });
   });
 
   describe('start() — error handling', () => {

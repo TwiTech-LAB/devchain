@@ -19,6 +19,7 @@ function makeSessionRow(overrides: Partial<Record<string, unknown>> = {}) {
     last_activity_at: '2026-01-01T00:01:00.000Z',
     activity_state: 'busy',
     name: 'Working session',
+    provider_name_at_launch: 'claude',
     ...overrides,
   };
 }
@@ -65,6 +66,7 @@ describe('ActiveSessionLookup', () => {
       lastActivityAt: '2026-01-01T00:01:00.000Z',
       activityState: 'busy',
       name: 'Working session',
+      providerNameAtLaunch: 'claude',
     });
   });
 
@@ -94,6 +96,18 @@ describe('ActiveSessionLookup', () => {
         projectId: 'project-1',
       }),
     ]);
+  });
+
+  it('lists launch-time provider snapshots across every project for local retention', async () => {
+    statement.all.mockReturnValue([
+      makeSessionRow(),
+      makeSessionRow({ project_id: 'project-2', provider_name_at_launch: null }),
+    ]);
+    expect(await service.listRunningProviderSessions()).toEqual([
+      expect.objectContaining({ providerNameAtLaunch: 'claude', sessionId: 'session-1' }),
+      expect.objectContaining({ providerNameAtLaunch: null, sessionId: 'session-1' }),
+    ]);
+    expect(statement.all).toHaveBeenCalledWith();
   });
 
   it('does not return an agent session from another project', async () => {

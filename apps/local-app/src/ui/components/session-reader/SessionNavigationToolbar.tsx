@@ -164,7 +164,7 @@ export const SessionNavigationToolbar = memo(function SessionNavigationToolbar({
             className={cn(
               navBtnClass,
               !onToggleHotspotFilter && disabledClass,
-              hotspotFilterActive && 'bg-amber-500/10 text-amber-500',
+              hotspotFilterActive && 'bg-status-warn/10 text-status-warn',
             )}
             aria-label="Toggle hotspot filter"
             title="Toggle hotspot filter"

@@ -1,5 +1,7 @@
 import { Bell } from 'lucide-react';
+import { HOME_BACKEND, type BackendId } from '@/ui/lib/api-transport';
 import { useCloudConnection } from '@/ui/hooks/useCloudConnection';
+import { useCloudTarget } from '@/ui/hooks/useCloudTarget';
 import { DisconnectedHint } from './DisconnectedHint';
 import { PushNotificationsPanel } from './PushNotificationsPanel';
 
@@ -8,7 +10,8 @@ interface NotificationsSectionProps {
 }
 
 export function NotificationsSection({ onNavigateToAccount }: NotificationsSectionProps) {
-  const { status, isLoading } = useCloudConnection();
+  const { backend } = useCloudTarget();
+  const { status, isLoading } = useCloudConnection(backend);
 
   if (isLoading) {
     return (
@@ -23,5 +26,14 @@ export function NotificationsSection({ onNavigateToAccount }: NotificationsSecti
     return <DisconnectedHint onNavigateToAccount={onNavigateToAccount} />;
   }
 
-  return <PushNotificationsPanel />;
+  if (backend === HOME_BACKEND) {
+    return <PushNotificationsPanel backend={backend} homeSignedIn />;
+  }
+
+  return <RemotePushNotificationsPanel backend={backend} />;
+}
+
+function RemotePushNotificationsPanel({ backend }: { backend: BackendId }) {
+  const { status } = useCloudConnection(HOME_BACKEND);
+  return <PushNotificationsPanel backend={backend} homeSignedIn={status.connected} />;
 }

@@ -30,6 +30,8 @@ apps/mobile-app/ios/
 
 # Local tool metadata
 .serena/
+.playwright-cli/
+/output/
 
 # Binary tarballs
 *.tgz

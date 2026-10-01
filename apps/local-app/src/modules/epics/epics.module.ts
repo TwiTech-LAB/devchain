@@ -8,6 +8,8 @@ import { EpicRelationsService } from './services/epic-relations.service';
 import { SettingsModule } from '../settings/settings.module';
 import { AgentMessageDeliveryModule } from '../agent-message-delivery/agent-message-delivery.module';
 import { TeamsModule } from '../teams/teams.module';
+import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
+import { RemotesModule } from '../remotes/remotes.module';
 import { EpicAssignmentNotifierSubscriber } from './subscribers/epic-assignment-notifier.subscriber';
 import { SubEpicCreatedNotifierSubscriber } from './subscribers/sub-epic-created-notifier.subscriber';
 
@@ -18,6 +20,8 @@ import { SubEpicCreatedNotifierSubscriber } from './subscribers/sub-epic-created
     SettingsModule,
     AgentMessageDeliveryModule,
     TeamsModule,
+    ProjectWriteAdmissionModule,
+    RemotesModule,
   ],
   controllers: [EpicsController, EpicCommentsController],
   providers: [

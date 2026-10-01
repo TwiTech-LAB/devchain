@@ -9,6 +9,7 @@ import {
 import type { ChatToolContext } from './chat-context';
 import { resolveSessionContext, getActorFromContext } from '../utils/session-context-helpers';
 import { redactParams } from '../utils/redact';
+import { toProjectAdmissionErrorResponse } from '../utils/project-admission-error';
 import {
   resolveRecipientByName,
   getAvailableRecipientNames,
@@ -90,6 +91,7 @@ export async function handleSendMessage(
         },
       };
     }
+    ctx.projectWriteAdmission?.assertWritable(project.id);
 
     const senderId = sender.id;
     const senderName = sender.name;
@@ -374,6 +376,8 @@ export async function handleSendMessage(
     if (error instanceof ServiceUnavailableError) {
       return { success: false, error: { code: 'SERVICE_UNAVAILABLE', message: error.message } };
     }
+    const refused = toProjectAdmissionErrorResponse(error);
+    if (refused) return refused;
     logger.error(
       { error, params: redactParams(params as SendMessageParams) },
       'sendMessage failed',

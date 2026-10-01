@@ -9,6 +9,7 @@ import {
   type ScheduledEpicRun,
   type ScheduledEpicRunStatus,
 } from '@/ui/lib/scheduled-epics';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 const PAGE_SIZE = 10;
 
@@ -102,11 +103,12 @@ interface RunHistoryPanelProps {
 }
 
 export function RunHistoryPanel({ scheduleId }: RunHistoryPanelProps) {
+  const fetchFn = useFetchFactory();
   const [offset, setOffset] = useState(0);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['scheduled-epic-runs', scheduleId, offset],
-    queryFn: () => fetchScheduledEpicRuns(scheduleId, { limit: PAGE_SIZE, offset }),
+    queryFn: () => fetchScheduledEpicRuns(fetchFn, scheduleId, { limit: PAGE_SIZE, offset }),
   });
 
   const total = data?.total ?? 0;

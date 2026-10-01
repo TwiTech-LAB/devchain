@@ -22,7 +22,6 @@ describe('HumanPromptStateService', () => {
       phase: 'inactive',
       generation: 0,
       executedInputEpoch: 0,
-      meaningfulOutputEpoch: 0,
     });
 
     const draft = service.recordPromptText('tmux:session');
@@ -46,26 +45,24 @@ describe('HumanPromptStateService', () => {
     expect(service.getState('pane')).toBe(second);
   });
 
-  it('tracks executed input and meaningful output on independent monotonic clocks', () => {
+  it('tracks executed input on a monotonic clock', () => {
     service.recordExecutedInput('pane');
     service.recordExecutedInput('pane');
-    service.recordMeaningfulOutput('pane');
 
     expect(service.getState('pane')).toEqual({
       phase: 'inactive',
       generation: 0,
       executedInputEpoch: 2,
-      meaningfulOutputEpoch: 1,
     });
   });
 
-  it('releases only an awaiting state whose generation and both epochs match', () => {
+  it('releases only an awaiting state whose generation and input epoch match', () => {
     const draft = service.recordPromptText('pane');
     service.transitionToAwaiting('pane', draft.generation);
     const snapshot = service.getQuietSnapshot('pane');
     expect(snapshot).not.toBeNull();
 
-    service.recordMeaningfulOutput('pane');
+    service.recordExecutedInput('pane');
     expect(service.releaseIfQuiet('pane', snapshot!)).toBe(false);
     expect(service.getState('pane').phase).toBe('awaiting_stable_idle');
 
@@ -79,7 +76,6 @@ describe('HumanPromptStateService', () => {
   it.each([
     ['generation', (state: HumanPromptStateService) => state.recordPromptText('pane')],
     ['executed input', (state: HumanPromptStateService) => state.recordExecutedInput('pane')],
-    ['meaningful output', (state: HumanPromptStateService) => state.recordMeaningfulOutput('pane')],
   ])('rejects a snapshot with a changed %s epoch', (_label, mutate) => {
     const draft = service.recordPromptText('pane');
     service.transitionToAwaiting('pane', draft.generation);

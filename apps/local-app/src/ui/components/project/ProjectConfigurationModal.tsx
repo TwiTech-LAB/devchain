@@ -43,6 +43,8 @@ import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { validatePresetAvailability } from '@/ui/lib/preset-validation';
 import type { Preset } from '@/ui/lib/preset-types';
 import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
+import { HOME_BACKEND, apiFetch as apiFetchTransport } from '@/ui/lib/api-transport';
+import type { FetchFn } from '@/ui/lib/api-transport';
 
 interface Agent {
   id: string;
@@ -81,32 +83,37 @@ interface ProjectConfigurationModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
-async function fetchAgents(projectId: string) {
-  const res = await fetch(`/api/agents?projectId=${projectId}`);
+async function fetchAgents(fetchFn: FetchFn, projectId: string) {
+  const res = await fetchFn(`/api/agents?projectId=${projectId}`);
   if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
 
-async function fetchProfiles(projectId: string) {
-  const res = await fetch(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
+async function fetchProfiles(fetchFn: FetchFn, projectId: string) {
+  const res = await fetchFn(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
   if (!res.ok) throw new Error('Failed to fetch profiles');
   return res.json();
 }
 
-async function fetchProviders() {
-  const res = await fetch('/api/providers');
+async function fetchProviders(fetchFn: FetchFn) {
+  const res = await fetchFn('/api/providers');
   if (!res.ok) throw new Error('Failed to fetch providers');
   return res.json();
 }
 
-async function fetchProviderConfigs(profileId: string): Promise<ProviderConfig[]> {
-  const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+async function fetchProviderConfigs(
+  fetchFn: FetchFn,
+  profileId: string,
+): Promise<ProviderConfig[]> {
+  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
   if (!res.ok) throw new Error('Failed to fetch provider configs');
   return res.json();
 }
 
 async function fetchPresets(projectId: string): Promise<{ presets: Preset[] }> {
-  const res = await fetch(`/api/projects/${projectId}/presets`);
+  const res = await apiFetchTransport(`/api/projects/${projectId}/presets`, undefined, {
+    backend: HOME_BACKEND,
+  });
   if (!res.ok) throw new Error('Failed to fetch presets');
   return res.json();
 }
@@ -115,11 +122,15 @@ async function applyPreset(
   projectId: string,
   presetName: string,
 ): Promise<{ applied: number; warnings: string[]; agents: Agent[] }> {
-  const res = await fetch(`/api/projects/${projectId}/presets/apply`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ presetName }),
-  });
+  const res = await apiFetchTransport(
+    `/api/projects/${projectId}/presets/apply`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ presetName }),
+    },
+    { backend: HOME_BACKEND },
+  );
   if (!res.ok) throw new Error('Failed to apply preset');
   return res.json();
 }
@@ -129,6 +140,7 @@ export function ProjectConfigurationModal({
   open,
   onOpenChange,
 }: ProjectConfigurationModalProps) {
+  const fetchFn = useFetchFactory();
   const { toast } = useToast();
   const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
     useActiveSessionConfirm();
@@ -149,21 +161,21 @@ export function ProjectConfigurationModal({
   // Fetch agents
   const { data: agentsData, isLoading: agentsLoading } = useQuery({
     queryKey: ['agents', projectId],
-    queryFn: () => fetchAgents(projectId),
+    queryFn: () => fetchAgents(fetchFn, projectId),
     enabled: open && !!projectId,
   });
 
   // Fetch profiles
   const { data: profilesData, isLoading: profilesLoading } = useQuery({
     queryKey: ['profiles', projectId],
-    queryFn: () => fetchProfiles(projectId),
+    queryFn: () => fetchProfiles(fetchFn, projectId),
     enabled: open && !!projectId,
   });
 
   // Fetch providers
   const { isLoading: providersLoading } = useQuery({
     queryKey: providersQueryKeys.list(),
-    queryFn: fetchProviders,
+    queryFn: () => fetchProviders(fetchFn),
     enabled: open,
   });
 
@@ -194,7 +206,7 @@ export function ProjectConfigurationModal({
     Promise.all(
       Array.from(profileIds).map(async (profileId) => {
         try {
-          const configs = await fetchProviderConfigs(profileId);
+          const configs = await fetchProviderConfigs(fetchFn, profileId);
           return { profileId, configs };
         } catch {
           return { profileId, configs: [] };
@@ -209,7 +221,7 @@ export function ProjectConfigurationModal({
         setConfigsByProfile(newMap);
       })
       .finally(() => setConfigsLoading(false));
-  }, [open, agentsData]);
+  }, [open, agentsData, fetchFn]);
 
   // Reset state when modal closes
   useEffect(() => {
@@ -394,7 +406,7 @@ export function ProjectConfigurationModal({
                             <span
                               className={cn(
                                 'w-2 h-2 rounded-full flex-shrink-0',
-                                available ? 'bg-green-500' : 'bg-yellow-500',
+                                available ? 'bg-status-ok' : 'bg-status-warn',
                               )}
                             />
                             <span className="font-medium">{preset.name}</span>

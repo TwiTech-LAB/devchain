@@ -1,0 +1,23 @@
+{
+  "name": "devchain-host-bootstrap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Root bootstrap service of the DevChain host image: unclaimed runtime, claim, update and project roots.",
+  "license": "Elastic-2.0",
+  "bin": {
+    "devchain-bootstrap": "bin/devchain-bootstrap.js",
+    "devchain-host-update": "bin/devchain-host-update.js",
+    "devchain-host-project-root": "bin/devchain-host-project-root.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "systemd"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test 'test/*.test.js'"
+  }
+}

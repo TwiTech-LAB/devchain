@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { providerEffortQueryKeys } from '@/ui/lib/provider-effort-query-keys';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { sameCatalogName } from '@/ui/hooks/useProviderModels';
 
 export interface ProviderEffortOption {
   id: string;
@@ -88,6 +90,7 @@ export interface UseProviderEffortsResult {
  * `requiresModelForEffort` and no model is resolvable.
  */
 export function useProviderEfforts(options: UseProviderEffortsOptions): UseProviderEffortsResult {
+  const fetchFn = useFetchFactory();
   const { providerId, effortOverride, onStaleSelection } = options;
 
   const { data: catalog } = useQuery({
@@ -96,7 +99,7 @@ export function useProviderEfforts(options: UseProviderEffortsOptions): UseProvi
       if (!providerId) {
         return { efforts: [], supportsEffort: false, requiresModelForEffort: false };
       }
-      const res = await fetch(`/api/providers/${providerId}/efforts`);
+      const res = await fetchFn(`/api/providers/${providerId}/efforts`);
       if (!res.ok) {
         return { efforts: [], supportsEffort: false, requiresModelForEffort: false };
       }
@@ -116,7 +119,7 @@ export function useProviderEfforts(options: UseProviderEffortsOptions): UseProvi
   // meaningful catalog and the UI hides the control entirely.
   useEffect(() => {
     if (!supportsEffort || !effortOverride) return;
-    if (!efforts.some((effort) => effort.name === effortOverride)) {
+    if (!efforts.some((effort) => sameCatalogName(effort.name, effortOverride))) {
       onStaleSelection(null);
     }
   }, [supportsEffort, efforts, effortOverride, onStaleSelection]);

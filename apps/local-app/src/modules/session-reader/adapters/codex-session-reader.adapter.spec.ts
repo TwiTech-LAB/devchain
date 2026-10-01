@@ -215,6 +215,26 @@ describe('CodexSessionReaderAdapter provider session id extraction', () => {
       }
     });
 
+    it('skips Syncthing marker directories during the date-directory scan', async () => {
+      const adapter = createAdapter();
+      const { tempHome, cleanup } = withTempHome('codex-syncthing-markers-');
+      setAdapterHome(adapter, tempHome);
+      const sessions = path.join(tempHome, '.codex/sessions');
+      const name = `rollout-2026-05-11T10-00-00-${FILENAME_ID}.jsonl`;
+      writeFile(path.join(sessions, '2026/05/11', name), `${sessionMetaLine()}\n`);
+      writeFile(path.join(sessions, '.stversions/2026/05', name), `${sessionMetaLine()}\n`);
+      fs.mkdirSync(path.join(sessions, '.stfolder'));
+      writeFile(path.join(sessions, '.stignore'), '(?d).DS_Store\n');
+
+      try {
+        const results = await adapter.discoverSessionFile({ projectRoot: '/tmp/project' });
+
+        expect(results.map((r) => r.filePath)).toEqual([path.join(sessions, '2026/05/11', name)]);
+      } finally {
+        cleanup();
+      }
+    });
+
     it('uses filename UUID during date-directory scan without reading file content', async () => {
       const adapter = createAdapter();
       const { tempHome, cleanup } = withTempHome('codex-provider-id-scan-filename-');

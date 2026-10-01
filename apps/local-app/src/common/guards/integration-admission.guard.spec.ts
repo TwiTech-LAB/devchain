@@ -9,8 +9,6 @@ describe('IntegrationAdmissionGuard', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.DEVCHAIN_MODE;
-    delete process.env.CONTAINER_PROJECT_ID;
     delete process.env.HOST;
     resetEnvConfig();
   });
@@ -20,15 +18,8 @@ describe('IntegrationAdmissionGuard', () => {
     resetEnvConfig();
   });
 
-  it('allows integration endpoints on a loopback main runtime', () => {
+  it('allows integration endpoints on a loopback runtime', () => {
     expect(new IntegrationAdmissionGuard().canActivate(context)).toBe(true);
-  });
-
-  it('rejects integration endpoints on child runtimes', () => {
-    process.env.CONTAINER_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
-    resetEnvConfig();
-
-    expect(() => new IntegrationAdmissionGuard().canActivate(context)).toThrow(ForbiddenError);
   });
 
   it('rejects integration endpoints on non-loopback runtimes', () => {

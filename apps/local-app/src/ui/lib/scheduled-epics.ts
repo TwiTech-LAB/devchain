@@ -2,6 +2,7 @@
  * Scheduled Epics API functions
  * Provides centralized API layer for scheduled epic management.
  */
+import type { FetchFn } from '@/ui/lib/api-transport';
 
 // ============================================
 // ERROR TYPES
@@ -210,6 +211,7 @@ async function throwOnError(response: Response, fallback: string): Promise<never
  * Fetch all scheduled epics for a project.
  */
 export async function fetchScheduledEpics(
+  fetchFn: FetchFn,
   projectId: string,
   options?: FetchScheduledEpicsOptions,
 ): Promise<ScheduledEpic[]> {
@@ -217,7 +219,7 @@ export async function fetchScheduledEpics(
   if (options?.enabled !== undefined) {
     params.set('enabled', String(options.enabled));
   }
-  const response = await fetch(`/api/scheduled-epics?${params.toString()}`);
+  const response = await fetchFn(`/api/scheduled-epics?${params.toString()}`);
   if (!response.ok) {
     await throwOnError(response, 'Failed to fetch scheduled epics');
   }
@@ -227,8 +229,8 @@ export async function fetchScheduledEpics(
 /**
  * Fetch a single scheduled epic by ID.
  */
-export async function fetchScheduledEpic(id: string): Promise<ScheduledEpic> {
-  const response = await fetch(`/api/scheduled-epics/${id}`);
+export async function fetchScheduledEpic(fetchFn: FetchFn, id: string): Promise<ScheduledEpic> {
+  const response = await fetchFn(`/api/scheduled-epics/${id}`);
   if (!response.ok) {
     await throwOnError(response, 'Failed to fetch scheduled epic');
   }
@@ -238,8 +240,11 @@ export async function fetchScheduledEpic(id: string): Promise<ScheduledEpic> {
 /**
  * Create a new scheduled epic.
  */
-export async function createScheduledEpic(data: CreateScheduledEpicData): Promise<ScheduledEpic> {
-  const response = await fetch('/api/scheduled-epics', {
+export async function createScheduledEpic(
+  fetchFn: FetchFn,
+  data: CreateScheduledEpicData,
+): Promise<ScheduledEpic> {
+  const response = await fetchFn('/api/scheduled-epics', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -255,10 +260,11 @@ export async function createScheduledEpic(data: CreateScheduledEpicData): Promis
  * Throws ScheduledEpicApiError with status 409 on version conflict.
  */
 export async function updateScheduledEpic(
+  fetchFn: FetchFn,
   id: string,
   data: UpdateScheduledEpicData,
 ): Promise<ScheduledEpic> {
-  const response = await fetch(`/api/scheduled-epics/${id}`, {
+  const response = await fetchFn(`/api/scheduled-epics/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -272,8 +278,8 @@ export async function updateScheduledEpic(
 /**
  * Delete a scheduled epic.
  */
-export async function deleteScheduledEpic(id: string): Promise<void> {
-  const response = await fetch(`/api/scheduled-epics/${id}`, {
+export async function deleteScheduledEpic(fetchFn: FetchFn, id: string): Promise<void> {
+  const response = await fetchFn(`/api/scheduled-epics/${id}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -286,11 +292,12 @@ export async function deleteScheduledEpic(id: string): Promise<void> {
  * Throws ScheduledEpicApiError with status 409 on version conflict.
  */
 export async function toggleScheduledEpic(
+  fetchFn: FetchFn,
   id: string,
   enabled: boolean,
   configVersion: number,
 ): Promise<ScheduledEpic> {
-  const response = await fetch(`/api/scheduled-epics/${id}/toggle`, {
+  const response = await fetchFn(`/api/scheduled-epics/${id}/toggle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled, configVersion }),
@@ -304,8 +311,11 @@ export async function toggleScheduledEpic(
 /**
  * Trigger an immediate run of a scheduled epic.
  */
-export async function runScheduledEpicNow(id: string): Promise<ScheduledEpicRunNowResult> {
-  const response = await fetch(`/api/scheduled-epics/${id}/run-now`, {
+export async function runScheduledEpicNow(
+  fetchFn: FetchFn,
+  id: string,
+): Promise<ScheduledEpicRunNowResult> {
+  const response = await fetchFn(`/api/scheduled-epics/${id}/run-now`, {
     method: 'POST',
   });
   if (!response.ok) {
@@ -318,6 +328,7 @@ export async function runScheduledEpicNow(id: string): Promise<ScheduledEpicRunN
  * Fetch paginated run history for a scheduled epic.
  */
 export async function fetchScheduledEpicRuns(
+  fetchFn: FetchFn,
   scheduleId: string,
   options?: FetchScheduledEpicRunsOptions,
 ): Promise<ScheduledEpicRunsPage> {
@@ -326,7 +337,7 @@ export async function fetchScheduledEpicRuns(
   if (options?.limit !== undefined) params.set('limit', String(options.limit));
   if (options?.offset !== undefined) params.set('offset', String(options.offset));
   const query = params.toString();
-  const response = await fetch(
+  const response = await fetchFn(
     `/api/scheduled-epics/${scheduleId}/runs${query ? `?${query}` : ''}`,
   );
   if (!response.ok) {

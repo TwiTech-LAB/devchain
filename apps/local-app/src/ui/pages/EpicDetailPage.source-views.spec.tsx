@@ -57,19 +57,6 @@ jest.mock('@/ui/components/shared/ConfirmDialog', () => ({
   ConfirmDialog: () => null,
 }));
 
-const worktreeRuntime = {
-  activeWorktree: null,
-  setActiveWorktree: () => undefined,
-  apiBase: '',
-  worktrees: [],
-  worktreesLoading: false,
-  runtimeResolved: true,
-};
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => worktreeRuntime,
-}));
-
 function jsonResponse(data: unknown): Response {
   return { ok: true, json: async () => data } as Response;
 }

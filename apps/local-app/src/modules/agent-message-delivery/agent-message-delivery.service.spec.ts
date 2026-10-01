@@ -294,6 +294,32 @@ describe('AgentMessageDeliveryService', () => {
       },
     );
 
+    it.each([
+      ['agent MCP', { kind: 'mcp.direct' as const, senderType: 'agent' as const }, false],
+      ['explicit user', { kind: 'mcp.direct' as const, senderType: 'user' as const }, false],
+      ['guest MCP', { kind: 'mcp.direct' as const, senderType: 'guest' as const }, true],
+      ['automation custom text', { kind: 'pooled' as const }, false],
+      ['automation event text', { kind: 'pooled' as const, outsideText: true }, true],
+    ])('marks outside text for %s', async (_label, identity, outsideText) => {
+      const { service, messageEnqueue } = buildService();
+
+      await service.deliver(
+        ['agent-1'],
+        {
+          ...identity,
+          body: 'message',
+          source: 'opaque-source',
+          projectId: 'p1',
+          senderName: 'Sender',
+        },
+        {},
+      );
+
+      expect(messageEnqueue.enqueue).toHaveBeenCalledWith([
+        expect.objectContaining({ outsideText }),
+      ]);
+    });
+
     it('passes deliveryMode to the pool and exposes only its classified failure', async () => {
       const { service, messageEnqueue } = buildService();
       messageEnqueue.enqueue.mockResolvedValue([

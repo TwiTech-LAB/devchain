@@ -5,6 +5,8 @@ import { BadRequestException } from '@nestjs/common';
 import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
 import { ProfileProviderConfig } from '../../storage/models/domain.models';
 import { ProviderConfigsService } from '../services/provider-configs.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -16,7 +18,7 @@ describe('ProviderConfigsController', () => {
     getProfileProviderConfig: jest.Mock;
     deleteProfileProviderConfig: jest.Mock;
   };
-  let providerConfigsService: { updateProviderConfig: jest.Mock };
+  let providerConfigsService: { updateProviderConfig: jest.Mock; deleteProviderConfig: jest.Mock };
 
   const baseConfig: ProfileProviderConfig = {
     id: 'config-1',
@@ -40,11 +42,13 @@ describe('ProviderConfigsController', () => {
     };
     providerConfigsService = {
       updateProviderConfig: jest.fn(),
+      deleteProviderConfig: jest.fn((id: string) => storage.deleteProfileProviderConfig(id)),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProviderConfigsController],
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         {
           provide: STORAGE_SERVICE,
           useValue: storage,

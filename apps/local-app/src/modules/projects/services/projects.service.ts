@@ -66,6 +66,7 @@ import {
   type ProjectWorkspaceChangedEvent,
 } from '../events/project-workspace-changed.events';
 import { EventsService } from '../../events/services/events.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 export interface TemplateInfo {
   id: string;
@@ -137,6 +138,7 @@ export class ProjectsService {
     private readonly unifiedTemplateService: UnifiedTemplateService,
     private readonly teamsService: TeamsService,
     private readonly provisioning: ProjectProviderProvisioningService,
+    private readonly admission: ProjectWriteAdmissionService,
     @Optional() private readonly eventEmitter?: EventEmitter2,
     @Optional()
     private readonly templatePipeline?: TemplatePipeline,
@@ -236,6 +238,7 @@ export class ProjectsService {
       configLookupMap: Map<string, string>;
     },
   ): Promise<{ applied: number; warnings: string[] }> {
+    this.admission.assertWritable(projectId);
     return applyPresetWithHelper(
       projectId,
       presetName,
@@ -245,6 +248,9 @@ export class ProjectsService {
   }
 
   async importProject(input: ImportProjectInput) {
+    if (!input.dryRun) {
+      this.admission.assertWritable(input.projectId);
+    }
     const result = await importProjectWithHelper(input, {
       storage: this.storage,
       snapshotPromptWriter: this.snapshotPromptWriter,
@@ -298,6 +304,7 @@ export class ProjectsService {
     data: UpdateProject,
   ): Promise<{ project: Project; provisioningWarnings: ProvisioningWarning[] }> {
     const before = await this.storage.getProject(id);
+    this.admission.assertWritable(id);
     const project = await this.storage.updateProject(id, data);
 
     if (before && before.workspaceId !== project.workspaceId) {
@@ -320,6 +327,7 @@ export class ProjectsService {
 
   async deleteProject(id: string): Promise<void> {
     const project = await this.storage.getProject(id);
+    this.admission.assertWritable(id);
     await this.storage.deleteProject(id);
     if (this.eventsService) {
       await this.eventsService.publish('epic.relations.invalidated', {

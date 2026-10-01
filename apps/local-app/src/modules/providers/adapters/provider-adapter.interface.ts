@@ -11,6 +11,12 @@ export interface LaunchInitialPromptBehavior {
 
 export interface RuntimePromptBehavior {
   postPasteDelayMs?: number;
+  /**
+   * Type the follow note after a DevChain paste (`delivery.ts` `FOLLOW_NOTE`). Only for a
+   * provider that hands a collapsed paste to the model as untrusted content: the note is
+   * typed as keys, and an open dialog in any other provider could read them as shortcuts.
+   */
+  followNote?: boolean;
 }
 
 export interface TerminalOutputBehavior {
@@ -93,6 +99,8 @@ export interface ProviderAdapter {
    * inherited vars without callers hardcoding provider-specific behavior.
    */
   readonly launchUnsetEnv?: readonly string[];
+  /** DevChain-owned environment overrides applied after provider and profile configuration. */
+  readonly launchEnv?: Readonly<Record<string, string>>;
   /**
    * Environment variable keys that MUST NOT be present in a provider's launch
    * environment (provider or config env). When any is set, `resolveLaunchConfig`

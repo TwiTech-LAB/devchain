@@ -5,13 +5,13 @@ import { NotificationsSection } from './NotificationsSection';
 // Mock useCloudConnection
 const mockUseCloudConnection = jest.fn();
 jest.mock('@/ui/hooks/useCloudConnection', () => ({
-  useCloudConnection: () => mockUseCloudConnection(),
+  useCloudConnection: (backend?: string) => mockUseCloudConnection(backend),
 }));
 
-// Mock useSelectedProject (provides projects list)
-const mockUseSelectedProject = jest.fn();
-jest.mock('@/ui/hooks/useProjectSelection', () => ({
-  useSelectedProject: () => mockUseSelectedProject(),
+// Mock useCloudTarget (the Cloud page target selector state)
+const mockUseCloudTarget = jest.fn();
+jest.mock('@/ui/hooks/useCloudTarget', () => ({
+  useCloudTarget: () => mockUseCloudTarget(),
 }));
 
 // Mock DisconnectedHint
@@ -23,12 +23,33 @@ jest.mock('./DisconnectedHint', () => ({
   ),
 }));
 
-// Mock PushNotificationsPanel
-jest.mock('./PushNotificationsPanel', () => ({
-  PushNotificationsPanel: () => (
-    <div data-testid="push-notifications-panel">Push Notifications</div>
+jest.mock('@/ui/components/cloud/DevicesPanel', () => ({
+  DevicesPanel: ({ backend }: { backend?: string }) => (
+    <div data-testid="devices-panel" data-backend={backend ?? 'home'} />
   ),
 }));
+
+jest.mock('@/ui/components/cloud/NotificationPreferencesPanel', () => ({
+  NotificationPreferencesPanel: () => <div data-testid="notification-preferences-panel" />,
+}));
+
+jest.mock('@/ui/components/cloud/QuietHoursConfig', () => ({
+  QuietHoursConfig: () => <div data-testid="quiet-hours-config" />,
+}));
+
+jest.mock('@/ui/components/cloud/ProjectForwardingList', () => ({
+  ProjectForwardingList: () => <div data-testid="project-forwarding-list" />,
+}));
+
+const HOME_TARGET = {
+  backend: 'home',
+  remoteName: null,
+  eligible: [],
+  selectorVisible: false,
+  selectTarget: jest.fn(),
+};
+
+const REMOTE_TARGET = { ...HOME_TARGET, backend: 'r1', remoteName: 'lab-vm' };
 
 const DISCONNECTED = {
   status: { connected: false, identityServiceUrl: 'http://localhost:3002' },
@@ -68,7 +89,7 @@ function renderSection() {
 describe('NotificationsSection', () => {
   beforeEach(() => {
     mockUseCloudConnection.mockReset();
-    mockUseSelectedProject.mockReset();
+    mockUseCloudTarget.mockReset().mockReturnValue(HOME_TARGET);
   });
 
   it('shows loading state while checking connection', () => {
@@ -81,14 +102,50 @@ describe('NotificationsSection', () => {
     mockUseCloudConnection.mockReturnValue(DISCONNECTED);
     renderSection();
     expect(screen.getByTestId('disconnected-hint')).toBeInTheDocument();
-    expect(screen.queryByTestId('push-notifications-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('devices-panel')).not.toBeInTheDocument();
   });
 
-  it('renders PushNotificationsPanel when signed in', () => {
+  it('keeps all notification panels for a signed-in This PC target', () => {
     mockUseCloudConnection.mockReturnValue(CONNECTED);
     renderSection();
-    expect(screen.getByTestId('push-notifications-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('devices-panel')).toHaveAttribute('data-backend', 'home');
+    expect(screen.getByTestId('notification-preferences-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('quiet-hours-config')).toBeInTheDocument();
+    expect(screen.getByTestId('project-forwarding-list')).toBeInTheDocument();
     expect(screen.queryByTestId('disconnected-hint')).not.toBeInTheDocument();
+  });
+
+  it('shows remote devices and the This PC hint when only the remote is signed in', () => {
+    mockUseCloudTarget.mockReturnValue(REMOTE_TARGET);
+    mockUseCloudConnection.mockImplementation((backend?: string) =>
+      backend === 'home' ? DISCONNECTED : CONNECTED,
+    );
+    renderSection();
+
+    expect(mockUseCloudConnection).toHaveBeenCalledWith('r1');
+    expect(mockUseCloudConnection).toHaveBeenCalledWith('home');
+    expect(screen.getByTestId('devices-panel')).toHaveAttribute('data-backend', 'r1');
+    expect(
+      screen.getByText(
+        'Preferences, quiet hours and forwarding belong to This PC. Sign This PC in to DevChain Cloud to change them.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('notification-preferences-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quiet-hours-config')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('project-forwarding-list')).not.toBeInTheDocument();
+  });
+
+  it('shows the home panels with a remote target when This PC is also signed in', () => {
+    mockUseCloudTarget.mockReturnValue(REMOTE_TARGET);
+    mockUseCloudConnection.mockReturnValue(CONNECTED);
+    renderSection();
+
+    expect(mockUseCloudConnection).toHaveBeenCalledWith('r1');
+    expect(screen.getByTestId('devices-panel')).toHaveAttribute('data-backend', 'r1');
+    expect(screen.getByTestId('notification-preferences-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('quiet-hours-config')).toBeInTheDocument();
+    expect(screen.getByTestId('project-forwarding-list')).toBeInTheDocument();
+    expect(screen.queryByText(/belong to This PC/)).not.toBeInTheDocument();
   });
 
   it('does not issue PUT to egress endpoint when signed out', () => {

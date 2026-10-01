@@ -204,7 +204,9 @@ describe('BoardPage stored source batch read', () => {
   });
 
   it('suppresses the batch and cached notes when admission is off', async () => {
-    runtimeAllowed.runtimeInfo = { integrationAdmission: { allowed: false, reason: 'worktree' } };
+    runtimeAllowed.runtimeInfo = {
+      integrationAdmission: { allowed: false, reason: 'child_runtime' },
+    };
     const { view } = renderBoard('/board');
 
     await waitFor(() => expect(screen.getByText('Epic root-1')).toBeInTheDocument());

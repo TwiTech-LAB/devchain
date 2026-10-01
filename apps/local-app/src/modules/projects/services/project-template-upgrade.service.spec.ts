@@ -5,6 +5,7 @@ import { UnifiedTemplateService } from '../../registry/services/unified-template
 import { SettingsService } from '../../settings/services/settings.service';
 import { ProjectsService } from './projects.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const createMockExportData = (prompts: any[] = []): any => ({
@@ -72,6 +73,7 @@ describe('ProjectTemplateUpgradeService', () => {
       mockUnifiedTemplateService,
       mockSettingsService,
       mockSessionsService,
+      createProjectWriteAdmissionStub() as never,
     );
   });
 
@@ -1205,6 +1207,7 @@ describe('ProjectTemplateUpgradeService', () => {
         mockUnifiedTemplateService,
         mockSettingsService,
         mockSessionsService,
+        createProjectWriteAdmissionStub() as never,
       );
       // Initialize the cleanup timer (moved from constructor to onModuleInit)
       serviceWithFakeTimers.onModuleInit();

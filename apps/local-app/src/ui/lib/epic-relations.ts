@@ -1,11 +1,12 @@
 import type { InfiniteData } from '@tanstack/react-query';
 
 /**
- * Cache scope for Board batch reads. Worktree tabs and unresolved runtimes
- * key under 'isolated' so a disabled runtime never shares a main-scope
- * entry; the batch-family prefix still invalidates every variant together.
+ * Cache scope for Board batch reads. A disabled caller — one passed `enabled:
+ * false`, or one still missing the context it needs to read — keys under
+ * 'disabled' so it never shares an active-scope entry; the batch-family prefix
+ * still invalidates every variant together.
  */
-export type EpicRelationQueryScope = 'main' | 'isolated';
+export type EpicRelationQueryScope = 'active' | 'disabled';
 
 export const epicRelationQueryKeys = {
   detailRoot: (): string[] => ['epic-relations', 'detail'],
@@ -20,7 +21,7 @@ export const epicRelationQueryKeys = {
     String(limit),
     String(offset),
   ],
-  batch: (epicIds: readonly string[], scope: EpicRelationQueryScope = 'main'): string[] => [
+  batch: (epicIds: readonly string[], scope: EpicRelationQueryScope = 'active'): string[] => [
     'epic-relations',
     'batch',
     scope,

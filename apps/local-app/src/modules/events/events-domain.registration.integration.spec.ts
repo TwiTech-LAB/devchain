@@ -11,78 +11,75 @@ import { TeamMembershipChangedNotifierSubscriber } from '../teams/subscribers/te
 
 jest.setTimeout(60_000);
 
-describe.each(['normal', 'main'] as const)(
-  'domain subscriber registration in %s app root',
-  (root) => {
-    let fixture: AppBootstrapFixture | undefined;
+describe('domain subscriber registration in app root', () => {
+  let fixture: AppBootstrapFixture | undefined;
 
-    afterEach(async () => {
-      await fixture?.close();
-      fixture = undefined;
-      jest.restoreAllMocks();
-    });
+  afterEach(async () => {
+    await fixture?.close();
+    fixture = undefined;
+    jest.restoreAllMocks();
+  });
 
-    it('invokes each transitional subscriber from app-root registration', async () => {
-      const epicCreatedAssignmentSpy = spyOnSubscriberMethod(
-        EpicAssignmentNotifierSubscriber.prototype,
-        'handleEpicCreated',
-      );
-      const epicUpdatedSpy = spyOnSubscriberMethod(
-        EpicAssignmentNotifierSubscriber.prototype,
-        'handleEpicUpdated',
-      );
-      const subEpicCreatedSpy = spyOnSubscriberMethod(
-        SubEpicCreatedNotifierSubscriber.prototype,
-        'handleEpicCreated',
-      );
-      const reviewCommentSpy = spyOnSubscriberMethod(
-        ReviewCommentNotifierSubscriber.prototype,
-        'handleReviewCommentCreated',
-      );
-      const teamConfigSpy = spyOnSubscriberMethod(
-        TeamConfigUpdatedNotifierSubscriber.prototype,
-        'handleTeamConfigUpdated',
-      );
-      const teamMemberAddedSpy = spyOnSubscriberMethod(
-        TeamMembershipChangedNotifierSubscriber.prototype,
-        'handleMemberAdded',
-      );
-      const teamMemberRemovedSpy = spyOnSubscriberMethod(
-        TeamMembershipChangedNotifierSubscriber.prototype,
-        'handleMemberRemoved',
-      );
+  it('invokes each transitional subscriber from app-root registration', async () => {
+    const epicCreatedAssignmentSpy = spyOnSubscriberMethod(
+      EpicAssignmentNotifierSubscriber.prototype,
+      'handleEpicCreated',
+    );
+    const epicUpdatedSpy = spyOnSubscriberMethod(
+      EpicAssignmentNotifierSubscriber.prototype,
+      'handleEpicUpdated',
+    );
+    const subEpicCreatedSpy = spyOnSubscriberMethod(
+      SubEpicCreatedNotifierSubscriber.prototype,
+      'handleEpicCreated',
+    );
+    const reviewCommentSpy = spyOnSubscriberMethod(
+      ReviewCommentNotifierSubscriber.prototype,
+      'handleReviewCommentCreated',
+    );
+    const teamConfigSpy = spyOnSubscriberMethod(
+      TeamConfigUpdatedNotifierSubscriber.prototype,
+      'handleTeamConfigUpdated',
+    );
+    const teamMemberAddedSpy = spyOnSubscriberMethod(
+      TeamMembershipChangedNotifierSubscriber.prototype,
+      'handleMemberAdded',
+    );
+    const teamMemberRemovedSpy = spyOnSubscriberMethod(
+      TeamMembershipChangedNotifierSubscriber.prototype,
+      'handleMemberRemoved',
+    );
 
-      fixture = await compileAppBootstrapFixture(root);
-      await fixture.moduleRef.init();
-      const eventEmitter = fixture.moduleRef.get(EventEmitter2);
+    fixture = await compileAppBootstrapFixture();
+    await fixture.moduleRef.init();
+    const eventEmitter = fixture.moduleRef.get(EventEmitter2);
 
-      eventEmitter.emit('epic.created', {});
-      await flushAsyncEventListeners();
-      expect(epicCreatedAssignmentSpy).toHaveBeenCalledWith({});
-      expect(subEpicCreatedSpy).toHaveBeenCalledWith({});
+    eventEmitter.emit('epic.created', {});
+    await flushAsyncEventListeners();
+    expect(epicCreatedAssignmentSpy).toHaveBeenCalledWith({});
+    expect(subEpicCreatedSpy).toHaveBeenCalledWith({});
 
-      eventEmitter.emit('epic.updated', { changes: {} });
-      await flushAsyncEventListeners();
-      expect(epicUpdatedSpy).toHaveBeenCalledWith({ changes: {} });
+    eventEmitter.emit('epic.updated', { changes: {} });
+    await flushAsyncEventListeners();
+    expect(epicUpdatedSpy).toHaveBeenCalledWith({ changes: {} });
 
-      eventEmitter.emit('review.comment.created', {});
-      await flushAsyncEventListeners();
-      expect(reviewCommentSpy).toHaveBeenCalledWith({});
+    eventEmitter.emit('review.comment.created', {});
+    await flushAsyncEventListeners();
+    expect(reviewCommentSpy).toHaveBeenCalledWith({});
 
-      eventEmitter.emit('team.config.updated', {});
-      await flushAsyncEventListeners();
-      expect(teamConfigSpy).toHaveBeenCalledWith({});
+    eventEmitter.emit('team.config.updated', {});
+    await flushAsyncEventListeners();
+    expect(teamConfigSpy).toHaveBeenCalledWith({});
 
-      eventEmitter.emit('team.member.added', {});
-      await flushAsyncEventListeners();
-      expect(teamMemberAddedSpy).toHaveBeenCalledWith({});
+    eventEmitter.emit('team.member.added', {});
+    await flushAsyncEventListeners();
+    expect(teamMemberAddedSpy).toHaveBeenCalledWith({});
 
-      eventEmitter.emit('team.member.removed', {});
-      await flushAsyncEventListeners();
-      expect(teamMemberRemovedSpy).toHaveBeenCalledWith({});
-    });
-  },
-);
+    eventEmitter.emit('team.member.removed', {});
+    await flushAsyncEventListeners();
+    expect(teamMemberRemovedSpy).toHaveBeenCalledWith({});
+  });
+});
 
 function spyOnSubscriberMethod(
   prototype: Record<string, (...args: unknown[]) => unknown>,

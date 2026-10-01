@@ -23,18 +23,20 @@ function durationFormatConstructor(): NativeDurationFormatConstructor | undefine
 }
 
 /**
- * Cache scope for time queries. Disabled runtimes (worktree tabs, unresolved
- * runtime) key under 'isolated' so their query observers can never read a
- * main-scope cache entry through any returned field.
+ * Cache scope for time queries. A disabled caller — one passed `enabled:
+ * false`, or one still missing the context it needs to read — keys under
+ * 'disabled' so its query observer can never read an active-scope cache entry
+ * through any returned field. The family prefix still invalidates every scope
+ * together.
  */
-export type EpicTimeQueryScope = 'main' | 'isolated';
+export type EpicTimeQueryScope = 'active' | 'disabled';
 
 export const epicTimeQueryKeys = {
-  detail: (epicId: string, timeZone: string, scope: EpicTimeQueryScope = 'main') =>
+  detail: (epicId: string, timeZone: string, scope: EpicTimeQueryScope = 'active') =>
     ['epic-time-detail', epicId, timeZone, scope] as const,
-  batch: (epicIds: readonly string[], timeZone: string, scope: EpicTimeQueryScope = 'main') =>
+  batch: (epicIds: readonly string[], timeZone: string, scope: EpicTimeQueryScope = 'active') =>
     ['epic-time-batch', epicIds, timeZone, scope] as const,
-  buffers: (projectId: string, scope: EpicTimeQueryScope = 'main') =>
+  buffers: (projectId: string, scope: EpicTimeQueryScope = 'active') =>
     ['agent-time-buffers', projectId, scope] as const,
   detailRoot: (): string[] => ['epic-time-detail'],
   batchRoot: (): string[] => ['epic-time-batch'],

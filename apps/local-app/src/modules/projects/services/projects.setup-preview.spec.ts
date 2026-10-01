@@ -11,6 +11,8 @@ import { TeamsService } from '../../teams/services/teams.service';
 import { ExportSchema } from '@devchain/shared';
 import { ZodError } from 'zod';
 import { ValidationError } from '../../../common/errors/error-types';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -81,6 +83,7 @@ describe('ProjectsService.setupPreview', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         ProjectsService,
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: SessionsService, useValue: {} },
@@ -220,6 +223,7 @@ describe('ProjectsService — selectedProviderNames validation', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         ProjectsService,
         { provide: STORAGE_SERVICE, useValue: storage },
         {

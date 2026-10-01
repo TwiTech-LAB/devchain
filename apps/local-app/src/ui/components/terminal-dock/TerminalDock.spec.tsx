@@ -436,7 +436,7 @@ describe('TerminalDock collapsed bar pills', () => {
 
       const pill = screen.getByRole('button', { name: /running agent/i });
       const statusDot = pill.querySelector('span.rounded-full');
-      expect(statusDot).toHaveClass('bg-emerald-500');
+      expect(statusDot).toHaveClass('bg-status-ok');
     });
 
     it('shows gray status dot for non-running session', () => {
@@ -516,7 +516,7 @@ describe('TerminalDock collapsed bar pills', () => {
       // Wait for query to settle and find the status dot (● character)
       await waitFor(() => {
         const statusDot = screen.getByText('●');
-        expect(statusDot).toHaveClass('text-emerald-500');
+        expect(statusDot).toHaveClass('text-status-ok');
       });
     });
 

@@ -84,7 +84,7 @@ export class ProviderConfigsController {
   async deleteProviderConfig(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/provider-configs/:id');
     try {
-      await this.storage.deleteProfileProviderConfig(id);
+      await this.providerConfigsService.deleteProviderConfig(id);
     } catch (error) {
       if (error instanceof ValidationError) {
         throw new BadRequestException({

@@ -1,11 +1,13 @@
-import { render, screen, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { ContextMenuItem } from '../ui/context-menu';
 import { CloudAccountMenu } from './CloudAccountMenu';
 
 const mockDisconnect = jest.fn();
 
-function renderMenu() {
+function renderMenu(compact?: boolean, contextMenu?: ReactNode) {
   return render(
     <MemoryRouter>
       <CloudAccountMenu
@@ -13,6 +15,8 @@ function renderMenu() {
         email="test@example.com"
         identityServiceUrl="http://localhost:3002"
         onDisconnect={mockDisconnect}
+        compact={compact}
+        contextMenu={contextMenu}
       />
     </MemoryRouter>,
   );
@@ -74,5 +78,55 @@ describe('CloudAccountMenu', () => {
     // Radix separators have role="separator"
     const separators = within(menu).getAllByRole('separator');
     expect(separators.length).toBeGreaterThanOrEqual(1);
+  });
+
+  describe('compact', () => {
+    it('renders an icon-only trigger whose accessible name carries the email', () => {
+      renderMenu(true);
+      const trigger = screen.getByRole('button', { name: 'Cloud connected: test@example.com' });
+      expect(trigger).toHaveTextContent('');
+      expect(trigger.querySelector('svg')).toBeInTheDocument();
+    });
+
+    it('still shows the email inside the dropdown', async () => {
+      renderMenu(true);
+      await userEvent.click(screen.getByRole('button'));
+
+      const menu = screen.getByRole('menu');
+      expect(menu).toHaveTextContent('test@example.com');
+    });
+  });
+
+  describe('right-click menu', () => {
+    const projectItems = <ContextMenuItem>Project item</ContextMenuItem>;
+
+    it('opens the given items on a right click instead of the browser menu', () => {
+      renderMenu(false, projectItems);
+      const notPrevented = fireEvent.contextMenu(screen.getByRole('button'));
+
+      expect(notPrevented).toBe(false);
+      const menu = screen.getByRole('menu');
+      expect(within(menu).getByRole('menuitem', { name: 'Project item' })).toBeInTheDocument();
+      expect(within(menu).queryByText('Manage cloud account')).not.toBeInTheDocument();
+    });
+
+    it('keeps the account menu on a left click, with the trigger state following it', async () => {
+      renderMenu(true, projectItems);
+      const trigger = screen.getByRole('button', { name: 'Cloud connected: test@example.com' });
+      expect(trigger).toHaveAttribute('data-state', 'closed');
+
+      await openDropdown();
+
+      expect(trigger).toHaveAttribute('data-state', 'open');
+      const menu = screen.getByRole('menu');
+      expect(within(menu).getAllByRole('menuitem')[0]).toHaveTextContent('Manage cloud account');
+      expect(screen.queryByText('Project item')).not.toBeInTheDocument();
+    });
+
+    it('leaves the browser menu alone without items', () => {
+      renderMenu();
+      expect(fireEvent.contextMenu(screen.getByRole('button'))).toBe(true);
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
   });
 });

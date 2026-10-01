@@ -210,7 +210,7 @@ export function ProviderGroupedConfigSelector<
                   <label
                     key={config.key}
                     className={`flex cursor-pointer items-center gap-1.5 text-xs ${
-                      selected ? 'text-foreground' : 'text-muted-foreground/60 line-through'
+                      selected ? 'text-foreground' : 'text-muted-foreground line-through'
                     }`}
                   >
                     <Checkbox

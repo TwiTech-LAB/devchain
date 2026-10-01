@@ -1,5 +1,6 @@
 import { isLessThan } from '@devchain/shared';
 import type {
+  ProjectRemoteOwner,
   ProjectTemplate,
   ProjectsQueryData,
   ProjectWithStats,
@@ -58,6 +59,8 @@ export interface BuildProjectsTableModelInput {
     readonly targetWorkspaceId: string | null;
   };
   statusMessage?: string;
+  /** Projects a remote owns, by project ID. */
+  remoteOwners?: ReadonlyMap<string, ProjectRemoteOwner>;
   actions: ProjectsTableActions;
 }
 
@@ -114,6 +117,7 @@ export function buildProjectsTableModel(input: BuildProjectsTableModelInput): Pr
     collapsedWorkspaceIds = new Set<string>(),
     projectDrag = { projectId: null, sourceWorkspaceId: null, targetWorkspaceId: null },
     statusMessage = '',
+    remoteOwners = new Map<string, ProjectRemoteOwner>(),
   } = input;
   const failedData = new Set(unavailableData);
   if (!isLoading && !data) failedData.add('projects');
@@ -129,7 +133,8 @@ export function buildProjectsTableModel(input: BuildProjectsTableModelInput): Pr
     openCreateInWorkspace: actions.openCreateInWorkspace,
     requestProjectMove: (projectId, workspaceId) => {
       const project = data?.items.find((candidate) => candidate.id === projectId);
-      if (project) actions.requestProjectMove(project, workspaceId);
+      if (project && !remoteOwners.has(project.id))
+        actions.requestProjectMove(project, workspaceId);
     },
     openCreateWorkspace: actions.openCreateWorkspace,
     statusMessage,
@@ -151,6 +156,7 @@ export function buildProjectsTableModel(input: BuildProjectsTableModelInput): Pr
       workspaces,
       templates,
       collapsedWorkspaceIds,
+      remoteOwners,
       actions,
     }),
   };
@@ -166,6 +172,7 @@ function buildTableContent({
   workspaces,
   templates,
   collapsedWorkspaceIds,
+  remoteOwners,
   actions,
 }: {
   data: ProjectsQueryData | undefined;
@@ -177,6 +184,7 @@ function buildTableContent({
   workspaces: ProjectWorkspace[] | undefined;
   templates: ProjectTemplate[] | undefined;
   collapsedWorkspaceIds: ReadonlySet<string>;
+  remoteOwners: ReadonlyMap<string, ProjectRemoteOwner>;
   actions: ProjectsTableActions;
 }): ProjectsTableContent {
   if (isLoading) return { kind: 'loading' };
@@ -195,7 +203,9 @@ function buildTableContent({
         search,
         sortField,
         sortOrder,
-      ).map((project) => buildRow(project, orderedWorkspaces, templates, actions));
+      ).map((project) =>
+        buildRow(project, orderedWorkspaces, templates, actions, remoteOwners.get(project.id)),
+      );
       const emptyState = getWorkspaceEmptyState(searchActive, rows.length, workspace.projectCount);
 
       return {
@@ -249,8 +259,10 @@ function buildRow(
   workspaces: ProjectWorkspace[],
   templates: ProjectTemplate[] | undefined,
   actions: ProjectsTableActions,
+  remoteOwner?: ProjectRemoteOwner,
 ): ProjectTableRowModel {
   const upgradeVersion = getProjectUpgradeVersion(project, templates);
+  const remoteLock = remoteOwner ? { message: describeRemoteLock(remoteOwner) } : null;
 
   return {
     id: project.id,
@@ -277,14 +289,27 @@ function buildRow(
     startImport: () => actions.startImport(project),
     export: () => actions.exportProject(project),
     configure: project.isConfigurable ? () => actions.configureProject(project) : undefined,
-    upgrade: upgradeVersion ? () => actions.upgradeProject(project, upgradeVersion) : undefined,
+    upgrade:
+      upgradeVersion && !remoteLock
+        ? () => actions.upgradeProject(project, upgradeVersion)
+        : undefined,
     actionsButtonId: projectActionsButtonId(project.id),
+    remoteLock,
     moveTargets: workspaces
-      .filter((workspace) => workspace.id !== project.workspaceId)
+      .filter((workspace) => !remoteLock && workspace.id !== project.workspaceId)
       .map((workspace) => ({
         workspaceId: workspace.id,
         workspaceName: workspace.name,
         requestMove: () => actions.requestProjectMove(project, workspace.id),
       })),
   };
+}
+
+export function describeRemoteLock(owner: ProjectRemoteOwner): string {
+  const remote = owner.remoteName ? `remote "${owner.remoteName}"` : 'a remote';
+  if (owner.state === 'attaching') return `Connecting to ${remote}; changes are paused.`;
+  if (owner.state === 'detaching') return `Disconnecting from ${remote}; changes are paused.`;
+  if (owner.state === 'failed')
+    return `Connection to ${remote} failed; retry or cancel it in Cloud.`;
+  return `Connected to ${remote}; change this project there.`;
 }

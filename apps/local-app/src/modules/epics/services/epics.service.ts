@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
@@ -16,12 +17,16 @@ import type {
   CreateEpic,
   CreateEpicWithExternalTaskLink,
   CreateEpicWithExternalTaskLinkResult,
+  CreateExternalTaskLink,
   IntegrationProvider,
   EpicRelationType,
+  Project,
+  Status,
 } from '../../storage/models/domain.models';
 import { EventsService } from '../../events/services/events.service';
 import {
   AppError,
+  ConflictError,
   NotFoundError,
   StorageError,
   ValidationError,
@@ -35,6 +40,12 @@ import { normalizeExternalTaskSourceUrl } from '../../external-integrations/mode
 import type { ExternalTaskSourceSummary } from '../../external-integrations/models/external-provider.models';
 import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
 import { resolveEpicRelationTarget } from './epic-relation-target-resolver';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { RemoteHostClient } from '../../remotes/operations/remote-host.client';
+import {
+  REMOTE_MIRROR_SYNC_PORT,
+  type RemoteMirrorSyncPort,
+} from '../../remotes/ports/remote-mirror-sync.port';
 import {
   applyEpicDescriptionEdits,
   type EpicDescriptionEdit,
@@ -123,6 +134,25 @@ export interface ImportExternalTaskInput {
   };
 }
 
+/** The host route's bound on an idempotency key. */
+const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
+
+/**
+ * The key a vendor-task import stores in the host epic's `data.idempotencyKey`.
+ * Parts are URI-encoded so a `:` inside one cannot collide with the separator;
+ * a key past the host's bound falls back to a digest of the same parts.
+ */
+export function externalImportIdempotencyKey(
+  provider: IntegrationProvider,
+  remoteScopeKey: string,
+  remoteTaskId: string,
+): string {
+  const key = `import:${provider}:${encodeURIComponent(remoteScopeKey)}:${encodeURIComponent(remoteTaskId)}`;
+  if (key.length <= MAX_IDEMPOTENCY_KEY_LENGTH) return key;
+  const digest = createHash('sha256').update(`${remoteScopeKey}\n${remoteTaskId}`).digest('hex');
+  return `import:${provider}:sha256:${digest}`;
+}
+
 /** One relation attachment for atomic Epic creation. */
 export interface EpicRelationInputOperation {
   relatedEpicId: string;
@@ -137,15 +167,21 @@ export interface CreateEpicForProjectOperationInput extends CreateEpicForProject
 @Injectable()
 export class EpicsService {
   private readonly logger = new Logger(EpicsService.name);
+  /** Tail of the in-flight host import per project and idempotency key. */
+  private readonly hostImports = new Map<string, Promise<unknown>>();
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
     private readonly eventsService: EventsService,
     private readonly settingsService: SettingsService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly admission: ProjectWriteAdmissionService,
+    private readonly hostClient: RemoteHostClient,
+    @Inject(REMOTE_MIRROR_SYNC_PORT) private readonly mirrorSync: RemoteMirrorSyncPort,
   ) {}
 
   async createEpic(data: CreateEpic, context?: EpicOperationContext): Promise<Epic> {
+    this.admission.assertWritable(data.projectId);
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(data.projectId, data.statusId, data);
     const createData = { ...data, createdBy: this.deriveCreatedBy(context) };
@@ -166,6 +202,7 @@ export class EpicsService {
     data: CreateEpicWithExternalTaskLink,
     context?: EpicOperationContext,
   ): Promise<CreateEpicWithExternalTaskLinkResult> {
+    this.admission.assertWritable(data.epic.projectId);
     const epic = { ...data.epic };
     this.applyAutoCleanIfNeeded(epic.projectId, epic.statusId, epic);
     const createData = { ...epic, createdBy: this.deriveCreatedBy(context) };
@@ -194,10 +231,22 @@ export class EpicsService {
     return result;
   }
 
+  /**
+   * Imports a vendor task as an epic with its link row. For a project a remote
+   * owns, the epic is created on the host and only the link row is written
+   * here; see `importExternalTaskThroughHost`.
+   */
   async importExternalTask(
     input: ImportExternalTaskInput,
     context?: EpicOperationContext,
   ): Promise<CreateEpicWithExternalTaskLinkResult> {
+    const owner = this.admission.getRemoteOwner(input.projectId);
+    // Only a settled binding goes through the host: while attaching the host
+    // is not thawed yet, and while detaching it is frozen.
+    const remoteId = owner?.state === 'remote' ? owner.remoteId : null;
+    if (!remoteId) {
+      this.admission.assertWritable(input.projectId);
+    }
     const [project, status, connection] = await Promise.all([
       this.storage.getProject(input.projectId),
       this.storage.getStatus(input.statusId),
@@ -218,6 +267,25 @@ export class EpicsService {
       });
     }
 
+    const externalTaskLink: Omit<CreateExternalTaskLink, 'epicId'> = {
+      connectionId: connection.id,
+      provider: input.remote.provider,
+      remoteScopeKey: input.remote.scopeKey,
+      remoteTaskId: input.remote.taskId,
+      sourceSnapshot: {
+        remoteKey: input.remote.remoteKey,
+        title: input.remote.title,
+        description: input.remote.description,
+        webUrl: input.remote.webUrl,
+        workAreaId: input.remote.workAreaId,
+        workAreaName: input.remote.workAreaName,
+        statusName: input.remote.statusName,
+      },
+    };
+    if (remoteId) {
+      return this.importExternalTaskThroughHost(remoteId, project, status, input, externalTaskLink);
+    }
+
     return this.createEpicWithExternalTaskLink(
       {
         epic: {
@@ -231,24 +299,108 @@ export class EpicsService {
           skillsRequired: null,
           tags: [],
         },
-        externalTaskLink: {
-          connectionId: connection.id,
-          provider: input.remote.provider,
-          remoteScopeKey: input.remote.scopeKey,
-          remoteTaskId: input.remote.taskId,
-          sourceSnapshot: {
-            remoteKey: input.remote.remoteKey,
-            title: input.remote.title,
-            description: input.remote.description,
-            webUrl: input.remote.webUrl,
-            workAreaId: input.remote.workAreaId,
-            workAreaName: input.remote.workAreaName,
-            statusName: input.remote.statusName,
-          },
-        },
+        externalTaskLink,
       },
       context,
     );
+  }
+
+  /**
+   * The host is the only writer of a remote-owned project's epics; home keeps
+   * the integration connection and the link row. Order: find or create the
+   * host epic by idempotency key, pull it into the mirror, then write the link.
+   * A failure after the host create leaves the host epic behind; the retry
+   * finds it by key, so no attempt creates a second one.
+   */
+  private async importExternalTaskThroughHost(
+    remoteId: string,
+    project: Project,
+    status: Status,
+    input: ImportExternalTaskInput,
+    link: Omit<CreateExternalTaskLink, 'epicId'>,
+  ): Promise<CreateEpicWithExternalTaskLinkResult> {
+    const idempotencyKey = externalImportIdempotencyKey(
+      link.provider,
+      link.remoteScopeKey,
+      link.remoteTaskId,
+    );
+    const findLink = () =>
+      this.storage.findExternalTaskLink(
+        project.id,
+        link.provider,
+        link.remoteScopeKey,
+        link.remoteTaskId,
+      );
+    const existingImport = async (existing: ExternalTaskLink) => ({
+      epic: await this.storage.getEpic(existing.epicId),
+      externalTaskLink: existing,
+      created: false,
+    });
+
+    // Serialized per key: the host lookup and create are two requests, so two
+    // concurrent imports of one task would otherwise both miss and both create.
+    const result = await this.serializeHostImport(`${project.id}\n${idempotencyKey}`, async () => {
+      const linked = await findLink();
+      if (linked) return existingImport(linked);
+
+      const epicId =
+        (await this.hostClient.findEpicByIdempotencyKey(remoteId, project.id, idempotencyKey)) ??
+        (
+          await this.hostClient.createEpic(remoteId, {
+            projectId: project.id,
+            statusId: status.id,
+            title: input.title,
+            description: input.description,
+            data: { idempotencyKey },
+          })
+        ).id;
+
+      await this.mirrorSync.pullNow(project.id);
+
+      return this.storage.runInTransaction(async () => {
+        const winner = await findLink();
+        if (winner) return existingImport(winner);
+        const epic = await this.getMirroredEpic(epicId, remoteId, project.id);
+        const externalTaskLink = await this.storage.createExternalTaskLink({ ...link, epicId });
+        return { epic, externalTaskLink, created: true };
+      });
+    });
+
+    if (result.created) {
+      await this.eventsService.publish('epic.time.scope.invalidated', {
+        workspaceId: project.workspaceId,
+      });
+    }
+    return result;
+  }
+
+  /** `pullNow` leaves the mirror as it is when the host is unreachable. */
+  private async getMirroredEpic(
+    epicId: string,
+    remoteId: string,
+    projectId: string,
+  ): Promise<Epic> {
+    try {
+      return await this.storage.getEpic(epicId);
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+      throw new ConflictError(
+        'The epic was created on the remote but has not reached this computer yet; try again.',
+        { code: 'REMOTE_MIRROR_PENDING', retryable: true, remoteId, projectId, epicId },
+      );
+    }
+  }
+
+  private async serializeHostImport<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.hostImports.get(key) ?? Promise.resolve();
+    const run = previous.then(fn);
+    const tail = run.catch(() => undefined);
+    this.hostImports.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.hostImports.get(key) === tail) this.hostImports.delete(key);
+    }
   }
 
   async listExternalTaskSources(epicId: string): Promise<ExternalTaskSourceSummary[]> {
@@ -327,6 +479,7 @@ export class EpicsService {
     input: CreateEpicForProjectOperationInput,
     context?: EpicOperationContext,
   ): Promise<Epic> {
+    this.admission.assertWritable(projectId);
     const { relation, relations, ...epicInput } = input;
     const relationList: EpicRelationInputOperation[] = relations ?? (relation ? [relation] : []);
     // Clear agentId if creating in an auto-clean status
@@ -529,6 +682,7 @@ export class EpicsService {
     context?: EpicOperationContext,
   ): Promise<{ epic: Epic; descriptionEdit?: EpicDescriptionEditOutcome }> {
     const before = await this.storage.getEpic(id);
+    this.admission.assertWritable(before.projectId);
 
     const { descriptionEdits, appendDescription, ...updateData } = data;
     let descriptionEdit: EpicDescriptionEditOutcome | undefined;
@@ -742,7 +896,7 @@ export class EpicsService {
   }
 
   async deleteEpic(id: string, context?: EpicOperationContext): Promise<void> {
-    await this.storage.getEpic(id);
+    this.admission.assertWritable((await this.storage.getEpic(id)).projectId);
     const prepared: Array<PreparedEvent<'epic.deleted'>> = [];
     let workspaceId: string | null = null;
     await this.storage.deleteEpic(id, (deleted, currentWorkspaceId) => {
@@ -783,6 +937,7 @@ export class EpicsService {
     authorType: 'agent' | 'guest',
   ): Promise<EpicComment> {
     const epic = await this.storage.getEpic(epicId);
+    this.admission.assertWritable(epic.projectId);
 
     if (epic.projectId !== projectId) {
       throw new ValidationError(`Epic ${epicId} does not belong to project ${projectId}.`, {
@@ -901,6 +1056,7 @@ export class EpicsService {
     content: string,
   ): Promise<EpicComment> {
     const epic = await this.storage.getEpic(epicId);
+    this.admission.assertWritable(epic.projectId);
     const comment = await this.storage.createEpicComment({
       epicId,
       authorName,
@@ -950,11 +1106,20 @@ export class EpicsService {
     if (epic.projectId !== projectId) {
       throw new NotFoundError('Epic', epicId);
     }
+    this.admission.assertWritable(projectId);
 
     const deleted = await this.storage.deleteEpicCommentScoped(epicId, commentId);
     if (!deleted) {
       throw new NotFoundError('Comment', commentId);
     }
+  }
+
+  /** Deletes a comment by its ID alone; an unknown comment is a no-op. */
+  async deleteEpicCommentById(commentId: string): Promise<void> {
+    const epicId = await this.storage.findEpicCommentEpicId(commentId);
+    if (!epicId) return;
+    this.admission.assertWritable((await this.storage.getEpic(epicId)).projectId);
+    await this.storage.deleteEpicComment(commentId);
   }
 
   /**

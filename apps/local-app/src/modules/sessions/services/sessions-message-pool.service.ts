@@ -100,6 +100,7 @@ interface ResolvedEnqueueInput {
   readonly deliveryMode: MessageDeliveryMode;
   readonly deferWhileHumanTyping: boolean;
   readonly humanPromptSubmit: boolean;
+  readonly outsideText: boolean;
 }
 
 type DeferredClaimOutcome = 'delivered' | 'unconfirmed' | 'deferred' | 'failed';
@@ -333,6 +334,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         deliveryMode,
         deferWhileHumanTyping: options.deferWhileHumanTyping === true,
         humanPromptSubmit: options.humanPromptSubmit === true,
+        outsideText: options.outsideText === true,
       });
     }
 
@@ -390,6 +392,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           skipConfirmation: immediateDelivery,
           preKeys,
           preDelayMs,
+          outsideText: options.outsideText === true,
         });
         const status = unconfirmed ? 'unconfirmed' : 'delivered';
         const deliveredAt = Date.now();
@@ -527,6 +530,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       logEntryId,
       clientMessageId,
       failureDisclosure,
+      outsideText: options.outsideText === true,
     };
     pool.messages.push(message);
 
@@ -699,6 +703,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       deferWhileHumanTyping: input.deferWhileHumanTyping,
       requiresProviderIdle: options?.requiresProviderIdle === true,
       heldGeneration: options?.heldGeneration,
+      outsideText: input.outsideText,
     };
   }
 
@@ -1759,8 +1764,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
   ): boolean {
     return (
       left.expectedGeneration === right.expectedGeneration &&
-      left.executedInputEpoch === right.executedInputEpoch &&
-      left.meaningfulOutputEpoch === right.meaningfulOutputEpoch
+      left.executedInputEpoch === right.executedInputEpoch
     );
   }
 
@@ -1873,13 +1877,15 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const submitKeys = messages[messages.length - 1]?.submitKeys ?? ['Enter'];
 
     try {
-      const postPasteDelayMs =
-        await this.providerAdapterFactory.getPostPasteDelayMsForAgent(agentId);
+      const { postPasteDelayMs, followNote } =
+        await this.providerAdapterFactory.getRuntimePromptBehaviorForAgent(agentId);
+      // One message from outside this DevChain keeps the whole batch without the note.
+      const batchFollowNote = followNote === true && !messages.some((m) => m.outsideText);
       const result = claim
         ? await this.terminalIO.deliverGuarded(
             { name: target.tmuxSessionName },
             baseText,
-            { agentId, submitKeys, postPasteDelayMs },
+            { agentId, submitKeys, postPasteDelayMs, followNote: batchFollowNote },
             claim.forceSnapshot ? undefined : quietSnapshot,
             {
               canStartMutation: () => {
@@ -1901,6 +1907,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
             agentId,
             submitKeys,
             postPasteDelayMs,
+            followNote: batchFollowNote,
           });
       const cancellation = deferredClaimCancellationResult(claim, messages.length);
       if (cancellation) return cancellation;
@@ -1980,7 +1987,12 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     agentId: string,
     text: string,
     submitKeys: string[],
-    opts?: { skipConfirmation?: boolean; preKeys?: string[]; preDelayMs?: number },
+    opts?: {
+      skipConfirmation?: boolean;
+      preKeys?: string[];
+      preDelayMs?: number;
+      outsideText?: boolean;
+    },
   ): Promise<{ nonce: string; unconfirmed?: boolean; skipped?: boolean; retryCount: number }> {
     return this.coordinator.withAgentLock(agentId, () =>
       this.deliverMessageUnderAgentLock(agentId, text, submitKeys, opts),
@@ -1991,7 +2003,12 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     agentId: string,
     text: string,
     submitKeys: string[],
-    opts?: { skipConfirmation?: boolean; preKeys?: string[]; preDelayMs?: number },
+    opts?: {
+      skipConfirmation?: boolean;
+      preKeys?: string[];
+      preDelayMs?: number;
+      outsideText?: boolean;
+    },
   ): Promise<{
     nonce: string;
     unconfirmed?: boolean;
@@ -2004,7 +2021,9 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const session = activeSessions.find((candidate) => candidate.agentId === agentId);
     if (!session?.tmuxSessionId) throw new Error(`No active session for agent ${agentId}`);
 
-    const postPasteDelayMs = await this.providerAdapterFactory.getPostPasteDelayMsForAgent(agentId);
+    const behavior = await this.providerAdapterFactory.getRuntimePromptBehaviorForAgent(agentId);
+    const postPasteDelayMs = behavior.postPasteDelayMs;
+    const followNote = behavior.followNote === true && opts?.outsideText !== true;
     if (opts?.skipConfirmation) {
       const delivery = await this.terminalIO.deliverImmediate(
         { name: session.tmuxSessionId },
@@ -2015,6 +2034,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           confirm: false,
           preKeys: opts.preKeys,
           preDelayMs: opts.preDelayMs,
+          followNote,
         },
       );
       return {
@@ -2032,6 +2052,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       postPasteDelayMs,
       preKeys: opts?.preKeys,
       preDelayMs: opts?.preDelayMs,
+      followNote,
     });
     return {
       nonce: delivery.nonce,
@@ -2064,6 +2085,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           skipConfirmation: input.deliveryMode === 'immediate',
           preKeys: input.preKeys,
           preDelayMs: input.preDelayMs,
+          outsideText: input.outsideText,
         },
       );
       const status = delivery.unconfirmed ? 'unconfirmed' : 'delivered';

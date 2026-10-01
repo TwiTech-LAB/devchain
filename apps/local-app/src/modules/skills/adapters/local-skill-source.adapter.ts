@@ -24,6 +24,8 @@ import type {
 
 const logger = createLogger('LocalSkillSourceAdapter');
 const SKILLS_DIRECTORY = 'skills';
+/** Written by a host into home's managed copy; part of the fingerprint so a new upload re-syncs. */
+export const LOCAL_SOURCE_CONTENT_HASH_FILE = '.devchain-content-hash';
 const DEFAULT_SKILLS_ROOT = join(homedir(), '.devchain', 'skills');
 
 interface SkillFileEntry {
@@ -162,6 +164,13 @@ export class LocalSkillSourceAdapter implements SkillSourceAdapter {
     }
 
     const hashParts: string[] = [`root:${skillsRoot}`];
+    try {
+      hashParts.push(
+        `home:${await fs.readFile(join(this.folderPath, LOCAL_SOURCE_CONTENT_HASH_FILE), 'utf8')}`,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
     const skillNames = await this.listSkillNamesFromLocalFolder();
 
     for (const skillName of skillNames) {

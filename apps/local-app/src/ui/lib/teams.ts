@@ -1,4 +1,4 @@
-import { fetchJsonOrThrow, fetchOrThrow } from '@/ui/lib/sessions';
+import { fetchJsonOrThrow, fetchOrThrow, type FetchFn } from '@/ui/lib/sessions';
 
 export interface TeamListItem {
   id: string;
@@ -86,32 +86,62 @@ export const teamsQueryKeys = {
   detail: (teamId: string) => ['teams', 'detail', teamId] as const,
 };
 
-export async function fetchTeams(projectId: string): Promise<ListResult<TeamListItem>> {
+export async function fetchTeams(
+  projectId: string,
+  fetchFn: FetchFn,
+): Promise<ListResult<TeamListItem>> {
   return fetchJsonOrThrow<ListResult<TeamListItem>>(
     `/api/teams?projectId=${encodeURIComponent(projectId)}`,
+    {},
+    undefined,
+    fetchFn,
   );
 }
 
-export async function fetchTeamDetail(teamId: string): Promise<TeamDetail> {
-  return fetchJsonOrThrow<TeamDetail>(`/api/teams/${encodeURIComponent(teamId)}`);
+export async function fetchTeamDetail(teamId: string, fetchFn: FetchFn): Promise<TeamDetail> {
+  return fetchJsonOrThrow<TeamDetail>(
+    `/api/teams/${encodeURIComponent(teamId)}`,
+    {},
+    undefined,
+    fetchFn,
+  );
 }
 
-export async function createTeam(data: CreateTeamPayload): Promise<TeamDetail> {
-  return fetchJsonOrThrow<TeamDetail>('/api/teams', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
+export async function createTeam(data: CreateTeamPayload, fetchFn: FetchFn): Promise<TeamDetail> {
+  return fetchJsonOrThrow<TeamDetail>(
+    '/api/teams',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    },
+    undefined,
+    fetchFn,
+  );
 }
 
-export async function updateTeam(id: string, data: UpdateTeamPayload): Promise<TeamDetail> {
-  return fetchJsonOrThrow<TeamDetail>(`/api/teams/${encodeURIComponent(id)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
+export async function updateTeam(
+  id: string,
+  data: UpdateTeamPayload,
+  fetchFn: FetchFn,
+): Promise<TeamDetail> {
+  return fetchJsonOrThrow<TeamDetail>(
+    `/api/teams/${encodeURIComponent(id)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    },
+    undefined,
+    fetchFn,
+  );
 }
 
-export async function disbandTeam(id: string): Promise<void> {
-  await fetchOrThrow(`/api/teams/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export async function disbandTeam(id: string, fetchFn: FetchFn): Promise<void> {
+  await fetchOrThrow(
+    `/api/teams/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+    undefined,
+    fetchFn,
+  );
 }

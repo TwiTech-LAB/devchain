@@ -18,7 +18,12 @@ import {
 import { CoreSettingsDelegate } from '../local/delegates/core-settings.delegate';
 import { MessagePoolSettingsDelegate } from '../local/delegates/message-pool-settings.delegate';
 import { RegistrySettingsDelegate } from '../local/delegates/registry-settings.delegate';
-import { SkillsSettingsDelegate } from '../local/delegates/skills-settings.delegate';
+import {
+  type HomePushedSkillSource,
+  SkillsSettingsDelegate,
+} from '../local/delegates/skills-settings.delegate';
+import { ProviderCliSettingsDelegate } from '../local/delegates/provider-cli-settings.delegate';
+import type { ProviderCliVersionEntry, ProviderCliVersionSettingsMap } from '@devchain/shared';
 import type { ProjectPoolSettings, ProjectSettings } from './settings.constants';
 
 export {
@@ -42,6 +47,7 @@ export {
   MAX_MESSAGE_POOL_MAX_MESSAGES,
   DEFAULT_MESSAGE_POOL_SEPARATOR,
   DEFAULT_SKILLS_SYNC_ON_STARTUP,
+  DEFAULT_MESSAGING_FOLLOW_NOTE,
 } from './settings.constants';
 export type { ProjectPoolSettings, ProjectSettings } from './settings.constants';
 
@@ -54,6 +60,7 @@ export class SettingsService {
   private readonly messagePoolDelegate: MessagePoolSettingsDelegate;
   private readonly registryDelegate: RegistrySettingsDelegate;
   private readonly skillsDelegate: SkillsSettingsDelegate;
+  private readonly providerCliDelegate: ProviderCliSettingsDelegate;
 
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
@@ -63,6 +70,7 @@ export class SettingsService {
     this.coreDelegate = new CoreSettingsDelegate({ sqlite, eventEmitter });
     this.presetDelegate = new PresetSettingsDelegate({ sqlite });
     this.skillsDelegate = new SkillsSettingsDelegate({ sqlite });
+    this.providerCliDelegate = new ProviderCliSettingsDelegate({ sqlite });
     this.messagePoolDelegate = new MessagePoolSettingsDelegate({
       getSettings: () => this.getSettings(),
       updateSettings: (s) => this.updateSettings(s),
@@ -88,6 +96,11 @@ export class SettingsService {
     return this.coreDelegate.getScrollbackLines();
   }
 
+  // --- Messaging ---
+  getFollowNoteEnabled(): boolean {
+    return this.coreDelegate.getFollowNoteEnabled();
+  }
+
   // --- Skills ---
   getSkillsSyncOnStartup(): boolean {
     return this.skillsDelegate.getSkillsSyncOnStartup();
@@ -95,8 +108,28 @@ export class SettingsService {
   getSkillSourcesEnabled(): Record<string, boolean> {
     return this.skillsDelegate.getSkillSourcesEnabled();
   }
+  getStoredSkillSourcesEnabled(): Record<string, boolean> {
+    return this.skillsDelegate.getStoredSkillSourcesEnabled();
+  }
+  getHomePushedSkillSources(): HomePushedSkillSource[] {
+    return this.skillsDelegate.getHomePushedSkillSources();
+  }
+  setHomePushedSkillSources(sources: HomePushedSkillSource[]): void {
+    this.skillsDelegate.setHomePushedSkillSources(sources);
+  }
+  mergeSkillSourcesEnabled(homeEffective: Record<string, boolean>): Record<string, boolean> {
+    return this.skillsDelegate.mergeSkillSourcesEnabled(homeEffective);
+  }
   async setSkillSourceEnabled(sourceName: string, enabled: boolean): Promise<void> {
     return this.skillsDelegate.setSkillSourceEnabled(sourceName, enabled);
+  }
+
+  // --- Provider CLI versions (raw settings row; not part of PUT /api/settings) ---
+  getProviderCliVersions(): ProviderCliVersionSettingsMap {
+    return this.providerCliDelegate.getProviderCliVersions();
+  }
+  setProviderCliVersion(provider: string, entry: ProviderCliVersionEntry): ProviderCliVersionEntry {
+    return this.providerCliDelegate.setProviderCliVersion(provider, entry);
   }
 
   // --- Auto-clean ---

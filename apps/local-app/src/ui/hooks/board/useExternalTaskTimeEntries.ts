@@ -168,7 +168,6 @@ export function useExternalTaskTimeEntries(
         ),
         { signal, headers: { 'X-DevChain-Connection-Epoch': generation ?? '' } },
         'Time entries could not be loaded.',
-        '',
         apiFetch,
       ),
     enabled: historyAccepted,
@@ -252,7 +251,6 @@ export function useExternalTaskTimeEntries(
           body: JSON.stringify(request.input),
         },
         'The time entry could not be submitted.',
-        '',
         apiFetch,
       ),
     onSuccess: async (result, request) => {
@@ -278,7 +276,6 @@ export function useExternalTaskTimeEntries(
           headers: mutationHeaders(request, timeOperationId()),
         },
         'The operation could not be verified.',
-        '',
         apiFetch,
       ),
     onSuccess: async (result, request) => {
@@ -301,7 +298,6 @@ export function useExternalTaskTimeEntries(
           headers: mutationHeaders(request, timeOperationId()),
         },
         'The duplicate risk could not be acknowledged.',
-        '',
         apiFetch,
       ),
     onSuccess: async (_result, request) => {
@@ -322,7 +318,6 @@ export function useExternalTaskTimeEntries(
           headers: mutationHeaders(request),
         },
         'The time entry could not be deleted.',
-        '',
         apiFetch,
       ),
     onSuccess: async (result, request) => {
@@ -349,7 +344,6 @@ export function useExternalTaskTimeEntries(
           body: JSON.stringify(request.input),
         },
         'The time entry could not be updated.',
-        '',
         apiFetch,
       ),
     onSuccess: async (result, request) => {

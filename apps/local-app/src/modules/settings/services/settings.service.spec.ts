@@ -12,6 +12,7 @@ import {
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
   DEFAULT_SKILLS_SYNC_ON_STARTUP,
+  DEFAULT_MESSAGING_FOLLOW_NOTE,
   DEFAULT_MESSAGE_POOL_ENABLED,
   DEFAULT_MESSAGE_POOL_DELAY_MS,
   DEFAULT_MESSAGE_POOL_MAX_WAIT_MS,
@@ -842,6 +843,40 @@ describe('SettingsService (message pool settings)', () => {
 
     expect(service.getProjectPoolSettings('proj-a')).toEqual({ enabled: true, maxMessages: 20 });
     expect(service.getProjectPoolSettings('proj-b')).toEqual({ delayMs: 3000 });
+  });
+});
+
+describe('SettingsService (messaging settings)', () => {
+  let sqlite: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    sqlite = createTestDb();
+    ({ service } = createTestService(sqlite));
+  });
+
+  afterEach(() => sqlite.close());
+
+  it('reads followNote as on when unset', () => {
+    expect(service.getSettings().messaging?.followNote).toBe(DEFAULT_MESSAGING_FOLLOW_NOTE);
+    expect(service.getFollowNoteEnabled()).toBe(true);
+  });
+
+  it('round-trips false and then true through the exact KV key', async () => {
+    // Layer note: the contract under test is KV encode/decode fidelity
+    // ('false' must not collapse to the default), which only a real SQLite
+    // round-trip can prove; mocking the delegate would test the mock.
+    await service.updateSettings({ messaging: { followNote: false } });
+
+    expect(service.getSetting('messaging.followNote')).toBe('false');
+    expect(service.getSettings().messaging?.followNote).toBe(false);
+    expect(service.getFollowNoteEnabled()).toBe(false);
+
+    await service.updateSettings({ messaging: { followNote: true } });
+
+    expect(service.getSetting('messaging.followNote')).toBe('true');
+    expect(service.getSettings().messaging?.followNote).toBe(true);
+    expect(service.getFollowNoteEnabled()).toBe(true);
   });
 });
 
@@ -2144,11 +2179,11 @@ describe('SettingsService — CRITICAL: updateSettings() cross-delegate atomicit
 });
 
 // ==========================================================================
-// API surface inventory — 33 public methods (thin facade after 4B.6)
+// API surface inventory — public methods delegate settings behavior
 // ==========================================================================
 
 describe('SettingsService — API surface inventory', () => {
-  it('has exactly 33 public methods on prototype (no private methods — all logic in delegates)', () => {
+  it('exposes only the inventoried delegate facade methods', () => {
     const db = createTestDb();
     const { service } = createTestService(db);
 
@@ -2162,9 +2197,16 @@ describe('SettingsService — API surface inventory', () => {
       'updateSettings',
       'getSetting',
       'getScrollbackLines',
+      'getFollowNoteEnabled',
       'getSkillsSyncOnStartup',
       'getSkillSourcesEnabled',
+      'getStoredSkillSourcesEnabled',
+      'getHomePushedSkillSources',
+      'setHomePushedSkillSources',
+      'mergeSkillSourcesEnabled',
       'setSkillSourceEnabled',
+      'getProviderCliVersions',
+      'setProviderCliVersion',
       'getAutoCleanStatusIds',
       'getMessagePoolConfig',
       'getMessagePoolConfigForProject',

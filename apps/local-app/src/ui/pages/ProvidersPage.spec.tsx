@@ -1,6 +1,8 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { ProvidersPage } from './ProvidersPage';
 import {
   CLAUDE_LAUNCH_SETTINGS_MAX_BYTES,
@@ -23,14 +25,53 @@ jest.mock('@/ui/hooks/useProjectSelection', () => ({
   }),
 }));
 
-function renderWithQuery(ui: React.ReactElement, queryClient?: QueryClient) {
+// The CLI versions section rides useRemotes, whose live patch path needs the
+// shared socket; page-level specs exercise the HTTP path only.
+jest.mock('@/ui/hooks/useHomeSocket', () => ({ useHomeSocket: jest.fn() }));
+
+// Mutable so a test can mount the page under a remote backend; undefined means
+// "no BackendProvider", which the page treats as home cards.
+let mockBackendContext:
+  | {
+      activeBackend: string;
+      activeRemote: {
+        id: string;
+        name: string;
+        online: boolean;
+        version: string | null;
+        versionMatches: boolean;
+      } | null;
+      bindings: Map<string, string>;
+      ready: boolean;
+      bindingsError: null;
+      retry: () => void;
+      apiFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+      buildApiUrl: (backendId: string, path: string) => string;
+    }
+  | undefined = undefined;
+
+jest.mock('@/ui/lib/backend-context', () => ({
+  ...jest.requireActual('@/ui/lib/backend-context'),
+  useOptionalBackend: () => mockBackendContext,
+}));
+
+function renderWithQuery(ui: React.ReactElement, queryClient?: QueryClient, url = '/providers') {
   const client =
     queryClient ??
     new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-  const view = render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  const view = render(
+    <MemoryRouter initialEntries={[url]}>
+      <QueryClientProvider client={client}>{ui}</QueryClientProvider>
+    </MemoryRouter>,
+  );
   return { ...view, queryClient: client };
+}
+
+// Radix tabs switch on pointer down, which fireEvent.click does not send.
+async function openTab(name: string | RegExp) {
+  await userEvent.click(screen.getByRole('tab', { name }));
 }
 
 function createQueryClient() {
@@ -58,7 +99,9 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
     renderWithQuery(<ProvidersPage />);
 
     // Ensure initial query completes and page renders
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     // Open dialog
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
@@ -88,7 +131,9 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
   it('includes Antigravity CLI as a provider type with the agy default binPath', async () => {
     renderWithQuery(<ProvidersPage />);
 
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
 
     fireEvent.click(screen.getByLabelText('Provider Type'));
@@ -102,7 +147,9 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
   it('includes Copilot CLI as a provider type with the copilot default binPath', async () => {
     renderWithQuery(<ProvidersPage />);
 
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
 
     fireEvent.click(screen.getByLabelText('Provider Type'));
@@ -340,7 +387,9 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   it('shows threshold input in create dialog when Claude type is selected', async () => {
     setupFetch([]);
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
 
@@ -358,7 +407,9 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   it('starts Add-Claude with the formatted default', async () => {
     setupFetch([]);
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
     fireEvent.click(screen.getByLabelText('Provider Type'));
@@ -373,7 +424,9 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   it('sends explicit null when Add-Claude launch settings are cleared', async () => {
     setupFetch([]);
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
     fireEvent.click(screen.getByLabelText('Provider Type'));
@@ -437,7 +490,9 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   ])('blocks %s launch settings before mutation', async (_label, value) => {
     setupFetch([]);
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
     fireEvent.click(screen.getByLabelText('Provider Type'));
@@ -542,7 +597,9 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   it('includes autoCompactThreshold in Claude CREATE payload when value is set', async () => {
     setupFetch([]);
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
 
@@ -574,7 +631,9 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   it('omits autoCompactThreshold from Claude CREATE payload when value is empty', async () => {
     setupFetch([]);
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
 
@@ -601,7 +660,9 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   it('non-Claude CREATE never sends autoCompactThreshold even if previously typed while Claude was selected', async () => {
     setupFetch([]);
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
 
@@ -669,7 +730,9 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
     );
 
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
 
@@ -850,7 +913,9 @@ describe('ProvidersPage - provider type select disabled in edit mode', () => {
   it('enables type select when adding a new provider', async () => {
     setupFetch([]);
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
 
@@ -1286,7 +1351,9 @@ describe('ProvidersPage - create provider auto-propagation', () => {
 
     renderWithQuery(<ProvidersPage />);
 
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
     await waitFor(() =>
@@ -1361,7 +1428,9 @@ describe('ProvidersPage - Rescan', () => {
     setupRescanFetch();
     renderWithQuery(<ProvidersPage />);
 
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     expect(screen.getByRole('button', { name: /rescan/i })).toBeInTheDocument();
   });
@@ -1370,7 +1439,9 @@ describe('ProvidersPage - Rescan', () => {
     setupRescanFetch();
     renderWithQuery(<ProvidersPage />);
 
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /rescan/i }));
 
@@ -1389,7 +1460,9 @@ describe('ProvidersPage - Rescan', () => {
     const invalidateSpy = jest.spyOn(qc, 'invalidateQueries');
     renderWithQuery(<ProvidersPage />, qc);
 
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /rescan/i }));
 
@@ -1437,7 +1510,9 @@ describe('ProvidersPage - Rescan', () => {
       jest.fn();
 
     renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /rescan/i }));
 
@@ -1449,7 +1524,7 @@ describe('ProvidersPage - Rescan', () => {
       expect(rescanCalls.length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByText('Providers')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument();
   });
 });
 
@@ -1523,7 +1598,12 @@ describe('ProvidersPage - MCP badge and Configure MCP button states', () => {
     ]);
     renderWithQuery(<ProvidersPage />);
     await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
-    expect(screen.getByText('MCP OK')).toBeInTheDocument();
+    expect(screen.getByText('MCP OK')).toHaveClass(
+      'bg-status-ok/10',
+      'text-status-ok',
+      'border-status-ok/40',
+    );
+    expect(screen.getByText('MCP OK').parentElement).toHaveClass('bg-background');
     expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
   });
 
@@ -1545,7 +1625,12 @@ describe('ProvidersPage - MCP badge and Configure MCP button states', () => {
     ]);
     renderWithQuery(<ProvidersPage />);
     await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
-    expect(screen.getByText('MCP WARN')).toBeInTheDocument();
+    expect(screen.getByText('MCP WARN')).toHaveClass(
+      'bg-status-warn/10',
+      'text-status-warn',
+      'border-status-warn/40',
+    );
+    expect(screen.getByText('MCP WARN').parentElement).toHaveClass('bg-background');
     const configBtn = screen.getByRole('button', { name: /configure mcp/i });
     expect(configBtn).toBeInTheDocument();
     expect(configBtn).not.toBeDisabled();
@@ -1720,7 +1805,9 @@ describe('ProvidersPage - CRUD mutations invalidate preflight query', () => {
     const qc = createQueryClient();
     const invalidateSpy = jest.spyOn(qc, 'invalidateQueries');
     renderWithQuery(<ProvidersPage />, qc);
-    await waitFor(() => expect(screen.getByText('Providers')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
     await waitFor(() =>
@@ -1847,7 +1934,12 @@ describe('ProvidersPage - aggregate-fail MCP badge guard', () => {
     ]);
     renderWithQuery(<ProvidersPage />);
     await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
-    expect(screen.getByText('MCP FAIL')).toBeInTheDocument();
+    expect(screen.getByText('MCP FAIL')).toHaveClass(
+      'bg-destructive/10',
+      'text-destructive',
+      'border-destructive/40',
+    );
+    expect(screen.getByText('MCP FAIL').parentElement).toHaveClass('bg-background');
     const configBtn = screen.getByRole('button', { name: /configure mcp/i });
     expect(configBtn).toBeInTheDocument();
     expect(configBtn).not.toBeDisabled();
@@ -2141,5 +2233,358 @@ describe('ProvidersPage - provider effort levels management', () => {
         ),
       ).toBe(true);
     });
+  });
+});
+
+// ============================================
+// CLI versions section + managed Binary Path
+// ============================================
+
+describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
+  const managedClaude = {
+    id: 'p-claude',
+    name: 'claude',
+    binPath: '/home/user/.local/share/devchain/provider-clis/bin/claude',
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    mcpConfigured: true,
+    mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+    mcpRegisteredAt: '2024-01-01',
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
+  function clisOverview(managed: boolean) {
+    const entry = (name: string) => ({
+      provider: name,
+      npmPackage: name,
+      setting: { version: 'latest', homeManaged: name === 'claude' ? managed : false },
+      lookup: {
+        latestVersion: '2.1.285',
+        versions: ['2.1.285'],
+        checkedAt: '2026-09-28T10:00:00.000Z',
+        error: null,
+      },
+      install: {
+        desiredVersion: 'latest',
+        installedVersion: name === 'claude' && managed ? '2.1.285' : null,
+        state: 'idle',
+        error: null,
+        checkedAt: '2026-09-28T10:00:00.000Z',
+      },
+    });
+    return {
+      providers: {
+        claude: entry('claude'),
+        codex: entry('codex'),
+        copilot: entry('copilot'),
+        opencode: entry('opencode'),
+      },
+    };
+  }
+
+  let updateCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+
+  function setupFetch(managed: boolean) {
+    updateCalls = [];
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (url: string, options?: RequestInit) => {
+        if (url === '/api/providers' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ items: [managedClaude], total: 1, limit: 100, offset: 0 }),
+          });
+        }
+        if (url === '/api/provider-clis' && (!options || !options.method)) {
+          return Promise.resolve({ ok: true, json: async () => clisOverview(managed) });
+        }
+        if (url === '/api/remotes' && (!options || !options.method)) {
+          return Promise.resolve({ ok: true, json: async () => ({ items: [] }) });
+        }
+        if (url === '/api/providers/p-claude/models' && (!options || !options.method)) {
+          return Promise.resolve({ ok: true, json: async () => [] });
+        }
+        if (url === '/api/providers/p-claude/efforts' && (!options || !options.method)) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              efforts: [],
+              supportsEffort: false,
+              requiresModelForEffort: false,
+            }),
+          });
+        }
+        if (url.startsWith('/api/preflight')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              overall: 'pass',
+              checks: [],
+              providers: [{ id: 'p-claude', mcpStatus: 'pass' }],
+              supportedMcpProviders: ['claude', 'codex', 'opencode'],
+              timestamp: new Date().toISOString(),
+            }),
+          });
+        }
+        if (url === '/api/providers/p-claude' && options?.method === 'PUT') {
+          updateCalls.push({ url, body: JSON.parse(options.body as string) });
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ ...managedClaude, ...JSON.parse(options.body as string) }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    mockBackendContext = undefined;
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+  });
+
+  it('shows the provider cards first and CLI versions on its own tab', async () => {
+    setupFetch(false);
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+    expect(screen.getByRole('tab', { name: /^Providers/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByRole('tab', { name: /^Providers/ })).toHaveTextContent('Providers1');
+    expect(screen.queryByRole('region', { name: 'CLI versions' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rescan' })).toBeInTheDocument();
+
+    await openTab('CLI versions');
+
+    expect(await screen.findByRole('region', { name: 'CLI versions' })).toBeInTheDocument();
+    expect(screen.getByRole('row', { name: 'Claude CLI version' })).toBeInTheDocument();
+    expect(screen.queryByText('claude')).not.toBeInTheDocument();
+    // Rescan and Add Provider belong to the provider cards.
+    expect(screen.queryByRole('button', { name: 'Rescan' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add Provider' })).not.toBeInTheDocument();
+  });
+
+  it('opens the CLI versions tab from the tab in the URL', async () => {
+    setupFetch(false);
+    renderWithQuery(<ProvidersPage />, undefined, '/providers?tab=cli-versions');
+
+    expect(await screen.findByRole('region', { name: 'CLI versions' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'CLI versions' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('shows Managed by DevChain on a managed provider card instead of the raw path', async () => {
+    setupFetch(true);
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Managed by DevChain')).toBeInTheDocument());
+    expect(
+      screen.queryByText('/home/user/.local/share/devchain/provider-clis/bin/claude'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the raw Binary Path when the provider is not managed', async () => {
+    setupFetch(false);
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('/home/user/.local/share/devchain/provider-clis/bin/claude'),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it('asks before a Binary Path edit switches a managed provider to own install', async () => {
+    setupFetch(true);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const binInput = (await screen.findByLabelText('Binary Path')) as HTMLInputElement;
+    fireEvent.change(binInput, { target: { value: '/usr/local/bin/claude' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Switch to your own install?' });
+    expect(updateCalls).toHaveLength(0);
+
+    // Cancel keeps the provider untouched; the still-open edit dialog then closes.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(updateCalls).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit Provider' })).not.toBeInTheDocument(),
+    );
+
+    // Confirm saves the custom path (the switch to own install is server-side).
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const binInput2 = (await screen.findByLabelText('Binary Path')) as HTMLInputElement;
+    fireEvent.change(binInput2, { target: { value: '/usr/local/bin/claude' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    const dialog2 = await screen.findByRole('dialog', { name: 'Switch to your own install?' });
+    fireEvent.click(within(dialog2).getByRole('button', { name: 'Save and switch' }));
+
+    await waitFor(() => expect(updateCalls).toHaveLength(1));
+    expect(updateCalls[0]?.body.binPath).toBe('/usr/local/bin/claude');
+  });
+
+  it('saves a Binary Path edit on an unmanaged provider without confirmation', async () => {
+    setupFetch(false);
+    renderWithQuery(<ProvidersPage />);
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const binInput = (await screen.findByLabelText('Binary Path')) as HTMLInputElement;
+    fireEvent.change(binInput, { target: { value: '/opt/claude' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(updateCalls).toHaveLength(1));
+    expect(updateCalls[0]?.body.binPath).toBe('/opt/claude');
+  });
+
+  function clisGetCalls(): number {
+    return ((global as unknown as { fetch: unknown }).fetch as jest.Mock).mock.calls.filter(
+      (call: [string, RequestInit?]) => call[0] === '/api/provider-clis' && !call[1]?.method,
+    ).length;
+  }
+
+  function findCliPutCall(url: string): [string, RequestInit?] | undefined {
+    return ((global as unknown as { fetch: unknown }).fetch as jest.Mock).mock.calls.find(
+      (call: [string, RequestInit?]) => call[0] === url && call[1]?.method === 'PUT',
+    ) as [string, RequestInit?] | undefined;
+  }
+
+  async function expectClaudePinSaveSendsOwnInstall() {
+    const claudeRow = () => screen.getByRole('row', { name: 'Claude CLI version' });
+    fireEvent.click(within(claudeRow()).getByRole('combobox', { name: 'Claude version' }));
+    fireEvent.click(await screen.findByRole('option', { name: '2.1.285' }));
+    await waitFor(() => {
+      const putCall = findCliPutCall('/api/provider-clis/claude');
+      expect(putCall).toBeDefined();
+      expect(JSON.parse(putCall![1].body as string)).toEqual({
+        version: '2.1.285',
+        homeManaged: false,
+      });
+    });
+  }
+
+  // The overview refetch after a Binary Path save never settles here, so only
+  // the synchronous cache write can keep the next pin save off the stale flag.
+  function hangOverviewRefetchAfterFirstLoad() {
+    const server = (global as unknown as { fetch: unknown }).fetch as typeof fetch;
+    let loads = 0;
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === '/api/provider-clis' && !init?.method) {
+          loads += 1;
+          if (loads > 1) return new Promise<Response>(() => {});
+        }
+        return server(input, init);
+      },
+    );
+  }
+
+  async function saveCustomBinaryPathViaOwnInstallDialog() {
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(await screen.findByLabelText('Binary Path'), {
+      target: { value: '/opt/custom/claude' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Switch to your own install?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save and switch' }));
+    await waitFor(() => expect(updateCalls).toHaveLength(1));
+  }
+
+  it('sends homeManaged false on the next pin save even while the overview refetch is in flight', async () => {
+    setupFetch(true);
+    hangOverviewRefetchAfterFirstLoad();
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Managed by DevChain')).toBeInTheDocument());
+    await saveCustomBinaryPathViaOwnInstallDialog();
+    await openTab('CLI versions');
+
+    const claudeRow = () => screen.getByRole('row', { name: 'Claude CLI version' });
+    await waitFor(() =>
+      expect(within(claudeRow()).getByText('Your own install')).toBeInTheDocument(),
+    );
+
+    await expectClaudePinSaveSendsOwnInstall();
+  });
+
+  it('refetches the home CLI overview to the server truth after Save and switch', async () => {
+    setupFetch(true);
+    const server = (global as unknown as { fetch: unknown }).fetch as typeof fetch;
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === '/api/provider-clis' && !init?.method) {
+          // The home server reports the provider as unmanaged after the save.
+          return Promise.resolve({
+            ok: true,
+            json: async () => clisOverview(updateCalls.length === 0),
+          } as Response);
+        }
+        return server(input, init);
+      },
+    );
+    renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('Managed by DevChain')).toBeInTheDocument());
+    await saveCustomBinaryPathViaOwnInstallDialog();
+    await openTab('CLI versions');
+
+    const claudeRow = () => screen.getByRole('row', { name: 'Claude CLI version' });
+    await waitFor(() =>
+      expect(within(claudeRow()).getByText('Your own install')).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(clisGetCalls()).toBeGreaterThanOrEqual(2));
+
+    await expectClaudePinSaveSendsOwnInstall();
+  });
+
+  it('keeps the home CLI overview untouched when a remote project cards Binary Path save runs', async () => {
+    setupFetch(true);
+    hangOverviewRefetchAfterFirstLoad();
+    const remoteId = '22222222-2222-4222-8222-222222222222';
+    mockBackendContext = {
+      activeBackend: remoteId,
+      activeRemote: {
+        id: remoteId,
+        name: 'lab-vm',
+        online: true,
+        version: '1.0.0',
+        versionMatches: true,
+      },
+      bindings: new Map(),
+      ready: true,
+      bindingsError: null,
+      retry: () => {},
+      apiFetch: (input, init) => (global.fetch as typeof fetch)(input, init),
+      buildApiUrl: (_backendId, path) => path,
+    };
+    const { queryClient } = renderWithQuery(<ProvidersPage />);
+
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(await screen.findByLabelText('Binary Path'), {
+      target: { value: '/opt/custom/claude' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    // A VM's cards save directly: no own-install confirmation for home.
+    await waitFor(() => expect(updateCalls).toHaveLength(1));
+    expect(
+      screen.queryByRole('dialog', { name: 'Switch to your own install?' }),
+    ).not.toBeInTheDocument();
+
+    // Home's cached overview keeps the server value: no flip, no refetch.
+    const cached = queryClient.getQueryData(['provider-clis']) as ReturnType<typeof clisOverview>;
+    expect(cached.providers.claude.setting.homeManaged).toBe(true);
+    expect(clisGetCalls()).toBe(1);
   });
 });

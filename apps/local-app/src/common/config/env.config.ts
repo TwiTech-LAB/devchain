@@ -1,76 +1,61 @@
 import { z } from 'zod';
 import * as dotenv from 'dotenv';
-import { existsSync } from 'fs';
-import { resolve } from 'path';
 
 dotenv.config();
 
 const TRUE_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
 
-const cloudUiEnvSchema = z.preprocess((value) => {
+/** A flag that is on unless set to a value other than 1, true, yes or on. */
+const onByDefaultFlagSchema = z.preprocess((value) => {
   if (typeof value === 'boolean') return value;
   if (typeof value !== 'string' || value.trim() === '') return true; // unset/empty → on
   return TRUE_ENV_VALUES.has(value.trim().toLowerCase()); // explicit → truthy check
 }, z.boolean());
 
-const envSchema = z
-  .object({
-    NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-    PORT: z.string().regex(/^\d+$/).transform(Number).default('3000'),
-    HOST: z
-      .string()
-      .default('127.0.0.1')
-      .transform((v) => v.trim())
-      .refine((v) => v.length > 0, { message: 'HOST must not be empty' })
-      .refine((v) => v !== '*', { message: 'HOST must not be "*"' })
-      .refine((v) => !/[\x00-\x1f\x7f]/.test(v), {
-        message: 'HOST must not contain control characters',
-      }),
-    LOG_LEVEL: z
-      .enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'])
-      .default('info'),
-    DEVCHAIN_MODE: z.enum(['normal', 'main']).default('normal'),
-    DATABASE_URL: z.string().optional(),
-    REPO_ROOT: z.string().optional(),
-    WORKTREES_ROOT: z.string().optional(),
-    WORKTREES_DATA_ROOT: z.string().optional(),
-    CONTAINER_PROJECT_ID: z.string().uuid().optional(),
-    RUNTIME_TOKEN: z.string().optional(),
-    RUNTIME_PORT_FILE: z.string().optional(),
-    DEVCHAIN_CLOUD_UI_ENABLED: cloudUiEnvSchema,
-    TEMPLATES_DIR: z.string().optional(),
-  })
-  .superRefine((env, ctx) => {
-    // REPO_ROOT is optional in main mode — orchestration works without a git repo
-    // (worktrees, sessions, etc. use process.cwd() as fallback when REPO_ROOT is unset)
-    if (env.REPO_ROOT && env.REPO_ROOT.trim()) {
-      const resolvedRepoRoot = resolve(env.REPO_ROOT);
-      if (!existsSync(resolvedRepoRoot)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['REPO_ROOT'],
-          message: `REPO_ROOT path does not exist: ${resolvedRepoRoot}`,
-        });
-      }
-    }
-  })
-  .transform((env) => {
-    if (env.DEVCHAIN_MODE !== 'main' || !env.REPO_ROOT) {
-      return env;
-    }
+/** An unset or blank value is absent. */
+const optionalPathSchema = z
+  .string()
+  .optional()
+  .transform((value) => value?.trim() || undefined);
 
-    const repoRoot = resolve(env.REPO_ROOT);
-    return {
-      ...env,
-      REPO_ROOT: repoRoot,
-      WORKTREES_ROOT: env.WORKTREES_ROOT
-        ? resolve(env.WORKTREES_ROOT)
-        : resolve(repoRoot, '.devchain', 'worktrees'),
-      WORKTREES_DATA_ROOT: env.WORKTREES_DATA_ROOT
-        ? resolve(env.WORKTREES_DATA_ROOT)
-        : resolve(repoRoot, '.devchain', 'worktrees-data'),
-    };
-  });
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  PORT: z.string().regex(/^\d+$/).transform(Number).default('3000'),
+  HOST: z
+    .string()
+    .default('127.0.0.1')
+    .transform((v) => v.trim())
+    .refine((v) => v.length > 0, { message: 'HOST must not be empty' })
+    .refine((v) => v !== '*', { message: 'HOST must not be "*"' })
+    .refine((v) => !/[\x00-\x1f\x7f]/.test(v), {
+      message: 'HOST must not contain control characters',
+    }),
+  LOG_LEVEL: z.enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  DATABASE_URL: z.string().optional(),
+  RUNTIME_TOKEN: z.string().optional(),
+  RUNTIME_PORT_FILE: z.string().optional(),
+  HOST_IMAGE_URL: z.string().url().optional(),
+  HOST_IMAGE_SHA256: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/)
+    .optional(),
+  HOST_NPM_REGISTRY: z.string().url().optional(),
+  DEVCHAIN_CLOUD_UI_ENABLED: onByDefaultFlagSchema,
+  TEMPLATES_DIR: z.string().optional(),
+  REMOTES_HEALTH_INTERVAL_MS: z.string().regex(/^\d+$/).transform(Number).default('10000'),
+  REMOTES_SYNC_INTERVAL_MS: z.string().regex(/^\d+$/).transform(Number).default('5000'),
+  REMOTES_RECONCILE_INTERVAL_MS: z.string().regex(/^\d+$/).transform(Number).default('120000'),
+  REMOTES_TIME_SETTLE_TIMEOUT_MS: z.string().regex(/^\d+$/).transform(Number).default('30000'),
+  SYNCTHING_BIN: z.string().optional(),
+  // Scheduled provider CLI registry checks (at start and every 6 hours).
+  PROVIDER_CLI_CHECKS_ENABLED: onByDefaultFlagSchema,
+  // Claim record and root helpers of a host VM (apps/host-bootstrap).
+  DEVCHAIN_HOST_ETC_DIR: z.string().default('/etc/devchain-host'),
+  DEVCHAIN_HOST_BIN_DIR: z.string().default('/usr/local/bin'),
+  // The VM certificate for the app port, set by the host unit (apps/host-bootstrap).
+  DEVCHAIN_HOST_TLS_KEY_FILE: optionalPathSchema,
+  DEVCHAIN_HOST_TLS_CERT_FILE: optionalPathSchema,
+});
 
 export type EnvConfig = z.infer<typeof envSchema>;
 

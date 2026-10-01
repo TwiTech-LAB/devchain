@@ -26,6 +26,9 @@ import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { Loader2, CheckCircle2, AlertCircle, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import { validatePresetAvailability, type Preset } from '@/ui/lib/preset-validation';
 import type { AgentPresenceMap } from '@/ui/lib/sessions';
+import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface Agent {
   id: string;
@@ -61,23 +64,32 @@ interface PresetSelectorProps {
 }
 
 async function fetchPresets(projectId: string): Promise<PresetsResponse> {
-  const res = await fetch(`/api/projects/${projectId}/presets`);
+  const res = await apiFetch(`/api/projects/${projectId}/presets`, undefined, {
+    backend: HOME_BACKEND,
+  });
   if (!res.ok) throw new Error('Failed to fetch presets');
   return res.json();
 }
 
-async function fetchProviderConfigs(profileId: string): Promise<ProviderConfig[]> {
-  const res = await fetch(`/api/profiles/${profileId}/provider-configs`);
+async function fetchProviderConfigs(
+  fetchFn: FetchFn,
+  profileId: string,
+): Promise<ProviderConfig[]> {
+  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
   if (!res.ok) throw new Error('Failed to fetch provider configs');
   return res.json();
 }
 
 async function applyPreset(projectId: string, presetName: string): Promise<ApplyPresetResponse> {
-  const res = await fetch(`/api/projects/${projectId}/presets/apply`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ presetName }),
-  });
+  const res = await apiFetch(
+    `/api/projects/${projectId}/presets/apply`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ presetName }),
+    },
+    { backend: HOME_BACKEND },
+  );
   if (!res.ok) throw new Error('Failed to apply preset');
   return res.json();
 }
@@ -90,6 +102,7 @@ export function PresetSelector({
   onEditPreset,
   onDeletePreset,
 }: PresetSelectorProps) {
+  const fetchFn = useFetchFactory();
   const { toast } = useToast();
   const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
     useActiveSessionConfirm();
@@ -115,7 +128,7 @@ export function PresetSelector({
       const results = await Promise.all(
         Array.from(profileIds).map(async (profileId) => {
           try {
-            const configs = await fetchProviderConfigs(profileId);
+            const configs = await fetchProviderConfigs(fetchFn, profileId);
             return { profileId, configs };
           } catch {
             return { profileId, configs: [] };
@@ -253,12 +266,12 @@ export function PresetSelector({
               <SelectItem key={preset.name} value={preset.name}>
                 <div className="flex items-center gap-2">
                   {available ? (
-                    <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
+                    <CheckCircle2 className="h-4 w-4 text-status-ok flex-shrink-0" />
                   ) : (
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <AlertCircle className="h-4 w-4 text-yellow-500 flex-shrink-0" />
+                          <AlertCircle className="h-4 w-4 text-status-warn flex-shrink-0" />
                         </TooltipTrigger>
                         <TooltipContent side="right" className="max-w-xs">
                           <p className="font-medium mb-1">Missing configs:</p>

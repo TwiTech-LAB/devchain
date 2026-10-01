@@ -5,6 +5,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'node:path';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { SkillSourceRegistryService } from './skill-source-registry.service';
+import { SkillSourceAlwaysEnabledError } from '../../../common/errors/error-types';
 import { SkillsService } from './skills.service';
 
 const now = '2026-01-01T00:00:00.000Z';
@@ -12,7 +13,7 @@ const now = '2026-01-01T00:00:00.000Z';
 describe('SkillsService setSkillsEnabled', () => {
   let sqlite: Database.Database;
   let db: BetterSQLite3Database;
-  let settingsService: { getSkillSourcesEnabled: jest.Mock };
+  let settingsService: { getSkillSourcesEnabled: jest.Mock; setSkillSourceEnabled: jest.Mock };
   let service: SkillsService;
 
   beforeEach(() => {
@@ -23,6 +24,7 @@ describe('SkillsService setSkillsEnabled', () => {
 
     settingsService = {
       getSkillSourcesEnabled: jest.fn().mockReturnValue({}),
+      setSkillSourceEnabled: jest.fn().mockResolvedValue(undefined),
     };
     service = new SkillsService(
       db,
@@ -31,8 +33,10 @@ describe('SkillsService setSkillsEnabled', () => {
         listRegisteredSources: jest.fn().mockResolvedValue([
           { name: 'src', repoUrl: 'https://example.test/src', kind: 'builtin' },
           { name: 'other-src', repoUrl: 'https://example.test/other', kind: 'builtin' },
+          { name: 'devchain', repoUrl: 'https://example.test/devchain', kind: 'builtin' },
+          { name: 'devchain-local', repoUrl: 'https://example.test/local', kind: 'local' },
         ]),
-        getBuiltInSourceNames: jest.fn().mockReturnValue(['src', 'other-src']),
+        getBuiltInSourceNames: jest.fn().mockReturnValue(['src', 'other-src', 'devchain']),
       } as unknown as SkillSourceRegistryService,
     );
   });
@@ -89,7 +93,12 @@ describe('SkillsService setSkillsEnabled', () => {
 
     const result = await service.setSkillsEnabled('proj-a', ['src/alpha', 'src/beta'], false);
 
-    expect(result).toEqual({ updated: ['src/alpha', 'src/beta'], unchanged: [], notFound: [] });
+    expect(result).toEqual({
+      updated: ['src/alpha', 'src/beta'],
+      unchanged: [],
+      notFound: [],
+      locked: [],
+    });
     expect(
       disabledRows('proj-a')
         .map((row) => row.skill_id)
@@ -105,7 +114,7 @@ describe('SkillsService setSkillsEnabled', () => {
 
     const result = await service.setSkillsEnabled('proj-c', ['src/alpha'], true);
 
-    expect(result).toEqual({ updated: ['src/alpha'], unchanged: [], notFound: [] });
+    expect(result).toEqual({ updated: ['src/alpha'], unchanged: [], notFound: [], locked: [] });
     expect(disabledRows('proj-c')).toEqual([]);
   });
 
@@ -127,6 +136,7 @@ describe('SkillsService setSkillsEnabled', () => {
       updated: ['src/alpha'],
       unchanged: ['src/beta', 'src/gamma'],
       notFound: ['src/missing'],
+      locked: [],
     });
     expect(
       disabledRows('proj-d')
@@ -142,7 +152,7 @@ describe('SkillsService setSkillsEnabled', () => {
     await service.setSkillsEnabled('proj-e', ['src/alpha'], false);
     const result = await service.setSkillsEnabled('proj-e', ['src/alpha'], false);
 
-    expect(result).toEqual({ updated: [], unchanged: ['src/alpha'], notFound: [] });
+    expect(result).toEqual({ updated: [], unchanged: ['src/alpha'], notFound: [], locked: [] });
   });
 
   it('resolves duplicate and mixed-case slugs once', async () => {
@@ -155,7 +165,7 @@ describe('SkillsService setSkillsEnabled', () => {
       false,
     );
 
-    expect(result).toEqual({ updated: ['src/alpha'], unchanged: [], notFound: [] });
+    expect(result).toEqual({ updated: ['src/alpha'], unchanged: [], notFound: [], locked: [] });
     expect(disabledRows('proj-f')).toHaveLength(1);
   });
 
@@ -171,6 +181,7 @@ describe('SkillsService setSkillsEnabled', () => {
       updated: ['src/alpha'],
       unchanged: [],
       notFound: ['other-src/beta'],
+      locked: [],
     });
     expect(disabledRows('proj-g').map((row) => row.skill_id)).toEqual(['skill-a']);
   });
@@ -187,7 +198,7 @@ describe('SkillsService setSkillsEnabled', () => {
 
     const result = await service.setSkillsEnabled('proj-h', ['src/alpha'], false);
 
-    expect(result).toEqual({ updated: ['src/alpha'], unchanged: [], notFound: [] });
+    expect(result).toEqual({ updated: ['src/alpha'], unchanged: [], notFound: [], locked: [] });
     expect(disabledRows('proj-h').map((row) => row.skill_id)).toEqual(['skill-a']);
     const sourceRow = sqlite
       .prepare(
@@ -210,11 +221,11 @@ describe('SkillsService setSkillsEnabled', () => {
     // The skill has no skill_project_disabled row: enabling it is a skill-level
     // no-op even though the project-disabled source keeps it undiscoverable.
     const enable = await service.setSkillsEnabled('proj-i', ['src/alpha'], true);
-    expect(enable).toEqual({ updated: [], unchanged: ['src/alpha'], notFound: [] });
+    expect(enable).toEqual({ updated: [], unchanged: ['src/alpha'], notFound: [], locked: [] });
     expect(disabledRows('proj-i')).toEqual([]);
 
     const disable = await service.setSkillsEnabled('proj-i', ['src/alpha'], false);
-    expect(disable).toEqual({ updated: ['src/alpha'], unchanged: [], notFound: [] });
+    expect(disable).toEqual({ updated: ['src/alpha'], unchanged: [], notFound: [], locked: [] });
     expect(disabledRows('proj-i').map((row) => row.skill_id)).toEqual(['skill-a']);
   });
 
@@ -266,6 +277,128 @@ describe('SkillsService setSkillsEnabled', () => {
 
       expect(result).toEqual({ status: 'source_disabled_globally', name: 'other-src' });
       expect(sourceRows('proj-l')).toEqual([]);
+    });
+  });
+
+  describe('built-in devchain source lock', () => {
+    const sourceRows = (projectId: string): { source_name: string; enabled: number }[] =>
+      sqlite
+        .prepare(`SELECT source_name, enabled FROM source_project_enabled WHERE project_id = ?`)
+        .all(projectId) as { source_name: string; enabled: number }[];
+
+    it('skips devchain slugs of a mixed disable batch and lists them as locked', async () => {
+      insertProject('proj-m');
+      insertSkill('skill-a', 'src/alpha');
+      insertSkill('skill-dc', 'devchain/code-simplifier', 'devchain');
+      insertSkill('skill-dcl', 'devchain-local/helper', 'devchain-local');
+
+      const result = await service.setSkillsEnabled(
+        'proj-m',
+        ['src/alpha', 'devchain/code-simplifier', 'devchain-local/helper'],
+        false,
+      );
+
+      expect(result).toEqual({
+        updated: ['src/alpha', 'devchain-local/helper'],
+        unchanged: [],
+        notFound: [],
+        locked: ['devchain/code-simplifier'],
+      });
+      expect(
+        disabledRows('proj-m')
+          .map((row) => row.skill_id)
+          .sort(),
+      ).toEqual(['skill-a', 'skill-dcl']);
+    });
+
+    it('reports an enabled devchain slug as unchanged, even with a legacy disable row', async () => {
+      insertProject('proj-n');
+      insertSkill('skill-dc', 'devchain/code-simplifier', 'devchain');
+      disableSkillInDb('proj-n', 'skill-dc');
+
+      const result = await service.setSkillsEnabled('proj-n', ['devchain/code-simplifier'], true);
+
+      expect(result).toEqual({
+        updated: [],
+        unchanged: ['devchain/code-simplifier'],
+        notFound: [],
+        locked: [],
+      });
+    });
+
+    it('refuses a single-skill disable of a devchain skill and writes nothing', async () => {
+      insertProject('proj-o');
+      insertSkill('skill-dc', 'devchain/code-simplifier', 'devchain');
+      insertSkill('skill-dcl', 'devchain-local/helper', 'devchain-local');
+
+      await expect(service.disableSkill('proj-o', 'skill-dc')).rejects.toMatchObject({
+        code: 'SKILL_SOURCE_ALWAYS_ENABLED',
+        statusCode: 409,
+      });
+      await service.disableSkill('proj-o', 'skill-dcl');
+      await expect(service.disableSkill('proj-o', 'missing')).rejects.toMatchObject({
+        code: 'validation_error',
+      });
+
+      expect(disabledRows('proj-o').map((row) => row.skill_id)).toEqual(['skill-dcl']);
+    });
+
+    it('refuses a global disable of devchain and does not touch settings', async () => {
+      await expect(service.setSourceEnabled(' DevChain ', false)).rejects.toBeInstanceOf(
+        SkillSourceAlwaysEnabledError,
+      );
+      expect(settingsService.setSkillSourceEnabled).not.toHaveBeenCalled();
+
+      await service.setSourceEnabled('devchain', true);
+      await service.setSourceEnabled('devchain-local', false);
+      expect(settingsService.setSkillSourceEnabled.mock.calls).toEqual([
+        ['devchain', true],
+        ['devchain-local', false],
+      ]);
+    });
+
+    it('refuses a REST project disable of devchain and writes nothing', async () => {
+      insertProject('proj-p');
+
+      await expect(
+        service.setSourceProjectEnabled('devchain', 'proj-p', false),
+      ).rejects.toMatchObject({ code: 'SKILL_SOURCE_ALWAYS_ENABLED' });
+      expect(sourceRows('proj-p')).toEqual([]);
+
+      await service.setSourceProjectEnabled('devchain-local', 'proj-p', false);
+      expect(sourceRows('proj-p')).toEqual([{ source_name: 'devchain-local', enabled: 0 }]);
+    });
+
+    it('returns source_always_enabled for an MCP project disable of devchain', async () => {
+      insertProject('proj-q');
+
+      const refused = await service.setSourceProjectEnabledForMcp('proj-q', 'DevChain', false);
+      expect(refused).toEqual({ status: 'source_always_enabled', name: 'devchain' });
+      expect(sourceRows('proj-q')).toEqual([]);
+
+      const enabled = await service.setSourceProjectEnabledForMcp('proj-q', 'devchain', true);
+      expect(enabled).toEqual({
+        status: 'ok',
+        name: 'devchain',
+        projectId: 'proj-q',
+        projectEnabled: true,
+      });
+    });
+
+    it('leaves devchain skills enabled on disable-all and excludes them from the count', async () => {
+      insertProject('proj-r');
+      insertSkill('skill-a', 'src/alpha');
+      insertSkill('skill-dc', 'devchain/code-simplifier', 'devchain');
+      insertSkill('skill-dcl', 'devchain-local/helper', 'devchain-local');
+
+      const count = await service.disableAll('proj-r');
+
+      expect(count).toBe(2);
+      expect(
+        disabledRows('proj-r')
+          .map((row) => row.skill_id)
+          .sort(),
+      ).toEqual(['skill-a', 'skill-dcl']);
     });
   });
 });

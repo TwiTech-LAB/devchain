@@ -1,7 +1,10 @@
+import type { ArgumentsHost } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { SkillsController } from './skills.controller';
 import { SkillSourceLifecycleService } from '../services/skill-source-lifecycle.service';
 import { SkillsService } from '../services/skills.service';
+import { AllExceptionsFilter } from '../../../common/filters/http-exception.filter';
+import { SkillSourceAlwaysEnabledError } from '../../../common/errors/error-types';
 
 describe('SkillsController', () => {
   let controller: SkillsController;
@@ -241,6 +244,39 @@ describe('SkillsController', () => {
 
     expect(skillsService.disableSkill).toHaveBeenCalledWith(projectId, skillId);
     expect(result).toEqual({ projectId, skillId });
+  });
+
+  it('answers DevChain disables with HTTP 409 SKILL_SOURCE_ALWAYS_ENABLED', async () => {
+    const respond = async (call: Promise<unknown>) => {
+      const error = await call.then(
+        () => undefined,
+        (rejection: unknown) => rejection,
+      );
+      const send = jest.fn();
+      const code = jest.fn(() => ({ send }));
+      const host = {
+        switchToHttp: () => ({
+          getResponse: () => ({ sent: false, code }),
+          getRequest: () => ({ id: 'request-1', method: 'POST', url: '/api/skills' }),
+        }),
+      } as unknown as ArgumentsHost;
+      new AllExceptionsFilter().catch(error, host);
+      return { status: (code.mock.calls[0] as unknown[])[0], body: send.mock.calls[0][0] };
+    };
+    const refusal = new SkillSourceAlwaysEnabledError('devchain');
+    skillsService.setSourceEnabled.mockRejectedValue(refusal);
+    skillsService.setSourceProjectEnabled.mockRejectedValue(refusal);
+    skillsService.disableSkill.mockRejectedValue(refusal);
+
+    for (const call of [
+      controller.disableSource({ name: 'devchain' }),
+      controller.disableSourceForProject({ name: 'devchain' }, { projectId }),
+      controller.disableSkill({ id: skillId }, { projectId }),
+    ]) {
+      const { status, body } = await respond(call);
+      expect(status).toBe(409);
+      expect(body).toMatchObject({ statusCode: 409, code: 'SKILL_SOURCE_ALWAYS_ENABLED' });
+    }
   });
 
   it('enables a single skill via action route payload', async () => {

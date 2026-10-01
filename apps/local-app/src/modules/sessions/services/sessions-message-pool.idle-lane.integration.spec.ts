@@ -137,7 +137,7 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
         },
         {
           provide: ProviderAdapterFactory,
-          useValue: { getPostPasteDelayMsForAgent: jest.fn(async () => undefined) },
+          useValue: { getRuntimePromptBehaviorForAgent: jest.fn(async () => ({})) },
         },
         {
           provide: DeliveryFailureNotifierService,
@@ -238,7 +238,7 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
     expect(terminalIO.deliver).not.toHaveBeenCalled();
   });
 
-  it('delivers deferred messages when particle-only output does not starve the quiet window', async () => {
+  it('delivers deferred messages after Enter while the provider keeps printing output', async () => {
     const tmuxName = 'tmux-1';
     const session = new TerminalSession({
       sessionId: 'session-1',
@@ -272,16 +272,15 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
       phase: 'awaiting_stable_idle',
     });
 
-    // Push particle-only frames through the real TerminalSession.
-    // With the fix these do NOT advance the meaningful output epoch,
-    // so the quiet snapshot stays stable and the 2-second grace fires.
-    session.pushFrame('\x1b[38;5;245m⠁\x1b[0m');
-    session.pushFrame('⠂⠄⠈');
+    // A working provider keeps printing real text through the real TerminalSession.
+    // Only human input restarts the grace, so the 2-second window after Enter still fires.
+    session.pushFrame('Reading files');
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    session.pushFrame('Running tests');
+    expect(session.getActivityState().lastDataAt).not.toBeNull();
 
-    expect(humanPromptState.getState(tmuxName).meaningfulOutputEpoch).toBe(0);
-
-    // Wait for HUMAN_DRAFT_IDLE_GRACE_MS (2 s) + margin
-    await new Promise((resolve) => setTimeout(resolve, 2500));
+    // Wait for the rest of HUMAN_DRAFT_IDLE_GRACE_MS (2 s) + margin
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(terminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
@@ -528,23 +527,6 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
 
       expect(result).toEqual({ status: 'delivered', deliveredCount: 1 });
       expect(terminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
-    });
-
-    it('force succeeds despite meaningful output continuing', async () => {
-      const { messageIds } = await setupDeferredLane();
-      jest.spyOn(Date, 'now').mockReturnValue(32_000);
-
-      humanPromptState.recordMeaningfulOutput('tmux-1');
-      humanPromptState.recordMeaningfulOutput('tmux-1');
-
-      const result = await service.forceDeferredDelivery(
-        'agent-1',
-        'project-1',
-        'session-1',
-        messageIds,
-      );
-
-      expect(result).toEqual({ status: 'delivered', deliveredCount: 1 });
     });
 
     it('returns conflict for repeated force while first is in flight', async () => {

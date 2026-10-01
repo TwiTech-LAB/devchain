@@ -9,6 +9,8 @@ import { SessionCoordinatorService } from '../../sessions/services/session-coord
 import { EventsService } from '../../events/services/events.service';
 import { SessionRuntime } from '../../sessions/services/session-runtime';
 import { SettingsService } from '../../settings/services/settings.service';
+import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -108,7 +110,7 @@ describe('AgentsController', () => {
     storage = {
       listAgents: jest.fn(),
       listGuests: jest.fn().mockResolvedValue([]),
-      getAgent: jest.fn(),
+      getAgent: jest.fn().mockResolvedValue(mockAgent),
       getAgentProfile: jest.fn(),
       getProvider: jest.fn(),
       getProfileProviderConfig: jest.fn(),
@@ -144,6 +146,7 @@ describe('AgentsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AgentsController],
       providers: [
+        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
         {
           provide: STORAGE_SERVICE,
           useValue: storage,

@@ -4,26 +4,13 @@ import type { ReactNode } from 'react';
 import { epicTimeQueryKeys } from '@/ui/lib/epic-time';
 import { useAgentTimeBuffers } from './useAgentTimeBuffers';
 
-// Layer: hook unit. The fetch factory and worktree runtime are mocked
-// because this spec owns the buffer URL, key shape, runtime gating, poll
-// cadence, and minute-map reference stability.
+// Layer: hook unit. The fetch factory is mocked because this spec owns the
+// buffer URL, key shape, active/disabled scope gating, poll cadence, and
+// minute-map reference stability.
 const fetchMock = jest.fn();
 
 jest.mock('@/ui/hooks/useFetchFactory', () => ({
   useFetchFactory: () => fetchMock,
-}));
-
-const worktreeRuntime = {
-  activeWorktree: null,
-  setActiveWorktree: () => undefined,
-  apiBase: '',
-  worktrees: [],
-  worktreesLoading: false,
-  runtimeResolved: true,
-};
-
-jest.mock('@/ui/hooks/useWorktreeTab', () => ({
-  useOptionalWorktreeTab: () => worktreeRuntime,
 }));
 
 function wrapper(client: QueryClient) {
@@ -65,13 +52,11 @@ describe('useAgentTimeBuffers', () => {
     });
     fetchMock.mockReset();
     fetchMock.mockResolvedValue({ ok: true, json: async () => snapshotPayload });
-    worktreeRuntime.runtimeResolved = true;
-    worktreeRuntime.apiBase = '';
   });
 
   afterEach(() => client.clear());
 
-  it('fetches the admitted project read under the main scope and polls every five seconds', async () => {
+  it('fetches the admitted project read under the active scope and polls every five seconds', async () => {
     const { result } = renderHook(() => useAgentTimeBuffers('project-1'), {
       wrapper: wrapper(client),
     });
@@ -84,11 +69,11 @@ describe('useAgentTimeBuffers', () => {
       signal: expect.any(AbortSignal),
     });
     expect(result.current.admitted).toBe(true);
-    expect(client.getQueryData(epicTimeQueryKeys.buffers('project-1', 'main'))).toEqual(
+    expect(client.getQueryData(epicTimeQueryKeys.buffers('project-1', 'active'))).toEqual(
       snapshotPayload,
     );
     expect(
-      client.getQueryCache().find({ queryKey: epicTimeQueryKeys.buffers('project-1', 'main') })
+      client.getQueryCache().find({ queryKey: epicTimeQueryKeys.buffers('project-1', 'active') })
         ?.options.refetchInterval,
     ).toBe(5_000);
   });
@@ -130,40 +115,25 @@ describe('useAgentTimeBuffers', () => {
     // the exposed view must fail closed with no marker- or action-feeding data.
     fetchMock.mockResolvedValue({ ok: false, json: async () => ({}) });
     await act(async () => {
-      await client.refetchQueries({ queryKey: epicTimeQueryKeys.buffers('project-1', 'main') });
+      await client.refetchQueries({ queryKey: epicTimeQueryKeys.buffers('project-1', 'active') });
     });
 
     await waitFor(() => expect(result.current.snapshot).toBeUndefined());
     expect(result.current.minutesByAgentId).toEqual({});
   });
 
-  it('issues no request and hides main data for unresolved, worktree, or missing projects', async () => {
-    worktreeRuntime.runtimeResolved = false;
-    const unresolved = renderHook(() => useAgentTimeBuffers('project-1'), {
-      wrapper: wrapper(client),
-    });
-    expect(unresolved.result.current.admitted).toBe(false);
-    expect(unresolved.result.current.snapshot).toBeUndefined();
-
-    worktreeRuntime.runtimeResolved = true;
-    worktreeRuntime.apiBase = '/wt/demo';
-    const worktree = renderHook(() => useAgentTimeBuffers('project-1'), {
-      wrapper: wrapper(client),
-    });
-    expect(worktree.result.current.admitted).toBe(false);
-    expect(worktree.result.current.snapshot).toBeUndefined();
-
-    worktreeRuntime.apiBase = '';
+  it('issues no request and keys under the disabled scope when no project is selected', async () => {
     const noProject = renderHook(() => useAgentTimeBuffers(null), {
       wrapper: wrapper(client),
     });
     expect(noProject.result.current.admitted).toBe(false);
+    expect(noProject.result.current.snapshot).toBeUndefined();
 
     await Promise.resolve();
     expect(fetchMock).not.toHaveBeenCalled();
-    // Disallowed runtimes key under the isolated scope, never main.
+    // A disabled read never primes the active-scope cache entry.
     expect(
-      client.getQueryCache().find({ queryKey: epicTimeQueryKeys.buffers('project-1', 'main') }),
+      client.getQueryCache().find({ queryKey: epicTimeQueryKeys.buffers('', 'active') }),
     ).toBeUndefined();
   });
 });
