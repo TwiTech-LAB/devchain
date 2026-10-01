@@ -59,7 +59,6 @@ Move a project to your own VM and keep working from the same app. The agents kee
 
 Before you start:
 
-- Use a LAN or VPN between your PC and the VM. Your PC reaches every VM with an API key, over TLS pinned to the VM's own certificate ([details](https://devchain.cc/releases/0.24.0/#secure-connection-to-every-vm)).
 - Install [Syncthing v2](https://syncthing.net) on your PC. DevChain installs it on the VM.
 - For your own VM, use a dedicated headless VM: Ubuntu 22.04+ or Debian 12+, amd64, and at least 4 GiB of RAM.
 - To follow a VM's projects in the mobile app, sign the VM in to DevChain Cloud from the **Cloud** page.
