@@ -13,6 +13,12 @@ import type {
 } from './types';
 import type { AgentMessageEventFrame, ProjectMessageEventFrame } from './useAgentEventBusStream';
 
+type AgentToAgentRoute = Extract<AgentEventBusActiveRoute, { routeKind: 'agent-to-agent' }>;
+
+function agentRoutes(routes: AgentEventBusActiveRoute[]): AgentToAgentRoute[] {
+  return routes.filter((route): route is AgentToAgentRoute => route.routeKind === 'agent-to-agent');
+}
+
 // Layer: pure unit. The scheduler's injected timer environment and geometry
 // snapshots are the cheapest reliable proof of capacity, epochs, routing, and
 // phase transitions without nondeterministic browser animation timing.
@@ -217,7 +223,9 @@ describe('AgentEventBusScheduler', () => {
     timers.runBefore(500);
 
     expect(routes).toHaveLength(1);
-    expect(routes[0].recipientAgentId).toBe('mounted');
+    const [mountedRoute] = agentRoutes(routes);
+    if (!mountedRoute) throw new Error('expected one agent-to-agent route');
+    expect(mountedRoute.recipientAgentId).toBe('mounted');
   });
 
   it('rebuilds only moved active routes and drops only disappeared endpoints', () => {
@@ -237,7 +245,7 @@ describe('AgentEventBusScheduler', () => {
     );
     timers.runBefore(500);
     const initialGenerations = new Map(
-      routes.map((route) => [route.recipientAgentId, route.generation]),
+      agentRoutes(routes).map((route) => [route.recipientAgentId, route.generation]),
     );
 
     scheduler.commitGeometry(
@@ -248,17 +256,17 @@ describe('AgentEventBusScheduler', () => {
       ]),
     );
 
-    expect(routes.find((route) => route.recipientAgentId === 'r1')?.generation).toBe(
+    expect(agentRoutes(routes).find((route) => route.recipientAgentId === 'r1')?.generation).toBe(
       (initialGenerations.get('r1') ?? 0) + 1,
     );
-    expect(routes.find((route) => route.recipientAgentId === 'r2')?.generation).toBe(
+    expect(agentRoutes(routes).find((route) => route.recipientAgentId === 'r2')?.generation).toBe(
       initialGenerations.get('r2'),
     );
 
     scheduler.commitGeometry(
       geometry(scopeEpoch, 3, [anchor('sender', 'sender', 20, 0), anchor('r1', 'r1', 100, 1)]),
     );
-    expect(routes.map((route) => route.recipientAgentId)).toEqual(['r1']);
+    expect(agentRoutes(routes).map((route) => route.recipientAgentId)).toEqual(['r1']);
   });
 
   it('starts recipient status feedback only on arrival and releases it after the endpoint window', () => {

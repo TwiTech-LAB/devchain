@@ -9,7 +9,15 @@ import type {
   DockerSelectionItem,
   DockerSelectionMode,
 } from '@/modules/remotes/docker/docker-plan.dto';
+import { ChevronDown } from 'lucide-react';
+import { Badge } from '@/ui/components/ui/badge';
+import { Button } from '@/ui/components/ui/button';
 import { Checkbox } from '@/ui/components/ui/checkbox';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/ui/components/ui/collapsible';
 import { Label } from '@/ui/components/ui/label';
 import {
   Select,
@@ -18,7 +26,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
+import { BusyStatus } from '@/ui/components/ui/spinner';
 import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { cn } from '@/ui/lib/utils';
 import { formatBytes, formatDuration } from './file-sync-display';
 
 /** What the Connect dialog needs to gate its button and build the request. */
@@ -31,8 +41,6 @@ export interface DockerSectionState {
   canConnect: boolean;
   /** A plan request is in flight; a loaded plan must not be acted on stale. */
   pending: boolean;
-  /** At least one plan answer was applied for this remote. */
-  loaded: boolean;
 }
 
 const MODE_LABELS: Record<DockerSelectionMode, string> = {
@@ -71,6 +79,30 @@ function sizeLabel(size: DockerPlanSize): string {
   return size.unknown
     ? `unknown size, at least ${formatBytes(size.bytes)}`
     : formatBytes(size.bytes);
+}
+
+/** "at least" when part of the size is unknown. */
+function shortSizeLabel(size: DockerPlanSize): string {
+  if (!size.unknown) return formatBytes(size.bytes);
+  return size.bytes > 0 ? `at least ${formatBytes(size.bytes)}` : 'size unknown';
+}
+
+/**
+ * What the item moves in this mode: its images, plus its data unless the mode
+ * or a kept VM copy leaves the data behind.
+ */
+function itemSize(item: DockerPlanItem, mode: DockerSelectionMode): DockerPlanSize {
+  const images = [...new Map(item.images.map((image) => [image.id, image.size])).values()];
+  const parts = [
+    ...(mode === 'data-only' ? [] : images),
+    ...(mode === 'without-data' || item.dataAction === 'keep-vm'
+      ? []
+      : [item.dataSize ?? { bytes: 0, unknown: true }]),
+  ];
+  return {
+    bytes: parts.reduce((total, size) => total + size.bytes, 0),
+    unknown: parts.some((size) => size.unknown),
+  };
 }
 
 function linkedReasonLabel(reason: string): string {
@@ -117,32 +149,71 @@ async function fetchPlan(projectId: string, payload: string, signal: AbortSignal
   return body;
 }
 
-/**
- * The Docker part of the Connect dialog: reads the import plan for the chosen
- * remote, lets the user pick items and modes, and reports the selection with
- * the plan's verdict. Only the latest plan request is ever applied, and while
- * one is pending the dialog does not act on the previous answer. A plan that
- * cannot be read never blocks a Connect without Docker items — the section
- * degrades to a note.
- */
-export function ConnectDockerSection({
-  projectId,
-  remoteId,
-  disabled,
-  onStateChange,
-}: {
+/** A Connect without Docker work: nothing read, nothing selected. */
+export const NO_DOCKER_STATE: DockerSectionState = {
+  ready: false,
+  items: [],
+  canConnect: false,
+  pending: false,
+};
+
+interface DockerSectionProps {
   projectId: string;
   remoteId: string;
   disabled: boolean;
   onStateChange: (state: DockerSectionState) => void;
-}) {
+}
+
+/**
+ * The Docker part of the Connect dialog. Nothing is read until the user opts
+ * in; opting out unmounts the plan, which aborts its requests and drops the
+ * selection, so the Connect goes without Docker items.
+ */
+export function ConnectDockerSection(props: DockerSectionProps) {
+  const { remoteId, disabled, onStateChange } = props;
+  const [enabled, setEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) onStateChange(NO_DOCKER_STATE);
+  }, [enabled, onStateChange]);
+
+  return (
+    <div className="space-y-2 text-sm">
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id={`docker-include-${remoteId}`}
+            checked={enabled}
+            disabled={disabled}
+            onCheckedChange={(checked) => setEnabled(checked === true)}
+          />
+          <Label htmlFor={`docker-include-${remoteId}`} className="font-normal">
+            Include Docker containers
+          </Label>
+        </div>
+        <p className="text-muted-foreground">
+          Reads this project&apos;s Docker containers. Next waits until the read is done.
+        </p>
+      </div>
+      {enabled && <DockerPlanSection {...props} />}
+    </div>
+  );
+}
+
+/**
+ * Reads the import plan for the chosen remote, lets the user pick items and
+ * modes, and reports the selection with the plan's verdict. Only the latest
+ * plan request is ever applied, and while one is pending the dialog does not
+ * act on the previous answer. A plan that cannot be read never blocks a
+ * Connect without Docker items — the section degrades to a note.
+ */
+function DockerPlanSection({ projectId, remoteId, disabled, onStateChange }: DockerSectionProps) {
   const [plan, setPlan] = useState<DockerPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [included, setIncluded] = useState<Record<string, boolean>>({});
   const [modes, setModes] = useState<Record<string, DockerSelectionMode>>({});
   const [dataChoices, setDataChoices] = useState<Record<string, DockerDataChoice>>({});
   const [pending, setPending] = useState(false);
-  const [loaded, setLoaded] = useState(false);
   const plannedRef = useRef<string | null>(null);
   /**
    * The newest plan request. A newer request, a remote change or an unmount
@@ -178,7 +249,6 @@ export function ConnectDockerSection({
               .map((item) => [item.id, item.selectedMode as DockerSelectionMode]),
           ),
         );
-        setLoaded(true);
       } catch (cause) {
         if (signal.aborted) return;
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -204,7 +274,6 @@ export function ConnectDockerSection({
       const body = await fetchPlan(projectId, payload, signal);
       if (signal.aborted) return;
       setPlan(body);
-      setLoaded(true);
     } catch (cause) {
       if (signal.aborted) return;
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -234,9 +303,8 @@ export function ConnectDockerSection({
       items: selection,
       canConnect: !error && (plan?.canConnect ?? false),
       pending,
-      loaded,
     });
-  }, [plan, included, modes, dataChoices, pending, loaded, error, onStateChange]);
+  }, [plan, included, modes, dataChoices, pending, error, onStateChange]);
 
   const toggle = (item: DockerPlanItem, checked: boolean) => {
     setIncluded((current) => ({ ...current, [item.id]: checked }));
@@ -264,9 +332,7 @@ export function ConnectDockerSection({
   }
   if (!plan) {
     return (
-      <p role="status" className="text-sm text-muted-foreground">
-        Reading Docker containers…
-      </p>
+      <BusyStatus className="text-sm text-muted-foreground">Reading Docker containers…</BusyStatus>
     );
   }
   const { availability } = plan;
@@ -291,7 +357,10 @@ export function ConnectDockerSection({
 
   return (
     <section aria-label="Docker containers" className="space-y-2 text-sm">
-      <h3>Docker containers</h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3>Docker containers</h3>
+        {pending && <BusyStatus className="text-muted-foreground">Updating the plan…</BusyStatus>}
+      </div>
       {plan.reconnect && (
         <div role="note" aria-label="Reconnect replacement" className="space-y-1">
           <p className="font-medium">
@@ -312,135 +381,21 @@ export function ConnectDockerSection({
         </p>
         {linked.length === 0 && <p className="text-muted-foreground">None.</p>}
         <ul className="space-y-2">
-          {linked.map((item) => {
-            // An item without choices cannot be selected; the server would
-            // refuse every mode for it, so it only ever shows its reasons.
-            const selectable = item.choices.length > 0;
-            // The server computes the list with the handoff's own stop rule.
-            const alsoStops = included[item.id] === true ? item.alsoStops.map(nameOf) : [];
-            return (
-              <li key={item.id} className="space-y-1 rounded-md border p-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Checkbox
-                    id={`docker-item-${item.id}`}
-                    checked={included[item.id] ?? false}
-                    disabled={disabled || !selectable}
-                    onCheckedChange={(checked) => toggle(item, checked === true)}
-                  />
-                  <Label htmlFor={`docker-item-${item.id}`} className="font-normal">
-                    {item.name}
-                  </Label>
-                  <span className="text-muted-foreground">
-                    {item.kind === 'compose-project' ? 'Compose project' : 'Container'}
-                  </span>
-                  {item.temporary && <span className="text-muted-foreground">temporary</span>}
-                  {item.targetAction !== 'create' && (
-                    <span className="text-muted-foreground">
-                      {TARGET_ACTION_LABELS[item.targetAction]}
-                    </span>
-                  )}
-                </div>
-                {item.dataState && <p>Data: {DATA_STATE_LABELS[item.dataState]}.</p>}
-                {item.dataChoiceRequired && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span>Shared data choice for {item.name}</span>
-                    <Select
-                      value={dataChoices[item.id]}
-                      disabled={disabled || !included[item.id]}
-                      onValueChange={(value) => changeDataChoice(item, value as DockerDataChoice)}
-                    >
-                      <SelectTrigger
-                        aria-label={`Shared data choice for ${item.name}`}
-                        className="h-8 w-auto min-w-[12rem]"
-                      >
-                        <SelectValue placeholder="Choose what to keep" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="keep-vm">Keep VM copy</SelectItem>
-                        <SelectItem value="replace-home">
-                          Replace with this PC&apos;s data
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-                {item.linkedReasons.length > 0 && (
-                  <p className="text-muted-foreground">
-                    Linked by {item.linkedReasons.map(linkedReasonLabel).join(', ')}.
-                  </p>
-                )}
-                <ul className="list-disc pl-5 text-muted-foreground">
-                  {item.mounts.map((mount, index) => (
-                    <li key={`${mount.source}:${mount.destination}:${index}`}>
-                      {MOUNT_KIND_LABELS[mount.kind]} {mount.source} → {mount.destination}
-                      {mount.readOnly ? ' (read-only)' : ''}, {sizeLabel(mount.size)}
-                    </li>
-                  ))}
-                  {item.images.map((image, index) => (
-                    <li key={`${image.id}:${index}`}>
-                      image {image.id} ({image.architecture}), {sizeLabel(image.size)}
-                    </li>
-                  ))}
-                  <li>Writable layer: {sizeLabel(item.writableLayer)}.</li>
-                </ul>
-                {alsoStops.length > 0 && (
-                  <p className="text-muted-foreground">
-                    Connect also stops: {alsoStops.join(', ')}.
-                  </p>
-                )}
-                {item.blockers.length > 0 && (
-                  <ul className="list-disc pl-5 text-destructive">
-                    {item.blockers.map((blocker, index) => (
-                      <li key={`${blocker.code}:${index}`}>{blocker.message}</li>
-                    ))}
-                  </ul>
-                )}
-                {item.warnings.length > 0 && (
-                  <ul className="list-disc pl-5 text-status-warn">
-                    {item.warnings.map((warning, index) => (
-                      <li key={`${warning.code}:${index}`}>{warning.message}</li>
-                    ))}
-                  </ul>
-                )}
-                {item.notes.length > 0 && (
-                  <ul className="list-disc pl-5 text-muted-foreground">
-                    {item.notes.map((note, index) => (
-                      <li key={`${note}:${index}`}>{note}</li>
-                    ))}
-                  </ul>
-                )}
-                {item.choices.length > 1 ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span>Mode</span>
-                    <Select
-                      value={modes[item.id] ?? item.choices[0]}
-                      disabled={disabled || !included[item.id]}
-                      onValueChange={(value) => changeMode(item, value as DockerSelectionMode)}
-                    >
-                      <SelectTrigger
-                        aria-label={`Mode for ${item.name}`}
-                        className="h-8 w-auto min-w-[12rem]"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {item.choices.map((mode) => (
-                          <SelectItem key={mode} value={mode}>
-                            {MODE_LABELS[mode]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ) : (
-                  item.choices[0] !== undefined &&
-                  item.choices[0] !== 'container-and-data' && (
-                    <p className="text-muted-foreground">Mode: {MODE_LABELS[item.choices[0]]}</p>
-                  )
-                )}
-              </li>
-            );
-          })}
+          {/* The server computes "also stops" with the handoff's own stop rule. */}
+          {linked.map((item) => (
+            <DockerItemRow
+              key={item.id}
+              item={item}
+              included={included[item.id] === true}
+              mode={modes[item.id] ?? item.choices[0]}
+              dataChoice={dataChoices[item.id]}
+              alsoStops={included[item.id] === true ? item.alsoStops.map(nameOf) : []}
+              disabled={disabled}
+              onToggle={(checked) => toggle(item, checked)}
+              onModeChange={(mode) => changeMode(item, mode)}
+              onDataChoiceChange={(choice) => changeDataChoice(item, choice)}
+            />
+          ))}
         </ul>
       </div>
       {plan.filesystems.some((fs) => fs.status !== 'fits') && (
@@ -475,11 +430,197 @@ export function ConnectDockerSection({
           ))}
         </ul>
       )}
-      {pending && (
-        <p role="status" className="text-muted-foreground">
-          Updating the plan…
-        </p>
-      )}
     </section>
+  );
+}
+
+/** Selects that read as controls, not as text. */
+const CONTROL_CLASS =
+  'h-8 w-auto min-w-[12rem] border-foreground/30 bg-muted/60 font-medium shadow-sm hover:bg-muted';
+
+/** A control that Connect waits for. */
+const REQUIRED_CLASS =
+  'border-status-warn ring-2 ring-status-warn ring-offset-1 ring-offset-background';
+
+/**
+ * One item on one line: its pick, its size in the chosen mode and the mode.
+ * Links, data, images and notes open under Details. Blockers, warnings and
+ * the containers Connect also stops stay in view, as they change what Connect
+ * does, and a shared data choice that Connect waits for is highlighted.
+ */
+function DockerItemRow({
+  item,
+  included,
+  mode,
+  dataChoice,
+  alsoStops,
+  disabled,
+  onToggle,
+  onModeChange,
+  onDataChoiceChange,
+}: {
+  item: DockerPlanItem;
+  included: boolean;
+  /** The chosen mode, else the first choice; none when the item has no choices. */
+  mode: DockerSelectionMode | undefined;
+  dataChoice: DockerDataChoice | undefined;
+  alsoStops: string[];
+  disabled: boolean;
+  onToggle: (checked: boolean) => void;
+  onModeChange: (mode: DockerSelectionMode) => void;
+  onDataChoiceChange: (choice: DockerDataChoice) => void;
+}) {
+  // An item without choices cannot be selected; the server would refuse every
+  // mode for it, so it only ever shows its reasons.
+  const selectable = item.choices.length > 0;
+  const choiceMissing = included && item.dataChoiceRequired === true && dataChoice === undefined;
+  return (
+    <Collapsible asChild>
+      <li className={cn('space-y-2 rounded-md border p-2', choiceMissing && 'border-status-warn')}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+            <Checkbox
+              id={`docker-item-${item.id}`}
+              checked={included}
+              disabled={disabled || !selectable}
+              onCheckedChange={(checked) => onToggle(checked === true)}
+            />
+            <Label htmlFor={`docker-item-${item.id}`}>{item.name}</Label>
+            <span className="text-muted-foreground">
+              {item.kind === 'compose-project' ? 'Compose project' : 'Container'}
+            </span>
+            <span className="tabular-nums">
+              {shortSizeLabel(itemSize(item, mode ?? 'container-and-data'))}
+            </span>
+            {item.temporary && (
+              <Badge variant="outline" className="font-normal">
+                temporary
+              </Badge>
+            )}
+            {item.targetAction !== 'create' && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  'font-normal',
+                  item.targetAction === 'conflict' && 'border-destructive text-destructive',
+                )}
+              >
+                {TARGET_ACTION_LABELS[item.targetAction]}
+              </Badge>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {item.choices.length > 1 ? (
+              <Select
+                value={mode}
+                disabled={disabled || !included}
+                onValueChange={(value) => onModeChange(value as DockerSelectionMode)}
+              >
+                <SelectTrigger aria-label={`Mode for ${item.name}`} className={CONTROL_CLASS}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {item.choices.map((choice) => (
+                    <SelectItem key={choice} value={choice}>
+                      {MODE_LABELS[choice]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              mode !== undefined &&
+              mode !== 'container-and-data' && (
+                <span className="text-muted-foreground">Mode: {MODE_LABELS[mode]}</span>
+              )
+            )}
+            <CollapsibleTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="group h-8 gap-1 px-2"
+                aria-label={`Details for ${item.name}`}
+              >
+                Details
+                <ChevronDown
+                  aria-hidden="true"
+                  className="h-4 w-4 transition-transform group-data-[state=open]:rotate-180"
+                />
+              </Button>
+            </CollapsibleTrigger>
+          </div>
+        </div>
+        {item.dataChoiceRequired && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn(choiceMissing && 'font-medium text-status-warn')}>
+              {item.dataState ? `Data: ${DATA_STATE_LABELS[item.dataState]}.` : 'Shared data.'}
+            </span>
+            <Select
+              value={dataChoice}
+              disabled={disabled || !included}
+              onValueChange={(value) => onDataChoiceChange(value as DockerDataChoice)}
+            >
+              <SelectTrigger
+                aria-label={`Shared data choice for ${item.name}`}
+                aria-invalid={choiceMissing}
+                className={cn(CONTROL_CLASS, choiceMissing && REQUIRED_CLASS)}
+              >
+                <SelectValue placeholder="Choose what to keep" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="keep-vm">Keep VM copy</SelectItem>
+                <SelectItem value="replace-home">Replace with this PC&apos;s data</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        {item.blockers.length > 0 && (
+          <ul className="list-disc pl-5 text-destructive">
+            {item.blockers.map((blocker, index) => (
+              <li key={`${blocker.code}:${index}`}>{blocker.message}</li>
+            ))}
+          </ul>
+        )}
+        {item.warnings.length > 0 && (
+          <ul className="list-disc pl-5 text-status-warn">
+            {item.warnings.map((warning, index) => (
+              <li key={`${warning.code}:${index}`}>{warning.message}</li>
+            ))}
+          </ul>
+        )}
+        {alsoStops.length > 0 && (
+          <p className="text-muted-foreground">Connect also stops: {alsoStops.join(', ')}.</p>
+        )}
+        <CollapsibleContent className="space-y-1 border-t pt-2 text-muted-foreground">
+          {item.dataState && !item.dataChoiceRequired && (
+            <p>Data: {DATA_STATE_LABELS[item.dataState]}.</p>
+          )}
+          {item.linkedReasons.length > 0 && (
+            <p>Linked by {item.linkedReasons.map(linkedReasonLabel).join(', ')}.</p>
+          )}
+          <ul className="list-disc pl-5">
+            {item.mounts.map((mount, index) => (
+              <li key={`${mount.source}:${mount.destination}:${index}`}>
+                {MOUNT_KIND_LABELS[mount.kind]} {mount.source} → {mount.destination}
+                {mount.readOnly ? ' (read-only)' : ''}, {sizeLabel(mount.size)}
+              </li>
+            ))}
+            {item.images.map((image, index) => (
+              <li key={`${image.id}:${index}`}>
+                image {image.id} ({image.architecture}), {sizeLabel(image.size)}
+              </li>
+            ))}
+            <li>Writable layer: {sizeLabel(item.writableLayer)}.</li>
+          </ul>
+          {item.notes.length > 0 && (
+            <ul className="list-disc pl-5">
+              {item.notes.map((note, index) => (
+                <li key={`${note}:${index}`}>{note}</li>
+              ))}
+            </ul>
+          )}
+        </CollapsibleContent>
+      </li>
+    </Collapsible>
   );
 }

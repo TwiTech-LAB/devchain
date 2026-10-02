@@ -680,6 +680,7 @@ describe('project-presets.helpers', () => {
       profileId: 'profile-1',
       providerConfigId: 'old-cfg',
       modelOverride: null,
+      effortOverride: null as string | null,
     };
     const baseProfileItems = [
       {

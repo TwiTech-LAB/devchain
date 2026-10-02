@@ -314,6 +314,13 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       // has settled (frames hit the normal write path), ask the server to re-emit alt-screen
       // + mouse modes. Server-gated on the provider's alt-screen policy → no-op for non-TUI
       // providers. Confined to the seed-ready hook; the wheel-forward gate is untouched.
+      //
+      // The seed also drops bracketed-paste mode (?2004h), which the provider CLIs enable
+      // once at startup. Without it xterm sends a paste as plain typing, and Claude then
+      // keeps the paste's \r line breaks and holds the prompt to review them. Every
+      // supported provider CLI enables bracketed paste, so turn it on in this xterm only
+      // (nothing reaches the pane); a later ?2004l from the live stream still turns it off.
+      writePump.write('\x1b[?2004h');
       if (socket.connected) {
         socket.emit('terminal:restore_viewport_modes', { sessionId });
       }

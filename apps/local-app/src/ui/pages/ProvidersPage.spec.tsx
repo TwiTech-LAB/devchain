@@ -2465,7 +2465,7 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
     await waitFor(() => {
       const putCall = findCliPutCall('/api/provider-clis/claude');
       expect(putCall).toBeDefined();
-      expect(JSON.parse(putCall![1].body as string)).toEqual({
+      expect(JSON.parse(putCall![1]!.body as string)).toEqual({
         version: '2.1.285',
         homeManaged: false,
       });

@@ -1,5 +1,11 @@
+import { basename, dirname, posix } from 'node:path';
 import { Readable } from 'node:stream';
 import { DockerEngineClient, DockerEngineError, isDockerNotFound } from './docker-engine.client';
+
+/** Keeps `/` readable, as the engine's own clients send it. */
+function archivePath(path: string): string {
+  return encodeURIComponent(path).replace(/%2F/g, '/');
+}
 
 /** Labels a journaled helper with its journal token. */
 export const DOCKER_ARCHIVE_HELPER_LABEL = 'dev.devchain.archive-helper';
@@ -169,24 +175,58 @@ export async function cleanupDockerArchiveHelper(
   for (const id of helper.ownedVolumeIds) await remove(`/volumes/${encodeURIComponent(id)}`);
 }
 
+/** What a copy moves: a volume, a bound folder, or a bound single file. */
+export type DockerCopiedSource = 'volume' | 'bind' | 'file';
+export interface DockerArchiveLayout {
+  mount: DockerArchiveMount;
+  /** The helper path the archive is read from. */
+  readPath: string;
+  /** The helper path the archive is restored into. */
+  writePath: string;
+}
+
+/**
+ * Where a helper mounts a copied source, and the archive paths that read and
+ * restore it. A volume or folder is the mount itself, and its archive holds a
+ * `data` folder. The engine cannot replace a mounted file, so a file's folder is
+ * mounted instead and the archive holds the file under its own name.
+ */
+export function dockerArchiveLayout(type: DockerCopiedSource, source: string): DockerArchiveLayout {
+  if (type !== 'file')
+    return {
+      mount: { Type: type, Source: source, Target: '/data' },
+      readPath: '/data',
+      writePath: '/',
+    };
+  return {
+    mount: { Type: 'bind', Source: dirname(source), Target: '/data' },
+    readPath: posix.join('/data', basename(source)),
+    writePath: '/data',
+  };
+}
+
 export function readDockerArchive(
   client: DockerEngineClient,
   helperId: string,
   signal?: AbortSignal,
+  path = '/data',
 ): Promise<Readable> {
-  return client.stream('GET', `/containers/${encodeURIComponent(helperId)}/archive?path=/data`, {
-    signal,
-  });
+  return client.stream(
+    'GET',
+    `/containers/${encodeURIComponent(helperId)}/archive?path=${archivePath(path)}`,
+    { signal },
+  );
 }
 export async function writeDockerArchive(
   client: DockerEngineClient,
   helperId: string,
   archive: Readable,
   signal?: AbortSignal,
+  path = '/',
 ): Promise<void> {
   const response = await client.stream(
     'PUT',
-    `/containers/${encodeURIComponent(helperId)}/archive?copyUIDGID=true&path=/`,
+    `/containers/${encodeURIComponent(helperId)}/archive?copyUIDGID=true&path=${archivePath(path)}`,
     {
       body: archive,
       headers: { 'Content-Type': 'application/x-tar' },

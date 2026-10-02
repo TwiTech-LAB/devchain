@@ -27,6 +27,12 @@ export interface TeamsListOptions extends ListOptions {
   q?: string;
 }
 
+// Creation order, not rowid order: a replica inserts a project's teams sorted by id, so a
+// host's rowid order differs from home's, and the Chat sidebar renders teams in list order.
+// Teams that share a created_at fall back to rowid, which at home is the order they were
+// created in; `createTeam` keeps new teams from sharing one.
+const TEAM_LIST_ORDER = [teams.createdAt, sql`${teams}.rowid`] as const;
+
 @Injectable()
 export class TeamsStore {
   private readonly txRunner: TransactionRunner;
@@ -43,10 +49,10 @@ export class TeamsStore {
 
   async createTeam(data: CreateTeam): Promise<Team> {
     const id = randomUUID();
-    const now = new Date().toISOString();
 
     try {
       return await this.txRunner.runImmediateAsync(async () => {
+        const now = await this.nextTeamCreatedAt(data.projectId);
         await this.db.insert(teams).values({
           id,
           projectId: data.projectId,
@@ -156,13 +162,11 @@ export class TeamsStore {
         )
       : eq(teams.projectId, projectId);
 
-    // Creation order, not rowid order: a replica inserts a project's teams sorted by id, so a
-    // host's rowid order differs from home's, and the Chat sidebar renders teams in list order.
     const rows = await this.db
       .select()
       .from(teams)
       .where(whereClause)
-      .orderBy(teams.createdAt, teams.id)
+      .orderBy(...TEAM_LIST_ORDER)
       .limit(limit)
       .offset(offset);
 
@@ -204,7 +208,7 @@ export class TeamsStore {
 
   /**
    * Batched read for mobile team grouping: returns every team in a project
-   * (in `listTeams` order — no ORDER BY, matching the web sidebar) together with
+   * (in `listTeams` order, matching the web sidebar) together with
    * its member agent IDs, resolved via a SINGLE `teamMembers` query keyed by the
    * project's teamIds (`inArray(teamMembers.teamId, teamIds)`) instead of a
    * per-team `getTeam()` (avoids N+1).
@@ -218,7 +222,11 @@ export class TeamsStore {
   async listTeamsWithMembers(
     projectId: string,
   ): Promise<Array<{ team: Team; memberAgentIds: string[] }>> {
-    const teamRows = await this.db.select().from(teams).where(eq(teams.projectId, projectId));
+    const teamRows = await this.db
+      .select()
+      .from(teams)
+      .where(eq(teams.projectId, projectId))
+      .orderBy(...TEAM_LIST_ORDER);
     const teamIds = teamRows.map((row) => row.id);
     if (teamIds.length === 0) return [];
 
@@ -552,6 +560,22 @@ export class TeamsStore {
     }
 
     return Array.from(map.entries()).map(([profileId, configIds]) => ({ profileId, configIds }));
+  }
+
+  /**
+   * The current time, or 1 ms after the project's newest team when that is not earlier. A
+   * template import creates its teams one after another, and on a fast PC they can get the
+   * same millisecond; TEAM_LIST_ORDER then could not show them in template order on a host.
+   */
+  private async nextTeamCreatedAt(projectId: string): Promise<string> {
+    const now = new Date();
+    const [row] = await this.db
+      .select({ newest: sql<string | null>`max(${teams.createdAt})` })
+      .from(teams)
+      .where(eq(teams.projectId, projectId));
+    const newest = row?.newest ? Date.parse(row.newest) : Number.NaN;
+    if (Number.isNaN(newest) || newest < now.getTime()) return now.toISOString();
+    return new Date(newest + 1).toISOString();
   }
 
   private async writeTeamProfileConfigs(

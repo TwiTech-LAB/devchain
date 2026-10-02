@@ -739,7 +739,12 @@ describe('ReviewsService', () => {
           authorAgentId: 'agent-1',
         });
         const reply = makeComment({ parentId: parentCommentId });
-        const parentTargets = [{ agentId: 'agent-1' }, { agentId: 'agent-2' }];
+        const parentTargets = ['agent-1', 'agent-2'].map((agentId) => ({
+          id: `target-${agentId}`,
+          commentId: parentCommentId,
+          agentId,
+          createdAt: new Date().toISOString(),
+        }));
 
         storage.getReview.mockResolvedValue(makeReview());
         storage.getReviewComment.mockResolvedValue(parentComment);
@@ -908,7 +913,7 @@ describe('ReviewsService', () => {
     it('returns comments for review', async () => {
       storage.getReview.mockResolvedValue(makeReview());
       storage.listReviewComments.mockResolvedValue({
-        items: [makeComment()],
+        items: [{ ...makeComment(), authorAgentName: null, targetAgents: [] }],
         total: 1,
         limit: 100,
         offset: 0,

@@ -7,7 +7,14 @@ import { SessionsService } from '../../sessions/services/sessions.service';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { cooperativeBudget, cooperativeMap } from './cooperative-work';
 import { buildChunks, buildChunksCooperatively } from '../builders/chunk-builder';
-import { decodeCursor, encodeCursor, TRANSCRIPT_PARSER_GENERATION } from './transcript-cursor';
+import {
+  decodeCursor,
+  encodeParseCursor,
+  TRANSCRIPT_PARSER_GENERATION,
+  type DecodedTranscriptCursor,
+  type TranscriptCursorProof,
+} from './transcript-cursor';
+import { checkAppendProof, type AppendProofOutcome } from './bounded-anchor-proof';
 import { truncateMessages, truncateChunks } from './transcript-truncation';
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
@@ -102,6 +109,8 @@ export interface TranscriptTimingData {
   fileMtimeMs: number;
   /** Numeric source revision used by transcript cursors and derived-cache keys. */
   sourceVersion: number;
+  /** Append proof for cursors minted from this parse (file sources only). */
+  cursorProof?: TranscriptCursorProof;
   providerName: string;
 }
 
@@ -146,6 +155,7 @@ const DEFAULT_CHUNK_SIZE = 20;
 const MAX_CHUNK_SIZE = 100;
 const MAX_INDEX_CHUNK_BODIES = 200;
 
+/** DB sources only: file cursors are decided by their append proof instead. */
 function requiresFullRefetch(
   sourceChangeKind: SourceChangeKind,
   revisionChanged: boolean,
@@ -166,6 +176,13 @@ function requiresFullRefetch(
   }
 }
 
+const UNPROVEN_APPEND_KIND: Record<Exclude<AppendProofOutcome, 'appended'>, SourceChangeKind> = {
+  replaced: 'file-replacement',
+  truncated: 'file-truncation',
+  rewritten: 'same-file-rewrite',
+  unavailable: 'unknown-full-parse',
+};
+
 function assertNever(value: never): never {
   throw new Error(`Unhandled source change kind: ${String(value)}`);
 }
@@ -180,12 +197,25 @@ interface ParseTimingData {
   fileMtimeMs: number;
   /** Numeric source revision compared by equality — cursor first component. */
   sourceVersion: number;
+  /** See {@link TranscriptTimingData.cursorProof}. */
+  cursorProof?: TranscriptCursorProof;
   providerName: string;
+}
+
+/** The source snapshot a parse describes, for proving a cursor against it. */
+interface ParsedSource {
+  kind: 'file' | 'db';
+  filePath: string;
+  /** `dev:ino` of the parsed file; absent for DB sources and a pending file. */
+  fileIdentity?: string;
+  /** Byte offset the parse consumed. */
+  lastOffset: number;
 }
 
 interface ParsedSessionResult {
   session: UnifiedSession;
   parseTiming: ParseTimingData;
+  source: ParsedSource;
 }
 
 interface ReadyAdapterResolution {
@@ -365,7 +395,7 @@ export class SessionReaderService implements OnModuleDestroy {
     const { session, parseTiming } = await this.getParsedSession(sessionId);
     const metrics = this.resolveMetricsContextWindow(sessionId, session.metrics);
     const chunks = session.chunks ?? buildChunks(session.messages);
-    const cursor = encodeCursor(parseTiming.sourceVersion, session.messages.length, chunks.length);
+    const cursor = encodeParseCursor(parseTiming, session.messages.length, chunks.length);
 
     return {
       sessionId,
@@ -577,7 +607,7 @@ export class SessionReaderService implements OnModuleDestroy {
     }
 
     return {
-      cursor: encodeCursor(parseTiming.sourceVersion, session.messages.length, chunks.length),
+      cursor: encodeParseCursor(parseTiming, session.messages.length, chunks.length),
       totals: {
         messageCount: session.messages.length,
         chunkCount: chunks.length,
@@ -665,6 +695,9 @@ export class SessionReaderService implements OnModuleDestroy {
    * Get transcript tail since a cursor position.
    * Returns a delta only when overlap is safe, otherwise requires a canonical refetch.
    * Returns null if the cursor is expired (message count exceeds current total).
+   *
+   * A file cursor is safe when its append proof still holds on the current file, whichever
+   * reader advanced or evicted the cache entry since. DB sources keep the classified-change rule.
    */
   async getTranscriptTail(
     sessionId: string,
@@ -675,18 +708,19 @@ export class SessionReaderService implements OnModuleDestroy {
       throw new ValidationError('Invalid cursor format');
     }
 
-    const { session, parseTiming } = await this.getParsedSession(sessionId);
+    const { session, parseTiming, source } = await this.getParsedSession(sessionId);
 
-    // DB-backed sources can mutate parts without growing the message count, so
-    // their classified updates retain the in-place last-chunk replacement path.
     const revisionChanged = cursorData.fileSize !== parseTiming.sourceVersion;
-    if (
-      cursorData.parserGeneration !== TRANSCRIPT_PARSER_GENERATION ||
-      requiresFullRefetch(parseTiming.sourceChangeKind, revisionChanged)
-    ) {
+    const unsafeChangeKind = await this.unsafeCursorChange(
+      cursorData,
+      parseTiming,
+      source,
+      revisionChanged,
+    );
+    if (unsafeChangeKind !== null) {
       return {
         kind: 'full-refetch-required',
-        sourceChangeKind: parseTiming.sourceChangeKind,
+        sourceChangeKind: unsafeChangeKind,
       };
     }
 
@@ -723,9 +757,8 @@ export class SessionReaderService implements OnModuleDestroy {
     // absolute position and handles the last chunk growing in place.
     const replaceFromChunkId = deltaChunks[0]?.id ?? null;
 
-    // First cursor component is the numeric source revision taken from the same
-    // parse — no extra resolve/stat round-trip, and source-type agnostic.
-    const cursor = encodeCursor(parseTiming.sourceVersion, session.messages.length, chunks.length);
+    // The cursor describes the same parse as the delta: its revision, counts and proof.
+    const cursor = encodeParseCursor(parseTiming, session.messages.length, chunks.length);
     const metrics = this.resolveMetricsContextWindow(sessionId, session.metrics);
 
     return {
@@ -739,6 +772,49 @@ export class SessionReaderService implements OnModuleDestroy {
       totalChunkCount: chunks.length,
       totalMessageCount: session.messages.length,
     };
+  }
+
+  /**
+   * `null` when the parse extends the cursor's snapshot: the current file still starts with the
+   * proven prefix, and the parse read that same file at least up to it. Otherwise the change kind
+   * to report. A parse that does not cover the prefix (an older shared flight) fails closed too.
+   */
+  /** Why the cursor's delta is unsafe on the current source, or null when it is safe. */
+  private async unsafeCursorChange(
+    cursor: DecodedTranscriptCursor,
+    parseTiming: ParseTimingData,
+    source: ParsedSource,
+    revisionChanged: boolean,
+  ): Promise<SourceChangeKind | null> {
+    if (cursor.parserGeneration !== TRANSCRIPT_PARSER_GENERATION) {
+      return parseTiming.sourceChangeKind;
+    }
+    if (source.kind === 'db') {
+      // DB-backed sources can mutate parts without growing the message count, so
+      // their classified updates retain the in-place last-chunk replacement path.
+      return requiresFullRefetch(parseTiming.sourceChangeKind, revisionChanged)
+        ? parseTiming.sourceChangeKind
+        : null;
+    }
+    return revisionChanged ? this.disproveCursorAppend(cursor.proof, source) : null;
+  }
+
+  private async disproveCursorAppend(
+    proof: TranscriptCursorProof | undefined,
+    source: ParsedSource,
+  ): Promise<SourceChangeKind | null> {
+    if (!proof) return 'unknown-full-parse';
+    const outcome = await checkAppendProof(
+      source.filePath,
+      proof.fileIdentity,
+      proof.offset,
+      proof.anchors,
+    );
+    if (outcome !== 'appended') return UNPROVEN_APPEND_KIND[outcome];
+    if (source.fileIdentity !== proof.fileIdentity || source.lastOffset < proof.offset) {
+      return 'unknown-full-parse';
+    }
+    return null;
   }
 
   /**
@@ -792,8 +868,17 @@ export class SessionReaderService implements OnModuleDestroy {
     const { adapter, sourceRef, providerName } = resolution;
 
     const tParse = performance.now();
-    const { session, cacheHit, sourceChangeKind, lastSize, lastMtime, sourceVersion } =
-      await this.sessionCacheService.getOrParseWithMeta(sessionId, sourceRef, adapter);
+    const {
+      session,
+      cacheHit,
+      sourceChangeKind,
+      lastOffset,
+      lastSize,
+      lastMtime,
+      sourceVersion,
+      cursorProof,
+      fileIdentity,
+    } = await this.sessionCacheService.getOrParseWithMeta(sessionId, sourceRef, adapter);
     const parseOrCacheHitMs = performance.now() - tParse;
 
     const cachedChunks = this.sessionCacheService.getChunks(sessionId, sourceVersion);
@@ -823,8 +908,10 @@ export class SessionReaderService implements OnModuleDestroy {
         fileSizeBytes: lastSize,
         fileMtimeMs: lastMtime,
         sourceVersion,
+        cursorProof,
         providerName,
       },
+      source: { kind: sourceRef.kind, filePath: sourceRef.filePath, fileIdentity, lastOffset },
     };
   }
 
@@ -880,6 +967,7 @@ export class SessionReaderService implements OnModuleDestroy {
         sourceVersion: 0,
         providerName: resolution.providerName,
       },
+      source: { kind: 'file', filePath: resolution.transcriptPath, lastOffset: 0 },
     };
   }
 

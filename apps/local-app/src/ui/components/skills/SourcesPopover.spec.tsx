@@ -165,7 +165,7 @@ function selectRemoteProject() {
   });
 }
 
-function makeSource(overrides: Record<string, unknown>) {
+function makeSource(overrides: Record<string, unknown> = {}) {
   return {
     name: 'community-source',
     kind: 'community',
@@ -576,25 +576,31 @@ describe('SourcesPopover', () => {
       const { queryClient } = renderWithQueryClient(<SourcesPopover />);
       await screen.findByText('Skill Sources');
 
-      const hostQueryOptions = () =>
+      const hostQueryOptions = (): unknown =>
         queryClient.getQueryCache().find({
           queryKey: ['skill-sources', REMOTE_PROJECT_ID],
           exact: true,
         })?.options;
+      // TanStack types the cached query options without the observer-level
+      // refetchInterval member; read it through unknown narrowing.
+      const refetchIntervalOf = (options: unknown): unknown =>
+        options !== null && typeof options === 'object' && 'refetchInterval' in options
+          ? options.refetchInterval
+          : undefined;
 
-      expect(hostQueryOptions()?.refetchInterval).toBe(false);
+      expect(refetchIntervalOf(hostQueryOptions())).toBe(false);
 
       fireEvent.click(screen.getByRole('button', { name: 'toggle-popover' }));
 
       await waitFor(() => {
-        expect(hostQueryOptions()?.refetchInterval).toBe(10_000);
+        expect(refetchIntervalOf(hostQueryOptions())).toBe(10_000);
       });
 
       const homeQuery = queryClient.getQueryCache().find({
         queryKey: ['home', 'skill-sources', 'global'],
         exact: true,
       });
-      expect(homeQuery?.options.refetchInterval ?? false).toBe(false);
+      expect(refetchIntervalOf(homeQuery?.options) ?? false).toBe(false);
     });
 
     it('invalidates the remote skill list when the popover sees a host change', async () => {

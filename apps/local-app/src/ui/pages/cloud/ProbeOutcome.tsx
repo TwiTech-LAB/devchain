@@ -168,9 +168,8 @@ export function ProbeOutcome({
           <Button
             type="button"
             onClick={() => onAddVm(result.baseUrl)}
-            disabled={
-              pending || name.trim().length === 0 || apiKey.trim().length === 0 || !fingerprintValid
-            }
+            disabled={name.trim().length === 0 || apiKey.trim().length === 0 || !fingerprintValid}
+            pending={pending}
           >
             Add VM
           </Button>

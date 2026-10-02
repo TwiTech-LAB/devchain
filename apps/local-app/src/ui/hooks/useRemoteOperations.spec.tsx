@@ -325,8 +325,6 @@ it('starts a host install with SSH credentials and estimate inputs', async () =>
       body: {
         address: '192.168.1.20',
         ssh: { user: 'ubuntu', password: 'secret' },
-        userName: 'devchain',
-        homePath: '/home/devchain',
         providerAuth: { codex: 'generate' },
         minDiskGib: 12,
       },
@@ -340,8 +338,6 @@ it('starts a host install with SSH credentials and estimate inputs', async () =>
     body: JSON.stringify({
       address: '192.168.1.20',
       ssh: { user: 'ubuntu', password: 'secret' },
-      userName: 'devchain',
-      homePath: '/home/devchain',
       providerAuth: { codex: 'generate' },
       minDiskGib: 12,
     }),

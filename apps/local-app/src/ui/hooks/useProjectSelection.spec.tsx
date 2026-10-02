@@ -770,7 +770,7 @@ describe('fetchProjects', () => {
 
   it('passes signal to stats fetches for cancellation support', async () => {
     const controller = new AbortController();
-    const mockFetch = jest.fn(async (input: RequestInfo | URL) => {
+    const mockFetch = jest.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       return {
         ok: true,
@@ -779,8 +779,8 @@ describe('fetchProjects', () => {
             ? { items: [{ id: 'p1', name: 'Project 1' }] }
             : { epicsCount: 0, agentsCount: 0 },
       } as Response;
-    }) as unknown as typeof fetch;
-    global.fetch = mockFetch;
+    });
+    global.fetch = mockFetch as unknown as typeof fetch;
 
     const result = await fetchProjects({ signal: controller.signal });
 
@@ -840,8 +840,8 @@ describe('fetchProjects', () => {
         ok: true,
         json: async () => ({ epicsCount: 5, agentsCount: 3 }),
       } as Response;
-    }) as unknown as typeof fetch;
-    global.fetch = mockFetch;
+    });
+    global.fetch = mockFetch as unknown as typeof fetch;
 
     // Cancel before stats fetch completes
     controller.abort();

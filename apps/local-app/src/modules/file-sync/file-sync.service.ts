@@ -154,6 +154,8 @@ export interface WaitForCompleteOptions {
   onProgress?: (progress: SyncProgress) => void;
   pollIntervalMs?: number;
   symmetric?: boolean;
+  /** When it fires, the wait ends with the signal's reason instead of the timeout. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -354,12 +356,13 @@ export class FileSyncService {
     }
   }
 
-  async rescan(folderId: string): Promise<void> {
+  async rescan(folderId: string, signal?: AbortSignal): Promise<void> {
     await this.client().request(
       'POST',
       `/rest/db/scan?folder=${enc(folderId)}`,
       undefined,
       SCAN_TIMEOUT_MS,
+      signal,
     );
   }
 
@@ -370,13 +373,16 @@ export class FileSyncService {
 
   /**
    * Polls both sides until `evaluateCompletion` holds. Failed polls count as
-   * not done; the last failure is reported if the wait times out.
+   * not done; the last failure is reported if the wait times out. An outside
+   * signal ends the wait with its own reason, also when it fires during a poll.
    */
   async waitForComplete(folderId: string, options: WaitForCompleteOptions): Promise<SyncProgress> {
     const deadline = Date.now() + options.timeoutMs;
     let progress: SyncProgress | null = null;
     let lastError: string | null = null;
     for (;;) {
+      options.signal?.throwIfAborted();
+      let done = false;
       try {
         const [sender, receiver] = await Promise.all([options.sender(), options.receiver()]);
         const result = options.symmetric
@@ -385,10 +391,13 @@ export class FileSyncService {
         progress = result.progress;
         lastError = null;
         options.onProgress?.(progress);
-        if (result.done) return progress;
+        done = result.done;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
       }
+      // A cancel during the poll wins over its answer and over the deadline.
+      options.signal?.throwIfAborted();
+      if (done && progress) return progress;
       if (Date.now() >= deadline) throw new FileSyncTimeoutError(folderId, progress, lastError);
       await new Promise((resolve) =>
         setTimeout(resolve, options.pollIntervalMs ?? COMPLETION_POLL_MS),

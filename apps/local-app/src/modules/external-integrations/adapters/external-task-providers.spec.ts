@@ -85,7 +85,7 @@ describe('external task providers', () => {
 
     await expect(
       provider.verifyCredentials({ ...jiraCredentials, siteUrl: 'https://127.0.0.1' }),
-    ).rejects.toMatchObject<JiraProviderError>({
+    ).rejects.toMatchObject<Partial<JiraProviderError>>({
       code: 'jira_request_rejected',
       details: expect.objectContaining({ provider: 'jira', reason: 'request_rejected' }),
     });

@@ -1,7 +1,7 @@
 import { McpProviderRegistrationService } from './mcp-provider-registration.service';
 import type { Provider } from '../../storage/models/domain.models';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
-import { ProviderAdapterFactory, ClaudeAdapter, CodexAdapter } from '../adapters';
+import { ProviderAdapterFactory, ClaudeAdapter, CodexAdapter, CopilotAdapter } from '../adapters';
 import { OpencodeAdapter } from '../adapters/opencode.adapter';
 import { AntigravityAdapter } from '../adapters/antigravity.adapter';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
@@ -43,6 +43,9 @@ describe('McpProviderRegistrationService', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -54,6 +57,9 @@ describe('McpProviderRegistrationService', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -65,6 +71,9 @@ describe('McpProviderRegistrationService', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -79,7 +88,9 @@ describe('McpProviderRegistrationService', () => {
       new ClaudeAdapter(),
       new CodexAdapter(),
       opencodeAdapter,
-      new AntigravityAdapter(),
+      // MCP methods don't use the injected trust/auth services, so stub them.
+      new AntigravityAdapter(undefined as never),
+      new CopilotAdapter(undefined as never, undefined as never),
     );
     fakeExecutor = new FakeProcessExecutor();
     const cliAdapter = new CliMcpRegistrationAdapter(factory, fakeExecutor);

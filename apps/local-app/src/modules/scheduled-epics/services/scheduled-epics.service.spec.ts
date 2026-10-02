@@ -47,6 +47,7 @@ function createMockStorage(): jest.Mocked<ScheduledEpicStorage> {
     getScheduledEpicRun: jest.fn(),
     listScheduledEpicRuns: jest.fn(),
     updateScheduledEpicRun: jest.fn(),
+    claimScheduledEpicRun: jest.fn(),
   };
 }
 
@@ -281,6 +282,10 @@ describe('ScheduledEpicsService', () => {
         cronExpression: '0 9 * * *',
         timezone: 'UTC',
         titleTemplate: 'Standup for today',
+        enabled: true,
+        templateTags: [],
+        allowOverlap: false,
+        missedRunPolicy: 'skip',
       });
 
       expect(runnerRefresh.refreshScheduleWindow).toHaveBeenCalledTimes(1);

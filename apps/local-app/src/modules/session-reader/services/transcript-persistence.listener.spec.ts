@@ -20,6 +20,7 @@ import { CodexSessionReaderAdapter } from '../adapters/codex-session-reader.adap
 import { readFileHead } from '../adapters/utils/file-search.util';
 import type { ClaudeHooksSessionStartedEventPayload } from '../../events/catalog/claude.hooks.session.started';
 import type { SessionStartedEventPayload } from '../../events/catalog/session.started';
+import { createMockProvider } from '../../../../test/factories';
 
 jest.mock('../adapters/utils/file-search.util', () => ({
   readFileHead: jest.fn(),
@@ -35,9 +36,7 @@ jest.mock('node:fs/promises', () => ({
 const codexMetadataParser = new CodexSessionReaderAdapter(undefined as unknown as never);
 
 const mockReadFileHead = readFileHead as jest.MockedFunction<typeof readFileHead>;
-const mockRealpath = fsPromises.realpath as jest.MockedFunction<
-  (filePath: string) => Promise<string>
->;
+const mockRealpath = jest.mocked(fsPromises.realpath);
 const DISCOVERY_BACKOFF_MS = [500, 1_000, 2_000, 4_000, 8_000, 16_000] as const;
 
 async function advanceDiscoveryRetryDelay(delayIndex: number): Promise<void> {
@@ -314,7 +313,7 @@ describe('TranscriptPersistenceListener', () => {
     mockAllAssignedTranscriptPaths = db.mockAllAssignedTranscriptPaths;
     mockAllAssignedDbCandidates = db.mockAllAssignedDbCandidates;
     mockGetDbUniquenessConflict = db.mockGetDbUniquenessConflict;
-    mockRealpath.mockImplementation(async (filePath: string) => filePath);
+    mockRealpath.mockImplementation(async (filePath) => filePath.toString());
 
     mockValidator = {
       validateShape: jest.fn().mockReturnValue('/normalized/path/session.jsonl'),
@@ -977,12 +976,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should match non-Claude transcript by full session UUID content', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
 
       const codexFile = makeFileInfo({
         filePath: '/home/user/.codex/sessions/2026/02/25/rollout-a.jsonl',
@@ -1009,12 +1009,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should capture Codex rollout that appears after a 12s cold start', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const startedAtMs = Date.now();
       const codexFile = makeFileInfo({
         filePath: '/home/user/.codex/sessions/2026/02/25/rollout-cold-start.jsonl',
@@ -1036,12 +1037,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should content-match Codex session IDs beyond 16KB but within the 64KB head', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const codexFile = makeFileInfo({
         filePath: '/home/user/.codex/sessions/2026/02/25/rollout-large-head.jsonl',
         providerName: 'codex',
@@ -1059,12 +1061,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should scan up to the Codex 200-candidate cap', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const files = Array.from({ length: 150 }, (_, index) =>
         makeFileInfo({
           filePath: `/tmp/codex-${index}.jsonl`,
@@ -1088,12 +1091,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should use the 200-candidate fallback when a provider has no candidate cap override', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'custom',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'custom',
+          binPath: null,
+        }),
+      );
       const files = Array.from({ length: 201 }, (_, index) =>
         makeFileInfo({
           filePath: `/tmp/custom-${index}.jsonl`,
@@ -1117,12 +1121,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should log full UUID content matches with matchType content', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
       const codexFile = makeFileInfo({
         filePath: '/home/user/.codex/sessions/2026/02/25/rollout-match.jsonl',
@@ -1152,12 +1157,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should discover Codex transcript by session_meta metadata without session UUID content', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockGetPersistRow.mockReturnValue({
         transcript_path: null,
         provider_session_id: null,
@@ -1191,12 +1197,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should use content to break ambiguous Codex metadata matches', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
       const files = [
@@ -1242,12 +1249,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should fall through to content match when Codex metadata cwd misses project root', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
       const codexFile = makeFileInfo({
@@ -1283,12 +1291,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should disambiguate Codex agents in different project roots by realpath cwd', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
       const files = [
         makeFileInfo({
@@ -1327,12 +1336,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should not metadata-match partially flushed Codex candidates without providerSessionId', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
       mockAdapter.discoverSessionFile.mockResolvedValue([
         makeFileInfo({ filePath: '/tmp/partial.jsonl', providerName: 'codex' }),
@@ -1349,12 +1359,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should exclude Codex candidates already assigned to another session', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
       mockAllAssignedTranscriptPaths.mockReturnValue([
         { id: 'other-session', transcript_path: '/tmp/already-assigned.jsonl' },
@@ -1383,12 +1394,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should use cwd-filtered timestamp fallback to pick the closest Codex rollout', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
       const files = [
@@ -1443,12 +1455,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should match non-Claude transcript by bare short prefix content', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
 
       const codexFile = makeFileInfo({
         filePath: '/home/user/.codex/sessions/2026/02/25/rollout-short.jsonl',
@@ -1472,12 +1485,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should call readFileHead once per scanned file', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const files = [
         makeFileInfo({ filePath: '/tmp/a.jsonl', providerName: 'codex' }),
         makeFileInfo({ filePath: '/tmp/b.jsonl', providerName: 'codex' }),
@@ -1504,12 +1518,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should stop scanning remaining files when first candidate contains full UUID', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const files = [
         makeFileInfo({
           filePath: '/tmp/first.jsonl',
@@ -1531,12 +1546,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should refuse ambiguous short-id matches for non-Claude providers', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
 
       const shortId = sessionStartedPayload.sessionId.slice(0, 8);
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
@@ -1563,12 +1579,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should apply timestamp heuristic only on final retry for non-Claude providers', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
 
       const codexFile = makeFileInfo({
         filePath: '/home/user/.codex/sessions/2026/02/25/rollout-a.jsonl',
@@ -1606,12 +1623,13 @@ describe('TranscriptPersistenceListener', () => {
     // DB-backed suite below. The `name: 'agy'` here only selects a non-claude /
     // non-codex provider so the 'all' file strategy runs.
     it('should not run timestamp heuristic on non-final retries (generic file-backed fake, not production agy)', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'agy',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'agy',
+          binPath: null,
+        }),
+      );
       // A provider WITHOUT extractCandidateMetadata: the metadata pipeline (and
       // its getSessionStartedAt read) must not run, so this fake proves the
       // generic path is untouched by the presence-based gate.
@@ -1637,12 +1655,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should refuse timestamp heuristic when multiple candidates are tied for closest', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockAdapter.discoverSessionFile.mockResolvedValue([
         makeFileInfo({ filePath: '/tmp/a.jsonl', providerName: 'codex' }),
         makeFileInfo({ filePath: '/tmp/b.jsonl', providerName: 'codex' }),
@@ -1669,12 +1688,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should exclude candidates without content timestamps from timestamp heuristic', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockAdapter.discoverSessionFile.mockResolvedValue([
         makeFileInfo({ filePath: '/tmp/no-ts.jsonl', providerName: 'codex' }),
       ]);
@@ -1694,12 +1714,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should skip unreadable files (readFileHead=null) and continue discovery safely', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const files = [
         makeFileInfo({ filePath: '/tmp/unreadable.jsonl', providerName: 'codex' }),
         makeFileInfo({
@@ -1723,12 +1744,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should not persist unrelated transcripts with different content', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockAdapter.discoverSessionFile.mockResolvedValue([
         makeFileInfo({
           filePath: '/tmp/unrelated-recent.jsonl',
@@ -1755,12 +1777,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should treat empty read content as non-match and continue retries', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockAdapter.discoverSessionFile.mockResolvedValue([
         makeFileInfo({ filePath: '/tmp/empty.jsonl', providerName: 'codex' }),
       ]);
@@ -1797,12 +1820,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should use debug logs for non-final misses and warn on final miss', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const debugSpy = jest.spyOn(Logger.prototype, 'debug').mockImplementation();
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
       mockAdapter.discoverSessionFile.mockResolvedValue([]);
@@ -1862,12 +1886,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should retry after a Codex path-only write and backfill id when it becomes available', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const firstFile = makeFileInfo({
         filePath: '/tmp/match.jsonl',
         providerName: 'codex',
@@ -1931,12 +1956,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should warn on final retry when Codex provider id never flushes after path-only writes', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
       const file = makeFileInfo({
         filePath: '/tmp/match.jsonl',
@@ -2000,12 +2026,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should persist on attempt 2 when attempt 1 has no files', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'codex',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'codex',
+          binPath: null,
+        }),
+      );
       mockAdapter.discoverSessionFile.mockResolvedValueOnce([]).mockResolvedValueOnce([
         makeFileInfo({
           filePath: '/tmp/match-2.jsonl',
@@ -2184,12 +2211,13 @@ describe('TranscriptPersistenceListener', () => {
       beforeEach(() => {
         dbAdapter = createMockDbBackedAdapter(providerName);
         mockAdapterFactory.getAdapter.mockReturnValue(dbAdapter as unknown as SessionReaderAdapter);
-        mockStorage.getProvider.mockResolvedValue({
-          id: 'provider-1',
-          name: providerName,
-          binPath: null,
-          mcpConfigured: false,
-        });
+        mockStorage.getProvider.mockResolvedValue(
+          createMockProvider({
+            id: 'provider-1',
+            name: providerName,
+            binPath: null,
+          }),
+        );
         // Fresh session row (no transcript bound yet) + a launch timestamp.
         mockGetTranscriptPath.mockReturnValue({
           transcript_path: null,
@@ -2422,12 +2450,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('drives the metadata pipeline for a fake adapter — cwd filter narrows to the project root', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'fakeprov',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'fakeprov',
+          binPath: null,
+        }),
+      );
       mockGetPersistRow.mockReturnValue({
         transcript_path: null,
         provider_session_id: null,
@@ -2470,12 +2499,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('disambiguates tied fake-metadata matches by session-id content (metadata+content)', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'fakeprov',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'fakeprov',
+          binPath: null,
+        }),
+      );
       mockGetPersistRow.mockReturnValue({
         transcript_path: null,
         provider_session_id: null,
@@ -2519,12 +2549,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('keeps generic content matching for a fake WITHOUT the optional methods', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'nometh',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'nometh',
+          binPath: null,
+        }),
+      );
       mockGetPersistRow.mockReturnValue({
         transcript_path: null,
         provider_session_id: null,
@@ -2553,12 +2584,13 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('keeps the default timestamp extractor for a no-method fake — ranks all in-window matches (no cwd filter)', async () => {
-      mockStorage.getProvider.mockResolvedValue({
-        id: 'provider-1',
-        name: 'nometh',
-        binPath: null,
-        mcpConfigured: false,
-      });
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({
+          id: 'provider-1',
+          name: 'nometh',
+          binPath: null,
+        }),
+      );
       mockGetPersistRow.mockReturnValue({
         transcript_path: null,
         provider_session_id: null,

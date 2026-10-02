@@ -31,6 +31,7 @@ describe('0002_seed_replace_permission_mode_plan', () => {
   function createContext(info?: jest.Mock): SeederContext {
     return {
       storage: {} as StorageService,
+      providerEffortSeeding: {} as SeederContext['providerEffortSeeding'],
       watchersService: {} as WatchersService,
       db,
       logger: {

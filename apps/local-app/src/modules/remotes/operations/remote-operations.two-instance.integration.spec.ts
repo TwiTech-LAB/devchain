@@ -19,7 +19,12 @@ import {
   REALTIME_BROADCASTER,
   type RealtimeBroadcaster,
 } from '../../realtime/ports/realtime-broadcaster.port';
-import type { Remote, RemoteOperation } from '../../storage/models/domain.models';
+import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import type {
+  Remote,
+  RemoteOperation,
+  UpdateRemoteOperation,
+} from '../../storage/models/domain.models';
 import { ProjectFreezeService } from '../host/project-freeze.service';
 import { TerminalActivityService } from '../../terminal/services/terminal-activity.service';
 import {
@@ -31,6 +36,7 @@ import {
 import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
 import { FileSyncService } from '../../file-sync/file-sync.service';
 import type { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
+import { AttachOperation } from './attach.operation';
 import { FileSyncHandoff } from './file-sync-handoff';
 import { RemoteHostClient } from './remote-host.client';
 
@@ -391,7 +397,7 @@ describe('remote operations between two instances', () => {
       // The host app booted before any of these rows existed there: only the
       // post-sync refresh can have moved the running value off 30000.
       const hostActivity = instances.host.app.get(TerminalActivityService);
-      await waitForValue(() => (hostActivity.idleTimeoutMs === 45000 ? true : null), 10_000);
+      await waitForValue(async () => (hostActivity.idleTimeoutMs === 45000 ? true : null), 10_000);
     });
 
     it('cancelling a refused attach leaves the existing binding and freeze alone', async () => {
@@ -562,7 +568,7 @@ describe('remote operations between two instances', () => {
         "UPDATE epics SET title = 'Edited on host after replay', updated_at = ? WHERE id = 'epic-i'",
       )
       .run(hostEditAt);
-    await waitForValue(() => {
+    await waitForValue(async () => {
       const row = home().sqlite.prepare("SELECT title FROM epics WHERE id = 'epic-i'").get() as
         | { title: string }
         | undefined;
@@ -624,6 +630,104 @@ describe('remote operations between two instances', () => {
     expect(hostHasProject('J')).toBe(false);
     expect(home().app.get(ProjectFreezeService).isFrozen('J')).toBe(false);
   });
+
+  // A cancel while the initial sync itself waits must not sit out the 30-minute
+  // sync timeout; only the two-instance layer exercises the runner-to-handoff
+  // abort path over the real cancel endpoint.
+  it('cancels a Connect while its file sync waits, ending it as cancelled with both folders unshared and home writable', async () => {
+    replicaSeeder(home().sqlite).seedProject('L');
+    fileSyncOf(home()).gitProjects.add('L');
+    // Neither folder ever completes on the receiver, so the sync waits for its
+    // 30-minute timeout unless the cancel ends it.
+    fileSyncOf(instances.host).need.set('code:L', { needItems: 1, needBytes: 64 });
+    fileSyncOf(instances.host).need.set('git:L', { needItems: 1, needBytes: 64 });
+
+    const started = await startOperation('attach', { projectId: 'L' });
+    await waitForValue(async () => {
+      const { body: operation } = await api(home(), 'GET', `/api/remotes/operations/${started.id}`);
+      return stepStates(operation).file_sync_initial === 'running' ? operation : null;
+    }, 15_000);
+
+    const cancel = await api(home(), 'POST', `/api/remotes/operations/${started.id}/cancel`);
+
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.state).toBe('cancelled');
+    expect(cancel.body.details).not.toHaveProperty('hostFolderRemovalError');
+    const sync = cancel.body.steps.find((step) => step.id === 'file_sync_initial');
+    expect(sync?.error).toMatchObject({ message: 'The Connect was cancelled.' });
+    for (const instance of [home(), instances.host]) {
+      expect(fileSyncOf(instance).folders.has('code:L')).toBe(false);
+      expect(fileSyncOf(instance).folders.has('git:L')).toBe(false);
+    }
+    expect(bindingRow('L')).toBeUndefined();
+    expect(hostHasProject('L')).toBe(false);
+    expect(home().app.get(ProjectFreezeService).isFrozen('L')).toBe(false);
+    const write = await api(home(), 'POST', '/api/epics', {
+      projectId: 'L',
+      title: 'Still home',
+      statusId: 'L-status',
+    });
+    expect(write.status).toBe(201);
+  }, 30_000);
+
+  // A retry sets the failed sync step back to pending. A cancel that arrives
+  // while the retried step's start is saved must still undo the first attempt.
+  it('undoes the first sync attempt when its retry is cancelled before the step starts again', async () => {
+    replicaSeeder(home().sqlite).seedProject('M');
+    fileSyncOf(home()).gitProjects.add('M');
+    const initial = jest.spyOn(home().app.get(FileSyncHandoff), 'initial');
+    const interrupt = jest.spyOn(home().app.get(AttachOperation), 'interrupt');
+    jest
+      .spyOn(fileSyncOf(home()), 'waitForComplete')
+      .mockRejectedValueOnce(new Error('sync timed out'));
+
+    const started = await startOperation('attach', { projectId: 'M' });
+    const failed = await waitForState(started.id, 'failed');
+    expect(stepStates(failed).file_sync_initial).toBe('failed');
+    for (const instance of [home(), instances.host]) {
+      expect(fileSyncOf(instance).folders.has('code:M')).toBe(true);
+      expect(fileSyncOf(instance).folders.has('git:M')).toBe(true);
+    }
+
+    // Hold the retried step's start write, so the cancel finds no step to interrupt.
+    const storage = home().app.get<{
+      updateRemoteOperation(id: string, data: UpdateRemoteOperation): Promise<RemoteOperation>;
+    }>(STORAGE_SERVICE);
+    const save = storage.updateRemoteOperation.bind(storage);
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let held = false;
+    jest.spyOn(storage, 'updateRemoteOperation').mockImplementation(async (id, data) => {
+      const starting = data.steps?.some(
+        (step) => step.id === 'file_sync_initial' && step.state === 'running',
+      );
+      if (starting && !held) {
+        held = true;
+        await released;
+      }
+      return save(id, data);
+    });
+    const retry = await api(home(), 'POST', `/api/remotes/operations/${started.id}/retry`);
+    expect(retry.status).toBe(202);
+    await waitForValue(async () => (held ? true : null), 10_000);
+
+    const cancelling = api(home(), 'POST', `/api/remotes/operations/${started.id}/cancel`);
+    await waitForValue(async () => (interrupt.mock.calls.length > 0 ? true : null), 10_000);
+    release();
+    const cancel = await cancelling;
+
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.state).toBe('cancelled');
+    expect(cancel.body.details).not.toHaveProperty('hostFolderRemovalError');
+    expect(initial).toHaveBeenCalledTimes(1);
+    for (const instance of [home(), instances.host]) {
+      expect(fileSyncOf(instance).folders.has('code:M')).toBe(false);
+      expect(fileSyncOf(instance).folders.has('git:M')).toBe(false);
+    }
+    expect(bindingRow('M')).toBeUndefined();
+    expect(hostHasProject('M')).toBe(false);
+    expect(home().app.get(ProjectFreezeService).isFrozen('M')).toBe(false);
+  }, 30_000);
 
   it('cancelling a detach after its file flip makes the remote the file writer again', async () => {
     const attach = await startOperation('attach', { projectId: 'K' });

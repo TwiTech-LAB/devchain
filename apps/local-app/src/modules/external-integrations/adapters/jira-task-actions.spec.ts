@@ -337,7 +337,7 @@ describe('Jira task detail and workflow actions', () => {
 
     await expect(
       providerWith(requestJson).myWork!.getTaskDetail!(credentials, context, 'ENG-1'),
-    ).rejects.toMatchObject<JiraProviderError>({
+    ).rejects.toMatchObject<Partial<JiraProviderError>>({
       code: 'jira_timeout',
     });
   });
@@ -388,7 +388,7 @@ describe('Jira task detail and workflow actions', () => {
 
     await expect(
       providerWith(requestJson).myWork!.getTaskDetail!(credentials, context, 'ENG-1'),
-    ).rejects.toMatchObject<JiraProviderError>({
+    ).rejects.toMatchObject<Partial<JiraProviderError>>({
       code: 'jira_invalid_response',
     });
   });
@@ -492,7 +492,7 @@ describe('Jira task detail and workflow actions', () => {
     await provider.myWork!.changeStatus!(credentials, context, 'ENG-1', { status: '31' });
     await expect(
       provider.myWork!.changeStatus!(credentials, context, 'ENG-1', { status: '41' }),
-    ).rejects.toMatchObject<JiraProviderError>({
+    ).rejects.toMatchObject<Partial<JiraProviderError>>({
       code: 'jira_unsupported_transition',
       details: expect.objectContaining({
         reason: 'unsupported_transition',
@@ -512,7 +512,7 @@ describe('Jira task detail and workflow actions', () => {
 
   it('accepts a real Jira transition 204 once through the explicit no-content contract', async () => {
     let transitionWrites = 0;
-    const fetchImpl = jest.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = jest.fn<Promise<Response>, Parameters<typeof fetch>>(async (_url, init) => {
       if (init?.method === 'POST') {
         transitionWrites += 1;
         return new Response(null, { status: 204 });
@@ -521,7 +521,7 @@ describe('Jira task detail and workflow actions', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-    }) as typeof fetch;
+    });
     const provider = new JiraExternalTaskProvider(new SafeVendorHttpClient({ fetchImpl }));
 
     await expect(
@@ -621,7 +621,9 @@ describe('Jira task detail and workflow actions', () => {
   });
 
   it('prevents worklog submission with clear guidance when Jira time tracking is disabled', async () => {
-    const requestJson = jest.fn(async () => ({ timeTrackingEnabled: false }));
+    const requestJson = jest.fn(async (_request: SafeVendorJsonRequest) => ({
+      timeTrackingEnabled: false,
+    }));
 
     await expect(
       providerWith(requestJson).timeEntryMutations!.createTimeEntry!(
@@ -634,7 +636,7 @@ describe('Jira task detail and workflow actions', () => {
           note: null,
         },
       ),
-    ).rejects.toMatchObject<JiraProviderError>({
+    ).rejects.toMatchObject<Partial<JiraProviderError>>({
       code: 'jira_time_tracking_disabled',
       details: expect.objectContaining({
         reason: 'time_tracking_disabled',

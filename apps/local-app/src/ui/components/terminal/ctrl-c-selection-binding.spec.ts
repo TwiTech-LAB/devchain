@@ -102,9 +102,9 @@ describe('createCtrlCSelectionBinding', () => {
   afterEach(() => {
     jest.useRealTimers();
     if (originalExecCommand) Object.defineProperty(document, 'execCommand', originalExecCommand);
-    else delete (document as Document & { execCommand?: unknown }).execCommand;
+    else Reflect.deleteProperty(document, 'execCommand');
     if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
-    else delete (navigator as Navigator & { clipboard?: unknown }).clipboard;
+    else Reflect.deleteProperty(navigator, 'clipboard');
   });
 
   // Pure unit is the cheapest reliable layer for xterm's keyCode contract and localized labels.

@@ -165,7 +165,7 @@ describe('CategoryToggleList', () => {
       catalog,
       isLoading: false,
       upsert: mockUpsert,
-    } as ReturnType<typeof useNotificationPreferences>);
+    } as unknown as ReturnType<typeof useNotificationPreferences>);
   });
 
   it('renders category rows grouped by catalog metadata', () => {
@@ -254,7 +254,7 @@ describe('CategoryToggleList', () => {
       preferences: [],
       isLoading: false,
       upsert: mockUpsert,
-    } as ReturnType<typeof useNotificationPreferences>);
+    } as unknown as ReturnType<typeof useNotificationPreferences>);
 
     renderList();
 

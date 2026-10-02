@@ -345,7 +345,11 @@ describe('useIntegrationConnections', () => {
       }
     });
 
-    expect(caught).toMatchObject<IntegrationConnectionApiError>({
+    expect(caught).toBeInstanceOf(IntegrationConnectionApiError);
+    if (!(caught instanceof IntegrationConnectionApiError)) {
+      throw new Error('expected an IntegrationConnectionApiError');
+    }
+    expect(caught).toMatchObject({
       field: 'token',
       providerReason: 'authentication_failed',
     });
@@ -381,7 +385,11 @@ describe('useIntegrationConnections', () => {
       }
     });
 
-    expect(caught).toMatchObject<IntegrationConnectionApiError>({
+    expect(caught).toBeInstanceOf(IntegrationConnectionApiError);
+    if (!(caught instanceof IntegrationConnectionApiError)) {
+      throw new Error('expected an IntegrationConnectionApiError');
+    }
+    expect(caught).toMatchObject({
       field: 'siteUrl',
       providerReason: 'request_rejected',
     });

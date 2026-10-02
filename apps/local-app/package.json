@@ -20,6 +20,7 @@
     "preview:ui": "vite preview --host 127.0.0.1 --port 5176",
     "lint": "eslint \"{src,test}/**/*.{ts,tsx}\" --max-warnings=0",
     "lint:fix": "eslint \"{src,test}/**/*.{ts,tsx}\" --fix",
+    "typecheck:test": "cross-env NODE_OPTIONS=--max-old-space-size=4096 tsc --noEmit --incremental false -p tsconfig.eslint.json",
     "test": "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=50% --workerIdleMemoryLimit=512MB",
     "test:watch": "cross-env NODE_ENV=test jest --watch --maxWorkers=75%",
     "test:cov": "node scripts/test-queue.mjs --coverage --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=512MB",

@@ -147,11 +147,17 @@ describe('useAgentsPagePresence', () => {
         expect(result.current).toEqual({});
       });
 
-      const query = queryClient.getQueryCache().find({
+      const cachedOptions: unknown = queryClient.getQueryCache().find({
         queryKey: ['agent-presence', 'proj-1'],
         exact: true,
-      });
-      expect(query?.options.refetchInterval).toBe(2000);
+      })?.options;
+      expect(
+        cachedOptions !== null &&
+          typeof cachedOptions === 'object' &&
+          'refetchInterval' in cachedOptions
+          ? cachedOptions.refetchInterval
+          : undefined,
+      ).toBe(2000);
     });
   });
 

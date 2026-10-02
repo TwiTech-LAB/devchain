@@ -36,6 +36,15 @@ function jsonResponse(payload: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
+/** A pending fetch response whose resolver stays callable from any closure. */
+function deferredResponse(): { promise: Promise<Response>; resolve: (response: Response) => void } {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 function seedReads(bufferPayload: unknown = null): void {
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -440,7 +449,7 @@ describe('AssignAgentTimeDialog', () => {
   });
 
   it('holds the shared guard across a delayed 409 refresh so neither write can overlap', async () => {
-    let resolveRefresh: ((response: Response) => void) | null = null;
+    const refreshGate = deferredResponse();
     const target = makeTarget();
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -448,9 +457,7 @@ describe('AssignAgentTimeDialog', () => {
         return jsonResponse({ code: 'conflict' }, 409);
       }
       if (url.startsWith('/api/agent-time-buffers?')) {
-        return new Promise<Response>((resolve) => {
-          resolveRefresh = resolve;
-        });
+        return refreshGate.promise;
       }
       if (url.startsWith('/api/epics?')) {
         return jsonResponse({
@@ -479,7 +486,7 @@ describe('AssignAgentTimeDialog', () => {
       0,
     );
 
-    resolveRefresh?.(
+    refreshGate.resolve(
       jsonResponse({
         capturedAt: '2026-09-01T00:10:00.000Z',
         items: [
@@ -533,14 +540,12 @@ describe('AssignAgentTimeDialog', () => {
 
   it('blocks dismissal while a pending assignment holds the guard and restores it on failure', async () => {
     const onCancel = jest.fn();
-    let resolveAssign: ((response: Response) => void) | null = null;
+    const assignGate = deferredResponse();
     const target = makeTarget();
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/assign')) {
-        return new Promise<Response>((resolve) => {
-          resolveAssign = resolve;
-        });
+        return assignGate.promise;
       }
       if (url.startsWith('/api/epics?')) {
         return jsonResponse({
@@ -563,7 +568,7 @@ describe('AssignAgentTimeDialog', () => {
     await attemptDismiss(onCancel);
     expect(screen.getByRole('button', { name: /Logging/ })).toBeDisabled();
 
-    resolveAssign?.(jsonResponse({ code: 'internal_error' }, 500));
+    assignGate.resolve(jsonResponse({ code: 'internal_error' }, 500));
     await waitFor(() => {
       expect(
         screen.getByText('The assignment could not be completed. Try again.'),
@@ -578,20 +583,16 @@ describe('AssignAgentTimeDialog', () => {
 
   it('blocks dismissal through a pending reset and its 409 refresh until both settle', async () => {
     const onCancel = jest.fn();
-    let resolveReset: ((response: Response) => void) | null = null;
-    let resolveRefresh: ((response: Response) => void) | null = null;
+    const resetGate = deferredResponse();
+    const refreshGate = deferredResponse();
     const target = makeTarget();
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/reset')) {
-        return new Promise<Response>((resolve) => {
-          resolveReset = resolve;
-        });
+        return resetGate.promise;
       }
       if (url.startsWith('/api/agent-time-buffers?')) {
-        return new Promise<Response>((resolve) => {
-          resolveRefresh = resolve;
-        });
+        return refreshGate.promise;
       }
       if (url.startsWith('/api/epics?')) {
         return jsonResponse({
@@ -612,12 +613,12 @@ describe('AssignAgentTimeDialog', () => {
     await attemptDismiss(onCancel);
     expect(screen.getByRole('button', { name: /Resetting/ })).toBeDisabled();
 
-    resolveReset?.(jsonResponse({ code: 'conflict' }, 409));
+    resetGate.resolve(jsonResponse({ code: 'conflict' }, 409));
     // The stale refresh is now the pending owner; dismissal stays blocked.
     await attemptDismiss(onCancel);
     expect(screen.getByRole('button', { name: /Resetting/ })).toBeDisabled();
 
-    resolveRefresh?.(
+    refreshGate.resolve(
       jsonResponse({
         capturedAt: '2026-09-01T00:10:00.000Z',
         items: [

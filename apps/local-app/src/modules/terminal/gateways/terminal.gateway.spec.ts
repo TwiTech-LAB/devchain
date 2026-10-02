@@ -1024,7 +1024,7 @@ describe('TerminalGateway.handleSubscribe', () => {
     expect(session.hasSubscriber('client-1')).toBe(true);
   });
 
-  const findSubscribed = (client: { emit: jest.Mock }) =>
+  const findSubscribed = (client: { emit: unknown }) =>
     (client.emit as jest.Mock).mock.calls
       .filter(([event]) => event === 'message')
       .map(([, envelope]) => envelope)
@@ -3100,7 +3100,9 @@ describe('TerminalGateway sequence-domain recovery isolation (Task 2)', () => {
       await gateway.handleSubscribe(client as unknown as Socket, { sessionId: 'window-sess' });
 
       // A deliberately pending recovery: capture its seed callbacks without completing it.
-      let lateDeliver!: (envelope: ReturnType<typeof createEnvelope>) => TerminalSeedDelivery;
+      let lateDeliver!: (
+        envelope: ReturnType<typeof createEnvelope>,
+      ) => TerminalSeedDeliveryDecision;
       let lateCaptured: ((sequence: number) => void) | undefined;
       let recoveryEpochA = 0;
       (seedService.emitSeedToClient as jest.Mock).mockImplementation(
@@ -3823,7 +3825,11 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
 
     const first = gateway.handleInput(client, payload);
     const second = gateway.handleInput(client, payload);
-    for (let turn = 0; turn < 10 && !terminalIO.sessionExists.mock.calls.length; turn += 1) {
+    for (
+      let turn = 0;
+      turn < 10 && !(terminalIO.sessionExists as jest.Mock).mock.calls.length;
+      turn += 1
+    ) {
       await Promise.resolve();
     }
     expect(terminalIO.sessionExists).toHaveBeenCalledTimes(1);

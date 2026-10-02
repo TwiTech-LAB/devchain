@@ -6,6 +6,7 @@ import {
   serializeRpcTranscriptChunks,
   serializeRpcTranscriptTail,
 } from './transcript-serialization';
+import type { TranscriptTailDeltaResponse, UnifiedChunkedResponse } from './session-reader.service';
 import type { UnifiedMessage } from '../dtos/unified-session.types';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 
@@ -168,13 +169,14 @@ describe('transcript-serialization', () => {
 
     it('projects chunks and delta-tail messages without changing their response envelopes', () => {
       const chunk = makeAIChunk([makeMessage('m1')]);
-      const chunks = serializeRpcTranscriptChunks({
+      const chunksPage: UnifiedChunkedResponse = {
         chunks: [chunk],
         nextCursor: null,
         prevCursor: null,
         totalCount: 1,
-      });
-      const tail = serializeRpcTranscriptTail({
+      };
+      const chunks = serializeRpcTranscriptChunks(chunksPage);
+      const tailResponse: TranscriptTailDeltaResponse = {
         kind: 'delta',
         cursor: 'cursor-2',
         replaceFromChunkId: chunk.id,
@@ -184,7 +186,8 @@ describe('transcript-serialization', () => {
         metrics: {} as never,
         totalChunkCount: 1,
         totalMessageCount: 2,
-      });
+      };
+      const tail = serializeRpcTranscriptTail(tailResponse);
 
       expect((chunks.chunks as Array<{ startTime: string }>)[0].startTime).toBe(
         '2026-01-01T10:00:00.000Z',

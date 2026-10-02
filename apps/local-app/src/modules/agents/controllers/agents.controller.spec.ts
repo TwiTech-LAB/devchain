@@ -85,6 +85,9 @@ describe('AgentsController', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
   };
@@ -257,9 +260,7 @@ describe('AgentsController', () => {
       expect(result.total).toBe(2);
 
       // Verify agent item includes providerConfig
-      const agentItem = result.items.find(
-        (item: { id: string; type: string }) => item.id === 'agent-1',
-      );
+      const agentItem = result.items.find((item) => item.id === 'agent-1');
       expect(agentItem).toMatchObject({
         id: 'agent-1',
         name: 'Test Agent',
@@ -279,9 +280,7 @@ describe('AgentsController', () => {
       });
 
       // Verify guest item has null providerConfig
-      const guestItem = result.items.find(
-        (item: { id: string; type: string }) => item.id === 'guest-1',
-      );
+      const guestItem = result.items.find((item) => item.id === 'guest-1');
       expect(guestItem).toMatchObject({
         id: 'guest-1',
         name: 'GuestBot',

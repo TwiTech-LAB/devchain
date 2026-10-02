@@ -325,7 +325,7 @@ describe('MobileBoardRpcService', () => {
   // the live project on the host instance. Service unit tests prove the
   // not-found answer and that no mirror read or write happens.
   describe('remote-owned projects', () => {
-    const remoteOwned = () => ({
+    const remoteOwned = (): Partial<ProjectWriteAdmissionService> => ({
       listRemoteOwnedProjectIds: () => [OTHER_PROJECT_ID],
       getRemoteOwner: (projectId: string) =>
         projectId === OTHER_PROJECT_ID

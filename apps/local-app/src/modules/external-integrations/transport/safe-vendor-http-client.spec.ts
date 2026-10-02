@@ -10,9 +10,20 @@ function jsonResponse(value: unknown, init: ResponseInit = {}): Response {
   });
 }
 
+/** Awaits a rejection and narrows it; fails the test if the promise resolves or rejects with a foreign error. */
+async function rejectionOf(promise: Promise<unknown>): Promise<SafeVendorHttpError> {
+  try {
+    await promise;
+  } catch (reason) {
+    if (reason instanceof SafeVendorHttpError) return reason;
+    throw new Error(`expected SafeVendorHttpError, got: ${String(reason)}`);
+  }
+  throw new Error('expected the request to reject');
+}
+
 describe('SafeVendorHttpClient', () => {
   it('rejects non-HTTPS, credentialed, IP, and non-allowlisted destinations before fetch', async () => {
-    const fetchImpl = jest.fn<typeof fetch>();
+    const fetchImpl = jest.fn<Promise<Response>, Parameters<typeof fetch>>();
     const client = new SafeVendorHttpClient({ fetchImpl });
 
     for (const url of [
@@ -23,7 +34,7 @@ describe('SafeVendorHttpClient', () => {
     ]) {
       await expect(
         client.requestJson({ url, allowedOrigins: [ALLOWED_ORIGIN] }),
-      ).rejects.toMatchObject<SafeVendorHttpError>({ reason: 'unsafe_url' });
+      ).rejects.toMatchObject<Partial<SafeVendorHttpError>>({ reason: 'unsafe_url' });
     }
 
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -44,7 +55,7 @@ describe('SafeVendorHttpClient', () => {
         url: `${ALLOWED_ORIGIN}/api/v2/user`,
         allowedOrigins: [ALLOWED_ORIGIN],
       }),
-    ).rejects.toMatchObject<SafeVendorHttpError>({ reason: 'redirect_rejected' });
+    ).rejects.toMatchObject<Partial<SafeVendorHttpError>>({ reason: 'redirect_rejected' });
 
     expect(cancel).toHaveBeenCalledTimes(1);
   });
@@ -64,7 +75,9 @@ describe('SafeVendorHttpClient', () => {
       allowedOrigins: [ALLOWED_ORIGIN],
     });
 
-    await expect(promise).rejects.toMatchObject<SafeVendorHttpError>({ reason: 'timeout' });
+    await expect(promise).rejects.toMatchObject<Partial<SafeVendorHttpError>>({
+      reason: 'timeout',
+    });
     await expect(promise).rejects.not.toThrow('contains-sensitive-vendor-detail');
   });
 
@@ -86,7 +99,7 @@ describe('SafeVendorHttpClient', () => {
         url: `${ALLOWED_ORIGIN}/api/v2/user`,
         allowedOrigins: [ALLOWED_ORIGIN],
       }),
-    ).rejects.toMatchObject<SafeVendorHttpError>({ reason: 'response_too_large' });
+    ).rejects.toMatchObject<Partial<SafeVendorHttpError>>({ reason: 'response_too_large' });
   });
 
   it('disposes non-success bodies without exposing them in the error', async () => {
@@ -101,7 +114,7 @@ describe('SafeVendorHttpClient', () => {
       allowedOrigins: [ALLOWED_ORIGIN],
     });
 
-    await expect(promise).rejects.toMatchObject<SafeVendorHttpError>({
+    await expect(promise).rejects.toMatchObject<Partial<SafeVendorHttpError>>({
       reason: 'http_error',
       upstreamStatus: 401,
     });
@@ -123,7 +136,7 @@ describe('SafeVendorHttpClient', () => {
         url: `${ALLOWED_ORIGIN}/api/v2/user`,
         allowedOrigins: [ALLOWED_ORIGIN],
       }),
-    ).rejects.toMatchObject<SafeVendorHttpError>({
+    ).rejects.toMatchObject<Partial<SafeVendorHttpError>>({
       reason: 'http_error',
       upstreamStatus: 429,
       retryAt: '2033-05-18T03:33:20.000Z',
@@ -145,7 +158,7 @@ describe('SafeVendorHttpClient', () => {
         url: `${ALLOWED_ORIGIN}/api/v2/user`,
         allowedOrigins: [ALLOWED_ORIGIN],
       }),
-    ).rejects.toMatchObject<SafeVendorHttpError>({
+    ).rejects.toMatchObject<Partial<SafeVendorHttpError>>({
       reason: 'http_error',
       upstreamStatus: 429,
       retryAt: '2026-08-19T12:00:05.000Z',
@@ -177,7 +190,7 @@ describe('SafeVendorHttpClient', () => {
 
     const first = request();
     const second = request();
-    await expect(request()).rejects.toMatchObject<SafeVendorHttpError>({
+    await expect(request()).rejects.toMatchObject<Partial<SafeVendorHttpError>>({
       reason: 'concurrency_limit',
     });
 
@@ -230,7 +243,7 @@ describe('SafeVendorHttpClient', () => {
         allowedOrigins: [ALLOWED_ORIGIN],
         method: 'POST',
       }),
-    ).rejects.toMatchObject<SafeVendorHttpError>({ reason: 'invalid_response' });
+    ).rejects.toMatchObject<Partial<SafeVendorHttpError>>({ reason: 'invalid_response' });
   });
 
   it.each([
@@ -252,7 +265,7 @@ describe('SafeVendorHttpClient', () => {
       allowedOrigins: [ALLOWED_ORIGIN],
       method: 'POST',
     });
-    await expect(promise).rejects.toMatchObject<SafeVendorHttpError>({
+    await expect(promise).rejects.toMatchObject<Partial<SafeVendorHttpError>>({
       reason: 'invalid_response',
     });
     await expect(promise).rejects.not.toThrow('must-not-leak');
@@ -277,7 +290,7 @@ describe('SafeVendorHttpClient', () => {
         allowedOrigins: [ALLOWED_ORIGIN],
         method: 'POST',
       }),
-    ).rejects.toMatchObject<SafeVendorHttpError>({
+    ).rejects.toMatchObject<Partial<SafeVendorHttpError>>({
       reason: 'http_error',
       upstreamStatus: 429,
       retryAt: '2026-08-19T12:00:05.000Z',
@@ -296,9 +309,12 @@ describe('SafeVendorHttpClient', () => {
       }) as typeof fetch;
       const client = new SafeVendorHttpClient({ fetchImpl, defaultTimeoutMs: 10 });
 
-      const error = await client
-        .requestJson({ url: `${ALLOWED_ORIGIN}/api/v2/task/x`, allowedOrigins: [ALLOWED_ORIGIN] })
-        .catch((reason: unknown) => reason as SafeVendorHttpError);
+      const error = await rejectionOf(
+        client.requestJson({
+          url: `${ALLOWED_ORIGIN}/api/v2/task/x`,
+          allowedOrigins: [ALLOWED_ORIGIN],
+        }),
+      );
       expect(error).toBeInstanceOf(SafeVendorHttpError);
       expect(error.reason).toBe('timeout');
       expect(error.dispatched).toBe(true);
@@ -310,9 +326,12 @@ describe('SafeVendorHttpClient', () => {
           throw new TypeError('fetch failed');
         }) as typeof fetch,
       });
-      const error = await client
-        .requestJson({ url: `${ALLOWED_ORIGIN}/api/v2/task/x`, allowedOrigins: [ALLOWED_ORIGIN] })
-        .catch((reason: unknown) => reason as SafeVendorHttpError);
+      const error = await rejectionOf(
+        client.requestJson({
+          url: `${ALLOWED_ORIGIN}/api/v2/task/x`,
+          allowedOrigins: [ALLOWED_ORIGIN],
+        }),
+      );
       expect(error.reason).toBe('network_error');
       expect(error.dispatched).toBe(true);
     });
@@ -326,25 +345,25 @@ describe('SafeVendorHttpClient', () => {
         fetchImpl: jest.fn(async () => responses[call++]!) as typeof fetch,
       });
 
-      const fiveHundred = await client
-        .requestJson({ url: `${ALLOWED_ORIGIN}/x`, allowedOrigins: [ALLOWED_ORIGIN] })
-        .catch((reason: unknown) => reason as SafeVendorHttpError);
+      const fiveHundred = await rejectionOf(
+        client.requestJson({ url: `${ALLOWED_ORIGIN}/x`, allowedOrigins: [ALLOWED_ORIGIN] }),
+      );
       expect(fiveHundred.reason).toBe('http_error');
       expect(fiveHundred.upstreamStatus).toBe(503);
       expect(fiveHundred.dispatched).toBe(true);
 
-      const fourHundred = await client
-        .requestJson({ url: `${ALLOWED_ORIGIN}/x`, allowedOrigins: [ALLOWED_ORIGIN] })
-        .catch((reason: unknown) => reason as SafeVendorHttpError);
+      const fourHundred = await rejectionOf(
+        client.requestJson({ url: `${ALLOWED_ORIGIN}/x`, allowedOrigins: [ALLOWED_ORIGIN] }),
+      );
       expect(fourHundred.upstreamStatus).toBe(400);
       expect(fourHundred.dispatched).toBe(false);
     });
 
     it('marks pre-dispatch failures (unsafe URL, queue admission) as not dispatched', async () => {
       const client = new SafeVendorHttpClient({ fetchImpl: jest.fn() as unknown as typeof fetch });
-      const unsafe = await client
-        .requestJson({ url: 'https://evil.example.com/x', allowedOrigins: [ALLOWED_ORIGIN] })
-        .catch((reason: unknown) => reason as SafeVendorHttpError);
+      const unsafe = await rejectionOf(
+        client.requestJson({ url: 'https://evil.example.com/x', allowedOrigins: [ALLOWED_ORIGIN] }),
+      );
       expect(unsafe.reason).toBe('unsafe_url');
       expect(unsafe.dispatched).toBe(false);
 
@@ -372,9 +391,12 @@ describe('SafeVendorHttpClient', () => {
         allowedOrigins: [ALLOWED_ORIGIN],
       });
       await Promise.resolve();
-      const rejected = await queuedClient
-        .requestJson({ url: `${ALLOWED_ORIGIN}/three`, allowedOrigins: [ALLOWED_ORIGIN] })
-        .catch((reason: unknown) => reason as SafeVendorHttpError);
+      const rejected = await rejectionOf(
+        queuedClient.requestJson({
+          url: `${ALLOWED_ORIGIN}/three`,
+          allowedOrigins: [ALLOWED_ORIGIN],
+        }),
+      );
       expect(rejected.reason).toBe('concurrency_limit');
       expect(rejected.dispatched).toBe(false);
       deferreds[0]!(jsonResponse({ done: true }));
@@ -400,15 +422,15 @@ describe('SafeVendorHttpClient', () => {
         fetchImpl: jest.fn(async () => responses[call++]!) as typeof fetch,
       });
 
-      const parseFailure = await client
-        .requestJson({ url: `${ALLOWED_ORIGIN}/x`, allowedOrigins: [ALLOWED_ORIGIN] })
-        .catch((reason: unknown) => reason as SafeVendorHttpError);
+      const parseFailure = await rejectionOf(
+        client.requestJson({ url: `${ALLOWED_ORIGIN}/x`, allowedOrigins: [ALLOWED_ORIGIN] }),
+      );
       expect(parseFailure.reason).toBe('invalid_response');
       expect(parseFailure.dispatched).toBe(true);
 
-      const typeFailure = await client
-        .requestJson({ url: `${ALLOWED_ORIGIN}/x`, allowedOrigins: [ALLOWED_ORIGIN] })
-        .catch((reason: unknown) => reason as SafeVendorHttpError);
+      const typeFailure = await rejectionOf(
+        client.requestJson({ url: `${ALLOWED_ORIGIN}/x`, allowedOrigins: [ALLOWED_ORIGIN] }),
+      );
       expect(typeFailure.reason).toBe('invalid_response');
       expect(typeFailure.dispatched).toBe(true);
     });
@@ -434,7 +456,7 @@ describe('SafeVendorHttpClient', () => {
         url: `${ALLOWED_ORIGIN}/two`,
         allowedOrigins: [ALLOWED_ORIGIN],
       });
-      const error = await queued.catch((reason: unknown) => reason as SafeVendorHttpError);
+      const error = await rejectionOf(queued);
       expect(error.reason).toBe('timeout');
       expect(error.dispatched).toBe(false);
       releaseFirst!(jsonResponse({ done: true }));

@@ -33,6 +33,7 @@ describe('ProjectsService', () => {
     listStatuses: jest.Mock;
     getInitialSessionPrompt: jest.Mock;
     getProvider: jest.Mock;
+    updateProvider: jest.Mock;
     createStatus: jest.Mock;
     createPrompt: jest.Mock;
     createAgentProfile: jest.Mock;
@@ -73,6 +74,7 @@ describe('ProjectsService', () => {
     getProjectTemplateMetadata: jest.Mock;
     getProjectPresets: jest.Mock;
     setProjectPresets: jest.Mock;
+    setProjectActivePreset: jest.Mock;
     clearProjectPresets: jest.Mock;
   };
   let watchersService: {
@@ -158,6 +160,7 @@ describe('ProjectsService', () => {
       getProjectTemplateMetadata: jest.fn().mockReturnValue(null),
       getProjectPresets: jest.fn().mockReturnValue([]),
       setProjectPresets: jest.fn().mockResolvedValue(undefined),
+      setProjectActivePreset: jest.fn().mockResolvedValue(undefined),
       clearProjectPresets: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -465,9 +468,9 @@ describe('ProjectsService', () => {
           provider: { name: 'agy' },
           familySlug: 'code reviewer',
           providerConfigs: [
-            { providerName: 'agy' },
-            { providerName: 'codex' },
-            { providerName: 'claude' },
+            { name: 'agy', providerName: 'agy' },
+            { name: 'codex', providerName: 'codex' },
+            { name: 'claude', providerName: 'claude' },
           ],
         },
       ];
@@ -503,7 +506,10 @@ describe('ProjectsService', () => {
           name: 'Coder',
           provider: { name: 'claude' },
           familySlug: 'coder',
-          providerConfigs: [{ providerName: 'claude' }, { providerName: 'codex' }],
+          providerConfigs: [
+            { name: 'claude', providerName: 'claude' },
+            { name: 'codex', providerName: 'codex' },
+          ],
         },
       ];
       const agents = [{ id: coderAgentId, name: 'Coder', profileId: coderProfileId }];
@@ -533,9 +539,9 @@ describe('ProjectsService', () => {
           provider: { name: 'agy' },
           familySlug: 'code reviewer',
           providerConfigs: [
-            { providerName: 'agy' },
-            { providerName: 'codex' },
-            { providerName: 'claude' },
+            { name: 'agy', providerName: 'agy' },
+            { name: 'codex', providerName: 'codex' },
+            { name: 'claude', providerName: 'claude' },
           ],
         },
       ];
@@ -657,9 +663,9 @@ describe('ProjectsService', () => {
 
     beforeEach(() => {
       // Add preset methods to settings mock
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest.fn();
-      (settings as { setProjectPresets: jest.Mock }).setProjectPresets = jest.fn();
-      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+      settings.getProjectPresets = jest.fn();
+      settings.setProjectPresets = jest.fn();
+      settings.setProjectActivePreset = jest.fn();
     });
 
     it('should apply preset and update agent provider configs', async () => {
@@ -672,7 +678,7 @@ describe('ProjectsService', () => {
         ],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      settings.getProjectPresets.mockReturnValue([preset]);
 
       const profileId = 'profile-1';
       const claudeConfigId = 'config-claude';
@@ -761,7 +767,7 @@ describe('ProjectsService', () => {
         ],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      settings.getProjectPresets.mockReturnValue([preset]);
 
       const profileId = 'profile-1';
       const claudeConfigId = 'config-claude';
@@ -848,7 +854,7 @@ describe('ProjectsService', () => {
         agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      settings.getProjectPresets.mockReturnValue([preset]);
 
       const profileId = 'profile-1';
       const claudeConfigId = 'config-claude';
@@ -922,9 +928,7 @@ describe('ProjectsService', () => {
     });
 
     it('should throw NotFoundError when preset not found', async () => {
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([
-        { name: 'other', agentConfigs: [] },
-      ]);
+      settings.getProjectPresets.mockReturnValue([{ name: 'other', agentConfigs: [] }]);
 
       await expect(service.applyPreset(projectId, 'missing')).rejects.toThrow(NotFoundError);
     });
@@ -935,7 +939,7 @@ describe('ProjectsService', () => {
         agentConfigs: [{ agentName: 'MissingAgent', providerConfigName: 'config' }],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      settings.getProjectPresets.mockReturnValue([preset]);
 
       storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
       storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
@@ -952,7 +956,7 @@ describe('ProjectsService', () => {
         agentConfigs: [{ agentName: 'Coder', providerConfigName: 'missing-config' }],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      settings.getProjectPresets.mockReturnValue([preset]);
 
       const profileId = 'profile-1';
       storage.listAgentProfiles.mockResolvedValue({
@@ -1010,7 +1014,7 @@ describe('ProjectsService', () => {
         agentConfigs: [{ agentName: 'coder', providerConfigName: 'config' }],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
+      settings.getProjectPresets.mockReturnValue([preset]);
 
       const profileId = 'profile-1';
       const configId = 'config-1';
@@ -1078,8 +1082,8 @@ describe('ProjectsService', () => {
         ],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
-      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+      settings.getProjectPresets.mockReturnValue([preset]);
+      settings.setProjectActivePreset = jest.fn();
 
       const profileId = 'profile-1';
       const claudeConfigId = 'config-claude';
@@ -1152,8 +1156,8 @@ describe('ProjectsService', () => {
         agentConfigs: [{ agentName: 'MissingAgent', providerConfigName: 'config' }],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
-      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+      settings.getProjectPresets.mockReturnValue([preset]);
+      settings.setProjectActivePreset = jest.fn();
 
       storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
       storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
@@ -1172,8 +1176,8 @@ describe('ProjectsService', () => {
         ],
       };
 
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([preset]);
-      (settings as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
+      settings.getProjectPresets.mockReturnValue([preset]);
+      settings.setProjectActivePreset = jest.fn();
 
       const profileId = 'profile-1';
       const claudeConfigId = 'config-claude';

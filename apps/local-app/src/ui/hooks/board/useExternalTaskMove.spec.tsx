@@ -78,6 +78,9 @@ function detailFixture(allowedStatuses: ExternalTaskStatusOption[]): ExternalTas
     },
     dueAt: null,
     priority: null,
+    subtasks: [],
+    subtasksTruncated: false,
+    taskTotalDurationMs: null,
     webUrl: 'https://acme.atlassian.net/browse/ENG-1',
     location: { scopeKey: 'site', workAreaId: 'board-1', workAreaName: 'Board 1' },
     allowedStatuses,
@@ -112,6 +115,7 @@ function workAreaFixture(remoteId: string, assignedTaskCount: number) {
 function taskFixture(remoteId: string) {
   return {
     remoteId,
+    parentRemoteTaskId: null,
     title: `Task ${remoteId}`,
     status: { remoteId: 'status-open', name: 'Open', category: 'active' as const },
     updatedAt: '2026-08-21T12:00:00.000Z',
@@ -188,6 +192,13 @@ function successfulActionResponse() {
       succeeded: true,
       refresh: ['my_work', 'task_detail'],
     }),
+  };
+}
+
+function failedActionResponse(message: string) {
+  return {
+    ok: false,
+    json: async () => ({ message }),
   };
 }
 
@@ -1030,12 +1041,18 @@ describe('useExternalTaskMove', () => {
     const oldSnapshot = seedLanding();
     const nextSnapshot = snapshotFixture();
     queryClient.setQueryData(nextLandingKey, nextSnapshot);
-    const pendingWrites: Array<
-      ReturnType<typeof deferred<ReturnType<typeof successfulActionResponse>>>
-    > = [];
+    type PendingActionResponse =
+      | ReturnType<typeof successfulActionResponse>
+      | ReturnType<typeof failedActionResponse>;
+    interface PendingWrite {
+      promise: Promise<PendingActionResponse>;
+      resolve: (value: PendingActionResponse) => void;
+      reject: (reason?: unknown) => void;
+    }
+    const pendingWrites: PendingWrite[] = [];
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (init?.method === 'PUT') {
-        const pending = deferred<ReturnType<typeof successfulActionResponse>>();
+        const pending = deferred<PendingActionResponse>();
         pendingWrites.push(pending);
         return pending.promise;
       }
@@ -1067,10 +1084,7 @@ describe('useExternalTaskMove', () => {
     expect(result.current.announcement).toBe(MOVE_PENDING_ANNOUNCEMENT);
 
     await act(async () => {
-      pendingWrites[0]!.resolve({
-        ok: false,
-        json: async () => ({ message: 'Old connection failed' }),
-      });
+      pendingWrites[0]!.resolve(failedActionResponse('Old connection failed'));
       await pendingWrites[0]!.promise;
     });
     await waitFor(() => expect(queryClient.getQueryState(detailKey)?.isInvalidated).toBe(true));

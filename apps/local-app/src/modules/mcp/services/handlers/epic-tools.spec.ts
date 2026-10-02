@@ -12,7 +12,13 @@ import {
   handleDeleteEpic,
 } from './epic-tools';
 import type { EpicToolContext } from './epic-context';
-import type { AgentSessionContext } from '../../dtos/mcp.dto';
+import type {
+  AgentSessionContext,
+  GetEpicByIdResponse,
+  ListAssignedEpicsTasksResponse,
+  ListEpicsResponse,
+  McpResponse,
+} from '../../dtos/mcp.dto';
 import {
   NotFoundError,
   OptimisticLockError,
@@ -25,6 +31,11 @@ import {
   RelationRouteConflictError,
 } from '../../../../common/errors/error-types';
 import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
+
+/** `McpResponse.data` is `unknown` by design; tests state the payload they expect. */
+function dataOf<T>(result: McpResponse): T {
+  return result.data as T;
+}
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -151,12 +162,6 @@ function makeStorageMock() {
         },
       ],
       total: 1,
-      limit: 100,
-      offset: 0,
-    }),
-    listAssignedEpics: jest.fn().mockResolvedValue({
-      items: [],
-      total: 0,
       limit: 100,
       offset: 0,
     }),
@@ -296,7 +301,11 @@ function makeEpicsServiceMock() {
   } as never;
 }
 
-function makeEpicCtx(overrides: Partial<EpicToolContext> = {}): EpicToolContext {
+type EpicTestCtx = EpicToolContext & {
+  epicRelationsService: NonNullable<EpicToolContext['epicRelationsService']>;
+};
+
+function makeEpicCtx(overrides: Partial<EpicToolContext> = {}): EpicTestCtx {
   return {
     storage: makeStorageMock(),
     epicsService: makeEpicsServiceMock(),
@@ -319,7 +328,7 @@ describe('epic-tools handlers', () => {
       const ctx = makeEpicCtx();
       const result = await handleListEpics(ctx, { sessionId: SESSION_ID });
       expect(result.success).toBe(true);
-      expect(result.data.epics).toHaveLength(1);
+      expect(dataOf<ListEpicsResponse>(result).epics).toHaveLength(1);
     });
 
     it('returns description previews instead of descriptions by default', async () => {
@@ -345,7 +354,7 @@ describe('epic-tools handlers', () => {
 
       const result = await handleListEpics(ctx, { sessionId: SESSION_ID });
 
-      const item = result.data.epics[0];
+      const item = dataOf<ListEpicsResponse>(result).epics[0];
       expect(item).not.toHaveProperty('description');
       expect(item.descriptionPreview).toBe(`${'a'.repeat(300)}…`);
       expect(item.descriptionLength).toBe(350);
@@ -378,7 +387,7 @@ describe('epic-tools handlers', () => {
         includeDescription: true,
       });
 
-      const item = result.data.epics[0];
+      const item = dataOf<ListEpicsResponse>(result).epics[0];
       expect(item.description).toBe(description);
       expect(item).not.toHaveProperty('descriptionPreview');
       expect(item).not.toHaveProperty('descriptionLength');
@@ -388,7 +397,7 @@ describe('epic-tools handlers', () => {
   describe('handleListAssignedEpicsTasks', () => {
     it('returns error when no project associated', async () => {
       const agentCtx = makeAgentCtx();
-      (agentCtx as Record<string, unknown>).project = null;
+      (agentCtx as unknown as Record<string, unknown>).project = null;
       const ctx = makeEpicCtx();
       (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({ success: true, data: agentCtx });
 
@@ -427,8 +436,12 @@ describe('epic-tools handlers', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data.epics[0].description).toBe('Full assigned-task description');
-      expect(result.data.epics[0]).not.toHaveProperty('descriptionPreview');
+      expect(dataOf<ListAssignedEpicsTasksResponse>(result).epics[0].description).toBe(
+        'Full assigned-task description',
+      );
+      expect(dataOf<ListAssignedEpicsTasksResponse>(result).epics[0]).not.toHaveProperty(
+        'descriptionPreview',
+      );
     });
   });
 
@@ -643,9 +656,9 @@ describe('epic-tools handlers', () => {
 
       const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
       expect(result.success).toBe(true);
-      expect(result.data.epic.id).toBe(EPIC_ID);
-      expect(result.data.epic.description).toBe('desc');
-      expect(result.data.relations).toMatchObject({
+      expect(dataOf<GetEpicByIdResponse>(result).epic.id).toBe(EPIC_ID);
+      expect(dataOf<GetEpicByIdResponse>(result).epic.description).toBe('desc');
+      expect(dataOf<GetEpicByIdResponse>(result).relations).toMatchObject({
         items: [],
         total: 51,
         limit: 50,
@@ -706,13 +719,13 @@ describe('epic-tools handlers', () => {
       const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
 
       expect(result.success).toBe(true);
-      expect(result.data.parent).toEqual({
+      expect(dataOf<GetEpicByIdResponse>(result).parent).toEqual({
         id: PARENT_ID,
         title: 'Parent Epic',
         status: 'New',
         agentName: AGENT_NAME,
       });
-      expect(result.data.parent).not.toHaveProperty('description');
+      expect(dataOf<GetEpicByIdResponse>(result).parent).not.toHaveProperty('description');
     });
 
     it('includes the parent description with includeParentDescription', async () => {
@@ -757,7 +770,7 @@ describe('epic-tools handlers', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data.parent).toMatchObject({
+      expect(dataOf<GetEpicByIdResponse>(result).parent).toMatchObject({
         id: PARENT_ID,
         description: 'Large phase context',
       });
@@ -1484,7 +1497,7 @@ describe('epic-tools handlers', () => {
   describe('handleDeleteEpic', () => {
     it('returns PROJECT_NOT_FOUND when session has no project', async () => {
       const agentCtx = makeAgentCtx();
-      (agentCtx as Record<string, unknown>).project = null;
+      (agentCtx as unknown as Record<string, unknown>).project = null;
       const ctx = makeEpicCtx();
       (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({ success: true, data: agentCtx });
 

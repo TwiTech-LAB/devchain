@@ -87,7 +87,7 @@ describe('VersionedMutationExecutor', () => {
 
   it('reloads and classifies a zero-row compare-and-swap as a conflict', async () => {
     const loadCurrent = jest
-      .fn<() => TestRow>()
+      .fn<TestRow, []>()
       .mockReturnValueOnce(current)
       .mockReturnValueOnce({ ...current, version: 4 });
 
@@ -102,7 +102,7 @@ describe('VersionedMutationExecutor', () => {
 
   it('propagates not-found classification when the zero-row reload cannot find the row', async () => {
     const loadCurrent = jest
-      .fn<() => TestRow>()
+      .fn<TestRow, []>()
       .mockReturnValueOnce(current)
       .mockImplementationOnce(() => {
         throw new NotFoundError('Record', current.id);

@@ -1,5 +1,5 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import {
@@ -20,6 +20,7 @@ import { buildChunks } from '../builders/chunk-builder';
 import {
   anchorsEqual,
   hashFileAnchors,
+  toFreshnessSnapshot,
   type FileContentAnchors,
   type FileFreshnessSnapshot,
 } from './bounded-anchor-proof';
@@ -28,7 +29,7 @@ import {
   estimateMessageTokens,
   estimateVisibleFromMessages,
 } from '../adapters/utils/estimate-content-tokens';
-import { encodeCursor } from './transcript-cursor';
+import { encodeCursor, type TranscriptCursorProof } from './transcript-cursor';
 import { truncateMessages, truncateChunks } from './transcript-truncation';
 import {
   serializeChunk as serializeChunkToWire,
@@ -37,6 +38,11 @@ import {
 import type { SessionTranscriptDiscoveredEventPayload } from '../../events/catalog/session.transcript.discovered';
 import type { SessionStoppedEventPayload } from '../../events/catalog/session.stopped';
 import type { SessionCrashedEventPayload } from '../../events/catalog/session.crashed';
+import {
+  SESSION_TRANSCRIPT_TURN_SIGNAL,
+  type SessionTranscriptTurnSignal,
+} from '../../terminal/services/session-turn-signals';
+import { hasTranscriptTurns, transcriptTurnState } from './transcript-turn-state';
 
 /** Debounce window for coalescing rapid JSONL appends */
 const DEBOUNCE_MS = 100;
@@ -67,15 +73,6 @@ function requiresCanonicalRefetch(sourceChangeKind: SourceChangeKind): boolean {
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled source change kind: ${String(value)}`);
-}
-
-/** The identity/size/mtime snapshot of a stat, in the form the anchor proof and the lane compare. */
-function toFreshnessSnapshot(stat: fs.Stats): FileFreshnessSnapshot & { fileIdentity: string } {
-  return {
-    size: stat.size,
-    mtimeMs: stat.mtime.getTime(),
-    fileIdentity: `${stat.dev}:${stat.ino}`,
-  };
 }
 
 interface MetricsSnapshot {
@@ -154,6 +151,11 @@ interface WatcherState {
   /** Numeric source revision for the cursor's first component. */
   lastSourceVersion: number;
   /**
+   * Append proof of the last published file generation (see
+   * {@link GetOrParseResult.cursorProof}).
+   */
+  lastCursorProof?: TranscriptCursorProof;
+  /**
    * Metrics-only lane state for file+delta sessions without a cache entry. Present once seeded;
    * kept current on every pass (lane or body) so it survives cache eviction with no reseed.
    */
@@ -185,6 +187,7 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     private readonly cacheService: SessionCacheService,
     private readonly adapterFactory: SessionReaderAdapterFactory,
     private readonly events: EventsService,
+    @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
   onModuleDestroy(): void {
@@ -334,6 +337,9 @@ export class TranscriptWatcherService implements OnModuleDestroy {
           );
           if (!this.isCurrent(state)) return;
           this.applyBodyResultToState(state, adapter, result, stat);
+          this.emitTranscriptTurn(state, result.session.metrics, result.continuationState, false);
+        } else if (state.lane) {
+          this.emitTranscriptTurn(state, state.lane.metrics, state.lane.continuationState, false);
         }
         if (sourceRef && adapter.getFreshnessToken) {
           const token = await adapter.getFreshnessToken(sourceRef);
@@ -697,6 +703,7 @@ export class TranscriptWatcherService implements OnModuleDestroy {
           state.lastSourceVersion = outcome.preParse.sourceVersion;
           state.lastMessageCount = outcome.preParse.messageCount;
           state.lastChunkCount = outcome.preParse.chunkCount;
+          state.lastCursorProof = outcome.preParse.cursorProof;
           state.inLane = false;
         }
         await this.publishBodyResult(state, stat, adapter, outcome.result, isReplacement);
@@ -992,6 +999,9 @@ export class TranscriptWatcherService implements OnModuleDestroy {
 
     this.markStatConsumed(state, stat);
     this.applyLaneToState(state);
+    if (!ending && state.lane) {
+      this.emitTranscriptTurn(state, state.lane.metrics, state.lane.continuationState, true);
+    }
 
     // The final stop pass (ending) refreshes the reported metrics only; it never publishes a live
     // transcript update. A live pass publishes on any merged change.
@@ -1052,6 +1062,26 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     return this.laneOwned(state, true) ? state.lastMetrics : fallback;
   }
 
+  /**
+   * Report the transcript's turn state to the activity state machine after a pass, also when the
+   * pass added no message (a Codex turn completion is a single event line).
+   */
+  private emitTranscriptTurn(
+    state: WatcherState,
+    metrics: UnifiedMetrics,
+    continuationState: unknown,
+    grew: boolean,
+  ): void {
+    if (!this.eventEmitter || !hasTranscriptTurns(state.providerName)) return;
+    const signal: SessionTranscriptTurnSignal = {
+      sessionId: state.sessionId,
+      providerName: state.providerName,
+      turn: transcriptTurnState(state.providerName, metrics, continuationState),
+      grew,
+    };
+    this.eventEmitter.emit(SESSION_TRANSCRIPT_TURN_SIGNAL, signal);
+  }
+
   /** Set the seed-time body-path state (start path; no event). File+delta refresh the lane too. */
   private applyBodyResultToState(
     state: WatcherState,
@@ -1062,6 +1092,7 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     state.lastMessageCount = result.session.metrics.messageCount;
     state.lastChunkCount = buildChunks(result.session.messages).length;
     state.lastSourceVersion = result.sourceVersion;
+    state.lastCursorProof = result.cursorProof;
     state.lastMetrics = this.toMetricsSnapshot(result.session.metrics);
     state.lastSummaryMetrics = result.session.metrics;
     state.inLane = false;
@@ -1080,9 +1111,9 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     isReplacement: boolean,
   ): Promise<void> {
     const { sessionId } = state;
-    const { session, sourceChangeKind, sourceVersion, boundaryFold } = result;
-    const changedCacheHit =
-      sourceChangeKind === 'cache-hit' && sourceVersion !== state.lastSourceVersion;
+    const { session, sourceChangeKind, sourceVersion, boundaryFold, cursorProof } = result;
+    const grew = sourceVersion !== state.lastSourceVersion;
+    const changedCacheHit = sourceChangeKind === 'cache-hit' && grew;
 
     const newMessageCount = session.metrics.messageCount - state.lastMessageCount;
     const isFullRefresh = isReplacement || session.metrics.messageCount < state.lastMessageCount;
@@ -1103,8 +1134,14 @@ export class TranscriptWatcherService implements OnModuleDestroy {
       state.lastSourceVersion,
       state.lastMessageCount,
       state.lastChunkCount,
+      state.lastCursorProof,
     );
-    const cursor = encodeCursor(sourceVersion, session.metrics.messageCount, chunks.length);
+    const cursor = encodeCursor(
+      sourceVersion,
+      session.metrics.messageCount,
+      chunks.length,
+      cursorProof,
+    );
     const replaceFromChunkIndex = isFullRefresh ? 0 : Math.max(0, state.lastChunkCount - 1);
     const sliceFromMessage = isFullRefresh ? 0 : state.lastMessageCount;
     const newChunkIds = chunks.slice(replaceFromChunkIndex).map((c) => c.id);
@@ -1114,7 +1151,9 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     const deltaMessages = truncatedDeltaMessages.map(serializeMessageToWire);
 
     this.markStatConsumed(state, stat);
+    this.emitTranscriptTurn(state, session.metrics, result.continuationState, grew);
     state.lastSourceVersion = sourceVersion;
+    state.lastCursorProof = cursorProof;
     state.lastMessageCount = session.metrics.messageCount;
     state.lastChunkCount = chunks.length;
     state.lastMetrics = this.toMetricsSnapshot(session.metrics);
@@ -1213,12 +1252,19 @@ export class TranscriptWatcherService implements OnModuleDestroy {
 
       const chunks = buildChunks(session.messages);
       const newMessageCount = session.metrics.messageCount - state.lastMessageCount;
+      // DB sources carry no append proof.
       const prevCursor = encodeCursor(
         state.lastSourceVersion,
         state.lastMessageCount,
         state.lastChunkCount,
+        undefined,
       );
-      const cursor = encodeCursor(sourceVersion, session.metrics.messageCount, chunks.length);
+      const cursor = encodeCursor(
+        sourceVersion,
+        session.metrics.messageCount,
+        chunks.length,
+        undefined,
+      );
       const replaceFromChunkIndex = isFullRefresh ? 0 : Math.max(0, state.lastChunkCount - 1);
       const sliceFromMessage = isFullRefresh ? 0 : state.lastMessageCount;
       const newChunkIds = chunks.slice(replaceFromChunkIndex).map((c) => c.id);

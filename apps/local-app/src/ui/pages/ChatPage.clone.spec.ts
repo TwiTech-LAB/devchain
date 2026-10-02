@@ -166,7 +166,7 @@ describe('clone step-2 non-2xx response handling', () => {
     getStatus: number;
     putStatus: number;
     networkError?: boolean;
-  }) {
+  }): Promise<{ id: string; name: string; teamAddFailed?: boolean }> {
     const created = { id: 'new-agent', name: 'Coder (1)' };
 
     try {

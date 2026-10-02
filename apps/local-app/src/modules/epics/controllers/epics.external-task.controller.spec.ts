@@ -1,5 +1,6 @@
 import { EpicsController } from './epics.controller';
 import type { EpicsService } from '../services/epics.service';
+import type { EpicRelationsService } from '../services/epic-relations.service';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { IntegrationAdmissionGuard } from '../../../common/guards/integration-admission.guard';
 
@@ -12,7 +13,10 @@ describe('EpicsController external task routes', () => {
     listExternalTaskSources: jest.fn(),
     listExternalTaskSourcesBatch: jest.fn(),
   };
-  const controller = new EpicsController(service as unknown as EpicsService);
+  const controller = new EpicsController(
+    service as unknown as EpicsService,
+    {} as unknown as EpicRelationsService,
+  );
   const body = {
     projectId: '11111111-1111-4111-8111-111111111111',
     statusId: '22222222-2222-4222-8222-222222222222',

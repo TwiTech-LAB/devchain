@@ -1,4 +1,4 @@
-import { MobileChatRpcService } from './mobile-chat-rpc.service';
+import { MOBILE_TAIL_MAX_DELTA_CHUNKS, MobileChatRpcService } from './mobile-chat-rpc.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
 import type { SessionReaderService } from '../../session-reader/services/session-reader.service';
@@ -574,6 +574,47 @@ describe('MobileChatRpcService transcript RPCs', () => {
       );
     });
 
+    it('projects AI chunks for the phone and leaves user chunks whole', async () => {
+      const userChunk = {
+        id: 'u1',
+        type: 'user',
+        messages: [{ id: 'mu', role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      };
+      const aiChunk = {
+        id: 'a1',
+        type: 'ai',
+        messages: [
+          { id: 'ma', role: 'assistant', content: [{ type: 'text', text: 'long reply' }] },
+        ],
+        semanticSteps: [{ id: 's1', type: 'output', content: { outputText: 'long reply' } }],
+        turns: [],
+      };
+      const { service } = build({
+        activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
+        sessionReader: {
+          getUnifiedTranscriptChunks: jest.fn().mockResolvedValue({
+            chunks: [userChunk, aiChunk],
+            nextCursor: null,
+            prevCursor: null,
+            totalCount: 2,
+          }),
+        },
+      });
+
+      const page = (await service.getTranscriptChunks({
+        sessionId: SESSION_A,
+        projectId: PROJECT_ID,
+      })) as {
+        chunks: Array<{ messages: Array<{ content: unknown[] }>; semanticSteps?: unknown[] }>;
+      };
+
+      expect(page.chunks[0].messages[0].content).toHaveLength(1);
+      expect(page.chunks[1].messages[0].content).toEqual([]);
+      expect(page.chunks[1].semanticSteps).toEqual([
+        { id: 's1', type: 'output', content: { outputText: 'long reply' } },
+      ]);
+    });
+
     it('passes through cursor, limit, and explicit direction', async () => {
       const { service, sessionReader } = build({
         activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
@@ -616,6 +657,70 @@ describe('MobileChatRpcService transcript RPCs', () => {
 
       expect(result).toBeNull();
       expect(sessionReader.getTranscriptTail).toHaveBeenCalledWith(SESSION_A, 'CUR');
+    });
+
+    const deltaSpanning = (chunkCount: number) => ({
+      kind: 'delta' as const,
+      cursor: 'NEXT',
+      replaceFromChunkId: 'chunk-0',
+      replaceFromChunkIndex: 0,
+      deltaChunks: Array.from({ length: chunkCount }, (_, index) => ({ id: `chunk-${index}` })),
+      deltaMessages: [],
+      totalChunkCount: chunkCount,
+      totalMessageCount: chunkCount,
+    });
+
+    it('sends the delta without deltaMessages and with projected AI chunks', async () => {
+      const aiChunk = {
+        id: 'chunk-ai',
+        type: 'ai',
+        startTime: new Date(0),
+        endTime: new Date(0),
+        messages: [{ id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'body' }] }],
+        metrics: {},
+        semanticSteps: [
+          {
+            id: 's1',
+            type: 'tool_result',
+            content: { toolCallId: 't1', toolResultContent: 'big', isError: false },
+          },
+        ],
+        turns: [],
+      };
+      const tail = (await tailFor({
+        ...deltaSpanning(1),
+        deltaChunks: [aiChunk],
+        deltaMessages: [{ id: 'm1' }],
+      })) as unknown as { deltaChunks: Array<typeof aiChunk>; deltaMessages: unknown[] };
+      expect(tail.deltaMessages).toEqual([]);
+      expect(tail.deltaChunks[0].messages[0].content).toEqual([]);
+      expect(tail.deltaChunks[0].semanticSteps[0].content).toEqual({
+        toolCallId: 't1',
+        isError: false,
+      });
+    });
+
+    async function tailFor(answer: unknown) {
+      const { service } = build({
+        activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
+        sessionReader: { getTranscriptTail: jest.fn().mockResolvedValue(answer) },
+      });
+      return service.getTranscriptTail({
+        sessionId: SESSION_A,
+        projectId: PROJECT_ID,
+        since: 'CUR',
+      });
+    }
+
+    it('answers a delta wider than one phone page with the expired-cursor null', async () => {
+      await expect(tailFor(deltaSpanning(MOBILE_TAIL_MAX_DELTA_CHUNKS + 1))).resolves.toBeNull();
+    });
+
+    it('passes a one-page delta and a full refetch through unchanged', async () => {
+      const page = deltaSpanning(MOBILE_TAIL_MAX_DELTA_CHUNKS);
+      await expect(tailFor(page)).resolves.toEqual(page);
+      const refetch = { kind: 'full-refetch-required', sourceChangeKind: 'file-replacement' };
+      await expect(tailFor(refetch)).resolves.toBe(refetch);
     });
   });
 });

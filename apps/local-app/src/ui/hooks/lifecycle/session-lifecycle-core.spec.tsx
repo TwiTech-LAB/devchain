@@ -6,6 +6,7 @@ import {
   restoreConflictTitle,
   runTrackedOperation,
   useLifecyclePendingTracker,
+  type LifecycleAction,
   type LifecyclePendingTracker,
 } from './session-lifecycle-core';
 
@@ -100,7 +101,7 @@ describe('useLifecyclePendingTracker', () => {
 describe('runTrackedOperation', () => {
   function makeTracker(): { tracker: LifecyclePendingTracker; log: string[] } {
     const log: string[] = [];
-    const state: Record<string, string> = {};
+    const state: Record<string, LifecycleAction> = {};
     const tracker: LifecyclePendingTracker = {
       actions: state,
       setAction: (key, action) => {
@@ -112,7 +113,7 @@ describe('runTrackedOperation', () => {
         log.push(`clear:${key}`);
         delete state[key];
       },
-      actionFor: (key) => state[key] as never,
+      actionFor: (key) => state[key],
       recordOf: () => ({}),
       singleKeyOf: () => null,
     };

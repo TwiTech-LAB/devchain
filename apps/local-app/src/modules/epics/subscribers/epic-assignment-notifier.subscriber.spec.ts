@@ -1,5 +1,6 @@
 import { EpicAssignmentNotifierSubscriber } from './epic-assignment-notifier.subscriber';
 import type { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
+import type { EpicUpdatedEventPayload } from '../../events/catalog/epic.updated';
 import type { EventLogService } from '../../events/services/event-log.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
@@ -25,7 +26,7 @@ describe('EpicAssignmentNotifierSubscriber', () => {
   let storageService: StorageService;
   let subscriber: EpicAssignmentNotifierSubscriber;
 
-  const basePayload = {
+  const basePayload: EpicUpdatedEventPayload = {
     epicId: 'epic-1',
     projectId: 'project-1',
     parentId: null,
@@ -40,7 +41,7 @@ describe('EpicAssignmentNotifierSubscriber', () => {
         currentName: 'Helper Agent',
       },
     },
-  } as const;
+  };
 
   beforeEach(() => {
     eventLogService = {

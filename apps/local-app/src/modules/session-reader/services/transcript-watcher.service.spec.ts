@@ -6,6 +6,7 @@ import type { SessionReaderAdapterFactory } from '../adapters/session-reader-ada
 import type { EventsService } from '../../events/services/events.service';
 import type { SessionReaderAdapter } from '../adapters/session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMetrics } from '../dtos/unified-session.types';
+import { decodeCursor, type TranscriptCursorProof } from './transcript-cursor';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -92,7 +93,7 @@ function createMockFsWatcher(): MockFsWatcher {
 
   const watcher = {
     close: jest.fn(),
-    on: jest.fn((event: string, handler: AnyHandler) => {
+    on: jest.fn((event: string, handler: AnyHandler): unknown => {
       const existing = handlers.get(event) || [];
       existing.push(handler);
       handlers.set(event, existing);
@@ -929,6 +930,229 @@ describe('TranscriptWatcherService', () => {
         totalChunkCount: expect.any(Number),
         deltaChunks: expect.any(Array),
         deltaMessages: expect.any(Array),
+      });
+    });
+
+    it("carries each published generation's append proof in cursor and prevCursor", async () => {
+      const proofAt = (offset: number): TranscriptCursorProof => ({
+        fileIdentity: '64768:7',
+        offset,
+        anchors: { headDigest: 'c'.repeat(64), tailDigest: 'd'.repeat(64) },
+      });
+      const parseWithMeta = mockCacheService.getOrParseWithMeta as jest.Mock;
+      const baseParse = parseWithMeta.getMockImplementation()!;
+      parseWithMeta
+        .mockImplementationOnce(async (...args: unknown[]) => ({
+          ...(await baseParse(...args)),
+          cursorProof: proofAt(500),
+        }))
+        .mockImplementation(async (...args: unknown[]) => ({
+          ...(await baseParse(...args)),
+          cursorProof: proofAt(1500),
+        }));
+      mockCacheService.getOrParse
+        .mockResolvedValueOnce(makeSession({ metrics: makeMetrics({ messageCount: 0 }) }))
+        .mockResolvedValue(makeSession({ metrics: makeMetrics({ messageCount: 5 }) }));
+
+      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+      mockedFsPromisesStat.mockResolvedValue(makeStat(1500));
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(200);
+
+      const update = mockEvents.publish.mock.calls.find(
+        ([eventName]) => eventName === 'session.transcript.updated',
+      )?.[1] as { cursor: string; prevCursor: string };
+      expect(decodeCursor(update.prevCursor)?.proof).toEqual(proofAt(500));
+      expect(decodeCursor(update.cursor)?.proof).toEqual(proofAt(1500));
+    });
+
+    describe('turn state signals', () => {
+      let emitter: { emit: jest.Mock };
+      const turnSignals = () =>
+        emitter.emit.mock.calls
+          .filter(([name]) => name === 'session.turn.transcript')
+          .map(([, signal]) => signal);
+
+      beforeEach(() => {
+        service.onModuleDestroy();
+        emitter = { emit: jest.fn() };
+        service = new TranscriptWatcherService(
+          mockCacheService,
+          mockAdapterFactory,
+          mockEvents,
+          emitter as never,
+        );
+      });
+
+      it('reports a Codex turn completion that adds no transcript message', async () => {
+        mockCacheService.getOrParse
+          .mockResolvedValueOnce(makeSession({ metrics: makeMetrics({ isOngoing: true }) }))
+          .mockResolvedValue(makeSession({ metrics: makeMetrics({ isOngoing: false }) }));
+
+        await service.startWatching(SESSION_ID, FILE_PATH, 'codex');
+        mockedFsPromisesStat.mockResolvedValue(makeStat(1100));
+        await jest.advanceTimersByTimeAsync(3000);
+        await jest.advanceTimersByTimeAsync(200);
+
+        expect(turnSignals()).toEqual([
+          {
+            sessionId: SESSION_ID,
+            providerName: 'codex',
+            turn: { open: true, atMs: null },
+            grew: false,
+          },
+          {
+            sessionId: SESSION_ID,
+            providerName: 'codex',
+            turn: { open: false, atMs: null },
+            grew: false,
+          },
+        ]);
+        expect(mockEvents.publish).not.toHaveBeenCalledWith(
+          'session.transcript.updated',
+          expect.anything(),
+        );
+      });
+
+      it('reports the carried Claude turn evidence', async () => {
+        const parseWithMeta = mockCacheService.getOrParseWithMeta as jest.Mock;
+        const baseParse = parseWithMeta.getMockImplementation()!;
+        parseWithMeta.mockImplementation(async (...args: unknown[]) => ({
+          ...(await baseParse(...args)),
+          continuationState: { turn: { open: true, atMs: 1706000000000 } },
+        }));
+
+        await service.startWatching(SESSION_ID, FILE_PATH, 'claude');
+
+        expect(turnSignals()).toEqual([
+          {
+            sessionId: SESSION_ID,
+            providerName: 'claude',
+            turn: { open: true, atMs: 1706000000000 },
+            grew: false,
+          },
+        ]);
+      });
+
+      describe('on the metrics-only lane path (no cache entry)', () => {
+        const ANCHORS = { headDigest: 'head', tailDigest: 'tail' };
+        let adapter: SessionReaderAdapter & { getSummary: jest.Mock };
+
+        function laneSeed(continuationState?: unknown) {
+          return {
+            metrics: makeMetrics({ isOngoing: true }),
+            exactFields: [],
+            laneSeed: {
+              endOffset: 1000,
+              visibleContextTokens: 100,
+              messageCount: 3,
+              firstMessageTimestamp: 1706000000000,
+              lastMessageTimestamp: 1706000000000,
+              continuationState,
+            },
+          };
+        }
+
+        /** A proven append that adds no transcript message (a bare turn-end line). */
+        function appendedSlice(isOngoing: boolean, continuationState?: unknown) {
+          return {
+            entries: [],
+            nextByteOffset: 1500,
+            metrics: makeMetrics({ isOngoing }),
+            continuationState,
+          };
+        }
+
+        beforeEach(() => {
+          // The anchor hash reads the real file; the append proof itself is covered with real
+          // files in bounded-anchor-proof.spec.ts.
+          jest
+            .spyOn(
+              TranscriptWatcherService.prototype as unknown as {
+                tryHashAnchors: () => Promise<typeof ANCHORS>;
+              },
+              'tryHashAnchors',
+            )
+            .mockResolvedValue(ANCHORS);
+          adapter = mockAdapterFactory.getAdapter('claude') as typeof adapter;
+          mockCacheService.getEntry.mockReturnValue(undefined);
+        });
+
+        /** Reads after the seed find no cache entry, so the change takes the lane path. */
+        function routeChangesToTheLane(): void {
+          mockCacheService.refreshIfPresent.mockClear().mockResolvedValue({
+            present: false,
+            lastFullParse: { seq: 1, durationMs: 1 },
+          });
+        }
+
+        it('reports a Claude end_turn appended to the transcript, also when it adds no message', async () => {
+          const claudeEnd = { turn: { open: false, atMs: 1706000009000 } };
+          adapter.getSummary = jest
+            .fn()
+            .mockResolvedValue(laneSeed({ turn: { open: true, atMs: 1706000001000 } }));
+          adapter.parseIncremental = jest.fn().mockResolvedValue(appendedSlice(false, claudeEnd));
+          const fsWatcher = createMockFsWatcher();
+
+          mockedFsPromisesStat.mockResolvedValue(makeStat(1000));
+          await service.startWatching(SESSION_ID, FILE_PATH, 'claude');
+          routeChangesToTheLane();
+          emitter.emit.mockClear();
+          mockEvents.publish.mockClear();
+
+          mockedFsPromisesStat.mockResolvedValue(makeStat(1500));
+          fsWatcher.triggerChange('change');
+          await jest.advanceTimersByTimeAsync(200);
+
+          expect(adapter.parseIncremental).toHaveBeenCalledTimes(1);
+          expect(turnSignals()).toEqual([
+            {
+              sessionId: SESSION_ID,
+              providerName: 'claude',
+              turn: { open: false, atMs: 1706000009000 },
+              grew: true,
+            },
+          ]);
+          expect(mockEvents.publish).not.toHaveBeenCalledWith(
+            'session.transcript.updated',
+            expect.anything(),
+          );
+        });
+
+        it('reports a Codex task_complete appended to the transcript, also when it adds no message', async () => {
+          adapter.getSummary = jest.fn().mockResolvedValue(laneSeed());
+          adapter.parseIncremental = jest.fn().mockResolvedValue(appendedSlice(false));
+          const fsWatcher = createMockFsWatcher();
+
+          mockedFsPromisesStat.mockResolvedValue(makeStat(1000));
+          await service.startWatching(SESSION_ID, FILE_PATH, 'codex');
+          routeChangesToTheLane();
+          emitter.emit.mockClear();
+          mockEvents.publish.mockClear();
+
+          mockedFsPromisesStat.mockResolvedValue(makeStat(1500));
+          fsWatcher.triggerChange('change');
+          await jest.advanceTimersByTimeAsync(200);
+
+          expect(adapter.parseIncremental).toHaveBeenCalledTimes(1);
+          expect(turnSignals()).toEqual([
+            {
+              sessionId: SESSION_ID,
+              providerName: 'codex',
+              turn: { open: false, atMs: null },
+              grew: true,
+            },
+          ]);
+          expect(mockEvents.publish).not.toHaveBeenCalledWith(
+            'session.transcript.updated',
+            expect.anything(),
+          );
+        });
+      });
+
+      it('reports nothing for providers without transcript turns', async () => {
+        await service.startWatching(SESSION_ID, FILE_PATH, 'opencode');
+        expect(turnSignals()).toEqual([]);
       });
     });
 

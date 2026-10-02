@@ -205,9 +205,7 @@ describe('ChatTerminal', () => {
     const socket = createMockSocket();
     currentAppSocket = socket as unknown as Socket;
 
-    const utils = render(
-      <ChatTerminal ref={terminalHandleRef} sessionId="chat-session" socket={currentAppSocket} />,
-    );
+    const utils = render(<ChatTerminal ref={terminalHandleRef} sessionId="chat-session" />);
 
     // jsdom reports offsetParent === null for every element (no layout engine), which the
     // visibility-aware scroll guard would read as "hidden" and suppress all history requests.
@@ -308,7 +306,7 @@ describe('ChatTerminal', () => {
     const socket = createMockSocket();
     currentAppSocket = socket as unknown as Socket;
 
-    const view = render(<ChatTerminal sessionId="settings-session" socket={currentAppSocket} />);
+    const view = render(<ChatTerminal sessionId="settings-session" />);
     expect(Terminal).not.toHaveBeenCalled();
     await waitFor(() => expect(resolveSettings).toBeDefined());
 
@@ -340,7 +338,7 @@ describe('ChatTerminal', () => {
     expect(handler(event)).toBe(true);
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(Terminal).toHaveBeenCalledTimes(1);
-    view.rerender(<ChatTerminal sessionId="settings-session" socket={currentAppSocket} />);
+    view.rerender(<ChatTerminal sessionId="settings-session" />);
     expect(Terminal).toHaveBeenCalledTimes(1);
   });
 
@@ -358,20 +356,16 @@ describe('ChatTerminal', () => {
     expect(socket.disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it('does not acquire or release the main pool for a provided socket', () => {
+  it('releases a seeded home-pool socket exactly once across a mount cycle', () => {
     const baseline = createMockSocket();
-    const provided = createMockSocket();
     currentAppSocket = baseline as unknown as Socket;
     setAppSocket(currentAppSocket);
 
-    const view = render(
-      <ChatTerminal sessionId="provided-path" socket={provided as unknown as Socket} />,
-    );
+    const view = render(<ChatTerminal sessionId="provided-path" />);
     view.unmount();
     releaseAppSocket('home');
 
     expect(baseline.disconnect).toHaveBeenCalledTimes(1);
-    expect(provided.disconnect).not.toHaveBeenCalled();
   });
 
   it('assembles seed chunks and writes content (unified seed_ansi contract)', async () => {
@@ -430,6 +424,12 @@ describe('ChatTerminal', () => {
       expect(socket.emit).toHaveBeenCalledWith('terminal:restore_viewport_modes', {
         sessionId: 'chat-session',
       });
+    });
+
+    // The seed also drops bracketed-paste mode, so the client turns it back on in its own
+    // xterm after the seed content; pastes then reach the provider as bracketed pastes.
+    await waitFor(() => {
+      expect(history.textContent).toBe('ABC\x1b[?2004h');
     });
   });
 
@@ -1461,7 +1461,7 @@ describe('ChatTerminal', () => {
     socket.connected = false;
     currentAppSocket = socket as unknown as Socket;
 
-    render(<ChatTerminal sessionId="chat-session" socket={currentAppSocket} />);
+    render(<ChatTerminal sessionId="chat-session" />);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 20));
     });

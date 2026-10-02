@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/ui/lib/utils';
+import { Spinner } from '@/ui/components/ui/spinner';
 
 const buttonVariants = cva(
   'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
@@ -35,13 +36,30 @@ export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
   asChild?: boolean;
+  /**
+   * Shows the pending spinner and blocks the button. For native buttons only:
+   * under `asChild` it is ignored, because the Slot child must stay the single
+   * child and cannot absorb `disabled`/`aria-busy`.
+   */
+  pending?: boolean;
 }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? Slot : 'button';
+  ({ className, variant, size, asChild = false, pending = false, ...props }, ref) => {
+    const classes = cn(buttonVariants({ variant, size, className }));
+    if (asChild) return <Slot className={classes} ref={ref} {...props} />;
+    const { disabled, children, ...rest } = props;
     return (
-      <Comp className={cn(buttonVariants({ variant, size, className }))} ref={ref} {...props} />
+      <button
+        className={classes}
+        ref={ref}
+        disabled={disabled || pending}
+        aria-busy={pending || undefined}
+        {...rest}
+      >
+        {pending && <Spinner className="mr-2" />}
+        {children}
+      </button>
     );
   },
 );

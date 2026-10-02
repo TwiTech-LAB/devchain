@@ -8,7 +8,6 @@ import { ExternalTaskMoveChoiceDialog } from './ExternalTaskMoveChoiceDialog';
 const choice: ExternalTaskMoveChoice = {
   taskId: 'ENG-1',
   taskTitle: 'Ship moves',
-  source: { taskId: 'ENG-1', columnKey: 'col-open' },
   target: {
     columnKey: 'col-done',
     name: 'Done',

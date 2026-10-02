@@ -6,6 +6,7 @@ import {
   relationRouteBoundaryWarning,
   relationRouteChangeKind,
   relationRouteChangeWarning,
+  type EpicRelationTarget,
 } from '@/ui/lib/epic-relations';
 
 // Layer: pure unit. Warning derivation and the typed 409 contract are
@@ -110,7 +111,13 @@ describe('epic-relations route warnings', () => {
 // detail card and the Board relation preview and must read the same from
 // either side of one stored pair.
 describe('relatedEpicRole', () => {
-  const relatedEpic = { id: 'epic-b' };
+  const relatedEpic: EpicRelationTarget = {
+    id: 'epic-b',
+    shortId: 'epic-b',
+    title: 'Beta',
+    status: { id: 'status-1', label: 'In Progress', color: '#3498db' },
+    project: { id: 'project-1', name: 'Test Project' },
+  };
 
   it('marks the counterpart as Source when it is the stored source', () => {
     expect(relatedEpicRole({ sourceEpicId: 'epic-b', relatedEpic })).toBe('Source');

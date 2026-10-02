@@ -398,6 +398,7 @@ describe('TerminalSeedService', () => {
         maxBytes: 1024 * 1024,
         allowEmpty: true,
         recovery: {
+          sequenceEpoch: 'epoch-1',
           recoveryEpoch: 3,
           getCurrentSequence: () => 5,
         },
@@ -495,6 +496,7 @@ describe('TerminalSeedService', () => {
         maxBytes: 1024 * 1024,
         allowEmpty: true,
         recovery: {
+          sequenceEpoch: 'epoch-1',
           recoveryEpoch: 7,
           getCurrentSequence: () => currentSequence,
           onCapturedSequence: captured,
@@ -506,7 +508,11 @@ describe('TerminalSeedService', () => {
       expect(envelopes.every((envelope) => envelope.payload.recoveryEpoch === 7)).toBe(true);
       expect(envelopes.every((envelope) => envelope.payload.capturedSequence === 9)).toBe(true);
       expect(captured).toHaveBeenCalledWith(9);
-      expect(watermark).toEqual({ recoveryEpoch: 7, capturedSequence: 9 });
+      expect(watermark).toEqual({
+        sequenceEpoch: 'epoch-1',
+        recoveryEpoch: 7,
+        capturedSequence: 9,
+      });
     });
 
     it('should skip seed when tmux capture returns empty (graceful handling)', async () => {

@@ -33,6 +33,7 @@ describe('0004_seed_disable_microsoft_source_default', () => {
   function createContext(info?: jest.Mock): SeederContext {
     return {
       storage: {} as StorageService,
+      providerEffortSeeding: {} as SeederContext['providerEffortSeeding'],
       watchersService: {} as WatchersService,
       db,
       logger: {

@@ -91,6 +91,9 @@ function comment(id: string, minutesOffset: number): ExternalTaskComment {
     author: { remoteId: `author-${id}`, displayName: `Author ${id}` },
     body: `Body ${id}`,
     bodyTruncated: false,
+    rich: null,
+    lookupToken: null,
+    owned: false,
     createdAt: new Date(
       Date.parse('2026-08-20T12:00:00.000Z') + minutesOffset * 60_000,
     ).toISOString(),

@@ -12,8 +12,15 @@ import {
   type ProjectStorage,
   type RemoteStorage,
 } from '../../storage/interfaces/storage.interface';
-import type { DockerPathCapacity, DockerScanResult } from '../host/host-docker.dto';
-import { DockerImportInventoryStore } from '../operations/docker-import-inventory.store';
+import type {
+  DockerHostOptions,
+  DockerPathCapacity,
+  DockerScanResult,
+} from '../host/host-docker.dto';
+import {
+  DockerImportInventoryStore,
+  vmImageCandidates,
+} from '../operations/docker-import-inventory.store';
 import { RemoteHostClient, type HostRuntime } from '../operations/remote-host.client';
 import { DockerPlanRequestSchema, isVolumeMount, type DockerPlan } from './docker-plan.dto';
 import {
@@ -32,7 +39,11 @@ import {
   blocksMode,
   dockerReconnect,
 } from './docker-plan-policy';
-import { DockerPlanSourceService, DockerAvailabilityError } from './docker-plan-source.service';
+import {
+  DockerPlanSourceService,
+  DockerAvailabilityError,
+  reusable,
+} from './docker-plan-source.service';
 
 /**
  * A VM scan of any number of paths, 64 per request (the route's limit): later
@@ -54,8 +65,18 @@ export async function pagedDockerScan(
   return result;
 }
 
+/** The copy speeds the estimate measured: 16 MB to the VM, and the home image export. */
+interface DockerCopySpeeds {
+  at: number;
+  probeSeconds: number;
+  exportRate: number | null;
+}
+
 @Injectable()
 export class DockerPlanService {
+  /** Per VM; a choice in the dialog cannot change them. */
+  private readonly speeds = new Map<string, DockerCopySpeeds>();
+
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage & RemoteStorage,
     private readonly source: DockerPlanSourceService,
@@ -70,12 +91,14 @@ export class DockerPlanService {
   /**
    * Connect calls this again before stopping anything. No cached plan or client paths are trusted.
    * `estimate: false` skips the copy-time probe for a caller that does not show the estimate.
+   * `reuse` lets the dialog reuse measurements of the last two minutes that its choices
+   * cannot change: the disk usage, folder sizes and copy speeds. Connect never passes it.
    */
   async plan(
     projectId: string,
     input: unknown,
     signal?: AbortSignal,
-    { estimate = true }: { estimate?: boolean } = {},
+    { estimate = true, reuse = false }: { estimate?: boolean; reuse?: boolean } = {},
   ): Promise<DockerPlan> {
     const request = DockerPlanRequestSchema.parse(input);
     const [project] = await Promise.all([
@@ -153,7 +176,7 @@ export class DockerPlanService {
     const options = { signal: scanSignal, apiVersion: plan.apiVersion };
     let scanned;
     try {
-      scanned = await this.source.scan(client, project.rootPath, scanSignal);
+      scanned = await this.source.scan(client, project.rootPath, scanSignal, { reuse });
     } catch (error) {
       if (error instanceof DockerEngineError && error.code === 'unsupported')
         throw new AppError(error.message, 'DOCKER_UNSUPPORTED_SETTING', 422);
@@ -206,6 +229,18 @@ export class DockerPlanService {
           ? keptWriterStops(item, plan.items)
           : writerStops(item, containerIds, project.rootPath)
       ).filter((id) => !movingContainers.has(id));
+    // The dialog shows each item's data size, so it counts with the fit check's own
+    // rule: a bind of the whole project root counts nothing, a nested bind once.
+    for (const item of plan.items) {
+      const data = uniqueCopiedMounts(
+        [{ ...item, selectedMode: 'container-and-data', dataAction: undefined }],
+        project.rootPath,
+      );
+      item.dataSize = {
+        bytes: data.reduce((total, mount) => total + mount.size.bytes, 0),
+        unknown: data.some((mount) => mount.size.unknown),
+      };
+    }
     const mounts = uniqueCopiedMounts(plan.items, project.rootPath);
     const bindPaths = mounts
       .filter(
@@ -217,6 +252,8 @@ export class DockerPlanService {
     const imageIds = [
       ...new Set(plan.items.filter(movesToVm).flatMap((i) => i.images.map((image) => image.id))),
     ];
+    const inventory = this.inventory.get(projectId, request.remoteId);
+    const candidates = new Map(imageIds.map((id) => [id, vmImageCandidates(inventory, id)]));
     let present: { ids: string[] };
     try {
       for (let offset = 0; offset < bindPaths.length; offset += 64)
@@ -229,14 +266,22 @@ export class DockerPlanService {
             )
           ).paths,
         );
-      present = await this.remote.dockerImagesPresent(request.remoteId, imageIds, options);
+      present = await this.remote.dockerImagesPresent(
+        request.remoteId,
+        [...new Set([...candidates.values()].flat())],
+        options,
+      );
     } catch (error) {
       if (signal?.aborted) throw error;
       return unavailable(plan, 'remote', 'remote-docker-routes', VM_ROUTES_MESSAGE);
     }
+    // planDockerFit compares home IDs, so present VM IDs translate back before it.
+    const presentHomeIds = imageIds.filter((id) =>
+      candidates.get(id)!.some((candidate) => present.ids.includes(candidate)),
+    );
     const fit = planDockerFit(
       plan.items,
-      present.ids,
+      presentHomeIds,
       {
         dockerRoot: runtime.docker.capacity?.dockerRoot ?? null,
         imageStore: runtime.docker.capacity?.imageStore ?? null,
@@ -280,12 +325,14 @@ export class DockerPlanService {
     if (fit.bytes === 0) plan.estimate = estimateDockerPlan(0, 0, null);
     else {
       try {
-        const start = performance.now();
-        await this.remote.dockerProbe(request.remoteId, probeBody(), options);
-        const probeSeconds = (performance.now() - start) / 1000;
-        const image = fit.images[0];
-        const exportRate = image ? await this.source.exportRate(client, image, scanSignal) : null;
-        plan.estimate = estimateDockerPlan(fit.bytes, probeSeconds, exportRate);
+        const speeds = await this.copySpeeds(
+          request.remoteId,
+          client,
+          fit.images[0],
+          options,
+          reuse,
+        );
+        plan.estimate = estimateDockerPlan(fit.bytes, speeds.probeSeconds, speeds.exportRate);
       } catch {
         if (signal?.aborted) signal.throwIfAborted();
         plan.warnings.push({
@@ -295,6 +342,25 @@ export class DockerPlanService {
       }
     }
     return plan;
+  }
+
+  private async copySpeeds(
+    remoteId: string,
+    client: DockerEngineClient,
+    image: string | undefined,
+    options: DockerHostOptions & { signal: AbortSignal },
+    reuse: boolean,
+  ): Promise<DockerCopySpeeds> {
+    const recent = this.speeds.get(remoteId);
+    if (reuse && recent && reusable(recent.at) && (recent.exportRate !== null || !image))
+      return recent;
+    const start = performance.now();
+    await this.remote.dockerProbe(remoteId, probeBody(), options);
+    const probeSeconds = (performance.now() - start) / 1000;
+    const exportRate = image ? await this.source.exportRate(client, image, options.signal) : null;
+    const measured = { at: Date.now(), probeSeconds, exportRate };
+    this.speeds.set(remoteId, measured);
+    return measured;
   }
 }
 

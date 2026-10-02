@@ -1,4 +1,6 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { broadcastRegistry } from '../../events/catalog/broadcast-registry';
+import { projectBroadcast } from '../../events/catalog/project-broadcast';
 import {
   TunnelEventForwarderService,
   TUNNEL_FORWARDED_EVENTS,
@@ -171,6 +173,44 @@ describe('TunnelEventForwarderService', () => {
     expect(frame.payload).toMatchObject({ alg: 'XC20P' });
     expect(frame.payload.__plain).not.toHaveProperty('transcriptPath');
     expect(frame.payload.__plain).toMatchObject({ sessionId: 's1', newMessageCount: 2 });
+  });
+
+  it('sends session.transcript.updated as a hint: no deltaChunks and no deltaMessages on the tunnel, both still on socket.io', async () => {
+    channelMode = 'encrypted';
+    const payload = {
+      kind: 'delta',
+      sessionId: 's1',
+      newMessageCount: 2,
+      metrics: { totalTokens: 1 },
+      cursor: 'c2',
+      prevCursor: 'c1',
+      replaceFromChunkIndex: 0,
+      newChunkIds: ['chunk-1'],
+      totalChunkCount: 3,
+      deltaChunks: [{ id: 'chunk-1' }],
+      deltaMessages: [{ role: 'assistant' }],
+    };
+    emitter.emit('session.transcript.updated', payload);
+    await flush();
+
+    const sent = tunnelClient.sendPush.mock.calls[0][0].payload.__plain;
+    expect(sent).not.toHaveProperty('deltaChunks');
+    expect(sent).not.toHaveProperty('deltaMessages');
+    expect(sent).toMatchObject({
+      kind: 'delta',
+      cursor: 'c2',
+      prevCursor: 'c1',
+      replaceFromChunkIndex: 0,
+      newChunkIds: ['chunk-1'],
+      totalChunkCount: 3,
+    });
+
+    // The socket.io (web) projection of the same event is unchanged.
+    const [entry] = broadcastRegistry['session.transcript.updated'] ?? [];
+    expect(projectBroadcast(entry, payload).payload).toMatchObject({
+      deltaChunks: [{ id: 'chunk-1' }],
+      deltaMessages: [{ role: 'assistant' }],
+    });
   });
 
   it('forwards AskUserQuestion pending to session/{id} SEALED when the lane is encrypted', async () => {

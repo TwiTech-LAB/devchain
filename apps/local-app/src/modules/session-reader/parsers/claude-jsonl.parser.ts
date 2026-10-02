@@ -13,6 +13,7 @@ import type {
 } from '../dtos/unified-session.types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import type { TailDescriptor } from '../adapters/session-reader-adapter.interface';
+import { classifyClaudeTurnEntry, type ClaudeTurnEvidence } from './claude-turn-evidence';
 import { estimateMessageTokens } from '../adapters/utils/estimate-content-tokens';
 import { isToolResultOnlyMessage } from '../adapters/utils/tool-result-fold';
 import { lastCompleteLineEnd, noLines } from './bounded-line-read';
@@ -110,6 +111,8 @@ export interface ClaudeParseResult {
   firstMessageTimestamp?: number;
   lastMessageTimestamp?: number;
   visibleContextTokensMerge: number;
+  /** Latest main-thread turn evidence, including the baseline; null when there is none. */
+  turn: ClaudeTurnEvidence | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +128,8 @@ export interface ClaudeParseOptions {
   pricingService?: PricingServiceInterface;
   /** Metrics-only scan: preserve coalescing state without retaining the full message array. */
   retainMessages?: boolean;
+  /** Turn evidence of the bytes before `byteOffset`, from the previous parse. */
+  turnBaseline?: ClaudeTurnEvidence | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +188,7 @@ export async function parseClaudeJsonl(
 
   // Ongoing detection: track last assistant stop_reason
   let lastAssistantStopReason: string | null = null;
+  let turn: ClaudeTurnEvidence | null = options?.turnBaseline ?? null;
 
   // Tool-result folding: the last assistant message pushed (per stream), so a standalone
   // user(tool_result) entry folds onto it instead of being counted as its own message.
@@ -287,6 +293,9 @@ export async function parseClaudeJsonl(
       // Build unified message
       const unified = buildUnifiedMessage(entry, ts, includeToolCalls);
       if (!unified) continue;
+
+      const turnOpen = classifyClaudeTurnEntry(unified);
+      if (turnOpen !== null) turn = { open: turnOpen, atMs: ts.getTime() };
 
       if (!entry.isSidechain) {
         const contentTokens = estimateMessageTokens(unified.content);
@@ -414,6 +423,7 @@ export async function parseClaudeJsonl(
         lastAssistantMessageStopReason = msg.stop_reason ?? null;
         // Keep the persisted signal in sync with the merged turn (read at the cache boundary).
         lastAssistantMessage.stopReason = lastAssistantMessageStopReason;
+        lastAssistantMessage.lastEntryAtMs = ts.getTime();
         continue;
       }
 
@@ -484,8 +494,10 @@ export async function parseClaudeJsonl(
   const durationMs =
     firstTimestamp && lastTimestamp ? lastTimestamp.getTime() - firstTimestamp.getTime() : 0;
 
-  // Ongoing detection
-  const isOngoing = lastAssistantStopReason === null || lastAssistantStopReason === 'tool_use';
+  // Ongoing detection: the turn evidence when there is any.
+  const isOngoing = turn
+    ? turn.open
+    : lastAssistantStopReason === null || lastAssistantStopReason === 'tool_use';
 
   // Context window from pricing
   const contextWindowTokens = pricing ? pricing.getContextWindowSize(primaryModel) : 200_000;
@@ -540,6 +552,7 @@ export async function parseClaudeJsonl(
     firstMessageTimestamp: firstMessageTimestamp?.getTime(),
     lastMessageTimestamp: lastMessage?.timestamp.getTime(),
     visibleContextTokensMerge,
+    turn,
   };
 }
 

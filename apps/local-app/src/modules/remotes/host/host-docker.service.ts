@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { resolve, sep, dirname, isAbsolute, normalize } from 'node:path';
+import { basename, join, resolve, sep, dirname, isAbsolute, normalize } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { AppError } from '../../../common/errors/error-types';
@@ -16,7 +16,11 @@ import {
   selectDockerApiVersion,
   DockerVersion,
 } from '../../core/controllers/docker-engine.client';
-import { readDockerArchive, writeDockerArchive } from '../../core/controllers/docker-archive';
+import {
+  dockerArchiveLayout,
+  readDockerArchive,
+  writeDockerArchive,
+} from '../../core/controllers/docker-archive';
 import { dockerFilesystem } from '../../core/controllers/docker-runtime';
 import { projectDockerCreate, DockerSettings } from '../../core/controllers/docker-settings';
 import {
@@ -33,6 +37,7 @@ import {
   DockerScanResult,
   DockerArchiveWriteResult,
   DockerBindPrepare,
+  DockerImageLoadResult,
 } from './host-docker.dto';
 
 type Labels = Record<string, string>;
@@ -84,8 +89,10 @@ export class HostDockerService {
     for (const path of paths) {
       signal?.throwIfAborted();
       try {
-        await stat(path);
-        existence.push({ path, exists: true });
+        const stats = await stat(path);
+        existence.push(
+          stats.isFile() ? { path, exists: true, file: true } : { path, exists: true },
+        );
       } catch (error) {
         existence.push(
           (error as NodeJS.ErrnoException).code === 'ENOENT'
@@ -205,17 +212,22 @@ export class HostDockerService {
     return { ids: present };
   }
 
-  async loadImage(body: Readable, signal?: AbortSignal, apiVersion?: string): Promise<void> {
+  async loadImage(
+    body: Readable,
+    signal?: AbortSignal,
+    apiVersion?: string,
+  ): Promise<DockerImageLoadResult> {
     const client = await this.engine(signal, apiVersion);
     const response = await client.stream('POST', '/images/load?quiet=1', {
       body,
       headers: { 'Content-Type': 'application/x-tar' },
       signal,
     });
+    const references: string[] = [];
     let line = '';
     const consume = (value: string) => {
       if (!value.trim()) return;
-      let message: { error?: unknown; errorDetail?: unknown };
+      let message: { error?: unknown; errorDetail?: unknown; stream?: unknown };
       try {
         message = JSON.parse(value);
       } catch {
@@ -223,6 +235,15 @@ export class HostDockerService {
       }
       if (message.error || message.errorDetail)
         throw new DockerEngineError('engine-error', 'Docker image load failed');
+      if (typeof message.stream !== 'string') return;
+      // Both image stores print these lines, also with quiet=1: the text after the
+      // prefix is a tag, or the ID the engine gave an untagged image — the only way
+      // to learn an ID that differs from the archive's on a containerd-store engine.
+      for (const prefix of ['Loaded image: ', 'Loaded image ID: ']) {
+        if (!message.stream.startsWith(prefix)) continue;
+        const reference = message.stream.slice(prefix.length).replace(/\n$/, '');
+        if (reference) references.push(reference);
+      }
     };
     try {
       for await (const chunk of response) {
@@ -242,6 +263,20 @@ export class HostDockerService {
     } finally {
       response.destroy();
     }
+    const images: DockerImageLoadResult['images'] = [];
+    const seen = new Set<string>();
+    for (const reference of references) {
+      const inspect = await optionalDockerJson<{
+        Id: string;
+        RootFS?: { Layers?: string[] };
+      }>(client, `/images/${encodeURIComponent(reference)}/json`, signal);
+      // A reference the engine no longer resolves is skipped; the caller decides
+      // what an empty list means.
+      if (!inspect?.Id || seen.has(inspect.Id)) continue;
+      seen.add(inspect.Id);
+      images.push({ id: inspect.Id, layers: inspect.RootFS?.Layers ?? [] });
+    }
+    return { images };
   }
 
   async saveImage(id: string, signal?: AbortSignal, apiVersion?: string): Promise<Readable> {
@@ -398,12 +433,8 @@ export class HostDockerService {
   ): Promise<DockerArchiveWriteResult> {
     const client = await this.engine(signal, apiVersion);
     const source = await this.archiveSource(client, input, signal);
-    const helper = await this.archives.create(
-      client,
-      input.image,
-      [{ Type: input.mountType, Source: source, Target: '/data' }],
-      signal,
-    );
+    const layout = dockerArchiveLayout(input.mountType, source);
+    const helper = await this.archives.create(client, input.image, [layout.mount], signal);
     const hash = createHash('sha256');
     let bytes = 0;
     const toEngine = new PassThrough();
@@ -428,10 +459,12 @@ export class HostDockerService {
     try {
       await Promise.all([
         received,
-        writeDockerArchive(client, helper.id, toEngine, signal).catch((error: unknown) => {
-          body.destroy();
-          throw error;
-        }),
+        writeDockerArchive(client, helper.id, toEngine, signal, layout.writePath).catch(
+          (error: unknown) => {
+            body.destroy();
+            throw error;
+          },
+        ),
       ]);
     } catch (error) {
       toEngine.destroy();
@@ -448,6 +481,8 @@ export class HostDockerService {
    * subtree first, so a reconnect leaves no VM-only files; the caller chooses
    * only subtrees it owns, and the home folder itself is never replaced.
    * Restored data keeps numeric owners, so emptying runs as root in the clear helper.
+   * A single `file` gets only its folder: the restore writes the file and replaces
+   * whatever is at its path.
    */
   async prepareBinds(
     input: DockerBindPrepare,
@@ -456,7 +491,7 @@ export class HostDockerService {
   ): Promise<void> {
     const home = homedir();
     const canonicalHome = await realpath(home);
-    for (const { path, replace, image } of input.paths) {
+    for (const { path, replace, image, file } of input.paths) {
       signal?.throwIfAborted();
       // The home folder itself is never a bind destination.
       if (path === home || !inside(path, home))
@@ -467,6 +502,10 @@ export class HostDockerService {
         throw new AppError('Bind paths must be under the VM home', 'DOCKER_BIND_OUTSIDE_HOME', 403);
       if (existing === path && (await lstat(path)).isSymbolicLink())
         throw new AppError('Bind paths must not be links', 'DOCKER_BIND_OUTSIDE_HOME', 403);
+      if (file) {
+        await mkdir(dirname(path), { recursive: true });
+        continue;
+      }
       if (replace && existing === path) {
         if (!(await lstat(resolved)).isDirectory()) await rm(path, { force: true });
         // A folder this user cannot list (a service's 0700 data folder) is not empty.
@@ -563,15 +602,16 @@ export class HostDockerService {
   ): Promise<Readable> {
     const client = await this.engine(signal, apiVersion);
     const source = await this.archiveSource(client, input, signal);
+    const layout = dockerArchiveLayout(input.mountType, source);
     const helper = await this.archives.create(
       client,
       input.image,
-      [{ Type: input.mountType, Source: source, Target: '/data', ReadOnly: true }],
+      [{ ...layout.mount, ReadOnly: true }],
       signal,
     );
     let archive: Readable;
     try {
-      archive = await readDockerArchive(client, helper.id, signal);
+      archive = await readDockerArchive(client, helper.id, signal, layout.readPath);
     } catch (error) {
       await this.archives.cleanup(client, helper);
       throw error;
@@ -660,12 +700,15 @@ export class HostDockerService {
       return volume.Name;
     }
     try {
-      const [home, source] = await Promise.all([
+      // A restored file need not exist yet; its folder must.
+      const file = input.mountType === 'file';
+      const requested = resolve(input.source);
+      const [home, resolved] = await Promise.all([
         realpath(homedir()),
-        realpath(resolve(input.source)),
+        realpath(file ? dirname(requested) : requested),
       ]);
-      if (!inside(source, home)) throw new Error();
-      return source;
+      if (!inside(resolved, home)) throw new Error();
+      return file ? join(resolved, basename(requested)) : resolved;
     } catch {
       throw new AppError(
         'Bind archive paths must exist under the VM home',

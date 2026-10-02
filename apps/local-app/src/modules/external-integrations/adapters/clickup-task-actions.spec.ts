@@ -301,7 +301,7 @@ describe('ClickUp task detail and remote actions', () => {
 
     await expect(
       provider.myWork!.getTaskDetail!(credentials, context, 'task-1'),
-    ).rejects.toMatchObject<ClickUpProviderError>({
+    ).rejects.toMatchObject<Partial<ClickUpProviderError>>({
       code: 'clickup_invalid_response',
     });
     expect(requestJson).toHaveBeenCalledTimes(1);

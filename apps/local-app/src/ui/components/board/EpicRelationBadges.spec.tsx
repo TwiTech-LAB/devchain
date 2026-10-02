@@ -27,7 +27,10 @@ jest.mock('@/ui/hooks/useFetchFactory', () => ({
   useFetchFactory: () => fetchMock,
 }));
 
-const mockProjectSelection = {
+const mockProjectSelection: {
+  selectedWorkspace: { id: string; name: string } | undefined;
+  activateProject: jest.Mock;
+} = {
   selectedWorkspace: { id: 'workspace-1', name: 'Workspace One' },
   activateProject: jest.fn(),
 };
@@ -1139,7 +1142,7 @@ describe('EpicRelationBadges remove relation', () => {
   }
 
   function confirmRemoveButton(): HTMLElement {
-    return screen.getByRole('button', { name: 'Remove', exact: true });
+    return screen.getByRole('button', { name: /^Remove$/ });
   }
 
   // Renders the badges inside a minimal Epic-card shell whose click and drag

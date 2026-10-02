@@ -146,6 +146,7 @@ describe('context-window resolution lifecycle', () => {
     expect(freshLaunch.env).toEqual({
       PRESERVED_CONFIG_ENV: 'yes',
       DISABLE_AUTOUPDATER: '1',
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',
       DEVCHAIN_STATUSLINE_LOCATOR: freshSettings.runtimeEnv.DEVCHAIN_STATUSLINE_LOCATOR,
     });
     expect(freshLaunch.commandArgs).toEqual(
@@ -401,6 +402,7 @@ function createRuntimeHarness(sqlite: Database.Database, transcriptPath: string)
     { publish: jest.fn() } as never,
     {} as never,
     capture,
+    { emit: jest.fn() } as never,
   );
   return {
     capture,

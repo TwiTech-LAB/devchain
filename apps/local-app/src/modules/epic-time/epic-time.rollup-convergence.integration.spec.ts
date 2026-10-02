@@ -41,6 +41,7 @@ describe('related-time rollup convergence', () => {
       name: 'Convergence',
       description: null,
       rootPath: '/tmp/convergence',
+      isTemplate: false,
     });
   });
 
@@ -367,7 +368,7 @@ describe('related-time rollup convergence', () => {
     // queue; the human retry runs after them and must receive the fresh facts
     // instead of displacing the new route with stale ones.
     const agent = await seedAgent('Racer');
-    const agentContext = { actor: { type: 'agent', id: agent.id } };
+    const agentContext = { actor: { type: 'agent' as const, id: agent.id } };
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -491,6 +492,8 @@ describe('related-time rollup convergence', () => {
       profileId: profile.id,
       providerId: provider.id,
       name: `config-${name}`,
+      options: null,
+      env: null,
     });
     return storage.createAgent({
       projectId: project.id,

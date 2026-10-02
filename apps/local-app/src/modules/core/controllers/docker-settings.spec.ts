@@ -148,7 +148,8 @@ it('refuses volume dependencies that cannot be recreated by identity', () => {
 
 it.each(INSPECT_ONLY_FIELDS)('strips inspect-only %s', (field) => {
   const original = inspect();
-  original[field] = field === 'NetworkSettings' ? { Networks: {} } : 'runtime-value';
+  if (field === 'NetworkSettings') original.NetworkSettings = { Networks: {} };
+  else original[field] = 'runtime-value';
   expect(Object.keys(projectDockerCreate(original))).not.toContain(field);
 });
 
@@ -199,7 +200,7 @@ it('allows default runtime and namespaces but refuses temporary containers', () 
   ).not.toThrow();
   expect(() => projectDockerCreate(inspect({ AutoRemove: true }))).toThrow('temporary container');
 });
-it.each(['Config', 'HostConfig', 'root'])(
+it.each(['Config', 'HostConfig', 'root'] as const)(
   'refuses unknown active fields in %s without values',
   (where) => {
     const original = inspect();

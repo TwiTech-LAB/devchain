@@ -10,7 +10,7 @@ function recordExecStatements(sqlite: Database.Database, statements: string[]): 
           return target.exec(sql);
         };
       }
-      return (target as Record<string | symbol, unknown>)[prop];
+      return (target as unknown as Record<string | symbol, unknown>)[prop];
     },
   }) as Database.Database;
 }

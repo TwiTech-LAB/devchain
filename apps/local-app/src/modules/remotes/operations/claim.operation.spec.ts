@@ -1,5 +1,6 @@
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import { ClaimOperation } from './claim.operation';
+import type { RemoteOperationStepRun } from './remote-operation.types';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,9 +41,11 @@ describe('ClaimOperation ssh_keys', () => {
     expect(claim.steps.indexOf(step)).toBe(
       claim.steps.findIndex((definition) => definition.id === 'verify_providers') + 1,
     );
-    const run = { operation: { remoteId: 'vm' }, details: { sshPublicKeys: [key] } } as Parameters<
-      typeof step.run
-    >[0];
+    const run: RemoteOperationStepRun = {
+      operation: { remoteId: 'vm' } as RemoteOperation,
+      details: { sshPublicKeys: [key] },
+      progress: async () => undefined,
+    };
     expect(step.skip?.(run.details)).toBe(false);
     await step.run(run);
     expect(applySshKeys).toHaveBeenCalledWith('vm', [key]);
@@ -63,9 +66,11 @@ describe('ClaimOperation ssh_keys', () => {
       await merge.apply(keys);
       throw new Error('Reply lost');
     });
-    const run = { operation: { remoteId: 'vm' }, details: { sshPublicKeys: [key] } } as Parameters<
-      typeof step.run
-    >[0];
+    const run: RemoteOperationStepRun = {
+      operation: { remoteId: 'vm' } as RemoteOperation,
+      details: { sshPublicKeys: [key] },
+      progress: async () => undefined,
+    };
     await expect(step.run(run)).rejects.toThrow('Reply lost');
     expect(
       claim.retryFrom({

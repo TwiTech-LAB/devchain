@@ -3,9 +3,9 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { AgentContextBar } from './AgentContextBar';
 
 // Polyfill DOMRect for floating-ui (Radix Tooltip positioning)
-interface GlobalWithDOMRect extends Global {
+type GlobalWithDOMRect = typeof globalThis & {
   DOMRect?: typeof DOMRect;
-}
+};
 
 if (!(global as GlobalWithDOMRect).DOMRect) {
   (global as GlobalWithDOMRect).DOMRect = class DOMRect {

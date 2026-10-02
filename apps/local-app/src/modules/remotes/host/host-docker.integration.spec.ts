@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { DockerEngineClient } from '../../core/controllers/docker-engine.client';
+import { FakeDockerEngine } from '../../../common/test/fake-docker-engine.server';
 import { RemoteHostClient } from '../operations/remote-host.client';
 import { HostDockerController } from './host-docker.controller';
 import { HostDockerService } from './host-docker.service';
@@ -42,6 +43,10 @@ let createBody: Record<string, unknown>;
 let handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 let failLoad = false;
 let clearExit = 0;
+/** `stream` messages the fake engine answers an image load with. */
+let loadMessages: string[];
+/** Inspect answers for specific image references; anything else gets the default. */
+let imageInspects: Map<string, { Id: string; RootFS?: { Layers: string[] } }>;
 const clearHelpers = new Map<string, { source: string; started: boolean }>();
 let earlyArchiveAnswer = false;
 
@@ -69,11 +74,18 @@ async function fakeEngine(req: IncomingMessage, res: ServerResponse) {
   if (path === '/images/load') {
     received = 0;
     for await (const chunk of req) received += chunk.length;
-    return reply(res, failLoad ? { error: 'Env PRIVATE=fake-sensitive' } : { stream: 'Loaded' });
+    if (failLoad) return reply(res, { error: 'Env PRIVATE=fake-sensitive' });
+    if (!loadMessages.length) return reply(res, { stream: 'Loaded' });
+    return void res.end(
+      loadMessages.map((message) => JSON.stringify({ stream: message })).join('\n') + '\n',
+    );
   }
   if (path.endsWith('/get')) return void res.end('saved-image');
-  if (path.startsWith('/images/'))
+  if (path.startsWith('/images/')) {
+    const inspect = imageInspects.get(path.slice('/images/'.length).replace(/\/json$/, ''));
+    if (inspect) return reply(res, inspect);
     return path.includes('missing') ? reply(res, {}, 404) : reply(res, { Id: 'image' });
+  }
   if (path === '/volumes' && req.method === 'GET')
     return reply(res, {
       Volumes: [...volumes].map(([Name, Labels]) => ({ Name, Driver: 'local', Labels })),
@@ -134,7 +146,7 @@ async function fakeEngine(req: IncomingMessage, res: ServerResponse) {
         Destination: mount.Target,
       };
     });
-    if (body.Cmd?.[0] === 'devchain-archive-helper') {
+    if (Array.isArray(body.Cmd) && body.Cmd[0] === 'devchain-archive-helper') {
       volumes.set(`owned-${id}`, {});
       mounts.push({ Type: 'volume', Name: `owned-${id}`, Destination: '/image-volume' });
     }
@@ -210,7 +222,7 @@ beforeEach(async () => {
   clearHelpers.clear();
   root = await mkdtemp(join(tmpdir(), 'host-docker-'));
   homeFixture = await mkdtemp(join(homedir(), '.host-docker-test-'));
-  volumes = new Map([
+  volumes = new Map<string, Labels>([
     ['imported', { [OWNER]: PROJECT, [COMPOSE]: 'app' }],
     ['unlabelled', {}],
   ]);
@@ -219,6 +231,8 @@ beforeEach(async () => {
   calls = [];
   received = 0;
   failLoad = false;
+  loadMessages = [];
+  imageInspects = new Map();
   handler = fakeEngine;
   server = createServer((req, res) => {
     void handler(req, res).catch(() => {
@@ -510,6 +524,51 @@ it('clears only a non-empty replaced folder, needs its image, and fails cleanly 
   expect(containers.size).toBe(0);
 });
 
+it('prepares only the folder of a single file and moves the file through that folder', async () => {
+  const folder = join(homeFixture, 'project', 'dev-https');
+  const file = join(folder, 'Caddy file');
+  // A folder an earlier version made of the file is left to the restore to replace.
+  await mkdir(file, { recursive: true });
+  await client.dockerPrepareBinds('remote', {
+    projectId: PROJECT,
+    paths: [
+      { path: file, replace: true, image: 'image', file: true },
+      { path: join(homeFixture, 'new', 'app.conf'), replace: false, file: true },
+    ],
+  });
+  expect(clearHelpers.size).toBe(0);
+  expect(existsSync(join(homeFixture, 'new'))).toBe(true);
+  expect(existsSync(join(homeFixture, 'new', 'app.conf'))).toBe(false);
+
+  const input = { projectId: PROJECT, image: 'image', mountType: 'file' as const, source: file };
+  calls = [];
+  await client.dockerWriteArchive('remote', input, Readable.from('tar'));
+  expect(createBody.HostConfig).toMatchObject({
+    Mounts: [{ Type: 'bind', Source: folder, Target: '/data' }],
+  });
+  expect(calls).toContainEqual(
+    expect.stringMatching(/^PUT \S*\/containers\/[^/]+\/archive\?copyUIDGID=true&path=\/data$/),
+  );
+
+  calls = [];
+  const { archive } = await client.dockerReadArchive('remote', input);
+  for await (const chunk of archive) void chunk;
+  expect(createBody.HostConfig).toMatchObject({
+    Mounts: [{ Type: 'bind', Source: folder, Target: '/data', ReadOnly: true }],
+  });
+  expect(calls).toContainEqual(
+    expect.stringMatching(/^GET \S*\/containers\/[^/]+\/archive\?path=\/data\/Caddy%20file$/),
+  );
+  // The folder must exist; the file itself need not.
+  await expect(
+    client.dockerWriteArchive(
+      'remote',
+      { ...input, source: join(homeFixture, 'absent', 'app.conf') },
+      Readable.from('tar'),
+    ),
+  ).rejects.toMatchObject({ status: 403 });
+});
+
 it('stops only running project containers, and stops a holder before deleting it', async () => {
   containers.set('mine', { Id: 'mine', Config: { Labels: { [OWNER]: PROJECT } }, Mounts: [] });
   containers.set('theirs', { Id: 'theirs', Config: { Labels: { [OWNER]: OTHER } }, Mounts: [] });
@@ -554,6 +613,142 @@ it('cleans image-load errors inside HTTP 200 streams without echoing Env', async
     expect((error as { status: number }).status).toBe(502);
     expect(JSON.stringify(error).includes('fake-sensitive')).toBe(false);
     expect(String(error).includes('PRIVATE')).toBe(false);
+  }
+});
+
+it('answers 200 with the ID and layers of each loaded image, tagged or untagged', async () => {
+  imageInspects.set('repo/img:v1', {
+    Id: 'sha256:tagged',
+    RootFS: { Layers: ['sha256:a', 'sha256:b'] },
+  });
+  imageInspects.set('sha256:plain', { Id: 'sha256:plain', RootFS: { Layers: [] } });
+  loadMessages = ['Loaded image: repo/img:v1\n', 'Loaded image ID: sha256:plain\n'];
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/host/docker/images/load',
+    headers: { 'content-type': 'application/x-tar' },
+    payload: 'tar',
+  });
+  expect(response.statusCode).toBe(200);
+  expect(JSON.parse(response.body)).toEqual({
+    images: [
+      { id: 'sha256:tagged', layers: ['sha256:a', 'sha256:b'] },
+      { id: 'sha256:plain', layers: [] },
+    ],
+  });
+  await expect(client.dockerLoadImage('remote', Readable.from('tar'))).resolves.toEqual({
+    images: [
+      { id: 'sha256:tagged', layers: ['sha256:a', 'sha256:b'] },
+      { id: 'sha256:plain', layers: [] },
+    ],
+  });
+});
+
+it('reports a loaded image once and skips references the engine no longer has', async () => {
+  imageInspects.set('repo/img:v1', { Id: 'sha256:same', RootFS: { Layers: ['sha256:a'] } });
+  imageInspects.set('repo/img:v2', { Id: 'sha256:same', RootFS: { Layers: ['sha256:a'] } });
+  loadMessages = [
+    'Loaded image: repo/img:v1\n',
+    'Loaded image: repo/img:v2\n',
+    'Loaded image ID: sha256:missing\n',
+  ];
+  await expect(client.dockerLoadImage('remote', Readable.from('tar'))).resolves.toEqual({
+    images: [{ id: 'sha256:same', layers: ['sha256:a'] }],
+  });
+});
+
+it('rejects a load answer that does not match the result schema', async () => {
+  imageInspects.set('sha256:broken', {
+    Id: 'sha256:broken',
+    RootFS: { Layers: 42 as unknown as string[] },
+  });
+  loadMessages = ['Loaded image ID: sha256:broken\n'];
+  await expect(client.dockerLoadImage('remote', Readable.from('tar'))).rejects.toMatchObject({
+    message: 'Docker host request failed',
+    details: { hostCode: 'invalid-response' },
+  });
+});
+
+/** Saves an image through the currently mocked engine socket and returns its archive text. */
+async function savedArchive(name: string): Promise<string> {
+  const saver = await DockerEngineClient.connect();
+  const stream = await saver.stream('GET', `/images/get?names=${encodeURIComponent(name)}`);
+  let archive = '';
+  for await (const chunk of stream) archive += chunk.toString('utf8');
+  return archive;
+}
+
+it('keeps the archive ID and layers through a classic-store save and load', async () => {
+  const source = new FakeDockerEngine('classic-source');
+  const target = new FakeDockerEngine('classic-target');
+  await source.listen(join(root, 'source.sock'));
+  await target.listen(join(root, 'target.sock'));
+  const connect = jest.spyOn(DockerEngineClient, 'connect');
+  source.images.set('sha256:cfg', {
+    architecture: 'amd64',
+    tags: ['app:1'],
+    size: 4,
+    layers: ['sha256:l1', 'sha256:l2'],
+  });
+  try {
+    connect.mockImplementation(async () => new DockerEngineClient(join(root, 'source.sock')));
+    const archive = await savedArchive('app:1');
+    connect.mockImplementation(async () => new DockerEngineClient(join(root, 'target.sock')));
+    await expect(client.dockerLoadImage('remote', Readable.from(archive))).resolves.toEqual({
+      images: [{ id: 'sha256:cfg', layers: ['sha256:l1', 'sha256:l2'] }],
+    });
+    expect(target.images.get('sha256:cfg')).toMatchObject({ tags: ['app:1'] });
+  } finally {
+    await source.close();
+    await target.close();
+  }
+});
+
+it('answers the derived image ID a containerd-store engine assigned on load', async () => {
+  const source = new FakeDockerEngine('containerd-source');
+  const target = new FakeDockerEngine('containerd-target', { imageStore: 'containerd' });
+  await source.listen(join(root, 'source.sock'));
+  await target.listen(join(root, 'target.sock'));
+  const connect = jest.spyOn(DockerEngineClient, 'connect');
+  source.images.set('sha256:cfg', {
+    architecture: 'amd64',
+    tags: [],
+    size: 4,
+    layers: ['sha256:l1'],
+  });
+  try {
+    connect.mockImplementation(async () => new DockerEngineClient(join(root, 'source.sock')));
+    const archive = await savedArchive('sha256:cfg');
+    connect.mockImplementation(async () => new DockerEngineClient(join(root, 'target.sock')));
+    const loaded = await client.dockerLoadImage('remote', Readable.from(archive));
+    const derived = 'sha256:' + createHash('sha256').update('manifest:sha256:cfg').digest('hex');
+    expect(derived).not.toBe('sha256:cfg');
+    expect(loaded).toEqual({ images: [{ id: derived, layers: ['sha256:l1'] }] });
+    expect(target.images.has(derived)).toBe(true);
+    expect(target.images.has('sha256:cfg')).toBe(false);
+  } finally {
+    await source.close();
+    await target.close();
+  }
+});
+
+it('refuses a container create whose image the engine never registered', async () => {
+  const engine = new FakeDockerEngine('strict-target');
+  await engine.listen(join(root, 'strict.sock'));
+  jest
+    .spyOn(DockerEngineClient, 'connect')
+    .mockImplementation(async () => new DockerEngineClient(join(root, 'strict.sock')));
+  try {
+    engine.images.set('sha256:known', { architecture: 'amd64', tags: [], size: 1 });
+    await expect(
+      client.dockerCreateContainer('remote', {
+        projectId: PROJECT,
+        name: 'unknown-image',
+        config: { Image: 'sha256:unknown' },
+      }),
+    ).rejects.toMatchObject({ status: 404 });
+  } finally {
+    await engine.close();
   }
 });
 
@@ -652,7 +847,7 @@ it('projects scan metadata and checks outside-home existence with a pinned API',
   });
   expect(result.architecture).toBe('x86_64');
   expect(result.paths).toEqual([
-    { path: '/etc/hosts', exists: true },
+    { path: '/etc/hosts', exists: true, file: true },
     { path: join(root, 'missing'), exists: false },
   ]);
   expect(result.containers).toEqual([

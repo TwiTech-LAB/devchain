@@ -1,38 +1,41 @@
 import { ImportContext } from '../import-context';
 import { buildExportProfiles, profilesCodec } from './profiles.codec';
-import type { CodecApplyRuntime } from '../template-section-codec';
+import type { CodecApplyRuntime, ParsedTemplatePayload } from '../template-section-codec';
+import type { StorageService } from '../../../storage/interfaces/storage.interface';
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
 }));
 
-type AnyRec = Record<string, unknown>;
+type StorageMock = jest.Mocked<
+  Pick<StorageService, 'createAgentProfile' | 'createProfileProviderConfig'>
+>;
 
 function makeRt(createProfileProviderConfig: jest.Mock): CodecApplyRuntime {
+  const storage: StorageMock = {
+    createAgentProfile: jest
+      .fn()
+      .mockImplementation((data: { name: string }) => Promise.resolve({ id: `new-${data.name}` })),
+    createProfileProviderConfig,
+  };
+  // storage is a deliberately partial stub of the injected service.
   return {
     projectId: 'proj-1',
-    storage: {
-      createAgentProfile: jest
-        .fn()
-        .mockImplementation((data: { name: string }) =>
-          Promise.resolve({ id: `new-${data.name}` }),
-        ),
-      createProfileProviderConfig,
-    } as AnyRec,
+    storage,
     installedProviders: new Map([['claude', 'prov-1']]),
-  } as CodecApplyRuntime;
+  } as unknown as CodecApplyRuntime;
 }
 
 // The profiles codec reads `selectedProfilesByFamily.profilesToCreate` (NOT its picked section),
 // so the fixture lives on the ImportContext.
-function seedCtx(profilesToCreate: AnyRec[]): ImportContext {
+function seedCtx(profilesToCreate: ParsedTemplatePayload['profiles']): ImportContext {
   return new ImportContext({
     selectedProfilesByFamily: {
       profilesToCreate,
       agentProfileMap: new Map(),
       profileNameRemapMap: new Map(),
       providerSubstitutions: new Map(),
-    } as AnyRec,
+    },
   });
 }
 
@@ -56,7 +59,7 @@ describe('profiles codec — providerConfig position pass-through', () => {
       },
     ];
 
-    await profilesCodec.apply([] as AnyRec, seedCtx(profilesToCreate), 'replace', rt);
+    await profilesCodec.apply([], seedCtx(profilesToCreate), 'replace', rt);
 
     expect(createProfileProviderConfig).toHaveBeenCalledTimes(3);
     const positions = createProfileProviderConfig.mock.calls.map(
@@ -79,7 +82,7 @@ describe('profiles codec — providerConfig position pass-through', () => {
       },
     ];
 
-    await profilesCodec.apply([] as AnyRec, seedCtx(profilesToCreate), 'create', rt);
+    await profilesCodec.apply([], seedCtx(profilesToCreate), 'create', rt);
 
     expect(createProfileProviderConfig).toHaveBeenCalledWith(
       expect.objectContaining({ position: 7 }),
@@ -101,7 +104,7 @@ describe('profiles codec — providerConfig position pass-through', () => {
       },
     ];
 
-    await profilesCodec.apply([] as AnyRec, seedCtx(profilesToCreate), 'replace', rt);
+    await profilesCodec.apply([], seedCtx(profilesToCreate), 'replace', rt);
 
     expect(createProfileProviderConfig).toHaveBeenCalledTimes(1);
     const callArg = createProfileProviderConfig.mock.calls[0][0] as { position?: number };
@@ -151,7 +154,7 @@ describe('profiles codec — context-window env round-trip', () => {
       (env) => env ?? null,
     );
 
-    expect(result[0].providerConfigs[0].env).toEqual(configuredEnv);
+    expect(result[0]?.providerConfigs?.[0]?.env).toEqual(configuredEnv);
   });
 
   it.each(['replace', 'create'] as const)(
@@ -174,7 +177,7 @@ describe('profiles codec — context-window env round-trip', () => {
         },
       ];
 
-      await profilesCodec.apply([] as AnyRec, seedCtx(profilesToCreate), mode, rt);
+      await profilesCodec.apply([], seedCtx(profilesToCreate), mode, rt);
 
       expect(createProfileProviderConfig).toHaveBeenCalledWith(
         expect.objectContaining({ env: configuredEnv }),

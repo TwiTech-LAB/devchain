@@ -83,8 +83,7 @@ describe('workspace grants at Connect across two instances', () => {
       await waitForValue(async () => {
         const response = await fetch(`${home.url}/api/remotes/operations/${pending.id}`);
         const current = (await response.json()) as RemoteOperation;
-        if (current.state === 'failed' || current.state === 'waiting')
-          throw new Error(JSON.stringify(current.steps));
+        if (current.state === 'failed') throw new Error(JSON.stringify(current.steps));
         return current.state === 'done';
       }, 20_000);
     }

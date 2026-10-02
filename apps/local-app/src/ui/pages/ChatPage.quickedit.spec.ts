@@ -86,7 +86,7 @@ describe('quickEditTeamMutation onError handler', () => {
 
   it('falls back to "Unknown error" for non-Error objects', () => {
     const toast = jest.fn();
-    const error = 'string error';
+    const error: unknown = 'string error';
 
     toast({
       title: 'Failed to update team',

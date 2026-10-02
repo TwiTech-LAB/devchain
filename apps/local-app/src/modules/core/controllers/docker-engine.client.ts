@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { request, type ClientRequest } from 'node:http';
+import { request, type ClientRequest, type IncomingMessage } from 'node:http';
 import { request as requestHttps } from 'node:https';
 import type { PinnedTlsOptions } from '../../remotes/transport/remote-tls';
 import { PassThrough, Readable } from 'node:stream';
@@ -206,6 +206,60 @@ function transportError(signal?: AbortSignal): DockerEngineError {
     : new DockerEngineError('unavailable', 'Docker engine connection failed');
 }
 
+const ENGINE_MESSAGE_BYTES = 64 * 1024;
+const ENGINE_MESSAGE_CHARACTERS = 1000;
+
+/**
+ * The engine's own reason for a refused request, so a failure on either machine
+ * can be diagnosed. A create answer may echo its payload, so the request's Env
+ * values are masked.
+ */
+async function engineMessage(
+  res: IncomingMessage,
+  body: DockerRequestOptions['body'],
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  try {
+    for await (const chunk of res as AsyncIterable<Buffer>) {
+      chunks.push(chunk);
+      bytes += chunk.length;
+      if (bytes >= ENGINE_MESSAGE_BYTES) break;
+    }
+  } catch {
+    // A broken answer keeps what arrived.
+  }
+  res.destroy();
+  const text = Buffer.concat(chunks).toString('utf8').slice(0, ENGINE_MESSAGE_BYTES);
+  let message = text;
+  try {
+    const parsed = JSON.parse(text) as { message?: unknown };
+    if (typeof parsed?.message === 'string') message = parsed.message;
+  } catch {
+    // Not JSON: the text itself is the reason.
+  }
+  return maskEnv(message.replace(/\s+/g, ' ').trim(), body).slice(0, ENGINE_MESSAGE_CHARACTERS);
+}
+
+/** Values shorter than four characters stay: masking `1` or `on` would garble the message. */
+function maskEnv(message: string, body: DockerRequestOptions['body']): string {
+  if (typeof body !== 'string' && !Buffer.isBuffer(body)) return message;
+  let env: unknown;
+  try {
+    const text = typeof body === 'string' ? body : body.toString('utf8');
+    env = (JSON.parse(text) as { Env?: unknown } | null)?.Env;
+  } catch {
+    return message;
+  }
+  if (!Array.isArray(env)) return message;
+  return env
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.slice(entry.indexOf('=') + 1))
+    .filter((value) => value.length >= 4)
+    .sort((a, b) => b.length - a.length)
+    .reduce((masked, value) => masked.split(value).join('***'), message);
+}
+
 export interface DockerRequestOptions {
   body?: Readable | Buffer | string;
   headers?: Record<string, string>;
@@ -251,6 +305,8 @@ export class DockerEngineClient {
       let req: ClientRequest | undefined;
       let answered = false;
       const fail = () => {
+        // A refusal is reported once its message is read; the closed upload is not the cause.
+        if (answered && !output) return;
         const error = transportError(options.signal);
         if (output) output.destroy(error);
         else reject(error);
@@ -276,19 +332,20 @@ export class DockerEngineClient {
           },
           (res) => {
             if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-              // Engine messages may echo create payloads (including Env); never decode or retain them.
               const status = res.statusCode;
               const code =
                 status === 404 ? 'not-found' : status === 409 ? 'conflict' : 'engine-error';
-              reject(
-                new DockerEngineError(
-                  code,
-                  `Docker engine request failed (HTTP ${status ?? 0})`,
-                  status,
+              answered = true;
+              if (options.body instanceof Readable) options.body.destroy();
+              void engineMessage(res, options.body).then((detail) =>
+                reject(
+                  new DockerEngineError(
+                    code,
+                    `Docker engine request failed (HTTP ${status ?? 0})${detail ? `: ${detail}` : ''}`,
+                    status,
+                  ),
                 ),
               );
-              res.destroy();
-              if (options.body instanceof Readable) options.body.destroy();
               return;
             }
             answered = true;

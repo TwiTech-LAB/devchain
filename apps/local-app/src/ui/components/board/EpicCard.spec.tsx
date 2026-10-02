@@ -119,7 +119,10 @@ const externalSource: ExternalTaskSourceSummary = {
   linkedAt: '2026-08-19T10:00:00.000Z',
 };
 
-function renderSourcedCard(epic = createEpic(), overrides: Partial<EpicCardProps> = {}) {
+function renderSourcedCard(
+  epic = createEpic(),
+  overrides: Partial<EpicCardProps> & { ref?: React.Ref<HTMLDivElement> } = {},
+) {
   const props: EpicCardProps = {
     epic,
     onEdit: jest.fn(),

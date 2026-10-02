@@ -59,7 +59,7 @@ describe('durable factual mutation events', () => {
   function prepared<TName extends EventName>(
     name: TName,
     payload: EventPayload<TName>,
-    id = randomUUID(),
+    id: string = randomUUID(),
   ): PreparedEvent<TName> {
     return {
       id,
@@ -96,6 +96,7 @@ describe('durable factual mutation events', () => {
       name: 'Facts',
       rootPath: '/tmp/durable-facts',
       description: null,
+      isTemplate: false,
     });
     const statusId = (await storage.listStatuses(project.id)).items[0]!.id;
     const epic = await storage.createEpic(
@@ -104,6 +105,8 @@ describe('durable factual mutation events', () => {
         statusId,
         title: 'Parent',
         description: null,
+        data: null,
+        tags: [],
       },
       (created) =>
         prepared('epic.created', {
@@ -169,6 +172,7 @@ describe('durable factual mutation events', () => {
       name: 'Rollback',
       rootPath: '/tmp/durable-rollback',
       description: null,
+      isTemplate: false,
     });
     const statusId = (await storage.listStatuses(project.id)).items[0]!.id;
     const epic = await storage.createEpic({
@@ -176,6 +180,8 @@ describe('durable factual mutation events', () => {
       statusId,
       title: 'Unchanged',
       description: null,
+      data: null,
+      tags: [],
     });
     sqlite
       .prepare(
@@ -218,6 +224,7 @@ describe('durable factual mutation events', () => {
       name: 'Comment facts',
       rootPath: '/tmp/comment-facts',
       description: null,
+      isTemplate: false,
     });
     const statusId = (await storage.listStatuses(project.id)).items[0]!.id;
     const epic = await storage.createEpic({
@@ -225,6 +232,8 @@ describe('durable factual mutation events', () => {
       statusId,
       title: 'Commented Epic',
       description: null,
+      data: null,
+      tags: [],
     });
 
     const comment = await storage.createEpicComment(
@@ -284,6 +293,7 @@ describe('durable factual mutation events', () => {
       name: 'Comment rollback',
       rootPath: '/tmp/comment-rollback',
       description: null,
+      isTemplate: false,
     });
     const statusId = (await storage.listStatuses(project.id)).items[0]!.id;
     const epic = await storage.createEpic({
@@ -291,6 +301,8 @@ describe('durable factual mutation events', () => {
       statusId,
       title: 'Unchanged comments',
       description: null,
+      data: null,
+      tags: [],
     });
     sqlite
       .prepare(
@@ -331,14 +343,25 @@ describe('durable factual mutation events', () => {
       name: 'Recursive delete',
       rootPath: '/tmp/durable-delete',
       description: null,
+      isTemplate: false,
     });
     const statusId = (await storage.listStatuses(project.id)).items[0]!.id;
-    const parent = await storage.createEpic({ projectId: project.id, statusId, title: 'Parent' });
+    const parent = await storage.createEpic({
+      projectId: project.id,
+      statusId,
+      title: 'Parent',
+      description: null,
+      data: null,
+      tags: [],
+    });
     const child = await storage.createEpic({
       projectId: project.id,
       statusId,
       title: 'Child',
       parentId: parent.id,
+      description: null,
+      data: null,
+      tags: [],
     });
 
     await storage.deleteEpic(parent.id, (deleted) =>
@@ -369,6 +392,7 @@ describe('durable factual mutation events', () => {
       name: 'Connection facts',
       rootPath: '/tmp/connection-facts',
       description: null,
+      isTemplate: false,
     });
     const identity = { projectId: project.id, provider: 'clickup' as const };
     const eventFactory = (

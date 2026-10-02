@@ -108,6 +108,9 @@ describe('RemoteVmSection', () => {
     );
     const flow = screen.getByRole('dialog', { name: 'Connect Project One' });
     await userEvent.click(within(flow).getByRole('button', { name: 'Next' }));
+    await userEvent.click(
+      within(flow).getByRole('checkbox', { name: 'Include Docker containers' }),
+    );
     await within(flow).findByText('Docker containers');
     await userEvent.click(within(flow).getByRole('checkbox', { name: 'gpu' }));
     await waitFor(() => expect(within(flow).getByRole('button', { name: 'Next' })).toBeEnabled());

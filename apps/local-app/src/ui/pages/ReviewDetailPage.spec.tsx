@@ -40,19 +40,22 @@ global.ResizeObserver = class ResizeObserver {
 
 // Mock IntersectionObserver for LazyHunk component
 global.IntersectionObserver = class IntersectionObserver {
+  readonly root: Element | Document | null = null;
+  readonly rootMargin = '0px';
+  readonly thresholds: ReadonlyArray<number> = [0];
   callback: IntersectionObserverCallback;
   constructor(callback: IntersectionObserverCallback) {
     this.callback = callback;
   }
   observe(target: Element) {
     // Immediately trigger as visible
-    this.callback(
-      [{ isIntersecting: true, target } as IntersectionObserverEntry],
-      this as unknown as IntersectionObserver,
-    );
+    this.callback([{ isIntersecting: true, target } as IntersectionObserverEntry], this);
   }
   unobserve() {}
   disconnect() {}
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
 };
 
 const navigateMock = jest.fn();
@@ -69,6 +72,7 @@ const baseReview: Review = {
   title: 'Fix authentication bug',
   description: 'Fixes the login issue',
   status: 'pending',
+  mode: 'commit',
   baseRef: 'main',
   headRef: 'feature/auth-fix',
   baseSha: 'abc123def456',

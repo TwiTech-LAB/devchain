@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { ExternalTaskCommentPage } from '@/modules/external-integrations/models/external-provider.models';
+import type { ExternalEditSessionView } from '@/modules/external-integrations/models/external-edit-session.models';
 import { useOwnedCommentActions } from './useOwnedCommentActions';
 import * as richApi from '@/ui/lib/external-rich-edit';
 
@@ -66,7 +67,7 @@ function comment(id: string, overrides: Record<string, unknown> = {}): Record<st
   };
 }
 
-const SESSION = {
+const SESSION: ExternalEditSessionView = {
   sessionId: 'session-1',
   kind: 'comment_edit',
   provider: 'clickup',

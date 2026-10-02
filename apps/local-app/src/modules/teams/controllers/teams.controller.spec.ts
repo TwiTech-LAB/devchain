@@ -44,9 +44,11 @@ function makeAgent(id: string): Agent {
   return {
     id,
     projectId: PROJECT_ID,
+    isProjectOwner: false,
     profileId: 'profile-1',
     providerConfigId: 'config-1',
     modelOverride: null,
+    effortOverride: null,
     name: `Agent-${id}`,
     description: null,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -133,6 +135,7 @@ describe('TeamsController', () => {
         ...makeTeam(),
         members: [makeMember('team-1', AGENT_A), makeMember('team-1', AGENT_B)],
         profileIds: [],
+        profileConfigSelections: [],
       });
 
       const result = await controller.getTeam('team-1');
@@ -160,6 +163,7 @@ describe('TeamsController', () => {
         ...makeTeam({ teamLeadAgentId: AGENT_A }),
         members: [makeMember('team-1', AGENT_A), makeMember('team-1', 'deleted-agent')],
         profileIds: [],
+        profileConfigSelections: [],
       });
       storageService.getAgent.mockImplementation((id: string) => {
         if (id === 'deleted-agent') return Promise.reject(new Error('not found'));
@@ -177,6 +181,7 @@ describe('TeamsController', () => {
         ...makeTeam({ teamLeadAgentId: null }),
         members: [makeMember('team-1', AGENT_A), makeMember('team-1', AGENT_B)],
         profileIds: [],
+        profileConfigSelections: [],
       });
 
       const result = await controller.getTeam('team-1');
@@ -191,6 +196,7 @@ describe('TeamsController', () => {
         ...makeTeam(),
         members: [makeMember('team-1', AGENT_A)],
         profileIds: ['profile-1', 'profile-2'],
+        profileConfigSelections: [],
       });
 
       const result = await controller.getTeam('team-1');

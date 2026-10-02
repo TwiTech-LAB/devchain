@@ -179,8 +179,9 @@ export class FakeFileSyncService
     };
   }
 
-  async rescan(folderId: string): Promise<void> {
+  async rescan(folderId: string, signal?: AbortSignal): Promise<void> {
     this.require(folderId);
+    signal?.throwIfAborted();
   }
 
   async revertLocalChanges(folderId: string): Promise<void> {

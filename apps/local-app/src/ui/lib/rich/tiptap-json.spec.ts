@@ -3,11 +3,13 @@ import {
   canonicalizeRichDocument,
   richDocumentFingerprint,
   type ExternalRichDocumentV1,
+  type ExternalRichMark,
+  type ExternalRichTextRun,
 } from '@/modules/external-integrations/models/external-rich-document';
 
 // Pure conversion contract — the cheapest reliable layer.
 
-function text(value: string, marks: Array<Record<string, unknown>> = []) {
+function text(value: string, marks: ExternalRichMark[] = []): ExternalRichTextRun {
   return { type: 'text', text: value, marks };
 }
 

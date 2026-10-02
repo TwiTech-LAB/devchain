@@ -55,6 +55,7 @@ describe('Jira owned mutations and description editing', () => {
       context,
       'KAN-1',
       '10000',
+      null,
     );
     expect(snapshot).toEqual({
       remoteId: '10000',

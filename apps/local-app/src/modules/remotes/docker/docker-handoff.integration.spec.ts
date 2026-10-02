@@ -43,6 +43,8 @@ let inventory: Map<string, DockerImportInventory>;
 let exclusions: Map<string, string[]>;
 let savedDockerHost: string | undefined;
 let progress: Array<Record<string, unknown>>;
+let host: RemoteHostClient;
+let homeJournal: DockerArchiveJournal;
 
 const volumeMount = (name: string, destination: string): FakeMount => ({
   Type: 'volume',
@@ -212,6 +214,7 @@ beforeEach(async () => {
     } as never,
     { get: async () => null, headers: async () => ({}) } as never,
   );
+  host = client;
   jest.spyOn(client, 'remoteRuntime').mockResolvedValue({
     homePath: homedir(),
     uid: process.getuid?.() ?? 1000,
@@ -248,12 +251,13 @@ beforeEach(async () => {
     inventoryStore as never,
   );
   store = new DockerHandoffStore(join(scratch, 'home'));
+  homeJournal = new DockerArchiveJournal(join(scratch, 'home'));
   handoff = new DockerHandoff(
     plans,
     source,
     client,
     store,
-    new DockerArchiveJournal(join(scratch, 'home')),
+    homeJournal,
     {
       set: (p: string, patterns: string[] | null) => exclusions.set(p, patterns ?? []),
       get: (p: string) => exclusions.get(p) ?? [],
@@ -331,6 +335,10 @@ it('copies Compose and docker run items, keeps --rm data only, and creates every
       expect.objectContaining({ name: 'tmp-job', volumes: [{ name: 'cache', sizeBytes: 10 }] }),
     ]),
   });
+  // Same-store engines give an image the same ID, so no pair is written.
+  expect(inventory.get(`${PROJECT}/${REMOTE}`)?.items.some((item) => 'vmImageId' in item)).toBe(
+    false,
+  );
   expect(docker()).toMatchObject({
     bytesDone: docker().bytesTotal,
     result: { withoutData: [], dataOnly: ['tmp-job'] },
@@ -519,6 +527,47 @@ it('a folder the clear helper cannot empty fails the step before any restore, na
     [],
   );
   expect((await store.read(operation().id))?.verified.binds).toEqual([]);
+});
+
+it('moves a bound single file as a file and never puts a folder in its place', async () => {
+  // Home and the VM share this disk: a folder made on the "VM" would replace the home file.
+  const caddyfile = join(root, 'dev-https', 'Caddyfile');
+  await mkdir(join(root, 'dev-https'));
+  await writeFile(caddyfile, 'home-caddy');
+  home.data.set(caddyfile, Buffer.from('home-caddy'));
+  home.addContainer({
+    Id: 'proxy-id',
+    Name: '/proxy',
+    Image: 'sha256:web',
+    Config: { Image: 'app-web:latest' },
+    HostConfig: { Binds: [`${caddyfile}:/etc/caddy/Caddyfile:ro`] },
+    Mounts: [{ Type: 'bind', Source: caddyfile, Destination: '/etc/caddy/Caddyfile', RW: false }],
+    running: true,
+  });
+  details = {
+    dockerSelection: {
+      items: [
+        ...selection.items,
+        { id: 'proxy-id', mode: 'container-and-data', dataChoice: 'replace-home' },
+      ],
+    },
+  };
+  const prepares = jest.spyOn(host, 'dockerPrepareBinds');
+  const archives = jest.spyOn(host, 'dockerWriteArchive');
+  await connect();
+
+  expect(prepares.mock.calls.flatMap(([, input]) => input.paths)).toContainEqual(
+    expect.objectContaining({ path: caddyfile, replace: true, file: true }),
+  );
+  expect(archives.mock.calls.map(([, input]) => input)).toContainEqual(
+    expect.objectContaining({ mountType: 'file', source: caddyfile }),
+  );
+  expect(archives.mock.calls.map(([, input]) => input)).toContainEqual(
+    expect.objectContaining({ mountType: 'bind', source: state }),
+  );
+  expect(vm.data.get(caddyfile)?.toString()).toBe('home-caddy');
+  expect((await stat(caddyfile)).isFile()).toBe(true);
+  expect(vmContainer('proxy')?.State.Running).toBe(false);
 });
 
 it('a reconnect of a subset keeps an earlier item folder excluded and in the inventory', async () => {
@@ -915,3 +964,173 @@ it.each(['home-newer', 'both-changed', 'unknown'] as const)(
     expect(existsSync(join(state, 'vm-only.txt'))).toBe(false);
   },
 );
+
+// The fake engines are the cheapest layer where both image stores and the real host
+// routes meet; a containerd-store VM gives a loaded image an ID home never had.
+describe('with a containerd-store VM', () => {
+  const DB_LAYERS = ['sha256:layer-db-1', 'sha256:layer-db-2'];
+  const vmIdOf = (tag: string) => [...vm.images].find(([, image]) => image.tags.includes(tag))?.[0];
+
+  beforeEach(async () => {
+    await vm.close();
+    vm = new FakeDockerEngine('vm-engine', { imageStore: 'containerd' });
+    await vm.listen(join(scratch, 'vm.sock'));
+    home.images.get('sha256:db')!.layers = DB_LAYERS;
+    home.images.get('sha256:web')!.layers = ['sha256:layer-web-1'];
+  });
+
+  it('copies with the VM IDs on the VM and the home IDs at home, and saves the pair', async () => {
+    const homeHelpers = jest.spyOn(homeJournal, 'create');
+    const archives = jest.spyOn(host, 'dockerWriteArchive');
+    const prepares = jest.spyOn(host, 'dockerPrepareBinds');
+    await connect();
+
+    const vmDb = vmIdOf('postgres:17')!;
+    const vmWeb = vmIdOf('app-web:latest')!;
+    expect(vmDb).not.toBe('sha256:db');
+    expect(vmWeb).not.toBe('sha256:web');
+    const record = (await store.read(operation().id))!;
+    expect(record.images).toEqual([
+      expect.objectContaining({ id: 'sha256:db', vmId: vmDb }),
+      expect.objectContaining({ id: 'sha256:web', vmId: vmWeb }),
+    ]);
+    expect(record.verified.images).toEqual(['sha256:db', 'sha256:web']);
+
+    expect(vmContainer('app-db-1')?.created?.Image).toBe(vmDb);
+    expect(vmContainer('runner')?.created?.Image).toBe(vmWeb);
+    // The captured settings keep the home ID.
+    expect((await store.readSettings(operation().id))['db-id'].config.Image).toBe('sha256:db');
+
+    expect(homeHelpers.mock.calls.map((call) => call[1]).sort()).toEqual([
+      'sha256:db',
+      'sha256:db',
+      'sha256:web',
+      'sha256:web',
+    ]);
+    expect(archives.mock.calls.map((call) => call[1].image).sort()).toEqual(
+      [vmDb, vmDb, vmWeb, vmWeb].sort(),
+    );
+    expect(
+      prepares.mock.calls.flatMap((call) => call[1].paths).filter((path) => path.replace),
+    ).toEqual([{ path: state, replace: true, image: vmWeb }]);
+    expect(vm.data.get('app_db')?.toString()).toBe('home-db-rows');
+    expect(vm.data.get(state)?.toString()).toBe('home-state');
+
+    expect(inventory.get(`${PROJECT}/${REMOTE}`)?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'app-db-1', imageId: 'sha256:db', vmImageId: vmDb }),
+        expect.objectContaining({ name: 'runner', imageId: 'sha256:web', vmImageId: vmWeb }),
+        expect.objectContaining({ name: 'tmp-job', imageId: 'sha256:web', vmImageId: vmWeb }),
+      ]),
+    );
+  });
+
+  it('finishes a retry of a push whose record has no VM ID', async () => {
+    await handoff.preflight(run());
+    await handoff.stopHome(run());
+    const load = host.dockerLoadImage.bind(host);
+    // The image reached the VM, but the push failed before it saved a VM ID.
+    jest.spyOn(host, 'dockerLoadImage').mockImplementationOnce(async (...args) => {
+      await load(...args);
+      throw new Error('The VM did not load an image with the expected ID.');
+    });
+    await expect(handoff.push(run())).rejects.toBeInstanceOf(Error);
+    const failed = (await store.read(operation().id))!;
+    expect(failed.images.every((image) => image.vmId === undefined)).toBe(true);
+    expect(failed.verified.images).toEqual([]);
+
+    await handoff.push(run());
+    await handoff.createHost(run());
+    expect(vmContainer('app-db-1')?.created?.Image).toBe(vmIdOf('postgres:17'));
+    expect(vmContainer('runner')?.created?.Image).toBe(vmIdOf('app-web:latest'));
+  });
+
+  it('a reconnect finds the images through the saved pair and does not load them again', async () => {
+    await connect();
+    await handoff.finish(operation().id);
+    vm.calls.length = 0;
+    details = {
+      dockerSelection: {
+        items: [
+          { id: 'db-id', mode: 'container-and-data', dataChoice: 'replace-home' },
+          { id: 'runner-id', mode: 'container-and-data', dataChoice: 'replace-home' },
+        ],
+      },
+    };
+    await connect();
+    expect(vm.calls).not.toContain('POST /images/load');
+    const vmDb = vmIdOf('postgres:17');
+    expect((await store.read(operation().id))?.images).toEqual([
+      expect.objectContaining({ id: 'sha256:db', vmId: vmDb }),
+      expect.objectContaining({ id: 'sha256:web', vmId: vmIdOf('app-web:latest') }),
+    ]);
+    expect(vmContainer('app-db-1')?.created?.Image).toBe(vmDb);
+  });
+
+  it.each([
+    ['keeps the pair of an unchanged home image', 'sha256:db', false],
+    ['drops the pair of a changed home image', 'sha256:db-old', true],
+  ] as const)('a keep-vm reconnect %s', async (_name, priorImageId, loadsDb) => {
+    await seedKeptData(false, false);
+    // A changed home image leaves the VM with the old content under the old pair.
+    vm.images.set('sha256:vm-db', {
+      architecture: 'amd64',
+      tags: ['postgres:17'],
+      layers: loadsDb ? ['sha256:layer-db-old'] : DB_LAYERS,
+      size: 1,
+    });
+    inventory.get(`${PROJECT}/${REMOTE}`)!.items = [
+      {
+        name: 'app-db-1',
+        imageId: priorImageId,
+        vmImageId: 'sha256:vm-db',
+        volumes: [{ name: 'app_db', sizeBytes: 12 }],
+        bindPaths: [],
+        sizeBytes: 12,
+      },
+    ];
+    const loads = jest.spyOn(host, 'dockerLoadImage');
+    await handoff.preflight(run());
+    expect(
+      (await store.read(operation().id))?.keptInventory?.find((i) => i.name === 'app-db-1')
+        ?.vmImageId,
+    ).toBe(loadsDb ? undefined : 'sha256:vm-db');
+    await handoff.stopHome(run());
+    await handoff.push(run());
+    await handoff.createHost(run());
+
+    // The web image is missing on the VM; the db image is loaded only without a valid pair.
+    expect(loads).toHaveBeenCalledTimes(loadsDb ? 2 : 1);
+    const item = inventory.get(`${PROJECT}/${REMOTE}`)?.items.find((i) => i.name === 'app-db-1');
+    expect(item?.imageId).toBe('sha256:db');
+    if (loadsDb) {
+      expect(item?.vmImageId).not.toBe('sha256:vm-db');
+      expect(vm.images.get(item!.vmImageId!)?.layers).toEqual(DB_LAYERS);
+    } else expect(item?.vmImageId).toBe('sha256:vm-db');
+    expect(vmContainer('runner')?.created?.Image).toBe(
+      inventory.get(`${PROJECT}/${REMOTE}`)?.items.find((i) => i.name === 'runner')?.vmImageId,
+    );
+  });
+
+  it('fails a load whose reported layers do not match, naming both IDs', async () => {
+    await handoff.preflight(run());
+    await handoff.stopHome(run());
+    home.intercept = (method, path, res) => {
+      if (method !== 'GET' || path !== '/images/sha256:db/json') return false;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          Id: 'sha256:db',
+          RepoTags: ['postgres:17'],
+          RootFS: { Type: 'layers', Layers: ['sha256:layer-other'] },
+        }),
+      );
+      return true;
+    };
+    const error = await handoff.push(run()).catch((e: Error) => e);
+    expect((error as Error).message).toBe(
+      `The VM loaded image sha256:db, but none of the images it reported (${vmIdOf('postgres:17')}) has the same layers. The VM engine can store images under its own IDs. Retry the copy.`,
+    );
+    expect((await store.read(operation().id))?.verified.images).toEqual([]);
+  });
+});

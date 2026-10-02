@@ -488,11 +488,10 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
         },
         deps as never,
       )) as AnyRec;
+      const project = result.project as AnyRec;
 
-      expect(result.project.workspaceId).toBe(destination.id);
-      expect((await h.storage.getProject(result.project.id as string)).workspaceId).toBe(
-        destination.id,
-      );
+      expect(project.workspaceId).toBe(destination.id);
+      expect((await h.storage.getProject(project.id as string)).workspaceId).toBe(destination.id);
     });
 
     it('passes the version to UnifiedTemplateService.getTemplate when provided', async () => {

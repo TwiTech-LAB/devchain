@@ -53,26 +53,31 @@ describe('applyTeamOverrides', () => {
 
   it('returns teams unchanged when no overrides provided', () => {
     const teams = [baseTeam];
-    const result = applyTeamOverrides(teams, undefined);
+    const result = applyTeamOverrides(teams, undefined, undefined, undefined);
     expect(result).toStrictEqual(teams);
   });
 
   it('returns teams unchanged when overrides array is empty', () => {
     const teams = [baseTeam];
-    const result = applyTeamOverrides(teams, []);
+    const result = applyTeamOverrides(teams, [], undefined, undefined);
     expect(result).toStrictEqual(teams);
   });
 
   it('applies maxMembers, maxConcurrentTasks, and allowTeamLeadCreateAgents overrides', () => {
     const teams = [baseTeam];
-    const result = applyTeamOverrides(teams, [
-      {
-        teamName: 'Dev Team',
-        maxMembers: 8,
-        maxConcurrentTasks: 5,
-        allowTeamLeadCreateAgents: true,
-      },
-    ]);
+    const result = applyTeamOverrides(
+      teams,
+      [
+        {
+          teamName: 'Dev Team',
+          maxMembers: 8,
+          maxConcurrentTasks: 5,
+          allowTeamLeadCreateAgents: true,
+        },
+      ],
+      undefined,
+      undefined,
+    );
     expect(result[0].maxMembers).toBe(8);
     expect(result[0].maxConcurrentTasks).toBe(5);
     expect(result[0].allowTeamLeadCreateAgents).toBe(true);
@@ -80,39 +85,60 @@ describe('applyTeamOverrides', () => {
 
   it('applies profileNames override, replacing template profileNames', () => {
     const teams = [baseTeam];
-    const result = applyTeamOverrides(teams, [
-      { teamName: 'Dev Team', profileNames: ['Profile B'] },
-    ]);
+    const result = applyTeamOverrides(
+      teams,
+      [{ teamName: 'Dev Team', profileNames: ['Profile B'] }],
+      undefined,
+      undefined,
+    );
     expect(result[0].profileNames).toEqual(['Profile B']);
   });
 
   it('applies profileSelections override, replacing template profileSelections', () => {
     const teams = [baseTeam];
     const overrideSelections = [{ profileName: 'Profile B', configNames: ['Config X'] }];
-    const result = applyTeamOverrides(teams, [
-      { teamName: 'Dev Team', profileSelections: overrideSelections },
-    ]);
+    const result = applyTeamOverrides(
+      teams,
+      [{ teamName: 'Dev Team', profileSelections: overrideSelections }],
+      undefined,
+      undefined,
+    );
     expect(result[0].profileSelections).toEqual(overrideSelections);
   });
 
   it('does not modify teams not referenced by an override', () => {
     const otherTeam = { ...baseTeam, name: 'QA Team', maxMembers: 3 };
     const teams = [baseTeam, otherTeam];
-    const result = applyTeamOverrides(teams, [{ teamName: 'Dev Team', maxMembers: 10 }]);
+    const result = applyTeamOverrides(
+      teams,
+      [{ teamName: 'Dev Team', maxMembers: 10 }],
+      undefined,
+      undefined,
+    );
     expect(result[0].maxMembers).toBe(10);
     expect(result[1].maxMembers).toBe(3);
   });
 
   it('silently skips overrides that reference non-existent team names', () => {
     const teams = [baseTeam];
-    const result = applyTeamOverrides(teams, [{ teamName: 'Ghost Team', maxMembers: 10 }]);
+    const result = applyTeamOverrides(
+      teams,
+      [{ teamName: 'Ghost Team', maxMembers: 10 }],
+      undefined,
+      undefined,
+    );
     expect(result).toHaveLength(1);
     expect(result[0].maxMembers).toBe(4);
   });
 
   it('matches team names case-insensitively', () => {
     const teams = [baseTeam];
-    const result = applyTeamOverrides(teams, [{ teamName: 'DEV TEAM', maxMembers: 6 }]);
+    const result = applyTeamOverrides(
+      teams,
+      [{ teamName: 'DEV TEAM', maxMembers: 6 }],
+      undefined,
+      undefined,
+    );
     expect(result[0].maxMembers).toBe(6);
   });
 
@@ -122,6 +148,7 @@ describe('applyTeamOverrides', () => {
       const result = applyTeamOverrides(
         teams,
         [{ teamName: 'Dev Team', profileNames: ['Profile A'] }],
+        undefined,
         undefined,
       );
       expect(result[0].profileNames).toEqual(['Profile A']);
@@ -175,6 +202,7 @@ describe('applyTeamOverrides', () => {
           },
         ],
         remapMap,
+        undefined,
       );
       expect(result[0].profileNames).toEqual(['Profile A']);
       expect(result[0].profileSelections).toEqual([
@@ -1142,20 +1170,23 @@ describe('importProjectWithHelper — session preservation', () => {
     const cardinalityAfterSecond = prompts.length;
     const third = await importProjectWithHelper({ projectId: PROJECT_ID, payload }, deps);
 
-    expect(dryRun.promptTransfer).toEqual({
+    const transferOf = (result: Awaited<ReturnType<typeof importProjectWithHelper>>) =>
+      'promptTransfer' in result ? result.promptTransfer : undefined;
+
+    expect(transferOf(dryRun)).toEqual({
       imported: 3,
       deleted: 1,
       preserved: 1,
       skipped: 0,
     });
-    expect(first.promptTransfer).toEqual(dryRun.promptTransfer);
-    expect(second.promptTransfer).toEqual({
+    expect(transferOf(first)).toEqual(transferOf(dryRun));
+    expect(transferOf(second)).toEqual({
       imported: 3,
       deleted: 3,
       preserved: 1,
       skipped: 0,
     });
-    expect(third.promptTransfer).toEqual(second.promptTransfer);
+    expect(transferOf(third)).toEqual(transferOf(second));
     expect([cardinalityAfterFirst, cardinalityAfterSecond, prompts.length]).toEqual([4, 4, 4]);
     expect(prompts.filter((prompt) => prompt.title.toLowerCase() === 'portable')).toEqual([
       expect.objectContaining({ title: 'Portable', content: 'first', tags: ['type:custom'] }),

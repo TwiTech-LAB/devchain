@@ -442,7 +442,7 @@ describe('CopilotJsonlParser', () => {
           { turnId: '0', interactionId: 'i-2' },
           { ts: '2026-06-27T11:00:02.000Z' },
         ),
-        assistantMessage('a2', { out: 20 }, { ts: '2026-06-27T11:00:03.000Z' }),
+        assistantMessage('a2', { out: 20, ts: '2026-06-27T11:00:03.000Z' }),
         ev('assistant.turn_end', { turnId: '0' }, { ts: '2026-06-27T11:00:04.000Z' }),
         shutdown({ input: 500, output: 20, cost: 0.2 }),
       ]);

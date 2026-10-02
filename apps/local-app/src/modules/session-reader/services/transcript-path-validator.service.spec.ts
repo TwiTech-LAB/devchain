@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
@@ -9,8 +10,8 @@ jest.mock('node:fs/promises');
 const mockFs = fs as jest.Mocked<typeof fs>;
 const homeDir = os.homedir();
 
-function mockStat(overrides: { isFile: boolean; size: number }): fs.Stats {
-  return { isFile: () => overrides.isFile, size: overrides.size } as unknown as fs.Stats;
+function mockStat(overrides: { isFile: boolean; size: number }): Stats {
+  return { isFile: () => overrides.isFile, size: overrides.size } as unknown as Stats;
 }
 
 describe('TranscriptPathValidator', () => {

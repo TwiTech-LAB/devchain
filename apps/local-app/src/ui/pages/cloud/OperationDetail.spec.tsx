@@ -2,7 +2,12 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
-import { OperationDetail, type ActivityActions, type ActivityNames } from './OperationDetail';
+import {
+  OperationDetail,
+  OperationStateChip,
+  type ActivityActions,
+  type ActivityNames,
+} from './OperationDetail';
 
 jest.mock('@/ui/lib/api-transport', () => ({
   HOME_BACKEND: 'home',
@@ -52,24 +57,26 @@ function actions(overrides: Partial<ActivityActions> = {}): ActivityActions {
   };
 }
 
+/** The action handlers, and `setPending` to rerender with the row's shared pending flag. */
 function renderDetail(
   target: RemoteOperationDto,
   options: { actions?: ActivityActions; error?: string | null } = {},
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const handlers = options.actions ?? actions();
-  render(
+  const tree = (pending: boolean) => (
     <QueryClientProvider client={client}>
       <OperationDetail
         operation={target}
         names={NAMES}
-        pending={false}
+        pending={pending}
         error={options.error ?? null}
         actions={handlers}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
-  return handlers;
+  const view = render(tree(false));
+  return { ...handlers, setPending: (pending: boolean) => view.rerender(tree(pending)) };
 }
 
 function stepState(label: string): string | null {
@@ -92,6 +99,13 @@ describe('OperationDetail progress', () => {
     expect(
       screen.getByText('You can close this. The work goes on, and the row shows its progress.'),
     ).toBeInTheDocument();
+  });
+
+  it('spins the state chip only while the operation runs', () => {
+    render(<OperationStateChip state="running" />);
+    expect(screen.getByText('Running').querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    render(<OperationStateChip state="done" />);
+    expect(screen.getByText('Done').querySelector('svg')).toBeNull();
   });
 
   it('folds finished steps and lists the current step before the pending ones', async () => {
@@ -197,7 +211,7 @@ describe('OperationDetail git settings copy', () => {
     ).toBeInTheDocument();
   });
 
-  it.each([
+  it.each<[string, { gitConfig: string; gitConfigError?: string }]>([
     ['a message ending in a period', { gitConfig: 'failed', gitConfigError: 'The VM refused.' }],
     [
       'a message without a final period',
@@ -535,12 +549,48 @@ describe('OperationDetail actions', () => {
     ['install_host', true],
     ['create_vm', true],
     ['update_logins', true],
-    ['attach', false],
+    ['attach', true],
+    ['detach', false],
     ['update_host', false],
   ])('offers Cancel on a running %s: %s', (kind, cancellable) => {
     renderDetail(operation({ kind }));
     expect(screen.queryByRole('button', { name: 'Cancel' }) !== null).toBe(cancellable);
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['pending', true],
+    ['running', false],
+    ['done', false],
+  ] as const)('offers Cancel on a running attach with bind_remote %s: %s', (state, cancellable) => {
+    renderDetail(
+      operation({ steps: [step('file_sync_initial', 'done'), step('bind_remote', state)] }),
+    );
+    expect(screen.queryByRole('button', { name: 'Cancel' }) !== null).toBe(cancellable);
+  });
+
+  it('sends the running attach to the cancel action', async () => {
+    const handlers = renderDetail(
+      operation({ steps: [step('file_sync_initial', 'running'), step('bind_remote', 'pending')] }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(handlers.cancel).toHaveBeenCalledWith(expect.objectContaining({ id: 'op1' }));
+  });
+
+  it('spins only the pressed action while its request runs', async () => {
+    const detail = renderDetail(operation({ kind: 'detach', state: 'failed' }));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    detail.setPending(true);
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toBeDisabled();
+    expect(retry.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    for (const name of ['Cancel', 'Force disconnect']) {
+      const button = screen.getByRole('button', { name });
+      expect(button).toBeDisabled();
+      expect(button.querySelector('svg')).toBeNull();
+    }
   });
 
   it.each([

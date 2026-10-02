@@ -18,6 +18,7 @@ import { TerminalSendSchedulerService } from './services/terminal-send-scheduler
 import { HumanPromptStateService } from './services/human-prompt-state.service';
 import { StandaloneTerminalService } from './services/standalone-terminal.service';
 import { ProcessExecutorModule } from './services/process-executor/process-executor.module';
+import { HooksModule } from '../hooks/hooks.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { ProcessExecutorModule } from './services/process-executor/process-execu
     SessionTerminalRuntimeModule,
     RealtimeBroadcastModule,
     MetricsModule,
+    HooksModule,
   ],
   providers: [
     TerminalStreamService,

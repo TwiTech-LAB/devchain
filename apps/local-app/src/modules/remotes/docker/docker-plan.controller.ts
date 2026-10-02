@@ -34,7 +34,7 @@ export class DockerPlanController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<DockerPlan> {
     // An abandoned plan (the dialog re-planned or closed) stops scanning.
-    return this.plans.plan(projectId, body, requestAbortSignal(req, reply));
+    return this.plans.plan(projectId, body, requestAbortSignal(req, reply), { reuse: true });
   }
 
   @Post('sync-state')

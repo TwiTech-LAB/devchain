@@ -6,6 +6,7 @@ import type {
   ExternalMyWorkResult,
   ExternalTaskSummary,
   ExternalWorkArea,
+  ExternalWorkAreaColumn,
   ExternalWorkAreaTask,
 } from '@/modules/external-integrations/models/external-provider.models';
 import { useExternalMyWorkLanding } from './useExternalMyWorkLanding';
@@ -644,7 +645,7 @@ describe('useExternalMyWorkLanding', () => {
   });
 
   it('caps the workflow summary at five columns', async () => {
-    const columns = Array.from({ length: 7 }, (_, index) => ({
+    const columns: ExternalWorkAreaColumn[] = Array.from({ length: 7 }, (_, index) => ({
       remoteId: `c${index}`,
       name: `Column ${index}`,
       color: '#888888',

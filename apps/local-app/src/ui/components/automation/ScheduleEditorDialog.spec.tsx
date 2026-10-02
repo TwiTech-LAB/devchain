@@ -257,9 +257,10 @@ describe('ScheduleEditorDialog', () => {
       });
 
       const createCall = fetchMock.mock.calls.find(
-        (c: string[]) => c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
+        (c: [string, RequestInit | undefined]) =>
+          c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
       );
-      const body = JSON.parse(createCall[1].body);
+      const body = JSON.parse(createCall![1]!.body as string);
       expect(body.templateStatusId).toBeNull();
       expect(body.templateAgentId).toBeNull();
       expect(body.templateParentEpicId).toBeNull();
@@ -290,10 +291,11 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         const createCall = fetchMock.mock.calls.find(
-          (c: string[]) => c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
+          (c: [string, RequestInit | undefined]) =>
+            c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
         );
         expect(createCall).toBeDefined();
-        const body = JSON.parse(createCall[1].body);
+        const body = JSON.parse(createCall![1]!.body as string);
         expect(body.templateStatusId).toBe('status-2');
       });
     });
@@ -322,10 +324,11 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         const createCall = fetchMock.mock.calls.find(
-          (c: string[]) => c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
+          (c: [string, RequestInit | undefined]) =>
+            c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
         );
         expect(createCall).toBeDefined();
-        const body = JSON.parse(createCall[1].body);
+        const body = JSON.parse(createCall![1]!.body as string);
         expect(body.templateAgentId).toBe('agent-1');
       });
     });
@@ -506,10 +509,11 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         const updateCall = fetchMock.mock.calls.find(
-          (c: string[]) => c[0] === '/api/scheduled-epics/sched-1' && c[1]?.method === 'PUT',
+          (c: [string, RequestInit | undefined]) =>
+            c[0] === '/api/scheduled-epics/sched-1' && c[1]?.method === 'PUT',
         );
         expect(updateCall).toBeDefined();
-        const body = JSON.parse(updateCall[1].body);
+        const body = JSON.parse(updateCall![1]!.body as string);
         expect(body.templateStatusId).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
         expect(body.templateAgentId).toBe('bbbbbbbb-cccc-dddd-eeee-ffffffffffff');
         expect(body.templateParentEpicId).toBe('cccccccc-dddd-eeee-ffff-000000000000');
@@ -541,10 +545,11 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         const updateCall = fetchMock.mock.calls.find(
-          (c: string[]) => c[0] === '/api/scheduled-epics/sched-1' && c[1]?.method === 'PUT',
+          (c: [string, RequestInit | undefined]) =>
+            c[0] === '/api/scheduled-epics/sched-1' && c[1]?.method === 'PUT',
         );
         expect(updateCall).toBeDefined();
-        const body = JSON.parse(updateCall[1].body);
+        const body = JSON.parse(updateCall![1]!.body as string);
         expect(body.templateStatusId).toBeNull();
       });
     });
@@ -695,10 +700,11 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         const createCall = fetchMock.mock.calls.find(
-          (c: string[]) => c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
+          (c: [string, RequestInit | undefined]) =>
+            c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
         );
         expect(createCall).toBeDefined();
-        const body = JSON.parse(createCall[1].body);
+        const body = JSON.parse(createCall![1]!.body as string);
         expect(body.templateParentEpicId).toBe('epic-1');
       });
     });
@@ -720,10 +726,11 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         const createCall = fetchMock.mock.calls.find(
-          (c: string[]) => c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
+          (c: [string, RequestInit | undefined]) =>
+            c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
         );
         expect(createCall).toBeDefined();
-        const body = JSON.parse(createCall[1].body);
+        const body = JSON.parse(createCall![1]!.body as string);
         expect(body.templateParentEpicId).toBeNull();
       });
     });
@@ -843,10 +850,11 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         const createCall = fetchMock.mock.calls.find(
-          (c: string[]) => c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
+          (c: [string, RequestInit | undefined]) =>
+            c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
         );
         expect(createCall).toBeDefined();
-        const body = JSON.parse(createCall[1].body);
+        const body = JSON.parse(createCall![1]!.body as string);
         expect(body.templateParentEpicId).toBe('epic-1');
       });
     });
@@ -976,7 +984,8 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         const createCall = fetchMock.mock.calls.find(
-          (c: string[]) => c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
+          (c: [string, RequestInit | undefined]) =>
+            c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
         );
         expect(createCall).toBeDefined();
       });

@@ -169,6 +169,7 @@ export class AttachOperation implements RemoteOperationDefinition {
   async interrupt(operationId: string): Promise<void> {
     this.transcripts.interrupt(operationId);
     this.docker.interrupt(operationId);
+    this.fileSync.interrupt(operationId);
   }
 
   assertCancellable(operation: RemoteOperation): void {

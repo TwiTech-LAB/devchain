@@ -273,10 +273,13 @@ describe('projects-page-model', () => {
   it('describes each remote-owned state', () => {
     const owner = { projectId: 'p', remoteId: 'r', remoteName: null } as const;
     expect(describeRemoteLock({ ...owner, state: 'attaching' })).toBe(
-      'Connecting to a remote; changes are paused.',
+      'Connecting to a remote; changes are paused. Cancel it in Cloud.',
     );
     expect(describeRemoteLock({ ...owner, state: 'detaching' })).toBe(
       'Disconnecting from a remote; changes are paused.',
+    );
+    expect(describeRemoteLock({ ...owner, remoteName: 'vm-1', state: 'attaching' })).toBe(
+      'Connecting to remote "vm-1"; changes are paused. Cancel it in Cloud.',
     );
   });
 

@@ -41,9 +41,9 @@ jest.mock('@/ui/components/ui/context-menu', () => ({
   ContextMenuLabel: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-interface GlobalWithDOMRect extends Global {
+type GlobalWithDOMRect = typeof globalThis & {
   DOMRect?: typeof DOMRect;
-}
+};
 
 if (!(global as GlobalWithDOMRect).DOMRect) {
   (global as GlobalWithDOMRect).DOMRect = class DOMRect {
@@ -96,8 +96,8 @@ const agent: AgentOrGuest = {
   id: 'agent-1',
   name: 'Alpha',
   profileId: 'profile-1',
-  projectId: 'project-1',
-} as AgentOrGuest;
+  isProjectOwner: false,
+};
 
 function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -123,6 +123,10 @@ function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
     onLaunchSession: jest.fn(async () => ({ id: 'session-1' })),
     onRestartSession: jest.fn(async () => {}),
     onTerminateConfirm: jest.fn(),
+    onReleaseHeldMessages: jest.fn(),
+    releasingHeldAgentId: null,
+    onForceDelivery: jest.fn(),
+    forcingAgentId: null,
     getProviderForAgent: jest.fn(() => null),
     pendingRestartAgentIds: new Set<string>(),
     validatedPresets: [],
@@ -132,6 +136,11 @@ function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
     onSwitchConfig: jest.fn(),
     fetchProviderConfigsForProfile: jest.fn(async () => []),
     updatingConfigAgentIds: {},
+    onCloneAgent: jest.fn(),
+    onDeleteAgent: jest.fn(),
+    pendingDeleteAgentId: null,
+    onAddTeamAgent: jest.fn(),
+    onEditTeam: jest.fn(),
   };
 
   return render(
@@ -589,29 +598,29 @@ describe('ChatSidebar team lead-as-header rendering', () => {
     id: 'agent-lead',
     name: 'Lead Agent',
     profileId: 'profile-1',
-    projectId: 'project-1',
-  } as AgentOrGuest;
+    isProjectOwner: false,
+  };
 
   const agentMember: AgentOrGuest = {
     id: 'agent-member',
     name: 'Member Agent',
     profileId: 'profile-1',
-    projectId: 'project-1',
-  } as AgentOrGuest;
+    isProjectOwner: false,
+  };
 
   const agentIndependent: AgentOrGuest = {
     id: 'agent-independent',
     name: 'Independent Agent',
     profileId: 'profile-1',
-    projectId: 'project-1',
-  } as AgentOrGuest;
+    isProjectOwner: false,
+  };
 
   const guestAgent: AgentOrGuest = {
     id: 'guest-1',
     name: 'Guest Agent',
     profileId: 'profile-guest',
-    projectId: 'project-1',
-  } as AgentOrGuest;
+    isProjectOwner: false,
+  };
 
   function mockTeamFetch(opts: {
     teamLeadAgentId: string | null;
@@ -797,7 +806,9 @@ describe('ChatSidebar team lead-as-header rendering', () => {
       expect(screen.getByText('Legacy Team')).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('button', { name: /Legacy Team/i })).toHaveAttribute('aria-expanded');
+    expect(screen.getByRole('button', { name: 'Toggle Legacy Team members' })).toHaveAttribute(
+      'aria-expanded',
+    );
   });
 
   it('preserves the team bucket while sorting its agent collection canonically', async () => {
@@ -1077,8 +1088,8 @@ describe('ChatSidebar human-held message badges', () => {
     id: 'agent-1',
     name: 'Alpha',
     profileId: 'profile-1',
-    projectId: 'project-1',
-  } as AgentOrGuest;
+    isProjectOwner: false,
+  };
 
   beforeEach(() => {
     global.fetch = jest.fn(async () => ({
@@ -1144,9 +1155,9 @@ describe('ChatSidebar guest compatibility', () => {
     id: 'guest-1',
     name: 'Guest Agent',
     profileId: null,
-    projectId: 'project-1',
+    isProjectOwner: false,
     type: 'guest',
-  } as AgentOrGuest;
+  };
 
   beforeEach(() => {
     global.fetch = jest.fn(async () => ({
@@ -1194,9 +1205,9 @@ describe('ChatSidebar unlogged time markers', () => {
     id: 'guest-1',
     name: 'Guest Agent',
     profileId: null,
-    projectId: 'project-1',
+    isProjectOwner: false,
     type: 'guest',
-  } as AgentOrGuest;
+  };
 
   beforeEach(() => {
     global.fetch = jest.fn(async () => ({

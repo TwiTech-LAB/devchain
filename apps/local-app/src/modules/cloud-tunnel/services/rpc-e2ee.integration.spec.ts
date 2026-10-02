@@ -290,6 +290,7 @@ describe('RPC lane E2EE — backend integration (real :memory: SQLite key servic
     expect(resp.error).toBeUndefined();
     const opened = (await mobileEnvelope.open(resp.result, resCtx(method))) as SealedRpcResult;
     expect(opened.ok).toBe(false);
+    if (opened.ok) return;
     expect(opened.error.data).toEqual({ code: 'CROSS_PROJECT' });
   });
 

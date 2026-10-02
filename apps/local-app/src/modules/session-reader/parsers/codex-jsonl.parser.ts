@@ -20,6 +20,13 @@ const logger = createLogger('CodexJsonlParser');
 /** Maximum allowed line length in bytes (10 MB) */
 const MAX_LINE_BYTES = 10 * 1024 * 1024;
 
+/** Events that end a Codex turn. An interrupted turn (Esc) ends with turn_aborted alone. */
+const CODEX_TURN_END_EVENTS: ReadonlySet<string> = new Set([
+  'task_complete',
+  'turn_complete',
+  'turn_aborted',
+]);
+
 // ---------------------------------------------------------------------------
 // Raw Codex JSONL types (defensive — all fields optional)
 // ---------------------------------------------------------------------------
@@ -656,8 +663,10 @@ export async function parseCodexJsonl(
               break;
             }
 
+            // The cases are CODEX_TURN_END_EVENTS; the prefix scan reads the same set.
             case 'task_complete':
-            case 'turn_complete': {
+            case 'turn_complete':
+            case 'turn_aborted': {
               // Flush remaining assistant buffer at turn end (the trailing tool_result, if
               // any, folds onto the just-flushed assistant via lastAssistantMessage).
               flushAssistantBuffer();
@@ -956,7 +965,7 @@ async function readTokenSnapshotBeforeOffset(
         continue;
       }
 
-      if (eventType === 'task_complete' || eventType === 'turn_complete') {
+      if (CODEX_TURN_END_EVENTS.has(eventType)) {
         snapshot.openTurns = Math.max(0, snapshot.openTurns - 1);
         if (snapshot.openTurns === 0) snapshot.lastTurnComplete = true;
         continue;

@@ -26,26 +26,29 @@ it('accepts bounded outside-home paths and defaults the optional path list', () 
     true,
   );
 });
-it('reports EACCES and other stat errors as unknown while ENOENT is absent', async () => {
+it('marks single files, and reports EACCES and other stat errors as unknown while ENOENT is absent', async () => {
   const engine = {
     info: jest.fn(async () => ({ Architecture: 'arm64' })),
     json: jest.fn(async (_method, path) => (path === '/volumes' ? { Volumes: null } : [])),
   } as unknown as DockerEngineClient;
   jest.spyOn(DockerEngineClient, 'connect').mockResolvedValue(engine);
   jest.mocked(fs.stat).mockImplementation(async (path) => {
-    if (path === '/outside/link') return {} as never;
+    if (path === '/outside/link') return { isFile: () => false } as never;
+    if (path === '/outside/file') return { isFile: () => true } as never;
     throw Object.assign(new Error('private detail'), {
       code: path === '/missing' ? 'ENOENT' : path === '/denied' ? 'EACCES' : 'EIO',
     });
   });
   const result = await new HostDockerService({} as DockerArchiveJournal).scan([
     '/outside/link',
+    '/outside/file',
     '/denied',
     '/missing',
     '/io-error',
   ]);
   expect(result.paths).toEqual([
     { path: '/outside/link', exists: true },
+    { path: '/outside/file', exists: true, file: true },
     { path: '/denied', unknown: true },
     { path: '/missing', exists: false },
     { path: '/io-error', unknown: true },

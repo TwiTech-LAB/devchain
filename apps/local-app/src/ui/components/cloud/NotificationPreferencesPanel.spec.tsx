@@ -91,14 +91,21 @@ jest.mock('../ui/select', () => {
 
     React.Children.forEach(nodes, (child: React.ReactElement) => {
       if (!child?.type) return;
-      if (child.type.__SELECT_TRIGGER) {
+      const type = child.type;
+      const isTrigger =
+        typeof type === 'function' && '__SELECT_TRIGGER' in type && type.__SELECT_TRIGGER === true;
+      const isContent =
+        typeof type === 'function' && '__SELECT_CONTENT' in type && type.__SELECT_CONTENT === true;
+      const isItem =
+        typeof type === 'function' && '__SELECT_ITEM' in type && type.__SELECT_ITEM === true;
+      if (isTrigger) {
         triggerProps = { id: child.props.id, 'aria-label': child.props['aria-label'] };
       }
-      if (child.type.__SELECT_CONTENT || child.type.__SELECT_TRIGGER) {
+      if (isContent || isTrigger) {
         const nested = collect(child.props.children);
         options.push(...nested.options);
         triggerProps = { ...triggerProps, ...nested.triggerProps };
-      } else if (child.type.__SELECT_ITEM) {
+      } else if (isItem) {
         options.push(
           <option key={child.props.value} value={child.props.value}>
             {child.props.children}

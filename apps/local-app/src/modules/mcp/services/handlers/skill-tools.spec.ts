@@ -91,11 +91,11 @@ function createContext(): SkillToolContext {
       getSkillsEpicReferences: jest
         .fn()
         .mockResolvedValue([{ slug: 'source/testing', total: 1, byStatus: { 'In Progress': 1 } }]),
-    } as SkillToolContext['skillsService'],
+    } as unknown as SkillToolContext['skillsService'],
     skillSourceLifecycleService: {
       syncSource: jest.fn(),
       syncAll: jest.fn(),
-    } as SkillToolContext['skillSourceLifecycleService'],
+    } as unknown as SkillToolContext['skillSourceLifecycleService'],
     resolveSessionContext: jest.fn().mockResolvedValue({
       success: true,
       data: {

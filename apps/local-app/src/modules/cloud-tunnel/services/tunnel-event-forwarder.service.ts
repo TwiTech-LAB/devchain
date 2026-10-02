@@ -7,7 +7,7 @@ import {
 } from '@devchain/shared';
 import { createLogger } from '../../../common/logging/logger';
 import { broadcastRegistry } from '../../events/catalog/broadcast-registry';
-import { projectBroadcast } from '../../events/catalog/project-broadcast';
+import { projectBroadcast, type ProjectedBroadcast } from '../../events/catalog/project-broadcast';
 import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
 import { WorkspaceModeCoordinatorService } from '../../workspaces/services/workspace-mode-coordinator.service';
 import { TunnelClientService } from './tunnel-client.service';
@@ -40,7 +40,8 @@ type ForwardedEvent = (typeof TUNNEL_FORWARDED_EVENTS)[number];
  * The subset of forwarded events whose push `payload` carries real CONTENT (not just a
  * routing hint), so it must NEVER ship in plaintext to a non-E2EE-capable peer:
  *  - `claude.hooks.ask_user_question.pending` — the question text.
- *  - `session.transcript.updated` — `deltaChunks`/`deltaMessages` carry transcript body text.
+ *  - `session.transcript.updated` — kept sealed-only even though the forwarded hint omits
+ *    `deltaChunks`/`deltaMessages` (its socket.io payload carries transcript body text).
  *  - `agent.created` / `agent.deleted` — carry agent/team NAMES.
  *
  * When the lane can encrypt these are sealed like any other frame; when it can't, they are
@@ -60,6 +61,22 @@ export const CONTENT_BEARING_PUSH_EVENTS: ReadonlySet<ForwardedEvent> = new Set<
   'agent.created',
   'agent.deleted',
 ]);
+
+/**
+ * A transcript push is a hint: the phone reads the change through its tail RPC, so the
+ * transcript body the socket.io payload carries never rides the tunnel. A frame carrying
+ * a whole running AI chunk can exceed the bridge's per-connection backlog and drop the
+ * stream.
+ */
+function toPushHint(event: ForwardedEvent, projected: ProjectedBroadcast): ProjectedBroadcast {
+  if (event !== 'session.transcript.updated') return projected;
+  const {
+    deltaChunks: _chunks,
+    deltaMessages: _messages,
+    ...hint
+  } = projected.payload as Record<string, unknown>;
+  return { ...projected, payload: hint };
+}
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -165,7 +182,7 @@ export class TunnelEventForwarderService implements OnModuleInit, OnModuleDestro
         // Same gate the socket.io broadcaster applies, so the two transports cannot
         // disagree about which payloads are broadcastable.
         if (entry.shouldBroadcast && !entry.shouldBroadcast(payload)) continue;
-        const projected = projectBroadcast(entry, payload);
+        const projected = toPushHint(event, projectBroadcast(entry, payload));
         const outboundPayload =
           channel.mode === 'encrypted'
             ? await channel.seal!(projected.topic, projected.type, projected.payload)

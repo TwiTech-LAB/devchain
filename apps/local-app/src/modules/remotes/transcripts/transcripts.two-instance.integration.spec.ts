@@ -91,6 +91,9 @@ describe('recorded transcript handoff', () => {
   }
 
   beforeAll(async () => {
+    // The restores below run the shared MCP readiness check against a real
+    // PreflightService; no provider CLIs exist here, so use the test mode.
+    process.env.SKIP_PREFLIGHT = '1';
     instances = await startTwoInstances({
       transcriptRoots: (_name, dir) => ({
         claude: [join(dir, 'claude')],
@@ -108,6 +111,7 @@ describe('recorded transcript handoff', () => {
   });
   afterAll(async () => {
     await instances?.close();
+    delete process.env.SKIP_PREFLIGHT;
   });
 
   it('copies Claude companions and a >1 MiB Codex file on Connect, and returns host-only files on Disconnect', async () => {
@@ -275,6 +279,7 @@ describe('recorded transcript handoff', () => {
         !(await readdir(dirname(files(instances.host).path(codex)))).some((name) =>
           name.endsWith('.part'),
         ),
+      10_000,
     );
     expect(await readFile(files(instances.host).path(codex), 'utf8')).toBe('old');
     await client().uploadTranscript(remoteId, codex, files(instances.home));

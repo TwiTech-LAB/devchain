@@ -72,9 +72,15 @@ describe('useAgentTimeBuffers', () => {
     expect(client.getQueryData(epicTimeQueryKeys.buffers('project-1', 'active'))).toEqual(
       snapshotPayload,
     );
+    const cachedOptions: unknown = client.getQueryCache().find({
+      queryKey: epicTimeQueryKeys.buffers('project-1', 'active'),
+    })?.options;
     expect(
-      client.getQueryCache().find({ queryKey: epicTimeQueryKeys.buffers('project-1', 'active') })
-        ?.options.refetchInterval,
+      cachedOptions !== null &&
+        typeof cachedOptions === 'object' &&
+        'refetchInterval' in cachedOptions
+        ? cachedOptions.refetchInterval
+        : undefined,
     ).toBe(5_000);
   });
 

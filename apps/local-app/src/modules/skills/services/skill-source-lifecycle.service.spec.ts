@@ -134,7 +134,13 @@ describe('SkillSourceLifecycleService', () => {
     const sync = deferred<SyncResult>();
     syncExecutor.syncSource.mockReturnValueOnce(sync.promise);
     const source = await service.createCommunitySource(
-      { name: 'community-source', repoOwner: 'owner', repoName: 'repo', branch: 'main' },
+      {
+        name: 'community-source',
+        repoOwner: 'owner',
+        repoName: 'repo',
+        branch: 'main',
+        existingProjects: { mode: 'none' },
+      },
       { deferInitialSync: true },
     );
     expect(source.name).toBe('community-source');
@@ -166,8 +172,13 @@ describe('SkillSourceLifecycleService', () => {
               repoOwner: 'owner',
               repoName: 'repo',
               branch: 'main',
+              existingProjects: { mode: 'none' },
             })
-          : service.createLocalSource({ name: 'devchain', folderPath: '/tmp/local-source' });
+          : service.createLocalSource({
+              name: 'devchain',
+              folderPath: '/tmp/local-source',
+              existingProjects: { mode: 'none' },
+            });
 
       await expect(operation).rejects.toThrow(ValidationError);
       expect(storage.createCommunitySkillSource).not.toHaveBeenCalled();
@@ -181,10 +192,12 @@ describe('SkillSourceLifecycleService', () => {
       repoOwner: 'owner',
       repoName: 'repo',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
     await service.createLocalSource({
       name: 'local-source',
       folderPath: '/tmp/local-source/../local-source',
+      existingProjects: { mode: 'none' },
     });
 
     expect(storage.createCommunitySkillSource).toHaveBeenCalledWith(
@@ -239,6 +252,7 @@ describe('SkillSourceLifecycleService', () => {
         repoOwner: 'owner',
         repoName: 'repo',
         branch: 'main',
+        existingProjects: { mode: 'none' },
       }),
     ).resolves.toMatchObject({ name: 'created-source' });
     expect(logger.warn).toHaveBeenCalledWith(
@@ -258,6 +272,7 @@ describe('SkillSourceLifecycleService', () => {
         repoOwner: 'owner',
         repoName: 'repo',
         branch: 'main',
+        existingProjects: { mode: 'none' },
       })
       .finally(() => {
         settled = true;
@@ -277,7 +292,11 @@ describe('SkillSourceLifecycleService', () => {
     );
 
     await expect(
-      service.createLocalSource({ name: 'local-source', folderPath: '/tmp/local-source' }),
+      service.createLocalSource({
+        name: 'local-source',
+        folderPath: '/tmp/local-source',
+        existingProjects: { mode: 'none' },
+      }),
     ).resolves.toMatchObject({ name: 'local-source' });
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ sourceName: 'local-source', failed: 1 }),
@@ -287,7 +306,11 @@ describe('SkillSourceLifecycleService', () => {
 
   it('validates local absolute and readable root plus skills directory', async () => {
     await expect(
-      service.createLocalSource({ name: 'local-source', folderPath: './relative' }),
+      service.createLocalSource({
+        name: 'local-source',
+        folderPath: './relative',
+        existingProjects: { mode: 'none' },
+      }),
     ).rejects.toThrow('folderPath must be an absolute path.');
 
     const missing = Object.assign(new Error('missing'), { code: 'ENOENT' });
@@ -296,7 +319,11 @@ describe('SkillSourceLifecycleService', () => {
       .mockResolvedValueOnce({ isDirectory: () => true } as never)
       .mockRejectedValueOnce(missing);
     await expect(
-      service.createLocalSource({ name: 'local-source', folderPath: '/tmp/local-source' }),
+      service.createLocalSource({
+        name: 'local-source',
+        folderPath: '/tmp/local-source',
+        existingProjects: { mode: 'none' },
+      }),
     ).rejects.toThrow('skillsPath does not exist.');
     expect(storage.createLocalSkillSource).not.toHaveBeenCalled();
   });
@@ -345,6 +372,7 @@ describe('SkillSourceLifecycleService', () => {
         repoOwner: 'owner',
         repoName: 'repo',
         branch: 'main',
+        existingProjects: { mode: 'none' },
       }),
     ).resolves.toMatchObject({ name: 'deferred-source' });
     expect(syncExecutor.syncSource).not.toHaveBeenCalled();
@@ -369,13 +397,18 @@ describe('SkillSourceLifecycleService', () => {
       repoOwner: 'owner',
       repoName: 'repo-a',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
     active.resolve(completedResult());
     await publicSync;
     await Promise.resolve();
     expect(syncExecutor.syncSource).toHaveBeenCalledWith('source-a');
 
-    await service.createLocalSource({ name: 'source-b', folderPath: '/tmp/source-b' });
+    await service.createLocalSource({
+      name: 'source-b',
+      folderPath: '/tmp/source-b',
+      existingProjects: { mode: 'none' },
+    });
     firstDeferred.resolve(completedResult());
     await Promise.resolve();
     await Promise.resolve();
@@ -402,7 +435,11 @@ describe('SkillSourceLifecycleService', () => {
     });
     const publicSync = service.syncAll();
     const deletion = service.deleteCommunitySource('delete-id');
-    await service.createLocalSource({ name: 'later-source', folderPath: '/tmp/later-source' });
+    await service.createLocalSource({
+      name: 'later-source',
+      folderPath: '/tmp/later-source',
+      existingProjects: { mode: 'none' },
+    });
 
     active.resolve(completedResult());
     await publicSync;
@@ -433,12 +470,14 @@ describe('SkillSourceLifecycleService', () => {
       repoOwner: 'owner',
       repoName: 'repo-a',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
     await service.createCommunitySource({
       name: 'source-b',
       repoOwner: 'owner',
       repoName: 'repo-b',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
     const deletion = service.deleteLocalSource('delete-id');
 
@@ -465,12 +504,14 @@ describe('SkillSourceLifecycleService', () => {
       repoOwner: 'owner',
       repoName: 'repo-a',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
     await service.createCommunitySource({
       name: 'SAME-SOURCE',
       repoOwner: 'owner',
       repoName: 'repo-b',
       branch: 'main',
+      existingProjects: { mode: 'none' },
     });
     active.resolve(completedResult());
     await publicSync;

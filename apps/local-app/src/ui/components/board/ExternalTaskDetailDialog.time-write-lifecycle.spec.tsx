@@ -147,7 +147,9 @@ describe('ExternalTaskDetailDialog time-write lifecycle', () => {
   beforeEach(() => {
     fetchMock.mockReset();
     initialDetailDelivered = false;
-    uuidSpy = jest.spyOn(window.crypto, 'randomUUID').mockReturnValue('write-operation-id');
+    uuidSpy = jest
+      .spyOn(window.crypto, 'randomUUID')
+      .mockReturnValue('00000000-0000-4000-8000-000000000003');
   });
 
   afterEach(() => uuidSpy.mockRestore());
@@ -245,7 +247,9 @@ describe('ExternalTaskDetailDialog time-write lifecycle', () => {
       receipt: { operationId: 'late-unknown', phase: 'outcome_unknown' },
     });
     expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
-    const unknownAlert = screen.getByText('Last submission unconfirmed').closest('[role="alert"]')!;
+    const unknownAlert = screen
+      .getByText('Last submission unconfirmed')
+      .closest<HTMLElement>('[role="alert"]')!;
     expect(within(unknownAlert).queryByRole('button', { name: 'Verify' })).toBeNull();
     expect(within(unknownAlert).getByRole('link', { name: /Open in source/ })).toBeVisible();
     expect(
@@ -295,7 +299,7 @@ describe('ExternalTaskDetailDialog time-write lifecycle', () => {
 
     write.resolve({
       outcome: 'deleted',
-      receipt: { operationId: 'write-operation-id', phase: 'succeeded' },
+      receipt: { operationId: '00000000-0000-4000-8000-000000000003', phase: 'succeeded' },
     });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
     expect(screen.getByRole('button', { name: /Delete 30m entry started/ })).toBeEnabled();

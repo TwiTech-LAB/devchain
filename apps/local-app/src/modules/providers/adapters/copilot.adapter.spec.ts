@@ -1,11 +1,15 @@
 import { CopilotAdapter } from './copilot.adapter';
 import { isHookCapable } from './capabilities';
+import type { ProviderAdapter } from './provider-adapter.interface';
 
 describe('CopilotAdapter', () => {
   let adapter: CopilotAdapter;
 
   beforeEach(() => {
-    adapter = new CopilotAdapter();
+    adapter = new CopilotAdapter(
+      { ensure: jest.fn() } as never,
+      { isAuthenticated: jest.fn() } as never,
+    );
   });
 
   describe('static capability surface', () => {
@@ -22,7 +26,8 @@ describe('CopilotAdapter', () => {
     });
 
     it('does NOT define launchInitialPromptBehavior (seeding handles the prompt, no paste)', () => {
-      expect(adapter.launchInitialPromptBehavior).toBeUndefined();
+      const asProvider: ProviderAdapter = adapter;
+      expect(asProvider.launchInitialPromptBehavior).toBeUndefined();
     });
 
     it('declares deterministic first-match discovery (S2) requiring providerSessionId for restore', () => {
@@ -136,7 +141,10 @@ describe('CopilotAdapter', () => {
         code: 'COPILOT_CONFIG_MALFORMED',
       };
       const ensure = jest.fn().mockResolvedValue({ success: false, warnings: [warning] });
-      const withService = new CopilotAdapter({ ensure } as never);
+      const withService = new CopilotAdapter(
+        { ensure } as never,
+        { isAuthenticated: jest.fn() } as never,
+      );
 
       const result = await withService.provisionProjectPath('/home/user/project');
 
@@ -146,7 +154,10 @@ describe('CopilotAdapter', () => {
 
     it('returns success with no warnings on a clean trust write', async () => {
       const ensure = jest.fn().mockResolvedValue({ success: true, warnings: [] });
-      const withService = new CopilotAdapter({ ensure } as never);
+      const withService = new CopilotAdapter(
+        { ensure } as never,
+        { isAuthenticated: jest.fn() } as never,
+      );
 
       const result = await withService.provisionProjectPath('/home/user/project');
 
@@ -155,7 +166,10 @@ describe('CopilotAdapter', () => {
 
     it('never throws — a service failure becomes a provisioning warning', async () => {
       const ensure = jest.fn().mockRejectedValue(new Error('disk on fire'));
-      const withService = new CopilotAdapter({ ensure } as never);
+      const withService = new CopilotAdapter(
+        { ensure } as never,
+        { isAuthenticated: jest.fn() } as never,
+      );
 
       const result = await withService.provisionProjectPath('/home/user/project');
 

@@ -1,4 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
+import type { EffortCapability } from '../../../providers/adapters/capabilities/effort.capability';
+import type { HookCapability } from '../../../providers/adapters/capabilities/hook.capability';
 import type { ProviderAdapter } from '../../../providers/adapters/provider-adapter.interface';
 import { ProviderPluginPolicyService } from '../../../providers/services/provider-plugin-policy.service';
 import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
@@ -186,12 +188,13 @@ describe('ProviderRuntimePreparationService', () => {
         argv: [...argv, '--effort', 'agent-effort'],
         env,
       }));
-      const adapter: TestAdapter = {
+      const adapter: TestAdapter & HookCapability & EffortCapability = {
         ...makeAdapter('claude'),
         hooksEnabled: true,
         hooksEventName: 'Notification',
         hooksProvideTranscriptPath: true,
         buildHookEnv,
+        defaultEffortValues: [],
         applyEffort,
       };
       storage.getProviderEnvForProject.mockReturnValue({ SHARED: 'provider', PROVIDER: 'yes' });

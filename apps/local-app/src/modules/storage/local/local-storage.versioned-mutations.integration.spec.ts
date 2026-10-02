@@ -66,6 +66,7 @@ describe('LocalStorageService versioned mutations (integration)', () => {
       name: 'Versioned mutations',
       rootPath: '/tmp/versioned-mutations',
       description: null,
+      isTemplate: false,
     });
     statusId = (await service.listStatuses(project.id)).items[0]!.id;
     capturedSql = [];
@@ -104,6 +105,7 @@ describe('LocalStorageService versioned mutations (integration)', () => {
       description: null,
       statusId,
       tags: ['existing'],
+      data: null,
       ...overrides,
     });
   }

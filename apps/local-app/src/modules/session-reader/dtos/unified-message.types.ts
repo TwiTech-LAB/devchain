@@ -89,4 +89,11 @@ export interface UnifiedMessage {
    * fold onto a cached tail that already `end_turn`-ed (that is a new turn, not a continuation).
    */
   stopReason?: string | null;
+  /**
+   * Epoch ms of the last assistant entry folded into this message; absent when nothing was
+   * folded (`timestamp` is then that entry's time). `timestamp` stays the FIRST entry's time,
+   * so turn-end evidence must read this to date a folded turn by its closing entry.
+   * Internal: not sent on the wire.
+   */
+  lastEntryAtMs?: number;
 }

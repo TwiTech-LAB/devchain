@@ -1,7 +1,18 @@
-import type { AgentSessionContext } from '../../dtos/mcp.dto';
+import type {
+  AgentSessionContext,
+  GetAgentByNameResponse,
+  ListAgentsResponse,
+  ListStatusesResponse,
+  McpResponse,
+} from '../../dtos/mcp.dto';
 import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 import type { AgentToolContext } from './agent-context';
 import { handleGetAgentByName, handleListAgents, handleListStatuses } from './agent-tools';
+
+/** `McpResponse.data` is `unknown` by design; tests state the payload they expect. */
+function dataOf<T>(result: McpResponse): T {
+  return result.data as T;
+}
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -108,7 +119,7 @@ describe('agent-tools handlers', () => {
   describe('handleListAgents', () => {
     it('returns error when no project associated', async () => {
       const agentCtx = makeAgentCtx();
-      (agentCtx as Record<string, unknown>).project = null;
+      (agentCtx as unknown as Record<string, unknown>).project = null;
       const ctx = makeAgentTestCtx();
       (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({ success: true, data: agentCtx });
 
@@ -143,7 +154,7 @@ describe('agent-tools handlers', () => {
 
       const result = await handleListAgents(ctx, { sessionId: SESSION_ID });
       expect(result.success).toBe(true);
-      expect(result.data.agents).toEqual([
+      expect(dataOf<ListAgentsResponse>(result).agents).toEqual([
         expect.objectContaining({ name: 'Alpha', type: 'agent' }),
         expect.objectContaining({ name: 'Beta', type: 'guest', online: true }),
         expect.objectContaining({ name: 'Zeta', type: 'agent' }),
@@ -205,9 +216,9 @@ describe('agent-tools handlers', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data.agent.name).toBe(AGENT_NAME);
+      expect(dataOf<GetAgentByNameResponse>(result).agent.name).toBe(AGENT_NAME);
       expect(ctx.storage.getAgentByName).toHaveBeenCalledWith(PROJECT_ID, AGENT_NAME);
-      expect(result.data.agent.profile).toEqual({
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile).toEqual({
         id: 'p1',
         name: 'Profile',
         instructionsResolved: {
@@ -217,8 +228,13 @@ describe('agent-tools handlers', () => {
           prompts: [],
         },
       });
-      expect(result.data.agent.profile).not.toHaveProperty('instructions');
-      expect(result.data.agent.assignedEpics).toEqual({ items: [], total: 0 });
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile).not.toHaveProperty(
+        'instructions',
+      );
+      expect(dataOf<GetAgentByNameResponse>(result).agent.assignedEpics).toEqual({
+        items: [],
+        total: 0,
+      });
       expect(ctx.instructionsResolver.resolve).toHaveBeenCalledTimes(1);
     });
 
@@ -228,8 +244,12 @@ describe('agent-tools handlers', () => {
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
       expect(result.success).toBe(true);
-      expect(result.data.agent.profile).not.toHaveProperty('instructions');
-      expect(result.data.agent.profile?.instructionsResolved).toMatchObject({
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile).not.toHaveProperty(
+        'instructions',
+      );
+      expect(
+        dataOf<GetAgentByNameResponse>(result).agent.profile?.instructionsResolved,
+      ).toMatchObject({
         contentMd: 'Run tasks step by step.',
         truncated: false,
       });
@@ -246,8 +266,12 @@ describe('agent-tools handlers', () => {
 
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
-      expect(result.data.agent.profile?.instructions).toBe('Run tasks step by step.');
-      expect(result.data.agent.profile?.instructionsResolved).toMatchObject({ truncated: true });
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile?.instructions).toBe(
+        'Run tasks step by step.',
+      );
+      expect(
+        dataOf<GetAgentByNameResponse>(result).agent.profile?.instructionsResolved,
+      ).toMatchObject({ truncated: true });
     });
 
     it('keeps the raw instructions when a prompt reference drops surrounding prose', async () => {
@@ -271,8 +295,10 @@ describe('agent-tools handlers', () => {
 
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
-      expect(result.data.agent.profile?.instructions).toBe(instructions);
-      expect(result.data.agent.profile?.instructionsResolved).toMatchObject({ truncated: false });
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile?.instructions).toBe(instructions);
+      expect(
+        dataOf<GetAgentByNameResponse>(result).agent.profile?.instructionsResolved,
+      ).toMatchObject({ truncated: false });
     });
 
     it('returns null instructions and no resolved text for a profile without instructions', async () => {
@@ -290,8 +316,10 @@ describe('agent-tools handlers', () => {
 
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
-      expect(result.data.agent.profile?.instructions).toBeNull();
-      expect(result.data.agent.profile?.instructionsResolved).toBeUndefined();
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile?.instructions).toBeNull();
+      expect(
+        dataOf<GetAgentByNameResponse>(result).agent.profile?.instructionsResolved,
+      ).toBeUndefined();
     });
 
     it('returns newest open assigned epics with status and a pre-cap total', async () => {
@@ -330,15 +358,17 @@ describe('agent-tools handlers', () => {
 
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
-      expect(result.data.agent.assignedEpics.total).toBe(22);
-      expect(result.data.agent.assignedEpics.items).toHaveLength(20);
-      expect(result.data.agent.assignedEpics.items[0]).toEqual({
+      expect(dataOf<GetAgentByNameResponse>(result).agent.assignedEpics.total).toBe(22);
+      expect(dataOf<GetAgentByNameResponse>(result).agent.assignedEpics.items).toHaveLength(20);
+      expect(dataOf<GetAgentByNameResponse>(result).agent.assignedEpics.items[0]).toEqual({
         id: 'epic-22',
         parentId: 'parent-1',
         title: 'Open epic 22',
         status: 'New',
       });
-      expect(result.data.agent.assignedEpics.items[19].id).toBe('epic-03');
+      expect(dataOf<GetAgentByNameResponse>(result).agent.assignedEpics.items[19].id).toBe(
+        'epic-03',
+      );
       expect(ctx.storage.listAssignedEpics).toHaveBeenCalledWith(PROJECT_ID, {
         agentName: AGENT_NAME,
         excludeMcpHidden: true,
@@ -403,7 +433,7 @@ describe('agent-tools handlers', () => {
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
       expect(result.success).toBe(true);
-      expect(result.data.agent).toMatchObject({
+      expect(dataOf<GetAgentByNameResponse>(result).agent).toMatchObject({
         providerConfigId: 'config-1',
         providerConfigName: 'Claude Sonnet',
         teams: [
@@ -431,8 +461,12 @@ describe('agent-tools handlers', () => {
         },
         profile: { id: 'p1', name: 'Profile' },
       });
-      expect(result.data.agent.profile).not.toHaveProperty('instructions');
-      expect(result.data.agent.profile).not.toHaveProperty('instructionsResolved');
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile).not.toHaveProperty(
+        'instructions',
+      );
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile).not.toHaveProperty(
+        'instructionsResolved',
+      );
       expect(ctx.instructionsResolver.resolve).not.toHaveBeenCalled();
     });
 
@@ -455,7 +489,10 @@ describe('agent-tools handlers', () => {
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
       expect(result.success).toBe(true);
-      expect(result.data.agent.profile).toEqual({ id: 'p1', name: 'Profile' });
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile).toEqual({
+        id: 'p1',
+        name: 'Profile',
+      });
       expect(ctx.instructionsResolver.resolve).not.toHaveBeenCalled();
     });
 
@@ -478,7 +515,7 @@ describe('agent-tools handlers', () => {
 
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
-      expect(result.data.agent.presence).toEqual({
+      expect(dataOf<GetAgentByNameResponse>(result).agent.presence).toEqual({
         online: true,
         activityState: 'idle',
         lastActivityAt: null,
@@ -497,7 +534,7 @@ describe('agent-tools handlers', () => {
 
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
-      expect(result.data.agent.presence).toEqual({
+      expect(dataOf<GetAgentByNameResponse>(result).agent.presence).toEqual({
         online: false,
         activityState: null,
         lastActivityAt: null,
@@ -517,8 +554,8 @@ describe('agent-tools handlers', () => {
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
       expect(result.success).toBe(true);
-      expect(result.data.agent.presence).toBeNull();
-      expect(result.data.agent.providerConfigName).toBe('Claude Sonnet');
+      expect(dataOf<GetAgentByNameResponse>(result).agent.presence).toBeNull();
+      expect(dataOf<GetAgentByNameResponse>(result).agent.providerConfigName).toBe('Claude Sonnet');
     });
 
     it('degrades unavailable teams without discarding presence or config', async () => {
@@ -534,9 +571,9 @@ describe('agent-tools handlers', () => {
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
       expect(result.success).toBe(true);
-      expect(result.data.agent.teams).toEqual([]);
-      expect(result.data.agent.providerConfigName).toBe('Claude Sonnet');
-      expect(result.data.agent.presence.online).toBe(false);
+      expect(dataOf<GetAgentByNameResponse>(result).agent.teams).toEqual([]);
+      expect(dataOf<GetAgentByNameResponse>(result).agent.providerConfigName).toBe('Claude Sonnet');
+      expect(dataOf<GetAgentByNameResponse>(result).agent.presence?.online).toBe(false);
     });
 
     it('preserves provider config id when its name lookup fails', async () => {
@@ -549,8 +586,8 @@ describe('agent-tools handlers', () => {
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
       expect(result.success).toBe(true);
-      expect(result.data.agent.providerConfigId).toBe('config-1');
-      expect(result.data.agent.providerConfigName).toBeNull();
+      expect(dataOf<GetAgentByNameResponse>(result).agent.providerConfigId).toBe('config-1');
+      expect(dataOf<GetAgentByNameResponse>(result).agent.providerConfigName).toBeNull();
     });
 
     it('degrades assigned epic lookup without changing other card fields', async () => {
@@ -562,11 +599,16 @@ describe('agent-tools handlers', () => {
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: AGENT_NAME });
 
       expect(result.success).toBe(true);
-      expect(result.data.agent.assignedEpics).toEqual({ items: [], total: 0 });
-      expect(result.data.agent.providerConfigName).toBe('Claude Sonnet');
-      expect(result.data.agent.teams).toEqual([]);
-      expect(result.data.agent.presence).toBeNull();
-      expect(result.data.agent.profile).toHaveProperty('instructionsResolved');
+      expect(dataOf<GetAgentByNameResponse>(result).agent.assignedEpics).toEqual({
+        items: [],
+        total: 0,
+      });
+      expect(dataOf<GetAgentByNameResponse>(result).agent.providerConfigName).toBe('Claude Sonnet');
+      expect(dataOf<GetAgentByNameResponse>(result).agent.teams).toEqual([]);
+      expect(dataOf<GetAgentByNameResponse>(result).agent.presence).toBeNull();
+      expect(dataOf<GetAgentByNameResponse>(result).agent.profile).toHaveProperty(
+        'instructionsResolved',
+      );
       expect(ctx.instructionsResolver.resolve).toHaveBeenCalledTimes(1);
     });
 
@@ -575,7 +617,9 @@ describe('agent-tools handlers', () => {
       const result = await handleGetAgentByName(ctx, { sessionId: SESSION_ID, name: 'Unknown' });
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('AGENT_NOT_FOUND');
-      expect(result.error?.data?.availableNames).toContain(AGENT_NAME);
+      expect((result.error?.data as { availableNames: string[] }).availableNames).toContain(
+        AGENT_NAME,
+      );
     });
   });
 
@@ -584,7 +628,7 @@ describe('agent-tools handlers', () => {
       const ctx = makeAgentTestCtx();
       const result = await handleListStatuses(ctx, { sessionId: SESSION_ID });
       expect(result.success).toBe(true);
-      expect(result.data.statuses).toEqual([
+      expect(dataOf<ListStatusesResponse>(result).statuses).toEqual([
         expect.objectContaining({ id: STATUS_ID, name: 'New' }),
       ]);
       expect(ctx.storage.listStatuses).toHaveBeenCalledWith(PROJECT_ID, {

@@ -2,9 +2,10 @@
 // so the archive digest travels as a real HTTP trailer.
 import { Test } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from '../../../common/filters/http-exception.filter';
 import { FakeDockerEngine, type FakeMount } from '../../../common/test/fake-docker-engine.server';
 import { fixtureTls, installFixtureTlsFront } from '../../../common/test/tls-fixture';
@@ -352,6 +353,168 @@ describe('copy home', () => {
 
     const after = await copyBack.syncState(PROJECT, { remoteId: REMOTE });
     expect(after.groups.map((g) => g.state)).toEqual(['in-sync', 'in-sync']);
+  });
+
+  it('copies a bound single file back as a file', async () => {
+    const caddyfile = join(root, 'dev-https', 'Caddyfile');
+    await mkdir(join(root, 'dev-https'));
+    await writeFile(caddyfile, 'on-disk');
+    home.data.set(caddyfile, Buffer.from('home-caddy'));
+    vm.data.set(caddyfile, Buffer.from('vm-caddy'));
+    const fileMount: FakeMount = {
+      Type: 'bind',
+      Source: caddyfile,
+      Destination: '/etc/caddy/Caddyfile',
+      RW: false,
+    };
+    home.addContainer({
+      Id: 'proxy-id',
+      Name: '/proxy',
+      Image: 'sha256:web',
+      Created: BEFORE,
+      startedAt: BEFORE,
+      Config: { Image: 'app-web:latest' },
+      HostConfig: { Binds: [`${caddyfile}:/etc/caddy/Caddyfile:ro`] },
+      Mounts: [fileMount],
+    });
+    vm.addContainer({
+      Id: 'vm-proxy',
+      Name: '/proxy',
+      Image: 'sha256:web',
+      Created: AFTER,
+      startedAt: AFTER,
+      Config: { Labels: { [OWNER]: PROJECT } },
+      HostConfig: {},
+      Mounts: [fileMount],
+    });
+    const imported = inventory.get(`${PROJECT}/${REMOTE}`)!;
+    imported.items.push({
+      name: 'proxy',
+      imageId: 'sha256:web',
+      volumes: [],
+      bindPaths: ['/dev-https/Caddyfile'],
+      sizeBytes: 8,
+    });
+    imported.groups!.push({
+      volumes: [],
+      bindPaths: [caddyfile],
+      lastSyncedAt: SYNCED,
+      lastSyncDirection: 'to-vm',
+    });
+    const reads = jest.spyOn(client, 'dockerReadArchive');
+
+    await copyBack.copyHome(run());
+
+    expect(reads.mock.calls.map(([, input]) => input)).toContainEqual(
+      expect.objectContaining({ mountType: 'file', source: caddyfile }),
+    );
+    expect(text(home, caddyfile)).toBe('vm-caddy');
+    expect(text(home, state)).toBe('vm-state');
+    expect((await stat(caddyfile)).isFile()).toBe(true);
+    expect(result().copied).toContain('proxy');
+  });
+
+  it('uses the VM image ID on the VM and the home ID at home after a containerd-store import', async () => {
+    // A fresh containerd-store VM: the same images load under engine-derived IDs.
+    await vm.close();
+    await rm(join(scratch, 'vm.sock'), { force: true });
+    vm = new FakeDockerEngine('vm-engine', { imageStore: 'containerd' });
+    await vm.listen(join(scratch, 'vm.sock'));
+    seed();
+    vm.images.clear();
+    const homeClient = new DockerEngineClient(join(scratch, 'home.sock'));
+    const loadIntoVm = async (id: string): Promise<string> => {
+      const stream = await homeClient.stream('GET', `/images/get?names=${encodeURIComponent(id)}`);
+      let archive = '';
+      for await (const chunk of stream) archive += chunk.toString('utf8');
+      const loaded = await client.dockerLoadImage(REMOTE, Readable.from(archive));
+      expect(loaded.images).toHaveLength(1);
+      return loaded.images[0]!.id;
+    };
+    const vmDb = await loadIntoVm('sha256:db');
+    const vmWeb = await loadIntoVm('sha256:web');
+    expect(vmDb).not.toBe('sha256:db');
+    inventory.set(
+      `${PROJECT}/${REMOTE}`,
+      DockerImportInventorySchema.parse({
+        importedAt: SYNCED,
+        items: [
+          {
+            name: 'app-db-1',
+            imageId: 'sha256:db',
+            vmImageId: vmDb,
+            volumes: [{ name: 'app_db', sizeBytes: 12 }],
+            bindPaths: [],
+            sizeBytes: 12,
+          },
+          {
+            name: 'runner',
+            imageId: 'sha256:web',
+            vmImageId: vmWeb,
+            volumes: [],
+            bindPaths: [state],
+            sizeBytes: 10,
+          },
+        ],
+        groups: [
+          { volumes: ['app_db'], bindPaths: [], lastSyncedAt: SYNCED, lastSyncDirection: 'to-vm' },
+          { volumes: [], bindPaths: [state], lastSyncedAt: SYNCED, lastSyncDirection: 'to-vm' },
+        ],
+      }),
+    );
+
+    const readImages: string[] = [];
+    const homeHelperImages: string[] = [];
+    const vmHelperImages: string[] = [];
+    const homeJournal = join(scratch, 'home', 'docker-helper-journal');
+    const read = client.dockerReadArchive.bind(client);
+    jest.spyOn(client, 'dockerReadArchive').mockImplementation(async (...args) => {
+      readImages.push(args[1].image);
+      return read(...args);
+    });
+    const createHelper = DockerArchiveJournal.prototype.create;
+    jest.spyOn(DockerArchiveJournal.prototype, 'create').mockImplementation(async function (
+      this: DockerArchiveJournal,
+      ...args: Parameters<typeof createHelper>
+    ) {
+      // The home journal runs the copy-back helpers; the VM journal the host route's.
+      (this.directory === homeJournal ? homeHelperImages : vmHelperImages).push(String(args[1]));
+      return createHelper.apply(this, args);
+    });
+
+    await copyBack.copyHome(run());
+
+    expect(text(home, 'app_db')).toBe('vm-db-rows');
+    expect(text(home, state)).toBe('vm-state');
+    // The VM helpers read and ran with the engine-derived IDs; the home helpers ran the home IDs.
+    expect(readImages).toEqual([vmDb, vmWeb]);
+    expect([...new Set(vmHelperImages)].sort()).toEqual([vmDb, vmWeb].sort());
+    expect([...new Set(homeHelperImages)].sort()).toEqual(['sha256:db', 'sha256:web']);
+  });
+
+  it('still copies from a copy-back record written before VM image IDs existed', async () => {
+    await store.writeCopyBack(OPERATION, {
+      apiVersion: '1.47',
+      groups: [
+        {
+          key: DB_GROUP(),
+          label: 'app-db-1',
+          state: 'vm-newer',
+          action: 'copy-home',
+          volumes: ['app_db'],
+          bindPaths: [],
+          images: ['sha256:db'],
+          sizeBytes: 12,
+        },
+      ],
+      projectContainers: ['db-id', 'runner-id'],
+      started: [],
+      verified: {},
+      absent: [],
+      decidedAt: BEFORE,
+    });
+    await copyBack.copyHome(run());
+    expect(text(home, 'app_db')).toBe('vm-db-rows');
   });
 
   it('skips in-sync and home-newer groups', async () => {

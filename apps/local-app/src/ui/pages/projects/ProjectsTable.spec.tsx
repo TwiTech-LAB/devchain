@@ -70,7 +70,11 @@ function group(overrides: Partial<ProjectWorkspaceGroupModel> = {}): ProjectWork
     visibleMatchCount: 1,
     isExpanded: true,
     canToggle: true,
-    identity: { initial: 'D', baseClassName: 'bg-blue-50 border-blue-200 text-blue-800' },
+    identity: {
+      initial: 'D',
+      baseClassName: 'bg-blue-50 border-blue-200 text-blue-800',
+      selectedClassName: 'bg-blue-100 border-blue-300 text-blue-900',
+    },
     rows: [row()],
     emptyState: 'none',
     toggleExpanded: jest.fn(),

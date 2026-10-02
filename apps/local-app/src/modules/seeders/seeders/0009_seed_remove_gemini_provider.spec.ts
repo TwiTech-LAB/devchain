@@ -83,6 +83,7 @@ describe('0009_seed_remove_gemini_provider', () => {
   function createContext(logger?: Partial<Record<'info' | 'debug', jest.Mock>>): SeederContext {
     return {
       storage: {} as StorageService,
+      providerEffortSeeding: {} as SeederContext['providerEffortSeeding'],
       watchersService: {} as WatchersService,
       db,
       logger: {

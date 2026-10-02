@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RuntimeProvider } from '@/ui/hooks/useRuntime';
+import type { RuntimeInfo } from '@/ui/lib/runtime';
 
 // Layer: page integration. The board data hooks are stubbed at the fetch
 // boundary so this spec owns the controller's batch-source wiring and the
@@ -57,9 +58,8 @@ function epicFixture(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
-const runtimeAllowed = {
-  runtimeInfo: null,
-  fetchRuntime: jest.fn(),
+const runtimeAllowed: { runtimeInfo: RuntimeInfo | undefined } = {
+  runtimeInfo: undefined,
 };
 
 jest.mock('@/ui/hooks/useRuntime', () => {
@@ -106,6 +106,8 @@ describe('BoardPage stored source batch read', () => {
 
   beforeEach(() => {
     runtimeAllowed.runtimeInfo = {
+      version: 'test',
+      bootId: 'test-boot',
       integrationAdmission: { allowed: true, reason: null },
     };
     fetchMock = jest.fn(async (input: RequestInfo | URL) => {
@@ -205,6 +207,8 @@ describe('BoardPage stored source batch read', () => {
 
   it('suppresses the batch and cached notes when admission is off', async () => {
     runtimeAllowed.runtimeInfo = {
+      version: 'test',
+      bootId: 'test-boot',
       integrationAdmission: { allowed: false, reason: 'child_runtime' },
     };
     const { view } = renderBoard('/board');

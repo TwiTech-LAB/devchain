@@ -85,6 +85,7 @@ const baseAgent: AgentOrGuest = {
   providerConfigId: 'config-1',
   modelOverride: null,
   effortOverride: null,
+  isProjectOwner: false,
 };
 
 const CONFIGS: OverridesConfigOption[] = [

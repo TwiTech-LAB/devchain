@@ -23,7 +23,7 @@ const readyState = {
   pending: null,
 };
 
-function jsonResponse(payload: unknown) {
+function jsonResponse(payload: unknown): { ok: true; json: () => Promise<unknown> } {
   return { ok: true, json: async () => payload };
 }
 
@@ -65,7 +65,9 @@ describe('useExternalEstimateTimeLog', () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     fetchMock.mockReset();
-    uuidSpy = jest.spyOn(window.crypto, 'randomUUID').mockReturnValue('estimate-operation-1');
+    uuidSpy = jest
+      .spyOn(window.crypto, 'randomUUID')
+      .mockReturnValue('00000000-0000-4000-8000-000000000001');
   });
 
   afterEach(() => {
@@ -158,12 +160,12 @@ describe('useExternalEstimateTimeLog', () => {
     expect((createCall[1] as RequestInit).headers).toEqual({
       'X-DevChain-Connection-Epoch': '4',
       'Content-Type': 'application/json',
-      'Idempotency-Key': 'estimate-operation-1',
+      'Idempotency-Key': '00000000-0000-4000-8000-000000000001',
     });
     expect((createCall[1] as RequestInit).body).toBe(
       JSON.stringify({
         scopeKey,
-        requestKey: 'estimate-operation-1',
+        requestKey: '00000000-0000-4000-8000-000000000001',
         timeZone: 'Europe/Madrid',
         estimateTotalMinutes: 120,
         expectedRevision: 0,
@@ -326,11 +328,11 @@ describe('useExternalEstimateTimeLog', () => {
     const { result } = renderEstimateLog(client);
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
 
-    act(() => result.current.setLoggedMinutes(60, 3));
+    act(() => result.current.setLoggedMinutes(60, 3, 'UTC'));
     await waitFor(() => expect(result.current.setLogged.isSuccess).toBe(true));
     const setCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')!;
     expect((setCall[1] as RequestInit).body).toBe(
-      JSON.stringify({ scopeKey, loggedMinutes: 60, expectedRevision: 3 }),
+      JSON.stringify({ scopeKey, loggedMinutes: 60, expectedRevision: 3, timeZone: 'UTC' }),
     );
 
     client.setQueryData(
@@ -489,8 +491,9 @@ describe('useExternalEstimateTimeLog', () => {
         expectedRevision: 3,
         timeZone: 'UTC',
         remoteScopeKey: scopeKey,
+        dailySnapshot: [],
       });
-      result.current.setLoggedMinutes(60, 3);
+      result.current.setLoggedMinutes(60, 3, 'UTC');
     });
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
   });
@@ -683,7 +686,7 @@ describe('useExternalEstimateTimeLog', () => {
       await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
       invalidate.mockClear();
 
-      act(() => result.current.setLoggedMinutes(60, 3));
+      act(() => result.current.setLoggedMinutes(60, 3, 'UTC'));
       await waitFor(() => expect(result.current.setLogged.isSuccess).toBe(true));
       await waitFor(() =>
         expect(invalidate).toHaveBeenCalledWith({
@@ -813,6 +816,7 @@ describe('useExternalEstimateTimeLog', () => {
           expectedRevision: 3,
           timeZone: 'UTC',
           remoteScopeKey: scopeKey,
+          dailySnapshot: [],
         });
       });
       await waitFor(() => expect(result.current.create.isPending).toBe(true));

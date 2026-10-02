@@ -42,7 +42,11 @@ jest.mock('../../utils/tmux-naming.util', () => ({
 
 // ── Imports ────────────────────────────────────────────────────────────
 
-import { createRestorePipelineHarness, fakeProvider } from './__test-utils__/pipeline-harness';
+import {
+  createRestorePipelineHarness,
+  fakeProfileProviderConfig,
+  fakeProvider,
+} from './__test-utils__/pipeline-harness';
 import { ConflictError, ValidationError } from '../../../../common/errors/error-types';
 import { TerminalStreamService } from '../../../terminal/services/terminal-stream.service';
 import type { MetricsService } from '../../../metrics/services/metrics.service';
@@ -631,6 +635,99 @@ describe('SessionRestorePipeline', () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  // Restore shares launch's MCP drift repair (ensureMcpReadiness).
+  describe('MCP registration check (shared with launch)', () => {
+    const preflightWithMcp = (mcpStatus: 'pass' | 'fail', mcpMessage?: string) => ({
+      overall: 'pass',
+      checks: [],
+      providers: [{ id: 'provider-1', mcpStatus, ...(mcpMessage ? { mcpMessage } : {}) }],
+    });
+
+    it('repairs drift through the full ensureMcp with the merged provider and config env, then completes', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+      mocks.storage.getProviderEnvForProject.mockReturnValue({
+        PROVIDER_ONLY: 'provider',
+        SHARED: 'provider',
+      });
+      mocks.storage.listProfileProviderConfigsByProfile.mockResolvedValue([
+        fakeProfileProviderConfig({
+          env: { CONFIG_ONLY: 'config', SHARED: 'config' },
+        }),
+      ]);
+      mocks.preflightService.runChecks
+        .mockResolvedValueOnce(preflightWithMcp('fail', 'not registered'))
+        .mockResolvedValue(preflightWithMcp('pass'));
+
+      await pipeline.restore(sessionId, projectId);
+
+      const provider = await mocks.storage.getProvider.mock.results[0].value;
+      expect(mocks.mcpEnsureService.ensureMcp).toHaveBeenCalledTimes(1);
+      expect(mocks.mcpEnsureService.ensureMcp).toHaveBeenCalledWith(provider, '/tmp/project', {
+        env: { PROVIDER_ONLY: 'provider', CONFIG_ONLY: 'config', SHARED: 'config' },
+      });
+      expect(mocks.mcpEnsureService.ensureProjectProvisioning).not.toHaveBeenCalled();
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+        'session.restored',
+        expect.objectContaining({ sessionId }),
+      );
+    });
+
+    it('makes no repair when preflight reports mcpStatus pass', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+
+      await pipeline.restore(sessionId, projectId);
+
+      expect(mocks.preflightService.runChecks).toHaveBeenCalledTimes(1);
+      expect(mocks.mcpEnsureService.ensureMcp).not.toHaveBeenCalled();
+      expect(mocks.mcpEnsureService.ensureProjectProvisioning).not.toHaveBeenCalled();
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+        'session.restored',
+        expect.objectContaining({ sessionId }),
+      );
+    });
+
+    it('stops with ValidationError, no tmux, unchanged row, and re-armed replay retention when the repair fails', async () => {
+      const streamService = {
+        scheduleClear: jest.fn(),
+        cancelScheduledClear: jest.fn().mockReturnValue(60_000),
+        setClearExpiryHandler: jest.fn(),
+      };
+      const { pipeline, mocks } = createRestorePipelineHarness({ streamService });
+      mocks.preflightService.runChecks.mockResolvedValue(
+        preflightWithMcp('fail', 'still not registered'),
+      );
+
+      await expect(pipeline.restore(sessionId, projectId)).rejects.toThrow(
+        'MCP configuration failed after auto-ensure',
+      );
+
+      expect(mocks.mcpEnsureService.ensureMcp).toHaveBeenCalledTimes(1);
+      expect(mocks.terminalIO.createEmptySession).not.toHaveBeenCalled();
+      expect(mocks.terminalIO.typeCommand).not.toHaveBeenCalled();
+      expect(mocks.updateStmt.run).not.toHaveBeenCalled();
+      expect(mocks.eventsService.publish).not.toHaveBeenCalledWith(
+        'session.restored',
+        expect.anything(),
+      );
+      expect(streamService.scheduleClear).toHaveBeenCalledWith(sessionId, 60_000);
+    });
+
+    it('runs the MCP repair before createPlan and before the session row update', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+      mocks.preflightService.runChecks
+        .mockResolvedValueOnce(preflightWithMcp('fail', 'not registered'))
+        .mockResolvedValue(preflightWithMcp('pass'));
+
+      await pipeline.restore(sessionId, projectId);
+
+      const repairOrder = mocks.mcpEnsureService.ensureMcp.mock.invocationCallOrder[0];
+      expect(repairOrder).toBeLessThan(
+        mocks.providerRuntimePreparation.createPlan.mock.invocationCallOrder[0],
+      );
+      expect(repairOrder).toBeLessThan(mocks.updateStmt.run.mock.invocationCallOrder[0]);
     });
   });
 });

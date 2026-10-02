@@ -1,10 +1,11 @@
 import { AntigravityAdapter } from './antigravity.adapter';
+import type { ProviderAdapter } from './provider-adapter.interface';
 
 describe('AntigravityAdapter', () => {
   let adapter: AntigravityAdapter;
 
   beforeEach(() => {
-    adapter = new AntigravityAdapter();
+    adapter = new AntigravityAdapter({ ensure: jest.fn() } as never);
   });
 
   describe('static capability surface', () => {
@@ -21,7 +22,8 @@ describe('AntigravityAdapter', () => {
     });
 
     it('does NOT define launchInitialPromptBehavior (seeding handles the prompt, no paste)', () => {
-      expect(adapter.launchInitialPromptBehavior).toBeUndefined();
+      const asProvider: ProviderAdapter = adapter;
+      expect(asProvider.launchInitialPromptBehavior).toBeUndefined();
     });
 
     it('declares DB-backed discovery requiring providerSessionId for restore', () => {

@@ -32,10 +32,16 @@ describe('0011_seed_remove_claude_1m_provider_env', () => {
       updateProvider: async (id, data) => delegate.updateProvider(id, data),
     });
     storage = {
-      listProviders: (options) => delegate.listProviders(options),
-      listEnvScopesByProviderIds: (providerIds) => delegate.listEnvScopesByProviderIds(providerIds),
-      updateProviderWithScopes: async (id, data, envScopes, currentEnvKeys) =>
-        delegate.updateProviderWithScopes(id, data, envScopes, currentEnvKeys),
+      listProviders: (options: Parameters<typeof delegate.listProviders>[0]) =>
+        delegate.listProviders(options),
+      listEnvScopesByProviderIds: (providerIds: string[]) =>
+        delegate.listEnvScopesByProviderIds(providerIds),
+      updateProviderWithScopes: async (
+        id: string,
+        data: Parameters<typeof delegate.updateProviderWithScopes>[1],
+        envScopes: Parameters<typeof delegate.updateProviderWithScopes>[2],
+        currentEnvKeys: string[],
+      ) => delegate.updateProviderWithScopes(id, data, envScopes, currentEnvKeys),
     } as unknown as StorageService;
   });
 
@@ -73,6 +79,7 @@ describe('0011_seed_remove_claude_1m_provider_env', () => {
       mcpConfigured: false,
       mcpEndpoint: null,
       mcpRegisteredAt: null,
+      claudeLaunchSettingsJson: null,
       autoCompactThreshold: null,
       env,
       createdAt: TS,

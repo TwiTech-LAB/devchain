@@ -51,7 +51,9 @@ describe('agentPlan — grouping', () => {
         name: 'Squad',
         teamLeadAgentName: 'Lead',
         memberAgentNames: ['Member1', 'Member2'],
-      } as TemplateTeam,
+        allowTeamLeadCreateAgents: false,
+        profileNames: [],
+      },
     ];
 
     const groups = buildAgentGroups(agents, teams);
@@ -68,8 +70,20 @@ describe('agentPlan — grouping', () => {
   it('claims each agent for the first team that references it (no duplicate rows)', () => {
     const agents = [agent({ name: 'A' }), agent({ name: 'B' })];
     const teams: TemplateTeam[] = [
-      { name: 'T1', teamLeadAgentName: 'A', memberAgentNames: ['B'] } as TemplateTeam,
-      { name: 'T2', teamLeadAgentName: 'B', memberAgentNames: [] } as TemplateTeam,
+      {
+        name: 'T1',
+        teamLeadAgentName: 'A',
+        memberAgentNames: ['B'],
+        allowTeamLeadCreateAgents: false,
+        profileNames: [],
+      },
+      {
+        name: 'T2',
+        teamLeadAgentName: 'B',
+        memberAgentNames: [],
+        allowTeamLeadCreateAgents: false,
+        profileNames: [],
+      },
     ];
     const groups = buildAgentGroups(agents, teams);
     expect(groups.map((g) => g.agentNames)).toEqual([['A', 'B']]);

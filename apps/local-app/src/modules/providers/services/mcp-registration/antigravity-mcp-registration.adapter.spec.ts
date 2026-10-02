@@ -39,13 +39,16 @@ describe('AntigravityMcpRegistrationAdapter (HOME-global mcp_config.json)', () =
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: '',
     updatedAt: '',
   };
 
   // Minimal factory stub: agy resolves to the real (pure) capability methods.
   const factory = {
-    getAdapter: () => new AntigravityAdapter(),
+    getAdapter: () => new AntigravityAdapter(undefined as never),
   } as unknown as ProviderAdapterFactory;
 
   beforeEach(async () => {

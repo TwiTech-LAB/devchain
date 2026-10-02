@@ -104,10 +104,13 @@ export class HostDockerController {
     );
   }
   @Post('images/load')
-  @HttpCode(204)
+  @HttpCode(200)
   @ApiConsumes('application/x-tar', 'application/octet-stream')
-  @ApiOperation({ summary: 'Stream an image archive into the engine' })
-  @ApiResponse({ status: 204 })
+  @ApiOperation({ summary: 'Stream an image archive into the engine and report each loaded image' })
+  @ApiResponse({
+    status: 200,
+    description: 'The engine-assigned ID and RootFS layers of each loaded image',
+  })
   load(@Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
     return this.run(req, reply, (signal, apiVersion) =>
       this.docker.loadImage(bodyStream(req), signal, apiVersion),

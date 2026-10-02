@@ -40,6 +40,9 @@ describe('McpRegistrationPort', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -51,6 +54,9 @@ describe('McpRegistrationPort', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -62,6 +68,9 @@ describe('McpRegistrationPort', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -73,6 +82,9 @@ describe('McpRegistrationPort', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -85,8 +97,8 @@ describe('McpRegistrationPort', () => {
       new ClaudeAdapter(),
       new CodexAdapter(),
       opencodeAdapter,
-      new AntigravityAdapter(),
       // MCP methods don't use the injected trust/auth services, so stub them.
+      new AntigravityAdapter(undefined as never),
       new CopilotAdapter(undefined as never, undefined as never),
     );
     fakeExecutor = new FakeProcessExecutor();

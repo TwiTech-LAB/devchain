@@ -145,7 +145,7 @@ describe('ChangeLoginsDialog', () => {
     ).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('warns with the running count for claude and copilot and sends without force', async () => {
+  it('hints with the running count for claude and copilot and sends without force', async () => {
     remoteSessions = [
       { status: 'running', agentId: 'a1' },
       { status: 'running', agentId: 'a2' },
@@ -159,7 +159,7 @@ describe('ChangeLoginsDialog', () => {
     await choose('claude', 'Main token · Token');
     await waitFor(() =>
       expect(screen.getByTestId('env-warning')).toHaveTextContent(
-        '2 agent sessions are running on this VM. Restart running agent sessions so they use the new logins.',
+        '2 agent sessions are running on this VM. New logins apply to new sessions only. Running sessions keep their current login until you restart them.',
       ),
     );
     expect(screen.queryByTestId('family-block')).not.toBeInTheDocument();
@@ -190,7 +190,7 @@ describe('ChangeLoginsDialog', () => {
     await choose('codex', 'New login (sign in during setup)');
     await waitFor(() =>
       expect(screen.getByTestId('family-block')).toHaveTextContent(
-        '1 agent session is running on this VM. Stop them first; a running session overwrites the new login on its next refresh.',
+        '1 agent session is running on this VM. Stop them first. On its next token refresh, a running session writes its old login over the new one, so new sessions and the stored login get the old account.',
       ),
     );
     expect(submit()).toHaveTextContent('Change anyway');

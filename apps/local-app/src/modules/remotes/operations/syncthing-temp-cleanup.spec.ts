@@ -1,5 +1,6 @@
 import {
-  Dirent,
+  type Dirent,
+  type PathLike,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -27,6 +28,17 @@ import {
   SYNCTHING_TEMP_CLEANUP_TIMEOUT_MS,
   deleteSyncthingTempFiles,
 } from './syncthing-temp-cleanup';
+
+type DirentEntry = Pick<Dirent, 'name' | 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
+
+function entry(name: string, kind: 'file' | 'directory'): DirentEntry {
+  return {
+    name,
+    isFile: () => kind === 'file',
+    isDirectory: () => kind === 'directory',
+    isSymbolicLink: () => false,
+  };
+}
 
 // Unit over a real directory: the walk's rules are filesystem decisions, and a
 // temp dir is cheaper than any Syncthing-dependent layer.
@@ -120,9 +132,9 @@ describe('deleteSyncthingTempFiles', () => {
   it('stops at its time limit, warns with the number already deleted, and does not throw', async () => {
     writeFileSync(join(root, '.syncthing.first.tmp'), 'partial');
     const slowDirectory = {
-      [Symbol.asyncIterator]: async function* (): AsyncGenerator<Dirent> {
-        yield new Dirent('.syncthing.first.tmp', 1);
-        yield new Dirent('slow', 2);
+      [Symbol.asyncIterator]: async function* (): AsyncGenerator<DirentEntry> {
+        yield entry('.syncthing.first.tmp', 'file');
+        yield entry('slow', 'directory');
       },
       close: async () => undefined,
     };
@@ -130,7 +142,7 @@ describe('deleteSyncthingTempFiles', () => {
     // never settles, so only the time limit can end the walk.
     jest
       .mocked(opendir)
-      .mockImplementation(async (path: string) =>
+      .mockImplementation(async (path: PathLike) =>
         path === root ? (slowDirectory as never) : (new Promise<never>(() => undefined) as never),
       );
 

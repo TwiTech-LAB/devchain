@@ -1,3 +1,4 @@
+import type { ListSessionsResponse, McpResponse } from '../../dtos/mcp.dto';
 import { ValidationError } from '../../../../common/errors/error-types';
 import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 import type { SessionToolContext } from './session-context';
@@ -10,7 +11,7 @@ function createContext(): SessionToolContext {
         .fn()
         .mockResolvedValue({ id: 'agent-1', name: 'Coder', projectId: 'project-1' }),
       getProject: jest.fn().mockResolvedValue({ id: 'project-1', name: 'Project' }),
-    },
+    } as unknown as SessionToolContext['storage'],
     sessionsService: {
       listActiveSessions: jest.fn().mockResolvedValue([
         {
@@ -20,15 +21,20 @@ function createContext(): SessionToolContext {
           startedAt: '2024-01-01T00:00:00Z',
         },
       ]),
-    } as SessionToolContext['sessionsService'],
+    } as unknown as SessionToolContext['sessionsService'],
     guestsService: {
       register: jest.fn().mockResolvedValue({
         guestId: 'guest-1',
         projectId: 'project-1',
         isSandbox: false,
       }),
-    } as SessionToolContext['guestsService'],
+    } as unknown as SessionToolContext['guestsService'],
   };
+}
+
+/** `McpResponse.data` is `unknown` by design; tests state the payload they expect. */
+function dataOf<T>(result: McpResponse): T {
+  return result.data as T;
 }
 
 describe('session-tools handlers', () => {
@@ -75,7 +81,9 @@ describe('session-tools handlers', () => {
       const result = await handleListSessions(ctx, {});
 
       expect(result).toMatchObject({ success: true });
-      expect(result.data.sessions).toEqual([expect.objectContaining({ agentName, projectName })]);
+      expect(dataOf<ListSessionsResponse>(result).sessions).toEqual([
+        expect.objectContaining({ agentName, projectName }),
+      ]);
     },
   );
 

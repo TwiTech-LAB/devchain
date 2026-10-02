@@ -344,7 +344,7 @@ describe('EpicRelationsCard', () => {
     expect(dialog).toHaveTextContent('Removing this relation deletes the pair and its time route.');
     expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: /^Remove$/ }));
     expect(deleteMutateMock).toHaveBeenCalledTimes(1);
     expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: DESIGN_ID }, expect.anything());
     expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
@@ -370,7 +370,7 @@ describe('EpicRelationsCard', () => {
     // action is unavailable, so the route context cannot be bypassed.
     expect(dialog).toHaveTextContent('Deleting removes this Related pair.');
     expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
-    const confirm = screen.getByRole('button', { name: 'Remove', exact: true });
+    const confirm = screen.getByRole('button', { name: /^Remove$/ });
     expect(confirm).toBeDisabled();
     // Cancel stays available during the wait.
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
@@ -381,9 +381,9 @@ describe('EpicRelationsCard', () => {
     await waitFor(() =>
       expect(dialog).toHaveTextContent('Current route: “Focal Epic” logs time with “Design API”.'),
     );
-    expect(screen.getByRole('button', { name: 'Remove', exact: true })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /^Remove$/ })).toBeEnabled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: /^Remove$/ }));
     expect(deleteMutateMock).toHaveBeenCalledTimes(1);
     expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: DESIGN_ID }, expect.anything());
   });
@@ -397,7 +397,7 @@ describe('EpicRelationsCard', () => {
     expect(dialog).not.toHaveTextContent('logs time with');
     expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: /^Remove$/ }));
     expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: SHIP_ID }, expect.anything());
   });
 

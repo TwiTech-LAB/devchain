@@ -395,10 +395,13 @@ describe('LoginsTab', () => {
     await openImport();
 
     expect(await screen.findByText('Loading OpenCode logins…')).toBeInTheDocument();
-    expect(screen.getByTestId('opencode-import-submit')).toBeDisabled();
+    const submit = screen.getByTestId('opencode-import-submit');
+    expect(submit).toBeDisabled();
+    expect(submit.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
 
     await act(async () => releaseLogins());
     expect(await screen.findByRole('checkbox', { name: 'zai-coding-plan' })).toBeChecked();
+    expect(screen.getByTestId('opencode-import-submit').querySelector('svg')).toBeNull();
   });
 
   it('shows the empty state when the PC has no OpenCode logins', async () => {

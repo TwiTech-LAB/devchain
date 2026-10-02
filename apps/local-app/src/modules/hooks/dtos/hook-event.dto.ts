@@ -5,10 +5,11 @@ import { MAX_RUNTIME_CONTEXT_WINDOW_TOKENS } from '../../runtime-context-capture
  * Incoming hook event payload from a provider relay script.
  * The relay augments the provider's hook JSON with env-derived fields.
  *
- * `hookEventName` is the discriminator. Five variants are accepted:
+ * `hookEventName` is the discriminator. Six variants are accepted:
  *  - `SessionStart`  — session lifecycle start; requires `source`. Claude + Copilot.
- *  - `Stop`          — agent finished a turn (Copilot `agentStop`); carries
- *                      `transcriptPath` + `stopReason` for downstream metrics.
+ *  - `UserPromptSubmit` — Claude accepted a prompt; a turn starts (busy).
+ *  - `Stop`          — agent finished a turn (Claude `Stop`, Copilot `agentStop`); the turn
+ *                      ends (idle). Carries `transcriptPath` + `stopReason`.
  *  - `PreToolUse`    — matched to `AskUserQuestion`; carries the pending questions.
  *  - `PostToolUse`   — matched to `AskUserQuestion`; reconciliation (resolved).
  *  - `StatusLine`     — minimal direct-Claude runtime context report.
@@ -76,11 +77,30 @@ export const SessionStartHookSchema = z
   })
   .strict();
 
+/**
+ * When the provider fired a turn hook, stamped by the relay (epoch ms). The relays post these
+ * hooks without waiting, so two may arrive out of order; the stamp keeps them ordered.
+ */
+const turnHookFields = {
+  firedAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+} as const;
+
+export const UserPromptSubmitHookSchema = z
+  .object({
+    hookEventName: z.literal('UserPromptSubmit'),
+    ...turnHookFields,
+    ...claudeMetaFields,
+    ...claudeSessionIdOptional,
+    ...baseInjectedFields,
+  })
+  .strict();
+
 export const StopHookSchema = z
   .object({
     hookEventName: z.literal('Stop'),
     /** Why the turn ended (e.g. Copilot "end_turn"). Optional — providers may omit it. */
     stopReason: z.string().min(1).optional(),
+    ...turnHookFields,
     ...claudeMetaFields,
     ...claudeSessionIdOptional,
     ...baseInjectedFields,
@@ -134,6 +154,7 @@ export const StatusLineHookSchema = z
 
 export const HookEventSchema = z.discriminatedUnion('hookEventName', [
   SessionStartHookSchema,
+  UserPromptSubmitHookSchema,
   StopHookSchema,
   PreToolUseHookSchema,
   PostToolUseHookSchema,
@@ -141,6 +162,7 @@ export const HookEventSchema = z.discriminatedUnion('hookEventName', [
 ]);
 
 export type SessionStartHookEvent = z.infer<typeof SessionStartHookSchema>;
+export type UserPromptSubmitHookEvent = z.infer<typeof UserPromptSubmitHookSchema>;
 export type StopHookEvent = z.infer<typeof StopHookSchema>;
 export type PreToolUseHookEvent = z.infer<typeof PreToolUseHookSchema>;
 export type PostToolUseHookEvent = z.infer<typeof PostToolUseHookSchema>;

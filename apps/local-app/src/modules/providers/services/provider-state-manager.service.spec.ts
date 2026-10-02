@@ -279,6 +279,7 @@ describe('ProviderStateManager', () => {
         stdout: '/usr/local/bin/claude\n',
         stderr: '',
         timedOut: false,
+        truncated: false,
       });
 
       await expect(service.normalizeBinPath('claude')).resolves.toBe('claude');
@@ -291,6 +292,7 @@ describe('ProviderStateManager', () => {
         stdout: '',
         stderr: '',
         timedOut: false,
+        truncated: false,
       });
 
       await expect(service.normalizeBinPath('missing')).rejects.toThrow(ValidationError);

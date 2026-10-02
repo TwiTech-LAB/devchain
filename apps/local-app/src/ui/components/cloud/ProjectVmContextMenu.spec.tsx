@@ -80,7 +80,9 @@ describe('ProjectVmContextMenu', () => {
 
   it('shows Loading while the VMs load', () => {
     mockLoading = true;
-    expect(item(openMenu(), 'Loading…')).toHaveAttribute('data-disabled');
+    const loading = item(openMenu(), 'Loading…');
+    expect(loading).toHaveAttribute('data-disabled');
+    expect(loading.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it.each([
@@ -157,11 +159,19 @@ describe('ProjectVmContextMenu', () => {
     mockBindings = [{ projectId: 'p1', remoteId: 'r1', state }];
     const menu = openMenu();
 
-    expect(item(menu, label)).toHaveAttribute('data-disabled');
+    const busy = item(menu, label);
+    expect(busy).toHaveAttribute('data-disabled');
+    expect(busy.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     expect(item(menu, 'View activity')).toHaveAttribute(
       'href',
       '/cloud?section=remote-vm&projectAction=p1',
     );
     expect(within(menu).queryByRole('menuitem', { name: /Connect to VM/ })).toBeNull();
+  });
+
+  it('shows no spinner on items while nothing runs', () => {
+    mockBindings = [{ projectId: 'p1', remoteId: 'r1', state: 'remote' }];
+    const settled = item(openMenu(), 'Disconnect from lab-vm');
+    expect(settled.querySelector('svg.animate-spin')).toBeNull();
   });
 });

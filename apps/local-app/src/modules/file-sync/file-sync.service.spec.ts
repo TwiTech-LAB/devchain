@@ -81,8 +81,26 @@ describe('FileSyncService.rescan', () => {
       '/rest/db/scan?folder=code%3Ap1',
       undefined,
       SCAN_TIMEOUT_MS,
+      undefined,
     );
     expect(SCAN_TIMEOUT_MS).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+
+  it('hands a cancel signal to the scan request so it can end early', async () => {
+    const request = jest.fn(async () => undefined);
+    const syncthing = { getConnection: () => ({ client: { request } }), getState: () => ({}) };
+    const service = new FileSyncService(syncthing as never, {} as never, {} as never, {} as never);
+    const controller = new AbortController();
+
+    await service.rescan('code:p1', controller.signal);
+
+    expect(request).toHaveBeenCalledWith(
+      'POST',
+      '/rest/db/scan?folder=code%3Ap1',
+      undefined,
+      SCAN_TIMEOUT_MS,
+      controller.signal,
+    );
   });
 });
 
@@ -186,6 +204,74 @@ describe('FileSyncService.waitForComplete', () => {
       },
     });
   });
+
+  it('ends at once with the signal reason and never polls when the signal is already aborted', async () => {
+    const reason = new Error('The Connect was cancelled.');
+    const controller = new AbortController();
+    controller.abort(reason);
+    const sender = jest.fn(async () => status({ peer: PEER_DONE }));
+
+    const error: unknown = await service
+      .waitForComplete('code:p1', {
+        sender,
+        receiver: async () => status(),
+        timeoutMs: 5_000,
+        pollIntervalMs: 1,
+        signal: controller.signal,
+      })
+      .catch((e: unknown) => e);
+
+    expect(error).toBe(reason);
+    expect(sender).not.toHaveBeenCalled();
+  });
+
+  it('ends an in-flight wait with the signal reason instead of the timeout, polling no further', async () => {
+    const controller = new AbortController();
+    const sender = jest.fn(async () => {
+      controller.abort(new Error('The Connect was cancelled.'));
+      return status({ peer: { ...PEER_DONE, completion: 10 } });
+    });
+
+    const error: unknown = await service
+      .waitForComplete('code:p1', {
+        sender,
+        receiver: async () => status(),
+        timeoutMs: 10 * 60_000,
+        pollIntervalMs: 5,
+        signal: controller.signal,
+      })
+      .catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ message: 'The Connect was cancelled.' });
+    // One poll, then the abort ended the loop before the next one.
+    expect(sender).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['answers complete', PEER_DONE, 5_000],
+    ['answers incomplete at the deadline', { ...PEER_DONE, completion: 10 }, 0],
+  ])(
+    'ends with the signal reason when the cancel arrives while the poll %s',
+    async (_case, peer, timeoutMs) => {
+      const reason = new Error('The Connect was cancelled.');
+      const controller = new AbortController();
+
+      const error: unknown = await service
+        .waitForComplete('code:p1', {
+          sender: async () => {
+            controller.abort(reason);
+            return status({ peer });
+          },
+          receiver: async () => status(),
+          timeoutMs,
+          pollIntervalMs: 1,
+          signal: controller.signal,
+        })
+        .catch((e: unknown) => e);
+
+      expect(error).toBe(reason);
+    },
+  );
 });
 
 describe('assertShareableFolder', () => {

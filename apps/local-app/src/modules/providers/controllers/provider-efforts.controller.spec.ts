@@ -174,7 +174,7 @@ describe('ProviderEffortsController', () => {
         providerId: 'provider-1',
         name: 'high',
       });
-      expect(result.name).toBe('high');
+      expect(result).toMatchObject({ name: 'high' });
     });
 
     it('bulk imports efforts from {efforts} with position ordering and returns stats', async () => {

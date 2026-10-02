@@ -18,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
+import { BusyStatus } from '@/ui/components/ui/spinner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
 import {
   useOpencodeLogins,
@@ -174,7 +175,12 @@ function TokenForm({
         )}
       </div>
       <DialogFooter>
-        <Button type="submit" disabled={!canSubmit} data-testid="add-token-submit">
+        <Button
+          type="submit"
+          disabled={!canSubmit}
+          pending={pending}
+          data-testid="add-token-submit"
+        >
           {pending ? 'Storing…' : generic ? 'Store key' : 'Store token'}
         </Button>
       </DialogFooter>
@@ -261,7 +267,7 @@ function OpencodeImport({
         sign-in instead.
       </p>
       {loginsLoading ? (
-        <p className="text-muted-foreground">Loading OpenCode logins…</p>
+        <BusyStatus className="text-muted-foreground">Loading OpenCode logins…</BusyStatus>
       ) : loginsError ? (
         <p className="text-destructive">Could not load the OpenCode logins.</p>
       ) : logins.length === 0 ? (
@@ -305,7 +311,8 @@ function OpencodeImport({
       <DialogFooter>
         <Button
           onClick={() => onSubmit(checkedIds)}
-          disabled={pending || loginsLoading || checkedIds.length === 0}
+          disabled={checkedIds.length === 0}
+          pending={loginsLoading || pending}
           data-testid="opencode-import-submit"
         >
           Import

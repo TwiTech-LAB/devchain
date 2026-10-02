@@ -52,7 +52,6 @@ function makeAiChunk(overrides: Partial<SerializedChunk> = {}): SerializedChunk 
         context: 'main',
       },
     ],
-    turns: [],
     ...overrides,
   } as SerializedChunk & { type: 'ai' };
 }
@@ -157,7 +156,6 @@ describe('AIGroupCard step-level hotspot rendering', () => {
           context: 'main',
         },
       ],
-      turns: [],
     });
   }
 

@@ -14,7 +14,8 @@ import type { UnifiedSemanticStep, UnifiedSemanticStepType } from '../dtos/unifi
 import { estimateStepTokens } from '../adapters/utils/estimate-content-tokens';
 import { runSteps } from '../services/cooperative-work';
 
-const INTERRUPTION_PATTERN = /\[Request interrupted by user\]/i;
+// Claude writes "[Request interrupted by user for tool use]" when Esc stops a tool call.
+const INTERRUPTION_PATTERN = /\[Request interrupted by user(?: for tool use)?\]/i;
 
 /**
  * Extract semantic steps from an array of AI chunk messages.

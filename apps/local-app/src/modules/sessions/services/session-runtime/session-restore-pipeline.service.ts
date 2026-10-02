@@ -21,8 +21,11 @@ import { PtyService } from '../../../terminal/services/pty.service';
 import { TerminalSessionRegistry } from '../../../terminal/services/terminal-session/terminal-session-registry';
 import { TerminalStreamService } from '../../../terminal/services/terminal-stream.service';
 import { EventsService } from '../../../events/services/events.service';
+import { PreflightService } from '../../../core/services/preflight.service';
+import { ProviderMcpEnsureService } from '../../../providers/services/provider-mcp-ensure.service';
 import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { CleanupStack } from './cleanup-stack';
+import { ensureMcpReadiness } from './ensure-mcp-readiness';
 import type { SessionDetailDto } from '../../dtos/sessions.dto';
 import { ProviderRuntimePreparationService } from '../provider-runtime-preparation';
 
@@ -58,6 +61,8 @@ export class SessionRestorePipeline {
     private readonly eventsService: EventsService,
     private readonly streamService: TerminalStreamService,
     private readonly providerRuntimePreparation: ProviderRuntimePreparationService,
+    private readonly preflightService: PreflightService,
+    private readonly mcpEnsureService: ProviderMcpEnsureService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -116,6 +121,20 @@ export class SessionRestorePipeline {
 
         // In-lock provider re-validation (defeats TOCTOU on agent provider reconfiguration)
         this.checkProviderMismatch(locked, provider.name);
+
+        // A restored session re-enters a live agent conversation; if the
+        // devchain MCP registration drifted since launch, the restored agent
+        // runs without DevChain tools. This repair is also the ONLY restore
+        // path that may write provider trust — the full ensureMcp includes it.
+        await ensureMcpReadiness({
+          storage: this.storage,
+          preflightService: this.preflightService,
+          mcpEnsureService: this.mcpEnsureService,
+          provider,
+          projectId: project.id,
+          projectRootPath: project.rootPath,
+          configEnv,
+        });
 
         // Phase 5: create the read-only restore runtime plan
         const adapter = this.providerAdapterFactory.getAdapter(provider.name);

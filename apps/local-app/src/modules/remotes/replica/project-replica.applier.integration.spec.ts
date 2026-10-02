@@ -230,10 +230,11 @@ describe('ProjectReplicaApplier (integration)', () => {
     expect(watcherByName(copied.tables.terminal_watchers, hostProviderName)).toEqual(
       watcherByName(expected.terminal_watchers, homeProviderName),
     );
-    expected.provider_settings = expected.provider_settings.map((row) => ({
-      ...row,
-      envScopes: row.providerName === 'claude' ? { API_KEY: ['A'] } : {},
-    }));
+    expected.provider_settings = expected.provider_settings.map((row) => {
+      const envScopes: Record<string, string[]> =
+        row.providerName === 'claude' ? { API_KEY: ['A'] } : {};
+      return { ...row, envScopes };
+    });
     expect(withoutProviderIds(copied.tables)).toEqual(withoutProviderIds(expected));
     expect(copied.workspace).toEqual(replica.workspace);
 

@@ -45,7 +45,9 @@ function createSessionsService(): NonNullable<McpBindingRuntime['sessionsService
 function minimalRuntime(overrides: Partial<McpBindingRuntime> = {}): McpBindingRuntime {
   return {
     storage: createStorage(),
-    instructionsResolver: { resolve: jest.fn() } as McpBindingRuntime['instructionsResolver'],
+    instructionsResolver: {
+      resolve: jest.fn(),
+    } as unknown as McpBindingRuntime['instructionsResolver'],
     defaultInlineMaxBytes: 64 * 1024,
     resolveSessionContext: jest.fn().mockResolvedValue({
       success: true,

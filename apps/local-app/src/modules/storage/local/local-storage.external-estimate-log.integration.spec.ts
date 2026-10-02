@@ -47,6 +47,7 @@ describe('LocalStorageService external estimate log states', () => {
       name: 'Estimate checkpoint project',
       description: null,
       rootPath: '/tmp/estimate-checkpoint-project',
+      isTemplate: false,
     });
     connection = await storage.replaceIntegrationConnection(
       {
@@ -66,6 +67,9 @@ describe('LocalStorageService external estimate log states', () => {
       projectId: project.id,
       title: 'Imported estimate source',
       statusId: statuses.items[0]!.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     identity = {
       projectId: project.id,
@@ -448,6 +452,9 @@ describe('LocalStorageService external estimate log states', () => {
       projectId: epic.projectId,
       title: 'Reimported estimate source',
       statusId: statuses.items[0]!.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     await storage.createExternalTaskLink({
       epicId: recreatedEpic.id,
@@ -1247,6 +1254,7 @@ describe('LocalStorageService external estimate log states', () => {
           name: 'Legacy recovery project',
           description: null,
           rootPath: '/tmp/legacy-recovery-project',
+          isTemplate: false,
         })
         .then((project) => project.id);
       targetConnection = await storage.replaceIntegrationConnection(
@@ -1267,6 +1275,9 @@ describe('LocalStorageService external estimate log states', () => {
         projectId: targetProjectId,
         title: 'Recovery target',
         statusId: statuses.items[0]!.id,
+        description: null,
+        data: null,
+        tags: [],
       });
       await storage.createExternalTaskLink({
         epicId: targetEpic.id,
@@ -1462,7 +1473,7 @@ describe('LocalStorageService external estimate log states', () => {
       sqlite
         .prepare('UPDATE external_task_links SET connection_id = NULL WHERE epic_id = ?')
         .run(targetEpic.id);
-      await expect(assign()).rejects.toMatchObject<ConflictError>({
+      await expect(assign()).rejects.toMatchObject<Partial<ConflictError>>({
         details: { reason: 'link_connection_mismatch' },
       });
 
@@ -1470,7 +1481,7 @@ describe('LocalStorageService external estimate log states', () => {
       sqlite
         .prepare('UPDATE external_task_links SET connection_id = ? WHERE epic_id = ?')
         .run(connection.id, targetEpic.id);
-      await expect(assign()).rejects.toMatchObject<ConflictError>({
+      await expect(assign()).rejects.toMatchObject<Partial<ConflictError>>({
         details: { reason: 'link_connection_mismatch' },
       });
 
@@ -1520,6 +1531,7 @@ describe('LocalStorageService external estimate log states', () => {
         name: 'Rival recovery project',
         description: null,
         rootPath: '/tmp/rival-recovery-project',
+        isTemplate: false,
       });
       const otherConnection = await storage.replaceIntegrationConnection(
         {
@@ -1539,6 +1551,9 @@ describe('LocalStorageService external estimate log states', () => {
         projectId: otherProject.id,
         title: 'Rival target',
         statusId: otherStatuses.items[0]!.id,
+        description: null,
+        data: null,
+        tags: [],
       });
       await storage.createExternalTaskLink({
         epicId: otherEpic.id,
@@ -1692,6 +1707,7 @@ describe('LocalStorageService external estimate log restart durability', () => {
       name: 'Restart project',
       description: null,
       rootPath: '/tmp/estimate-restart-project',
+      isTemplate: false,
     });
     const identity = {
       projectId: project.id,
@@ -1717,6 +1733,9 @@ describe('LocalStorageService external estimate log restart durability', () => {
       projectId: project.id,
       title: 'Restart source',
       statusId: statuses.items[0]!.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     await first.storage.createExternalTaskLink({
       epicId: epic.id,

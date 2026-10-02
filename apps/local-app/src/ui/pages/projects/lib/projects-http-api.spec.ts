@@ -21,13 +21,26 @@ function rejectedJson(options: { ok?: boolean; status?: number } = {}): Response
   } as unknown as Response;
 }
 
-const setupPreview = {
-  payload: { version: 1, profiles: [], agents: [], teams: [] },
+const setupPreview: SetupPreviewResponse = {
+  payload: {
+    version: 1,
+    prompts: [],
+    profiles: [],
+    agents: [],
+    statuses: [],
+    watchers: [],
+    subscribers: [],
+    teams: [],
+    providerModels: [],
+    providerEfforts: [],
+    presets: [],
+    scheduledEpics: [],
+  },
   providerSummary: [],
   familyAlternatives: [],
   presetProviderCoverage: [],
   localAvailability: { installedProviders: [] },
-} as SetupPreviewResponse;
+};
 
 describe('ProjectsHttpApi', () => {
   const originalFetch = window.fetch;

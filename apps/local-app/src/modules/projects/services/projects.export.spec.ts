@@ -14,6 +14,27 @@ jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
 }));
 
+type ParsedExport = ReturnType<typeof devchainShared.ExportSchema.parse>;
+
+// Completes the fields ExportSchema.parse() defaults so round-trip payloads type-check.
+function mockParseResult(overrides: Partial<ParsedExport>): ParsedExport {
+  return {
+    version: 1,
+    prompts: [],
+    profiles: [],
+    agents: [],
+    statuses: [],
+    watchers: [],
+    subscribers: [],
+    teams: [],
+    providerModels: [],
+    providerEfforts: [],
+    presets: [],
+    scheduledEpics: [],
+    ...overrides,
+  };
+}
+
 import { createMockProject } from '../../../../test/factories';
 import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
@@ -35,6 +56,7 @@ describe('ProjectsService', () => {
     listStatuses: jest.Mock;
     getInitialSessionPrompt: jest.Mock;
     getProvider: jest.Mock;
+    updateProvider: jest.Mock;
     createStatus: jest.Mock;
     createPrompt: jest.Mock;
     createAgentProfile: jest.Mock;
@@ -810,8 +832,8 @@ describe('ProjectsService', () => {
       // Profile should have providerConfigs
       expect(result.profiles).toHaveLength(1);
       expect(result.profiles[0].providerConfigs).toBeDefined();
-      expect(result.profiles[0].providerConfigs).toHaveLength(2);
-      expect(result.profiles[0].providerConfigs[0]).toEqual(
+      expect(result.profiles[0]?.providerConfigs).toHaveLength(2);
+      expect(result.profiles[0]?.providerConfigs?.[0]).toEqual(
         expect.objectContaining({
           name: 'claude',
           providerName: 'claude',
@@ -819,7 +841,7 @@ describe('ProjectsService', () => {
           env: { ANTHROPIC_API_KEY: '***' },
         }),
       );
-      expect(result.profiles[0].providerConfigs[1]).toEqual(
+      expect(result.profiles[0]?.providerConfigs?.[1]).toEqual(
         expect.objectContaining({
           name: 'agy',
           providerName: 'agy',
@@ -1018,9 +1040,26 @@ describe('ProjectsService', () => {
 
       const { _manifest: _omittedManifest, ...importPayload } = exported;
       void _omittedManifest;
-      jest
-        .spyOn(devchainShared.ExportSchema, 'parse')
-        .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(
+        mockParseResult({
+          ...importPayload,
+          agents: importPayload.agents.map((agent) => ({ isProjectOwner: false, ...agent })),
+          teams: importPayload.teams?.map((team) => ({
+            allowTeamLeadCreateAgents: false,
+            ...team,
+          })),
+          // Export emits nullable provider/env and omits defaulted fields; parse output
+          // requires both non-null, and the import path maps empty env back to null.
+          profiles: importPayload.profiles.map((profile) => ({
+            ...profile,
+            provider: profile.provider ?? { name: 'unknown' },
+            providerConfigs: profile.providerConfigs?.map((config) => ({
+              ...config,
+              env: config.env ?? {},
+            })),
+          })),
+        }),
+      );
 
       await service.importProject({
         projectId,
@@ -1491,9 +1530,26 @@ describe('ProjectsService', () => {
 
       const { _manifest: _omittedManifest, ...importPayload } = exported;
       void _omittedManifest;
-      jest
-        .spyOn(devchainShared.ExportSchema, 'parse')
-        .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(
+        mockParseResult({
+          ...importPayload,
+          agents: importPayload.agents.map((agent) => ({ isProjectOwner: false, ...agent })),
+          teams: importPayload.teams?.map((team) => ({
+            allowTeamLeadCreateAgents: false,
+            ...team,
+          })),
+          // Export emits nullable provider/env and omits defaulted fields; parse output
+          // requires both non-null, and the import path maps empty env back to null.
+          profiles: importPayload.profiles.map((profile) => ({
+            ...profile,
+            provider: profile.provider ?? { name: 'unknown' },
+            providerConfigs: profile.providerConfigs?.map((config) => ({
+              ...config,
+              env: config.env ?? {},
+            })),
+          })),
+        }),
+      );
 
       await service.importProject({ projectId, payload: importPayload, dryRun: false });
 

@@ -776,7 +776,7 @@ describe('claim and update_host operations', () => {
     expect(vm.claims[0]).toMatchObject({
       userName: 'alice',
       homePath: '/Users/alice',
-      ...(process.platform === 'win32' ? {} : { uid: process.getuid() }),
+      ...(process.platform === 'win32' ? {} : { uid: process.getuid?.() }),
       version: getAppVersion(),
     });
     expect(sent.providerAuth.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN });

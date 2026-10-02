@@ -338,7 +338,8 @@ export function AddOwnVmDialog({
               <Button
                 type="submit"
                 variant={check.status === 'done' ? 'outline' : 'default'}
-                disabled={pending || check.status === 'checking' || address.trim() === ''}
+                disabled={pending || address.trim() === ''}
+                pending={check.status === 'checking'}
               >
                 {check.status === 'checking' ? 'Checking…' : 'Check'}
               </Button>
@@ -501,7 +502,13 @@ export function AddOwnVmDialog({
             </Button>
           )}
           {step === 'review' && (
-            <Button type="button" onClick={start} disabled={!canStart} data-testid="own-vm-start">
+            <Button
+              type="button"
+              onClick={start}
+              disabled={!canStart}
+              pending={pending}
+              data-testid="own-vm-start"
+            >
               {pending ? 'Starting…' : plan?.kind === 'claim' ? 'Set up VM' : 'Install and set up'}
             </Button>
           )}

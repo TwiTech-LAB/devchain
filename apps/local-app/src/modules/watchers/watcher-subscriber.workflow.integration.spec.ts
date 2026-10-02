@@ -16,6 +16,7 @@ import type { Watcher, Subscriber, Agent } from '../storage/models/domain.models
 import type { SessionDto } from '../sessions/dtos/sessions.dto';
 import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
 import { createProjectWriteAdmissionStub } from '../remotes/admission/testing/project-write-admission.stub';
+import { createMockAgent as createAgentFixture } from '../../../test/factories';
 
 /**
  * End-to-end integration test for the watcher → subscriber flow.
@@ -75,6 +76,7 @@ describe('Watcher → Subscriber E2E Flow', () => {
     scopeFilterId: null,
     pollIntervalMs: 1000,
     viewportLines: 50,
+    idleAfterSeconds: 0,
     condition: { type: 'contains', pattern: 'test pattern' },
     cooldownMs: 5000,
     cooldownMode: 'time',
@@ -122,16 +124,14 @@ describe('Watcher → Subscriber E2E Flow', () => {
     ...overrides,
   });
 
-  const createMockAgent = (overrides: Partial<Agent> = {}): Agent => ({
-    id: 'agent-1',
-    name: 'Test Agent',
-    profileId: 'profile-1',
-    projectId: 'project-1',
-    description: null,
-    createdAt: '2024-01-01T00:00:00Z',
-    updatedAt: '2024-01-01T00:00:00Z',
-    ...overrides,
-  });
+  const createMockAgent = (overrides: Partial<Agent> = {}): Agent =>
+    createAgentFixture({
+      id: 'agent-1',
+      name: 'Test Agent',
+      profileId: 'profile-1',
+      projectId: 'project-1',
+      ...overrides,
+    });
 
   /** Wait for the event emitter to process events */
   const waitForEvents = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms));

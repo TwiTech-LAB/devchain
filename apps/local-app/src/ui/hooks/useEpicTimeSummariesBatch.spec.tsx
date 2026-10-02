@@ -98,7 +98,10 @@ describe('useEpicTimeSummariesBatch', () => {
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
     expect(result.current.totals?.get('epic-1')).toBe(90);
-    expect(result.current.query.data?.get('epic-1')).toBe(90);
+    // The hook's return type erases the query's Map generic (reported as a
+    // production typing gap on batch 7); identity with `totals` proves the
+    // same active Map flows through the query result.
+    expect(result.current.query.data).toBe(result.current.totals);
 
     rerender({ enabled: false });
     expect(result.current.totals).toBeUndefined();
@@ -152,7 +155,7 @@ describe('useEpicTimeSummariesBatch', () => {
   });
 
   it('retains the last successful map for native decoration while flagging a failed 60-second background refetch', async () => {
-    jest.useFakeTimers({ shouldAdvanceTime: true });
+    jest.useFakeTimers();
     try {
       fetchMock.mockResolvedValueOnce(batchResponse([{ epicId: 'epic-1', totalMinutes: 90 }]));
       const { result } = renderHook(() => useEpicTimeSummariesBatch(['epic-1']), {

@@ -35,6 +35,11 @@ const InventoryItemSchema = z
     name: z.string().min(1).max(255),
     /** The image the item's VM-side container is created from, by ID. */
     imageId: z.string().min(1).max(255),
+    /**
+     * The VM engine's ID for `imageId`, written only when it differs (the engines
+     * use different image stores). Valid only together with this `imageId`.
+     */
+    vmImageId: z.string().min(1).max(255).optional(),
     volumes: z.array(InventoryVolumeSchema).max(1000),
     /** In-project data subtrees DevChain owns and keeps out of file sync. */
     bindPaths: z.array(z.string().min(1).max(4096)).max(1000),
@@ -70,6 +75,21 @@ export const DockerImportInventorySchema = z
   })
   .strict();
 export type DockerImportInventory = z.infer<typeof DockerImportInventorySchema>;
+
+/**
+ * The IDs under which the VM can hold a home image: the home ID itself, then the
+ * VM IDs that earlier imports paired with exactly this home ID. Image IDs are
+ * content digests, so the presence of either one means the VM has the image.
+ */
+export function vmImageCandidates(
+  inventory: DockerImportInventory | null | undefined,
+  homeId: string,
+): string[] {
+  const paired = (inventory?.items ?? []).flatMap((item) =>
+    item.imageId === homeId && item.vmImageId ? [item.vmImageId] : [],
+  );
+  return [...new Set([homeId, ...paired])];
+}
 
 @Injectable()
 export class DockerImportInventoryStore {

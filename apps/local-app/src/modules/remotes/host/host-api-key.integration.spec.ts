@@ -17,7 +17,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { io } from 'socket.io-client';
-import type { FastifyInstance } from 'fastify';
 import * as config from '../../../common/config/env.config';
 import { HostApiKeyModule } from './host-api-key.module';
 import { registerHostApiKeyBoundary } from './host-api-key.setup';
@@ -68,7 +67,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 // Real Nest/Fastify, Engine.IO and files verify hook timing, namespace sharing and atomic replacement.
 describe('Host API key transport integration', () => {
   let app: NestFastifyApplication;
-  let fastify: FastifyInstance;
+  let fastify: ReturnType<ReturnType<NestFastifyApplication['getHttpAdapter']>['getInstance']>;
   let root: string;
   let keyPath: string;
   let url: string;

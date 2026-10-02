@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ApiKeyDialog } from './ApiKeyDialog';
 
@@ -57,5 +57,30 @@ describe('ApiKeyDialog', () => {
       '/api/remotes/vm/api-key/reset',
       expect.objectContaining({ method: 'POST', body: '{}' }),
     );
+  });
+
+  it('spins the submit button only while the request runs', async () => {
+    let release!: () => void;
+    homeFetch.mockReturnValue(
+      new Promise((resolve) => {
+        release = () => resolve({ ok: true, status: 204 } as Response);
+      }),
+    );
+    const onClose = jest.fn();
+    render(<ApiKeyDialog remoteId="vm" name="lab" mode="reset" onClose={onClose} />);
+
+    const submit = screen.getByRole('button', { name: 'Reset API key' });
+    expect(submit.querySelector('svg')).toBeNull();
+    await userEvent.click(submit);
+
+    const saving = screen.getByRole('button', { name: 'Saving…' });
+    expect(saving).toBeDisabled();
+    expect(saving.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(cancel).toBeDisabled();
+    expect(cancel.querySelector('svg')).toBeNull();
+
+    await act(async () => release());
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 });

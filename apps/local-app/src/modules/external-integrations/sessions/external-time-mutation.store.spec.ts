@@ -51,8 +51,7 @@ describe('ExternalTimeMutationStore', () => {
       baseline: null,
     });
 
-    expect(conflict.ok).toBe(false);
-    expect(conflict.reason).toBe('operation_id_conflict');
+    expect(conflict).toMatchObject({ ok: false, reason: 'operation_id_conflict' });
   });
 
   it('reports a live duplicate and a terminal duplicate separately', () => {
@@ -66,7 +65,7 @@ describe('ExternalTimeMutationStore', () => {
       tuple: tuple(),
       baseline: null,
     });
-    expect(live.reason).toBe('duplicate_live');
+    expect(live).toMatchObject({ ok: false, reason: 'duplicate_live' });
     expect(live.receipt!.phase).toBe('outcome_unknown');
 
     store.markTerminal('op-1', 'abandoned_unknown');
@@ -76,7 +75,7 @@ describe('ExternalTimeMutationStore', () => {
       tuple: tuple(),
       baseline: null,
     });
-    expect(terminal.reason).toBe('duplicate_terminal');
+    expect(terminal).toMatchObject({ ok: false, reason: 'duplicate_terminal' });
   });
 
   it.each(['pending', 'dispatched', 'outcome_unknown'] as const)(
@@ -159,8 +158,7 @@ describe('ExternalTimeMutationStore', () => {
       tuple: tuple({ durationMs: 99 }),
       baseline: null,
     });
-    expect(exhausted.ok).toBe(false);
-    expect(exhausted.reason).toBe('receipt_capacity');
+    expect(exhausted).toMatchObject({ ok: false, reason: 'receipt_capacity' });
     // The live receipts are all still present.
     expect(store.get('op-0')).not.toBeNull();
     expect(store.get('op-1')).not.toBeNull();
@@ -222,7 +220,7 @@ describe('ExternalTimeMutationStore', () => {
     const second = store.view(store.get('op-2')!);
     now = Date.parse(second.expiresAt) + 1;
     expect(store.get('op-2')).toBeNull();
-    expect(store.acknowledgeUnknown('op-2').reason).toBe('not_found');
+    expect(store.acknowledgeUnknown('op-2')).toMatchObject({ ok: false, reason: 'not_found' });
   });
 
   it('transitions only a live unknown receipt to abandoned_unknown', () => {
@@ -233,14 +231,12 @@ describe('ExternalTimeMutationStore', () => {
 
     store.markUnknown('op-1');
     const acked = store.acknowledgeUnknown('op-1');
-    expect(acked.ok).toBe(true);
-    expect(acked.receipt!.phase).toBe('abandoned_unknown');
+    expect(acked).toMatchObject({ ok: true, receipt: { phase: 'abandoned_unknown' } });
 
     const again = store.acknowledgeUnknown('op-1');
-    expect(again.ok).toBe(false);
-    expect(again.reason).toBe('not_unknown');
+    expect(again).toMatchObject({ ok: false, reason: 'not_unknown' });
 
-    expect(store.acknowledgeUnknown('missing').reason).toBe('not_found');
+    expect(store.acknowledgeUnknown('missing')).toMatchObject({ ok: false, reason: 'not_found' });
   });
 
   it('exposes a wire view without the tuple fingerprint internals', () => {

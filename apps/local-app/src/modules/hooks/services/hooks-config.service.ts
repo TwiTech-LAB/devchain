@@ -7,6 +7,8 @@ const logger = createLogger('HooksConfigService');
 
 const SETTINGS_FILE_MODE = 0o600;
 const SCRIPT_FILE_MODE = 0o755;
+/** Claude's wait cap for the UserPromptSubmit and Stop relay entries, in seconds. */
+const TURN_HOOK_TIMEOUT_SEC = 2;
 
 /**
  * Relay script embedded as a string constant.
@@ -19,7 +21,8 @@ const SCRIPT_FILE_MODE = 0o755;
  * 2. Captures tmux session name
  * 3. Reads DEVCHAIN_* env vars injected by DevChain session launcher
  * 4. Constructs combined JSON payload with jq
- * 5. POSTs to DevChain API via curl
+ * 5. POSTs to DevChain API via curl — turn hooks (UserPromptSubmit, Stop) post in the
+ *    background with a 2 s cap and exit at once, so DevChain never delays a prompt
  * 6. Outputs hook-compatible JSON to stdout (bidirectional)
  * 7. Always exits 0 (never blocks Claude)
  */
@@ -53,6 +56,16 @@ if [ -z "$TMUX_SESSION" ]; then
   exit 0
 fi
 
+# Hook time in epoch ms orders turn hooks that arrive out of order. BSD date has no %N, so
+# use perl there, and whole seconds as the last resort.
+FIRED_AT_MS="$(date +%s%3N 2>/dev/null || true)"
+case "$FIRED_AT_MS" in
+  ''|*[!0-9]*) FIRED_AT_MS="$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null || true)" ;;
+esac
+case "$FIRED_AT_MS" in
+  ''|*[!0-9]*) FIRED_AT_MS="$(( $(date +%s) * 1000 ))" ;;
+esac
+
 # Build combined payload: Claude Code fields + DevChain env vars.
 # Tool fields (PreToolUse/PostToolUse) are forwarded with --argjson so the
 # questions OBJECT is preserved (never stringified). tool_response is size-capped
@@ -77,6 +90,7 @@ PAYLOAD="$(echo "$INPUT" | jq \\
   --arg projectId "\${DEVCHAIN_PROJECT_ID:-}" \\
   --arg agentId "\${DEVCHAIN_AGENT_ID:-}" \\
   --arg sessionId "\${DEVCHAIN_SESSION_ID:-}" \\
+  --argjson firedAtMs "$FIRED_AT_MS" \\
   '{
     hookEventName: \$hookEventName,
     claudeSessionId: \$claudeSessionId,
@@ -93,7 +107,21 @@ PAYLOAD="$(echo "$INPUT" | jq \\
   + (if \$toolInput != null then {toolInput: \$toolInput} else {} end)
   + (if \$toolUseId != "" then {toolUseId: \$toolUseId} else {} end)
   + (if \$toolResponse != null then {toolResponse: \$toolResponse} else {} end)
+  + (if (\$hookEventName == "UserPromptSubmit" or \$hookEventName == "Stop")
+     then {firedAtMs: \$firedAtMs} else {} end)
   ')" || exit 0
+
+# Turn hooks: fire and forget. The detached POST outlives this script; nothing waits for it.
+case "$HOOK_EVENT_NAME" in
+  UserPromptSubmit|Stop)
+    curl -s -o /dev/null -X POST \\
+      -H "Content-Type: application/json" \\
+      -d "$PAYLOAD" \\
+      "\${DEVCHAIN_API_URL}/api/hooks/events" \\
+      --max-time 2 </dev/null >/dev/null 2>&1 &
+    exit 0
+    ;;
+esac
 
 # POST to DevChain API, capture response
 RESPONSE="$(curl -s -f -X POST \\
@@ -218,12 +246,14 @@ export class HooksConfigService {
       }
     }
 
-    // Build the DevChain hook entry
+    // Build the DevChain hook entries. Turn hooks run on every prompt and turn end, so their
+    // relay returns at once and Claude stops waiting for it after TURN_HOOK_TIMEOUT_SEC.
     const devchainHook = {
       type: 'command' as const,
       command: `"${relayScriptPath}"`,
       timeout: 10,
     };
+    const turnHook = { ...devchainHook, timeout: TURN_HOOK_TIMEOUT_SEC };
 
     // Ensure hooks object exists
     if (!settings.hooks || typeof settings.hooks !== 'object') {
@@ -231,10 +261,12 @@ export class HooksConfigService {
     }
 
     // Merge each DevChain hook group — preserve user hooks, add/update our entry.
-    // SessionStart has no matcher; the AskUserQuestion groups are matcher-scoped
-    // so the picker is captured BEFORE it blocks (Pre) and reconciled after (Post).
+    // SessionStart and the turn hooks have no matcher; the AskUserQuestion groups are
+    // matcher-scoped so the picker is captured BEFORE it blocks (Pre) and reconciled after (Post).
     const hooks = settings.hooks as Record<string, unknown>;
     this.mergeHookGroup(hooks, 'SessionStart', undefined, devchainHook);
+    this.mergeHookGroup(hooks, 'UserPromptSubmit', undefined, turnHook);
+    this.mergeHookGroup(hooks, 'Stop', undefined, turnHook);
     this.mergeHookGroup(hooks, 'PreToolUse', 'AskUserQuestion', devchainHook);
     this.mergeHookGroup(hooks, 'PostToolUse', 'AskUserQuestion', devchainHook);
 

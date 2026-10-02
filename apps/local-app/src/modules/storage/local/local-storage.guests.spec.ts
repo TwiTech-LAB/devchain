@@ -4,6 +4,7 @@ import { LocalStorageService } from './local-storage.service';
 import { DB_CONNECTION } from '../db/db.provider';
 import { NotFoundError, ConflictError } from '../../../common/errors/error-types';
 import { Guest, CreateGuest, Project } from '../models/domain.models';
+import { DEFAULT_PROJECT_WORKSPACE_ID } from '../db/schema';
 
 describe('LocalStorageService - Guests', () => {
   let service: LocalStorageService;
@@ -45,6 +46,7 @@ describe('LocalStorageService - Guests', () => {
       const createData: CreateGuest = {
         projectId: 'project-1',
         name: 'TestGuest',
+        description: null,
         tmuxSessionId: 'tmux-session-123',
         lastSeenAt: new Date().toISOString(),
       };
@@ -95,6 +97,7 @@ describe('LocalStorageService - Guests', () => {
       const createData: CreateGuest = {
         projectId: 'project-1',
         name: 'ExistingGuest',
+        description: null,
         tmuxSessionId: 'tmux-session-new',
         lastSeenAt: new Date().toISOString(),
       };
@@ -117,6 +120,7 @@ describe('LocalStorageService - Guests', () => {
       const createData: CreateGuest = {
         projectId: 'project-1',
         name: 'NewGuest',
+        description: null,
         tmuxSessionId: 'tmux-session-existing',
         lastSeenAt: new Date().toISOString(),
       };
@@ -154,6 +158,7 @@ describe('LocalStorageService - Guests', () => {
         id: 'guest-1',
         projectId: 'project-1',
         name: 'TestGuest',
+        description: null,
         tmuxSessionId: 'tmux-123',
         lastSeenAt: '2024-01-01T00:00:00Z',
         createdAt: '2024-01-01T00:00:00Z',
@@ -195,6 +200,7 @@ describe('LocalStorageService - Guests', () => {
         id: 'guest-1',
         projectId: 'project-1',
         name: 'TestGuest',
+        description: null,
         tmuxSessionId: 'tmux-123',
         lastSeenAt: '2024-01-01T00:00:00Z',
         createdAt: '2024-01-01T00:00:00Z',
@@ -237,6 +243,7 @@ describe('LocalStorageService - Guests', () => {
         id: 'guest-1',
         projectId: 'project-1',
         name: 'TestGuest',
+        description: null,
         tmuxSessionId: 'tmux-123',
         lastSeenAt: '2024-01-01T00:00:00Z',
         createdAt: '2024-01-01T00:00:00Z',
@@ -280,6 +287,7 @@ describe('LocalStorageService - Guests', () => {
           id: 'guest-1',
           projectId: 'project-1',
           name: 'AlphaGuest',
+          description: null,
           tmuxSessionId: 'tmux-1',
           lastSeenAt: '2024-01-01T00:00:00Z',
           createdAt: '2024-01-01T00:00:00Z',
@@ -289,6 +297,7 @@ describe('LocalStorageService - Guests', () => {
           id: 'guest-2',
           projectId: 'project-1',
           name: 'BetaGuest',
+          description: null,
           tmuxSessionId: 'tmux-2',
           lastSeenAt: '2024-01-02T00:00:00Z',
           createdAt: '2024-01-02T00:00:00Z',
@@ -319,6 +328,7 @@ describe('LocalStorageService - Guests', () => {
           id: 'guest-1',
           projectId: 'project-1',
           name: 'Guest1',
+          description: null,
           tmuxSessionId: 'tmux-1',
           lastSeenAt: '2024-01-01T00:00:00Z',
           createdAt: '2024-01-01T00:00:00Z',
@@ -328,6 +338,7 @@ describe('LocalStorageService - Guests', () => {
           id: 'guest-2',
           projectId: 'project-2',
           name: 'Guest2',
+          description: null,
           tmuxSessionId: 'tmux-2',
           lastSeenAt: '2024-01-02T00:00:00Z',
           createdAt: '2024-01-02T00:00:00Z',
@@ -354,6 +365,7 @@ describe('LocalStorageService - Guests', () => {
         id: 'guest-1',
         projectId: 'project-1',
         name: 'TestGuest',
+        description: null,
         tmuxSessionId: 'tmux-123',
         lastSeenAt: '2024-01-01T00:00:00Z',
         createdAt: '2024-01-01T00:00:00Z',
@@ -400,6 +412,7 @@ describe('LocalStorageService - Guests', () => {
         id: 'guest-1',
         projectId: 'project-1',
         name: 'TestGuest',
+        description: null,
         tmuxSessionId: 'tmux-123',
         lastSeenAt: '2024-01-01T00:00:00Z',
         createdAt: '2024-01-01T00:00:00Z',
@@ -483,6 +496,7 @@ describe('LocalStorageService - Project Path Lookups', () => {
     it('should return project when exact rootPath matches', async () => {
       const mockProject: Project = {
         id: 'project-1',
+        workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
         name: 'Test Project',
         description: null,
         rootPath: '/home/user/project',
@@ -530,6 +544,7 @@ describe('LocalStorageService - Project Path Lookups', () => {
       const mockProjects: Project[] = [
         {
           id: 'project-1',
+          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
           name: 'Root Project',
           description: null,
           rootPath: '/home/user/projects/app',
@@ -569,6 +584,7 @@ describe('LocalStorageService - Project Path Lookups', () => {
       const mockProjects: Project[] = [
         {
           id: 'project-parent',
+          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
           name: 'Parent Project',
           description: null,
           rootPath: '/home/user/projects',
@@ -578,6 +594,7 @@ describe('LocalStorageService - Project Path Lookups', () => {
         },
         {
           id: 'project-child',
+          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
           name: 'Child Project',
           description: null,
           rootPath: '/home/user/projects/app',
@@ -618,6 +635,7 @@ describe('LocalStorageService - Project Path Lookups', () => {
       const mockProjects: Project[] = [
         {
           id: 'project-1',
+          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
           name: 'Other Project',
           description: null,
           rootPath: '/home/user/other',
@@ -653,6 +671,7 @@ describe('LocalStorageService - Project Path Lookups', () => {
       const mockProjects: Project[] = [
         {
           id: 'project-1',
+          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
           name: 'Exact Match Project',
           description: null,
           rootPath: '/home/user/project',

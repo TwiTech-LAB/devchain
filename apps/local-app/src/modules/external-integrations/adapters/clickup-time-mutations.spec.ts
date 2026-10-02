@@ -169,7 +169,7 @@ describe('ClickUp time-entry mutations', () => {
 
     await expect(
       provider.timeEntryMutations!.readTimeEntryExact!(credentials, context, 'task-1', '8127'),
-    ).rejects.toMatchObject<ClickUpProviderError>({ code: 'clickup_invalid_response' });
+    ).rejects.toMatchObject<Partial<ClickUpProviderError>>({ code: 'clickup_invalid_response' });
   });
 
   it('lists own ids in a window and never claims completeness', async () => {

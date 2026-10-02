@@ -73,6 +73,11 @@ export interface DockerPlanItem {
   dataAction?: DockerDataChoice;
   dataChoiceRequired?: boolean;
   missingData?: DockerDataMembers;
+  /**
+   * The data the item copies when it moves with its data, by the fit check's
+   * copy rule: a bind of the whole project root counts nothing.
+   */
+  dataSize?: DockerPlanSize;
   id: string;
   kind: 'container' | 'compose-project';
   name: string;

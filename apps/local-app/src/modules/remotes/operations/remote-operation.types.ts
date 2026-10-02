@@ -64,10 +64,14 @@ export function requireProjectId(operation: RemoteOperation): string {
   return operation.projectId;
 }
 
-/** The step ran, or began running, at least once. */
+/**
+ * The step ran, or began running, at least once. A retry sets a step back to
+ * `pending` but keeps its `startedAt`, so an earlier attempt still counts.
+ */
 export function stepStarted(operation: RemoteOperation, stepId: string): boolean {
-  const state = operation.steps.find((step) => step.id === stepId)?.state;
-  return state !== undefined && state !== 'pending' && state !== 'skipped';
+  const step = operation.steps.find((candidate) => candidate.id === stepId);
+  if (!step) return false;
+  return step.startedAt !== null || (step.state !== 'pending' && step.state !== 'skipped');
 }
 
 /** Operations that own a remote's VM or host install; one may be open per remote. */

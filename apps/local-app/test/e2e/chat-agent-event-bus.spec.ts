@@ -186,11 +186,10 @@ async function emitEventBusFrame(
 ) {
   await page.evaluate(
     async ({ projectId, type, payload }) => {
-      // @ts-expect-error Vite serves this browser module; the Playwright Node process does not.
-      const socketModule: typeof import('../../src/ui/lib/socket') = await import(
-        '/src/ui/lib/socket.ts'
-      );
-      const socket = socketModule.getAppSocket();
+      const socketModule: typeof import('../../src/ui/lib/socket') =
+        // @ts-expect-error Vite serves this browser module; the Playwright Node process does not.
+        await import('/src/ui/lib/socket.ts');
+      const socket = socketModule.getAppSocket('home');
       const envelope = {
         topic: `project/${projectId}/agent-messages`,
         type,
@@ -198,7 +197,7 @@ async function emitEventBusFrame(
         ts: new Date().toISOString(),
       };
       for (const listener of socket.listeners('message')) listener(envelope);
-      socketModule.releaseAppSocket();
+      socketModule.releaseAppSocket('home');
     },
     { projectId: PROJECT_ID, ...frame },
   );

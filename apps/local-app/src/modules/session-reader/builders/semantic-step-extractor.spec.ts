@@ -185,6 +185,21 @@ describe('extractSemanticSteps', () => {
     expect(steps[0].estimatedTokens).toBe(0);
   });
 
+  it('should extract an interruption step for a tool-use interruption', () => {
+    const messages: UnifiedMessage[] = [
+      makeMsg({
+        id: 'a1',
+        role: 'assistant',
+        content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }],
+      }),
+    ];
+
+    const steps = extractSemanticSteps(messages);
+
+    expect(steps).toHaveLength(1);
+    expect(steps[0].type).toBe('interruption');
+  });
+
   it('should skip empty text blocks', () => {
     const messages: UnifiedMessage[] = [
       makeMsg({

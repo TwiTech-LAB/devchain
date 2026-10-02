@@ -286,7 +286,10 @@ describe('useEpicTimeDetail', () => {
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
     expect(result.current.summary?.totalMinutes).toBe(90);
-    expect(result.current.query.data?.totalMinutes).toBe(90);
+    // The hook's return type erases the query's data generic (reported as a
+    // production typing gap); identity with `summary` proves the same active
+    // payload flows through the query result.
+    expect(result.current.query.data).toBe(result.current.summary);
 
     rerender({ enabled: false });
     expect(result.current.admitted).toBe(false);
@@ -320,7 +323,7 @@ describe('useEpicTimeDetail', () => {
   });
 
   it('refreshes the summary every 60 seconds', async () => {
-    jest.useFakeTimers({ shouldAdvanceTime: true });
+    jest.useFakeTimers();
     try {
       const { result } = renderHook(() => useEpicTimeDetail('epic-1'), {
         wrapper: wrapper(client),
@@ -344,7 +347,7 @@ describe('useEpicTimeDetail', () => {
     const driftedZone = mountedZone === 'America/New_York' ? 'Europe/Berlin' : 'America/New_York';
     const driftSpy = mockBrowserTimeZone(driftedZone);
     try {
-      jest.useFakeTimers({ shouldAdvanceTime: true });
+      jest.useFakeTimers();
       try {
         const { result, unmount } = renderHook(() => useEpicTimeDetail('epic-1'), {
           wrapper: wrapper(client),

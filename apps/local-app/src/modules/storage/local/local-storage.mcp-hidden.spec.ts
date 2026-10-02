@@ -72,8 +72,6 @@ describe('LocalStorageService - mcpHidden Filtering Integration', () => {
     const profile = await service.createAgentProfile({
       projectId,
       name: 'Test Profile',
-      providerId,
-      options: null,
       systemPrompt: null,
       temperature: null,
       maxTokens: null,

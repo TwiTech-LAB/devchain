@@ -308,6 +308,15 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
           error: null,
         }),
       });
+      // A cancel accepted during that write found no step to interrupt, so the
+      // step must not start: it would run with a signal nobody aborts.
+      if (this.cancelRequested.has(id)) {
+        operation = await this.persist(operation, {
+          steps: withStep(operation.steps, index, step),
+        });
+        await this.rollback(operation, definition);
+        return;
+      }
 
       const details = { ...operation.details };
       const progress = this.progressReporter(id, details);

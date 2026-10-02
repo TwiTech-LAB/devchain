@@ -264,6 +264,8 @@ describe('session lifecycle race serialization', () => {
       eventsService as never,
       streamService as never,
       providerRuntimePreparation as never,
+      preflightService as never,
+      mcpEnsureService as never,
     );
     sessionRuntime = new SessionRuntime(
       launchPipeline,

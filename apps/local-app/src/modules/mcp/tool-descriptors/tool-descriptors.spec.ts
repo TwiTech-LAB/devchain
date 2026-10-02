@@ -112,7 +112,10 @@ describe('tool-descriptors', () => {
 
     it('omits retired thread and internal-recipient fields', () => {
       const entry = allMetadata.find((m) => m.name === 'devchain_send_message');
-      const schema = entry?.inputSchema as { properties?: Record<string, unknown> };
+      const schema = entry?.inputSchema as {
+        properties?: Record<string, unknown>;
+        additionalProperties?: boolean;
+      };
       expect(schema?.properties).not.toHaveProperty('threadId');
       expect(schema?.properties).not.toHaveProperty('recipient');
       expect(schema?.additionalProperties).toBe(false);

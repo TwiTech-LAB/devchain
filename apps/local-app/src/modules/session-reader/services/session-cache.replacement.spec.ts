@@ -359,8 +359,9 @@ describe('SessionCacheService file replacement classification', () => {
       return baseImpl(...args);
     });
 
-    await service.getOrParse(SESSION_ID, filePath, adapter);
+    const drifted = await service.getOrParseWithMeta(SESSION_ID, filePath, adapter);
     expect(service.getEntry(SESSION_ID)?.fileContentAnchors).toBeUndefined();
+    expect(drifted.cursorProof).toBeUndefined();
 
     // The next growth cannot be proven as an append (no stored anchors) → canonical reparse,
     // so the messages the mid-parse growth already folded in are never re-read as a delta.
@@ -371,5 +372,21 @@ describe('SessionCacheService file replacement classification', () => {
     expect(adapter.parseIncremental).not.toHaveBeenCalled();
     const ids = result.session.messages.map((message) => message.id);
     expect(new Set(ids).size).toBe(ids.length); // every row exactly once
+  });
+
+  it('mints the cursor proof of an accepted append from its proven anchors', async () => {
+    await writeFile(filePath, transcript(1, 70));
+    await service.getOrParse(SESSION_ID, filePath, adapter);
+    await appendFile(filePath, transcript(1, 6, 70));
+
+    const result = await service.getOrParseWithMeta(SESSION_ID, filePath, adapter);
+
+    expect(result.sourceChangeKind).toBe('same-file-append');
+    expect(result.cursorProof).toEqual({
+      fileIdentity: result.fileIdentity,
+      offset: result.lastOffset,
+      anchors: service.getEntry(SESSION_ID)?.fileContentAnchors,
+    });
+    expect(result.lastOffset).toBe((await stat(filePath)).size);
   });
 });

@@ -49,6 +49,7 @@ const pendingEstimateState = {
 const authoritativeLink = {
   id: 'link-1',
   epicId: 'epic-1',
+  projectId,
   connectionId: connection.id,
   provider: 'clickup' as const,
   remoteScopeKey,
@@ -174,7 +175,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           remoteScopeKey,
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -206,7 +207,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           'altered-workspace',
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -226,6 +227,7 @@ describe('ExternalTimeMutationService', () => {
         {
           ...authoritativeLink,
           id: 'other-link',
+          projectId: 'project-2',
           connectionId: 'other-connection',
           remoteScopeKey: unrelatedState.remoteScopeKey,
         },
@@ -293,7 +295,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           remoteScopeKey,
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -355,7 +357,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           remoteScopeKey,
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -379,7 +381,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           'altered-workspace',
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -403,7 +405,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           'altered-workspace',
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -434,7 +436,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           'altered-workspace',
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -463,7 +465,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           remoteScopeKey,
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -584,7 +586,7 @@ describe('ExternalTimeMutationService', () => {
           'estimate-operation-1',
           4,
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'operation_in_progress',
           operationId: 'manual-operation-1',
@@ -750,7 +752,7 @@ describe('ExternalTimeMutationService', () => {
           'estimate-operation-1',
           4,
         ),
-      ).rejects.toMatchObject<BusyError>({ details: { reason: 'operation_in_progress' } });
+      ).rejects.toMatchObject<Partial<BusyError>>({ details: { reason: 'operation_in_progress' } });
       expect(createTimeEntry).toHaveBeenCalledTimes(1);
 
       rejectManual(dispatchedTimeout());
@@ -792,7 +794,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           remoteScopeKey,
         ),
-      ).rejects.toMatchObject<BusyError>({ details: { reason: 'operation_in_progress' } });
+      ).rejects.toMatchObject<Partial<BusyError>>({ details: { reason: 'operation_in_progress' } });
       expect(createTimeEntry).toHaveBeenCalledTimes(1);
 
       releaseEstimate({ remoteEntryId: 'estimate-entry' });
@@ -1202,7 +1204,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           remoteScopeKey,
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: { reason: 'estimate_operation_pending' },
       });
       expect(assertTimeEntryEditable).not.toHaveBeenCalled();
@@ -1231,7 +1233,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           remoteScopeKey,
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -1257,7 +1259,7 @@ describe('ExternalTimeMutationService', () => {
           4,
           'altered-workspace',
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'estimate_operation_pending',
           operationId: 'estimate-operation-1',
@@ -1348,7 +1350,7 @@ describe('ExternalTimeMutationService', () => {
           'estimate-operation-1',
           4,
         ),
-      ).rejects.toMatchObject<BusyError>({
+      ).rejects.toMatchObject<Partial<BusyError>>({
         details: {
           reason: 'operation_in_progress',
           operationId: 'manual-delete-operation',
@@ -1818,6 +1820,8 @@ describe('ExternalTimeMutationService', () => {
           readTimeEntryExact,
           listOwnTimeEntryIdsInRange,
           assertTimeEntryDeletable,
+          updateTimeEntry,
+          assertTimeEntryEditable,
         },
       };
       const ttlService = new ExternalTimeMutationService(
@@ -1903,7 +1907,7 @@ describe('ExternalTimeMutationService', () => {
 
       await expect(
         service.acknowledgeOperation(projectId, 'clickup', 'op-1', 4),
-      ).rejects.toMatchObject<BusyError>({ details: { reason: 'operation_in_progress' } });
+      ).rejects.toMatchObject<Partial<BusyError>>({ details: { reason: 'operation_in_progress' } });
       expect(store.get('op-1')?.phase).toBe('outcome_unknown');
 
       releaseProof({ ids: ['9100'], complete: true });
@@ -1954,14 +1958,14 @@ describe('ExternalTimeMutationService', () => {
         projectId: 'project-2',
       });
 
-      await expect(
-        service.getOperation('project-2', 'clickup', 'op-1', 4),
-      ).rejects.toMatchObject<ConflictError>({
+      await expect(service.getOperation('project-2', 'clickup', 'op-1', 4)).rejects.toMatchObject<
+        Partial<ConflictError>
+      >({
         details: { reason: 'connection_superseded' },
       });
       await expect(
         service.acknowledgeOperation('project-2', 'clickup', 'op-1', 4),
-      ).rejects.toMatchObject<ConflictError>({
+      ).rejects.toMatchObject<Partial<ConflictError>>({
         details: { reason: 'connection_superseded' },
       });
     });

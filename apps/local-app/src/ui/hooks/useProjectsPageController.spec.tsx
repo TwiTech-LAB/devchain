@@ -79,7 +79,20 @@ const workspace = (
 
 function emptyPreview(): SetupPreviewResponse {
   return {
-    payload: { version: 1, profiles: [], agents: [], teams: [] },
+    payload: {
+      version: 1,
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+      watchers: [],
+      subscribers: [],
+      teams: [],
+      providerModels: [],
+      providerEfforts: [],
+      presets: [],
+      scheduledEpics: [],
+    },
     providerSummary: [],
     familyAlternatives: [],
     presetProviderCoverage: [],
@@ -91,14 +104,26 @@ function configuredPreview(): SetupPreviewResponse {
   return {
     payload: {
       version: 1,
+      prompts: [],
       profiles: [
         {
           id: 'profile-1',
           name: 'Coder Profile',
+          provider: { name: 'codex' },
           providerConfigs: [{ name: 'main', providerName: 'codex' }],
         },
       ],
-      agents: [{ name: 'Coder', profileId: 'profile-1', providerConfigName: 'main' }],
+      agents: [
+        {
+          name: 'Coder',
+          profileId: 'profile-1',
+          isProjectOwner: false,
+          providerConfigName: 'main',
+        },
+      ],
+      statuses: [],
+      watchers: [],
+      subscribers: [],
       teams: [
         {
           name: 'Core',
@@ -107,12 +132,15 @@ function configuredPreview(): SetupPreviewResponse {
           profileNames: ['Coder Profile'],
         },
       ],
+      providerModels: [],
+      providerEfforts: [],
       presets: [
         {
           name: 'balanced',
           agentConfigs: [{ agentName: 'Coder', providerConfigName: 'main' }],
         },
       ],
+      scheduledEpics: [],
     },
     providerSummary: [{ name: 'codex', available: true, families: ['reasoning'], agentCount: 1 }],
     familyAlternatives: [

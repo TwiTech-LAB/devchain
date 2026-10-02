@@ -73,7 +73,7 @@ describe('claude-config utils', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockHomedir.mockReturnValue('/mock/home');
-    mockRealpath.mockImplementation(async (inputPath: string) => inputPath);
+    mockRealpath.mockImplementation(async (inputPath) => inputPath.toString());
     mockReadFile.mockRejectedValue(createEnoentError());
     mockStat.mockResolvedValue(createStatResult(0o100600));
     mockWriteFile.mockResolvedValue(undefined);

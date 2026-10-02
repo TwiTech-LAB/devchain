@@ -79,23 +79,34 @@ describe('PendingAskUserQuestionService', () => {
     expect(service.getBySession(SESSION_B, 2000)).toHaveLength(1);
   });
 
-  it('expires entries past the TTL on read', () => {
+  it('hides entries past the TTL from the poll but keeps them for the turn hold', () => {
     service.set(input({ now: 1000 }));
     const justBefore = 1000 + PENDING_ASK_QUESTION_TTL_MS - 1;
     const atExpiry = 1000 + PENDING_ASK_QUESTION_TTL_MS;
 
     expect(service.getBySession(SESSION_A, justBefore)).toHaveLength(1);
     expect(service.getBySession(SESSION_A, atExpiry)).toHaveLength(0);
-    expect(service.size(atExpiry)).toBe(0);
+    expect(service.hasPendingQuestion(SESSION_A)).toBe(true);
+    expect(service.size()).toBe(1);
   });
 
-  it('prunes expired entries when new ones are stored', () => {
+  it('never deletes an entry because of time, including when new ones are stored', () => {
     service.set(input({ toolUseId: 'old', now: 1000 }));
-    // a much later set() should prune the expired "old" entry
     service.set(input({ toolUseId: 'new', now: 1000 + PENDING_ASK_QUESTION_TTL_MS + 5 }));
 
     const found = service.getBySession(SESSION_A, 1000 + PENDING_ASK_QUESTION_TTL_MS + 10);
     expect(found.map((e) => e.toolUseId)).toEqual(['new']);
+    expect(service.size()).toBe(2);
+  });
+
+  it('reports a pending question per session until it is cleared', () => {
+    service.set(input({ toolUseId: 'a' }));
+
+    expect(service.hasPendingQuestion(SESSION_A)).toBe(true);
+    expect(service.hasPendingQuestion(SESSION_B)).toBe(false);
+
+    service.clearByToolUseId(SESSION_A, 'a');
+    expect(service.hasPendingQuestion(SESSION_A)).toBe(false);
   });
 
   it('clears the session on session.stopped', () => {

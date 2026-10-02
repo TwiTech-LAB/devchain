@@ -7,6 +7,7 @@ import type { SyncthingManager, SyncthingState } from '../../file-sync/syncthing
 import type { HostEnvOverrideReportStorage } from '../../remotes/host/host-env-override-report';
 import { renderHostEnvFile } from '../../remotes/host/host-provider-auth.service';
 import { RuntimeController } from './runtime.controller';
+import { createMockProvider } from '../../../../test/factories';
 
 const fileSyncState: SyncthingState = {
   available: false,
@@ -75,8 +76,8 @@ describe('RuntimeController', () => {
     expect(result).toEqual({
       version: expect.any(String),
       homePath: homedir(),
-      uid: process.getuid(),
-      gid: process.getgid(),
+      uid: process.getuid?.(),
+      gid: process.getgid?.(),
       bootId: expect.any(String),
       features: {
         cloudUi: true,
@@ -108,8 +109,8 @@ describe('RuntimeController', () => {
   it('reports the real process account ids, the source of truth for a VM claim', async () => {
     const result = await controller.getRuntime();
 
-    expect(result.uid).toBe(process.getuid());
-    expect(result.gid).toBe(process.getgid());
+    expect(result.uid).toBe(process.getuid?.());
+    expect(result.gid).toBe(process.getgid?.());
   });
 
   it('returns the same bootId across multiple calls', async () => {
@@ -177,11 +178,11 @@ describe('RuntimeController', () => {
         makeStorage({
           listProviders: async () => ({
             items: [
-              {
+              createMockProvider({
                 id: 'p-claude',
                 name: 'claude',
                 env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-shadow-secret-token-value' },
-              },
+              }),
             ],
             total: 1,
             limit: 100,

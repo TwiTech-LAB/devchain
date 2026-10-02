@@ -10,7 +10,7 @@ import type { DockerScanResult } from '../host/host-docker.dto';
 import type { DockerImportInventory } from '../operations/docker-import-inventory.store';
 import { buildRecord } from './docker-handoff';
 import { DockerPlanService } from './docker-plan.service';
-import { DockerPlanSourceService } from './docker-plan-source.service';
+import { DOCKER_PLAN_REUSE_MS, DockerPlanSourceService } from './docker-plan-source.service';
 import type { DockerPlan } from './docker-plan.dto';
 
 const projectId = '11111111-1111-4111-8111-111111111111';
@@ -201,6 +201,40 @@ it('plans linked and other containers with negotiated API, fit, estimate and exc
   expect(JSON.stringify(plan)).not.toContain('must-never-escape');
 });
 
+it('lets the dialog reuse disk usage, folder sizes and copy speeds for two minutes; Connect reads fresh', async () => {
+  const measure = jest.spyOn(source, 'measure');
+  const exportRate = jest.spyOn(source, 'exportRate');
+  const dialog = () => service.plan(projectId, { remoteId }, undefined, { reuse: true });
+  const diskUsageReads = () => requests.filter((r) => r.endsWith('/system/df')).length;
+
+  const first = await dialog();
+  expect(diskUsageReads()).toBe(1);
+  expect(remote.dockerProbe).toHaveBeenCalledTimes(1);
+  expect(measure).toHaveBeenCalledTimes(1);
+
+  // The next choice reads the containers again, but none of the measurements.
+  containers.push(container('late'));
+  const second = await dialog();
+  expect(item(second, 'late')).toBeDefined();
+  expect(item(second, 'web').mounts).toEqual(item(first, 'web').mounts);
+  expect(second.estimate).toEqual(first.estimate);
+  expect(diskUsageReads()).toBe(1);
+  expect(remote.dockerProbe).toHaveBeenCalledTimes(1);
+  expect(exportRate).toHaveBeenCalledTimes(1);
+  expect(measure).toHaveBeenCalledTimes(1);
+
+  // Connect measures again before it stops anything.
+  await service.plan(projectId, { remoteId }, undefined, { estimate: false });
+  expect(diskUsageReads()).toBe(2);
+  expect(measure).toHaveBeenCalledTimes(2);
+
+  jest.spyOn(Date, 'now').mockReturnValue(Date.now() + DOCKER_PLAN_REUSE_MS);
+  await dialog();
+  expect(diskUsageReads()).toBe(3);
+  expect(remote.dockerProbe).toHaveBeenCalledTimes(2);
+  expect(measure).toHaveBeenCalledTimes(3);
+});
+
 it.each([
   ['as stored', ''],
   ['with a trailing slash', '/'],
@@ -225,6 +259,8 @@ it.each([
     expect(remote.dockerCapacity).toHaveBeenCalledWith(remoteId, [pg], expect.anything());
     // Only the Postgres folder counts; the project's other files travel by file sync.
     expect(plan.filesystems.find((f) => f.filesystemId === 'home')?.requiredBytes).toBe(2);
+    expect(item(plan, 'app').dataSize).toEqual({ bytes: 0, unknown: false });
+    expect(item(plan, 'db').dataSize).toEqual({ bytes: 2, unknown: false });
 
     const selected = plan.items.filter((i) => i.selectedMode);
     const record = buildRecord(plan.items, selected, plan.apiVersion!, projectRoot);
@@ -247,6 +283,31 @@ it.each([
 it('images the VM already has cost nothing and need no estimate probe for them', async () => {
   remote.dockerImagesPresent.mockResolvedValue({ ids: ['sha256:image'] });
   const plan = await run();
+  expect(plan.filesystems.find((f) => f.filesystemId === 'root')?.requiredBytes).toBe(9);
+});
+
+it('counts an image the VM holds only under its paired VM ID as present', async () => {
+  inventory = {
+    importedAt: '2026-09-27T00:00:00.000Z',
+    items: [
+      {
+        name: 'web',
+        imageId: 'sha256:image',
+        vmImageId: 'sha256:vm-image',
+        volumes: [],
+        bindPaths: [],
+        sizeBytes: 0,
+      },
+    ],
+  };
+  remote.dockerImagesPresent.mockResolvedValue({ ids: ['sha256:vm-image'] });
+  const plan = await run();
+  expect(remote.dockerImagesPresent).toHaveBeenCalledWith(
+    remoteId,
+    expect.arrayContaining(['sha256:image', 'sha256:vm-image']),
+    expect.anything(),
+  );
+  // No image bytes enter the fit, exactly as when the VM answers with the home ID.
   expect(plan.filesystems.find((f) => f.filesystemId === 'root')?.requiredBytes).toBe(9);
 });
 

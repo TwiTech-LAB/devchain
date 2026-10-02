@@ -13,7 +13,7 @@ describe('UpdateHostOperation preflight', () => {
     const operation = { id: 'op-update', remoteId: 'remote-1' } as RemoteOperation;
 
     await expect(
-      step.run({ operation, details: { version: '2.0.0' } } as Parameters<typeof step.run>[0]),
+      step.run({ operation, details: { version: '2.0.0' }, progress: async () => undefined }),
     ).rejects.toMatchObject({ code: 'HOST_API_KEY_REJECTED' });
   });
 });

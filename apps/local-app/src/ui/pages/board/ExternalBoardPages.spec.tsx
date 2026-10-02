@@ -6,6 +6,10 @@ import type { ReactNode } from 'react';
 import { ExternalBoardMyWorkPage } from './ExternalBoardMyWorkPage';
 import { ExternalBoardKanbanPage } from './ExternalBoardKanbanPage';
 import type { ExternalMyWorkLanding } from '@/ui/hooks/board/useExternalMyWorkLanding';
+import type {
+  ExternalTaskDetail,
+  ExternalTaskLinkStateSummary,
+} from '@/modules/external-integrations/models/external-provider.models';
 import { formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 
 // Layer: UI component unit. The connection and landing-controller hooks are mocked
@@ -616,7 +620,7 @@ describe('ExternalBoardKanbanPage', () => {
     const resolver = mockRetainedDialogFocus.resolver;
     expect(resolver).toBeInstanceOf(Function);
     act(() => {
-      resolver!().focus();
+      resolver!()!.focus();
     });
 
     await waitFor(() =>
@@ -653,7 +657,7 @@ describe('ExternalBoardKanbanPage', () => {
     const fallbackResolver = mockRetainedDialogFocus.resolver;
     expect(fallbackResolver).toBeInstanceOf(Function);
     act(() => {
-      fallbackResolver!().focus();
+      fallbackResolver!()!.focus();
     });
 
     await waitFor(() => expect(screen.getByRole('region', { name: 'Task board' })).toHaveFocus());
@@ -1047,13 +1051,14 @@ describe('ExternalBoardKanbanPage move wiring', () => {
 });
 
 describe('ExternalBoardKanbanPage quick import', () => {
-  const unlinkedEntry = {
+  const unlinkedEntry: ExternalTaskLinkStateSummary = {
     scopeKey: 'workspace-1',
     taskId: 'task-1',
     linked: false,
     epicId: null,
     projectId: null,
     projectName: null,
+    loggedMinutes: null,
   };
   const secondUnlinkedEntry = { ...unlinkedEntry, taskId: 'task-2' };
 
@@ -1073,6 +1078,9 @@ describe('ExternalBoardKanbanPage quick import', () => {
       },
       dueAt: null,
       priority: null,
+      subtasks: [],
+      subtasksTruncated: false,
+      taskTotalDurationMs: null,
       webUrl: 'https://app.clickup.com/t/task-1',
       location: {
         scopeKey: 'workspace-1',
@@ -1136,7 +1144,9 @@ describe('ExternalBoardKanbanPage quick import', () => {
 
   const quickFetch = jest.fn();
 
-  function renderQuickBoard(linkItems = [unlinkedEntry, secondUnlinkedEntry]) {
+  function renderQuickBoard(
+    linkItems: ExternalTaskLinkStateSummary[] = [unlinkedEntry, secondUnlinkedEntry],
+  ) {
     useIntegrationConnectionsMock.mockReturnValue(
       baseConnectionsValue([
         {
@@ -1510,7 +1520,7 @@ describe('ExternalBoardKanbanPage quick import', () => {
     const resolver = mockRetainedImportFocus.resolver;
     expect(resolver).toBeInstanceOf(Function);
     act(() => {
-      resolver!().focus();
+      resolver!()!.focus();
     });
     await waitFor(() => expect(button).toHaveFocus());
   });
@@ -1553,7 +1563,7 @@ describe('ExternalBoardKanbanPage quick import', () => {
     const resolver = mockRetainedImportFocus.resolver;
     expect(resolver).toBeInstanceOf(Function);
     act(() => {
-      resolver!().focus();
+      resolver!()!.focus();
     });
     await waitFor(() => expect(screen.getByRole('region', { name: 'Task board' })).toHaveFocus());
   });
@@ -1576,7 +1586,7 @@ describe('ExternalBoardKanbanPage quick import', () => {
     const resolver = mockRetainedImportFocus.resolver;
     expect(resolver).toBeInstanceOf(Function);
     act(() => {
-      resolver!().focus();
+      resolver!()!.focus();
     });
     // The detail dialog's registered resolver targets document.body; the card
     // quick buttons must not have stolen the origin.

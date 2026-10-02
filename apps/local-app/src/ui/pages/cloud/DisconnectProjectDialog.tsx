@@ -251,7 +251,8 @@ export function DisconnectProjectDialog({
           <Button
             variant={forced ? 'destructive' : 'default'}
             onClick={handleDisconnect}
-            disabled={pending || missingChoice}
+            disabled={missingChoice}
+            pending={pending}
           >
             {forced ? 'Force disconnect' : 'Disconnect'}
           </Button>

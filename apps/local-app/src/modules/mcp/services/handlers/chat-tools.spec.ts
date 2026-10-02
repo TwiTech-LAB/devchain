@@ -190,7 +190,7 @@ describe('chat-tools handlers', () => {
 
     it('returns error when no project associated', async () => {
       const sessionCtx = makeAgentCtx();
-      (sessionCtx as Record<string, unknown>).project = null;
+      (sessionCtx as unknown as Record<string, unknown>).project = null;
       const ctx = makeCtx(sessionCtx);
 
       const result = await handleSendMessage(ctx, {

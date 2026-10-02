@@ -168,7 +168,15 @@ describe('TunnelRpcCryptoService', () => {
     const sealedParams = await mobileSvc.seal({ subscriptionId: 'vp-1' }, reqCtx(method));
     const privateValue = 'producer-private-value';
     const viewport = { unsubscribe: jest.fn().mockReturnValue({ ok: privateValue }) };
-    const handler = new TunnelHandlerService({}, {} as never, {} as never, viewport as never);
+    const handler = new TunnelHandlerService(
+      {},
+      {} as never,
+      {} as never,
+      viewport as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
 
     const resp = await svc.handle(
       { jsonrpc: '2.0', id: 'invalid-sealed-result', method, params: sealedParams },
@@ -279,7 +287,15 @@ describe('TunnelRpcCryptoService', () => {
         totalMessageCount: 1,
       }),
     };
-    const handler = new TunnelHandlerService({}, mobileChat as never, {} as never, {} as never);
+    const handler = new TunnelHandlerService(
+      {},
+      mobileChat as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
     const params = { sessionId, projectId, since: 'cursor-1' };
 
     const plaintext = await handler.handle({

@@ -175,7 +175,21 @@ const projectSelectionValue = {
   setSelectedProjectId: jest.fn(),
 };
 
-const workingTreeResponse = {
+interface WorkingTreeFileChange {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+}
+
+const workingTreeResponse: {
+  changes: {
+    staged: WorkingTreeFileChange[];
+    unstaged: WorkingTreeFileChange[];
+    untracked: string[];
+  };
+  diff: string;
+} = {
   changes: {
     staged: [{ path: 'src/index.ts', status: 'modified', additions: 10, deletions: 5 }],
     unstaged: [{ path: 'src/app.ts', status: 'modified', additions: 3, deletions: 2 }],

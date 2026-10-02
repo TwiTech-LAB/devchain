@@ -45,8 +45,8 @@ describe('EpicsService', () => {
   let mirrorSync: { pullNow: jest.Mock };
   let eventsService: {
     publish: jest.Mock;
-    prepareCommitted?: jest.Mock;
-    emitCommitted?: jest.Mock;
+    prepareCommitted: jest.Mock;
+    emitCommitted: jest.Mock;
   };
   let settingsService: { getSetting: jest.Mock; getAutoCleanStatusIds: jest.Mock };
   let eventEmitter: { emit: jest.Mock };
@@ -411,7 +411,9 @@ describe('EpicsService', () => {
       storage.getStatus.mockResolvedValue({ id: 'status-1', projectId: 'project-1' });
       storage.getIntegrationConnection.mockResolvedValue(null);
 
-      await expect(service.importExternalTask(importInput)).rejects.toMatchObject<ValidationError>({
+      await expect(service.importExternalTask(importInput)).rejects.toMatchObject<
+        Partial<ValidationError>
+      >({
         message: 'Connect the integration before importing this task.',
       });
 
@@ -823,7 +825,7 @@ describe('EpicsService', () => {
         { actor: { type: 'agent', id: 'agent-1' } },
       );
       expect(storage.setEpicRelation.mock.invocationCallOrder[0]).toBeLessThan(
-        eventsService.prepareCommitted!.mock.invocationCallOrder[0],
+        eventsService.prepareCommitted.mock.invocationCallOrder[0],
       );
       expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
       expect(eventsService.publish).toHaveBeenCalledWith('epic.relations.invalidated', {

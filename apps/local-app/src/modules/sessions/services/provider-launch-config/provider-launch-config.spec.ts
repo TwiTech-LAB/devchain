@@ -48,7 +48,7 @@ describe('ProviderLaunchConfig.resolve', () => {
       [new ClaudeAdapter(), 'DISABLE_AUTOUPDATER', '1'],
       [new CopilotAdapter(undefined as never, undefined as never), 'COPILOT_AUTO_UPDATE', 'false'],
       [new OpencodeAdapter(), 'OPENCODE_DISABLE_AUTOUPDATE', 'true'],
-      [new AntigravityAdapter(), 'AGY_CLI_DISABLE_AUTO_UPDATE', 'true'],
+      [new AntigravityAdapter(undefined as never), 'AGY_CLI_DISABLE_AUTO_UPDATE', 'true'],
     ] as const)(
       'enforces %s update policy in new and restore base and runtime passes',
       (adapter, key, value) => {
@@ -71,6 +71,24 @@ describe('ProviderLaunchConfig.resolve', () => {
         }
       },
     );
+
+    it('forces the classic Claude renderer in new and restore launches', () => {
+      for (const mode of ['new', 'restore'] as const) {
+        const result = resolve(
+          makeInput({
+            adapter: new ClaudeAdapter(),
+            mode,
+            providerSessionId: 'session',
+            providerEnv: { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '0' },
+            configEnv: { ANTHROPIC_BASE_URL: 'https://glm.example.test' },
+          }),
+        );
+        expect(result.env).toMatchObject({
+          CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',
+          ANTHROPIC_BASE_URL: 'https://glm.example.test',
+        });
+      }
+    });
 
     it('places provider options before profile options for new and restore Claude launches', () => {
       const common = {
@@ -120,6 +138,7 @@ describe('ProviderLaunchConfig.resolve', () => {
         DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json',
         KEEP: 'config',
         DISABLE_AUTOUPDATER: '1',
+        CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',
       });
     });
   });

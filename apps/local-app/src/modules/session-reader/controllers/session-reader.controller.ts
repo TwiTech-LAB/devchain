@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { SessionReaderService } from '../services/session-reader.service';
-import { encodeCursor } from '../services/transcript-cursor';
+import { encodeParseCursor } from '../services/transcript-cursor';
 import { DEFAULT_MAX_TOOL_RESULT_LENGTH } from '../services/transcript-truncation';
 import {
   serializeChunk as serializeChunkToWire,
@@ -185,7 +185,7 @@ export class SessionReaderController implements OnModuleInit {
 
       const tSerialize = performance.now();
       const chunks = session.chunks ?? [];
-      const cursor = encodeCursor(timing.sourceVersion, session.messages.length, chunks.length);
+      const cursor = encodeParseCursor(timing, session.messages.length, chunks.length);
       const result = { ...this.serializeTranscript(session), cursor };
       const serializeTranscriptMs = performance.now() - tSerialize;
 

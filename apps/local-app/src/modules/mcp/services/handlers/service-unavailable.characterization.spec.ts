@@ -514,7 +514,6 @@ describe('session-tools SERVICE_UNAVAILABLE', () => {
 describe('skill-tools SERVICE_UNAVAILABLE', () => {
   it('handleListSkills: skillsService is null adapter', async () => {
     const ctx: SkillToolContext = {
-      storage: storageWithAgent() as never,
       skillsService: createNullAdapter<SkillsService>('SkillsService'),
       skillSourceLifecycleService: createNullAdapter<SkillSourceLifecycleService>(
         'SkillSourceLifecycleService',
@@ -527,7 +526,6 @@ describe('skill-tools SERVICE_UNAVAILABLE', () => {
 
   it('handleGetSkill: skillsService is null adapter', async () => {
     const ctx: SkillToolContext = {
-      storage: storageWithAgent() as never,
       skillsService: createNullAdapter<SkillsService>('SkillsService'),
       skillSourceLifecycleService: createNullAdapter<SkillSourceLifecycleService>(
         'SkillSourceLifecycleService',
@@ -540,7 +538,6 @@ describe('skill-tools SERVICE_UNAVAILABLE', () => {
 
   it('handleSkillsSetSourceEnabled: skillsService is null adapter', async () => {
     const ctx: SkillToolContext = {
-      storage: storageWithAgent() as never,
       skillsService: createNullAdapter<SkillsService>('SkillsService'),
       skillSourceLifecycleService: createNullAdapter<SkillSourceLifecycleService>(
         'SkillSourceLifecycleService',
@@ -557,7 +554,6 @@ describe('skill-tools SERVICE_UNAVAILABLE', () => {
 
   it('handleSkillsSync: skillSourceLifecycleService is null adapter', async () => {
     const ctx: SkillToolContext = {
-      storage: storageWithAgent() as never,
       skillsService: createNullAdapter<SkillsService>('SkillsService'),
       skillSourceLifecycleService: createNullAdapter<SkillSourceLifecycleService>(
         'SkillSourceLifecycleService',

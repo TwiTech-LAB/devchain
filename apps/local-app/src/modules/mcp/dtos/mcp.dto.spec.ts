@@ -19,7 +19,6 @@ import {
   RegisterGuestParamsSchema,
   UpdateEpicParamsSchema,
   ListEpicsParamsSchema,
-  GetEpicByIdParamsSchema,
 } from './mcp.dto';
 
 describe('ListEpicsParamsSchema includeDescription flag', () => {

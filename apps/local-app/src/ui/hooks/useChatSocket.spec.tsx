@@ -100,7 +100,7 @@ describe('useChatSocket', () => {
       registry
         .flatMap((entry) => entry.entries)
         .some((entry) =>
-          entry.kind === 'invalidate'
+          entry.kind === 'invalidate' && Array.isArray(entry.queryKey)
             ? entry.queryKey.some((segment) => String(segment).includes('thread'))
             : false,
         ),
@@ -146,6 +146,7 @@ describe('useChatSocket', () => {
         topic: 'project/project-1/state',
         type: 'team.member.added',
         payload: { teamId: 't1', teamName: 'Backend', addedAgentId: 'a2', addedAgentName: 'W' },
+        ts: '2026-01-01T00:00:00.000Z',
       });
 
       expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
@@ -159,6 +160,7 @@ describe('useChatSocket', () => {
         topic: 'project/project-1/state',
         type: 'team.member.removed',
         payload: { teamId: 't1', teamName: 'Backend', removedAgentId: 'a2', removedAgentName: 'W' },
+        ts: '2026-01-01T00:00:00.000Z',
       });
 
       expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
@@ -172,6 +174,7 @@ describe('useChatSocket', () => {
         topic: 'project/project-1/state',
         type: 'team.config.updated',
         payload: { teamId: 't1', teamName: 'Backend', previous: {}, current: {} },
+        ts: '2026-01-01T00:00:00.000Z',
       });
 
       expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
@@ -185,6 +188,7 @@ describe('useChatSocket', () => {
         topic: 'project/project-other/state',
         type: 'agent.created',
         payload: { agentId: 'a1', agentName: 'Coder' },
+        ts: '2026-01-01T00:00:00.000Z',
       });
 
       expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
@@ -196,6 +200,7 @@ describe('useChatSocket', () => {
         topic: 'chat/thread-1',
         type: 'message.created',
         payload: { authorType: 'user', authorAgentId: null, content: 'hi' },
+        ts: '2026-01-01T00:00:00.000Z',
       });
 
       expect(queryClient.invalidateQueries).not.toHaveBeenCalled();

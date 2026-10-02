@@ -19,8 +19,10 @@ import { join } from 'node:path';
 import type { StorageService } from '../../../storage/interfaces/storage.interface';
 import type {
   IntegrationConnection,
+  IntegrationConnectionLookup,
   IntegrationCredentials,
   IntegrationProvider,
+  Project,
 } from '../../../storage/models/domain.models';
 import { ClickUpExternalTaskProvider } from '../clickup-external-task.provider';
 import { JiraExternalTaskProvider } from '../jira-external-task.provider';
@@ -69,7 +71,29 @@ interface GateEvidence {
   };
 }
 
-function loadCredentials(provider: 'clickup' | 'jira'): IntegrationCredentials | null {
+/** Project that owns the provider's stored connection, or null when none is configured. */
+function loadConnectionProjectId(provider: 'clickup' | 'jira'): string | null {
+  const dbPath = join(homedir(), '.devchain', 'devchain.db');
+  if (!existsSync(dbPath)) {
+    return null;
+  }
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const row = db
+      .prepare(
+        'SELECT project_id FROM integration_connections WHERE provider = ? AND project_id IS NOT NULL ORDER BY created_at LIMIT 1',
+      )
+      .get(provider) as { project_id: string } | undefined;
+    return row?.project_id ?? null;
+  } finally {
+    db.close();
+  }
+}
+
+function loadCredentials(
+  provider: 'clickup' | 'jira',
+  projectId: string,
+): IntegrationCredentials | null {
   const dbPath = join(homedir(), '.devchain', 'devchain.db');
   if (!existsSync(dbPath)) {
     return null;
@@ -78,9 +102,9 @@ function loadCredentials(provider: 'clickup' | 'jira'): IntegrationCredentials |
   try {
     const row = db
       .prepare(
-        'SELECT credential_ciphertext, id, generation FROM integration_connections WHERE provider = ?',
+        'SELECT credential_ciphertext, id, generation FROM integration_connections WHERE provider = ? AND project_id = ?',
       )
-      .get(provider) as
+      .get(provider, projectId) as
       | { credential_ciphertext?: string; id?: string; generation?: number }
       | undefined;
     if (!row?.credential_ciphertext || !row.id || typeof row.generation !== 'number') {
@@ -93,24 +117,66 @@ function loadCredentials(provider: 'clickup' | 'jira'): IntegrationCredentials |
   }
 }
 
+/** The slice of StorageService that the edit-session service reads for a stable connection. */
 class ConnectionReadingStorage {
-  constructor(private readonly provider: IntegrationProvider) {}
+  constructor(
+    private readonly provider: 'clickup' | 'jira',
+    private readonly projectId: string,
+  ) {}
 
-  async getIntegrationConnection(provider: string): Promise<IntegrationConnection | null> {
-    if (provider !== this.provider) {
+  private matches(lookup: IntegrationConnectionLookup): boolean {
+    return (
+      typeof lookup === 'object' &&
+      'projectId' in lookup &&
+      lookup.provider === this.provider &&
+      lookup.projectId === this.projectId
+    );
+  }
+
+  async getProject(projectId: string): Promise<Project> {
+    return {
+      id: projectId,
+      workspaceId: '',
+      name: 'smoke',
+      description: null,
+      rootPath: '',
+      isTemplate: false,
+      createdAt: '',
+      updatedAt: '',
+    };
+  }
+
+  async getIntegrationConnection(
+    lookup: IntegrationConnectionLookup,
+  ): Promise<IntegrationConnection | null> {
+    if (!this.matches(lookup)) {
       return null;
     }
     const dbPath = join(homedir(), '.devchain', 'devchain.db');
     const db = new Database(dbPath, { readonly: true });
     try {
       const row = db
-        .prepare('SELECT id, provider, generation FROM integration_connections WHERE provider = ?')
-        .get(provider) as { id: string; provider: string; generation: number } | undefined;
+        .prepare(
+          'SELECT id, generation, legacy_source_connection_id, subtask_sync_enabled, sync_setting_revision FROM integration_connections WHERE provider = ? AND project_id = ?',
+        )
+        .get(this.provider, this.projectId) as
+        | {
+            id: string;
+            generation: number;
+            legacy_source_connection_id: string | null;
+            subtask_sync_enabled: number;
+            sync_setting_revision: number;
+          }
+        | undefined;
       return row
         ? {
             id: row.id,
-            provider: row.provider as IntegrationProvider,
+            projectId: this.projectId,
+            provider: this.provider,
+            legacySourceConnectionId: row.legacy_source_connection_id,
             generation: row.generation,
+            subtaskSyncEnabled: row.subtask_sync_enabled === 1,
+            syncSettingRevision: row.sync_setting_revision,
             createdAt: '',
             updatedAt: '',
           }
@@ -121,9 +187,9 @@ class ConnectionReadingStorage {
   }
 
   async getIntegrationConnectionCredentials(
-    provider: string,
+    lookup: IntegrationConnectionLookup,
   ): Promise<IntegrationCredentials | null> {
-    return provider === this.provider ? loadCredentials(this.provider as 'clickup' | 'jira') : null;
+    return this.matches(lookup) ? loadCredentials(this.provider, this.projectId) : null;
   }
 }
 
@@ -218,12 +284,16 @@ describeFn('Phase 13 gate: cross-provider live smoke', () => {
   };
 
   it('runs the full description-edit and owned-delete matrix on both providers', async () => {
-    const clickupCredentials = loadCredentials('clickup');
-    const jiraCredentials = loadCredentials('jira');
+    const clickupProjectId = loadConnectionProjectId('clickup');
+    const jiraProjectId = loadConnectionProjectId('jira');
+    const clickupCredentials = clickupProjectId
+      ? loadCredentials('clickup', clickupProjectId)
+      : null;
+    const jiraCredentials = jiraProjectId ? loadCredentials('jira', jiraProjectId) : null;
 
     // ---------- ClickUp ----------
     const clickup = emptyResult('clickup');
-    if (clickupCredentials?.provider === 'clickup') {
+    if (clickupProjectId && clickupCredentials?.provider === 'clickup') {
       clickup.available = true;
       const token = clickupCredentials.token;
       const listId = await clickupListId(http, token);
@@ -271,14 +341,14 @@ describeFn('Phase 13 gate: cross-provider live smoke', () => {
         new JiraExternalTaskProvider(http),
       ]);
       const service = new ExternalEditSessionService(
-        new ConnectionReadingStorage('clickup') as unknown as StorageService,
+        new ConnectionReadingStorage('clickup', clickupProjectId) as unknown as StorageService,
         registry,
         new ProviderOperationGate(),
         new ExternalEditSessionStore(),
       );
 
       // Description edit through the real session service.
-      const session = await service.createDescriptionSession('clickup', taskId);
+      const session = await service.createDescriptionSession(clickupProjectId, 'clickup', taskId);
       clickup.descriptionSession.created = true;
       clickup.descriptionSession.baselineSupported = session.baselineFingerprint !== null;
 
@@ -299,25 +369,29 @@ describeFn('Phase 13 gate: cross-provider live smoke', () => {
           },
         ],
       };
-      const write = await service.saveSession(session.sessionId, updated, 0);
+      const write = await service.saveSession(clickupProjectId, session.sessionId, updated, 0);
       clickup.descriptionSession.writeOutcome = write.outcome;
       if (write.outcome === 'pre_dispatch_rejected') {
         clickup.descriptionSession.writeReason = write.reason;
       }
-      const verify = await service.verifySession(session.sessionId);
+      const verify = await service.verifySession(clickupProjectId, session.sessionId);
       clickup.descriptionSession.verifiedRemoteState = verify.remoteState;
       clickup.descriptionSession.revisionAfterVerify = verify.session?.revision ?? null;
       clickup.descriptionSession.finalState = verify.session?.state ?? null;
 
       // Owned delete through the real bounded lookup + gate.
       const deleteSession = await service.createCommentDeleteSession(
+        clickupProjectId,
         'clickup',
         taskId,
         commentId,
         null,
       );
       clickup.commentDelete.sessionCreated = true;
-      const deleteOutcome = await service.executeCommentDelete(deleteSession.sessionId);
+      const deleteOutcome = await service.executeCommentDelete(
+        clickupProjectId,
+        deleteSession.sessionId,
+      );
       clickup.commentDelete.deleteOutcome = deleteOutcome.outcome;
       if (deleteOutcome.outcome === 'rejected') {
         clickup.commentDelete.deleteReason = deleteOutcome.reason;
@@ -354,7 +428,7 @@ describeFn('Phase 13 gate: cross-provider live smoke', () => {
 
     // ---------- Jira ----------
     const jira = emptyResult('jira');
-    if (jiraCredentials?.provider === 'jira') {
+    if (jiraProjectId && jiraCredentials?.provider === 'jira') {
       jira.available = true;
       const origin = jiraCredentials.siteUrl.replace(/\/$/, '');
       const authorization = `Basic ${Buffer.from(
@@ -418,13 +492,13 @@ describeFn('Phase 13 gate: cross-provider live smoke', () => {
         jiraAdapter,
       ]);
       const service = new ExternalEditSessionService(
-        new ConnectionReadingStorage('jira') as unknown as StorageService,
+        new ConnectionReadingStorage('jira', jiraProjectId) as unknown as StorageService,
         registry,
         new ProviderOperationGate(),
         new ExternalEditSessionStore(),
       );
 
-      const session = await service.createDescriptionSession('jira', issueKey);
+      const session = await service.createDescriptionSession(jiraProjectId, 'jira', issueKey);
       jira.descriptionSession.created = true;
       jira.descriptionSession.baselineSupported = session.baselineFingerprint !== null;
 
@@ -445,24 +519,28 @@ describeFn('Phase 13 gate: cross-provider live smoke', () => {
           ...(baselineDoc.supported ? baselineDoc.document.blocks : []),
         ],
       };
-      const write = await service.saveSession(session.sessionId, updated, 0);
+      const write = await service.saveSession(jiraProjectId, session.sessionId, updated, 0);
       jira.descriptionSession.writeOutcome = write.outcome;
       if (write.outcome === 'pre_dispatch_rejected') {
         jira.descriptionSession.writeReason = write.reason;
       }
-      const verify = await service.verifySession(session.sessionId);
+      const verify = await service.verifySession(jiraProjectId, session.sessionId);
       jira.descriptionSession.verifiedRemoteState = verify.remoteState;
       jira.descriptionSession.revisionAfterVerify = verify.session?.revision ?? null;
       jira.descriptionSession.finalState = verify.session?.state ?? null;
 
       const deleteSession = await service.createCommentDeleteSession(
+        jiraProjectId,
         'jira',
         issueKey,
         commentId,
         null,
       );
       jira.commentDelete.sessionCreated = true;
-      const deleteOutcome = await service.executeCommentDelete(deleteSession.sessionId);
+      const deleteOutcome = await service.executeCommentDelete(
+        jiraProjectId,
+        deleteSession.sessionId,
+      );
       jira.commentDelete.deleteOutcome = deleteOutcome.outcome;
       if (deleteOutcome.outcome === 'rejected') {
         jira.commentDelete.deleteReason = deleteOutcome.reason;

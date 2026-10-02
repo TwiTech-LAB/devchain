@@ -48,11 +48,29 @@ export const providerAuthKeys = {
   all: [HOME_BACKEND, 'provider-auth'] as const,
 };
 
+/** A refused provider-auth request; `details` carries the server's code and context. */
+export class ProviderAuthApiError extends Error {
+  readonly status: number;
+  readonly details: Record<string, unknown> | null;
+
+  constructor(message: string, status: number, details: Record<string, unknown> | null) {
+    super(message);
+    this.name = 'ProviderAuthApiError';
+    this.status = status;
+    this.details = details;
+  }
+}
+
 async function send(path: string, init?: RequestInit): Promise<Response> {
   const response = await apiFetch(path, init, { backend: HOME_BACKEND });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.message ?? `Provider auth request failed (${response.status})`);
+    const details = body?.details;
+    throw new ProviderAuthApiError(
+      body?.message ?? `Provider auth request failed (${response.status})`,
+      response.status,
+      details && typeof details === 'object' ? details : null,
+    );
   }
   return response;
 }
@@ -211,6 +229,14 @@ export function isGenerationTerminal(state: ProviderAuthGenerationView['state'])
   return GENERATION_TERMINAL.has(state);
 }
 
+/** The login a refused start found running for the same provider, or null. */
+export function runningGenerationId(error: unknown): string | null {
+  if (!(error instanceof ProviderAuthApiError)) return null;
+  if (error.details?.code !== 'PROVIDER_AUTH_GENERATION_RUNNING') return null;
+  const id = error.details.generationId;
+  return typeof id === 'string' ? id : null;
+}
+
 /**
  * Polls one login generation until it settles. `null` disables the poll, so
  * the dialog can stop asking once it closes.
@@ -265,8 +291,11 @@ export function useProviderAuthGenerationActions() {
           headers: JSON_HEADERS,
           body: JSON.stringify(body),
         }),
-      onError: (error: Error) =>
-        showError({ title: 'Could not start the login', description: error.message }),
+      // A login already running is no failure: the dialog shows that login instead.
+      onError: (error: Error) => {
+        if (runningGenerationId(error)) return;
+        showError({ title: 'Could not start the login', description: error.message });
+      },
     },
     client,
   );

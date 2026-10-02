@@ -61,6 +61,7 @@ describe('ProvidersController', () => {
   };
   let mcpEnsureService: {
     ensureMcp: jest.Mock;
+    assertPathNotRemoteOwned: jest.Mock;
   };
   let providerStateManager: ProviderStateManager;
   let mockSyncService: { syncProviderToAllProjects: jest.Mock };
@@ -201,9 +202,9 @@ describe('ProvidersController', () => {
 
     controller = module.get(ProvidersController);
     providerStateManager = module.get(ProviderStateManager);
-    normalizeBinPathSpy = jest
+    jest
       .spyOn(providerStateManager, 'normalizeBinPath')
-      .mockImplementation(async (value) => value);
+      .mockImplementation(async (value) => value ?? null);
   });
 
   afterEach(() => {

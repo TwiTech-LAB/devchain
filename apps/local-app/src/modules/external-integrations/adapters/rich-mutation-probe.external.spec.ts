@@ -100,7 +100,7 @@ function adfParagraph(content: AdfNode[]): AdfNode {
   return { type: 'paragraph', content };
 }
 
-const JIRA_ADF_DESCRIPTION: AdfNode = {
+const JIRA_ADF_DESCRIPTION: AdfNode & { content: AdfNode[] } = {
   type: 'doc',
   version: 1,
   content: [
@@ -185,11 +185,11 @@ interface Evidence {
         htmlWriteBackAccepted: boolean;
         htmlWriteBackSemanticEquality: boolean;
         readFields: string[];
-        markdownAfterCreate: string | null;
-        markdownAfterRewrite: string | null;
-        htmlAfterCreate: string | null;
-        htmlAfterRewrite: string | null;
-        htmlAfterWriteBack: string | null;
+        markdownAfterCreate: unknown;
+        markdownAfterRewrite: unknown;
+        htmlAfterCreate: unknown;
+        htmlAfterRewrite: unknown;
+        htmlAfterWriteBack: unknown;
       };
       comments: {
         createEchoFields: string[];
@@ -536,10 +536,11 @@ function canonicalDelta(value: unknown): unknown {
       } else if (typeof op.type === 'string') {
         out.type = op.type;
       }
-      if (isRecord(op.attributes)) {
-        out.attributes = Object.keys(op.attributes)
+      const attributes = op.attributes;
+      if (isRecord(attributes)) {
+        out.attributes = Object.keys(attributes)
           .sort()
-          .map((key) => [key, JSON.stringify(op.attributes[key])]);
+          .map((key) => [key, JSON.stringify(attributes[key])]);
       }
       return out;
     })
@@ -826,8 +827,9 @@ describeFn('rich mutation contract probe', () => {
       if (!taskId) {
         throw new Error('ClickUp probe task was not created');
       }
+      const probeTaskId = taskId;
       const taskPath = () =>
-        `/api/v2/task/${encodeURIComponent(taskId)}?include_markdown_description=true`;
+        `/api/v2/task/${encodeURIComponent(probeTaskId)}?include_markdown_description=true`;
       const read = await request('getTaskAfterCreate', taskPath());
       expect(read.ok).toBe(true);
       const payload = read.payload as Record<string, unknown> | undefined;
@@ -906,6 +908,9 @@ describeFn('rich mutation contract probe', () => {
       if (!taskId || !commentAnchor || !commentRichUpdate || !commentPlainUpdate) {
         throw new Error('ClickUp probe comments were not created');
       }
+      const anchorComment = commentAnchor;
+      const richComment = commentRichUpdate;
+      const plainComment = commentPlainUpdate;
       const page = await request(
         'getTaskComments',
         `/api/v2/task/${encodeURIComponent(taskId)}/comment`,
@@ -920,12 +925,12 @@ describeFn('rich mutation contract probe', () => {
         ? objectKeys((comments as unknown[])[0])
         : [];
 
-      const richRead = records.find((record) => record.id === commentRichUpdate.id) ?? null;
+      const richRead = records.find((record) => record.id === richComment.id) ?? null;
       evidence.providers.clickup.comments.createReturnedDelta = capture(richRead?.delta ?? null);
       evidence.providers.clickup.comments.createPreservesRich =
         richRead !== null && deltaEqual(CLICKUP_DELTA_BOLD, richRead.delta);
 
-      const anchorRead = records.find((record) => record.id === commentAnchor.id) ?? null;
+      const anchorRead = records.find((record) => record.id === anchorComment.id) ?? null;
       evidence.providers.clickup.comments.ownershipSignal =
         anchorRead?.userId !== null &&
         anchorRead?.userId === currentUserId &&
@@ -933,7 +938,7 @@ describeFn('rich mutation contract probe', () => {
 
       const richUpdate = await request(
         'updateCommentRich',
-        `/api/v2/comment/${encodeURIComponent(commentRichUpdate.id)}`,
+        `/api/v2/comment/${encodeURIComponent(richComment.id)}`,
         {
           method: 'PUT',
           body: JSON.stringify({ comment: CLICKUP_DELTA_BOLD_UPDATED }),
@@ -950,7 +955,7 @@ describeFn('rich mutation contract probe', () => {
         )
           .map(toCommentRecord)
           .filter((record): record is ClickUpCommentRecord => record !== null);
-        const updated = updatedRecords.find((record) => record.id === commentRichUpdate.id) ?? null;
+        const updated = updatedRecords.find((record) => record.id === richComment.id) ?? null;
         evidence.providers.clickup.comments.afterRichUpdateDelta = capture(updated?.delta ?? null);
         evidence.providers.clickup.comments.richUpdatePreserved =
           updated !== null && deltaEqual(CLICKUP_DELTA_BOLD_UPDATED, updated.delta);
@@ -958,7 +963,7 @@ describeFn('rich mutation contract probe', () => {
 
       const plainUpdate = await request(
         'updateCommentPlain',
-        `/api/v2/comment/${encodeURIComponent(commentPlainUpdate.id)}`,
+        `/api/v2/comment/${encodeURIComponent(plainComment.id)}`,
         {
           method: 'PUT',
           body: JSON.stringify({ comment_text: CLICKUP_PLAIN_UPDATE_TEXT }),
@@ -975,8 +980,7 @@ describeFn('rich mutation contract probe', () => {
         )
           .map(toCommentRecord)
           .filter((record): record is ClickUpCommentRecord => record !== null);
-        const updated =
-          updatedRecords.find((record) => record.id === commentPlainUpdate.id) ?? null;
+        const updated = updatedRecords.find((record) => record.id === plainComment.id) ?? null;
         evidence.providers.clickup.comments.afterPlainUpdateDelta = capture(updated?.delta ?? null);
         evidence.providers.clickup.comments.afterPlainUpdateText = updated?.commentText ?? null;
         const formattingSurvived =
@@ -990,7 +994,7 @@ describeFn('rich mutation contract probe', () => {
 
       const exactRead = await request(
         'getCommentById',
-        `/api/v2/comment/${encodeURIComponent(commentRichUpdate.id)}`,
+        `/api/v2/comment/${encodeURIComponent(richComment.id)}`,
       );
       evidence.providers.clickup.comments.exactCommentReadStatus = exactRead.ok
         ? 200
@@ -999,7 +1003,7 @@ describeFn('rich mutation contract probe', () => {
           null);
       evidence.providers.clickup.comments.exactCommentReadAvailable = exactRead.ok;
 
-      if (commentRichUpdate.date === commentAnchor.date) {
+      if (richComment.date === anchorComment.date) {
         // Same-millisecond creation would make the replay cursor ambiguous.
         await new Promise((resolve) => setTimeout(resolve, 1_100));
       }
@@ -1014,8 +1018,8 @@ describeFn('rich mutation contract probe', () => {
         const replay = await request(
           'replayCommentPage',
           `/api/v2/task/${encodeURIComponent(taskId)}/comment?start=${encodeURIComponent(
-            String(commentRichUpdate.date),
-          )}&start_id=${encodeURIComponent(commentRichUpdate.id)}`,
+            String(richComment.date),
+          )}&start_id=${encodeURIComponent(richComment.id)}`,
         );
         if (!replay.ok) {
           break;
@@ -1029,14 +1033,14 @@ describeFn('rich mutation contract probe', () => {
         // Creation-time dates keep the ordering expectation independent of
         // any date changes the update probes may have caused.
         const olderIds = new Set(
-          [commentAnchor, commentPlainUpdate]
-            .filter((record) => record.date < commentRichUpdate.date)
+          [anchorComment, plainComment]
+            .filter((record) => record.date < richComment.date)
             .map((record) => record.id),
         );
         replayVerified =
           olderIds.size > 0 &&
           [...olderIds].every((id) => replayIds.has(id)) &&
-          !replayIds.has(commentRichUpdate.id);
+          !replayIds.has(richComment.id);
         if (replayIds.size === 0) {
           break;
         }

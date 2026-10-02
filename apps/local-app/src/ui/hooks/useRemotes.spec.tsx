@@ -27,6 +27,8 @@ const remote: RemoteListItemDto = {
   vmProviderConnectionId: null,
   vmIdentity: null,
   vmSpec: null,
+  tlsCertificate: null,
+  tlsFingerprint: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   online: true,
@@ -87,21 +89,32 @@ describe('useRemotes remotes/state patch', () => {
       json: async () => (init?.method === 'POST' ? remote : { items: [] }),
     }));
     const { result } = renderHook(() => useRemotes(), { wrapper });
+    const fingerprint = 'A1'.repeat(32);
     await act(async () => {
       await result.current.createRemote.mutateAsync({
         name: 'vm',
         baseUrl: 'http://vm',
         apiKey: key,
+        certificateFingerprint: fingerprint,
       });
     });
     expect(mockApiFetch).toHaveBeenCalledWith(
       '/api/remotes',
       expect.objectContaining({
-        body: JSON.stringify({ name: 'vm', baseUrl: 'http://vm', apiKey: key }),
+        body: JSON.stringify({
+          name: 'vm',
+          baseUrl: 'http://vm',
+          certificateFingerprint: fingerprint,
+          apiKey: key,
+        }),
       }),
       expect.anything(),
     );
-    expect(result.current.createRemote.variables).toEqual({ name: 'vm', baseUrl: 'http://vm' });
+    expect(result.current.createRemote.variables).toEqual({
+      name: 'vm',
+      baseUrl: 'http://vm',
+      certificateFingerprint: fingerprint,
+    });
     expect(JSON.stringify(result.current.createRemote.data)).not.toContain(key);
   });
 

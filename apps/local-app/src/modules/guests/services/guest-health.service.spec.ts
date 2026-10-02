@@ -10,15 +10,21 @@ jest.useFakeTimers();
 
 describe('GuestHealthService', () => {
   let healthService: GuestHealthService;
-  let mockStorage: jest.Mocked<Partial<StorageService>>;
-  let mockTerminalIO: jest.Mocked<Partial<TerminalIOService>>;
-  let mockEventsService: jest.Mocked<Partial<EventsService>>;
-  let mockGuestsService: jest.Mocked<Partial<GuestsService>>;
+  let mockStorage: jest.Mocked<Pick<StorageService, 'listAllGuests'>>;
+  let mockTerminalIO: jest.Mocked<Pick<TerminalIOService, 'sessionExists'>>;
+  let mockEventsService: jest.Mocked<Pick<EventsService, 'publish'>>;
+  let mockGuestsService: jest.Mocked<
+    Pick<
+      GuestsService,
+      'setHealthServiceRef' | 'initializeAndCleanup' | 'deleteGuest' | 'updateGuestLastSeen'
+    >
+  >;
 
   const mockGuest: Guest = {
     id: 'guest-1',
     projectId: 'project-1',
     name: 'TestGuest',
+    description: null,
     tmuxSessionId: 'tmux-session-123',
     lastSeenAt: '2024-01-01T00:00:00Z',
     createdAt: '2024-01-01T00:00:00Z',
@@ -46,10 +52,10 @@ describe('GuestHealthService', () => {
     };
 
     healthService = new GuestHealthService(
-      mockStorage as StorageService,
+      mockStorage as unknown as StorageService,
       mockTerminalIO as unknown as TerminalIOService,
-      mockEventsService as EventsService,
-      mockGuestsService as GuestsService,
+      mockEventsService as unknown as EventsService,
+      mockGuestsService as unknown as GuestsService,
     );
   });
 
@@ -93,7 +99,7 @@ describe('GuestHealthService', () => {
       mockStorage.listAllGuests!.mockResolvedValueOnce([mockGuest]);
       mockTerminalIO.sessionExists!.mockResolvedValueOnce(false);
       mockGuestsService.deleteGuest!.mockResolvedValueOnce(undefined);
-      mockEventsService.publish!.mockResolvedValueOnce(undefined);
+      mockEventsService.publish.mockResolvedValueOnce('event-id');
 
       await healthService.onModuleInit();
 
@@ -184,7 +190,7 @@ describe('GuestHealthService', () => {
     it('should clean up guest when tmux session dies', async () => {
       mockTerminalIO.sessionExists!.mockResolvedValueOnce(false);
       mockGuestsService.deleteGuest!.mockResolvedValueOnce(undefined);
-      mockEventsService.publish!.mockResolvedValueOnce(undefined);
+      mockEventsService.publish.mockResolvedValueOnce('event-id');
 
       healthService.startMonitoring(mockGuest);
 

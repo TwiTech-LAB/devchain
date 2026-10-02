@@ -95,7 +95,8 @@ export function ResetVmDialog({
             type="button"
             variant="destructive"
             onClick={confirmReset}
-            disabled={pending || (unreachable && !force)}
+            disabled={unreachable && !force}
+            pending={pending}
           >
             {pending ? 'Starting…' : 'Reset VM'}
           </Button>

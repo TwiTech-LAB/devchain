@@ -120,7 +120,7 @@ describe('ProviderModelsController', () => {
         providerId: 'provider-1',
         name: 'gpt-4.1',
       });
-      expect(result.name).toBe('gpt-4.1');
+      expect(result).toMatchObject({ name: 'gpt-4.1' });
     });
 
     it('bulk imports models from {models} and returns stats', async () => {

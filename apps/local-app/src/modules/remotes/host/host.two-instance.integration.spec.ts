@@ -207,7 +207,7 @@ describe('host API between two instances', () => {
       const response = await fetch(`${hostUrl}/api/host/projects/A/replica?scope=attach`);
 
       expect(response.status).toBe(200);
-      const replica = (await response.json()) as ProjectReplicaV1;
+      const replica = (await response.json()) as Extract<ProjectReplicaV1, { scope: 'attach' }>;
       expect(replica.scope).toBe('attach');
       expect(replica.tables.sessions.map((session) => session.id)).toEqual(['session-1']);
       expect(replica.tables.epic_time_session_watermarks).toHaveLength(1);

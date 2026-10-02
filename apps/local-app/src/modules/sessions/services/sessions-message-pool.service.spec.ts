@@ -25,6 +25,7 @@ import type { ProviderAdapterFactory } from '../../providers/adapters/provider-a
 import { MessageLogService } from './message-log.service';
 import { DeliveryFailureNotifierService } from './delivery-failure-notifier.service';
 import { HumanPromptStateService } from '../../terminal/services/human-prompt-state.service';
+import { createMockAgent as createAgentFixture } from '../../../../test/factories';
 
 describe('SessionsMessagePoolService', () => {
   let service: SessionsMessagePoolService;
@@ -45,15 +46,16 @@ describe('SessionsMessagePoolService', () => {
   >;
   let humanPromptState: HumanPromptStateService;
 
-  const createMockAgent = (overrides: { id?: string; name?: string; projectId?: string } = {}) => ({
-    id: overrides.id ?? 'agent-1',
-    name: overrides.name ?? 'Test Agent',
-    projectId: overrides.projectId ?? 'project-1',
-    profileId: 'profile-1',
-    description: 'Test agent description',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  });
+  const createMockAgent = (overrides: { id?: string; name?: string; projectId?: string } = {}) =>
+    createAgentFixture({
+      id: overrides.id ?? 'agent-1',
+      name: overrides.name ?? 'Test Agent',
+      projectId: overrides.projectId ?? 'project-1',
+      profileId: 'profile-1',
+      description: 'Test agent description',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
 
   const createActiveSession = (agentId: string, tmuxSessionId: string = 'tmux-1') => ({
     id: `session-${agentId}`,

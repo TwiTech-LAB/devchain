@@ -360,6 +360,7 @@ export function AddVmDialog({
               type="button"
               onClick={create}
               disabled={!canCreate}
+              pending={pending}
               data-testid="add-vm-submit"
             >
               {pending ? 'Starting…' : 'Create VM'}

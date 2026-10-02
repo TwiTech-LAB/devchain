@@ -1,13 +1,15 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { AppError } from '../../../common/errors/error-types';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
 import {
   DOCKER_ARCHIVE_HELPER_LABEL,
+  dockerArchiveLayout,
   writeDockerArchive,
+  type DockerCopiedSource,
 } from '../../core/controllers/docker-archive';
 import {
   DockerEngineClient,
@@ -369,6 +371,7 @@ export class DockerCopyBack {
         const key = dockerDataGroupKey(group);
         const items = plan.items.filter((i) => group.itemIds.includes(i.id));
         const choice = request.choices[key];
+        const images = [...new Set(items.flatMap((i) => i.images.map((image) => image.id)))];
         return {
           key,
           label: items.map((i) => i.name).join(', ') || key,
@@ -376,7 +379,14 @@ export class DockerCopyBack {
           action: copyBackAction(group.state, choice),
           volumes: group.volumes,
           bindPaths: group.bindPaths,
-          images: [...new Set(items.flatMap((i) => i.images.map((image) => image.id)))],
+          images,
+          // The VM engine's ID for each image, when the import inventory paired
+          // one; the home ID itself otherwise, which is also the same-store value.
+          vmImages: images.map(
+            (id) =>
+              inventory.items.find((item) => item.imageId === id && item.vmImageId)?.vmImageId ??
+              id,
+          ),
           sizeBytes: groupSize(items, group),
         };
       });
@@ -475,9 +485,14 @@ export class DockerCopyBack {
       record.started.push(group.key);
       await this.store.writeCopyBack(operationId, record);
     }
+    // The VM's answer says which bound paths are single files.
+    const files = new Set(vmAgain.paths.filter((p) => 'exists' in p && p.file).map((p) => p.path));
     const sources = [
       ...members.volumes.map((source) => ({ type: 'volume' as const, source })),
-      ...members.bindPaths.map((source) => ({ type: 'bind' as const, source })),
+      ...members.bindPaths.map((source) => ({
+        type: files.has(source) ? ('file' as const) : ('bind' as const),
+        source,
+      })),
     ];
     for (const { type, source } of sources)
       await this.copyOne(client, remoteId, projectId, type, source, images, context);
@@ -509,29 +524,19 @@ export class DockerCopyBack {
     client: DockerEngineClient,
     remoteId: string,
     projectId: string,
-    type: 'volume' | 'bind',
+    type: DockerCopiedSource,
     source: string,
     { vmImage, homeImage }: HelperImages,
     { options, progress }: CopyContext,
   ): Promise<void> {
     const signal = options.signal;
-    progress.item(source, type);
+    progress.item(source, type === 'volume' ? 'volume' : 'bind');
     if (type === 'bind') await mkdir(source, { recursive: true });
-    try {
-      await this.journal.clear(client, homeImage, type, source, signal);
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      throw new DockerCopyBackError(
-        `${type === 'volume' ? 'Volume' : 'Folder'} ${source} could not be emptied on this PC with image ${homeImage}. Empty it yourself and press Retry, or Cancel.`,
-        'DOCKER_COPY_BACK_CLEAR_FAILED',
-      );
-    }
-    const helper = await this.journal.create(
-      client,
-      homeImage,
-      [{ Type: type, Source: source, Target: '/data' }],
-      signal,
-    );
+    // The restore replaces a single file whole, so only its folder must exist.
+    if (type === 'file') await mkdir(dirname(source), { recursive: true });
+    else await this.clear(client, homeImage, type, source, signal);
+    const layout = dockerArchiveLayout(type, source);
+    const helper = await this.journal.create(client, homeImage, [layout.mount], signal);
     try {
       const { archive, sha256 } = await this.host.dockerReadArchive(
         remoteId,
@@ -561,10 +566,12 @@ export class DockerCopyBack {
       try {
         await Promise.all([
           received,
-          writeDockerArchive(client, helper.id, toEngine, signal).catch((error: unknown) => {
-            archive.destroy();
-            throw error;
-          }),
+          writeDockerArchive(client, helper.id, toEngine, signal, layout.writePath).catch(
+            (error: unknown) => {
+              archive.destroy();
+              throw error;
+            },
+          ),
         ]);
       } catch (error) {
         toEngine.destroy();
@@ -584,6 +591,24 @@ export class DockerCopyBack {
     progress.complete();
   }
 
+  private async clear(
+    client: DockerEngineClient,
+    homeImage: string,
+    type: 'volume' | 'bind',
+    source: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      await this.journal.clear(client, homeImage, type, source, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new DockerCopyBackError(
+        `${type === 'volume' ? 'Volume' : 'Folder'} ${source} could not be emptied on this PC with image ${homeImage}. Empty it yourself and press Retry, or Cancel.`,
+        'DOCKER_COPY_BACK_CLEAR_FAILED',
+      );
+    }
+  }
+
   /** A group image present on the VM for the read, and one present here for the restore. */
   private async helperImages(
     client: DockerEngineClient,
@@ -596,11 +621,13 @@ export class DockerCopyBack {
         'No image of it is on this PC to run the copy helper; pull or build one of its images and press Retry.',
         'DOCKER_COPY_BACK_IMAGE_MISSING',
       );
-    const { ids } = await this.host.dockerImagesPresent(remoteId, group.images, options);
-    const vmImage = group.images.find((id) => ids.includes(id));
+    // Records written before VM IDs existed carry one list for both engines.
+    const vmCandidates = group.vmImages ?? group.images;
+    const { ids } = await this.host.dockerImagesPresent(remoteId, vmCandidates, options);
+    const vmImage = vmCandidates.find((id) => ids.includes(id));
     if (!vmImage)
       throw new DockerCopyBackError(
-        `The VM has none of its images (${group.images.join(', ')}) to read the data.`,
+        `The VM has none of its images (${vmCandidates.join(', ')}) to read the data.`,
         'DOCKER_COPY_BACK_IMAGE_MISSING',
       );
     for (const id of group.images)

@@ -6,10 +6,15 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import { ExternalProviderError } from '../errors/external-provider.errors';
 import type {
   ExternalDescriptionEditCapability,
+  ExternalOwnedCommentSnapshot,
   ExternalOwnedMutationsCapability,
 } from '../models/external-provider.models';
-import type { ExternalRichDocumentV1 } from '../models/external-rich-document';
+import type {
+  ExternalRichDocumentResult,
+  ExternalRichDocumentV1,
+} from '../models/external-rich-document';
 import type { ExternalEditSessionView } from '../models/external-edit-session.models';
+import type { ExternalRichCapabilityFlags } from '../models/external-rich-capabilities';
 import { ExternalEditSessionService } from './external-edit-session.service';
 import { ExternalEditSessionStore } from '../sessions/external-edit-session.store';
 import { ProviderOperationGate } from '../sessions/provider-operation-gate';
@@ -18,6 +23,10 @@ import { adfToRichDocument } from '../adapters/rich/jira-adf-converter';
 // Module-unit layer: the service orchestration contract (gate, sessions,
 // outcomes, races) runs against fake storage/provider adapters; vendor HTTP
 // and persistence contracts are owned by their own suites.
+
+function supportedDocument(result: ExternalRichDocumentResult): ExternalRichDocumentV1 | null {
+  return result.supported ? result.document : null;
+}
 
 const BASELINE_ADF = {
   type: 'doc',
@@ -119,13 +128,7 @@ class FakeAdapter {
   commentUpdateCalls: Array<{ document: unknown; metadata: unknown }> = [];
   commentUpdateImpl: (() => Promise<void>) | null = null;
   ownerRemoteId = 'owner-1';
-  snapshot: {
-    remoteId: string;
-    authorRemoteId: string | null;
-    createdAt: string;
-    raw: unknown;
-    metadata: { assignee: number | null; resolved: boolean | null; groupAssignee: string | null };
-  } | null = {
+  snapshot: ExternalOwnedCommentSnapshot | null = {
     remoteId: 'comment-1',
     authorRemoteId: 'owner-1',
     createdAt: '2026-08-22T00:00:00.000Z',
@@ -151,7 +154,8 @@ class FakeAdapter {
     findComment: async () => {
       this.findCalls += 1;
       if (this.findImpl) {
-        return this.findImpl();
+        // Tests inject malformed provider results on purpose.
+        return this.findImpl() as Promise<ExternalOwnedCommentSnapshot | null>;
       }
       return this.snapshot;
     },
@@ -260,7 +264,7 @@ describe('ExternalEditSessionService', () => {
     expect(session.state).toBe('editable');
     expect(session.revision).toBe(0);
     expect(session.baselineFingerprint).toBe(
-      JSON.stringify(adfToRichDocument(BASELINE_ADF).document ?? null),
+      JSON.stringify(supportedDocument(adfToRichDocument(BASELINE_ADF))),
     );
     expect(store.size()).toBe(1);
   });
@@ -533,6 +537,8 @@ describe('ExternalEditSessionService', () => {
         remoteId: 'comment-1',
         authorRemoteId: 'someone-else',
         createdAt: '2026-08-22T00:00:00.000Z',
+        raw: [{ text: 'comment body' }],
+        metadata: { assignee: null, resolved: null, groupAssignee: null },
       };
       await expect(
         service.createCommentDeleteSession(PROJECT_ID, 'clickup', 'task-1', 'comment-1', null),
@@ -640,6 +646,8 @@ describe('ExternalEditSessionService', () => {
           remoteId: 'comment-1',
           authorRemoteId: 'owner-1',
           createdAt: '2026-08-22T00:00:00.000Z',
+          raw: [{ text: 'comment body' }],
+          metadata: { assignee: null, resolved: null, groupAssignee: null },
         });
       // The bounded-lookup bound is enforced inside the ClickUp adapter's
       // findComment loop; through the service it appears as exactly one
@@ -1088,12 +1096,14 @@ describe('ExternalEditSessionService', () => {
       adapter.writeImpl = () => Promise.resolve();
       // The post-write verification read fails transiently.
       let readCount = 0;
-      (adapter.descriptionEdit as { readDescription: unknown }).readDescription = async () => {
+      (adapter.descriptionEdit as { readDescription: unknown }).readDescription = async (
+        ...args: Parameters<typeof originalRead>
+      ) => {
         readCount += 1;
         if (readCount > 1) {
           throw dispatchedUnknown(provider);
         }
-        return originalRead();
+        return originalRead(...args);
       };
       const outcome = await service.saveSession(PROJECT_ID, session.sessionId, UPDATED_DOCUMENT, 0);
       expect(outcome.outcome).toBe('saved_unverified');
@@ -1142,7 +1152,9 @@ describe('ExternalEditSessionService', () => {
         session: {
           state: 'editable',
           revision: 1,
-          baselineFingerprint: JSON.stringify(adfToRichDocument(adapter.descriptionRaw).document),
+          baselineFingerprint: JSON.stringify(
+            supportedDocument(adfToRichDocument(adapter.descriptionRaw)),
+          ),
         },
       });
       adapter.writeImpl = async (raw) => {
@@ -1276,7 +1288,8 @@ describe('ExternalEditSessionService', () => {
         new FakeRegistry(adapter) as never,
         new ProviderOperationGate(),
         new ExternalEditSessionStore(),
-        { richEdit: false, ownedDelete: false },
+        // The production flag type is `as const` (all true) and cannot express a disabled gate.
+        { richEdit: false, ownedDelete: false } as unknown as ExternalRichCapabilityFlags,
       );
       await expect(
         service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1'),

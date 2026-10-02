@@ -523,6 +523,17 @@ function configuredUpgradeTargetTemplate(): Record<string, unknown> {
   };
 }
 
+/** The configured upgrade target with two teams whose template order is not their name order. */
+function twoTeamUpgradeTargetTemplate(): Record<string, unknown> {
+  return {
+    ...configuredUpgradeTargetTemplate(),
+    teams: [
+      { name: 'Planning', teamLeadAgentName: 'Worker', memberAgentNames: ['Worker'] },
+      { name: 'Builders', memberAgentNames: ['Worker'] },
+    ],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Normalization for idempotent round-trip comparison.
 // ---------------------------------------------------------------------------
@@ -653,6 +664,25 @@ function normalizeExport(input: AnyRec): AnyRec {
 // ---------------------------------------------------------------------------
 // Shared setup helpers.
 // ---------------------------------------------------------------------------
+
+/** Hold Date at `iso`; promises and timers stay real. Call jest.useRealTimers() after. */
+function freezeDate(iso: string): void {
+  jest.useFakeTimers({
+    now: new Date(iso),
+    doNotFake: [
+      'hrtime',
+      'nextTick',
+      'performance',
+      'queueMicrotask',
+      'setImmediate',
+      'clearImmediate',
+      'setInterval',
+      'clearInterval',
+      'setTimeout',
+      'clearTimeout',
+    ],
+  });
+}
 
 async function seedClaudeProvider(h: Harness): Promise<void> {
   await h.storage.createProvider({ name: 'claude', binPath: null });
@@ -1053,6 +1083,61 @@ describe('template round-trip contract safety net (real storage)', () => {
     });
   });
 
+  describe('team order after a template import or upgrade', () => {
+    // A fast PC creates a template's teams in one millisecond. Real storage is the cheapest
+    // layer that runs the replace import and the upgrade into TeamsStore with that clock.
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    async function expectTemplateTeamOrder(projectId: string): Promise<void> {
+      const listed = await h.teamsStore.listTeams(projectId, { limit: 100, offset: 0 });
+      expect(listed.items.map((team) => team.name)).toEqual(['Planning', 'Builders']);
+      const mobile = await h.teamsStore.listTeamsWithMembers(projectId);
+      expect(mobile.map(({ team }) => team.name)).toEqual(['Planning', 'Builders']);
+    }
+
+    it('lists teams in template order after an import into an existing project', async () => {
+      const { projectId, legacyStatusId } = await seedConfiguredUpgradeSource(
+        h,
+        'Team Order Import',
+        null,
+      );
+      const { teamOverrides: _teamOverrides, ...controls } =
+        configuredUpgradeControls(legacyStatusId);
+      freezeDate('2026-10-02T08:00:00.000Z');
+
+      const result = await importProjectWithHelper(
+        { projectId, payload: twoTeamUpgradeTargetTemplate(), ...controls },
+        importDeps(h) as never,
+      );
+
+      expect(result).toMatchObject({ success: true, mode: 'replace' });
+      await expectTemplateTeamOrder(projectId);
+    });
+
+    it('lists teams in template order after a template upgrade', async () => {
+      const { projectId, legacyStatusId } = await seedConfiguredUpgradeSource(
+        h,
+        'Team Order Upgrade',
+        null,
+      );
+      const { teamOverrides: _teamOverrides, ...controls } =
+        configuredUpgradeControls(legacyStatusId);
+      const { service } = createRealStorageUpgradeService(h, twoTeamUpgradeTargetTemplate());
+      freezeDate('2026-10-02T08:00:00.000Z');
+
+      const result = await service.upgradeProject({
+        projectId,
+        targetVersion: '2.0.0',
+        ...controls,
+      });
+
+      expect(result).toMatchObject({ success: true, newVersion: '2.0.0' });
+      await expectTemplateTeamOrder(projectId);
+    });
+  });
+
   describe('configured template upgrade and recovery', () => {
     it('applies explicit provider, preset, team, and status selections while preserving established data', async () => {
       const { projectId, legacyStatusId, epicId } = await seedConfiguredUpgradeSource(
@@ -1073,7 +1158,7 @@ describe('template round-trip contract safety net (real storage)', () => {
           ...controls,
         },
         importDeps(h) as never,
-      )) as AnyRec;
+      )) as AnyRec & { counts: { toDelete: { statuses: number } } };
       expect(dryRun).toMatchObject({
         dryRun: true,
         readiness: { ready: true, issues: [] },
@@ -1645,7 +1730,7 @@ describe('template round-trip contract safety net (real storage)', () => {
       // No project row (or its statuses/prompts/profiles) survived the rolled-back transaction.
       const after = await h.storage.listProjects({ limit: 1000, offset: 0 });
       expect(after.total).toBe(beforeCount);
-      expect((after.items as AnyRec[]).some((p) => p.name === 'Orphan Check')).toBe(false);
+      expect(after.items.some((p) => p.name === 'Orphan Check')).toBe(false);
     });
 
     // A client-supplied projectId that collides with an existing project must surface as a domain
@@ -1694,8 +1779,8 @@ describe('template round-trip contract safety net (real storage)', () => {
       // The failed second attempt rolled back — still exactly one project with that id.
       const after = await h.storage.listProjects({ limit: 1000, offset: 0 });
       expect(after.total).toBe(before.total);
-      expect((after.items as AnyRec[]).filter((p) => p.id === explicitId)).toHaveLength(1);
-      expect((after.items as AnyRec[]).some((p) => p.name === 'Conflict Second')).toBe(false);
+      expect(after.items.filter((p) => p.id === explicitId)).toHaveLength(1);
+      expect(after.items.some((p) => p.name === 'Conflict Second')).toBe(false);
     });
   });
 

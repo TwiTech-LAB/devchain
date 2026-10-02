@@ -81,13 +81,20 @@ describe('domain subscriber registration in app root', () => {
   });
 });
 
-function spyOnSubscriberMethod(
-  prototype: Record<string, (...args: unknown[]) => unknown>,
-  methodName: string,
-): jest.SpyInstance<unknown, unknown[]> {
-  const original = prototype[methodName];
+function spyOnSubscriberMethod<
+  T extends object,
+  M extends jest.FunctionPropertyNames<Required<T>> & string,
+>(prototype: T, methodName: M): jest.SpyInstance {
+  const methodOf = (target: T): object => {
+    const method: unknown = target[methodName];
+    if (typeof method !== 'function') {
+      throw new Error(`${methodName} is not a function`);
+    }
+    return method;
+  };
+  const original = methodOf(prototype);
   const spy = jest.spyOn(prototype, methodName);
-  const wrapped = prototype[methodName];
+  const wrapped = methodOf(prototype);
 
   for (const metadataKey of Reflect.getMetadataKeys(original)) {
     Reflect.defineMetadata(metadataKey, Reflect.getMetadata(metadataKey, original), wrapped);

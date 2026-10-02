@@ -1,11 +1,15 @@
 import { render, screen } from '@testing-library/react';
 import { ExternalRichDocument } from './ExternalRichDocument';
-import type { ExternalRichDocumentV1 } from '@/modules/external-integrations/models/external-rich-document';
+import type {
+  ExternalRichDocumentV1,
+  ExternalRichMark,
+  ExternalRichTextRun,
+} from '@/modules/external-integrations/models/external-rich-document';
 
 // Pure component over a closed model — the cheapest reliable layer for the
 // renderer contract, including the no-HTML guarantee.
 
-function text(text: string, marks: Array<Record<string, unknown>> = []) {
+function text(text: string, marks: ExternalRichMark[] = []): ExternalRichTextRun {
   return { type: 'text', text, marks };
 }
 

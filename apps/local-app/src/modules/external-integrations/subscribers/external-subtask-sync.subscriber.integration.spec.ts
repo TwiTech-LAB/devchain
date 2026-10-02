@@ -179,10 +179,18 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       name: 'Subscriber project',
       rootPath: '/home/project-owner/subscriber-project',
       description: null,
+      isTemplate: false,
     });
     projectId = project.id;
     statusId = (await storage.listStatuses(project.id)).items[0]!.id;
-    const parent = await storage.createEpic({ projectId, statusId, title: 'Parent' });
+    const parent = await storage.createEpic({
+      projectId,
+      statusId,
+      title: 'Parent',
+      description: null,
+      data: null,
+      tags: [],
+    });
     parentId = parent.id;
     const child = await storage.createEpic({
       projectId,
@@ -190,6 +198,8 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       title: 'Child',
       description: 'Description',
       parentId,
+      data: null,
+      tags: [],
     });
     childId = child.id;
     const connection = await storage.replaceIntegrationConnection(
@@ -260,12 +270,16 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       name: 'Hosted project',
       rootPath: '/home/project-owner/hosted-project',
       description: null,
+      isTemplate: false,
     });
     const hostedStatusId = (await host.listStatuses(project.id)).items[0]!.id;
     const parent = await host.createEpic({
       projectId: project.id,
       statusId: hostedStatusId,
       title: 'Hosted parent',
+      description: null,
+      data: null,
+      tags: [],
     });
 
     type ApplierEvents = ConstructorParameters<typeof ProjectReplicaApplier>[1];
@@ -340,6 +354,8 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       title: 'Hosted child',
       description: 'Mirrored description',
       parentId: mirror.hostedParentId,
+      data: null,
+      tags: [],
     });
 
     await mirror.pull();
@@ -372,6 +388,9 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       statusId: mirror.hostedStatusId,
       title: 'Hosted child',
       parentId: mirror.hostedParentId,
+      description: null,
+      data: null,
+      tags: [],
     });
     await mirror.pull();
     const row = (await storage.listExternalManagedSubtaskLinksByProvider('clickup'))[0]!;
@@ -444,6 +463,9 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       projectId,
       statusId,
       title: 'Second Parent',
+      description: null,
+      data: null,
+      tags: [],
     });
     const child = await storage.getEpic(childId);
     await storage.updateEpic(childId, { parentId: secondParent.id }, child.version);
@@ -493,18 +515,25 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       name: 'Unrelated subscriber project',
       rootPath: '/tmp/unrelated-subscriber-project',
       description: null,
+      isTemplate: false,
     });
     const statusB = (await storage.listStatuses(projectB.id)).items[0]!.id;
     const parentB = await storage.createEpic({
       projectId: projectB.id,
       statusId: statusB,
       title: 'Other parent',
+      description: null,
+      data: null,
+      tags: [],
     });
     const childB = await storage.createEpic({
       projectId: projectB.id,
       statusId: statusB,
       title: 'Other child',
       parentId: parentB.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     const connectionB = await storage.replaceIntegrationConnection(
       {
@@ -621,18 +650,25 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       name: 'Current-event project B',
       rootPath: '/tmp/current-event-project-b',
       description: null,
+      isTemplate: false,
     });
     const statusB = (await storage.listStatuses(projectB.id)).items[0]!.id;
     const parentB = await storage.createEpic({
       projectId: projectB.id,
       statusId: statusB,
       title: 'Project B parent',
+      description: null,
+      data: null,
+      tags: [],
     });
     const childB = await storage.createEpic({
       projectId: projectB.id,
       statusId: statusB,
       title: 'Project B child',
       parentId: parentB.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     const connectionB = await storage.replaceIntegrationConnection(
       {
@@ -799,6 +835,7 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       name: 'Shared [Library]',
       rootPath: '/home/project-owner/shared-library',
       description: null,
+      isTemplate: false,
     });
     const otherWorkspace = await storage.createProjectWorkspace('Other workspace');
     await storage.createProject({
@@ -806,6 +843,7 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       name: 'Other Workspace Secret',
       rootPath: '/home/project-owner/private-other',
       description: null,
+      isTemplate: false,
     });
     const child = await storage.getEpic(childId);
     await storage.updateEpic(
@@ -1233,6 +1271,9 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       projectId,
       statusId,
       title: 'Second parent',
+      description: null,
+      data: null,
+      tags: [],
     });
     const connection = await storage.getIntegrationConnection('clickup');
     await storage.createExternalTaskLink({
@@ -1264,6 +1305,9 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       projectId,
       statusId,
       title: 'Retry destination',
+      description: null,
+      data: null,
+      tags: [],
     });
     const connection = await storage.getIntegrationConnection('clickup');
     await storage.createExternalTaskLink({
@@ -1309,6 +1353,9 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       projectId,
       statusId,
       title: 'Blocked destination',
+      description: null,
+      data: null,
+      tags: [],
     });
     const connection = await storage.getIntegrationConnection('clickup');
     await storage.createExternalTaskLink({
@@ -1367,6 +1414,9 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       projectId,
       statusId,
       title: 'Fan-out destination',
+      description: null,
+      data: null,
+      tags: [],
     });
     const clickupConnection = await storage.getIntegrationConnection('clickup');
     await storage.createExternalTaskLink({
@@ -1437,6 +1487,9 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       projectId,
       statusId,
       title: 'Filtered fan-out destination',
+      description: null,
+      data: null,
+      tags: [],
     });
     const clickupConnection = await storage.getIntegrationConnection('clickup');
     await storage.createExternalTaskLink({

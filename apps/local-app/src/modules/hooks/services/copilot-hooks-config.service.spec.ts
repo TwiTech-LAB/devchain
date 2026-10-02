@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, type ExecFileSyncOptions } from 'child_process';
 import { mkdtemp, readFile, rm, stat } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -27,6 +27,20 @@ jest.mock('os', () => {
     },
   });
 });
+
+/**
+ * Runs the relay with the hook JSON on stdin. A guard path exits before it reads stdin, so the
+ * write can fail with EPIPE; that is still a clean run when the relay exited 0.
+ */
+function execRelay(args: string[], options: ExecFileSyncOptions): void {
+  try {
+    execFileSync('bash', args, options);
+  } catch (err) {
+    const { code, status } = err as NodeJS.ErrnoException & { status?: number | null };
+    if (code === 'EPIPE' && status === 0) return;
+    throw err;
+  }
+}
 
 describe('CopilotHooksConfigService', () => {
   let service: CopilotHooksConfigService;
@@ -159,7 +173,7 @@ exit 0
       // Never let a subprocess failure propagate as a (circular) ExecException —
       // the relay is fail-open (exit 0) anyway, so a throw here is a test bug.
       try {
-        execFileSync('bash', [relayPath(), eventArg], {
+        execRelay([relayPath(), eventArg], {
           input: JSON.stringify(hookJson),
           env: { ...baseEnv, PATH: `${binDir}:${process.env.PATH ?? ''}`, ...env },
         });
@@ -329,7 +343,7 @@ exit 0
       const PATH = opts.stripJq ? binDir : `${binDir}:${process.env.PATH ?? ''}`;
 
       try {
-        execFileSync('bash', [relayPath(), eventArg], {
+        execRelay([relayPath(), eventArg], {
           input: rawStdin,
           env: { ...baseEnv, PATH, ...DEVCHAIN_ENV },
         });

@@ -87,12 +87,12 @@ describe('MobileRpcWorkspaceAccessService classification', () => {
     const multi = createAccessHarness();
     await expect(
       multi.service.authorize('chat.listAgents', { projectId: PROJECT_A }),
-    ).rejects.toMatchObject<AppError>({ code: 'WORKSPACE_DEVICE_PAIRING_REQUIRED' });
+    ).rejects.toMatchObject<Partial<AppError>>({ code: 'WORKSPACE_DEVICE_PAIRING_REQUIRED' });
 
     const pending = createAccessHarness({ multiWorkspaceMode: false, failClosedPending: true });
     await expect(
       pending.service.authorize('chat.listAgents', { projectId: PROJECT_A }),
-    ).rejects.toMatchObject<AppError>({ code: 'WORKSPACE_DEVICE_PAIRING_REQUIRED' });
+    ).rejects.toMatchObject<Partial<AppError>>({ code: 'WORKSPACE_DEVICE_PAIRING_REQUIRED' });
   });
 
   it('distinguishes desktop encryption unavailability from an outdated or unpaired phone', async () => {
@@ -101,7 +101,7 @@ describe('MobileRpcWorkspaceAccessService classification', () => {
 
     await expect(
       harness.service.authorize('chat.listAgents', { projectId: PROJECT_A }),
-    ).rejects.toMatchObject<AppError>({ code: 'WORKSPACE_E2EE_UNAVAILABLE' });
+    ).rejects.toMatchObject<Partial<AppError>>({ code: 'WORKSPACE_E2EE_UNAVAILABLE' });
   });
 
   it('treats an unknown verified sender key as a re-pair requirement without exposing it', async () => {
@@ -116,7 +116,7 @@ describe('MobileRpcWorkspaceAccessService classification', () => {
         { projectId: PROJECT_A },
         { senderKid: 'unknown-kid' },
       ),
-    ).rejects.toMatchObject<AppError>({
+    ).rejects.toMatchObject<Partial<AppError>>({
       code: 'WORKSPACE_DEVICE_PAIRING_REQUIRED',
       details: undefined,
     });
@@ -136,7 +136,7 @@ describe('MobileRpcWorkspaceAccessService classification', () => {
       ).resolves.toBeDefined();
       await expect(
         harness.service.authorize(method, params, { senderKid: 'kid-b' }),
-      ).rejects.toMatchObject<ForbiddenError>({
+      ).rejects.toMatchObject<Partial<ForbiddenError>>({
         code: 'forbidden',
         message: 'Workspace access denied',
         details: undefined,

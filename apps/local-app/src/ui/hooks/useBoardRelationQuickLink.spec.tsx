@@ -1,4 +1,4 @@
-import { createRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { type PointerEvent as ReactPointerEvent } from 'react';
 import { act, renderHook } from '@testing-library/react';
 import type { EpicRelationDragOverlayHandle } from '@/ui/components/board/EpicRelationDragOverlay';
 import { useBoardRelationQuickLink } from '@/ui/hooks/useBoardRelationQuickLink';
@@ -72,8 +72,7 @@ function setup(visibleEpics: Epic[] = [source, target]) {
     update: jest.fn(),
     hide: jest.fn(),
   };
-  const overlayRef = createRef<EpicRelationDragOverlayHandle>();
-  overlayRef.current = overlay;
+  const overlayRef: { current: EpicRelationDragOverlayHandle | null } = { current: overlay };
   let renderCount = 0;
   const hook = renderHook(
     ({ visible }: { visible: Epic[] }) => {

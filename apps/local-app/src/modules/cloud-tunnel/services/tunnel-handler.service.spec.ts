@@ -38,6 +38,32 @@ describe('TunnelHandlerService', () => {
   // Viewport lease control is not exercised by these board/chat tests; a bare stub
   // suffices. The viewport RPC delegation is covered in its own describe block below.
   const mobileViewport = {} as ViewportStreamerService;
+  // Only the terminal.sendKey tests reach these collaborators; they build their own handler.
+  const terminalKeyInputStub = {} as TerminalKeyInputFacade;
+  const activeSessionsStub = {} as ActiveSessionLookup;
+  const buildHandler = (
+    storage: object = {},
+    {
+      chat = mobileChat,
+      board = mobileBoard,
+      viewport = mobileViewport,
+      e2eeTrust = {} as E2eeTrustService,
+    }: {
+      chat?: MobileChatRpcService;
+      board?: MobileBoardRpcService;
+      viewport?: ViewportStreamerService;
+      e2eeTrust?: E2eeTrustService;
+    } = {},
+  ) =>
+    new TunnelHandlerService(
+      storage,
+      chat,
+      board,
+      viewport,
+      e2eeTrust,
+      terminalKeyInputStub,
+      activeSessionsStub,
+    );
   const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
   const STATUS_ID = '22222222-2222-4222-8222-222222222222';
   const STATUS_ID_2 = '12121212-1212-4212-8212-121212121212';
@@ -179,7 +205,7 @@ describe('TunnelHandlerService', () => {
       }),
       listEpicsByStatus: jest.fn(),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({ jsonrpc: '2.0', id: '1', method: 'board.listProjects', params: {} }),
@@ -231,9 +257,9 @@ describe('TunnelHandlerService', () => {
         mobileChat,
         mobileBoard,
         mobileViewport,
-        undefined,
-        undefined,
-        undefined,
+        {} as E2eeTrustService,
+        terminalKeyInputStub,
+        activeSessionsStub,
         undefined,
         admission,
       );
@@ -414,7 +440,7 @@ describe('TunnelHandlerService', () => {
         total: 1,
       }),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({
@@ -451,7 +477,7 @@ describe('TunnelHandlerService', () => {
         projectId: PROJECT_ID,
       }),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({
@@ -483,7 +509,7 @@ describe('TunnelHandlerService', () => {
         total: 1,
       }),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({
@@ -542,7 +568,7 @@ describe('TunnelHandlerService', () => {
       ),
       countSubEpicsByStatus: jest.fn(),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({
@@ -626,7 +652,7 @@ describe('TunnelHandlerService', () => {
           new Map([[PARENT_ID, [{ id: 'child-1', parentId: PARENT_ID, statusId: STATUS_ID }]]]),
         ),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({
@@ -680,7 +706,7 @@ describe('TunnelHandlerService', () => {
           new Map([[PARENT_ID, [{ id: CHILD_ID, parentId: PARENT_ID, statusId: STATUS_ID }]]]),
         ),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     const response = await service.handle({
       jsonrpc: '2.0',
@@ -767,7 +793,7 @@ describe('TunnelHandlerService', () => {
         '00000000-0000-4000-8000-000000000000': 0,
       }),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({
@@ -838,7 +864,7 @@ describe('TunnelHandlerService', () => {
         [STATUS_ID_2]: 4,
       }),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({
@@ -869,7 +895,7 @@ describe('TunnelHandlerService', () => {
   });
 
   it('returns invalid params for malformed board.listParentChildren payload', async () => {
-    const service = new TunnelHandlerService({}, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler();
 
     await expect(
       service.handle({
@@ -893,7 +919,7 @@ describe('TunnelHandlerService', () => {
       updatedAt: ISO,
     });
     const board = { addEpicComment } as unknown as MobileBoardRpcService;
-    const service = new TunnelHandlerService({}, mobileChat, board, mobileViewport);
+    const service = buildHandler({}, { board });
     const params = {
       projectId: PROJECT_ID,
       epicId: EPIC_ID,
@@ -913,7 +939,7 @@ describe('TunnelHandlerService', () => {
     const viewport = {
       unsubscribe: jest.fn().mockReturnValue(producerResult),
     } as unknown as ViewportStreamerService;
-    const service = new TunnelHandlerService({}, mobileChat, mobileBoard, viewport);
+    const service = buildHandler({}, { viewport });
 
     const response = await service.handle({
       jsonrpc: '2.0',
@@ -934,7 +960,7 @@ describe('TunnelHandlerService', () => {
         total: 1,
       }),
     };
-    const service = new TunnelHandlerService(storage, mobileChat, mobileBoard, mobileViewport);
+    const service = buildHandler(storage);
 
     await expect(
       service.handle({
@@ -963,7 +989,7 @@ describe('TunnelHandlerService', () => {
         { id: AGENT_ID, name: 'Coder', type: 'agent', online: true, sessionId: STATUS_ID_2 },
       ]);
     const chat = { listAgents } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -984,7 +1010,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.listAgents with a non-uuid projectId before delegating', async () => {
     const listAgents = jest.fn();
     const chat = { listAgents } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1003,7 +1029,7 @@ describe('TunnelHandlerService', () => {
     const chat = {
       listAgents: jest.fn().mockRejectedValue(new NotFoundError('Project', PROJECT_ID)),
     } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1028,7 +1054,7 @@ describe('TunnelHandlerService', () => {
       cursor: 'CUR',
     });
     const chat = { getTranscriptSummary } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1049,7 +1075,7 @@ describe('TunnelHandlerService', () => {
     const SESSION_ID = '12121212-1212-4212-8212-121212121212';
     const getTranscriptChunks = jest.fn();
     const chat = { getTranscriptChunks } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1083,7 +1109,7 @@ describe('TunnelHandlerService', () => {
       totalMessageCount: 1,
     });
     const chat = { getTranscriptChunks, getTranscriptTail } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     const chunksResponse = await service.handle({
       jsonrpc: '2.0',
@@ -1132,7 +1158,7 @@ describe('TunnelHandlerService', () => {
       listCustomPrompts,
       getCustomPrompt,
     } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1190,7 +1216,7 @@ describe('TunnelHandlerService', () => {
       listCustomPrompts,
       getCustomPrompt,
     } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({ jsonrpc: '2.0', id: '15c', method, params }),
@@ -1202,7 +1228,7 @@ describe('TunnelHandlerService', () => {
   it('delegates chat.sendMessage to MobileChatRpcService', async () => {
     const sendMessage = jest.fn().mockResolvedValue({ status: 'queued' });
     const chat = { sendMessage } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1226,7 +1252,7 @@ describe('TunnelHandlerService', () => {
   it('threads trusted crypto context separately while accepting spoofed passthrough fields', async () => {
     const sendMessage = jest.fn().mockResolvedValue({ status: 'queued' });
     const chat = { sendMessage } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
     const cryptoCtx = { senderKid: 'authenticated-kid' };
     const params = {
       agentId: AGENT_ID,
@@ -1247,7 +1273,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.sendMessage with empty/whitespace text before delegating', async () => {
     const sendMessage = jest.fn();
     const chat = { sendMessage } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1265,7 +1291,7 @@ describe('TunnelHandlerService', () => {
       .fn()
       .mockRejectedValue(new AppError('Launch the agent first.', 'SESSION_NOT_RUNNING', 409));
     const chat = { sendMessage } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1285,7 +1311,7 @@ describe('TunnelHandlerService', () => {
       .fn()
       .mockResolvedValue({ status: 'delivered', messageId: 'm1', clientMessageId: CLIENT_MSG_ID });
     const chat = { sendMessage } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1317,7 +1343,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.sendMessage with a non-uuid clientMessageId before delegating', async () => {
     const sendMessage = jest.fn();
     const chat = { sendMessage } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1343,7 +1369,7 @@ describe('TunnelHandlerService', () => {
     ];
     const getPendingMessages = jest.fn().mockResolvedValue(rows);
     const chat = { getPendingMessages } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1364,7 +1390,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.getPendingMessages with more than 50 ids before delegating', async () => {
     const getPendingMessages = jest.fn();
     const chat = { getPendingMessages } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     const tooMany = Array.from({ length: 51 }, () => '10101010-1010-4010-8010-101010101010');
 
@@ -1382,7 +1408,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.getPendingMessages with a non-uuid id before delegating', async () => {
     const getPendingMessages = jest.fn();
     const chat = { getPendingMessages } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1398,7 +1424,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.getPendingMessages with an unknown extra field (.strict)', async () => {
     const getPendingMessages = jest.fn();
     const chat = { getPendingMessages } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1421,7 +1447,7 @@ describe('TunnelHandlerService', () => {
       .fn()
       .mockResolvedValue({ operationId: OPERATION_ID, status: 'launching' });
     const chat = { launchAgent } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1439,7 +1465,7 @@ describe('TunnelHandlerService', () => {
       .fn()
       .mockRejectedValue(new ConflictError('already running', { code: 'SESSION_ALREADY_RUNNING' }));
     const chat = { launchAgent } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1460,7 +1486,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.getOperationStatus with a non-uuid operationId', async () => {
     const getOperationStatus = jest.fn();
     const chat = { getOperationStatus } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1476,7 +1502,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.getOperationStatus when projectId is missing', async () => {
     const getOperationStatus = jest.fn();
     const chat = { getOperationStatus } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1492,7 +1518,7 @@ describe('TunnelHandlerService', () => {
   it('delegates chat.getAgentStatus with { agentId, projectId } and passes through a null result', async () => {
     const getAgentStatus = jest.fn().mockResolvedValue(null);
     const chat = { getAgentStatus } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1508,7 +1534,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.getAgentStatus when projectId is missing', async () => {
     const getAgentStatus = jest.fn();
     const chat = { getAgentStatus } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1524,7 +1550,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.getAgentStatus with a non-uuid agentId', async () => {
     const getAgentStatus = jest.fn();
     const chat = { getAgentStatus } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1555,7 +1581,7 @@ describe('TunnelHandlerService', () => {
       },
     ]);
     const chat = { listPendingAskQuestions } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1577,7 +1603,7 @@ describe('TunnelHandlerService', () => {
   it('rejects chat.listPendingAskQuestions with a non-uuid sessionId before delegating', async () => {
     const listPendingAskQuestions = jest.fn();
     const chat = { listPendingAskQuestions } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1594,7 +1620,7 @@ describe('TunnelHandlerService', () => {
     const SESSION_ID = '12121212-1212-4212-8212-121212121212';
     const listPendingAskQuestions = jest.fn();
     const chat = { listPendingAskQuestions } as unknown as MobileChatRpcService;
-    const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+    const service = buildHandler({}, { chat });
 
     await expect(
       service.handle({
@@ -1615,7 +1641,7 @@ describe('TunnelHandlerService', () => {
         .fn()
         .mockResolvedValue(makeEpic({ version: 4, agentId: AGENT_ID, agentName: 'Coder' }));
       const board = { updateEpicAssignment } as unknown as MobileBoardRpcService;
-      const service = new TunnelHandlerService({}, mobileChat, board, mobileViewport);
+      const service = buildHandler({}, { board });
 
       await expect(
         service.handle({
@@ -1638,7 +1664,7 @@ describe('TunnelHandlerService', () => {
     it('accepts a null agentId (unassign) on board.updateEpicAssignment', async () => {
       const updateEpicAssignment = jest.fn().mockResolvedValue(makeEpic({ agentId: null }));
       const board = { updateEpicAssignment } as unknown as MobileBoardRpcService;
-      const service = new TunnelHandlerService({}, mobileChat, board, mobileViewport);
+      const service = buildHandler({}, { board });
 
       await expect(
         service.handle({
@@ -1656,7 +1682,7 @@ describe('TunnelHandlerService', () => {
         .fn()
         .mockRejectedValue(new OptimisticLockError('Epic', EPIC_ID));
       const board = { updateEpicAssignment } as unknown as MobileBoardRpcService;
-      const service = new TunnelHandlerService({}, mobileChat, board, mobileViewport);
+      const service = buildHandler({}, { board });
 
       await expect(
         service.handle({
@@ -1675,7 +1701,7 @@ describe('TunnelHandlerService', () => {
         .fn()
         .mockRejectedValue(new ValidationError('Agent does not belong to project'));
       const board = { updateEpicAssignment } as unknown as MobileBoardRpcService;
-      const service = new TunnelHandlerService({}, mobileChat, board, mobileViewport);
+      const service = buildHandler({}, { board });
 
       await expect(
         service.handle({
@@ -1692,7 +1718,7 @@ describe('TunnelHandlerService', () => {
     it('rejects board.updateEpicAssignment with a non-int version (strict schema)', async () => {
       const updateEpicAssignment = jest.fn();
       const board = { updateEpicAssignment } as unknown as MobileBoardRpcService;
-      const service = new TunnelHandlerService({}, mobileChat, board, mobileViewport);
+      const service = buildHandler({}, { board });
 
       await expect(
         service.handle({
@@ -1708,7 +1734,7 @@ describe('TunnelHandlerService', () => {
     it('rejects board.addEpicComment with empty content (strict schema)', async () => {
       const addEpicComment = jest.fn();
       const board = { addEpicComment } as unknown as MobileBoardRpcService;
-      const service = new TunnelHandlerService({}, mobileChat, board, mobileViewport);
+      const service = buildHandler({}, { board });
 
       await expect(
         service.handle({
@@ -1739,7 +1765,7 @@ describe('TunnelHandlerService', () => {
         addEpicComment,
         deleteEpicComment,
       } as unknown as MobileBoardRpcService;
-      const service = new TunnelHandlerService({}, mobileChat, board, mobileViewport);
+      const service = buildHandler({}, { board });
 
       await expect(
         service.handle({
@@ -1798,7 +1824,7 @@ describe('TunnelHandlerService', () => {
         total: 1,
       });
       const chat = { listSessions } as unknown as MobileChatRpcService;
-      const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+      const service = buildHandler({}, { chat });
 
       await expect(
         service.handle({
@@ -1821,7 +1847,7 @@ describe('TunnelHandlerService', () => {
     it('rejects chat.listSessions with a non-uuid agentId before delegating', async () => {
       const listSessions = jest.fn();
       const chat = { listSessions } as unknown as MobileChatRpcService;
-      const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+      const service = buildHandler({}, { chat });
 
       await expect(
         service.handle({
@@ -1837,7 +1863,7 @@ describe('TunnelHandlerService', () => {
     it('rejects chat.listSessions when limit exceeds 100 before delegating', async () => {
       const listSessions = jest.fn();
       const chat = { listSessions } as unknown as MobileChatRpcService;
-      const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+      const service = buildHandler({}, { chat });
 
       await expect(
         service.handle({
@@ -1853,7 +1879,7 @@ describe('TunnelHandlerService', () => {
     it('delegates chat.deleteSessionRecord and returns { deleted }', async () => {
       const deleteSessionRecord = jest.fn().mockResolvedValue({ deleted: true });
       const chat = { deleteSessionRecord } as unknown as MobileChatRpcService;
-      const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+      const service = buildHandler({}, { chat });
 
       await expect(
         service.handle({
@@ -1876,7 +1902,7 @@ describe('TunnelHandlerService', () => {
           new ConflictError('Cannot delete a running session', { code: 'STATUS_RUNNING' }),
         );
       const chat = { deleteSessionRecord } as unknown as MobileChatRpcService;
-      const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+      const service = buildHandler({}, { chat });
 
       await expect(
         service.handle({
@@ -1893,7 +1919,7 @@ describe('TunnelHandlerService', () => {
     it('delegates chat.renameSession and accepts a null name (clear)', async () => {
       const renameSession = jest.fn().mockResolvedValue(makeSession(SESSION_ID));
       const chat = { renameSession } as unknown as MobileChatRpcService;
-      const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+      const service = buildHandler({}, { chat });
 
       await expect(
         service.handle({
@@ -1913,7 +1939,7 @@ describe('TunnelHandlerService', () => {
     it('rejects chat.renameSession when name exceeds 120 chars before delegating', async () => {
       const renameSession = jest.fn();
       const chat = { renameSession } as unknown as MobileChatRpcService;
-      const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+      const service = buildHandler({}, { chat });
 
       await expect(
         service.handle({
@@ -1929,7 +1955,7 @@ describe('TunnelHandlerService', () => {
     it('rejects chat.renameSession when name is omitted (nullable, not optional)', async () => {
       const renameSession = jest.fn();
       const chat = { renameSession } as unknown as MobileChatRpcService;
-      const service = new TunnelHandlerService({}, chat, mobileBoard, mobileViewport);
+      const service = buildHandler({}, { chat });
 
       await expect(
         service.handle({
@@ -1949,7 +1975,7 @@ describe('TunnelHandlerService', () => {
     it('delegates terminal.viewport.subscribe and returns the subscriptionId', async () => {
       const subscribe = jest.fn().mockResolvedValue({ subscriptionId: 'vp-1' });
       const viewport = { subscribe } as unknown as ViewportStreamerService;
-      const service = new TunnelHandlerService({}, mobileChat, mobileBoard, viewport);
+      const service = buildHandler({}, { viewport });
 
       await expect(
         service.handle(
@@ -1971,7 +1997,7 @@ describe('TunnelHandlerService', () => {
     it('rejects terminal.viewport.subscribe with a non-uuid sessionId before delegating', async () => {
       const subscribe = jest.fn();
       const viewport = { subscribe } as unknown as ViewportStreamerService;
-      const service = new TunnelHandlerService({}, mobileChat, mobileBoard, viewport);
+      const service = buildHandler({}, { viewport });
 
       await expect(
         service.handle({
@@ -1987,7 +2013,7 @@ describe('TunnelHandlerService', () => {
     it('rejects terminal.viewport.subscribe when projectId is missing before delegating', async () => {
       const subscribe = jest.fn();
       const viewport = { subscribe } as unknown as ViewportStreamerService;
-      const service = new TunnelHandlerService({}, mobileChat, mobileBoard, viewport);
+      const service = buildHandler({}, { viewport });
 
       await expect(
         service.handle({
@@ -2005,7 +2031,7 @@ describe('TunnelHandlerService', () => {
         .fn()
         .mockRejectedValue(new AppError('No running session', 'SESSION_NOT_RUNNING', 409));
       const viewport = { subscribe } as unknown as ViewportStreamerService;
-      const service = new TunnelHandlerService({}, mobileChat, mobileBoard, viewport);
+      const service = buildHandler({}, { viewport });
 
       await expect(
         service.handle({
@@ -2020,7 +2046,7 @@ describe('TunnelHandlerService', () => {
     it('delegates terminal.viewport.unsubscribe and returns { ok }', async () => {
       const unsubscribe = jest.fn().mockReturnValue({ ok: true });
       const viewport = { unsubscribe } as unknown as ViewportStreamerService;
-      const service = new TunnelHandlerService({}, mobileChat, mobileBoard, viewport);
+      const service = buildHandler({}, { viewport });
 
       await expect(
         service.handle(
@@ -2042,7 +2068,7 @@ describe('TunnelHandlerService', () => {
     it('rejects terminal.viewport.unsubscribe with an empty subscriptionId before delegating', async () => {
       const unsubscribe = jest.fn();
       const viewport = { unsubscribe } as unknown as ViewportStreamerService;
-      const service = new TunnelHandlerService({}, mobileChat, mobileBoard, viewport);
+      const service = buildHandler({}, { viewport });
 
       await expect(
         service.handle({
@@ -2278,7 +2304,7 @@ describe('TunnelHandlerService', () => {
 
     const makeHandler = (adopt: jest.Mock) => {
       const e2eeTrust = { adoptPeerKeyTofu: adopt } as unknown as E2eeTrustService;
-      return new TunnelHandlerService({}, mobileChat, mobileBoard, mobileViewport, e2eeTrust);
+      return buildHandler({}, { e2eeTrust });
     };
 
     it('threads a supplied installId to adoptPeerKeyTofu as the second (separate) arg', async () => {
@@ -2335,7 +2361,7 @@ describe('TunnelHandlerService', () => {
 
     const makeHandler = (revoke: jest.Mock) => {
       const e2eeTrust = { revokeDevice: revoke } as unknown as E2eeTrustService;
-      return new TunnelHandlerService({}, mobileChat, mobileBoard, mobileViewport, e2eeTrust);
+      return buildHandler({}, { e2eeTrust });
     };
 
     it('revokes EXACTLY the crypto-context sender kid and ignores any client-supplied kid param', async () => {
@@ -2396,7 +2422,7 @@ describe('TunnelHandlerService', () => {
       const e2eeTrust = {
         bindNotificationRoutingIdentity: bind,
       } as unknown as E2eeTrustService;
-      return new TunnelHandlerService({}, mobileChat, mobileBoard, mobileViewport, e2eeTrust);
+      return buildHandler({}, { e2eeTrust });
     };
 
     it('binds the routing kid to EXACTLY the crypto-context sender kid and ignores caller-supplied sender identity', async () => {

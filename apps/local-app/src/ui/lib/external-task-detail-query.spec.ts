@@ -54,7 +54,9 @@ describe('externalTaskDetailQueryOptions', () => {
     expect(options.enabled).toBe(true);
 
     const signal = new AbortController().signal;
-    await expect(options.queryFn!(context(signal))).resolves.toEqual(detail);
+    const { queryFn } = options;
+    if (typeof queryFn !== 'function') throw new Error('queryFn must be set while enabled');
+    await expect(queryFn(context(signal))).resolves.toEqual(detail);
     expect(mockFetch).toHaveBeenCalledWith(
       `/api/integrations/my-work/jira/tasks/ENG%201%2F2?projectId=${PROJECT_ID}`,
       { signal },
@@ -78,10 +80,14 @@ describe('externalTaskDetailQueryOptions', () => {
   it('surfaces the safe fallback text when the load fails', async () => {
     mockFetch.mockResolvedValue({ ok: false, json: async () => null });
 
-    await expect(
-      externalTaskDetailQueryOptions(mockFetch, 'jira', 'conn-a:2', PROJECT_ID, 'ENG-1').queryFn!(
-        context(),
-      ),
-    ).rejects.toThrow('Task detail could not be loaded.');
+    const { queryFn } = externalTaskDetailQueryOptions(
+      mockFetch,
+      'jira',
+      'conn-a:2',
+      PROJECT_ID,
+      'ENG-1',
+    );
+    if (typeof queryFn !== 'function') throw new Error('queryFn must be set while enabled');
+    await expect(queryFn(context())).rejects.toThrow('Task detail could not be loaded.');
   });
 });

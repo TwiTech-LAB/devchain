@@ -85,7 +85,12 @@ describe('EpicEstimateLoggingService project contributions and legacy recovery',
   };
 
   const seedProject = async (name: string, rootPath: string): Promise<ProjectContext> => {
-    const project = await storage.createProject({ name, description: null, rootPath });
+    const project = await storage.createProject({
+      name,
+      description: null,
+      rootPath,
+      isTemplate: false,
+    });
     const connection = await storage.replaceIntegrationConnection(
       {
         projectId: project.id,
@@ -104,6 +109,9 @@ describe('EpicEstimateLoggingService project contributions and legacy recovery',
       projectId: project.id,
       title: `${name} imported task`,
       statusId: statuses.items[0]!.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     await storage.createExternalTaskLink({
       epicId: epic.id,
@@ -353,7 +361,7 @@ describe('EpicEstimateLoggingService project contributions and legacy recovery',
         expectedRevision: 0,
         dailySnapshot: [{ activityDate: '2026-08-30', minutes: 30 }],
       }),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: { reason: 'legacy_ownership_unresolved' },
     });
     await expect(
@@ -363,7 +371,7 @@ describe('EpicEstimateLoggingService project contributions and legacy recovery',
         expectedRevision: 0,
         timeZone: 'UTC',
       }),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: { reason: 'legacy_ownership_unresolved' },
     });
     expect(timeMutations.createEstimateTimeEntry).not.toHaveBeenCalled();

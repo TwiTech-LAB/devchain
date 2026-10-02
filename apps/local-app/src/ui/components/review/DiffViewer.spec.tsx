@@ -63,19 +63,22 @@ global.ResizeObserver = class ResizeObserver {
 
 // Mock IntersectionObserver for LazyHunk component
 global.IntersectionObserver = class IntersectionObserver {
+  readonly root: Element | Document | null = null;
+  readonly rootMargin = '0px';
+  readonly thresholds: ReadonlyArray<number> = [0];
   callback: IntersectionObserverCallback;
   constructor(callback: IntersectionObserverCallback) {
     this.callback = callback;
   }
   observe(target: Element) {
     // Immediately trigger as visible
-    this.callback(
-      [{ isIntersecting: true, target } as IntersectionObserverEntry],
-      this as unknown as IntersectionObserver,
-    );
+    this.callback([{ isIntersecting: true, target } as IntersectionObserverEntry], this);
   }
   unobserve() {}
   disconnect() {}
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
 };
 
 // Sample unified diff for testing
@@ -316,13 +319,16 @@ describe('DiffViewer multi-line selection', () => {
         parentId: null,
         lineStart: 1,
         lineEnd: 1,
-        side: 'right' as const,
+        side: 'new' as const,
         content: 'Test comment',
         commentType: 'comment' as const,
         status: 'open' as const,
         authorType: 'user' as const,
         authorAgentId: null,
+        authorAgentName: null,
+        targetAgents: [],
         version: 1,
+        editedAt: null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },

@@ -3,7 +3,7 @@
     "slug": "teams-dev",
     "name": "DevChain Development Flow",
     "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy",
-    "version": "1.1.56",
+    "version": "1.1.57",
     "category": "development",
     "tags": [
       "development",
@@ -15,10 +15,10 @@
     "authorName": "Devchain",
     "changelog": "",
     "minDevchainVersion": "0.12.0",
-    "publishedAt": "2026-09-30T18:38:14.799Z"
+    "publishedAt": "2026-10-02T22:44:05.546Z"
   },
   "version": 1,
-  "exportedAt": "2026-09-30T18:38:14.799Z",
+  "exportedAt": "2026-10-02T22:44:05.546Z",
   "prompts": [
     {
       "id": "325b23a5-09d1-4f13-b0f5-4ff2713dbe24",
@@ -815,7 +815,7 @@
       "id": "bb30f7a4-4536-4005-a886-229e0be55fe9",
       "name": "Limit reached",
       "description": null,
-      "enabled": true,
+      "enabled": false,
       "scope": "provider",
       "scopeFilterName": "claude",
       "pollIntervalMs": 60000,

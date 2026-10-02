@@ -391,7 +391,7 @@ describe('GitService', () => {
       );
 
       // File no longer exists (deleted after ls-files ran)
-      mockExistsSync.mockImplementation((path: string) => {
+      mockExistsSync.mockImplementation((path) => {
         if (typeof path === 'string' && path.includes('deleted-file.ts')) {
           return false;
         }

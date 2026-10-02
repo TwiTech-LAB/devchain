@@ -1,9 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 type Labels = Record<string, string>;
+/** The line that names a single file in a fake archive. */
+export const FILE_ENTRY = 'FILE:';
 export interface FakeMount {
   Type: 'volume' | 'bind';
   Name?: string;
@@ -25,17 +28,29 @@ export interface FakeContainer {
   /** The raw create body, for assertions on what the VM received. */
   created?: Record<string, unknown>;
 }
+export interface FakeDockerEngineOptions {
+  /**
+   * `containerd` registers a loaded image under an ID derived from its manifest,
+   * not the config-digest ID the save archive carries — the behavior that makes
+   * cross-store image IDs differ on real engines.
+   */
+  imageStore?: 'classic' | 'containerd';
+}
 
 /**
  * A stateful Docker Engine over a Unix socket: containers, volumes, networks,
  * images and archive I/O. Volume and bind data are opaque byte strings, so a
- * test can follow data across engines without real tar handling.
+ * test can follow data across engines without real tar handling. A single
+ * file travels as `FILE:<name>` on its own line before its bytes.
  */
 export class FakeDockerEngine {
   readonly containers = new Map<string, FakeContainer>();
   readonly volumes = new Map<string, { labels: Labels; driver: string }>();
   readonly networks = new Map<string, { labels: Labels; driver: string; internal: boolean }>();
-  readonly images = new Map<string, { architecture: string; tags: string[]; size: number }>();
+  readonly images = new Map<
+    string,
+    { architecture: string; tags: string[]; size: number; layers?: string[] }
+  >();
   /** Data by volume name or bind path. */
   readonly data = new Map<string, Buffer>();
   readonly calls: string[] = [];
@@ -47,8 +62,14 @@ export class FakeDockerEngine {
   loseResponse?: (method: string, path: string, search: URLSearchParams) => boolean;
   private server?: Server;
   private sequence = 0;
+  private readonly imageStore: 'classic' | 'containerd';
 
-  constructor(readonly engineId: string) {}
+  constructor(
+    readonly engineId: string,
+    options: FakeDockerEngineOptions = {},
+  ) {
+    this.imageStore = options.imageStore ?? 'classic';
+  }
 
   async listen(socket: string): Promise<void> {
     this.server = createServer((req, res) => {
@@ -133,9 +154,32 @@ export class FakeDockerEngine {
       const text = (await body()).toString('utf8');
       const match = /^IMAGE:([^\n]+)\n/.exec(text);
       if (!match) return json({ error: 'bad archive' });
-      const [id, tags] = match[1].split('|');
-      this.images.set(id, { architecture: 'amd64', tags: tags ? tags.split(',') : [], size: 1 });
-      return json({ stream: `Loaded image ID: ${id}\n` });
+      const [id, tags = '', layers = ''] = match[1].split('|');
+      const loadedTags = tags ? tags.split(',') : [];
+      // A containerd-store engine keeps the manifest digest as the image ID, so a
+      // loaded image lands under an ID the archive never carried.
+      const registeredId =
+        this.imageStore === 'containerd'
+          ? 'sha256:' + createHash('sha256').update(`manifest:${id}`).digest('hex')
+          : id;
+      // A loaded tag moves to the loaded image, as on a real engine.
+      for (const [otherId, other] of this.images)
+        if (otherId !== registeredId)
+          other.tags = other.tags.filter((tag) => !loadedTags.includes(tag));
+      this.images.set(registeredId, {
+        architecture: 'amd64',
+        tags: loadedTags,
+        layers: layers ? layers.split(',') : [],
+        size: 1,
+      });
+      const lines: string[] = [];
+      for (const tag of loadedTags)
+        lines.push(JSON.stringify({ stream: `Loaded image: ${tag}\n` }));
+      if (!loadedTags.length)
+        lines.push(JSON.stringify({ stream: `Loaded image ID: ${registeredId}\n` }));
+      if (lost()) return;
+      res.statusCode = 200;
+      return void res.end(lines.join('\n') + '\n');
     }
     if (path === '/images/get') {
       const names = url.searchParams.getAll('names');
@@ -145,16 +189,19 @@ export class FakeDockerEngine {
       if (!entry) return json({}, 404);
       const [id, image] = entry;
       return void res.end(
-        `IMAGE:${id}|${image.tags.filter((t) => names.includes(t)).join(',')}\n${'x'.repeat(image.size)}`,
+        `IMAGE:${id}|${image.tags.filter((t) => names.includes(t)).join(',')}|${(image.layers ?? []).join(',')}\n${'x'.repeat(image.size)}`,
       );
     }
     const image = path.match(/^\/images\/(.+)\/json$/);
     if (image) {
-      const entry = [...this.images].find(
-        ([id, value]) => id === image[1] || value.tags.includes(image[1]),
-      );
+      const entry = this.findImage(image[1]);
       return entry
-        ? json({ Id: entry[0], Architecture: entry[1].architecture, RepoTags: entry[1].tags })
+        ? json({
+            Id: entry[0],
+            Architecture: entry[1].architecture,
+            RepoTags: entry[1].tags,
+            RootFS: { Type: 'layers', Layers: entry[1].layers ?? [] },
+          })
         : json({ message: 'No such image' }, 404);
     }
 
@@ -249,6 +296,9 @@ export class FakeDockerEngine {
       const input = JSON.parse((await body()).toString('utf8')) as Record<string, unknown>;
       const name = url.searchParams.get('name') ?? `anon-${++this.sequence}`;
       if (this.find(name)) return json({ message: 'Conflict. The name is in use' }, 409);
+      const requestedImage = String(input.Image);
+      // Real engines refuse a create whose image reference they never registered.
+      if (!this.findImage(requestedImage)) return json({ message: 'No such image' }, 404);
       const host = (input.HostConfig ?? {}) as {
         Binds?: string[];
         Mounts?: Array<{ Type: string; Source: string; Target: string; ReadOnly?: boolean }>;
@@ -329,8 +379,26 @@ export class FakeDockerEngine {
         const mount = found.Mounts.find((m) => m.Destination === '/data');
         if (!mount) return json({ message: 'no /data mount' }, 404);
         const key = mount.Type === 'volume' ? mount.Name! : mount.Source;
-        if (method === 'GET') return void res.end(this.data.get(key) ?? Buffer.alloc(0));
-        this.data.set(key, await body());
+        const at = url.searchParams.get('path') ?? '/data';
+        if (method === 'GET') {
+          if (at === '/data') return void res.end(this.data.get(key) ?? Buffer.alloc(0));
+          // A single file is read from its folder's mount and keeps its own name.
+          const name = at.slice('/data/'.length);
+          const file = this.data.get(join(mount.Source, name));
+          if (!file) return json({ message: `Could not find the file ${at}` }, 404);
+          return void res.end(Buffer.concat([Buffer.from(`${FILE_ENTRY}${name}\n`), file]));
+        }
+        const archive = await body();
+        const header = archive.subarray(0, Math.max(archive.indexOf('\n'), 0)).toString();
+        const name = header.startsWith(FILE_ENTRY) ? header.slice(FILE_ENTRY.length) : null;
+        if (at === '/' && name === null) {
+          this.data.set(key, archive);
+          return empty(200);
+        }
+        // As the real engine: a file cannot replace the mounted `/data` itself.
+        if (at === '/') return json({ message: 'RemoveAll data: device or resource busy' }, 500);
+        if (name === null) return json({ message: `Unexpected archive at ${at}` }, 400);
+        this.data.set(join(mount.Source, name), archive.subarray(header.length + 1));
         return empty(200);
       }
       if (method === 'DELETE') {
@@ -341,6 +409,14 @@ export class FakeDockerEngine {
       }
     }
     json({ message: 'not found' }, 404);
+  }
+
+  private findImage(
+    ref: string,
+  ):
+    | [string, { architecture: string; tags: string[]; size: number; layers?: string[] }]
+    | undefined {
+    return [...this.images].find(([id, value]) => id === ref || value.tags.includes(ref));
   }
 
   private holders(volume: string): FakeContainer[] {

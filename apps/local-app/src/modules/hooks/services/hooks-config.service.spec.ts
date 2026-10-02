@@ -3,6 +3,7 @@ import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { HooksConfigService } from './hooks-config.service';
+import { HookEventSchema } from '../dtos/hook-event.dto';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({
@@ -136,8 +137,44 @@ describe('HooksConfigService', () => {
       );
       // Should still have exactly one DevChain hook group per event, not two
       expect(settings.hooks.SessionStart).toHaveLength(1);
+      expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+      expect(settings.hooks.Stop).toHaveLength(1);
       expect(settings.hooks.PreToolUse).toHaveLength(1);
       expect(settings.hooks.PostToolUse).toHaveLength(1);
+    });
+
+    it('keeps user turn hooks and updates its own turn hook in place', async () => {
+      const settingsDir = join(tempDir, '.claude');
+      await mkdir(settingsDir, { recursive: true });
+      const relayCmd = `"${join(settingsDir, 'hooks', 'devchain-relay.sh')}"`;
+      await writeFile(
+        join(settingsDir, 'settings.local.json'),
+        JSON.stringify({
+          hooks: {
+            Stop: [
+              { hooks: [{ type: 'command', command: '/user/notify.sh' }] },
+              // An older DevChain install with the long relay timeout.
+              { hooks: [{ type: 'command', command: relayCmd, timeout: 10 }] },
+            ],
+            UserPromptSubmit: [{ hooks: [{ type: 'command', command: '/user/lint-prompt.sh' }] }],
+          },
+        }),
+      );
+
+      await service.ensureHooksConfig(tempDir);
+      await service.ensureHooksConfig(tempDir);
+
+      const settings = JSON.parse(
+        await readFile(join(settingsDir, 'settings.local.json'), 'utf-8'),
+      );
+      expect(settings.hooks.Stop).toEqual([
+        { hooks: [{ type: 'command', command: '/user/notify.sh' }] },
+        { hooks: [{ type: 'command', command: relayCmd, timeout: 2 }] },
+      ]);
+      expect(settings.hooks.UserPromptSubmit).toEqual([
+        { hooks: [{ type: 'command', command: '/user/lint-prompt.sh' }] },
+        { hooks: [{ type: 'command', command: relayCmd, timeout: 2 }] },
+      ]);
     });
 
     it('should use absolute path for hook command', async () => {
@@ -162,7 +199,7 @@ describe('HooksConfigService', () => {
       );
 
       const relayCmd = `"${join(tempDir, '.claude', 'hooks', 'devchain-relay.sh')}"`;
-      const expectDevchainEntry = (group: string, matcher?: string) => {
+      const expectDevchainEntry = (group: string, matcher?: string, timeout = 10) => {
         expect(settings.hooks[group]).toHaveLength(1);
         const groupEntry = settings.hooks[group][0];
         if (matcher !== undefined) {
@@ -172,20 +209,24 @@ describe('HooksConfigService', () => {
         }
         expect(groupEntry.hooks).toHaveLength(1);
         const hook = groupEntry.hooks[0];
-        expect(hook).toEqual({ type: 'command', command: relayCmd, timeout: 10 });
+        expect(hook).toEqual({ type: 'command', command: relayCmd, timeout });
         // Copilot schema keys must NOT appear in the Claude config.
         expect(hook).not.toHaveProperty('bash');
         expect(hook).not.toHaveProperty('timeoutSec');
       };
 
       expectDevchainEntry('SessionStart');
+      expectDevchainEntry('UserPromptSubmit', undefined, 2);
+      expectDevchainEntry('Stop', undefined, 2);
       expectDevchainEntry('PreToolUse', 'AskUserQuestion');
       expectDevchainEntry('PostToolUse', 'AskUserQuestion');
-      // Exactly the three Claude event groups — no Copilot-only keys.
+      // Exactly the Claude event groups — no Copilot-only keys.
       expect(Object.keys(settings.hooks).sort()).toEqual([
         'PostToolUse',
         'PreToolUse',
         'SessionStart',
+        'Stop',
+        'UserPromptSubmit',
       ]);
     });
 
@@ -222,6 +263,14 @@ describe('HooksConfigService', () => {
      * Proves the jq pipeline extracts toolName/toolInput(object)/toolUseId.
      */
     function runRelay(hookJson: unknown): Record<string, unknown> | null {
+      return runRelayTimed(hookJson)?.payload ?? null;
+    }
+
+    /** Runs the relay; `curlDelaySec` makes the stubbed POST slow, `elapsedMs` times the relay. */
+    function runRelayTimed(
+      hookJson: unknown,
+      { curlDelaySec = 0 }: { curlDelaySec?: number } = {},
+    ): { payload: Record<string, unknown>; elapsedMs: number } | null {
       let bashOk = true;
       try {
         execFileSync('bash', ['-c', 'command -v jq >/dev/null && command -v bash >/dev/null']);
@@ -241,7 +290,8 @@ while [ $# -gt 0 ]; do
   if [ "$1" = "-d" ]; then shift; out="$1"; fi
   shift
 done
-printf '%s' "$out" > "${captureFile}"
+printf '%s' "$out" > "${captureFile}.tmp" && mv "${captureFile}.tmp" "${captureFile}"
+sleep ${curlDelaySec}
 exit 0
 `;
 
@@ -252,6 +302,7 @@ exit 0
         `cat > "${join(binDir, 'curl')}" <<'EOF'\n${fakeCurl}EOF\nchmod +x "${join(binDir, 'curl')}"`,
       ]);
 
+      const startedAt = Date.now();
       execFileSync('bash', [scriptPath], {
         input: JSON.stringify(hookJson),
         env: {
@@ -265,8 +316,15 @@ exit 0
         },
       });
 
+      const elapsedMs = Date.now() - startedAt;
+
+      // A turn hook posts in the background; give it a moment to land.
+      execFileSync('bash', [
+        '-c',
+        `for _ in $(seq 50); do [ -f "${captureFile}" ] && exit 0; sleep 0.1; done; exit 1`,
+      ]);
       const raw = execFileSync('cat', [captureFile]).toString();
-      return JSON.parse(raw) as Record<string, unknown>;
+      return { payload: JSON.parse(raw) as Record<string, unknown>, elapsedMs };
     }
 
     it('extracts toolName, toolInput (as object), and toolUseId from a PreToolUse hook', async () => {
@@ -330,6 +388,49 @@ exit 0
       expect('toolName' in payload).toBe(false);
       expect('toolInput' in payload).toBe(false);
       expect('toolUseId' in payload).toBe(false);
+    });
+
+    it.each(['UserPromptSubmit', 'Stop'])(
+      'posts a %s turn hook in the background with a valid hook time',
+      async (hookEventName) => {
+        await service.ensureHooksConfig(tempDir);
+
+        const result = runRelayTimed(
+          {
+            hook_event_name: hookEventName,
+            session_id: 'claude-session-1',
+            transcript_path: '/tmp/transcript.jsonl',
+            prompt: 'Refactor the parser',
+          },
+          { curlDelaySec: 8 },
+        );
+        if (result === null) return;
+
+        // The relay returns without waiting for the slow POST.
+        expect(result.elapsedMs).toBeLessThan(6000);
+        expect(result.payload).toMatchObject({
+          hookEventName,
+          claudeSessionId: 'claude-session-1',
+          sessionId: '33333333-3333-3333-3333-333333333333',
+        });
+        expect(result.payload).not.toHaveProperty('prompt');
+        expect(Math.abs((result.payload.firedAtMs as number) - Date.now())).toBeLessThan(60_000);
+        expect(HookEventSchema.safeParse(result.payload).success).toBe(true);
+      },
+    );
+
+    it('stamps no hook time on other hooks (strict variants stay valid)', async () => {
+      await service.ensureHooksConfig(tempDir);
+
+      const payload = runRelay({
+        hook_event_name: 'SessionStart',
+        session_id: 'claude-session-1',
+        source: 'startup',
+      });
+      if (payload === null) return;
+
+      expect(payload).not.toHaveProperty('firedAtMs');
+      expect(HookEventSchema.safeParse(payload).success).toBe(true);
     });
   });
 });

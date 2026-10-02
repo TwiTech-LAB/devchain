@@ -11,8 +11,9 @@ type RpcTranscriptTailSource =
     };
 
 export function serializeMessage(message: UnifiedMessage): Record<string, unknown> {
+  const { lastEntryAtMs, ...wire } = message;
   return {
-    ...message,
+    ...wire,
     timestamp: message.timestamp.toISOString(),
   };
 }

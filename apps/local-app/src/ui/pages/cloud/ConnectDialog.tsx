@@ -10,9 +10,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/ui/components/ui/dialog';
+import { BusyStatus } from '@/ui/components/ui/spinner';
 import { cn } from '@/ui/lib/utils';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
-import { ConnectDockerSection, type DockerSectionState } from './ConnectDockerSection';
+import {
+  ConnectDockerSection,
+  NO_DOCKER_STATE,
+  type DockerSectionState,
+} from './ConnectDockerSection';
 import {
   ignoreChange,
   useProjectIgnores,
@@ -23,14 +28,6 @@ import { IgnoreListEditor } from './IgnoreListEditor';
 import { ProjectList, type ProjectListData } from './ProjectList';
 import { connectBlockedReason, type VmStatus } from './remote-status';
 import { StartError } from './StartError';
-
-const NO_DOCKER: DockerSectionState = {
-  ready: false,
-  items: [],
-  canConnect: false,
-  pending: false,
-  loaded: false,
-};
 
 type Step = 'target' | 'files' | 'review';
 const STEPS: Step[] = ['target', 'files', 'review'];
@@ -158,7 +155,7 @@ export function ConnectDialog({
   const remoteId = chosenRemote ?? defaultRemoteId(initialRemoteId, readyIds);
   const remoteReady = remoteId !== null && readyIds.includes(remoteId);
   const [draft, setDraft] = useState<IgnoreDraft | null>(null);
-  const [docker, setDocker] = useState<DockerSectionState>(NO_DOCKER);
+  const [docker, setDocker] = useState<DockerSectionState>(NO_DOCKER_STATE);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [filesVisited, setFilesVisited] = useState(false);
@@ -179,25 +176,24 @@ export function ConnectDialog({
     blocked ? ` (${blocked})` : ''
   }. Go back and choose a VM.`;
 
-  // Docker only gates Connect when items are selected: a plan that could not
-  // be read, or an empty selection, keeps the plain Connect. Once a plan has
-  // loaded, Connect waits for any in-flight re-plan so it never sends a
+  // A refusal gates Connect only when items are selected: a plan that could not
+  // be read, or an empty selection, keeps the plain Connect. Next and Connect
+  // wait for any in-flight read the user opted into, so they never send a
   // selection the server has not answered for.
-  const dockerBlocks =
-    (docker.items.length > 0 && (!docker.ready || !docker.canConnect)) ||
-    (docker.loaded && docker.pending);
+  const dockerRefused = docker.items.length > 0 && (!docker.ready || !docker.canConnect);
+  const dockerBlocks = dockerRefused || docker.pending;
 
   const chooseProject = (id: string) => {
     if (id === projectId) return;
     setProjectId(id);
     setDraft(null);
-    setDocker(NO_DOCKER);
+    setDocker(NO_DOCKER_STATE);
     setFilesVisited(false);
   };
   const chooseRemote = (id: string) => {
     if (id === remoteId) return;
     setChosenRemote(id);
-    setDocker(NO_DOCKER);
+    setDocker(NO_DOCKER_STATE);
   };
   const goTo = (next: Step) => {
     if (next === 'files') setFilesVisited(true);
@@ -289,9 +285,9 @@ export function ConnectDialog({
         {filesVisited && projectId && remoteId && (
           <div hidden={step !== 'files'} className="space-y-4">
             {ignores.isPending && (
-              <p role="status" className="text-sm text-muted-foreground">
+              <BusyStatus className="text-sm text-muted-foreground">
                 Reading the file list…
-              </p>
+              </BusyStatus>
             )}
             {ignores.error && (
               <p role="alert" className="text-sm text-destructive">
@@ -308,7 +304,7 @@ export function ConnectDialog({
               disabled={busy}
               onStateChange={setDocker}
             />
-            {dockerBlocks && (
+            {dockerRefused && (
               <p role="alert" className="text-sm text-destructive">
                 Resolve the Docker space or blockers above, or clear the Docker selections to
                 connect without containers.
@@ -399,7 +395,8 @@ export function ConnectDialog({
             <Button
               type="button"
               onClick={() => goTo('review')}
-              disabled={busy || ignores.isPending || dockerBlocks}
+              pending={docker.pending || ignores.isPending}
+              disabled={busy || dockerBlocks}
             >
               Next
             </Button>
@@ -408,7 +405,8 @@ export function ConnectDialog({
             <Button
               type="button"
               onClick={() => void connect()}
-              disabled={busy || dockerBlocks || !remoteReady}
+              pending={busy}
+              disabled={dockerBlocks || !remoteReady}
             >
               {saving ? 'Saving…' : pending ? 'Starting…' : 'Connect'}
             </Button>

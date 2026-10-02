@@ -60,6 +60,7 @@ describe('LocalStorageService project deletion transactions', () => {
         name,
         description: null,
         rootPath: `/tmp/${name.toLowerCase().replaceAll(' ', '-')}`,
+        isTemplate: false,
       })
     ).id;
   }

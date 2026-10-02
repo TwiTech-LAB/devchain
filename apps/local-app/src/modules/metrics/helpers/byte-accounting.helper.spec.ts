@@ -219,7 +219,7 @@ describe('estimateObjectBytes', () => {
 
     it('handles circular array references', () => {
       const arr: unknown[] = [1];
-      (arr as unknown as Record<string, unknown>).push(arr);
+      arr.push(arr);
       const result = estimateObjectBytes(arr);
       expect(result).toBeGreaterThan(0);
     });

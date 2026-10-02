@@ -44,7 +44,7 @@ describe('param-suggestion', () => {
     });
 
     describe('with custom registry', () => {
-      const customRegistry = new Map([
+      const customRegistry = new Map<string, z.ZodTypeAny>([
         [
           'test_tool',
           z

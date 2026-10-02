@@ -61,7 +61,7 @@ describe('Terminal delivery wrappers', () => {
     terminalIO.deliverImmediate.mockRejectedValue(new Error('tmux failed'));
 
     await expect(
-      guestDelivery.deliverToGuest({ name: 'guest-tmux' }, 'hello', ['Escape']),
+      guestDelivery.deliverToGuest({ name: 'guest-tmux' }, 'hello', { submitKeys: ['Escape'] }),
     ).resolves.toEqual({ delivered: false, error: 'tmux failed' });
   });
 

@@ -45,12 +45,12 @@ afterAll(() => {
   if (originalOffsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, 'offsetHeight', originalOffsetHeightDescriptor);
   } else {
-    delete (HTMLElement.prototype as Record<string, unknown>).offsetHeight;
+    Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight');
   }
   if (originalOffsetWidthDescriptor) {
     Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffsetWidthDescriptor);
   } else {
-    delete (HTMLElement.prototype as Record<string, unknown>).offsetWidth;
+    Reflect.deleteProperty(HTMLElement.prototype, 'offsetWidth');
   }
 });
 

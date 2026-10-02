@@ -7,8 +7,30 @@ import { ProviderAdapterFactory } from '../../providers/adapters';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
+import type { ProfileProviderConfig } from '../../storage/models/domain.models';
+import { createMockAgent, createMockProject, createMockProvider } from '../../../../test/factories';
 
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
+
+function createProfileProviderConfig(
+  overrides: Partial<ProfileProviderConfig> = {},
+): ProfileProviderConfig {
+  return {
+    id: 'config-test-1',
+    profileId: 'profile-test-1',
+    providerId: 'provider-test-1',
+    name: 'default',
+    description: null,
+    options: null,
+    env: null,
+    model: null,
+    effort: null,
+    position: 0,
+    createdAt: '',
+    updatedAt: '',
+    ...overrides,
+  };
+}
 
 // Mock dependencies with custom promisify support
 jest.mock('child_process', () => {
@@ -227,7 +249,7 @@ describe('PreflightService', () => {
       // Mock providers from storage
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'claude',
             binPath: '/usr/local/bin/claude',
@@ -236,8 +258,8 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
-          {
+          }),
+          createMockProvider({
             id: 'p2',
             name: 'codex',
             binPath: null,
@@ -246,7 +268,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 2,
         limit: 100,
@@ -327,7 +349,7 @@ describe('PreflightService', () => {
 
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'claude',
             binPath: '/invalid/path/claude',
@@ -336,7 +358,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -382,7 +404,7 @@ describe('PreflightService', () => {
 
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'newprovider',
             binPath: null,
@@ -391,7 +413,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: null,
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -463,7 +485,7 @@ describe('PreflightService', () => {
 
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'claude',
             binPath: '/usr/local/bin/claude',
@@ -472,8 +494,8 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
-          {
+          }),
+          createMockProvider({
             id: 'p2',
             name: 'codex',
             binPath: '/usr/local/bin/codex',
@@ -482,7 +504,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 2,
         limit: 100,
@@ -524,7 +546,7 @@ describe('PreflightService', () => {
 
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'claude',
             binPath: '/usr/local/bin/claude',
@@ -533,7 +555,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -552,7 +574,7 @@ describe('PreflightService', () => {
     const seedCopilotProvider = () => {
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p-copilot',
             name: 'copilot',
             binPath: '/usr/bin/copilot',
@@ -561,7 +583,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: null,
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -629,7 +651,7 @@ describe('PreflightService', () => {
 
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'claude',
             binPath: '/usr/local/bin/claude',
@@ -638,7 +660,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -678,7 +700,7 @@ describe('PreflightService', () => {
 
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'claude',
             binPath: '/usr/local/bin/claude',
@@ -687,7 +709,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -729,7 +751,7 @@ describe('PreflightService', () => {
 
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'codex',
             binPath: '/usr/local/bin/codex',
@@ -738,7 +760,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -776,7 +798,7 @@ describe('PreflightService', () => {
 
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p1',
             name: 'codex',
             binPath: '/usr/local/bin/codex',
@@ -785,7 +807,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -808,7 +830,7 @@ describe('PreflightService', () => {
   });
 
   describe('config-based validation', () => {
-    const mockProvider = {
+    const mockProvider = createMockProvider({
       id: 'p1',
       name: 'claude',
       binPath: '/usr/local/bin/claude',
@@ -817,7 +839,7 @@ describe('PreflightService', () => {
       mcpRegisteredAt: '2024-01-01',
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
     // mockProfile commented out - currently unused in this test
     // const mockProfile = {
@@ -834,7 +856,7 @@ describe('PreflightService', () => {
     //   updatedAt: '',
     // };
 
-    const mockAgent = {
+    const mockAgent = createMockAgent({
       id: 'agent-1',
       projectId: 'project-1',
       profileId: 'profile-1',
@@ -843,9 +865,9 @@ describe('PreflightService', () => {
       description: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
-    const mockConfig = {
+    const mockConfig = createProfileProviderConfig({
       id: 'config-1',
       profileId: 'profile-1',
       providerId: 'p1',
@@ -853,7 +875,7 @@ describe('PreflightService', () => {
       env: { API_KEY: 'test-key' },
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
     beforeEach(() => {
       mockExec.mockImplementation(
@@ -877,15 +899,17 @@ describe('PreflightService', () => {
       configEnv: Record<string, string>,
       providerEnv: Record<string, string> | null = null,
     ) {
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listAgents.mockResolvedValue({
         items: [mockAgent],
         total: 1,
@@ -907,15 +931,17 @@ describe('PreflightService', () => {
     }
 
     it('validates providers from agent configs when project path is provided', async () => {
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listAgents.mockResolvedValue({
         items: [mockAgent],
         total: 1,
@@ -943,16 +969,18 @@ describe('PreflightService', () => {
 
     it('skips agents without providerConfigId (Phase 4 behavior)', async () => {
       // Agents without providerConfigId are now skipped (no profile.providerId fallback)
-      const agentWithoutConfig = { ...mockAgent, providerConfigId: null };
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      const agentWithoutConfig = { ...mockAgent, providerConfigId: '' };
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listAgents.mockResolvedValue({
         items: [agentWithoutConfig],
         total: 1,
@@ -978,15 +1006,17 @@ describe('PreflightService', () => {
         ...mockConfig,
         env: { 'INVALID-KEY': 'value' }, // Invalid key with hyphen
       };
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listAgents.mockResolvedValue({
         items: [mockAgent],
         total: 1,
@@ -1042,15 +1072,17 @@ describe('PreflightService', () => {
         ...mockProvider,
         env: { 'INVALID-PROVIDER-KEY': 'value' },
       };
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listAgents.mockResolvedValue({
         items: [mockAgent],
         total: 1,
@@ -1077,15 +1109,17 @@ describe('PreflightService', () => {
         ...mockProvider,
         env: { GOOD_KEY: 'value\x01bad' },
       };
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listAgents.mockResolvedValue({
         items: [mockAgent],
         total: 1,
@@ -1116,15 +1150,17 @@ describe('PreflightService', () => {
         ...mockConfig,
         env: { SHARED_KEY: 'config-value', CONFIG_ONLY: 'cval' },
       };
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listAgents.mockResolvedValue({
         items: [mockAgent],
         total: 1,
@@ -1171,7 +1207,7 @@ describe('PreflightService', () => {
   });
 
   describe('config-file provider (opencode) preflight', () => {
-    const opencodeProvider = {
+    const opencodeProvider = createMockProvider({
       id: 'p-oc',
       name: 'opencode',
       binPath: '/usr/local/bin/opencode',
@@ -1180,7 +1216,7 @@ describe('PreflightService', () => {
       mcpRegisteredAt: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
     beforeEach(() => {
       mockExec.mockImplementation(
@@ -1220,18 +1256,20 @@ describe('PreflightService', () => {
     });
 
     it('evaluates MCP normally for opencode with project context', async () => {
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listAgents.mockResolvedValue({
         items: [
-          {
+          createMockAgent({
             id: 'agent-oc',
             projectId: 'project-1',
             profileId: 'profile-1',
@@ -1240,14 +1278,14 @@ describe('PreflightService', () => {
             description: null,
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
         offset: 0,
       });
       mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([
-        {
+        createProfileProviderConfig({
           id: 'config-oc',
           profileId: 'profile-1',
           providerId: 'p-oc',
@@ -1255,7 +1293,7 @@ describe('PreflightService', () => {
           env: null,
           createdAt: '',
           updatedAt: '',
-        },
+        }),
       ]);
       mockStorage.listProvidersByIds.mockResolvedValue([opencodeProvider]);
       mockAccess.mockResolvedValue(undefined);
@@ -1277,7 +1315,7 @@ describe('PreflightService', () => {
   });
 
   describe('Antigravity (agy) MCP preflight (P2-1 — HOME-global config)', () => {
-    const agyProvider = {
+    const agyProvider = createMockProvider({
       id: 'p-agy',
       name: 'agy',
       binPath: '/usr/local/bin/agy',
@@ -1286,7 +1324,7 @@ describe('PreflightService', () => {
       mcpRegisteredAt: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
     beforeEach(() => {
       mockExec.mockImplementation(
@@ -1333,15 +1371,17 @@ describe('PreflightService', () => {
     });
 
     it('does not require project context for agy (HOME-global config, not project-local)', async () => {
-      mockStorage.findProjectByPath.mockResolvedValue({
-        id: 'project-1',
-        name: 'Test',
-        rootPath: '/test',
-        isTemplate: false,
-        description: null,
-        createdAt: '',
-        updatedAt: '',
-      });
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
       mockStorage.listProviders.mockResolvedValue({
         items: [agyProvider],
         total: 1,
@@ -1385,7 +1425,7 @@ describe('PreflightService', () => {
       setupExec();
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p-oc',
             name: 'opencode',
             binPath: '/usr/local/bin/opencode',
@@ -1394,7 +1434,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: null,
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -1414,7 +1454,7 @@ describe('PreflightService', () => {
       setupExec();
       mockStorage.listProviders.mockResolvedValue({
         items: [
-          {
+          createMockProvider({
             id: 'p-cl',
             name: 'claude',
             binPath: '/usr/local/bin/claude',
@@ -1423,7 +1463,7 @@ describe('PreflightService', () => {
             mcpRegisteredAt: '2024-01-01',
             createdAt: '',
             updatedAt: '',
-          },
+          }),
         ],
         total: 1,
         limit: 100,
@@ -1446,7 +1486,7 @@ describe('PreflightService', () => {
   });
 
   describe('includeAllProviders mode', () => {
-    const mockProject = {
+    const mockProject = createMockProject({
       id: 'project-1',
       name: 'Test',
       rootPath: '/test',
@@ -1454,9 +1494,9 @@ describe('PreflightService', () => {
       description: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
-    const claudeProvider = {
+    const claudeProvider = createMockProvider({
       id: 'p-cl',
       name: 'claude',
       binPath: '/usr/local/bin/claude',
@@ -1465,9 +1505,9 @@ describe('PreflightService', () => {
       mcpRegisteredAt: '2024-01-01',
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
-    const codexProvider = {
+    const codexProvider = createMockProvider({
       id: 'p-cx',
       name: 'codex',
       binPath: '/usr/local/bin/codex',
@@ -1476,9 +1516,9 @@ describe('PreflightService', () => {
       mcpRegisteredAt: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
-    const claudeAgent = {
+    const claudeAgent = createMockAgent({
       id: 'agent-1',
       projectId: 'project-1',
       profileId: 'profile-1',
@@ -1487,9 +1527,9 @@ describe('PreflightService', () => {
       description: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
-    const claudeConfig = {
+    const claudeConfig = createProfileProviderConfig({
       id: 'config-cl',
       profileId: 'profile-1',
       providerId: 'p-cl',
@@ -1497,7 +1537,7 @@ describe('PreflightService', () => {
       env: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
     const okMcpResult = {
       success: true,
@@ -1717,7 +1757,7 @@ describe('PreflightService', () => {
   });
 
   describe('allSettled rejection fallback contract', () => {
-    const mockProject = {
+    const mockProject = createMockProject({
       id: 'project-1',
       name: 'Test',
       rootPath: '/test',
@@ -1725,9 +1765,9 @@ describe('PreflightService', () => {
       description: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
-    const claudeProvider = {
+    const claudeProvider = createMockProvider({
       id: 'p-cl',
       name: 'claude',
       binPath: '/usr/local/bin/claude',
@@ -1736,9 +1776,9 @@ describe('PreflightService', () => {
       mcpRegisteredAt: '2024-01-01',
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
-    const codexProvider = {
+    const codexProvider = createMockProvider({
       id: 'p-cx',
       name: 'codex',
       binPath: '/usr/local/bin/codex',
@@ -1747,9 +1787,9 @@ describe('PreflightService', () => {
       mcpRegisteredAt: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
-    const opencodeProvider = {
+    const opencodeProvider = createMockProvider({
       id: 'p-oc',
       name: 'opencode',
       binPath: '/usr/local/bin/opencode',
@@ -1758,7 +1798,7 @@ describe('PreflightService', () => {
       mcpRegisteredAt: null,
       createdAt: '',
       updatedAt: '',
-    };
+    });
 
     const okMcpResult = {
       success: true,

@@ -729,9 +729,9 @@ describe('ClickUp My Work capability', () => {
     });
     const provider = providerWith(requestJson);
 
-    await expect(
-      provider.myWork!.discover(credentials, myWorkOptions),
-    ).rejects.toMatchObject<ClickUpProviderError>({
+    await expect(provider.myWork!.discover(credentials, myWorkOptions)).rejects.toMatchObject<
+      Partial<ClickUpProviderError>
+    >({
       code: 'clickup_unavailable',
       details: expect.objectContaining({ provider: 'clickup', reason: 'unavailable' }),
     });

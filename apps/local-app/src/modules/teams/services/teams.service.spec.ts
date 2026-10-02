@@ -32,6 +32,7 @@ function makeAgent(id: string, projectId: string = PROJECT_ID): Agent {
     profileId: 'profile-1',
     providerConfigId: 'config-1',
     modelOverride: null,
+    effortOverride: null,
     name: `Agent-${id}`,
     description: null,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -74,11 +75,17 @@ function makeTeamWithMembers(
   overrides: Partial<Team> = {},
   members: TeamMember[] = [],
   profileIds: string[] = [],
-): Team & { members: TeamMember[]; profileIds: string[] } {
+  profileConfigSelections: Array<{ profileId: string; configIds: string[] }> = [],
+): Team & {
+  members: TeamMember[];
+  profileIds: string[];
+  profileConfigSelections: Array<{ profileId: string; configIds: string[] }>;
+} {
   return {
     ...makeTeam(overrides),
     members,
     profileIds,
+    profileConfigSelections,
   };
 }
 
@@ -1872,10 +1879,7 @@ describe('TeamsService', () => {
         ),
       );
       teamsStore.createTeamAgentAtomicCapped.mockRejectedValue(
-        new (await import('../../../common/errors/error-types')).TeamMemberCapReachedError(
-          'team-1',
-          1,
-        ),
+        new (await import('../../../common/errors/error-types')).TeamMemberCapReachedError(1, 1),
       );
 
       await expect(service.createTeamAgentForRest(baseInput)).rejects.toThrow(ConflictError);

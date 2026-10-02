@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/ui/components/ui/dialog';
+import { BusyStatus } from '@/ui/components/ui/spinner';
 import { StartError } from './StartError';
 
 interface BoundProject {
@@ -96,7 +97,7 @@ export function RemoteDeleteDialog({
               Destroy VM too
             </label>
 
-            {destroyVm && bindingsLoading && <p role="status">Checking project connections…</p>}
+            {destroyVm && bindingsLoading && <BusyStatus>Checking project connections…</BusyStatus>}
             {destroyVm && hasBindings && (
               <div role="alert" className="space-y-1">
                 <p>Disconnect these projects first:</p>
@@ -142,7 +143,8 @@ export function RemoteDeleteDialog({
               if (destroyVm) onDestroy(unreachable && confirmForce);
               else onDelete();
             }}
-            disabled={pending || cannotDestroy}
+            disabled={cannotDestroy}
+            pending={pending}
           >
             {pending
               ? 'Processing…'

@@ -5,7 +5,11 @@ import type { NormalizedAskUserQuestion } from '../../events/catalog/claude.hook
 
 const logger = createLogger('PendingAskUserQuestionService');
 
-/** Pending entries live at most ~30min before being treated as stale. */
+/**
+ * A pending entry stays visible to the mobile poll for ~30min. Past that it is hidden from
+ * {@link PendingAskUserQuestionService.getBySession} but stays in the store, so a turn held
+ * open by a long wait still counts it ({@link PendingAskUserQuestionService.hasPendingQuestion}).
+ */
 export const PENDING_ASK_QUESTION_TTL_MS = 30 * 60 * 1000;
 
 export interface PendingAskUserQuestionEntry {
@@ -37,8 +41,9 @@ export interface SetPendingAskUserQuestionInput {
  * so a persisted row would be zombie state. Runtime cardinality is ≤1 per
  * session (the agent is blocked single-threaded while the picker is open).
  *
- * Entries are cleared on PostToolUse (terminal answer), on TTL expiry, and on
- * `session.stopped` / `session.crashed`.
+ * Entries are cleared on PostToolUse (terminal answer), when the session's turn ends
+ * (`TerminalActivityService`, which also covers a lost PostToolUse), on a delivered mobile
+ * answer, and on `session.stopped` / `session.crashed`. Time never deletes an entry.
  */
 @Injectable()
 export class PendingAskUserQuestionService {
@@ -50,7 +55,6 @@ export class PendingAskUserQuestionService {
 
   set(input: SetPendingAskUserQuestionInput): PendingAskUserQuestionEntry {
     const now = input.now ?? Date.now();
-    this.prune(now);
     const entry: PendingAskUserQuestionEntry = {
       projectId: input.projectId,
       agentId: input.agentId,
@@ -68,14 +72,24 @@ export class PendingAskUserQuestionService {
 
   /** Non-expired pending entries for a DevChain session (the mobile poll source). */
   getBySession(sessionId: string, now: number = Date.now()): PendingAskUserQuestionEntry[] {
-    this.prune(now);
     const result: PendingAskUserQuestionEntry[] = [];
     for (const entry of this.entries.values()) {
-      if (entry.sessionId === sessionId) {
+      if (entry.sessionId === sessionId && entry.expiresAt > now) {
         result.push(entry);
       }
     }
     return result;
+  }
+
+  /**
+   * Whether the session has an unanswered question, however long it has waited. The provider
+   * is blocked on the picker for as long as the entry exists, so the turn stays open.
+   */
+  hasPendingQuestion(sessionId: string): boolean {
+    for (const entry of this.entries.values()) {
+      if (entry.sessionId === sessionId) return true;
+    }
+    return false;
   }
 
   clearByToolUseId(sessionId: string, toolUseId: string): boolean {
@@ -93,18 +107,9 @@ export class PendingAskUserQuestionService {
     return cleared;
   }
 
-  /** Test/observability helper — total live entries after pruning. */
-  size(now: number = Date.now()): number {
-    this.prune(now);
+  /** Test/observability helper — total stored entries, expired ones included. */
+  size(): number {
     return this.entries.size;
-  }
-
-  private prune(now: number): void {
-    for (const [key, entry] of this.entries) {
-      if (entry.expiresAt <= now) {
-        this.entries.delete(key);
-      }
-    }
   }
 
   @OnEvent('session.stopped', { async: true })

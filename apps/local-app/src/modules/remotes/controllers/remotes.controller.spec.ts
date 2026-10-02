@@ -76,6 +76,7 @@ describe('RemotesController', () => {
     kind: 'claim',
     remoteId: mockRemote.id,
     projectId: null,
+    state: 'done',
     steps: [],
     details: { userName: 'devchain', homePath: '/home/devchain' },
     createdAt: '2024-01-01T00:00:00.000Z',

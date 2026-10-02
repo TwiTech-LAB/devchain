@@ -1,5 +1,5 @@
 import type { SerializedChunk, SerializedSemanticStep } from '@/ui/hooks/useSessionTranscript';
-import type { DisplayItem } from '../ai-group-enhancer';
+import type { DisplayItem, SingleDisplayItem } from '../ai-group-enhancer';
 import {
   classifyDisplayItemHotspots,
   computeChunkHotspots,
@@ -384,13 +384,13 @@ function aiChunkWithSteps(
 }
 
 function makeDisplayItem(
-  type: DisplayItem['type'],
+  type: SingleDisplayItem['type'],
   stepId: string,
   estimatedTokens: number,
   linkedResultTokens?: number,
 ): DisplayItem {
   const step = makeStep(stepId, type === 'tool' ? 'tool_call' : type, estimatedTokens);
-  const item: DisplayItem = { type, step };
+  const item: SingleDisplayItem = { type, step };
   if (linkedResultTokens !== undefined) {
     item.linkedResult = makeStep(`${stepId}-result`, 'tool_result', linkedResultTokens);
   }

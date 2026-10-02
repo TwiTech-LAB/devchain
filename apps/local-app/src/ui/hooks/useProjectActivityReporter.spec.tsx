@@ -103,9 +103,10 @@ describe('useProjectActivityReporter', () => {
   });
 
   it('keeps document input gated by project selection and active document state', () => {
+    const initialProps: { projectId: string | undefined } = { projectId: undefined };
     const { rerender } = renderHook(
       ({ projectId }: { projectId: string | undefined }) => useProjectActivityReporter(projectId),
-      { initialProps: { projectId: undefined } },
+      { initialProps },
     );
 
     act(() => {
@@ -164,7 +165,7 @@ describe('useProjectActivityReporter', () => {
   it.each([
     ['hidden', false, 'hidden document'],
     ['visible', false, 'unfocused document'],
-  ] as const)('does not touch for a %s/%s state (%s)', async (visibilityState, focused) => {
+  ] as const)('does not touch for a %s/%s state (%s)', async (visibilityState, focused, _state) => {
     setDocumentActivityState(visibilityState, focused);
 
     const touched = await touchProjectActivity('project-1', {

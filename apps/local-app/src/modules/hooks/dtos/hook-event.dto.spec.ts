@@ -73,6 +73,41 @@ describe('HookEventSchema (discriminated union)', () => {
     });
   });
 
+  describe('turn hooks (UserPromptSubmit, Stop)', () => {
+    const userPromptSubmit = {
+      hookEventName: 'UserPromptSubmit',
+      claudeSessionId: 'claude-session-1',
+      firedAtMs: 1_700_000_000_000,
+      transcriptPath: '/tmp/t.jsonl',
+      tmuxSessionName: 'devchain-test',
+      projectId: PROJECT_ID,
+      agentId: AGENT_ID,
+      sessionId: SESSION_ID,
+    };
+
+    it('accepts a UserPromptSubmit with and without a hook time', () => {
+      expect(HookEventSchema.safeParse(userPromptSubmit).success).toBe(true);
+      const { firedAtMs, ...withoutTime } = userPromptSubmit;
+      void firedAtMs;
+      expect(HookEventSchema.safeParse(withoutTime).success).toBe(true);
+    });
+
+    it('accepts a Stop with a hook time', () => {
+      expect(
+        HookEventSchema.safeParse({ ...userPromptSubmit, hookEventName: 'Stop' }).success,
+      ).toBe(true);
+    });
+
+    it.each([-1, 1.5, '1700000000000'])('rejects the hook time %p', (firedAtMs) => {
+      expect(HookEventSchema.safeParse({ ...userPromptSubmit, firedAtMs }).success).toBe(false);
+    });
+
+    it('rejects a hook time on the other variants (strict)', () => {
+      expect(HookEventSchema.safeParse({ ...sessionStart, firedAtMs: 1 }).success).toBe(false);
+      expect(HookEventSchema.safeParse({ ...preToolUse, firedAtMs: 1 }).success).toBe(false);
+    });
+  });
+
   describe('PreToolUse', () => {
     it('accepts a PreToolUse payload and preserves the questions object', () => {
       const result = HookEventSchema.safeParse(preToolUse);

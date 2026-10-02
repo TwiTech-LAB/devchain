@@ -2,10 +2,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import type { ExternalTaskDetail } from '@/modules/external-integrations/models/external-provider.models';
-import type {
-  ExternalEditSessionView,
-  ExternalSessionWriteOutcome,
-} from '@/modules/external-integrations/models/external-edit-session.models';
+import type { ExternalRichDocumentV1 } from '@/modules/external-integrations/models/external-rich-document';
+import type { ExternalEditSessionView } from '@/modules/external-integrations/models/external-edit-session.models';
 import { ExternalTaskRichDescription } from './ExternalTaskRichDescription';
 import type { useExternalRichDescriptionEdit } from '@/ui/hooks/board/useExternalRichDescriptionEdit';
 
@@ -34,7 +32,7 @@ const DETAIL = {
   descriptionTruncated: false,
 } as unknown as ExternalTaskDetail;
 
-const DOCUMENT = {
+const DOCUMENT: ExternalRichDocumentV1 = {
   version: 1,
   blocks: [{ type: 'paragraph', content: [{ type: 'text', text: 'rich body', marks: [] }] }],
 };
@@ -358,7 +356,6 @@ describe('ExternalTaskRichDescription', () => {
   });
 
   it('writes outcome sessions through to the editor key so a new session remounts it', async () => {
-    void ({} satisfies ExternalSessionWriteOutcome);
     const controller = controllerWith({
       state: {
         phase: 'editing',

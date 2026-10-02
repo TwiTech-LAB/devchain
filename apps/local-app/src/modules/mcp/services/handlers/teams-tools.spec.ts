@@ -175,23 +175,24 @@ describe('handleTeamsList', () => {
       success: false,
       error: { code: 'SESSION_NOT_FOUND' },
     });
-    expect((ctx.teamsService as { listTeams: jest.Mock }).listTeams).not.toHaveBeenCalled();
+    expect(
+      (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
+    ).not.toHaveBeenCalled();
   });
 
   it('passes q parameter to service for server-side filtering', async () => {
     const ctx = makeCtx();
     await handleTeamsList(ctx, { sessionId: 'abcd1234', q: 'backend' });
 
-    expect((ctx.teamsService as { listTeams: jest.Mock }).listTeams).toHaveBeenCalledWith(
-      PROJECT_ID,
-      { limit: 100, offset: 0, q: 'backend' },
-    );
+    expect(
+      (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
+    ).toHaveBeenCalledWith(PROJECT_ID, { limit: 100, offset: 0, q: 'backend' });
   });
 
   it('returns correct total from service when q is provided', async () => {
     const ctx = makeCtx();
     // Mock service returning filtered results with correct total
-    (ctx.teamsService as { listTeams: jest.Mock }).listTeams.mockResolvedValueOnce({
+    (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams.mockResolvedValueOnce({
       items: [
         {
           id: TEAM_ID,
@@ -221,7 +222,7 @@ describe('handleTeamsList', () => {
   it('q + pagination: total reflects all matching teams, not just current page', async () => {
     const ctx = makeCtx();
     // Simulate: 5 teams total, q matches 3, limit=2 offset=0 → page has 2, total=3
-    (ctx.teamsService as { listTeams: jest.Mock }).listTeams.mockResolvedValueOnce({
+    (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams.mockResolvedValueOnce({
       items: [
         {
           id: 'team-a',
@@ -265,20 +266,18 @@ describe('handleTeamsList', () => {
     expect(data.limit).toBe(2);
     expect(data.offset).toBe(0);
 
-    expect((ctx.teamsService as { listTeams: jest.Mock }).listTeams).toHaveBeenCalledWith(
-      PROJECT_ID,
-      { limit: 2, offset: 0, q: 'team' },
-    );
+    expect(
+      (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
+    ).toHaveBeenCalledWith(PROJECT_ID, { limit: 2, offset: 0, q: 'team' });
   });
 
   it('respects custom limit and offset', async () => {
     const ctx = makeCtx();
     await handleTeamsList(ctx, { sessionId: 'abcd1234', limit: 5, offset: 10 });
 
-    expect((ctx.teamsService as { listTeams: jest.Mock }).listTeams).toHaveBeenCalledWith(
-      PROJECT_ID,
-      { limit: 5, offset: 10, q: undefined },
-    );
+    expect(
+      (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
+    ).toHaveBeenCalledWith(PROJECT_ID, { limit: 5, offset: 10, q: undefined });
   });
 
   it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
@@ -353,7 +352,7 @@ describe('handleTeamsMembersList', () => {
 
     it('returns TEAM_NOT_FOUND when team does not exist', async () => {
       const ctx = makeCtx();
-      (ctx.teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce(null);
+      (ctx.teamsService as unknown as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce(null);
 
       const result = await handleTeamsMembersList(ctx, {
         sessionId: 'abcd1234',
@@ -366,7 +365,7 @@ describe('handleTeamsMembersList', () => {
 
     it('returns members with no team lead when teamLeadAgentId is null', async () => {
       const ctx = makeCtx();
-      (ctx.teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce({
+      (ctx.teamsService as unknown as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce({
         id: TEAM_ID,
         name: TEAM_NAME,
         description: 'The backend squad',
@@ -416,7 +415,9 @@ describe('handleTeamsMembersList', () => {
         updatedAt: new Date().toISOString(),
       };
       const ctx = makeCtx();
-      (ctx.teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce(crossProjectTeam);
+      (ctx.teamsService as unknown as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce(
+        crossProjectTeam,
+      );
 
       const result = await handleTeamsMembersList(ctx, {
         sessionId: 'abcd1234',
@@ -441,15 +442,15 @@ describe('handleTeamsMembersList', () => {
       expect(data.teams[0].members).toHaveLength(2);
 
       expect(
-        (ctx.teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent,
+        (ctx.teamsService as unknown as { listTeamsByAgent: jest.Mock }).listTeamsByAgent,
       ).toHaveBeenCalledWith(AGENT_ID);
     });
 
     it('returns empty teams array when agent has no team membership', async () => {
       const ctx = makeCtx();
-      (ctx.teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent.mockResolvedValueOnce(
-        [],
-      );
+      (
+        ctx.teamsService as unknown as { listTeamsByAgent: jest.Mock }
+      ).listTeamsByAgent.mockResolvedValueOnce([]);
 
       const result = await handleTeamsMembersList(ctx, { sessionId: 'abcd1234' });
 
@@ -460,7 +461,9 @@ describe('handleTeamsMembersList', () => {
 
     it('returns no team lead flags when an agent team has no lead', async () => {
       const ctx = makeCtx();
-      (ctx.teamsService as { listTeamsByAgent: jest.Mock }).listTeamsByAgent.mockResolvedValueOnce([
+      (
+        ctx.teamsService as unknown as { listTeamsByAgent: jest.Mock }
+      ).listTeamsByAgent.mockResolvedValueOnce([
         {
           id: TEAM_ID,
           name: TEAM_NAME,
@@ -471,7 +474,7 @@ describe('handleTeamsMembersList', () => {
           updatedAt: new Date().toISOString(),
         },
       ]);
-      (ctx.teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce({
+      (ctx.teamsService as unknown as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce({
         id: TEAM_ID,
         name: TEAM_NAME,
         description: 'The backend squad',
@@ -562,7 +565,7 @@ describe('handleTeamsMembersList', () => {
     it('falls back to agentId as name when getAgent fails', async () => {
       const unknownAgentId = '00000000-0000-0000-0000-000000000777';
       const ctx = makeCtx();
-      (ctx.teamsService as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce({
+      (ctx.teamsService as unknown as { getTeam: jest.Mock }).getTeam.mockResolvedValueOnce({
         id: TEAM_ID,
         name: TEAM_NAME,
         teamLeadAgentId: unknownAgentId,
@@ -610,7 +613,8 @@ describe('handleTeamsConfigsList', () => {
     expect(data.configs[0].teamName).toBe(TEAM_NAME);
 
     expect(
-      (ctx.teamsService as { listConfigsVisibleToLead: jest.Mock }).listConfigsVisibleToLead,
+      (ctx.teamsService as unknown as { listConfigsVisibleToLead: jest.Mock })
+        .listConfigsVisibleToLead,
     ).toHaveBeenCalledWith(AGENT_ID, PROJECT_ID);
   });
 
@@ -630,7 +634,7 @@ describe('handleTeamsConfigsList', () => {
   it('returns FORBIDDEN_NOT_TEAM_LEAD when caller leads no teams', async () => {
     const ctx = makeCtx();
     (
-      ctx.teamsService as { listConfigsVisibleToLead: jest.Mock }
+      ctx.teamsService as unknown as { listConfigsVisibleToLead: jest.Mock }
     ).listConfigsVisibleToLead.mockResolvedValueOnce({
       error: { code: 'FORBIDDEN_NOT_TEAM_LEAD', message: 'You do not lead any teams' },
     });
@@ -684,7 +688,7 @@ describe('handleTeamsCreateAgent', () => {
     expect(data.agentId).toBe('new-agent-id');
 
     expect(
-      (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent,
+      (ctx.teamsService as unknown as { createTeamAgent: jest.Mock }).createTeamAgent,
     ).toHaveBeenCalledWith({
       leadAgentId: AGENT_ID,
       projectId: PROJECT_ID,
@@ -711,7 +715,9 @@ describe('handleTeamsCreateAgent', () => {
 
   it('returns FORBIDDEN_NOT_TEAM_LEAD when caller leads no teams', async () => {
     const ctx = makeCtx();
-    (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent.mockResolvedValueOnce({
+    (
+      ctx.teamsService as unknown as { createTeamAgent: jest.Mock }
+    ).createTeamAgent.mockResolvedValueOnce({
       error: { code: 'FORBIDDEN_NOT_TEAM_LEAD', message: 'You do not lead any teams' },
     });
     const result = await handleTeamsCreateAgent(ctx, validParams);
@@ -722,7 +728,9 @@ describe('handleTeamsCreateAgent', () => {
 
   it('returns AMBIGUOUS_TEAM_LEAD when leading multiple teams without teamName', async () => {
     const ctx = makeCtx();
-    (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent.mockResolvedValueOnce({
+    (
+      ctx.teamsService as unknown as { createTeamAgent: jest.Mock }
+    ).createTeamAgent.mockResolvedValueOnce({
       error: {
         code: 'AMBIGUOUS_TEAM_LEAD',
         message: 'You lead multiple teams. Specify teamName to disambiguate.',
@@ -740,13 +748,15 @@ describe('handleTeamsCreateAgent', () => {
     await handleTeamsCreateAgent(ctx, { ...validParams, teamName: TEAM_NAME });
 
     expect(
-      (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent,
+      (ctx.teamsService as unknown as { createTeamAgent: jest.Mock }).createTeamAgent,
     ).toHaveBeenCalledWith(expect.objectContaining({ teamName: TEAM_NAME }));
   });
 
   it('returns TEAM_NOT_FOUND_OR_NOT_LED for wrong teamName', async () => {
     const ctx = makeCtx();
-    (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent.mockResolvedValueOnce({
+    (
+      ctx.teamsService as unknown as { createTeamAgent: jest.Mock }
+    ).createTeamAgent.mockResolvedValueOnce({
       error: {
         code: 'TEAM_NOT_FOUND_OR_NOT_LED',
         message: 'No team named "Wrong" found among teams you lead',
@@ -760,7 +770,9 @@ describe('handleTeamsCreateAgent', () => {
 
   it('returns CONFIG_NOT_FOUND when no matching config', async () => {
     const ctx = makeCtx();
-    (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent.mockResolvedValueOnce({
+    (
+      ctx.teamsService as unknown as { createTeamAgent: jest.Mock }
+    ).createTeamAgent.mockResolvedValueOnce({
       error: {
         code: 'CONFIG_NOT_FOUND',
         message: 'No provider configuration named "missing" found for this team',
@@ -774,7 +786,9 @@ describe('handleTeamsCreateAgent', () => {
 
   it('returns AMBIGUOUS_CONFIG_NAME when multiple configs match without profileName', async () => {
     const ctx = makeCtx();
-    (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent.mockResolvedValueOnce({
+    (
+      ctx.teamsService as unknown as { createTeamAgent: jest.Mock }
+    ).createTeamAgent.mockResolvedValueOnce({
       error: {
         code: 'AMBIGUOUS_CONFIG_NAME',
         message: 'Multiple configurations found. Specify profileName.',
@@ -797,13 +811,15 @@ describe('handleTeamsCreateAgent', () => {
     await handleTeamsCreateAgent(ctx, { ...validParams, profileName: 'Default Profile' });
 
     expect(
-      (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent,
+      (ctx.teamsService as unknown as { createTeamAgent: jest.Mock }).createTeamAgent,
     ).toHaveBeenCalledWith(expect.objectContaining({ profileName: 'Default Profile' }));
   });
 
   it('returns AGENT_NAME_EXISTS for duplicate name', async () => {
     const ctx = makeCtx();
-    (ctx.teamsService as { createTeamAgent: jest.Mock }).createTeamAgent.mockResolvedValueOnce({
+    (
+      ctx.teamsService as unknown as { createTeamAgent: jest.Mock }
+    ).createTeamAgent.mockResolvedValueOnce({
       error: {
         code: 'AGENT_NAME_EXISTS',
         message: 'An agent named "New Agent" already exists in this project',
@@ -1002,7 +1018,7 @@ describe('handleDevchainTeam', () => {
         listTeamsByAgent: jest
           .fn()
           .mockResolvedValue([{ id: TEAM_ID, name: TEAM_NAME, projectId: PROJECT_ID }]),
-        getTeam: (makeTeamCtx().teamsService as { getTeam: jest.Mock }).getTeam,
+        getTeam: (makeTeamCtx().teamsService as unknown as { getTeam: jest.Mock }).getTeam,
         countBusyTeamMembers: jest.fn().mockResolvedValue(0),
       } as never,
     });
@@ -1206,7 +1222,7 @@ describe('handleDevchainTeam', () => {
 
     expect(result.success).toBe(true);
     const data = result.data as {
-      members: Array<{ agentName: string; description: string | null }>;
+      members: Array<{ agentId: string; agentName: string; description: string | null }>;
     };
     expect(data.members[0].description).toBeNull();
     expect(data.members[0].agentName).toBe(data.members[0].agentId);
@@ -1232,7 +1248,7 @@ describe('handleTeamsDeleteAgent', () => {
     });
 
     expect(
-      (ctx.teamsService as { deleteTeamAgent: jest.Mock }).deleteTeamAgent,
+      (ctx.teamsService as unknown as { deleteTeamAgent: jest.Mock }).deleteTeamAgent,
     ).toHaveBeenCalledWith({
       leadAgentId: AGENT_ID,
       projectId: PROJECT_ID,
@@ -1246,7 +1262,7 @@ describe('handleTeamsDeleteAgent', () => {
     await handleTeamsDeleteAgent(ctx, { ...validParams, teamName: 'Backend' });
 
     expect(
-      (ctx.teamsService as { deleteTeamAgent: jest.Mock }).deleteTeamAgent,
+      (ctx.teamsService as unknown as { deleteTeamAgent: jest.Mock }).deleteTeamAgent,
     ).toHaveBeenCalledWith(expect.objectContaining({ teamName: 'Backend' }));
   });
 
@@ -1275,7 +1291,9 @@ describe('handleTeamsDeleteAgent', () => {
     'AGENT_HAS_RUNNING_SESSIONS',
   ])('forwards service error %s as MCP error', async (code) => {
     const ctx = makeCtx();
-    (ctx.teamsService as { deleteTeamAgent: jest.Mock }).deleteTeamAgent.mockResolvedValueOnce({
+    (
+      ctx.teamsService as unknown as { deleteTeamAgent: jest.Mock }
+    ).deleteTeamAgent.mockResolvedValueOnce({
       error: { code, message: `Error: ${code}` },
     });
     const result = await handleTeamsDeleteAgent(ctx, validParams);

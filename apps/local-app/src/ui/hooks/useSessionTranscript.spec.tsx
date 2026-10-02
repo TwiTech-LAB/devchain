@@ -476,11 +476,16 @@ describe('useSessionTranscript', () => {
 
     expect(result.current.isLive).toBe(true);
 
-    const summaryQuery = queryClient.getQueryCache().find({
+    const summaryOptions: unknown = queryClient.getQueryCache().find({
       queryKey: transcriptQueryKeys.summary('session-1'),
       exact: true,
-    });
-    const refetchInterval = summaryQuery?.options.refetchInterval;
+    })?.options;
+    const refetchInterval =
+      summaryOptions !== null &&
+      typeof summaryOptions === 'object' &&
+      'refetchInterval' in summaryOptions
+        ? summaryOptions.refetchInterval
+        : undefined;
     expect(typeof refetchInterval).toBe('function');
     expect(
       (
@@ -509,11 +514,16 @@ describe('useSessionTranscript', () => {
 
     expect(result.current.isLive).toBe(false);
 
-    const summaryQuery = queryClient.getQueryCache().find({
+    const summaryOptions: unknown = queryClient.getQueryCache().find({
       queryKey: transcriptQueryKeys.summary('session-1'),
       exact: true,
-    });
-    const refetchInterval = summaryQuery?.options.refetchInterval;
+    })?.options;
+    const refetchInterval =
+      summaryOptions !== null &&
+      typeof summaryOptions === 'object' &&
+      'refetchInterval' in summaryOptions
+        ? summaryOptions.refetchInterval
+        : undefined;
     expect(typeof refetchInterval).toBe('function');
     expect(
       (

@@ -1,5 +1,6 @@
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { CreateWatcher, Project, Provider, Watcher } from '../../storage/models/domain.models';
+import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import type { SeederContext } from '../types/seeder.types';
@@ -8,6 +9,7 @@ import { runSeedCompactOnIdleWatcher } from './0001_seed_compact_on_idle_watcher
 function createProject(id: string, name: string): Project {
   return {
     id,
+    workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
     name,
     description: null,
     rootPath: `/tmp/${name}`,
@@ -46,6 +48,9 @@ function createProvider(id: string, name = 'claude'): Provider {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
   };
@@ -94,6 +99,7 @@ describe('0001_seed_compact_on_idle_watcher', () => {
         info: overrides?.info ?? jest.fn(),
         warn: overrides?.warn ?? jest.fn(),
       } as unknown as SeederContext['logger'],
+      providerEffortSeeding: {} as SeederContext['providerEffortSeeding'],
     };
   }
 

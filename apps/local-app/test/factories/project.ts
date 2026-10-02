@@ -3,6 +3,7 @@ import type { Project } from '../../src/modules/storage/models/domain.models';
 export function createMockProject(overrides: Partial<Project> = {}): Project {
   return {
     id: 'project-test-1',
+    workspaceId: 'workspace-test-1',
     name: 'Test Project',
     description: null,
     rootPath: '/tmp/test-project',

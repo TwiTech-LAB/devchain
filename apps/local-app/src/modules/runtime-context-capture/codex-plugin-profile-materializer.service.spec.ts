@@ -291,7 +291,7 @@ describe('CodexPluginProfileMaterializerService (unit)', () => {
       projectId: PROJECT_ID,
       attemptNonce: NONCE,
     });
-    const childEnvironment = { ...process.env, HOME: inheritedHome };
+    const childEnvironment: NodeJS.ProcessEnv = { ...process.env, HOME: inheritedHome };
     delete childEnvironment.CODEX_HOME;
     const result = spawnSync(helperArgv[0], helperArgv.slice(1), {
       env: childEnvironment,

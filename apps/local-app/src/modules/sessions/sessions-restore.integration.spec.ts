@@ -116,6 +116,7 @@ describe('POST /api/sessions/:id/restore', () => {
     DB_PATH: process.env.DB_PATH,
     DB_FILENAME: process.env.DB_FILENAME,
     TEMPLATES_DIR: process.env.TEMPLATES_DIR,
+    SKIP_PREFLIGHT: process.env.SKIP_PREFLIGHT,
   };
 
   let app: NestFastifyApplication | null = null;
@@ -148,6 +149,9 @@ describe('POST /api/sessions/:id/restore', () => {
     process.env.DATABASE_URL = 'postgres://devchain:devchain@127.0.0.1:5432/devchain_test';
     process.env.DB_PATH = dbDir;
     process.env.DB_FILENAME = 'test.db';
+    // Restore runs the shared MCP readiness check against a real PreflightService;
+    // this suite has no provider CLIs, so use the preflight test mode.
+    process.env.SKIP_PREFLIGHT = '1';
     resetEnvConfig();
 
     moduleRef = await Test.createTestingModule({
@@ -187,6 +191,8 @@ describe('POST /api/sessions/:id/restore', () => {
     process.env.DB_PATH = originalEnv.DB_PATH;
     process.env.DB_FILENAME = originalEnv.DB_FILENAME;
     process.env.TEMPLATES_DIR = originalEnv.TEMPLATES_DIR;
+    if (originalEnv.SKIP_PREFLIGHT === undefined) delete process.env.SKIP_PREFLIGHT;
+    else process.env.SKIP_PREFLIGHT = originalEnv.SKIP_PREFLIGHT;
     resetEnvConfig();
   });
 

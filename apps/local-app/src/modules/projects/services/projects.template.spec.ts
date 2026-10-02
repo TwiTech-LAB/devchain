@@ -43,6 +43,7 @@ describe('ProjectsService', () => {
     listStatuses: jest.Mock;
     getInitialSessionPrompt: jest.Mock;
     getProvider: jest.Mock;
+    updateProvider: jest.Mock;
     createStatus: jest.Mock;
     createPrompt: jest.Mock;
     createAgentProfile: jest.Mock;

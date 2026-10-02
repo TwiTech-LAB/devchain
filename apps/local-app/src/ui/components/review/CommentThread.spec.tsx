@@ -17,7 +17,7 @@ const baseComment: ReviewComment = {
   parentId: null,
   lineStart: 10,
   lineEnd: 15,
-  side: 'right',
+  side: 'new',
   content: 'This function needs better error handling',
   commentType: 'issue',
   status: 'open',

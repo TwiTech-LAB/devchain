@@ -89,6 +89,7 @@ describe('EpicsService atomic relation creation', () => {
       name,
       description: null,
       rootPath: `/tmp/${name.toLowerCase().replaceAll(' ', '-')}`,
+      isTemplate: false,
     });
   }
 
@@ -109,6 +110,8 @@ describe('EpicsService atomic relation creation', () => {
       profileId: profile.id,
       providerId: provider.id,
       name: `config-${name}`,
+      options: null,
+      env: null,
     });
     return storage.createAgent({
       projectId,
@@ -134,7 +137,7 @@ describe('EpicsService atomic relation creation', () => {
 
   async function createWithRelation(
     relation: 'related' | 'blocks' | 'blocked_by',
-    generatedEpicId: string,
+    generatedEpicId: ReturnType<typeof crypto.randomUUID>,
     input: {
       relatedEpicId?: string;
       parentId?: string;
@@ -163,7 +166,7 @@ describe('EpicsService atomic relation creation', () => {
   }
 
   async function createWithRelations(
-    generatedEpicId: string,
+    generatedEpicId: ReturnType<typeof crypto.randomUUID>,
     relations: Array<{ relatedEpicId: string; relation: 'related' | 'blocks' | 'blocked_by' }>,
     input: { parentId?: string; tags?: string[] } = {},
   ): Promise<Epic> {
@@ -256,6 +259,7 @@ describe('EpicsService atomic relation creation', () => {
         description: null,
         rootPath: '/tmp/foreign-atomic',
         workspaceId: foreignWorkspace.id,
+        isTemplate: false,
       });
       relatedEpicId = (await storage.createEpicForProject(foreignProject.id, { title: 'Foreign' }))
         .id;
@@ -322,7 +326,7 @@ describe('EpicsService atomic relation creation', () => {
       mcpHidden: true,
     });
     const hiddenTarget = await storage.createEpicForProject(project.id, { title: 'Hidden Target' });
-    await storage.updateEpic(hiddenTarget.id, { statusId: hidden.id });
+    await storage.updateEpic(hiddenTarget.id, { statusId: hidden.id }, hiddenTarget.version);
     const before = persistedCounts();
 
     // A prefix keeps the visible-only resolution: the hidden epic is not disclosed.

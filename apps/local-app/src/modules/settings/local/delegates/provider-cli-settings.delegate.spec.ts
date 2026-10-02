@@ -129,7 +129,7 @@ describe('ProviderCliSettingsDelegate', () => {
 
       const result = delegate.getProviderCliVersions();
       expect(result.claude).toEqual({ version: '2.1.281', homeManaged: true });
-      expect(result.agy).toBeUndefined();
+      expect((result as Record<string, unknown>).agy).toBeUndefined();
       expect(result.codex).toEqual({ version: 'latest', homeManaged: false });
     });
 

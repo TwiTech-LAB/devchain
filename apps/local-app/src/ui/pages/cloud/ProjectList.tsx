@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
+import { BusyStatus } from '@/ui/components/ui/spinner';
 import type { Project, ProjectWorkspace } from '@/ui/pages/projects/lib/project-contracts';
 import type { ProjectStatus } from './remote-status';
 import { StatusChip } from './StatusChip';
@@ -153,7 +154,7 @@ export function ProjectList({
           </p>
         )}
         {loading ? (
-          <p className="text-sm text-muted-foreground">Loading projects…</p>
+          <BusyStatus className="text-sm text-muted-foreground">Loading projects…</BusyStatus>
         ) : visible.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             {rows.length === 0 ? 'No projects yet.' : 'No project matches these filters.'}

@@ -35,9 +35,9 @@ function setup(git = false) {
   const peer = new FakeFileSyncService();
   if (git) home.gitProjects.add('p1');
   const guard = {
-    install: jest.fn(async () => null),
+    install: jest.fn(async (): Promise<string | null> => null),
     remove: jest.fn(async () => undefined),
-    reinstall: jest.fn(async () => null),
+    reinstall: jest.fn(async (): Promise<string | null> => null),
   };
   const managed = new FakeManagedExclusionsStore();
   const calls: string[] = [];
@@ -334,7 +334,8 @@ describe('split git handoffs', () => {
     }));
     host.syncScan.mockClear();
     await handoff.final(run, 'p1');
-    expect(scan).toHaveBeenCalledWith('code:p1');
+    // The Disconnect path scans home without a cancel signal.
+    expect(scan).toHaveBeenCalledWith('code:p1', undefined);
     expect(host.syncScan).toHaveBeenCalledWith('r1', 'code:p1');
     expect(revert).not.toHaveBeenCalledWith('code:p1');
     expect(revert).toHaveBeenCalledWith('git:p1');
@@ -373,5 +374,103 @@ describe('split git handoffs', () => {
     await expect(handoff.flipToHost(run, 'p1')).rejects.toThrow('unavailable');
     home.folders.delete('git:p1');
     await expect(handoff.flipToHome(run, 'p1', true)).resolves.toBeUndefined();
+  });
+
+  // A cancel must reach every wait of a running Connect; the abort wiring is
+  // proven here against the fake, one wait at a time.
+  describe('interrupt', () => {
+    /** Resolves once a condition flips true; a bounded tick loop is enough for the in-memory fake. */
+    async function until(condition: () => boolean): Promise<void> {
+      for (let i = 0; i < 1_000 && !condition(); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    }
+
+    /**
+     * A rescan that ends on the cancel signal the way the REST-backed one does,
+     * and otherwise waits for the test's release — so a step can be held inside
+     * its scan.
+     */
+    function gatedRescan(home: FakeFileSyncService) {
+      const releases: Array<() => void> = [];
+      const spy = jest.spyOn(home, 'rescan').mockImplementation(
+        (_folderId: string, signal?: AbortSignal) =>
+          new Promise<void>((resolve, reject) => {
+            // A scan starting after the cancel must end with it, like the real client.
+            signal?.throwIfAborted();
+            let settled = false;
+            const settle = (finish: () => void) => {
+              if (settled) return;
+              settled = true;
+              finish();
+            };
+            signal?.addEventListener('abort', () => settle(() => reject(signal.reason)), {
+              once: true,
+            });
+            releases.push(() => settle(resolve));
+          }),
+      );
+      return { spy, release: (index: number) => releases[index]?.() };
+    }
+
+    it('ends initial while its home rescan is still pending, which settles only afterwards', async () => {
+      const { home, handoff, run } = setup(true);
+      const rescan = gatedRescan(home);
+      const initial = handoff.initial(run, 'p1');
+      await until(() => rescan.spy.mock.calls.length >= 2);
+
+      handoff.interrupt('op-1');
+
+      await expect(initial).rejects.toThrow('The Connect was cancelled.');
+      // The scans never finished on their own; their gates settle after the step ended.
+      rescan.release(0);
+      rescan.release(1);
+    });
+
+    it('ends initial during the completion wait with the cancel reason', async () => {
+      const { home, peer, handoff, run } = setup();
+      // The receiver never becomes complete, so the wait would outlive the test.
+      peer.need.set('code:p1', { needItems: 2, needBytes: 2048 });
+      const realWait = home.waitForComplete.bind(home);
+      let waiting!: () => void;
+      const waitStarted = new Promise<void>((resolve) => (waiting = resolve));
+      jest
+        .spyOn(home, 'waitForComplete')
+        .mockImplementation((folderId, options) => (waiting(), realWait(folderId, options)));
+      const initial = handoff.initial(run, 'p1');
+      await waitStarted;
+
+      handoff.interrupt('op-1');
+
+      await expect(initial).rejects.toThrow('The Connect was cancelled.');
+    });
+
+    it('ends initial during the pairing wait with the cancel reason', async () => {
+      const { home, handoff, run } = setup();
+      const connected = jest.spyOn(home, 'isConnected').mockResolvedValue(false);
+      const initial = handoff.initial(run, 'p1');
+      await until(() => connected.mock.calls.length >= 1);
+
+      handoff.interrupt('op-1');
+
+      await expect(initial).rejects.toThrow('The Connect was cancelled.');
+    });
+
+    it('does not let a superseded run drop the newer controller of the same operation', async () => {
+      const { home, handoff, run } = setup();
+      const rescan = gatedRescan(home);
+      const first = handoff.initial(run, 'p1');
+      await until(() => rescan.spy.mock.calls.length >= 1);
+      const second = handoff.initial(run, 'p1');
+      await until(() => rescan.spy.mock.calls.length >= 2);
+
+      // The first run finishes late; only the second controller may be interrupted.
+      rescan.release(0);
+      await expect(first).resolves.toBeUndefined();
+
+      handoff.interrupt('op-1');
+      await expect(second).rejects.toThrow('The Connect was cancelled.');
+      rescan.release(1);
+    });
   });
 });

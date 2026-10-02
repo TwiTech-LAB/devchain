@@ -15,6 +15,9 @@ function comment(overrides: Partial<ExternalTaskComment> = {}): ExternalTaskComm
     author: { remoteId: '183', displayName: 'John Doe' },
     body: 'Plain text body',
     bodyTruncated: false,
+    rich: null,
+    lookupToken: null,
+    owned: false,
     createdAt: '2026-08-20T12:00:00.000Z',
     updatedAt: null,
     ...overrides,
@@ -51,7 +54,7 @@ function controllerValue(overrides: Record<string, unknown> = {}): Controller {
       data: undefined,
     },
     ...overrides,
-  } as Controller;
+  } as unknown as Controller;
 }
 
 function renderPanel(

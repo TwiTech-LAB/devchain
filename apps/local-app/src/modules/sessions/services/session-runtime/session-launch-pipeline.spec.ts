@@ -49,6 +49,7 @@ import {
   fakeProfileProviderConfig,
 } from './__test-utils__/pipeline-harness';
 import { isProjectProvisioningCapable } from '../../../providers/adapters/capabilities';
+import type { SessionDetailDto } from '../../dtos/sessions.dto';
 
 const mockIsProjectProvisioningCapable = isProjectProvisioningCapable as unknown as jest.Mock;
 
@@ -192,7 +193,7 @@ describe('SessionLaunchPipeline', () => {
         return { run: jest.fn().mockReturnValue({ changes: 1 }), get: jest.fn(), all: jest.fn() };
       });
 
-      const result = await runWithTimers(() => pipeline.launch(launchDto));
+      const result = await runWithTimers<SessionDetailDto>(() => pipeline.launch(launchDto));
 
       expect(mocks.providerRuntimePreparation.createPlan).toHaveBeenCalledWith(
         expect.objectContaining({ mode: 'new', sessionId: result.id }),

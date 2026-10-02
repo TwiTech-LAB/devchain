@@ -75,6 +75,7 @@ export function foldTurnParts(target: UnifiedMessage, source: UnifiedMessage): v
   if (source.role === 'assistant') {
     target.usage = sumTokenUsage(target.usage, source.usage);
     target.stopReason = source.stopReason ?? null;
+    target.lastEntryAtMs = source.lastEntryAtMs ?? source.timestamp.getTime();
     if (source.model && !target.model) target.model = source.model;
   }
 }

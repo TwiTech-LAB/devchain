@@ -26,6 +26,25 @@ import {
 import { TeamsStore } from './teams.store';
 import { TransactionRunner } from '../../storage/db/transaction-runner';
 
+/** Hold Date at `iso`; promises and timers stay real. Call jest.useRealTimers() after. */
+function freezeDate(iso: string): void {
+  jest.useFakeTimers({
+    now: new Date(iso),
+    doNotFake: [
+      'hrtime',
+      'nextTick',
+      'performance',
+      'queueMicrotask',
+      'setImmediate',
+      'clearImmediate',
+      'setInterval',
+      'clearInterval',
+      'setTimeout',
+      'clearTimeout',
+    ],
+  });
+}
+
 /** Insert a project and return its id */
 async function seedProject(db: BetterSQLite3Database, name = 'test-project'): Promise<string> {
   const id = randomUUID();
@@ -197,6 +216,34 @@ describe('TeamsStore', () => {
       expect(fetched).not.toBeNull();
       expect(fetched!.members).toHaveLength(2);
       expect(fetched!.members.map((m) => m.agentId).sort()).toEqual([agentA, agentB].sort());
+    });
+
+    // The store sets created_at, so it is the cheapest layer that can hold the clock still
+    // across two creates. A template import on a fast PC creates its teams in one millisecond.
+    it('creates each team after the newest one when the clock does not move', async () => {
+      freezeDate('2026-10-02T08:00:00.000Z');
+      try {
+        const planning = await store.createTeam({
+          projectId,
+          name: 'Planning',
+          memberAgentIds: [agentA],
+        });
+        const builders = await store.createTeam({
+          projectId,
+          name: 'Builders',
+          memberAgentIds: [agentB],
+        });
+
+        expect(planning.createdAt).toBe('2026-10-02T08:00:00.000Z');
+        expect(builders.createdAt).toBe('2026-10-02T08:00:00.001Z');
+        const result = await store.listTeams(projectId);
+        expect(result.items.map((team) => [team.name, team.createdAt])).toEqual([
+          ['Planning', '2026-10-02T08:00:00.000Z'],
+          ['Builders', '2026-10-02T08:00:00.001Z'],
+        ]);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('creates a team with no members', async () => {
@@ -379,6 +426,23 @@ describe('TeamsStore', () => {
       expect(result.items.map((team) => team.id)).toEqual([earlier.id, later.id]);
     });
 
+    // Teams imported before createTeam kept them apart can share a created_at. Their ids and
+    // names both sort the other way, so only the insertion order gives the template order.
+    it('keeps insertion order for teams that share a created_at', async () => {
+      const createdAt = '2026-10-01T00:45:56.525Z';
+      const inserted = [
+        { id: 'ffffffff-0000-4000-8000-000000000001', name: 'Planning' },
+        { id: '00000000-0000-4000-8000-000000000002', name: 'Builders' },
+      ];
+      for (const team of inserted) {
+        await db.insert(teams).values({ ...team, projectId, createdAt, updatedAt: createdAt });
+      }
+
+      const result = await store.listTeams(projectId);
+
+      expect(result.items.map((team) => team.name)).toEqual(['Planning', 'Builders']);
+    });
+
     it('returns teams with mixed null and non-null leads', async () => {
       await store.createTeam({
         projectId,
@@ -512,6 +576,32 @@ describe('TeamsStore', () => {
 
       expect(result.items).toHaveLength(0);
       expect(result.total).toBe(0);
+    });
+  });
+
+  describe('listTeamsWithMembers', () => {
+    // Mobile groups agents by this list, so it must follow listTeams. The rows are inserted in
+    // reverse creation order, as a replica does when the ids sort that way.
+    it('lists teams in the same order as listTeams', async () => {
+      const earlier = {
+        id: 'ffffffff-0000-4000-8000-000000000001',
+        name: 'Planning',
+        createdAt: '2026-09-23T16:17:53.559Z',
+      };
+      const later = {
+        id: '00000000-0000-4000-8000-000000000002',
+        name: 'Builders',
+        createdAt: '2026-09-23T16:17:53.562Z',
+      };
+      for (const team of [later, earlier]) {
+        await db.insert(teams).values({ ...team, projectId, updatedAt: team.createdAt });
+      }
+
+      const result = await store.listTeamsWithMembers(projectId);
+
+      expect(result.map(({ team }) => team.name)).toEqual(['Planning', 'Builders']);
+      const listed = await store.listTeams(projectId);
+      expect(result.map(({ team }) => team.id)).toEqual(listed.items.map((team) => team.id));
     });
   });
 
@@ -1507,6 +1597,8 @@ describe('TeamsStore', () => {
             profileId: 'p',
             providerConfigId: 'c',
             modelOverride: null,
+            effortOverride: null,
+            isProjectOwner: false,
             name: 'CapC',
             description: null,
             createdAt: new Date().toISOString(),
@@ -1700,6 +1792,8 @@ describe('TeamsStore', () => {
           profileId: 'p',
           providerConfigId: 'c',
           modelOverride: null,
+          effortOverride: null,
+          isProjectOwner: false,
           name: 'RunnerCapAgent',
           description: null,
           createdAt: new Date().toISOString(),
@@ -1778,6 +1872,8 @@ describe('TeamsStore', () => {
             profileId: 'p',
             providerConfigId: 'c',
             modelOverride: null,
+            effortOverride: null,
+            isProjectOwner: false,
             name: 'CapErrNew',
             description: null,
             createdAt: new Date().toISOString(),

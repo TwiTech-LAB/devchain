@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Circle, Loader2, Minus, X } from 'lucide-react';
-import { Badge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
 import { cn } from '@/ui/lib/utils';
 import {
@@ -19,7 +18,8 @@ import {
   stepProgress,
   type RecoveryAction,
 } from './remote-status';
-import { TONE_CLASSES, type StatusTone } from '@/ui/lib/status-tone';
+import { type StatusTone } from '@/ui/lib/status-tone';
+import { StatusChip } from './StatusChip';
 import {
   FileSyncLossItems,
   folderLabel,
@@ -76,11 +76,7 @@ const STATE_CHIPS: Record<RemoteOperationDto['state'], { label: string; tone: St
 
 export function OperationStateChip({ state }: { state: RemoteOperationDto['state'] }) {
   const chip = STATE_CHIPS[state];
-  return (
-    <Badge variant="outline" className={TONE_CLASSES[chip.tone]}>
-      {chip.label}
-    </Badge>
-  );
+  return <StatusChip tone={chip.tone}>{chip.label}</StatusChip>;
 }
 
 function formatTime(iso: string): string {
@@ -498,6 +494,10 @@ function OperationNotes({
 /** Kinds a running operation may still be cancelled in. */
 function runningCancelAllowed(operation: RemoteOperationDto): boolean {
   if (['install_host', 'create_vm', 'update_logins'].includes(operation.kind)) return true;
+  // Mirrors the server rule in AttachOperation.assertCancellable: once the VM
+  // owns the project, the project must be disconnected, not cancelled.
+  if (operation.kind === 'attach')
+    return !operation.steps.some((step) => step.id === 'bind_remote' && step.state !== 'pending');
   return (
     operation.kind === 'destroy_vm' &&
     !operation.steps.some(
@@ -557,6 +557,17 @@ export function OperationDetail({
         ).filter(([, provider]) => provider.generationId && provider.sessionId)
       : [];
   const vmName = names.remotes.get(operation.remoteId) ?? operation.remoteId;
+  // The row shares one pending flag; only the pressed action spins. The disconnect
+  // actions close Activity before anything runs, so they never spin here.
+  const [pressed, setPressed] = useState<keyof ActivityActions | null>(null);
+  const press = (key: keyof ActivityActions, run: () => void) => ({
+    onClick: () => {
+      setPressed(key);
+      run();
+    },
+    disabled: pending,
+    pending: pending && pressed === key,
+  });
 
   return (
     <div className="space-y-4">
@@ -648,7 +659,7 @@ export function OperationDetail({
 
       <div className="flex flex-wrap gap-2">
         {canRetry && (
-          <Button size="sm" onClick={() => actions.retry(operation)} disabled={pending}>
+          <Button size="sm" {...press('retry', () => actions.retry(operation))}>
             Retry
           </Button>
         )}
@@ -656,8 +667,7 @@ export function OperationDetail({
           <Button
             size="sm"
             variant="outline"
-            onClick={() => actions.reauth(operation, reauth)}
-            disabled={pending}
+            {...press('reauth', () => actions.reauth(operation, reauth))}
             data-testid="reauth-button"
           >
             Re-authenticate {reauth.join(', ')}
@@ -684,12 +694,7 @@ export function OperationDetail({
           </Button>
         )}
         {canCancel && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => actions.cancel(operation)}
-            disabled={pending}
-          >
+          <Button size="sm" variant="outline" {...press('cancel', () => actions.cancel(operation))}>
             Cancel
           </Button>
         )}

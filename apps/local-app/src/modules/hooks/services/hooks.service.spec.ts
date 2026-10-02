@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { HooksService } from './hooks.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { EventsService } from '../../events/services/events.service';
@@ -26,6 +27,7 @@ describe('HooksService', () => {
     clearBySession: jest.Mock;
   };
   let mockRuntimeContextCapture: { capture: jest.Mock };
+  let mockEventEmitter: { emit: jest.Mock };
 
   const PROJECT_ID = '11111111-1111-1111-1111-111111111111';
   const AGENT_ID = '22222222-2222-2222-2222-222222222222';
@@ -95,6 +97,7 @@ describe('HooksService', () => {
       getBySession: jest.fn().mockReturnValue([]),
       clearBySession: jest.fn().mockReturnValue(0),
     };
+    mockEventEmitter = { emit: jest.fn() };
     mockRuntimeContextCapture = {
       capture: jest.fn().mockReturnValue({
         accepted: true,
@@ -114,6 +117,7 @@ describe('HooksService', () => {
         { provide: EventsService, useValue: mockEvents },
         { provide: PendingAskUserQuestionService, useValue: mockPending },
         { provide: RuntimeContextCaptureService, useValue: mockRuntimeContextCapture },
+        { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
 
@@ -121,6 +125,7 @@ describe('HooksService', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     jest.clearAllMocks();
   });
 
@@ -244,7 +249,7 @@ describe('HooksService', () => {
   });
 
   describe('handleHookEvent — Stop (agentStop)', () => {
-    it('dispatches Stop without publishing (final-metrics deferred to a later phase)', async () => {
+    it('signals a Copilot turn end without publishing a catalog event', async () => {
       const stopPayload: HookEventData = {
         hookEventName: 'Stop',
         stopReason: 'end_turn',
@@ -256,11 +261,75 @@ describe('HooksService', () => {
         agentId: AGENT_ID,
         sessionId: SESSION_ID,
       };
+      jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
 
       const result = await service.handleHookEvent(stopPayload);
 
-      expect(result).toEqual({ ok: true, handled: false, data: {} });
+      expect(result).toEqual({ ok: true, handled: true, data: {} });
       expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith('session.turn.hook', {
+        sessionId: SESSION_ID,
+        providerName: 'copilot',
+        kind: 'stopped',
+        firedAtMs: 1_700_000_000_000,
+      });
+    });
+
+    it('signals a Claude turn end at the relay hook time', async () => {
+      const result = await service.handleHookEvent({
+        hookEventName: 'Stop',
+        claudeSessionId: 'claude-session-1',
+        firedAtMs: 1_700_000_000_123,
+        tmuxSessionName: 'devchain-test-session',
+        projectId: PROJECT_ID,
+        agentId: AGENT_ID,
+        sessionId: SESSION_ID,
+      });
+
+      expect(result).toEqual({ ok: true, handled: true, data: {} });
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith('session.turn.hook', {
+        sessionId: SESSION_ID,
+        providerName: 'claude',
+        kind: 'stopped',
+        firedAtMs: 1_700_000_000_123,
+      });
+    });
+  });
+
+  describe('handleHookEvent — UserPromptSubmit', () => {
+    it('signals a Claude turn start', async () => {
+      const result = await service.handleHookEvent({
+        hookEventName: 'UserPromptSubmit',
+        claudeSessionId: 'claude-session-1',
+        firedAtMs: 1_700_000_000_456,
+        tmuxSessionName: 'devchain-test-session',
+        projectId: PROJECT_ID,
+        agentId: AGENT_ID,
+        sessionId: SESSION_ID,
+      });
+
+      expect(result).toEqual({ ok: true, handled: true, data: {} });
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith('session.turn.hook', {
+        sessionId: SESSION_ID,
+        providerName: 'claude',
+        kind: 'prompt-submitted',
+        firedAtMs: 1_700_000_000_456,
+      });
+    });
+
+    it('ignores a prompt without a DevChain session', async () => {
+      const result = await service.handleHookEvent({
+        hookEventName: 'UserPromptSubmit',
+        claudeSessionId: 'claude-session-1',
+        tmuxSessionName: 'devchain-test-session',
+        projectId: PROJECT_ID,
+        agentId: null,
+        sessionId: null,
+      });
+
+      expect(result).toEqual({ ok: true, handled: false, data: {} });
+      expect(mockEventEmitter.emit).not.toHaveBeenCalled();
     });
   });
 

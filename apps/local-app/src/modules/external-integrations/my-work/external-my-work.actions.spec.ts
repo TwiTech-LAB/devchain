@@ -1,10 +1,11 @@
 import { ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
-import type { ExternalTaskLink } from '../../storage/models/domain.models';
+import type { ExternalTaskLink, IntegrationConnection } from '../../storage/models/domain.models';
 import { LEGACY_UNASSIGNED_PROJECT_ID } from '../../storage/models/domain.models';
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
 import type { ExternalTaskProvider } from '../ports/external-task-provider';
 import { ExternalMyWorkService } from './external-my-work.service';
+import { createMockEpic } from '../../../../test/factories/epic';
 
 describe('ExternalMyWorkService task details and actions', () => {
   const projectId = 'project-1';
@@ -40,12 +41,14 @@ describe('ExternalMyWorkService task details and actions', () => {
     },
     verifyCredentials: jest.fn(),
   };
-  const connection = {
+  const connection: IntegrationConnection = {
     id: 'connection-clickup',
     projectId,
     legacySourceConnectionId: null,
-    provider: 'clickup' as const,
+    provider: 'clickup',
     generation: 4,
+    subtaskSyncEnabled: false,
+    syncSettingRevision: 1,
     createdAt: '2026-08-19T10:00:00.000Z',
     updatedAt: '2026-08-19T11:00:00.000Z',
   };
@@ -148,7 +151,7 @@ describe('ExternalMyWorkService task details and actions', () => {
     };
     getTaskDetail.mockResolvedValue(detail);
     storage.findExternalTaskLink.mockResolvedValue(link);
-    storage.getEpic.mockResolvedValue({ id: 'epic-1', projectId });
+    storage.getEpic.mockResolvedValue(createMockEpic({ id: 'epic-1', projectId }));
 
     await expect(service.getTaskDetail(projectId, 'clickup', 'task-1')).resolves.toEqual({
       ...detail,
@@ -197,6 +200,7 @@ describe('ExternalMyWorkService task details and actions', () => {
     storage.findExternalTaskLink.mockResolvedValue({
       id: 'other-link',
       epicId: 'other-epic',
+      projectId: 'project-2',
       connectionId: 'project-2-clickup-connection',
       provider: 'clickup',
       remoteScopeKey: 'workspace-1',
@@ -218,6 +222,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       {
         id: 'other-link',
         epicId: 'other-epic',
+        projectId: 'project-2',
         connectionId: 'project-2-clickup-connection',
         provider: 'clickup',
         remoteScopeKey: 'workspace-1',
@@ -264,7 +269,7 @@ describe('ExternalMyWorkService task details and actions', () => {
         updatedAt: '2026-08-19T10:00:00.000Z',
       },
     ]);
-    storage.getEpic.mockResolvedValue({ id: 'epic-1', projectId });
+    storage.getEpic.mockResolvedValue(createMockEpic({ id: 'epic-1', projectId }));
 
     await expect(
       service.getTaskLinkStates(projectId, 'clickup', [
@@ -325,7 +330,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       },
     ]);
     storage.getEpic.mockImplementation(async (epicId: string) =>
-      epicId === 'epic-1' ? { id: 'epic-1', projectId } : { id: 'epic-2', projectId },
+      createMockEpic({ id: epicId === 'epic-1' ? 'epic-1' : 'epic-2', projectId }),
     );
     storage.listExternalEstimateLoggedMinutes.mockResolvedValue([
       { projectId, remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1', loggedMinutes: 75 },
@@ -417,7 +422,7 @@ describe('ExternalMyWorkService task details and actions', () => {
       },
     ]);
     storage.getEpic.mockImplementation(async (epicId: string) =>
-      epicId === 'epic-1' ? { id: 'epic-1', projectId } : { id: 'epic-2', projectId },
+      createMockEpic({ id: epicId === 'epic-1' ? 'epic-1' : 'epic-2', projectId }),
     );
     // The project owns its own checkpoint for task-own but nothing for
     // task-legacy; the unassigned legacy row for task-legacy must surface as
@@ -488,7 +493,7 @@ describe('ExternalMyWorkService task details and actions', () => {
   });
 
   it('never lets an orphan checkpoint row establish linkage or leak minutes', async () => {
-    storage.getEpic.mockResolvedValue({ id: 'epic-1', projectId });
+    storage.getEpic.mockResolvedValue(createMockEpic({ id: 'epic-1', projectId }));
     storage.listExternalEstimateLoggedMinutes.mockResolvedValue([
       { projectId, remoteScopeKey: 'workspace-1', remoteTaskId: 'task-1', loggedMinutes: 55 },
     ]);

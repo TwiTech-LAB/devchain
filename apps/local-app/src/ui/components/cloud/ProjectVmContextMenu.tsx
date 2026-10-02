@@ -7,6 +7,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
 } from '../ui/context-menu';
+import { Spinner } from '../ui/spinner';
 import { useSelectedProject } from '../../hooks/useProjectSelection';
 import { useRemotes } from '../../hooks/useRemotes';
 import { projectActionHref } from '@/ui/pages/cloud/project-action-intent';
@@ -35,7 +36,12 @@ export function ProjectVmContextMenu() {
 
   if (!selectedProject) return <ContextMenuItem disabled>Select a project first</ContextMenuItem>;
   if (remotesLoading || bindingsLoading)
-    return <ContextMenuItem disabled>Loading…</ContextMenuItem>;
+    return (
+      <ContextMenuItem disabled>
+        <Spinner className="mr-2 h-3.5 w-3.5" />
+        Loading…
+      </ContextMenuItem>
+    );
 
   const projectId = selectedProject.id;
   const binding = bindingByProjectId.get(projectId);
@@ -58,6 +64,7 @@ export function ProjectVmContextMenu() {
     return (
       <>
         <ContextMenuItem disabled>
+          <Spinner className="mr-2 h-3.5 w-3.5" />
           {binding.state === 'attaching' ? `Connecting to ${vm}…` : `Disconnecting from ${vm}…`}
         </ContextMenuItem>
         <ContextMenuItem asChild>

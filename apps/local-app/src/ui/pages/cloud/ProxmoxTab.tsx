@@ -12,6 +12,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
+import { BusyStatus, Spinner } from '@/ui/components/ui/spinner';
 import {
   vmProviderConnectionQueryKey,
   type VmProviderConnectionView,
@@ -62,9 +63,9 @@ function Rights({
   const checkedAt = check.dataUpdatedAt ? new Date(check.dataUpdatedAt).toLocaleString() : null;
   if (check.isFetching && !check.data) {
     return (
-      <p role="status" className="text-sm text-muted-foreground">
+      <BusyStatus className="text-sm text-muted-foreground">
         Checking the Proxmox rights…
-      </p>
+      </BusyStatus>
     );
   }
   if (check.error) {
@@ -94,6 +95,7 @@ function Rights({
       )}
       {checkedAt && (
         <p className="text-xs text-muted-foreground">
+          {check.isFetching && <Spinner className="mr-1 h-3 w-3" />}
           {check.isFetching ? 'Checking again…' : `Checked ${checkedAt}`}
         </p>
       )}
@@ -151,7 +153,9 @@ export function ProxmoxTab({
   );
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground">Loading Proxmox servers…</p>;
+    return (
+      <BusyStatus className="text-sm text-muted-foreground">Loading Proxmox servers…</BusyStatus>
+    );
   }
 
   const loadError = error && (
@@ -202,7 +206,8 @@ export function ProxmoxTab({
             size="sm"
             variant="ghost"
             className="text-destructive hover:text-destructive"
-            disabled={blocker !== null || (remove.isPending && remove.variables === connection.id)}
+            disabled={blocker !== null}
+            pending={remove.isPending && remove.variables === connection.id}
             onClick={() => setRemoveTarget(connection)}
           >
             Remove
@@ -225,7 +230,7 @@ export function ProxmoxTab({
                   size="sm"
                   variant="outline"
                   onClick={() => void check?.refetch()}
-                  disabled={check?.isFetching}
+                  pending={check?.isFetching}
                 >
                   Check again
                 </Button>

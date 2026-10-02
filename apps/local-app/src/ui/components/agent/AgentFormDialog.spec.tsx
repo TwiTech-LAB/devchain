@@ -51,8 +51,19 @@ function buildProps(overrides?: Partial<AgentFormDialogProps>): AgentFormDialogP
   };
 }
 
+interface ProviderConfigFixture {
+  id: string;
+  profileId: string;
+  providerId: string;
+  name: string;
+  options: string | null;
+  env: Record<string, string> | null;
+  model?: string | null;
+  effort?: string | null;
+}
+
 function setupFetchMock(
-  configs = [
+  configs: ProviderConfigFixture[] = [
     {
       id: 'config-1',
       profileId: 'profile-1',
@@ -179,6 +190,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: 'config-1',
             description: 'A description',
             modelOverride: null,
+            effortOverride: null,
           },
           editAgentId: 'agent-1',
         })}
@@ -202,6 +214,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: 'config-1',
             description: '',
             modelOverride: null,
+            effortOverride: null,
           },
           editAgentId: 'agent-1',
         })}
@@ -229,6 +242,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: 'config-1',
             description: '',
             modelOverride: null,
+            effortOverride: null,
             isProjectOwner: false,
           },
           editAgentId: 'agent-1',
@@ -255,6 +269,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: 'config-1',
             description: '',
             modelOverride: null,
+            effortOverride: null,
             isProjectOwner: true,
           },
           editAgentId: 'agent-1',
@@ -283,6 +298,7 @@ describe('AgentFormDialog', () => {
               providerConfigId: 'config-1',
               description: '',
               modelOverride: null,
+              effortOverride: null,
               isProjectOwner,
             },
             editAgentId: 'agent-1',
@@ -311,6 +327,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: 'config-1',
             description: 'Test desc',
             modelOverride: null,
+            effortOverride: null,
           },
           editAgentId: 'agent-1',
         })}
@@ -336,6 +353,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: 'config-1',
             description: '',
             modelOverride: null,
+            effortOverride: null,
           },
           editAgentId: 'agent-1',
         })}
@@ -367,6 +385,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: '',
             description: '',
             modelOverride: null,
+            effortOverride: null,
           },
           initialProfile: missingProfile,
           editAgentId: 'agent-1',
@@ -431,6 +450,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: 'config-1',
             description: '',
             modelOverride: null,
+            effortOverride: null,
           },
           editAgentId: 'agent-1',
         })}
@@ -605,6 +625,7 @@ describe('AgentFormDialog', () => {
             providerConfigId: 'config-1',
             description: 'Test desc',
             modelOverride: 'anthropic/claude-3-7-sonnet',
+            effortOverride: null,
           },
           editAgentId: 'agent-1',
         })}

@@ -303,7 +303,37 @@ export function createLaunchPipelineHarness() {
 
 // ── Full harness for SessionRestorePipeline ─────────────────────────────
 
-export function createRestorePipelineHarness(opts?: { streamService?: unknown }) {
+function createDefaultStreamServiceMock() {
+  return {
+    scheduleClear: jest.fn(),
+    cancelScheduledClear: jest.fn().mockReturnValue(null),
+    setClearExpiryHandler: jest.fn(),
+    clearBuffer: jest.fn(),
+    getSequenceEpoch: jest.fn(),
+    getBufferStats: jest.fn(),
+    initializeBuffer: jest.fn(),
+  };
+}
+
+interface StoppedSessionRow {
+  id: string;
+  epic_id: string;
+  agent_id: string;
+  tmux_session_id: string | null;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  transcript_path: string | null;
+  provider_session_id: string | null;
+  provider_name_at_launch: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `TStream` is the injected stream service's type; the default is a bag of jest mocks. */
+export function createRestorePipelineHarness<
+  TStream = ReturnType<typeof createDefaultStreamServiceMock>,
+>(opts?: { streamService?: TStream }) {
   const sqliteMock = createSqliteMock();
   const adapter = createMockAdapter();
 
@@ -313,6 +343,7 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
     getEpic: jest.fn().mockResolvedValue(fakeEpic()),
     getAgentProfile: jest.fn().mockResolvedValue(fakeProfile()),
     getProvider: jest.fn().mockResolvedValue(fakeProvider()),
+    getProviderEnvForProject: jest.fn().mockReturnValue(null),
     getInitialSessionPrompt: jest.fn().mockResolvedValue(null),
     listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([fakeProfileProviderConfig()]),
   };
@@ -351,17 +382,22 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
     publish: jest.fn().mockResolvedValue(undefined),
   };
 
+  const preflightService = {
+    runChecks: jest.fn().mockResolvedValue({
+      overall: 'pass',
+      checks: [],
+      providers: [{ id: 'provider-1', mcpStatus: 'pass' }],
+    }),
+  };
+
+  const mcpEnsureService = {
+    ensureMcp: jest.fn().mockResolvedValue(undefined),
+    ensureProjectProvisioning: jest.fn().mockResolvedValue({ success: true, warnings: [] }),
+  };
+
   // Replay-lifecycle owner. Default is a jest.fn() mock (cancelScheduledClear returns null → no
   // rollback re-arm pushed); a test can inject a real TerminalStreamService to exercise the timer.
-  const streamService = opts?.streamService ?? {
-    scheduleClear: jest.fn(),
-    cancelScheduledClear: jest.fn().mockReturnValue(null),
-    setClearExpiryHandler: jest.fn(),
-    clearBuffer: jest.fn(),
-    getSequenceEpoch: jest.fn(),
-    getBufferStats: jest.fn(),
-    initializeBuffer: jest.fn(),
-  };
+  const streamService = (opts?.streamService ?? createDefaultStreamServiceMock()) as TStream;
 
   const providerRuntimePlan = Object.freeze({ mode: 'restore' });
   const preparedProviderRuntime = {
@@ -382,7 +418,7 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
 
   // Default: prepare returns a stopped session row when called with SELECT,
   // and a normal statement for INSERT/UPDATE.
-  const stoppedSessionRow = {
+  const stoppedSessionRow: StoppedSessionRow = {
     id: 'session-1',
     epic_id: 'epic-1',
     agent_id: 'agent-1',
@@ -439,6 +475,8 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
     eventsService, // EventsService
     streamService, // TerminalStreamService
     providerRuntimePreparation, // ProviderRuntimePreparationService
+    preflightService, // PreflightService
+    mcpEnsureService, // ProviderMcpEnsureService
   );
 
   /**
@@ -490,6 +528,8 @@ export function createRestorePipelineHarness(opts?: { streamService?: unknown })
       terminalSessionRegistry,
       eventsService,
       streamService,
+      preflightService,
+      mcpEnsureService,
       providerRuntimePlan,
       preparedProviderRuntime,
       providerRuntimePreparation,

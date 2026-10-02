@@ -33,7 +33,10 @@ describe('useFetchFactory', () => {
   });
 
   it('forwards the request to window.fetch unchanged', async () => {
-    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
+    const fetchMock = jest.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        ({ ok: true, json: async () => ({}) }) as Response,
+    );
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const { result } = renderHook(() => useFetchFactory(), { wrapper: createWrapper() });
@@ -53,7 +56,10 @@ describe('useFetchFactory', () => {
   });
 
   it('routes requests of a remote-bound active project through the /r proxy', async () => {
-    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
+    const fetchMock = jest.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        ({ ok: true, json: async () => ({}) }) as Response,
+    );
     global.fetch = fetchMock as unknown as typeof fetch;
     const bindings = new Map([['p1', 'remote-1']]);
     const value: BackendContextValue = {
@@ -61,6 +67,8 @@ describe('useFetchFactory', () => {
       activeRemote: null,
       bindings,
       ready: true,
+      bindingsError: null,
+      retry: jest.fn(),
       apiFetch: createApiFetch(() => ({ bindings, activeProjectId: 'p1', authority: 'known' })),
       buildApiUrl,
     };
@@ -80,7 +88,10 @@ describe('useFetchFactory', () => {
   });
 
   it('useHomeFetch keeps project-routed paths on home even under a remote backend context', async () => {
-    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
+    const fetchMock = jest.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        ({ ok: true, json: async () => ({}) }) as Response,
+    );
     global.fetch = fetchMock as unknown as typeof fetch;
     const bindings = new Map([['p1', 'remote-1']]);
     const value: BackendContextValue = {
@@ -88,6 +99,8 @@ describe('useFetchFactory', () => {
       activeRemote: null,
       bindings,
       ready: true,
+      bindingsError: null,
+      retry: jest.fn(),
       apiFetch: createApiFetch(() => ({ bindings, activeProjectId: 'p1', authority: 'known' })),
       buildApiUrl,
     };

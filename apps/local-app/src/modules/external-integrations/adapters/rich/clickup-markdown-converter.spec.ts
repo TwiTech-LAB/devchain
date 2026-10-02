@@ -126,7 +126,9 @@ describe('ClickUp markdown converter', () => {
       const result = markdownToRichDocument('[docs](https://example.com/docs?a=1#frag)');
       expect(result.supported).toBe(true);
       if (result.supported) {
-        expect(result.document.blocks[0]!.content).toEqual([
+        const block = result.document.blocks[0];
+        if (block?.type !== 'paragraph') throw new Error('expected a paragraph block');
+        expect(block.content).toEqual([
           text('docs', [{ type: 'link', href: 'https://example.com/docs?a=1#frag' }]),
         ]);
       }

@@ -186,7 +186,8 @@ describe('the host API key boundary between home and a claimed host', () => {
   });
 
   it('refuses keyless and wrong-key HTTP calls from the non-loopback peer', async () => {
-    for (const headers of [{}, { authorization: `Bearer ${WRONG_KEY}` }] as const) {
+    const attempts: Record<string, string>[] = [{}, { authorization: `Bearer ${WRONG_KEY}` }];
+    for (const headers of attempts) {
       const response = await fetchHost(`${instances.host.url}/health`, headers);
       expect(response.status).toBe(401);
       expect(response.body).toContain('HOST_API_KEY_REJECTED');

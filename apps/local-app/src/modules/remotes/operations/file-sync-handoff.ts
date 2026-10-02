@@ -52,6 +52,13 @@ type Side = 'home' | 'host';
 /** Handoffs keep code two-way while the remote alone owns git metadata. */
 @Injectable()
 export class FileSyncHandoff {
+  /**
+   * One controller per running Connect, so a cancel ends its pairing wait,
+   * home rescan and completion wait. A controller leaves the map only while it
+   * is still the current one, so a superseded run cannot drop a newer one.
+   */
+  private readonly active = new Map<string, AbortController>();
+
   constructor(
     private readonly fileSync: FileSyncService,
     private readonly host: RemoteHostClient,
@@ -59,36 +66,47 @@ export class FileSyncHandoff {
     private readonly guard: HomeGitGuardService,
   ) {}
 
+  /** Cancel: ends a running Connect's initial sync with a short, plain reason. */
+  interrupt(operationId: string): void {
+    this.active.get(operationId)?.abort(new Error('The Connect was cancelled.'));
+  }
+
   /**
    * Connect: shares every project folder from home to the remote and waits
    * until the remote holds exactly home's files. Receiver files home does not
    * have are reverted, since home is the owner.
    */
   async initial(run: RemoteOperationStepRun, projectId: string): Promise<void> {
-    const { remoteId } = run.operation;
-    const ignores = this.syncIgnores(projectId);
-    const devices = await this.pair(remoteId);
-    const folders = await this.fileSync.initialFolders(projectId);
-    for (const folder of folders) {
-      const request = {
-        projectId,
-        kind: folder.kind,
-        ignores: folder.kind === 'code' ? ignores : gitIgnores(false),
-        paused: true,
-      };
-      await this.fileSync.ensureFolder({
-        ...request,
-        type: 'sendonly',
-        peerDeviceId: devices.host,
-      });
-      await this.host.syncFolders(remoteId, {
-        ...request,
-        type: 'receiveonly',
-        peerDeviceId: devices.home,
-      });
+    const controller = new AbortController();
+    this.active.set(run.operation.id, controller);
+    try {
+      const { remoteId } = run.operation;
+      const ignores = this.syncIgnores(projectId);
+      const devices = await this.pair(remoteId, controller.signal);
+      const folders = await this.fileSync.initialFolders(projectId);
+      for (const folder of folders) {
+        const request = {
+          projectId,
+          kind: folder.kind,
+          ignores: folder.kind === 'code' ? ignores : gitIgnores(false),
+          paused: true,
+        };
+        await this.fileSync.ensureFolder({
+          ...request,
+          type: 'sendonly',
+          peerDeviceId: devices.host,
+        });
+        await this.host.syncFolders(remoteId, {
+          ...request,
+          type: 'receiveonly',
+          peerDeviceId: devices.home,
+        });
+      }
+      await this.unpauseAll(remoteId, folders);
+      await this.waitAll(run, folders, { sender: 'home', devices, signal: controller.signal });
+    } finally {
+      if (this.active.get(run.operation.id) === controller) this.active.delete(run.operation.id);
     }
-    await this.unpauseAll(remoteId, folders);
-    await this.waitAll(run, folders, { sender: 'home', devices });
   }
 
   /** Connect's preflight: home's Syncthing must run before Connect changes anything. */
@@ -234,13 +252,17 @@ export class FileSyncHandoff {
   }
 
   /** Makes each side trust the other and waits until they are connected. */
-  private async pair(remoteId: string): Promise<{ home: string; host: string }> {
+  private async pair(
+    remoteId: string,
+    signal?: AbortSignal,
+  ): Promise<{ home: string; host: string }> {
     const home = this.fileSync.device();
     const host = await this.host.syncDevice(remoteId);
     await this.fileSync.addPeer(host);
     await this.host.syncPeer(remoteId, home);
     const deadline = Date.now() + CONNECT_TIMEOUT_MS;
     while (!(await this.fileSync.isConnected(host.deviceId))) {
+      signal?.throwIfAborted();
       if (Date.now() >= deadline) throw new FileSyncNotConnectedError(host.address);
       await sleep(POLL_MS);
     }
@@ -258,7 +280,12 @@ export class FileSyncHandoff {
   private async waitAll(
     run: RemoteOperationStepRun,
     folders: ProjectFolder[],
-    options: { sender: Side; devices: { home: string; host: string }; symmetricCode?: boolean },
+    options: {
+      sender: Side;
+      devices: { home: string; host: string };
+      symmetricCode?: boolean;
+      signal?: AbortSignal;
+    },
   ): Promise<void> {
     const { remoteId } = run.operation;
     const receiver: Side = options.sender === 'home' ? 'host' : 'home';
@@ -273,7 +300,7 @@ export class FileSyncHandoff {
       folders.map(async (folder) => {
         const symmetric = options.symmetricCode === true && folder.kind === 'code';
         await Promise.all([
-          this.scan(options.sender, remoteId, folder.id),
+          this.scan(options.sender, remoteId, folder.id, options.signal),
           ...(symmetric ? [this.scan(receiver, remoteId, folder.id)] : []),
         ]);
         progress[folder.id] = await this.fileSync.waitForComplete(folder.id, {
@@ -296,6 +323,7 @@ export class FileSyncHandoff {
             progress[folder.id] = current;
             void report();
           },
+          signal: options.signal,
         });
       }),
     );
@@ -332,9 +360,15 @@ export class FileSyncHandoff {
       : this.host.syncStatus(remoteId, folderId, peerDeviceId);
   }
 
-  private scan(side: Side, remoteId: string, folderId: string): Promise<void> {
+  /** Only the home scan takes a cancel signal; the host side scans through the host routes. */
+  private scan(
+    side: Side,
+    remoteId: string,
+    folderId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     return side === 'home'
-      ? this.fileSync.rescan(folderId)
+      ? this.fileSync.rescan(folderId, signal)
       : this.host.syncScan(remoteId, folderId);
   }
 

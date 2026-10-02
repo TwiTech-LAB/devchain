@@ -223,12 +223,12 @@ describe('UI and Swagger serving (E2E)', () => {
   });
 });
 
-describe.each(['normal', 'main'] as const)('%s root runtime route composition', (mode) => {
+describe.each(['normal', 'main'] as const)('%s root runtime route composition', (_mode) => {
   let app: NestFastifyApplication;
   let fixture: AppBootstrapFixture;
 
   beforeAll(async () => {
-    fixture = await compileAppBootstrapFixture(mode);
+    fixture = await compileAppBootstrapFixture();
     app = fixture.moduleRef.createNestApplication<NestFastifyApplication>(createFastifyAdapter(), {
       logger: false,
     });

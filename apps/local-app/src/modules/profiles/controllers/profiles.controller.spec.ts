@@ -27,6 +27,7 @@ describe('ProfilesController', () => {
     // Provider config methods
     createProfileProviderConfig: jest.Mock;
     listProfileProviderConfigsByProfile: jest.Mock;
+    updateProfileProviderConfig: jest.Mock;
     reorderProfileProviderConfigs: jest.Mock;
     // Agent methods
     listAgents: jest.Mock;
@@ -63,6 +64,7 @@ describe('ProfilesController', () => {
   const baseAgent: Agent = {
     id: 'agent-1',
     projectId: 'project-1',
+    isProjectOwner: false,
     profileId: 'profile-1',
     providerConfigId: 'config-1',
     name: 'Test Agent',
@@ -227,6 +229,11 @@ describe('ProfilesController', () => {
     const detailed: AgentProfileWithPrompts = {
       ...baseProfile,
       projectId: baseProfile.projectId ?? null,
+      familySlug: baseProfile.familySlug ?? null,
+      systemPrompt: baseProfile.systemPrompt ?? null,
+      instructions: baseProfile.instructions ?? null,
+      temperature: baseProfile.temperature ?? null,
+      maxTokens: baseProfile.maxTokens ?? null,
       prompts: [
         { promptId: 'p1', title: 'T1', order: 1 },
         { promptId: 'p2', title: 'T2', order: 2 },

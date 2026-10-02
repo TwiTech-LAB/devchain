@@ -2,7 +2,11 @@ import * as fs from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { SessionReaderService } from '../services/session-reader.service';
+import {
+  SessionReaderService,
+  type TranscriptTailDeltaResponse,
+  type TranscriptTailResponse,
+} from '../services/session-reader.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { SessionCacheService } from '../services/session-cache.service';
 import { OpenCodeSessionReaderAdapter } from '../adapters/opencode-session-reader.adapter';
@@ -142,6 +146,13 @@ function seedSessionB(): SeedSession {
   };
 }
 
+function expectDelta(tail: TranscriptTailResponse | null): TranscriptTailDeltaResponse {
+  if (tail?.kind !== 'delta') {
+    throw new Error(`expected a delta tail response, got ${tail?.kind ?? 'null'}`);
+  }
+  return tail;
+}
+
 describe('OpenCode DB pipeline integration (seeded fixture DB)', () => {
   let tmpDir: string;
   let dbPath: string;
@@ -248,12 +259,12 @@ describe('OpenCode DB pipeline integration (seeded fixture DB)', () => {
     });
 
     const tail = await svc.getTranscriptTail('dc-a', summary.cursor);
-    expect(tail).not.toBeNull();
-    expect(tail?.totalMessageCount).toBe(2); // no NEW message
-    expect(tail?.deltaMessages).toEqual([]);
-    expect(tail?.deltaChunks.length).toBeGreaterThan(0); // in-place last-chunk replacement
-    expect(tail?.replaceFromChunkId).not.toBeNull();
-    expect(tail?.cursor).not.toBe(summary.cursor);
+    const delta = expectDelta(tail);
+    expect(delta.totalMessageCount).toBe(2); // no NEW message
+    expect(delta.deltaMessages).toEqual([]);
+    expect(delta.deltaChunks.length).toBeGreaterThan(0); // in-place last-chunk replacement
+    expect(delta.replaceFromChunkId).not.toBeNull();
+    expect(delta.cursor).not.toBe(summary.cursor);
 
     const after = await svc.getTranscript('dc-a');
     expect(
@@ -298,10 +309,10 @@ describe('OpenCode DB pipeline integration (seeded fixture DB)', () => {
     });
 
     const tail = await svc.getTranscriptTail('dc-a', summary.cursor);
-    expect(tail).not.toBeNull();
-    expect(tail?.totalMessageCount).toBe(2);
-    expect(tail?.deltaChunks.length).toBeGreaterThan(0);
-    expect(tail?.replaceFromChunkId).not.toBeNull();
+    const delta = expectDelta(tail);
+    expect(delta.totalMessageCount).toBe(2);
+    expect(delta.deltaChunks.length).toBeGreaterThan(0);
+    expect(delta.replaceFromChunkId).not.toBeNull();
 
     const after = await svc.getTranscript('dc-a');
     expect(

@@ -14,12 +14,14 @@ import {
   DOCKER_API_VERSION_HEADER,
   DOCKER_ARCHIVE_SHA256_TRAILER,
   DockerArchiveWriteResultSchema,
+  DockerImageLoadResultSchema,
   type DockerArchiveRequest,
   type DockerArchiveWriteResult,
   type DockerBindPrepare,
   type DockerCapacityResult,
   type DockerContainerCreate,
   type DockerHostOptions,
+  type DockerImageLoadResult,
   type DockerNetworkCreate,
   type DockerScanResult,
   type DockerVolumeCreate,
@@ -359,12 +361,15 @@ export class RemoteHostClient {
       options,
     );
   }
+  /** Resolves with the ID and RootFS layers of each image the VM engine loaded. */
   async dockerLoadImage(
     remoteId: string,
     body: Readable,
     options: DockerHostOptions = {},
-  ): Promise<void> {
-    await this.dockerUpload(remoteId, '/api/host/docker/images/load', 'POST', body, options);
+  ): Promise<DockerImageLoadResult> {
+    const path = '/api/host/docker/images/load';
+    const answer = await this.dockerUpload(remoteId, path, 'POST', body, options);
+    return parseDockerAnswer(DockerImageLoadResultSchema, answer, remoteId, path);
   }
   /** Resolves with the digest of the bytes the VM received. */
   async dockerWriteArchive(
@@ -380,23 +385,12 @@ export class RemoteHostClient {
       body,
       options,
     );
-    const parsed = DockerArchiveWriteResultSchema.safeParse(
-      (() => {
-        try {
-          return JSON.parse(answer);
-        } catch {
-          return null;
-        }
-      })(),
+    return parseDockerAnswer(
+      DockerArchiveWriteResultSchema,
+      answer,
+      remoteId,
+      '/api/host/docker/archive',
     );
-    if (!parsed.success)
-      throw new RemoteHostRequestError('Docker host request failed', {
-        remoteId,
-        path: '/api/host/docker/archive',
-        status: null,
-        hostCode: 'invalid-response',
-      });
-    return parsed.data;
   }
   async dockerPrepareBinds(
     remoteId: string,
@@ -1219,6 +1213,30 @@ export class RemoteHostClient {
 /** Releases the pooled connection; an unread body holds it until garbage collection. */
 async function discardBody(response: Response): Promise<void> {
   await response.body?.cancel().catch(() => undefined);
+}
+
+/** A Docker upload's JSON answer, checked by `schema`; anything else is an invalid host response. */
+function parseDockerAnswer<T>(
+  schema: z.ZodType<T>,
+  answer: string,
+  remoteId: string,
+  path: string,
+): T {
+  let value: unknown = null;
+  try {
+    value = JSON.parse(answer);
+  } catch {
+    // Not JSON: the schema refuses the null below.
+  }
+  const parsed = schema.safeParse(value);
+  if (!parsed.success)
+    throw new RemoteHostRequestError('Docker host request failed', {
+      remoteId,
+      path,
+      status: null,
+      hostCode: 'invalid-response',
+    });
+  return parsed.data;
 }
 
 async function parseBody<T>(

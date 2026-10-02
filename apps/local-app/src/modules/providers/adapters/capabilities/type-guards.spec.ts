@@ -19,8 +19,11 @@ describe('type-guards', () => {
   const claude: ProviderAdapter = new ClaudeAdapter();
   const codex: ProviderAdapter = new CodexAdapter();
   const opencode: ProviderAdapter = new OpencodeAdapter();
-  const antigravity: ProviderAdapter = new AntigravityAdapter();
-  const copilot: ProviderAdapter = new CopilotAdapter();
+  const antigravity: ProviderAdapter = new AntigravityAdapter({ ensure: jest.fn() } as never);
+  const copilot: ProviderAdapter = new CopilotAdapter(
+    { ensure: jest.fn() } as never,
+    { isAuthenticated: jest.fn() } as never,
+  );
 
   describe('isGlobalMcpConfigCapable', () => {
     it('returns true for Antigravity (agy — HOME-global mcp_config.json)', () => {

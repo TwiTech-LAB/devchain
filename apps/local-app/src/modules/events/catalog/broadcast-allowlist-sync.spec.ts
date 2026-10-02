@@ -22,7 +22,10 @@ const SAMPLE = {
   reviewId: 'rev-1',
 };
 
-function resolve(entry: BroadcastTopicEntry): { topic: string; eventType: string } {
+function resolve(entry: BroadcastTopicEntry<Record<string, unknown>>): {
+  topic: string;
+  eventType: string;
+} {
   const topic = typeof entry.topic === 'function' ? entry.topic(SAMPLE) : entry.topic;
   const eventType = typeof entry.type === 'function' ? entry.type(SAMPLE) : entry.type;
   return { topic, eventType };

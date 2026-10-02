@@ -13,27 +13,27 @@ const skipReason =
 
 test.describe.skip('Chat inline terminal smoke', () => {
   test('opens context menu and toggles inline terminal', async () => {
-    test.skip(skipReason);
+    test.skip(true, skipReason);
   });
 
   test('launches inline terminal from DM CTA', async () => {
-    test.skip(skipReason);
+    test.skip(true, skipReason);
   });
 
   test('launches selected agents from group CTA', async () => {
-    test.skip(skipReason);
+    test.skip(true, skipReason);
   });
 
   test('preserves composer state while toggling inline terminal', async () => {
-    test.skip(skipReason);
+    test.skip(true, skipReason);
   });
 
   test('respects theme tokens inside inline terminal', async () => {
-    test.skip(skipReason);
+    test.skip(true, skipReason);
   });
 
   test('handles session crash and relaunch prompt', async () => {
-    test.skip(skipReason);
+    test.skip(true, skipReason);
   });
 });
 

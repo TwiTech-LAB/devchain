@@ -86,12 +86,15 @@ describe('useBoardSync', () => {
     );
 
     const firstCall = useAppSocketMock.mock.calls[0];
+    if (!firstCall) throw new Error('useAppSocket was not called on first render');
     const firstHandlers = firstCall[0];
     const firstDeps = firstCall[1];
     rerender({ revision: 1 });
     const secondCall = useAppSocketMock.mock.calls[1];
+    if (!secondCall) throw new Error('useAppSocket was not called on second render');
     const secondHandlers = secondCall[0];
     const secondDeps = secondCall[1];
+    if (!firstDeps || !secondDeps) throw new Error('useAppSocket was called without a deps array');
 
     expect(secondHandlers.message).toBe(firstHandlers.message);
     expect(secondHandlers.connect).toBe(firstHandlers.connect);

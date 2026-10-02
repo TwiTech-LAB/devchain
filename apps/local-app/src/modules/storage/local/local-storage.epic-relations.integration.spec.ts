@@ -66,6 +66,8 @@ describe('LocalStorageService Epic relations', () => {
       profileId: profile.id,
       providerId: provider.id,
       name: `config-${name}`,
+      options: null,
+      env: null,
     });
     return service.createAgent({
       projectId,

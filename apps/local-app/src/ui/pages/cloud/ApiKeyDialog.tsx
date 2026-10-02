@@ -104,7 +104,7 @@ export function ApiKeyDialog({
             <Button type="button" variant="outline" disabled={pending} onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={!canSubmit}>
+            <Button type="submit" disabled={!canSubmit} pending={pending}>
               {submitLabel}
             </Button>
           </DialogFooter>

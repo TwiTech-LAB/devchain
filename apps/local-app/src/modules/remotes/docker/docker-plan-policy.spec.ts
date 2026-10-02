@@ -113,7 +113,12 @@ it('reports unowned conflicts and unrelated volume holders without offering repl
   const t = target();
   t.volumes = [{ name: 'db', driver: 'local', labels: {} }];
   t.containers = [
-    { id: 'other', name: 'web', labels: {}, mounts: [{ type: 'volume', name: 'db' }] },
+    {
+      id: 'other',
+      name: 'web',
+      labels: {},
+      mounts: [{ type: 'volume', name: 'db', destination: '/data' }],
+    },
   ];
   apply(a, t);
   expect(a.targetAction).toBe('conflict');
@@ -136,7 +141,7 @@ it('replaces owned Compose holders but leaves imported stateless Compose contain
   const a = item();
   apply(a, t);
   expect(a.targetAction).toBe('leave-as-is');
-  t.containers[0].mounts = [{ type: 'volume', name: 'db' }];
+  t.containers[0].mounts = [{ type: 'volume', name: 'db', destination: '/data' }];
   const b = item();
   apply(b, t);
   expect(b.targetAction).toBe('replace');

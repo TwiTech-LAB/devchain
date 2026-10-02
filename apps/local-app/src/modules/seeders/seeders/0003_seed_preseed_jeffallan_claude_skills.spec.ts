@@ -50,6 +50,7 @@ describe('0003_seed_preseed_jeffallan_claude_skills', () => {
 
     return {
       storage,
+      providerEffortSeeding: {} as SeederContext['providerEffortSeeding'],
       watchersService: {} as WatchersService,
       db: {} as BetterSQLite3Database,
       logger: {

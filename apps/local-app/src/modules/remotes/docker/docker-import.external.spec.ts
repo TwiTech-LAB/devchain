@@ -441,8 +441,9 @@ suite('Docker import across two real engines', () => {
       if (throttled.imageLoad !== undefined) return load(remoteId, body, options);
       const started = Date.now();
       throttled.imageLoad = 0;
-      await load(remoteId, paced(body, window, imageBytes), options);
+      const loaded = await load(remoteId, paced(body, window, imageBytes), options);
       throttled.imageLoad = (Date.now() - started) / 1000;
+      return loaded;
     });
     jest
       .spyOn(client, 'dockerWriteArchive')

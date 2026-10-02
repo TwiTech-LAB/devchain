@@ -73,7 +73,15 @@ export class ClaudeAdapter
     ProviderPluginCapability
 {
   readonly providerName = 'claude';
-  readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
+  // DevChain runs Claude as a line-streaming provider (alt-screen stripped, LF
+  // normalized), so every launch forces the classic renderer. Claude checks this
+  // env before the `tui` setting, CLAUDE_CODE_NO_FLICKER=1, and its fresh-install
+  // and server-flag fullscreen defaults. It also covers launches that get no
+  // DevChain `--settings` file (e.g. configs with ANTHROPIC_BASE_URL).
+  readonly launchEnv = {
+    ...getProviderCliNoUpdateOptions(this.providerName).env,
+    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',
+  };
 
   // Claude's workspace trust lives in ~/.claude.json
   // (projects[path].hasTrustDialogAccepted), separate from

@@ -28,6 +28,8 @@ const mockComment: ReviewComment = {
   status: 'open',
   authorType: 'user',
   authorAgentId: null,
+  authorAgentName: null,
+  targetAgents: [],
   version: 1,
   editedAt: null,
   createdAt: new Date().toISOString(),

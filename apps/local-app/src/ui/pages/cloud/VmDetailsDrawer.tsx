@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent, type ReactNode } from 'react';
-import { Loader2, Lock, LockOpen, Pencil, X } from 'lucide-react';
+import { Lock, LockOpen, Pencil, X } from 'lucide-react';
 import { PROVIDER_CLI_NAMES } from '@devchain/shared';
 import { REMOTE_NAME_MAX_LENGTH, type RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
 import { RemoteMetricsStrip } from '@/ui/components/remote-metrics/RemoteMetricsStrip';
@@ -15,6 +15,7 @@ import {
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
+import { Spinner } from '@/ui/components/ui/spinner';
 import type { ProviderAuthEntryItem } from '@/ui/hooks/useProviderAuth';
 import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
@@ -120,7 +121,7 @@ function EditableName({
           }}
           className="min-w-[12rem] flex-1"
         />
-        <Button type="submit" size="sm" disabled={!canSave}>
+        <Button type="submit" size="sm" disabled={!canSave} pending={saving}>
           {saving ? 'Saving…' : 'Save'}
         </Button>
         <Button
@@ -207,7 +208,7 @@ function ProviderCliFacts({ remote }: { remote: RemoteListItemDto }) {
             )}
             {install?.state === 'installing' && (
               <span className="flex items-center gap-1 text-muted-foreground">
-                <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> Installing
+                <Spinner className="h-3 w-3" /> Installing
               </span>
             )}
             {install?.state === 'failed' && (
@@ -431,7 +432,7 @@ export function VmDetailsDrawer({
               <Button
                 size="sm"
                 variant={status.tone === 'error' ? 'destructive' : 'default'}
-                disabled={action.kind === 'power-on' && powerOnPending}
+                pending={action.kind === 'power-on' && powerOnPending}
                 onClick={() => onAction(action)}
               >
                 {action.kind === 'power-on' && powerOnPending ? 'Starting…' : action.label}

@@ -126,7 +126,12 @@ describe('TemplatePipeline execution', () => {
         ctx.set('promptIdMap', { p: '2' });
       },
     });
-    const createOnly = fakeCodec('c', { modes: ['create'], apply: () => order.push('c') });
+    const createOnly = fakeCodec('c', {
+      modes: ['create'],
+      apply: () => {
+        order.push('c');
+      },
+    });
     const pipeline = new TemplatePipeline([a, b, createOnly]);
 
     const ctx = new ImportContext();
@@ -146,8 +151,16 @@ describe('TemplatePipeline execution', () => {
 
   it('skips codecs not in the requested set', async () => {
     const order: string[] = [];
-    const a = fakeCodec('a', { apply: () => order.push('a') });
-    const b = fakeCodec('b', { apply: () => order.push('b') });
+    const a = fakeCodec('a', {
+      apply: () => {
+        order.push('a');
+      },
+    });
+    const b = fakeCodec('b', {
+      apply: () => {
+        order.push('b');
+      },
+    });
     const pipeline = new TemplatePipeline([a, b]);
 
     await pipeline.applySections(['b'], EMPTY_PAYLOAD, new ImportContext(), 'replace', RT);

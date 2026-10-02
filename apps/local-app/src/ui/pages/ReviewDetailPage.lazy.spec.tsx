@@ -20,18 +20,21 @@ global.ResizeObserver = class ResizeObserver {
 
 // Mock IntersectionObserver for LazyHunk component
 global.IntersectionObserver = class IntersectionObserver {
+  readonly root: Element | Document | null = null;
+  readonly rootMargin = '0px';
+  readonly thresholds: ReadonlyArray<number> = [0];
   callback: IntersectionObserverCallback;
   constructor(callback: IntersectionObserverCallback) {
     this.callback = callback;
   }
   observe(target: Element) {
-    this.callback(
-      [{ isIntersecting: true, target } as IntersectionObserverEntry],
-      this as unknown as IntersectionObserver,
-    );
+    this.callback([{ isIntersecting: true, target } as IntersectionObserverEntry], this);
   }
   unobserve() {}
   disconnect() {}
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
 };
 
 import { ReviewDetailPageSkeleton, preloadReviewDetailPage } from './ReviewDetailPage.lazy';

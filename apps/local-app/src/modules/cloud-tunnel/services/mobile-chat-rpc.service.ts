@@ -29,6 +29,14 @@ import type { NormalizedAskUserQuestion } from '../../events/catalog/claude.hook
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
 import { LifecycleOperationTracker, type LifecycleOperation } from './lifecycle-operation-tracker';
 import type { RpcCryptoContext } from './tunnel-rpc-crypto.service';
+import { projectMobileChunksPage, projectMobileTail } from './mobile-transcript-projection';
+
+/**
+ * The phone's transcript page size (`DEFAULT_CHUNK_PAGE_LIMIT` in the mobile app's
+ * `useTranscript.ts`). A tail delta that spans more chunks would leave a gap in the phone's
+ * window, so the phone gets the expired-cursor answer and loads the latest page instead.
+ */
+export const MOBILE_TAIL_MAX_DELTA_CHUNKS = 20;
 
 /** Per-agent item returned by `chat.listAgents` (serialized over the tunnel). */
 export interface MobileChatAgent {
@@ -485,18 +493,25 @@ export class MobileChatRpcService {
     const limit = params['limit'] as number | undefined;
     const direction = (params['direction'] as 'forward' | 'backward' | undefined) ?? 'backward';
 
-    return this.sessionReader.getUnifiedTranscriptChunks(sessionId, cursor, limit, direction);
+    return projectMobileChunksPage(
+      await this.sessionReader.getUnifiedTranscriptChunks(sessionId, cursor, limit, direction),
+    );
   }
 
   /**
    * `chat.getTranscriptTail({ sessionId, projectId, since })` — delta recovery
-   * for cursor-tail polling. Returns null when the cursor is expired (client
-   * should re-bootstrap via the summary). Ownership-checked first.
+   * for cursor-tail polling. Returns null when the cursor is expired or the delta
+   * spans more than one phone page (client should re-bootstrap via the summary).
+   * Ownership-checked first.
    */
   async getTranscriptTail(params: Record<string, unknown>): Promise<TranscriptTailResponse | null> {
     const sessionId = params['sessionId'] as string;
     await this.assertSessionInProject(sessionId, params['projectId'] as string);
-    return this.sessionReader.getTranscriptTail(sessionId, params['since'] as string);
+    const tail = await this.sessionReader.getTranscriptTail(sessionId, params['since'] as string);
+    if (tail?.kind === 'delta' && tail.deltaChunks.length > MOBILE_TAIL_MAX_DELTA_CHUNKS) {
+      return null;
+    }
+    return projectMobileTail(tail);
   }
 
   async listCustomPrompts(params: Record<string, unknown>): Promise<MobileCustomPromptSummary[]> {

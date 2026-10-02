@@ -127,14 +127,15 @@ export function ChangeLoginsDialog({
         />
         {blocked && (
           <p role="alert" className="text-sm text-destructive" data-testid="family-block">
-            {count} agent {sessionsAre} running on this VM. Stop them first; a running session
-            overwrites the new login on its next refresh.
+            {count} agent {sessionsAre} running on this VM. Stop them first. On its next token
+            refresh, a running session writes its old login over the new one, so new sessions and
+            the stored login get the old account.
           </p>
         )}
         {!blocked && changed.length > 0 && sessionsRun && (
           <p role="status" className="text-sm text-status-warn" data-testid="env-warning">
-            {count} agent {sessionsAre} running on this VM. Restart running agent sessions so they
-            use the new logins.
+            {count} agent {sessionsAre} running on this VM. New logins apply to new sessions only.
+            Running sessions keep their current login until you restart them.
           </p>
         )}
         {overrideWarnings.map((warning) => (
@@ -155,7 +156,8 @@ export function ChangeLoginsDialog({
           </Button>
           <Button
             onClick={() => onChangeLogins(providerAuth, blocked)}
-            disabled={pending || changed.length === 0}
+            disabled={changed.length === 0}
+            pending={pending}
             variant={blocked ? 'destructive' : 'default'}
             data-testid="change-logins-submit"
           >

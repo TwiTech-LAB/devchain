@@ -100,23 +100,39 @@ it('refuses an empty API interval', async () => {
   expect(client.apiVersion).toBeUndefined();
 });
 it.each([404, 409, 500])(
-  'cleans HTTP %s errors without retaining Env or engine body',
+  'keeps the engine reason of an HTTP %s answer and masks the request Env values',
   async (status) => {
     handler = (_req, res) => {
       res.statusCode = status;
-      res.end('{"message":"Env SECRET=value request body"}');
+      res.end('{"message":"invalid environment variable: SECRET=hunter22\\nPORT=80"}');
     };
-    try {
-      await client.json('POST', '/containers/create', { Env: ['SECRET=value'] });
-      throw new Error('expected failure');
-    } catch (error) {
-      expect(error).toBeInstanceOf(DockerEngineError);
-      expect(JSON.stringify(error)).not.toMatch(/SECRET|Env|value|request body/);
-      expect(String(error)).not.toMatch(/SECRET|Env|value|request body/);
-      expect((error as DockerEngineError).status).toBe(status);
-    }
+    const failure = client.json('POST', '/containers/create', {
+      Env: ['SECRET=hunter22', 'PORT=80'],
+    });
+    await expect(failure).rejects.toBeInstanceOf(DockerEngineError);
+    await expect(failure).rejects.toMatchObject({
+      status,
+      message: `Docker engine request failed (HTTP ${status}): invalid environment variable: SECRET=*** PORT=80`,
+    });
   },
 );
+it('keeps a plain-text engine reason, bounded, and the bare status when there is none', async () => {
+  handler = (_req, res) => {
+    res.statusCode = 500;
+    res.end(`engine says no ${'x'.repeat(5000)}`);
+  };
+  const error = (await client.json('GET', '/info').catch((e: unknown) => e)) as DockerEngineError;
+  expect(error.message).toMatch(/^Docker engine request failed \(HTTP 500\): engine says no x+$/);
+  expect(error.message.length).toBeLessThan(1100);
+  handler = (_req, res) => {
+    res.statusCode = 502;
+    res.end();
+  };
+  await expect(client.json('GET', '/info')).rejects.toMatchObject({
+    code: 'engine-error',
+    message: 'Docker engine request failed (HTTP 502)',
+  });
+});
 it('cancels before headers and during a response body', async () => {
   let received!: () => void;
   handler = (_req, _res) => received();
@@ -437,6 +453,19 @@ it('keeps a complete 2xx answer when the engine closes before the upload ends', 
   await expect(writeDockerArchive(client, 'helper', upload())).rejects.toMatchObject({
     code: 'engine-error',
     status: 500,
+  });
+
+  // The closed upload must not hide the reason the engine gave.
+  handler = (req, res) => {
+    req.once('data', () => {
+      res.writeHead(500, { Connection: 'close', 'Content-Type': 'application/json' });
+      res.end('{"message":"RemoveAll data: device or resource busy"}');
+      res.once('finish', () => req.socket.destroy());
+    });
+  };
+  await expect(writeDockerArchive(client, 'helper', upload())).rejects.toMatchObject({
+    code: 'engine-error',
+    message: 'Docker engine request failed (HTTP 500): RemoveAll data: device or resource busy',
   });
 });
 

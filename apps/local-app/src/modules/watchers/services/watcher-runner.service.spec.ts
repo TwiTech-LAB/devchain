@@ -15,6 +15,7 @@ describe('WatcherRunnerService', () => {
     listAgents: jest.Mock;
     getAgentProfile: jest.Mock;
     getProfileProviderConfig: jest.Mock;
+    listProfileProviderConfigsByProfile: jest.Mock;
     getAgent: jest.Mock;
   };
   let mockSessionsService: {

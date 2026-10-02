@@ -74,17 +74,24 @@ export class SyncthingRestClient {
     path: string,
     body?: unknown,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => timeoutController.abort(), timeoutMs);
     timeout.unref?.();
+    // The joined signal ends the call when either source fires and carries the
+    // reason of the first one, so a cancel surfaces as its own reason instead
+    // of a timeout or an unreachable report.
+    const requestSignal = signal
+      ? AbortSignal.any([timeoutController.signal, signal])
+      : timeoutController.signal;
     const route = path.split('?')[0];
     let response: Response;
     let text: string;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
         method,
-        signal: controller.signal,
+        signal: requestSignal,
         headers: {
           'X-API-Key': this.apiKey,
           ...(body !== undefined && { 'content-type': 'application/json' }),
@@ -93,6 +100,7 @@ export class SyncthingRestClient {
       });
       text = await response.text();
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
       throw new SyncthingRestError(
         `Syncthing is unreachable (${method} ${route}): ${error instanceof Error ? error.message : String(error)}`,
         { path: route, status: null },

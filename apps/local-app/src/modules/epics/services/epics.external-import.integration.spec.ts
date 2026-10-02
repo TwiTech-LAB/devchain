@@ -61,6 +61,7 @@ describe('EpicsService external task import', () => {
       name: 'External import project',
       description: null,
       rootPath: '/tmp/external-import-project',
+      isTemplate: false,
     });
     projectId = project.id;
     workspaceId = project.workspaceId;
@@ -330,6 +331,7 @@ describe('EpicsService external task import', () => {
       name: 'Connection owner',
       description: null,
       rootPath: '/tmp/connection-owner',
+      isTemplate: false,
     });
     const connection = await storage.replaceIntegrationConnection(
       {
@@ -349,9 +351,9 @@ describe('EpicsService external task import', () => {
       },
     });
 
-    await expect(
-      service.createEpicWithExternalTaskLink(input),
-    ).rejects.toMatchObject<ValidationError>({
+    await expect(service.createEpicWithExternalTaskLink(input)).rejects.toMatchObject<
+      Partial<ValidationError>
+    >({
       message: 'External task link project must match its connection.',
     });
 
@@ -418,6 +420,7 @@ describe('EpicsService external task import', () => {
       name: 'Other import project',
       description: null,
       rootPath: '/tmp/other-import-project',
+      isTemplate: false,
     });
     const otherStatus = (await storage.listStatuses(otherProject.id)).items[0]!;
     const [originalConnection, otherConnection] = await Promise.all([
@@ -483,6 +486,7 @@ describe('EpicsService external task import', () => {
       name: 'Concurrent import project',
       description: null,
       rootPath: '/tmp/concurrent-import-project',
+      isTemplate: false,
     });
     const otherStatus = (await storage.listStatuses(otherProject.id)).items[0]!;
     await Promise.all([

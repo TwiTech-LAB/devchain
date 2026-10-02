@@ -8,6 +8,7 @@ import type {
   SetupPreviewResponse,
 } from '@/ui/pages/projects/lib/project-contracts';
 import { InMemoryProjectsPageApi } from '../../../test/helpers/in-memory-projects-page-api';
+import type { PromptReferenceValidationFailure } from '@/common/prompt-references';
 
 (global as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
   observe() {}
@@ -104,7 +105,7 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 const TARGET = { id: 'proj-1', name: 'My Project' };
-const PROMPT_PREFLIGHT_FAILURE = {
+const PROMPT_PREFLIGHT_FAILURE: PromptReferenceValidationFailure = {
   success: false,
   mutationStarted: false,
   error: 'Template profiles reference excluded prompts',
@@ -113,7 +114,7 @@ const PROMPT_PREFLIGHT_FAILURE = {
     promptTitles: ['Private SOP'],
     issues: [{ promptTitle: 'Private SOP', profileNames: ['Coder'] }],
   },
-} as const;
+};
 
 describe('useImportProjectWizard', () => {
   it('loads the setup-preview, runs the dry-run on Review, and commits on submit', async () => {

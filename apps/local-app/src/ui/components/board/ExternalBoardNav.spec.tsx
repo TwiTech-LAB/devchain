@@ -55,7 +55,10 @@ function connection(provider: 'clickup' | 'jira', connected: boolean): Integrati
   return {
     provider,
     connected,
+    connectionId: connected ? `connection-${provider}` : null,
     generation: connected ? 1 : null,
+    subtaskSyncEnabled: false,
+    syncSettingRevision: connected ? 1 : null,
     updatedAt: connected ? '2026-01-01T00:00:00Z' : null,
   };
 }
@@ -184,10 +187,21 @@ describe('ExternalBoardNav', () => {
           {
             provider: 'clickup',
             connected: true,
+            connectionId: 'connection-clickup',
             generation: 3,
+            subtaskSyncEnabled: false,
+            syncSettingRevision: 1,
             updatedAt: '2026-01-01T00:00:00Z',
           },
-          { provider: 'jira', connected: false, generation: null, updatedAt: null },
+          {
+            provider: 'jira',
+            connected: false,
+            connectionId: null,
+            generation: null,
+            subtaskSyncEnabled: false,
+            syncSettingRevision: null,
+            updatedAt: null,
+          },
         ],
       }),
     );

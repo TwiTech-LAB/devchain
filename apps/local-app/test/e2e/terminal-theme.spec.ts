@@ -44,7 +44,7 @@ test.describe('Terminal Theme', () => {
 
     const hasTerminal = await openTerminalSession(page);
     if (!hasTerminal) {
-      test.skip('No active terminal session available');
+      test.skip(true, 'No active terminal session available');
       return;
     }
 
@@ -75,7 +75,7 @@ test.describe('Terminal Theme', () => {
 
     const hasTerminal = await openTerminalSession(page);
     if (!hasTerminal) {
-      test.skip('No active terminal session available');
+      test.skip(true, 'No active terminal session available');
       return;
     }
 

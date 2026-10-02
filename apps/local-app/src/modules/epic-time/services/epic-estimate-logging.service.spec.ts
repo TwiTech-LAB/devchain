@@ -113,7 +113,7 @@ const inspection = (
   operationId: state.pendingOperationId,
   kind: 'create',
   phase,
-  canVerify: timeOperationCanVerify({ kind: 'create', phase, baseline }),
+  canVerify: timeOperationCanVerify({ kind: 'create', phase, baseline, updateBaseline: null }),
   expiresAt: '2026-08-31T12:00:00.000Z',
   tuple: {
     provider: state.provider,
@@ -610,7 +610,7 @@ describe('EpicEstimateLoggingService', () => {
       checkpoint(pending({ pendingOperationId: 'other-estimate-operation' })),
     );
 
-    await expect(service.createTimeEntry(createInput())).rejects.toMatchObject<BusyError>({
+    await expect(service.createTimeEntry(createInput())).rejects.toMatchObject<Partial<BusyError>>({
       details: { reason: 'estimate_operation_pending' },
     });
     expect(storage.prepareExternalEstimateLogOperation).not.toHaveBeenCalled();
@@ -626,7 +626,9 @@ describe('EpicEstimateLoggingService', () => {
       inspection(pending({ pendingOperationId: childOperationId(0) }), 'succeeded'),
     );
 
-    await expect(service.createTimeEntry(createInput())).rejects.toMatchObject<ConflictError>({
+    await expect(service.createTimeEntry(createInput())).rejects.toMatchObject<
+      Partial<ConflictError>
+    >({
       details: { reason: 'request_key_reused' },
     });
     expect(storage.prepareExternalEstimateLogOperation).not.toHaveBeenCalled();
@@ -686,7 +688,7 @@ describe('EpicEstimateLoggingService', () => {
             dailySnapshot: captured,
           }),
         ),
-      ).rejects.toMatchObject<ValidationError>({ details: { reason } });
+      ).rejects.toMatchObject<Partial<ValidationError>>({ details: { reason } });
       expect(storage.prepareExternalEstimateLogOperation).not.toHaveBeenCalled();
       expect(timeMutations.createEstimateTimeEntry).not.toHaveBeenCalled();
     },
@@ -708,7 +710,7 @@ describe('EpicEstimateLoggingService', () => {
     // Against the 60-minute mirror the 90-minute capture would be `estimate_snapshot_ahead`.
     await expect(
       service.createTimeEntry(createInput({ expectedRevision: 1 })),
-    ).rejects.toMatchObject<ValidationError>({
+    ).rejects.toMatchObject<Partial<ValidationError>>({
       details: { reason: 'estimate_up_to_date' },
     });
     expect(mirrorSync.pullNow).toHaveBeenCalledTimes(1);
@@ -727,7 +729,7 @@ describe('EpicEstimateLoggingService', () => {
 
     await expect(
       service.createTimeEntry(createInput({ expectedRevision: 1 })),
-    ).rejects.toMatchObject<ValidationError>({
+    ).rejects.toMatchObject<Partial<ValidationError>>({
       details: { reason: 'estimate_up_to_date' },
     });
     expect(storage.prepareExternalEstimateLogOperation).not.toHaveBeenCalled();
@@ -1152,7 +1154,9 @@ describe('EpicEstimateLoggingService', () => {
         : null,
     );
 
-    await expect(service.createTimeEntry(createInput())).rejects.toMatchObject<ConflictError>({
+    await expect(service.createTimeEntry(createInput())).rejects.toMatchObject<
+      Partial<ConflictError>
+    >({
       details: { reason: 'request_key_reused' },
     });
     expect(storage.prepareExternalEstimateLogOperation).not.toHaveBeenCalled();
@@ -1279,7 +1283,7 @@ describe('EpicEstimateLoggingService', () => {
     expect(snapshot.pendingDisposition).toBe('outcome_unknown');
     expect(snapshot.canVerify).toBe(true);
     expect(snapshot.verifyExpiresAt).toBe('2026-08-31T12:00:00.000Z');
-    expect(snapshot.state.pendingOperationId).toBe(childOperationId(0));
+    expect(snapshot.state?.pendingOperationId).toBe(childOperationId(0));
   });
 
   it('fails through the internal invariant when a non-null row loses its checkpoint', async () => {
@@ -1516,7 +1520,9 @@ describe('EpicEstimateLoggingService', () => {
         action: 'verify',
         expectedRevision: state.revision,
       }),
-    ).rejects.toMatchObject<ConflictError>({ details: { reason: 'connection_superseded' } });
+    ).rejects.toMatchObject<Partial<ConflictError>>({
+      details: { reason: 'connection_superseded' },
+    });
     expect(timeMutations.verifyOperation).not.toHaveBeenCalled();
 
     const stored = pending({ ...state, pendingResolution: 'not_logged', revision: 3 });
@@ -1540,7 +1546,7 @@ describe('EpicEstimateLoggingService', () => {
       connectionId: 'stale-connection',
     });
 
-    await expect(service.getState(context)).rejects.toMatchObject<ConflictError>({
+    await expect(service.getState(context)).rejects.toMatchObject<Partial<ConflictError>>({
       details: { reason: 'link_connection_mismatch' },
     });
     expect(storage.getEpic).not.toHaveBeenCalled();
@@ -1788,7 +1794,7 @@ describe('EpicEstimateLoggingService', () => {
       inspection(state, 'succeeded', { remoteTaskId: 'OTHER-1' }),
     );
 
-    await expect(service.getState(context)).rejects.toMatchObject<ConflictError>({
+    await expect(service.getState(context)).rejects.toMatchObject<Partial<ConflictError>>({
       details: { reason: 'receipt_tuple_mismatch' },
     });
     expect(storage.confirmExternalEstimateLogOperation).not.toHaveBeenCalled();
@@ -1950,7 +1956,7 @@ describe('EpicEstimateLoggingService legacy ownership signal and recovery', () =
         expectedRevision: 0,
         dailySnapshot: [{ activityDate: '2026-08-30', minutes: 30 }],
       }),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: { reason: 'legacy_ownership_unresolved' },
     });
     await expect(
@@ -1960,7 +1966,7 @@ describe('EpicEstimateLoggingService legacy ownership signal and recovery', () =
         expectedRevision: 0,
         timeZone: 'UTC',
       }),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: { reason: 'legacy_ownership_unresolved' },
     });
 
@@ -2004,7 +2010,7 @@ describe('EpicEstimateLoggingService legacy ownership signal and recovery', () =
   it('rejects a legacy claim through a stale connection epoch before any assignment', async () => {
     await expect(
       service.assignLegacyCheckpoint({ ...context, expectedEpoch: 3, expectedLegacyRevision: 4 }),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: { reason: 'connection_epoch_mismatch' },
     });
     expect(storage.assignUnassignedExternalEstimateLogCheckpoint).not.toHaveBeenCalled();

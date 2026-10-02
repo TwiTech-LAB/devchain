@@ -173,6 +173,7 @@ describe('0083 retire documents migration', () => {
       name: 'Post-retirement deletion',
       description: null,
       rootPath: '/tmp/post-retirement',
+      isTemplate: false,
     });
     await service.createPrompt({
       projectId: project.id,

@@ -35,10 +35,10 @@ describe('Adapter getSummary parity: file providers', () => {
   ] as const)(
     '%s summary metrics match a full fixture parse',
     async (providerName, Adapter, file) => {
-      const adapter = new Adapter(mockPricing);
+      const adapter: SessionReaderAdapter = new Adapter(mockPricing);
       const filePath = path.join(FIXTURES_DIR, file);
       const full = await adapter.parseFullSession(filePath);
-      const summary = await adapter.getSummary({
+      const summary = await adapter.getSummary?.({
         filePath,
         providerName,
         kind: 'file',

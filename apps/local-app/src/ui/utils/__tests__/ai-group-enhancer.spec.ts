@@ -8,6 +8,8 @@ import {
   buildSummary,
   findLastOutput,
   getHeaderTokens,
+  type DisplayItem,
+  type SingleDisplayItem,
 } from '../ai-group-enhancer';
 
 function makeMessage(overrides: Partial<UnifiedMessage> = {}): UnifiedMessage {
@@ -60,8 +62,6 @@ function makeStep(
   overrides: Partial<UnifiedSemanticStep> & Pick<UnifiedSemanticStep, 'id' | 'type'>,
 ): UnifiedSemanticStep {
   return {
-    id: overrides.id,
-    type: overrides.type,
     startTime: new Date('2026-01-01T10:00:00.000Z'),
     durationMs: 0,
     content: {},
@@ -196,7 +196,9 @@ describe('ai-group-enhancer utilities', () => {
       const items = buildDisplayItems(steps, 'output-last');
 
       expect(items.map((item) => item.type)).toEqual(['thinking', 'tool', 'subagent']);
-      const toolItem = items.find((item) => item.type === 'tool' && item.step.id === 'call-1');
+      const toolItem = items.find(
+        (item): item is SingleDisplayItem => item.type === 'tool' && item.step.id === 'call-1',
+      );
       expect(toolItem?.linkedResult?.id).toBe('result-1');
       expect(
         items.some((item) => item.type !== 'tool-group' && item.step.id === 'output-last'),
@@ -215,9 +217,11 @@ describe('ai-group-enhancer utilities', () => {
       const items = buildDisplayItems(steps, null);
 
       expect(items).toHaveLength(1);
-      expect(items[0].type).toBe('tool');
-      expect(items[0].step.id).toBe('orphan-result');
-      expect(items[0].linkedResult).toBeUndefined();
+      const first = items[0];
+      if (!first || first.type === 'tool-group') throw new Error('expected a single tool item');
+      expect(first.type).toBe('tool');
+      expect(first.step.id).toBe('orphan-result');
+      expect(first.linkedResult).toBeUndefined();
     });
 
     it('returns an empty list for empty steps', () => {
@@ -745,21 +749,21 @@ describe('ai-group-enhancer utilities', () => {
 
   describe('buildSummary', () => {
     it('uses singular tool call label for a single tool item', () => {
-      const items = [
+      const items: DisplayItem[] = [
         { type: 'tool', step: makeStep({ id: 'tool-1', type: 'tool_call' }) },
-      ] as const;
+      ];
 
       expect(buildSummary(items)).toBe('1 tool call');
     });
 
     it('builds pluralized summary counts', () => {
-      const items = [
+      const items: DisplayItem[] = [
         { type: 'thinking', step: makeStep({ id: 'thinking-1', type: 'thinking' }) },
         { type: 'tool', step: makeStep({ id: 'tool-1', type: 'tool_call' }) },
         { type: 'tool', step: makeStep({ id: 'tool-2', type: 'tool_result' }) },
         { type: 'output', step: makeStep({ id: 'output-1', type: 'output' }) },
         { type: 'subagent', step: makeStep({ id: 'subagent-1', type: 'subagent' }) },
-      ] as const;
+      ];
 
       expect(buildSummary(items)).toBe('1 thinking, 2 tool calls, 1 message, 1 subagent');
     });

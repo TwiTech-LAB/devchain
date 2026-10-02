@@ -136,7 +136,9 @@ describe('ExternalRichDocumentV1', () => {
           },
         ],
       });
-      expect(canonical!.blocks[0]!.content[0]).toEqual({
+      const block = canonical!.blocks[0];
+      if (block?.type !== 'paragraph') throw new Error('expected a paragraph block');
+      expect(block.content[0]).toEqual({
         type: 'text',
         text: 'x',
         marks: [{ type: 'bold' }, { type: 'link', href: 'https://example.com' }],

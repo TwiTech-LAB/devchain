@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.24.0",
+  "version": "0.24.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,13 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.24.1": [
+      "Mobile app 1.10.2: a more live and responsive chat experience",
+      "Remote VMs: more control over Connect. You can cancel it, choose which Docker containers to move, and see progress while it runs",
+      "Remote VMs: more reliable Connect and sign-in",
+      "Stability: smoother pasting into Claude, and restored agents keep their DevChain tools",
+      "Teams and templates: teams keep their order after a template update, and the Dev Template has updated defaults"
+    ],
     "0.24.0": [
       "https://devchain.cc/releases/0.24.0/",
       "",

@@ -4,14 +4,21 @@ import { TemplateCacheService } from '../services/template-cache.service';
 import { RegistryOrchestrationService } from '../services/registry-orchestration.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { StorageService } from '../../storage/interfaces/storage.interface';
+import { createMockProject } from '../../../../test/factories';
 
 describe('RegistryController', () => {
   let controller: RegistryController;
-  let mockRegistryClient: jest.Mocked<Partial<RegistryClientService>>;
-  let mockCacheService: jest.Mocked<Partial<TemplateCacheService>>;
-  let mockOrchestrationService: jest.Mocked<Partial<RegistryOrchestrationService>>;
-  let mockSettingsService: jest.Mocked<Partial<SettingsService>>;
-  let mockStorageService: jest.Mocked<Partial<StorageService>>;
+  let mockRegistryClient: jest.Mocked<
+    Pick<RegistryClientService, 'isAvailable' | 'getRegistryUrl' | 'downloadTemplate'>
+  >;
+  let mockCacheService: jest.Mocked<Pick<TemplateCacheService, 'isCached' | 'saveTemplate'>>;
+  let mockOrchestrationService: jest.Mocked<
+    Pick<RegistryOrchestrationService, 'downloadToCache' | 'getUpdateStatus'>
+  >;
+  let mockSettingsService: jest.Mocked<
+    Pick<SettingsService, 'getAllTrackedProjects' | 'getProjectTemplateMetadata'>
+  >;
+  let mockStorageService: jest.Mocked<Pick<StorageService, 'listProjects' | 'getProject'>>;
 
   beforeEach(() => {
     mockRegistryClient = {
@@ -27,6 +34,7 @@ describe('RegistryController', () => {
 
     mockOrchestrationService = {
       downloadToCache: jest.fn(),
+      getUpdateStatus: jest.fn(),
     };
 
     mockSettingsService = {
@@ -40,17 +48,17 @@ describe('RegistryController', () => {
     };
 
     controller = new RegistryController(
-      mockRegistryClient as RegistryClientService,
-      mockCacheService as TemplateCacheService,
-      mockOrchestrationService as RegistryOrchestrationService,
-      mockSettingsService as SettingsService,
-      mockStorageService as StorageService,
+      mockRegistryClient as unknown as RegistryClientService,
+      mockCacheService as unknown as TemplateCacheService,
+      mockOrchestrationService as unknown as RegistryOrchestrationService,
+      mockSettingsService as unknown as SettingsService,
+      mockStorageService as unknown as StorageService,
     );
   });
 
   describe('downloadTemplate', () => {
     it('should return the existing cache-hit response from orchestration', async () => {
-      mockOrchestrationService.downloadToCache!.mockResolvedValue({ cached: true });
+      mockOrchestrationService.downloadToCache.mockResolvedValue({ cached: true });
 
       await expect(controller.downloadTemplate('test-template', '1.0.0')).resolves.toEqual({
         success: true,
@@ -68,7 +76,7 @@ describe('RegistryController', () => {
     });
 
     it('should map the orchestration miss result to the existing response', async () => {
-      mockOrchestrationService.downloadToCache!.mockResolvedValue({
+      mockOrchestrationService.downloadToCache.mockResolvedValue({
         cached: false,
         checksum: 'abc123',
         size: 42,
@@ -91,7 +99,7 @@ describe('RegistryController', () => {
 
     it('should propagate orchestration failures unchanged', async () => {
       const error = new Error('Registry unavailable');
-      mockOrchestrationService.downloadToCache!.mockRejectedValue(error);
+      mockOrchestrationService.downloadToCache.mockRejectedValue(error);
 
       await expect(controller.downloadTemplate('test-template', '1.0.0')).rejects.toBe(error);
     });
@@ -99,7 +107,7 @@ describe('RegistryController', () => {
 
   describe('getProjectsUsingTemplate', () => {
     it('should return empty array when no projects use the template', async () => {
-      mockSettingsService.getAllTrackedProjects!.mockReturnValue([]);
+      mockSettingsService.getAllTrackedProjects.mockReturnValue([]);
 
       const result = await controller.getProjectsUsingTemplate('test-template');
 
@@ -108,7 +116,7 @@ describe('RegistryController', () => {
     });
 
     it('should batch fetch project names in single query', async () => {
-      mockSettingsService.getAllTrackedProjects!.mockReturnValue([
+      mockSettingsService.getAllTrackedProjects.mockReturnValue([
         {
           projectId: 'project-1',
           metadata: {
@@ -125,7 +133,6 @@ describe('RegistryController', () => {
             templateSlug: 'test-template',
             installedVersion: '1.0.0',
             installedAt: '2024-01-01T00:00:00Z',
-            lastUpdateCheckAt: null,
             registryUrl: 'https://registry.test.com',
           },
         },
@@ -135,35 +142,16 @@ describe('RegistryController', () => {
             templateSlug: 'other-template',
             installedVersion: '2.0.0',
             installedAt: '2024-01-01T00:00:00Z',
-            lastUpdateCheckAt: null,
             registryUrl: 'https://registry.test.com',
           },
         },
       ]);
 
-      mockStorageService.listProjects!.mockResolvedValue({
+      mockStorageService.listProjects.mockResolvedValue({
         items: [
-          {
-            id: 'project-1',
-            name: 'Project One',
-            rootPath: '/path/1',
-            createdAt: '',
-            updatedAt: '',
-          },
-          {
-            id: 'project-2',
-            name: 'Project Two',
-            rootPath: '/path/2',
-            createdAt: '',
-            updatedAt: '',
-          },
-          {
-            id: 'project-3',
-            name: 'Project Three',
-            rootPath: '/path/3',
-            createdAt: '',
-            updatedAt: '',
-          },
+          createMockProject({ id: 'project-1', name: 'Project One', rootPath: '/path/1' }),
+          createMockProject({ id: 'project-2', name: 'Project Two', rootPath: '/path/2' }),
+          createMockProject({ id: 'project-3', name: 'Project Three', rootPath: '/path/3' }),
         ],
         total: 3,
         limit: 1000,
@@ -186,7 +174,7 @@ describe('RegistryController', () => {
         projectName: 'Project Two',
         installedVersion: '1.0.0',
         installedAt: '2024-01-01T00:00:00Z',
-        lastUpdateCheckAt: null,
+        lastUpdateCheckAt: undefined,
       });
 
       // Should fetch all projects in single call (batch)
@@ -198,21 +186,20 @@ describe('RegistryController', () => {
     });
 
     it('should return null projectName for deleted projects', async () => {
-      mockSettingsService.getAllTrackedProjects!.mockReturnValue([
+      mockSettingsService.getAllTrackedProjects.mockReturnValue([
         {
           projectId: 'deleted-project',
           metadata: {
             templateSlug: 'test-template',
             installedVersion: '1.0.0',
             installedAt: '2024-01-01T00:00:00Z',
-            lastUpdateCheckAt: null,
             registryUrl: 'https://registry.test.com',
           },
         },
       ]);
 
       // Project no longer exists in storage
-      mockStorageService.listProjects!.mockResolvedValue({
+      mockStorageService.listProjects.mockResolvedValue({
         items: [],
         total: 0,
         limit: 1000,

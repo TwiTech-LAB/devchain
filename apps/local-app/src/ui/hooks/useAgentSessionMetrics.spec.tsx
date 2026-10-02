@@ -8,7 +8,7 @@ import {
   METRICS_WATCHDOG_MIN_MS,
 } from './useAgentSessionMetrics';
 import type { AgentSessionEntry } from './useAgentSessionMetrics';
-import { fetchTranscriptSummary } from '@/ui/lib/sessions';
+import { fetchTranscriptSummary, type TranscriptSummary } from '@/ui/lib/sessions';
 import { useRealtimeDispatch } from '@/ui/hooks/useRealtimeDispatch';
 import { dispatchRealtimeEnvelope } from '@/ui/lib/realtime-invalidation-registry';
 
@@ -41,7 +41,7 @@ function makeSummary(overrides?: {
   contextWindowTokens?: number;
   isOngoing?: boolean;
   sessionId?: string;
-}) {
+}): TranscriptSummary {
   return {
     sessionId: overrides?.sessionId ?? 'test-session',
     providerName: 'claude',
@@ -58,10 +58,14 @@ function makeSummary(overrides?: {
       totalContextTokens: overrides?.totalContextTokens ?? 50_000,
       contextWindowTokens: overrides?.contextWindowTokens ?? 200_000,
       costUsd: 0,
+      primaryModel: 'claude-sonnet-4',
+      durationMs: 0,
+      messageCount: 5,
+      isOngoing: overrides?.isOngoing ?? true,
     },
     messageCount: 5,
     isOngoing: overrides?.isOngoing ?? true,
-  } as Awaited<ReturnType<typeof fetchTranscriptSummary>>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +106,7 @@ describe('useAgentSessionMetrics', () => {
           topic: 'session/session-1/transcript',
           type: 'updated',
           payload: { sessionId: 'session-1' },
+          ts: '2026-01-01T00:00:00.000Z',
         },
         registry,
         queryClient,
@@ -134,6 +139,7 @@ describe('useAgentSessionMetrics', () => {
           topic: 'session/session-1/runtime-context',
           type: 'updated',
           payload: { sessionId: 'session-1' },
+          ts: '2026-01-01T00:00:00.000Z',
         },
         registry,
         queryClient,

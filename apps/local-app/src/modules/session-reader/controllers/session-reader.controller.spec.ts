@@ -173,6 +173,34 @@ const mockService: jest.Mocked<
 // Tests
 // ---------------------------------------------------------------------------
 
+// The controller's wire results are loosely typed (cached DTOs are Record<string, unknown>);
+// these describe only the fields the assertions below read.
+interface TimestampedWire {
+  timestamp: string;
+}
+interface ChunkWire {
+  startTime: string;
+  endTime: string;
+  messages: TimestampedWire[];
+  semanticSteps: { startTime: string }[];
+}
+interface TranscriptWire {
+  messages: TimestampedWire[];
+  chunks?: ChunkWire[];
+  cursor: string;
+  metrics: { contextWindowTokens: number };
+}
+interface ChunksPageWire {
+  chunks: ChunkWire[];
+  nextCursor: string | null;
+  prevCursor: string | null;
+}
+
+function wireAs<T>(result: unknown): T {
+  expect(result).toBeDefined();
+  return result as T;
+}
+
 describe('SessionReaderController', () => {
   let controller: SessionReaderController;
 
@@ -393,18 +421,17 @@ describe('SessionReaderController', () => {
         timing: DEFAULT_TIMING,
       });
 
-      const result = await controller.getTranscript(VALID_UUID);
+      const result = wireAs<TranscriptWire>(await controller.getTranscript(VALID_UUID));
 
-      expect(result).toBeDefined();
-      expect(result!.messages[0].timestamp).toBe('2026-01-01T10:00:00.000Z');
-      expect(result!.messages[1].timestamp).toBe('2026-01-01T10:00:05.000Z');
-      expect(result!.chunks?.[0].startTime).toBe('2026-01-01T10:00:01.000Z');
-      expect(result!.chunks?.[0].endTime).toBe('2026-01-01T10:00:05.000Z');
-      expect(result!.chunks?.[0].messages[0].timestamp).toBe('2026-01-01T10:00:05.000Z');
-      expect(result!.chunks?.[0].semanticSteps[0].startTime).toBe('2026-01-01T10:00:05.000Z');
-      expect(typeof result!.chunks?.[0].startTime).toBe('string');
-      expect(typeof result!.chunks?.[0].semanticSteps[0].startTime).toBe('string');
-      expect(decodeCursor(result!.cursor)?.fileSize).toBe(654_321);
+      expect(result.messages[0].timestamp).toBe('2026-01-01T10:00:00.000Z');
+      expect(result.messages[1].timestamp).toBe('2026-01-01T10:00:05.000Z');
+      expect(result.chunks?.[0].startTime).toBe('2026-01-01T10:00:01.000Z');
+      expect(result.chunks?.[0].endTime).toBe('2026-01-01T10:00:05.000Z');
+      expect(result.chunks?.[0].messages[0].timestamp).toBe('2026-01-01T10:00:05.000Z');
+      expect(result.chunks?.[0].semanticSteps[0].startTime).toBe('2026-01-01T10:00:05.000Z');
+      expect(typeof result.chunks?.[0].startTime).toBe('string');
+      expect(typeof result.chunks?.[0].semanticSteps[0].startTime).toBe('string');
+      expect(decodeCursor(result.cursor)?.fileSize).toBe(654_321);
       expect(mockService.getTranscriptWithTimings).toHaveBeenCalledWith(VALID_UUID, {
         maxToolResultLength: 2000,
       });
@@ -541,15 +568,15 @@ describe('SessionReaderController', () => {
         session: session200k,
         timing: DEFAULT_TIMING,
       });
-      const result1 = await controller.getTranscript(VALID_UUID);
-      expect(result1!.metrics.contextWindowTokens).toBe(200_000);
+      const result1 = wireAs<TranscriptWire>(await controller.getTranscript(VALID_UUID));
+      expect(result1.metrics.contextWindowTokens).toBe(200_000);
 
       mockService.getTranscriptWithTimings.mockResolvedValueOnce({
         session: session1M,
         timing: DEFAULT_TIMING,
       });
-      const result2 = await controller.getTranscript(VALID_UUID);
-      expect(result2!.metrics.contextWindowTokens).toBe(1_000_000);
+      const result2 = wireAs<TranscriptWire>(await controller.getTranscript(VALID_UUID));
+      expect(result2.metrics.contextWindowTokens).toBe(1_000_000);
     });
   });
 
@@ -747,14 +774,15 @@ describe('SessionReaderController', () => {
       };
       mockService.getUnifiedTranscriptChunks.mockResolvedValue(response);
 
-      const result = await controller.getTranscriptChunks(VALID_UUID);
+      const result = wireAs<ChunksPageWire & { totalCount: number }>(
+        await controller.getTranscriptChunks(VALID_UUID),
+      );
 
-      expect(result).toBeDefined();
-      expect(result!.chunks[0].messages[0].timestamp).toBe('2026-01-01T10:00:00.000Z');
-      expect(result!.chunks[0].startTime).toBe('2026-01-01T10:00:00.000Z');
-      expect(result!.nextCursor).toBe('chunk-1');
-      expect(result!.prevCursor).toBeNull();
-      expect(result!.totalCount).toBe(3);
+      expect(result.chunks[0].messages[0].timestamp).toBe('2026-01-01T10:00:00.000Z');
+      expect(result.chunks[0].startTime).toBe('2026-01-01T10:00:00.000Z');
+      expect(result.nextCursor).toBe('chunk-1');
+      expect(result.prevCursor).toBeNull();
+      expect(result.totalCount).toBe(3);
     });
 
     it('should pass cursor, limit, and direction to service', async () => {
@@ -812,12 +840,11 @@ describe('SessionReaderController', () => {
       const chunk = makeAiChunk('chunk-0', [msg]);
       mockService.getUnifiedTranscriptChunk.mockResolvedValue(chunk);
 
-      const result = await controller.getTranscriptChunk(VALID_UUID, 'chunk-0');
+      const result = wireAs<ChunkWire>(await controller.getTranscriptChunk(VALID_UUID, 'chunk-0'));
 
-      expect(result).toBeDefined();
-      expect(result!.messages[0].timestamp).toBe('2026-01-01T10:00:05.000Z');
-      expect(result!.startTime).toBe('2026-01-01T10:00:05.000Z');
-      expect(result!.semanticSteps[0].startTime).toBe('2026-01-01T10:00:05.000Z');
+      expect(result.messages[0].timestamp).toBe('2026-01-01T10:00:05.000Z');
+      expect(result.startTime).toBe('2026-01-01T10:00:05.000Z');
+      expect(result.semanticSteps[0].startTime).toBe('2026-01-01T10:00:05.000Z');
     });
 
     it('should throw BadRequestException for invalid chunkId format', async () => {
@@ -860,6 +887,30 @@ describe('SessionReaderController', () => {
         deltaMessages: [{ timestamp: '2026-01-01T10:00:05.000Z' }],
         deltaChunks: [{ startTime: '2026-01-01T10:00:05.000Z' }],
       });
+    });
+
+    it('returns a delta wider than one phone page in full (no mobile page cap)', async () => {
+      const chunks = Array.from({ length: 21 }, (_, index) =>
+        makeAiChunk(`chunk-${index}`, [
+          makeMessage(`m${index}`, 'assistant', '2026-01-01T10:00:05.000Z'),
+        ]),
+      );
+      mockService.getTranscriptTail.mockResolvedValue({
+        kind: 'delta',
+        cursor: 'next-cursor',
+        replaceFromChunkId: 'chunk-0',
+        replaceFromChunkIndex: 0,
+        deltaChunks: chunks,
+        deltaMessages: [],
+        metrics: makeMetrics({ messageCount: 21 }),
+        totalChunkCount: 21,
+        totalMessageCount: 21,
+      });
+
+      const result = await controller.getTranscriptTail(VALID_UUID, 'prior-cursor');
+
+      expect(result).toMatchObject({ kind: 'delta', cursor: 'next-cursor' });
+      expect((result as { deltaChunks: unknown[] }).deltaChunks).toHaveLength(21);
     });
 
     it('returns the cursor-free full-refetch discriminator without serializing a delta', async () => {

@@ -33,7 +33,7 @@ const baseComment: ReviewComment = {
   parentId: null,
   lineStart: 10,
   lineEnd: 10,
-  side: 'right',
+  side: 'new',
   content: 'This needs improvement',
   commentType: 'issue',
   status: 'open',

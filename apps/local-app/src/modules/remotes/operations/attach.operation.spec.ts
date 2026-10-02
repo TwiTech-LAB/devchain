@@ -137,6 +137,7 @@ describe('AttachOperation preflight home gate', () => {
       { ensureAvailable } as never,
       {} as never,
       {} as never,
+      {} as never,
       new FakeProcessExecutor(),
     );
   }
@@ -291,6 +292,7 @@ describe('AttachOperation Docker steps', () => {
     interrupt: jest.fn(),
     finish: jest.fn().mockResolvedValue(undefined),
   };
+  const fileSync = { interrupt: jest.fn() };
   const attach = () => {
     const unused = {} as never;
     return new AttachOperation(
@@ -302,7 +304,7 @@ describe('AttachOperation Docker steps', () => {
       unused,
       unused,
       unused,
-      unused,
+      fileSync as never,
       unused,
       { interrupt: jest.fn() } as never,
       docker as never,
@@ -336,6 +338,12 @@ describe('AttachOperation Docker steps', () => {
     expect(docker.finish).toHaveBeenCalledWith('op');
     operation.forget('op-2');
     expect(docker.finish).toHaveBeenCalledWith('op-2');
+  });
+
+  it('aborts the file sync waits on cancel', async () => {
+    await attach().interrupt('op');
+
+    expect(fileSync.interrupt).toHaveBeenCalledWith('op');
   });
 });
 

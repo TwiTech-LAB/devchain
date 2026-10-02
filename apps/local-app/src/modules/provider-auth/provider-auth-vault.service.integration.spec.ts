@@ -11,9 +11,9 @@ import type {
   ClaudeAdapter,
   CodexAdapter,
   CopilotAdapter,
-  AntigravityAdapter,
   OpencodeAdapter,
 } from '../providers/adapters';
+import type { AntigravityAdapter } from '../providers/adapters/antigravity.adapter';
 import type { StorageService } from '../storage/interfaces/storage.interface';
 import { LocalStorageService } from '../storage/local/local-storage.service';
 import { IntegrationCredentialCipher } from '../storage/local/integration-credential-cipher';

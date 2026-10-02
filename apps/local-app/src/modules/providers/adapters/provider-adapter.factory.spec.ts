@@ -29,8 +29,11 @@ describe('ProviderAdapterFactory', () => {
     claudeAdapter = new ClaudeAdapter();
     codexAdapter = new CodexAdapter();
     opencodeAdapter = new OpencodeAdapter();
-    antigravityAdapter = new AntigravityAdapter();
-    copilotAdapter = new CopilotAdapter();
+    antigravityAdapter = new AntigravityAdapter({ ensure: jest.fn() } as never);
+    copilotAdapter = new CopilotAdapter(
+      { ensure: jest.fn() } as never,
+      { isAuthenticated: jest.fn() } as never,
+    );
     mockStorage = makeMockStorage();
     factory = new ProviderAdapterFactory(
       mockStorage,

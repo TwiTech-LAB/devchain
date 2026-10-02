@@ -576,7 +576,7 @@ describe('SELECT mapper coverage: name field', () => {
       method: 'GET',
       url: (_id: string) => `/api/sessions/agents/${uuid(10)}/history?projectId=${uuid(1)}`,
     },
-  ];
+  ] as const;
 
   it.each(mappers)('$name returns the name field', async ({ name, method, url }) => {
     const projectId = uuid(1);

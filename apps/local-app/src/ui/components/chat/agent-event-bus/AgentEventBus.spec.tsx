@@ -17,9 +17,9 @@ import type {
 // Layer: UI component (jsdom). Rendering with controlled stream, geometry,
 // timer, and animation seams is the cheapest reliable proof of React lifecycle,
 // SVG state, feedback priority, and cleanup; browser layout/hit-testing stays E2E.
-interface GlobalWithDOMRect extends Global {
+type GlobalWithDOMRect = typeof globalThis & {
   DOMRect?: typeof DOMRect;
-}
+};
 
 if (!(global as GlobalWithDOMRect).DOMRect) {
   (global as GlobalWithDOMRect).DOMRect = class DOMRect {
@@ -185,13 +185,15 @@ function createSchedulerHarness() {
 
 function createAnimationHarness() {
   const handles: Array<AgentEventBusAnimationHandle & { cancel: jest.Mock }> = [];
-  const animate = jest.fn(() => {
-    const handle = { cancel: jest.fn() };
-    handles.push(handle);
-    return handle;
-  });
+  const animate = jest.fn(
+    (_element: Element, _keyframes: Keyframe[], _options: KeyframeAnimationOptions) => {
+      const handle = { cancel: jest.fn() };
+      handles.push(handle);
+      return handle;
+    },
+  );
   return {
-    driver: { animate } as AgentEventBusAnimationDriver,
+    driver: { animate },
     animate,
     handles,
   };
@@ -237,7 +239,7 @@ function BusHarness({
   schedulerEnvironment,
   animationDriver,
 }: HarnessProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const setContainerRef = useCallback<RefCallback<HTMLDivElement>>((element) => {
     containerRef.current = element;
     if (element) setRect(element, { left: 0, top: 0, width: 320, height: 400 });
@@ -338,10 +340,10 @@ describe('AgentEventBus', () => {
     const maskRect = glowMask?.querySelector('rect');
     const fadeGradient = svg.querySelector('linearGradient');
     const clippedLayer = screen.getByTestId('agent-event-bus-clipped-glow-layer');
-    const tail = svg.querySelector('.agent-event-bus__route-tail');
-    const body = svg.querySelector('.agent-event-bus__route-body');
-    const head = svg.querySelector('.agent-event-bus__route-head');
-    const ignition = svg.querySelector('[data-marker-kind="ignition"]');
+    const tail = svg.querySelector<SVGElement>('.agent-event-bus__route-tail');
+    const body = svg.querySelector<SVGElement>('.agent-event-bus__route-body');
+    const head = svg.querySelector<SVGElement>('.agent-event-bus__route-head');
+    const ignition = svg.querySelector<SVGElement>('[data-marker-kind="ignition"]');
     // The overlay reaches 16px left of the panel so the bloom can spill into the page
     // gutter; the viewBox origin and the mask region must both follow it, or the bloom is
     // clipped straight back to the panel edge.
@@ -449,9 +451,9 @@ describe('AgentEventBus', () => {
         new RegExp(`^1:route:1:1:${layer.dataset.pulseRole}$`),
       );
     }
-    expect(svg.querySelector('[data-marker-kind="ignition"]')?.dataset.routeAnimation).toBe(
-      '1:route:1:ignition',
-    );
+    expect(
+      svg.querySelector<SVGElement>('[data-marker-kind="ignition"]')?.dataset.routeAnimation,
+    ).toBe('1:route:1:ignition');
 
     act(() => mockStreamHandler?.(directFrame()));
 
@@ -832,11 +834,11 @@ describe('AgentEventBus', () => {
       expect.stringMatching(/^M 4 8 V /),
     );
     const clippedLayer = screen.getByTestId('agent-event-bus-clipped-glow-layer');
-    const runtimeIgnition = svg.querySelector(
+    const runtimeIgnition = svg.querySelector<SVGElement>(
       '[data-marker-kind="ignition"][data-route-source="runtime"]',
     );
-    const runtimeRing = runtimeIgnition?.querySelector('.agent-event-bus__marker-ring');
-    const agentIgnition = svg.querySelector(
+    const runtimeRing = runtimeIgnition?.querySelector<SVGElement>('.agent-event-bus__marker-ring');
+    const agentIgnition = svg.querySelector<SVGElement>(
       '[data-marker-kind="ignition"][data-route-source="agent"]',
     );
     expect(runtimeRing).toHaveAttribute('cx', '4');

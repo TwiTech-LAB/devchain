@@ -65,7 +65,12 @@ export interface DockerHandoffRecord {
   apiVersion: string;
   projectRoot: string;
   items: DockerHandoffItem[];
-  images: Array<{ id: string; sizeBytes: number }>;
+  /**
+   * `id` is the home ID. `vmId` is the ID the VM engine gave the same image; it
+   * differs from `id` when the two engines use different image stores. Absent
+   * until the push verifies the image, and in records written before it existed.
+   */
+  images: Array<{ id: string; sizeBytes: number; vmId?: string }>;
   volumes: DockerHandoffVolume[];
   binds: DockerHandoffBind[];
   /** Home containers to stop: the selected ones and their writer groups. */
@@ -94,8 +99,14 @@ export interface DockerCopyBackGroup {
   /** The members to copy: those present on the VM. */
   volumes: string[];
   bindPaths: string[];
-  /** Image IDs of the group's items; the helpers run one present on each engine. */
+  /**
+   * Image IDs of the group's items; the helpers run one present on each engine.
+   * `images` are home IDs; `vmImages[i]` is the VM engine's ID for `images[i]`,
+   * equal to it on same-store engines. Absent from records written before the
+   * field existed, which then use `images` for both engines.
+   */
   images: string[];
+  vmImages?: string[];
   sizeBytes: number;
 }
 /** What one Disconnect's copy-back decided and did; written before each home change. */

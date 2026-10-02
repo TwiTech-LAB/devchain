@@ -12,8 +12,6 @@ function makeStep(
   overrides: Partial<SerializedSemanticStep> & Pick<SerializedSemanticStep, 'id' | 'type'>,
 ): SerializedSemanticStep {
   return {
-    id: overrides.id,
-    type: overrides.type,
     startTime: '2026-02-24T12:00:00.000Z',
     durationMs: 500,
     content: {},

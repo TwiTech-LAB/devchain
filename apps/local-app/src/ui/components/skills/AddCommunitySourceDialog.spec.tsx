@@ -124,7 +124,10 @@ describe('AddCommunitySourceDialog', () => {
       currentProject: { id: string; name: string } | null,
       radioLabel: RegExp,
     ): Promise<AddCommunitySourceDialogSubmit | null> => {
-      const onSubmit = jest.fn(async (input: AddCommunitySourceDialogSubmit) => input);
+      const calls: AddCommunitySourceDialogSubmit[] = [];
+      const onSubmit = jest.fn(async (input: AddCommunitySourceDialogSubmit): Promise<void> => {
+        calls.push(input);
+      });
 
       render(
         <AddCommunitySourceDialog
@@ -150,7 +153,9 @@ describe('AddCommunitySourceDialog', () => {
       await waitFor(() => {
         expect(onSubmit).toHaveBeenCalledTimes(1);
       });
-      return onSubmit.mock.calls[0][0];
+      const submitted = calls[0];
+      if (!submitted) throw new Error('submit payload missing');
+      return submitted;
     };
 
     it('defaults to keep disabled and shows the current-project option with a project', async () => {

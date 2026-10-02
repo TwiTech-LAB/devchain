@@ -72,6 +72,8 @@ describe('RegistrySettingsDelegate', () => {
     const metadata: RegistryTemplateMetadataDto = {
       templateSlug: 'test-template',
       installedVersion: '1.0.0',
+      registryUrl: null,
+      installedAt: '2026-01-01T00:00:00Z',
       lastUpdateCheckAt: '2026-01-01T00:00:00Z',
     };
 

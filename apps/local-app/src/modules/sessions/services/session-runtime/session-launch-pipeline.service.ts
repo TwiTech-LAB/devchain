@@ -44,6 +44,7 @@ import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { renderTemplate } from '../../../../common/template/handlebars-renderer';
 import { buildPromptRenderContext } from '../../../../common/template/prompt-render-context';
 import { CleanupStack } from './cleanup-stack';
+import { ensureMcpReadiness } from './ensure-mcp-readiness';
 import type { LaunchSessionDto, SessionDetailDto } from '../../dtos/sessions.dto';
 import { RuntimeContextCaptureService } from '../../../runtime-context-capture/runtime-context-capture.service';
 import { CodexPluginProfileMaterializerService } from '../../../runtime-context-capture/codex-plugin-profile-materializer.service';
@@ -402,27 +403,15 @@ export class SessionLaunchPipeline {
       );
     }
 
-    const providerEnv = this.storage.getProviderEnvForProject(provider.id, projectId);
-    const provisioningContext = {
-      env: { ...(providerEnv ?? {}), ...(configEnv ?? {}) },
-    };
-
-    const preflightResult = await this.preflightService.runChecks(projectRootPath);
-    let providerCheck = preflightResult.providers?.find((p) => p.id === provider.id);
-
-    if (providerCheck?.mcpStatus && providerCheck.mcpStatus !== 'pass') {
-      await this.mcpEnsureService.ensureMcp(provider, projectRootPath, provisioningContext);
-      const recheck = await this.preflightService.runChecks(projectRootPath);
-      providerCheck = recheck.providers?.find((p) => p.id === provider.id);
-
-      if (providerCheck?.mcpStatus !== 'pass') {
-        throw new ValidationError('MCP configuration failed after auto-ensure', {
-          providerId: provider.id,
-          mcpStatus: providerCheck?.mcpStatus,
-          mcpMessage: providerCheck?.mcpMessage,
-        });
-      }
-    }
+    const { preflightResult, provisioningContext } = await ensureMcpReadiness({
+      storage: this.storage,
+      preflightService: this.preflightService,
+      mcpEnsureService: this.mcpEnsureService,
+      provider,
+      projectId,
+      projectRootPath,
+      configEnv,
+    });
 
     // Providers with pre-launch project provisioning needs (workspace/folder
     // trust) run the trust-only provisioning path here — before runtime

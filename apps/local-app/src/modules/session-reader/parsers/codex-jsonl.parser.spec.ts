@@ -201,6 +201,15 @@ function turnComplete(turnId = 'turn_002', ts = '2026-02-24T10:00:09.500Z'): obj
   };
 }
 
+/** The event Codex writes when the user interrupts a turn (Esc); no task_complete follows. */
+function turnAborted(turnId = 'turn_001', ts = '2026-02-24T10:00:09.000Z'): object {
+  return {
+    timestamp: ts,
+    type: 'event_msg',
+    payload: { type: 'turn_aborted', turn_id: turnId, reason: 'interrupted' },
+  };
+}
+
 function compacted(message = 'Compacted context summary'): object {
   return {
     timestamp: '2026-02-24T10:01:00.000Z',
@@ -1047,6 +1056,45 @@ describe('CodexJsonlParser', () => {
       taskComplete('turn_001', '2026-02-24T10:01:01.000Z'),
     ];
     fs.appendFileSync(file, appendedLines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+    const incremental = await parseCodexJsonl(file, { byteOffset });
+    expect(incremental.metrics.isOngoing).toBe(false);
+  });
+
+  it('ends an interrupted turn, so the next completion ends the session turn', async () => {
+    const file = tmpFile([
+      sessionMeta(),
+      turnContext('o3'),
+      taskStarted('turn_001'),
+      userMessage('Start'),
+      turnAborted('turn_001', '2026-02-24T10:00:05.000Z'),
+    ]);
+    expect((await parseCodexJsonl(file)).metrics.isOngoing).toBe(false);
+
+    fs.appendFileSync(
+      file,
+      [taskStarted('turn_002'), userMessage('Again'), taskComplete('turn_002')]
+        .map((l) => JSON.stringify(l))
+        .join('\n') + '\n',
+    );
+    expect((await parseCodexJsonl(file)).metrics.isOngoing).toBe(false);
+  });
+
+  it('counts an interrupted turn before the offset as ended', async () => {
+    const file = tmpFile([
+      sessionMeta(),
+      turnContext('o3'),
+      taskStarted('turn_001'),
+      userMessage('Start'),
+      turnAborted('turn_001', '2026-02-24T10:00:05.000Z'),
+    ]);
+    const byteOffset = fs.statSync(file).size;
+    fs.appendFileSync(
+      file,
+      [taskStarted('turn_002'), userMessage('Again'), taskComplete('turn_002')]
+        .map((l) => JSON.stringify(l))
+        .join('\n') + '\n',
+    );
 
     const incremental = await parseCodexJsonl(file, { byteOffset });
     expect(incremental.metrics.isOngoing).toBe(false);

@@ -97,20 +97,26 @@ function createHooksService(serviceEvents: EventsService) {
     getBySession: jest.fn().mockReturnValue([]),
     clearBySession: jest.fn().mockReturnValue(0),
   };
+  const eventEmitter = { emit: jest.fn() };
   return {
     service: new HooksService(
       storage as never,
       serviceEvents,
       pending as unknown as PendingAskUserQuestionService,
+      { capture: jest.fn() } as never,
+      eventEmitter as never,
     ),
     storage,
     pending,
+    eventEmitter,
   };
 }
 
 /** Build a fresh EventsService stub whose `publish` is a spy. */
-function eventsStub(): EventsService {
-  return { publish: jest.fn().mockResolvedValue('evt-id') } as unknown as EventsService;
+function eventsStub(): jest.Mocked<EventsService> {
+  return {
+    publish: jest.fn().mockResolvedValue('evt-id'),
+  } as unknown as jest.Mocked<EventsService>;
 }
 
 /** ProviderAdapterFactory mock: Claude binds (hooksProvideTranscriptPath=true),
@@ -131,7 +137,7 @@ function mockProviderAdapterFactory(): ProviderAdapterFactory {
 
 describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService → listener', () => {
   let service: HooksService;
-  let serviceEvents: EventsService;
+  let serviceEvents: jest.Mocked<EventsService>;
   let listener: TranscriptPersistenceListener;
   let listenerEvents: EventsService;
   let validator: { validateShape: jest.Mock };
@@ -223,23 +229,27 @@ describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService →
     expect(listenerEvents.publish).not.toHaveBeenCalled();
   });
 
-  it('flows a Copilot Stop through the DTO + service (handleStop is a confirmed no-op — final-metrics deferred)', async () => {
-    // Per EM note + backlog feb88d1c: the agentStop→final-metrics re-read is
-    // intentionally unwired. This asserts the CURRENT no-op behavior (NOT a
-    // metrics re-read, which does not exist yet).
+  it('flows a Copilot Stop through the DTO + service into a turn-end signal', async () => {
+    // The agentStop→final-metrics re-read stays unwired (backlog feb88d1c); Stop only ends the
+    // turn for the activity state machine.
+    const { service: stopService, eventEmitter } = createHooksService(serviceEvents);
     const parsed = HookEventSchema.parse(COPILOT_RELAY_STOP) as HookEventData;
     expect(parsed.hookEventName).toBe('Stop');
 
-    const result = await service.handleHookEvent(parsed);
+    const result = await stopService.handleHookEvent(parsed);
 
-    expect(result).toEqual({ ok: true, handled: false, data: {} });
+    expect(result).toEqual({ ok: true, handled: true, data: {} });
     expect(serviceEvents.publish).not.toHaveBeenCalled();
+    expect(eventEmitter.emit).toHaveBeenCalledWith(
+      'session.turn.hook',
+      expect.objectContaining({ sessionId: SESSION_ID, providerName: 'copilot', kind: 'stopped' }),
+    );
   });
 });
 
 describe('Claude regression seam: the same pipeline binds the transcript FROM the hook (byte-identical path)', () => {
   let service: HooksService;
-  let serviceEvents: EventsService;
+  let serviceEvents: jest.Mocked<EventsService>;
   let listener: TranscriptPersistenceListener;
   let listenerEvents: EventsService;
   let validator: { validateShape: jest.Mock };

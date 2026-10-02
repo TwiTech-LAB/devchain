@@ -41,6 +41,7 @@ describe('ScheduledEpicStorageDelegate (integration)', () => {
       name,
       rootPath: `/tmp/${name.toLowerCase().replace(/\s+/g, '-')}`,
       description: null,
+      isTemplate: false,
     });
   }
 
@@ -62,6 +63,8 @@ describe('ScheduledEpicStorageDelegate (integration)', () => {
       profileId: profile.id,
       providerId: provider.id,
       name: `config-${agentName}`,
+      options: null,
+      env: null,
     });
     const agent = await service.createAgent({
       projectId,

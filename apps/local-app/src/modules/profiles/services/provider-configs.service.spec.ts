@@ -70,9 +70,11 @@ describe('ProviderConfigsService', () => {
     return {
       id: 'agent-1',
       projectId: 'project-1',
+      isProjectOwner: false,
       profileId: 'profile-1',
       providerConfigId: 'config-1',
       modelOverride: null,
+      effortOverride: null,
       name: 'Coder',
       description: null,
       createdAt: '2024-01-01T00:00:00.000Z',

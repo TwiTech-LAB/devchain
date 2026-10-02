@@ -161,15 +161,7 @@ afterEach(() => {
 
 describe('TerminalComponent', () => {
   it('replays seed_ansi once before draining bounded live data staged behind it', async () => {
-    render(
-      <Terminal
-        sessionId="session-visual"
-        socket={null}
-        chrome="none"
-        className=""
-        ariaLabel="terminal"
-      />,
-    );
+    render(<Terminal sessionId="session-visual" chrome="none" className="" ariaLabel="terminal" />);
 
     expect(ioMock).toHaveBeenCalledTimes(1);
     const { instance: socket } = sockets[0];

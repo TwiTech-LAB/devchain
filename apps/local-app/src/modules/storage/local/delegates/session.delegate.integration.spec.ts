@@ -33,6 +33,7 @@ describe('SessionStorageDelegate (integration)', () => {
       name,
       rootPath: `/tmp/${name.toLowerCase().replace(/\s+/g, '-')}-${randomUUID().slice(0, 8)}`,
       description: null,
+      isTemplate: false,
     });
   }
 
@@ -48,6 +49,8 @@ describe('SessionStorageDelegate (integration)', () => {
       profileId: profile.id,
       providerId: provider.id,
       name: `config-${agentName}`,
+      options: null,
+      env: null,
     });
     const agent = await service.createAgent({
       projectId,

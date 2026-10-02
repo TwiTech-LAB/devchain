@@ -4,10 +4,12 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import type { WatchersService } from '../../watchers/services/watchers.service';
 import type { SeederContext } from '../types/seeder.types';
 import { runSeedRenewInstructionsSubscriber } from './0005_seed_renew_instructions_subscriber';
+import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
 
 function createProject(id: string, name: string): Project {
   return {
     id,
+    workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
     name,
     description: null,
     rootPath: `/tmp/${name}`,
@@ -62,6 +64,7 @@ describe('0005_seed_renew_instructions_subscriber', () => {
 
     return {
       storage,
+      providerEffortSeeding: {} as SeederContext['providerEffortSeeding'],
       watchersService: {} as unknown as WatchersService,
       db: {} as BetterSQLite3Database,
       logger: {

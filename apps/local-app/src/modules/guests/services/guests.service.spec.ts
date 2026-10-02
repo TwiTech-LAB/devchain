@@ -9,9 +9,26 @@ import { createMockProject, createMockAgent } from '../../../../test/factories';
 
 describe('GuestsService', () => {
   let guestsService: GuestsService;
-  let mockStorage: jest.Mocked<Partial<StorageService>>;
-  let mockTerminalIO: jest.Mocked<Partial<TerminalIOService>>;
-  let mockEventsService: jest.Mocked<Partial<EventsService>>;
+  let mockStorage: jest.Mocked<
+    Pick<
+      StorageService,
+      | 'getProjectByRootPath'
+      | 'findProjectContainingPath'
+      | 'createProject'
+      | 'deleteProject'
+      | 'createGuest'
+      | 'getGuest'
+      | 'getGuestByName'
+      | 'getGuestByTmuxSessionId'
+      | 'listGuests'
+      | 'listAllGuests'
+      | 'deleteGuest'
+      | 'updateGuestLastSeen'
+      | 'getAgentByName'
+    >
+  >;
+  let mockTerminalIO: jest.Mocked<Pick<TerminalIOService, 'sessionExists' | 'getSessionCwd'>>;
+  let mockEventsService: jest.Mocked<Pick<EventsService, 'publish'>>;
 
   beforeEach(() => {
     mockStorage = {
@@ -40,9 +57,9 @@ describe('GuestsService', () => {
     };
 
     guestsService = new GuestsService(
-      mockStorage as StorageService,
+      mockStorage as unknown as StorageService,
       mockTerminalIO as unknown as TerminalIOService,
-      mockEventsService as EventsService,
+      mockEventsService as unknown as EventsService,
     );
   });
 
@@ -122,6 +139,7 @@ describe('GuestsService', () => {
       id: 'guest-1',
       projectId: 'project-1',
       name: 'TestGuest',
+      description: null,
       tmuxSessionId: 'tmux-session-123',
       lastSeenAt: '2024-01-01T00:00:00Z',
       createdAt: '2024-01-01T00:00:00Z',
@@ -136,7 +154,7 @@ describe('GuestsService', () => {
       mockStorage.getAgentByName!.mockRejectedValueOnce(new NotFoundError('Agent', 'TestGuest'));
       mockStorage.getGuestByName!.mockResolvedValueOnce(null);
       mockStorage.createGuest!.mockResolvedValueOnce(mockGuest);
-      mockEventsService.publish!.mockResolvedValueOnce(undefined);
+      mockEventsService.publish.mockResolvedValueOnce('event-id');
 
       const result = await guestsService.register(mockRegisterDto);
 
@@ -164,7 +182,7 @@ describe('GuestsService', () => {
       mockStorage.getAgentByName!.mockRejectedValueOnce(new NotFoundError('Agent', 'TestGuest'));
       mockStorage.getGuestByName!.mockResolvedValueOnce(null);
       mockStorage.createGuest!.mockResolvedValueOnce({ ...mockGuest, projectId: 'sandbox-id' });
-      mockEventsService.publish!.mockResolvedValueOnce(undefined);
+      mockEventsService.publish.mockResolvedValueOnce('event-id');
 
       const result = await guestsService.register(mockRegisterDto);
 

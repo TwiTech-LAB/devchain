@@ -181,7 +181,8 @@ export function DiskEstimate({
           variant="outline"
           size="sm"
           onClick={() => void estimate.measure()}
-          disabled={disabled || estimate.pending || estimate.selectedIds.length === 0}
+          disabled={disabled || estimate.selectedIds.length === 0}
+          pending={estimate.pending}
         >
           {estimate.pending ? 'Measuring…' : 'Measure'}
         </Button>

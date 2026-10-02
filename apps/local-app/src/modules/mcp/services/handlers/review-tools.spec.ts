@@ -7,11 +7,24 @@ import {
   handleApplySuggestion,
 } from './review-tools';
 import type { ReviewToolContext } from './review-context';
-import type { AgentSessionContext, GuestSessionContext } from '../../dtos/mcp.dto';
+import type {
+  AgentSessionContext,
+  ApplySuggestionResponse,
+  GetReviewCommentsResponse,
+  GetReviewResponse,
+  GuestSessionContext,
+  ListReviewsResponse,
+  McpResponse,
+} from '../../dtos/mcp.dto';
 import { SuggestionApplicationError } from '../../../reviews/services/review-suggestion-applier.service';
 import { createNullAdapter } from './null-adapter';
 import type { ReviewsService } from '../../../reviews/services/reviews.service';
 import type { ReviewSuggestionApplier } from '../../../reviews/services/review-suggestion-applier.service';
+
+/** `McpResponse.data` is `unknown` by design; tests state the payload they expect. */
+function dataOf<T>(result: McpResponse): T {
+  return result.data as T;
+}
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -153,7 +166,7 @@ describe('review-tools handlers', () => {
 
     it('returns error when no project associated', async () => {
       const sessionCtx = makeAgentCtx();
-      (sessionCtx as Record<string, unknown>).project = null;
+      (sessionCtx as unknown as Record<string, unknown>).project = null;
       const ctx = makeCtx(sessionCtx);
 
       const result = await handleListReviews(ctx, { sessionId: SESSION_ID });
@@ -194,9 +207,9 @@ describe('review-tools handlers', () => {
 
       const result = await handleListReviews(ctx, { sessionId: SESSION_ID });
       expect(result.success).toBe(true);
-      expect(result.data.reviews).toHaveLength(1);
-      expect(result.data.reviews[0].id).toBe(REVIEW_ID);
-      expect(result.data.total).toBe(1);
+      expect(dataOf<ListReviewsResponse>(result).reviews).toHaveLength(1);
+      expect(dataOf<ListReviewsResponse>(result).reviews[0].id).toBe(REVIEW_ID);
+      expect(dataOf<ListReviewsResponse>(result).total).toBe(1);
     });
 
     it('passes status, epic, and pagination params to service', async () => {
@@ -257,9 +270,9 @@ describe('review-tools handlers', () => {
 
       const result = await handleGetReview(ctx, { sessionId: SESSION_ID, reviewId: REVIEW_ID });
       expect(result.success).toBe(true);
-      expect(result.data.changedFiles).toHaveLength(1);
-      expect(result.data.comments).toHaveLength(1);
-      expect(result.data.comments[0].authorAgentName).toBe(AGENT_NAME);
+      expect(dataOf<GetReviewResponse>(result).changedFiles).toHaveLength(1);
+      expect(dataOf<GetReviewResponse>(result).comments).toHaveLength(1);
+      expect(dataOf<GetReviewResponse>(result).comments[0].authorAgentName).toBe(AGENT_NAME);
     });
 
     it('gracefully handles agent name resolution failure', async () => {
@@ -274,7 +287,7 @@ describe('review-tools handlers', () => {
 
       const result = await handleGetReview(ctx, { sessionId: SESSION_ID, reviewId: REVIEW_ID });
       expect(result.success).toBe(true);
-      expect(result.data.comments[0].authorAgentName).toBeUndefined();
+      expect(dataOf<GetReviewResponse>(result).comments[0].authorAgentName).toBeUndefined();
     });
   });
 
@@ -321,8 +334,10 @@ describe('review-tools handlers', () => {
         reviewId: REVIEW_ID,
       });
       expect(result.success).toBe(true);
-      expect(result.data.comments).toHaveLength(1);
-      expect(result.data.comments[0].authorAgentName).toBe(AGENT_NAME);
+      expect(dataOf<GetReviewCommentsResponse>(result).comments).toHaveLength(1);
+      expect(dataOf<GetReviewCommentsResponse>(result).comments[0].authorAgentName).toBe(
+        AGENT_NAME,
+      );
     });
 
     it('passes filter params to service', async () => {
@@ -484,14 +499,14 @@ describe('review-tools handlers', () => {
         version: 1,
       });
       expect(result.success).toBe(true);
-      expect(result.data.applied.filePath).toBe('src/index.ts');
-      expect(result.data.applied).toEqual({
+      expect(dataOf<ApplySuggestionResponse>(result).applied.filePath).toBe('src/index.ts');
+      expect(dataOf<ApplySuggestionResponse>(result).applied).toEqual({
         filePath: 'src/index.ts',
         lineStart: 1,
         lineEnd: 1,
       });
-      expect(result.data.commentId).toBe(COMMENT_ID);
-      expect(result.data.version).toBe(1);
+      expect(dataOf<ApplySuggestionResponse>(result).commentId).toBe(COMMENT_ID);
+      expect(dataOf<ApplySuggestionResponse>(result).version).toBe(1);
     });
 
     it('returns SERVICE_UNAVAILABLE when applier is null adapter', async () => {

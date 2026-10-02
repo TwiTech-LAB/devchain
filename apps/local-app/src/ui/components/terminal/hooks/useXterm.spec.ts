@@ -220,10 +220,12 @@ describe('useXterm', () => {
       return { xtermRef, fitAddonRef };
     });
 
-    const terminal = result.current.xtermRef.current as Record<string, unknown>;
-    const registerOscHandler = (terminal.parser as { registerOscHandler: jest.Mock })
-      .registerOscHandler;
-    const handler = registerOscHandler.mock.calls.find(([code]) => code === 52)?.[1] as
+    const terminal = result.current.xtermRef.current;
+    if (!terminal) throw new Error('terminal was not constructed');
+    const parser = terminal.parser as unknown as {
+      registerOscHandler: jest.Mock;
+    };
+    const handler = parser.registerOscHandler.mock.calls.find(([code]) => code === 52)?.[1] as
       | ((data: string) => boolean)
       | undefined;
 
@@ -617,7 +619,8 @@ describe('useXterm', () => {
         useXterm(terminalRef, 'test-session', xtermRef, fitAddonRef, undefined, 'form');
         return { xtermRef, fitAddonRef };
       });
-      const terminal = result.current.xtermRef.current as Record<string, unknown>;
+      const terminal = result.current.xtermRef.current;
+      if (!terminal) throw new Error('terminal was not constructed');
 
       mockContainerElement.dispatchEvent(
         new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }),

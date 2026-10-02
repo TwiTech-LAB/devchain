@@ -70,7 +70,7 @@ describe('useExternalTaskTimeEntries', () => {
     fetchMock.mockReset();
     cryptoRandomUuid = jest
       .spyOn(window.crypto, 'randomUUID')
-      .mockReturnValue('generated-operation-id');
+      .mockReturnValue('00000000-0000-4000-8000-000000000002');
   });
 
   afterEach(() => {
@@ -169,7 +169,7 @@ describe('useExternalTaskTimeEntries', () => {
     );
     const headers = (createCall[1] as RequestInit).headers as Record<string, string>;
     expect(headers['X-DevChain-Connection-Epoch']).toBe('4');
-    expect(headers['Idempotency-Key']).toBe('generated-operation-id');
+    expect(headers['Idempotency-Key']).toBe('00000000-0000-4000-8000-000000000002');
     expect((createCall[1] as RequestInit).body).toBe(
       JSON.stringify({ startedAt: '2026-08-22T11:30:00.000Z', durationMs: 1_800_000, note: null }),
     );
@@ -220,7 +220,7 @@ describe('useExternalTaskTimeEntries', () => {
     );
     expect((updateCall[1] as RequestInit).headers).toMatchObject({
       'X-DevChain-Connection-Epoch': '4',
-      'Idempotency-Key': 'generated-operation-id',
+      'Idempotency-Key': '00000000-0000-4000-8000-000000000002',
     });
     expect(JSON.parse(String((updateCall[1] as RequestInit).body))).toEqual({
       startedAt: '2026-08-22T11:30:00.000Z',
@@ -412,14 +412,11 @@ describe('useExternalTaskTimeEntries', () => {
     );
 
     act(() => {
-      result.current.submitCreate(
-        {
-          startedAt: '2026-08-22T11:30:00.000Z',
-          durationMs: 1_800_000,
-          note: null,
-        },
-        'estimate',
-      );
+      result.current.submitCreate({
+        startedAt: '2026-08-22T11:30:00.000Z',
+        durationMs: 1_800_000,
+        note: null,
+      });
     });
     await waitFor(() => expect(result.current.create.isPending).toBe(true));
 
@@ -503,7 +500,7 @@ describe('useExternalTaskTimeEntries', () => {
     resolveDelete!(
       jsonResponse({
         outcome: 'deleted',
-        receipt: { operationId: 'generated-operation-id', phase: 'succeeded' },
+        receipt: { operationId: '00000000-0000-4000-8000-000000000002', phase: 'succeeded' },
       }),
     );
     await waitFor(() => expect(result.current.writeBlocked).toBe(false));
@@ -677,7 +674,7 @@ describe('useExternalTaskTimeEntries', () => {
     );
     const headers = (deleteCall[1] as RequestInit).headers as Record<string, string>;
     expect(headers['X-DevChain-Connection-Epoch']).toBe('4');
-    expect(headers['Idempotency-Key']).toBe('generated-operation-id');
+    expect(headers['Idempotency-Key']).toBe('00000000-0000-4000-8000-000000000002');
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: externalMyWorkQueryKeys.taskTimeEntries('jira', connectionEpoch, 'ENG-1'),
       exact: true,
@@ -718,7 +715,7 @@ describe('useExternalTaskTimeEntries', () => {
           jsonResponse({
             outcome: 'outcome_unknown',
             receipt: {
-              operationId: 'generated-operation-id',
+              operationId: '00000000-0000-4000-8000-000000000002',
               phase: 'outcome_unknown',
               canVerify,
               expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
@@ -731,7 +728,7 @@ describe('useExternalTaskTimeEntries', () => {
           jsonResponse({
             outcome: 'outcome_unknown',
             receipt: {
-              operationId: 'generated-operation-id',
+              operationId: '00000000-0000-4000-8000-000000000002',
               phase: 'outcome_unknown',
               canVerify,
               expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
@@ -766,7 +763,7 @@ describe('useExternalTaskTimeEntries', () => {
           jsonResponse({
             outcome: 'outcome_unknown',
             receipt: {
-              operationId: 'generated-operation-id',
+              operationId: '00000000-0000-4000-8000-000000000002',
               phase: 'outcome_unknown',
               canVerify: true,
               expiresAt: '2020-01-01T00:00:00.000Z',
@@ -799,7 +796,7 @@ describe('useExternalTaskTimeEntries', () => {
           jsonResponse({
             outcome: 'outcome_unknown',
             receipt: {
-              operationId: 'generated-operation-id',
+              operationId: '00000000-0000-4000-8000-000000000002',
               phase: 'outcome_unknown',
               canVerify: true,
               expiresAt: '2026-09-01T11:00:00.000Z',
@@ -840,7 +837,7 @@ describe('useExternalTaskTimeEntries', () => {
           jsonResponse({
             outcome: 'outcome_unknown',
             receipt: {
-              operationId: 'generated-operation-id',
+              operationId: '00000000-0000-4000-8000-000000000002',
               phase: 'outcome_unknown',
               canVerify: true,
               expiresAt: '2026-09-01T11:00:00.000Z',
@@ -883,7 +880,7 @@ describe('useExternalTaskTimeEntries', () => {
           jsonResponse({
             outcome: 'outcome_unknown',
             receipt: {
-              operationId: 'generated-operation-id',
+              operationId: '00000000-0000-4000-8000-000000000002',
               phase: 'outcome_unknown',
               canVerify: true,
               expiresAt: '2026-09-01T11:00:00.000Z',

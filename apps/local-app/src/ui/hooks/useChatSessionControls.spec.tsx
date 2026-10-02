@@ -83,8 +83,8 @@ function buildOptions(
       'agent-2': { online: true, sessionId: 'sess-2-old' },
     },
     agents: [
-      { id: 'agent-1', name: 'Agent One', type: 'agent' as const },
-      { id: 'agent-2', name: 'Agent Two', type: 'agent' as const },
+      { id: 'agent-1', name: 'Agent One', isProjectOwner: false, type: 'agent' as const },
+      { id: 'agent-2', name: 'Agent Two', isProjectOwner: false, type: 'agent' as const },
     ],
     presenceReady: true,
     ...overrides,

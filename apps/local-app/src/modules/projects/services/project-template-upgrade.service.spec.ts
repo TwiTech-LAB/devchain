@@ -509,7 +509,7 @@ describe('ProjectTemplateUpgradeService', () => {
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
-      mockProjectsService.importProject.mockResolvedValue({ success: true, warnings: [] });
+      mockProjectsService.importProject.mockResolvedValue({ success: true, warnings: [] } as never);
 
       await service.upgradeProject({
         projectId: 'project-123',
@@ -711,7 +711,7 @@ describe('ProjectTemplateUpgradeService', () => {
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
       // importProject returns generic failure (success: false without providerMappingRequired)
-      mockProjectsService.importProject.mockResolvedValue({ success: false });
+      mockProjectsService.importProject.mockResolvedValue({ success: false } as never);
 
       const result = await service.upgradeProject({
         projectId: 'project-123',
@@ -749,7 +749,7 @@ describe('ProjectTemplateUpgradeService', () => {
           promptTitles: ['Private SOP'],
           issues: [{ promptTitle: 'Private SOP', profileNames: ['Coder'] }],
         },
-      });
+      } as never);
 
       const result = await service.upgradeProject({
         projectId: 'project-123',
@@ -1126,7 +1126,7 @@ describe('ProjectTemplateUpgradeService', () => {
       mockProjectsService.importProject.mockResolvedValue({
         success: false,
         error: 'snapshot rejected',
-      });
+      } as never);
 
       await expect(service.restoreBackup(backupId)).rejects.toThrow(
         'Backup restore import failed: snapshot rejected',

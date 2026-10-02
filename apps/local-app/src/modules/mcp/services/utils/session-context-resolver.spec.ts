@@ -145,8 +145,12 @@ describe('SessionContextResolver', () => {
       {
         id: 'guest000-0000-0000-0000-000000000001',
         name: 'Guest',
+        description: null,
         projectId: PROJECT_ID,
         tmuxSessionId: 'guest-tmux',
+        lastSeenAt: '2024-01-01T00:00:00Z',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
       },
     ]);
     const terminal = {

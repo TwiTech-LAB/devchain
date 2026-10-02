@@ -3,9 +3,9 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AgentRow } from './AgentRow';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 
-interface GlobalWithDOMRect extends Global {
+type GlobalWithDOMRect = typeof globalThis & {
   DOMRect?: typeof DOMRect;
-}
+};
 
 if (!(global as GlobalWithDOMRect).DOMRect) {
   (global as GlobalWithDOMRect).DOMRect = class DOMRect {
@@ -58,6 +58,7 @@ const agent: AgentOrGuest = {
   id: 'agent-1',
   name: 'Alpha',
   profileId: 'profile-1',
+  isProjectOwner: false,
 };
 
 function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>> = {}) {
@@ -546,7 +547,7 @@ describe('AgentRow', () => {
 
       const row = screen.getByRole('listitem');
       const accent = marker(row);
-      expect(accent).not.toBeNull();
+      if (!accent) throw new Error('unlogged-time marker missing');
       expect(accent).toHaveAttribute('aria-hidden', 'true');
       expect(accent.className).toContain('pointer-events-none');
       expect(accent.className).toContain('-right-0.5');

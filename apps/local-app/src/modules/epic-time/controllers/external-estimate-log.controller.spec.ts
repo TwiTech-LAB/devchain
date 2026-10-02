@@ -22,6 +22,7 @@ describe('ExternalEstimateLogController', () => {
   const state = (
     overrides: Partial<Extract<ExternalEstimateLogState, { pendingOperationId: string }>> = {},
   ): Extract<ExternalEstimateLogState, { pendingOperationId: string }> => ({
+    projectId: PROJECT_ID,
     provider: 'jira',
     remoteScopeKey: SCOPE_KEY,
     remoteTaskId: TASK_ID,
@@ -46,6 +47,7 @@ describe('ExternalEstimateLogController', () => {
     loggedMinutes: number,
     revision: number,
   ): Extract<ExternalEstimateLogState, { pendingOperationId: null }> => ({
+    projectId: PROJECT_ID,
     provider: 'jira',
     remoteScopeKey: SCOPE_KEY,
     remoteTaskId: TASK_ID,

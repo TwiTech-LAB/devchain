@@ -72,7 +72,7 @@ export function RenameVmDialog({
             <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
               Cancel
             </Button>
-            <Button type="submit" disabled={!canSubmit}>
+            <Button type="submit" disabled={!canSubmit} pending={pending}>
               {pending ? 'Renaming…' : 'Rename'}
             </Button>
           </DialogFooter>

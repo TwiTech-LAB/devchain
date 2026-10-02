@@ -161,7 +161,9 @@ describe('ExternalTaskTimeTracking', () => {
 
   beforeEach(() => {
     fetchMock.mockReset();
-    uuidSpy = jest.spyOn(window.crypto, 'randomUUID').mockReturnValue('generated-operation-id');
+    uuidSpy = jest
+      .spyOn(window.crypto, 'randomUUID')
+      .mockReturnValue('00000000-0000-4000-8000-000000000004');
   });
 
   afterEach(() => {
@@ -740,7 +742,7 @@ describe('ExternalTaskTimeTracking', () => {
     expect((createCall[1] as RequestInit).body).toBe(
       JSON.stringify({
         scopeKey: 'acme.atlassian.net',
-        requestKey: 'generated-operation-id',
+        requestKey: '00000000-0000-4000-8000-000000000004',
         timeZone: resolveEpicTimeZone(),
         estimateTotalMinutes: 90,
         expectedRevision: 0,
@@ -841,7 +843,7 @@ describe('ExternalTaskTimeTracking', () => {
     expect((request[1] as RequestInit).body).toBe(
       JSON.stringify({
         scopeKey: 'acme.atlassian.net',
-        requestKey: 'generated-operation-id',
+        requestKey: '00000000-0000-4000-8000-000000000004',
         timeZone: resolveEpicTimeZone(),
         estimateTotalMinutes: 120,
         expectedRevision: 5,
@@ -906,7 +908,7 @@ describe('ExternalTaskTimeTracking', () => {
     expect((request[1] as RequestInit).body).toBe(
       JSON.stringify({
         scopeKey: 'acme.atlassian.net',
-        requestKey: 'generated-operation-id',
+        requestKey: '00000000-0000-4000-8000-000000000004',
         timeZone: resolveEpicTimeZone(),
         estimateTotalMinutes: 120,
         expectedRevision: 0,
@@ -917,7 +919,7 @@ describe('ExternalTaskTimeTracking', () => {
       }),
     );
     expect((request[1] as RequestInit).headers).toMatchObject({
-      'Idempotency-Key': 'generated-operation-id',
+      'Idempotency-Key': '00000000-0000-4000-8000-000000000004',
     });
   });
 
@@ -2147,8 +2149,10 @@ describe('ExternalTaskTimeTracking', () => {
     });
     // Focus lands on the next remaining row's first mutation affordance.
     await waitFor(() => {
-      expect(document.activeElement?.dataset.entryEdit).toBeDefined();
-      expect(document.activeElement?.textContent).toBe('Edit');
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement)) throw new Error('focus target missing');
+      expect(active.dataset.entryEdit).toBeDefined();
+      expect(active.textContent).toBe('Edit');
     });
     expect(screen.getByRole('status', { hidden: true })).toHaveTextContent('Time entry deleted.');
   });

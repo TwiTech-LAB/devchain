@@ -55,6 +55,9 @@ it('refuses to connect a provisioning remote without an address', async () => {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
   );
   await expect(service.attach('remote-1', 'project-1')).rejects.toMatchObject({
     details: expect.objectContaining({ code: 'REMOTE_PROVISIONING' }),
@@ -160,7 +163,16 @@ describe('RemoteOperationsService.detach', () => {
         return detach;
       }),
     };
-    service = new RemoteOperationsService(storage as never, runner as never);
+    service = new RemoteOperationsService(
+      storage as never,
+      runner as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
   });
 
   it('starts a detach directly when no operation is open', async () => {
@@ -300,6 +312,7 @@ describe('RemoteOperationsService.installHost credentials', () => {
       { isSupported: jest.fn(), getSupportedProviders: jest.fn() } as never,
       installOperation as never,
       { resolve: jest.fn(async (input: never) => ({ credentials: input })) } as never,
+      {} as never,
     );
     const ssh = {
       user: 'vm-admin',
@@ -369,6 +382,7 @@ describe('RemoteOperationsService.installHost credentials', () => {
           credentials: { user: 'vm-admin', privateKey: 'private-key-secret' },
         }),
       } as never,
+      {} as never,
     );
     const ssh = { user: 'vm-admin', keyName: 'id_rsa' };
 
@@ -426,6 +440,7 @@ describe('RemoteOperationsService.installHost account validation', () => {
       { isSupported: jest.fn(() => true), getSupportedProviders: jest.fn(() => []) } as never,
       installOperation as never,
       sshKeys as never,
+      {} as never,
     );
     return { service, runner, storage, installOperation, sshKeys };
   }
@@ -468,6 +483,9 @@ describe('RemoteOperationsService.installHost account validation', () => {
     const service = new RemoteOperationsService(
       storage as never,
       runner as never,
+      {} as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -609,6 +627,9 @@ it('persists public keys when claiming an own VM', async () => {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
   );
   await service.claim(ClaimRemoteSchema.parse({ remoteId, port: 3000, sshPublicKeys: [key] }));
   expect(runner.start).toHaveBeenCalledWith(
@@ -652,6 +673,9 @@ describe('RemoteOperationsService.claim by address', () => {
       storage as never,
       runner as never,
       remotes as never,
+      {} as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
     );

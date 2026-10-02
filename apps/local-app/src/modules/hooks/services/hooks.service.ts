@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { EventsService } from '../../events/services/events.service';
 import type {
@@ -9,11 +10,16 @@ import type {
   SessionStartHookEvent,
   StatusLineHookEvent,
   StopHookEvent,
+  UserPromptSubmitHookEvent,
 } from '../dtos/hook-event.dto';
 import { ASK_USER_QUESTION_TOOL, normalizeAskUserQuestions } from '../dtos/ask-user-question.dto';
 import { PendingAskUserQuestionService } from './pending-ask-user-question.service';
 import { createLogger } from '../../../common/logging/logger';
 import { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
+import {
+  SESSION_TURN_HOOK_SIGNAL,
+  type SessionTurnHookSignal,
+} from '../../terminal/services/session-turn-signals';
 
 const logger = createLogger('HooksService');
 
@@ -27,6 +33,7 @@ export class HooksService {
     private readonly events: EventsService,
     private readonly pendingAskQuestions: PendingAskUserQuestionService,
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -46,6 +53,8 @@ export class HooksService {
     switch (hookEventName) {
       case 'SessionStart':
         return this.handleSessionStart(data);
+      case 'UserPromptSubmit':
+        return this.handleUserPromptSubmit(data);
       case 'Stop':
         return this.handleStop(data);
       case 'PreToolUse':
@@ -71,21 +80,38 @@ export class HooksService {
     return { ok: true, handled: true, data: {} };
   }
 
-  /**
-   * Stop (Copilot `agentStop`): the agent finished a turn. Accepted + dispatched
-   * here so the ingestion path tolerates the 2nd provider; the final-metrics
-   * capture listener lands in a later phase (P3-4). No-op for now.
-   */
-  private async handleStop(data: StopHookEvent): Promise<HookEventResponse> {
+  /** UserPromptSubmit (Claude): a turn starts, so the session is busy. */
+  private handleUserPromptSubmit(data: UserPromptSubmitHookEvent): HookEventResponse {
+    return this.signalTurn(data, 'prompt-submitted');
+  }
+
+  /** Stop (Claude `Stop`, Copilot `agentStop`): the agent finished a turn, so it is idle. */
+  private handleStop(data: StopHookEvent): HookEventResponse {
     logger.debug(
       {
         providerName: data.providerName ?? 'claude',
         sessionId: data.sessionId,
         stopReason: data.stopReason,
       },
-      'Stop hook received — final-metrics handling deferred to a later phase',
+      'Stop hook received',
     );
-    return { ok: true, handled: false, data: {} };
+    return this.signalTurn(data, 'stopped');
+  }
+
+  private signalTurn(
+    data: UserPromptSubmitHookEvent | StopHookEvent,
+    kind: SessionTurnHookSignal['kind'],
+  ): HookEventResponse {
+    if (!data.sessionId) return { ok: true, handled: false, data: {} };
+    const signal: SessionTurnHookSignal = {
+      sessionId: data.sessionId,
+      providerName: data.providerName ?? 'claude',
+      kind,
+      firedAtMs: data.firedAtMs ?? Date.now(),
+    };
+    // Nest isolates listener errors; the activity listener logs its own.
+    this.eventEmitter.emit(SESSION_TURN_HOOK_SIGNAL, signal);
+    return { ok: true, handled: true, data: {} };
   }
 
   /**

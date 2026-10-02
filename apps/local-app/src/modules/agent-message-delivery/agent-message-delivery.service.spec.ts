@@ -60,11 +60,11 @@ function buildService() {
   };
   const service = new AgentMessageDeliveryService(
     resolver,
-    launcher as SessionLauncherFacade,
+    launcher as unknown as SessionLauncherFacade,
     formatter,
-    messageEnqueue as MessageEnqueueService,
-    guestDelivery as GuestDeliveryService,
-    activeSessionLookup as ActiveSessionLookup,
+    messageEnqueue as unknown as MessageEnqueueService,
+    guestDelivery as unknown as GuestDeliveryService,
+    activeSessionLookup as unknown as ActiveSessionLookup,
     eventsService as unknown as EventsService,
   );
 

@@ -688,6 +688,7 @@ describe('ExternalTaskDetailDialog', () => {
         epicId: 'epic-other',
         projectId: 'project-other',
         projectName: 'Original project',
+        loggedMinutes: null,
       },
     });
 
@@ -892,6 +893,9 @@ describe('ExternalTaskDetailDialog', () => {
       author: { remoteId: 'author-c1', displayName: 'Author C1' },
       body: 'Cached comment body',
       bodyTruncated: false,
+      rich: null,
+      lookupToken: null,
+      owned: false,
       createdAt: '2026-08-20T12:00:00.000Z',
       updatedAt: null,
     };

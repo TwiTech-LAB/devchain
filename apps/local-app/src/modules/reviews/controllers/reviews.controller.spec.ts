@@ -77,6 +77,7 @@ describe('ReviewsController', () => {
       title: overrides.title ?? 'Test Review',
       description: overrides.description ?? null,
       status: overrides.status ?? 'draft',
+      mode: overrides.mode ?? 'commit',
       baseRef: overrides.baseRef ?? 'main',
       headRef: overrides.headRef ?? 'feature/test',
       baseSha: overrides.baseSha ?? 'abc123',
@@ -104,6 +105,7 @@ describe('ReviewsController', () => {
       status: overrides.status ?? 'open',
       authorType: overrides.authorType ?? 'user',
       authorAgentId: overrides.authorAgentId ?? null,
+      editedAt: overrides.editedAt ?? null,
       version: overrides.version ?? 1,
       createdAt: overrides.createdAt ?? now,
       updatedAt: overrides.updatedAt ?? now,
@@ -260,7 +262,7 @@ describe('ReviewsController', () => {
 
     it('throws BadRequestException for version conflict', async () => {
       reviewsService.updateReview.mockRejectedValue(
-        new OptimisticLockError('Review', reviewId, 1, 2),
+        new OptimisticLockError('Review', reviewId, { expectedVersion: 1, actualVersion: 2 }),
       );
 
       await expect(
@@ -383,7 +385,7 @@ describe('ReviewsController', () => {
 
     it('throws BadRequestException for version conflict', async () => {
       reviewsService.updateComment.mockRejectedValue(
-        new OptimisticLockError('Comment', commentId, 1, 2),
+        new OptimisticLockError('Comment', commentId, { expectedVersion: 1, actualVersion: 2 }),
       );
 
       await expect(

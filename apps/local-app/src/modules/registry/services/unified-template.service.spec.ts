@@ -687,7 +687,7 @@ describe('UnifiedTemplateService', () => {
         ...templateWithVersion,
         watchers: [],
         subscribers: [],
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      } as unknown as ReturnType<typeof devchainShared.ExportSchema.parse>);
 
       mockExistsSyncFn.mockReturnValue(true);
       mockReadFileSyncFn.mockReturnValue(JSON.stringify(templateWithVersion));
@@ -729,7 +729,7 @@ describe('UnifiedTemplateService', () => {
         ...templateWithSlug,
         watchers: [],
         subscribers: [],
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      } as unknown as ReturnType<typeof devchainShared.ExportSchema.parse>);
 
       mockExistsSyncFn.mockReturnValue(true);
       mockReadFileSyncFn.mockReturnValue(JSON.stringify(templateWithSlug));
@@ -753,7 +753,7 @@ describe('UnifiedTemplateService', () => {
         ...templateWithPartialManifest,
         watchers: [],
         subscribers: [],
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      } as unknown as ReturnType<typeof devchainShared.ExportSchema.parse>);
 
       mockExistsSyncFn.mockReturnValue(true);
       mockReadFileSyncFn.mockReturnValue(JSON.stringify(templateWithPartialManifest));

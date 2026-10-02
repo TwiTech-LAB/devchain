@@ -37,11 +37,34 @@ describe('ProjectsController', () => {
       | 'deleteProject'
       | 'listAgentProfiles'
       | 'listAllProfileProviderConfigs'
+      | 'listAgents'
     >
   >;
-  let projectsService: jest.Mocked<Partial<ProjectsService>>;
-  let templateUpgradeService: jest.Mocked<Partial<ProjectTemplateUpgradeService>>;
-  let registryImportService: jest.Mocked<Partial<ProjectRegistryImportService>>;
+  let projectsService: jest.Mocked<
+    Pick<
+      ProjectsService,
+      | 'listTemplates'
+      | 'createFromTemplate'
+      | 'setupPreview'
+      | 'exportProject'
+      | 'importProject'
+      | 'updateProject'
+      | 'deleteProject'
+      | 'getTemplateManifestForProject'
+      | 'getBundledUpgradesForProjects'
+      | 'doesProjectMatchPreset'
+      | 'applyPreset'
+    >
+  >;
+  let templateUpgradeService: jest.Mocked<
+    Pick<
+      ProjectTemplateUpgradeService,
+      'upgradeProject' | 'previewUpgrade' | 'restoreBackup' | 'getBackupInfo' | 'getProjectBackups'
+    >
+  >;
+  let registryImportService: jest.Mocked<
+    Pick<ProjectRegistryImportService, 'createProjectFromRegistry'>
+  >;
   let settingsService: jest.Mocked<
     Pick<
       SettingsService,
@@ -49,6 +72,12 @@ describe('ProjectsController', () => {
       | 'getAllProjectTemplateMetadataMap'
       | 'clearProjectTemplateMetadata'
       | 'clearProjectPresets'
+      | 'getProjectPresets'
+      | 'getProjectActivePreset'
+      | 'setProjectActivePreset'
+      | 'createProjectPreset'
+      | 'updateProjectPreset'
+      | 'deleteProjectPreset'
     >
   >;
 
@@ -80,6 +109,8 @@ describe('ProjectsController', () => {
       deleteProject: jest.fn(),
       getTemplateManifestForProject: jest.fn(),
       getBundledUpgradesForProjects: jest.fn().mockReturnValue(new Map()),
+      doesProjectMatchPreset: jest.fn(),
+      applyPreset: jest.fn(),
     };
 
     templateUpgradeService = {
@@ -99,6 +130,12 @@ describe('ProjectsController', () => {
       getAllProjectTemplateMetadataMap: jest.fn().mockReturnValue(new Map()),
       clearProjectTemplateMetadata: jest.fn(),
       clearProjectPresets: jest.fn(),
+      getProjectPresets: jest.fn().mockReturnValue([]),
+      getProjectActivePreset: jest.fn().mockReturnValue(null),
+      setProjectActivePreset: jest.fn(),
+      createProjectPreset: jest.fn().mockResolvedValue(undefined),
+      updateProjectPreset: jest.fn().mockResolvedValue(undefined),
+      deleteProjectPreset: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -639,12 +676,10 @@ describe('ProjectsController', () => {
               id: 'profile1',
               projectId: 'p1',
               familySlug: 'coder',
-              providerId: 'default-provider',
               name: 'Profile 1',
               instructions: null,
               temperature: null,
               maxTokens: null,
-              options: null,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             },
@@ -660,8 +695,13 @@ describe('ProjectsController', () => {
             profileId: 'profile1',
             providerId: 'claude',
             id: 'c1',
+            name: 'Claude Config',
+            description: null,
             options: null,
             env: null,
+            model: null,
+            effort: null,
+            position: 0,
             createdAt: '',
             updatedAt: '',
           },
@@ -669,8 +709,13 @@ describe('ProjectsController', () => {
             profileId: 'profile1',
             providerId: 'agy',
             id: 'c2',
+            name: 'AGY Config',
+            description: null,
             options: null,
             env: null,
+            model: null,
+            effort: null,
+            position: 1,
             createdAt: '',
             updatedAt: '',
           },
@@ -696,12 +741,10 @@ describe('ProjectsController', () => {
               id: 'profile1',
               projectId: 'p1',
               familySlug: 'coder',
-              providerId: 'default-provider',
               name: 'Profile 1',
               instructions: null,
               temperature: null,
               maxTokens: null,
-              options: null,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             },
@@ -717,8 +760,13 @@ describe('ProjectsController', () => {
             profileId: 'profile1',
             providerId: 'claude',
             id: 'c1',
+            name: 'Claude Config',
+            description: null,
             options: null,
             env: null,
+            model: null,
+            effort: null,
+            position: 0,
             createdAt: '',
             updatedAt: '',
           },
@@ -794,12 +842,10 @@ describe('ProjectsController', () => {
               id: 'profile1',
               projectId: 'p1',
               familySlug: null,
-              providerId: 'claude',
               name: 'Profile 1',
               instructions: null,
               temperature: null,
               maxTokens: null,
-              options: null,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             },
@@ -814,8 +860,13 @@ describe('ProjectsController', () => {
             profileId: 'profile1',
             providerId: 'claude',
             id: 'c1',
+            name: 'Claude Config',
+            description: null,
             options: null,
             env: null,
+            model: null,
+            effort: null,
+            position: 0,
             createdAt: '',
             updatedAt: '',
           },
@@ -823,8 +874,13 @@ describe('ProjectsController', () => {
             profileId: 'profile1',
             providerId: 'agy',
             id: 'c2',
+            name: 'AGY Config',
+            description: null,
             options: null,
             env: null,
+            model: null,
+            effort: null,
+            position: 1,
             createdAt: '',
             updatedAt: '',
           },
@@ -932,10 +988,10 @@ describe('ProjectsController', () => {
 
   describe('POST /api/projects/from-template', () => {
     it('validates and forwards an explicit destination workspace before creation', async () => {
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue({
+      projectsService.createFromTemplate.mockResolvedValue({
         success: true,
         project: makeProject({ workspaceId: SECOND_WORKSPACE_ID }),
-      });
+      } as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -964,7 +1020,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: '11111111-1111-4111-8111-111111111111', name: 'New Project' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1000,7 +1056,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1', name: 'New Project' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       const result = await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1024,7 +1080,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1', name: 'New Project' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1048,7 +1104,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1071,7 +1127,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1095,7 +1151,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1140,7 +1196,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1173,7 +1229,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1218,7 +1274,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1', name: 'New Project' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       const result = await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1242,7 +1298,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New Project',
@@ -1314,7 +1370,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1', name: 'New' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New',
@@ -1347,7 +1403,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1', name: 'New' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New',
@@ -1407,7 +1463,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1', name: 'New' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New',
@@ -1439,7 +1495,7 @@ describe('ProjectsController', () => {
         project: makeProject({ id: 'p1', name: 'New' }),
         imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
       };
-      (projectsService.createFromTemplate as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
 
       await controller.createProjectFromTemplate({
         name: 'New',
@@ -1447,14 +1503,27 @@ describe('ProjectsController', () => {
         slug: 'my-template',
       });
 
-      const call = (projectsService.createFromTemplate as jest.Mock).mock.calls[0][0];
+      const call = projectsService.createFromTemplate.mock.calls[0][0];
       expect(call).not.toHaveProperty('selectedProviderNames');
     });
   });
 
   describe('POST /api/projects/setup-preview', () => {
     const mockPreviewResponse = {
-      payload: { profiles: [], agents: [], presets: [] },
+      payload: {
+        version: 1,
+        prompts: [],
+        profiles: [],
+        agents: [],
+        statuses: [],
+        watchers: [],
+        subscribers: [],
+        teams: [],
+        providerModels: [],
+        providerEfforts: [],
+        presets: [],
+        scheduledEpics: [],
+      },
       providerSummary: [
         { name: 'claude', available: true, families: ['reasoning'], agentCount: 1 },
       ],
@@ -1480,7 +1549,7 @@ describe('ProjectsController', () => {
     };
 
     it('resolves by slug and passes it to the service', async () => {
-      (projectsService.setupPreview as jest.Mock).mockResolvedValue(mockPreviewResponse);
+      projectsService.setupPreview.mockResolvedValue(mockPreviewResponse);
 
       const result = await controller.setupPreview({ slug: 'my-template' });
 
@@ -1489,7 +1558,7 @@ describe('ProjectsController', () => {
     });
 
     it('passes slug + version to the service', async () => {
-      (projectsService.setupPreview as jest.Mock).mockResolvedValue(mockPreviewResponse);
+      projectsService.setupPreview.mockResolvedValue(mockPreviewResponse);
 
       await controller.setupPreview({ slug: 'my-template', version: '1.2.3' });
 
@@ -1500,7 +1569,7 @@ describe('ProjectsController', () => {
     });
 
     it('resolves by templatePath and passes it to the service', async () => {
-      (projectsService.setupPreview as jest.Mock).mockResolvedValue(mockPreviewResponse);
+      projectsService.setupPreview.mockResolvedValue(mockPreviewResponse);
 
       await controller.setupPreview({ templatePath: '/abs/path/template.json' });
 
@@ -1510,7 +1579,7 @@ describe('ProjectsController', () => {
     });
 
     it('resolves by rawContent and passes it to the service', async () => {
-      (projectsService.setupPreview as jest.Mock).mockResolvedValue(mockPreviewResponse);
+      projectsService.setupPreview.mockResolvedValue(mockPreviewResponse);
       const rawContent = { profiles: [], agents: [], statuses: [] };
 
       await controller.setupPreview({ rawContent });
@@ -1554,7 +1623,7 @@ describe('ProjectsController', () => {
 
   describe('POST /api/projects/:id/export', () => {
     it('does not expose the internal Custom-prompt export option', async () => {
-      (projectsService.exportProject as jest.Mock).mockResolvedValue({ version: 1 });
+      projectsService.exportProject.mockResolvedValue({ version: 1 } as never);
 
       await controller.exportProjectWithOverrides('p1', {
         includeCustomPrompts: true,
@@ -1567,7 +1636,7 @@ describe('ProjectsController', () => {
 
     it('accepts valid manifest overrides', async () => {
       const mockExport = { version: 1, _manifest: { name: 'Test' } };
-      (projectsService.exportProject as jest.Mock).mockResolvedValue(mockExport);
+      projectsService.exportProject.mockResolvedValue(mockExport as never);
 
       const result = await controller.exportProjectWithOverrides('p1', {
         manifest: {
@@ -1595,7 +1664,7 @@ describe('ProjectsController', () => {
 
     it('accepts empty body', async () => {
       const mockExport = { version: 1 };
-      (projectsService.exportProject as jest.Mock).mockResolvedValue(mockExport);
+      projectsService.exportProject.mockResolvedValue(mockExport as never);
 
       const result = await controller.exportProjectWithOverrides('p1', undefined);
 
@@ -1607,7 +1676,7 @@ describe('ProjectsController', () => {
 
     it('accepts null description', async () => {
       const mockExport = { version: 1 };
-      (projectsService.exportProject as jest.Mock).mockResolvedValue(mockExport);
+      projectsService.exportProject.mockResolvedValue(mockExport as never);
 
       await controller.exportProjectWithOverrides('p1', {
         manifest: { description: null },
@@ -1666,7 +1735,7 @@ describe('ProjectsController', () => {
 
     it('accepts valid semver with prerelease', async () => {
       const mockExport = { version: 1 };
-      (projectsService.exportProject as jest.Mock).mockResolvedValue(mockExport);
+      projectsService.exportProject.mockResolvedValue(mockExport as never);
 
       await controller.exportProjectWithOverrides('p1', {
         manifest: { version: '1.0.0-beta.1' },
@@ -1706,7 +1775,7 @@ describe('ProjectsController', () => {
 
   describe('GET /api/projects/:id/export', () => {
     it('uses the public System-only default', async () => {
-      (projectsService.exportProject as jest.Mock).mockResolvedValue({ version: 1 });
+      projectsService.exportProject.mockResolvedValue({ version: 1 } as never);
 
       await controller.exportProject('p1');
 
@@ -1716,11 +1785,8 @@ describe('ProjectsController', () => {
 
   describe('POST /api/projects/:id/import', () => {
     it('accepts valid familyProviderMappings and normalizes to lowercase', async () => {
-      const mockResult = {
-        success: true,
-        counts: { imported: {}, deleted: {} },
-      };
-      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
+      projectsService.importProject.mockResolvedValue(mockResult as never);
 
       await controller.importProject('p1', undefined, {
         familyProviderMappings: { Coder: 'CLAUDE', Reviewer: 'Agy' },
@@ -1734,11 +1800,8 @@ describe('ProjectsController', () => {
     });
 
     it('passes undefined familyProviderMappings when not provided', async () => {
-      const mockResult = {
-        success: true,
-        counts: { imported: {}, deleted: {} },
-      };
-      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
+      projectsService.importProject.mockResolvedValue(mockResult as never);
 
       await controller.importProject('p1', undefined, {});
 
@@ -1775,7 +1838,7 @@ describe('ProjectsController', () => {
 
     it('accepts valid teamOverrides and passes to service', async () => {
       const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.importProject.mockResolvedValue(mockResult as never);
 
       await controller.importProject('p1', undefined, {
         teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
@@ -1806,17 +1869,17 @@ describe('ProjectsController', () => {
 
     it('passes no teamOverrides when field is absent', async () => {
       const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.importProject.mockResolvedValue(mockResult as never);
 
       await controller.importProject('p1', undefined, {});
 
-      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      const call = projectsService.importProject.mock.calls[0][0];
       expect(call.teamOverrides).toBeUndefined();
     });
 
     it('validates + strips agentOverrides so they never reach the template payload', async () => {
       const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.importProject.mockResolvedValue(mockResult as never);
 
       await controller.importProject('p1', undefined, {
         agentOverrides: [
@@ -1826,13 +1889,14 @@ describe('ProjectsController', () => {
         agents: [{ name: 'Coder' }],
       } as unknown as Record<string, unknown>);
 
-      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      const call = projectsService.importProject.mock.calls[0][0];
+      const payload = call.payload as Record<string, unknown>;
       expect(call.agentOverrides).toEqual([
         { agentName: 'Coder', providerConfigName: 'claude-config', effortOverride: 'high' },
       ]);
       // Stripped from the ExportSchema-bound payload (would otherwise be swallowed by `...payload`).
-      expect(call.payload.agentOverrides).toBeUndefined();
-      expect(call.payload.agents).toEqual([{ name: 'Coder' }]);
+      expect(payload.agentOverrides).toBeUndefined();
+      expect(payload.agents).toEqual([{ name: 'Coder' }]);
     });
 
     it('rejects when presetName and agentOverrides are both provided (400)', async () => {
@@ -1846,20 +1910,21 @@ describe('ProjectsController', () => {
     });
 
     it('validates, forwards, and strips presetName from the template payload', async () => {
-      (projectsService.importProject as jest.Mock).mockResolvedValue({
+      projectsService.importProject.mockResolvedValue({
         success: true,
         counts: { imported: {}, deleted: {} },
-      });
+      } as never);
 
       await controller.importProject('p1', undefined, {
         presetName: 'Fast',
         agents: [{ name: 'Coder' }],
       } as unknown as Record<string, unknown>);
 
-      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      const call = projectsService.importProject.mock.calls[0][0];
+      const payload = call.payload as Record<string, unknown>;
       expect(call.presetName).toBe('Fast');
-      expect(call.payload.presetName).toBeUndefined();
-      expect(call.payload.agents).toEqual([{ name: 'Coder' }]);
+      expect(payload.presetName).toBeUndefined();
+      expect(payload.agents).toEqual([{ name: 'Coder' }]);
     });
 
     it('rejects an empty presetName', async () => {
@@ -1879,28 +1944,29 @@ describe('ProjectsController', () => {
 
     it('passes no agentOverrides when field is absent', async () => {
       const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.importProject.mockResolvedValue(mockResult as never);
 
       await controller.importProject('p1', undefined, {});
 
-      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      const call = projectsService.importProject.mock.calls[0][0];
       expect(call.agentOverrides).toBeUndefined();
     });
 
     it('validates + normalizes + strips selectedProviderNames so they never reach the payload', async () => {
       const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.importProject.mockResolvedValue(mockResult as never);
 
       await controller.importProject('p1', undefined, {
         selectedProviderNames: ['Claude', 'CODEX'],
         agents: [{ name: 'Coder' }],
       } as unknown as Record<string, unknown>);
 
-      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      const call = projectsService.importProject.mock.calls[0][0];
+      const payload = call.payload as Record<string, unknown>;
       expect(call.selectedProviderNames).toEqual(['claude', 'codex']);
       // Stripped from the ExportSchema-bound payload (would otherwise be swallowed by `...payload`).
-      expect(call.payload.selectedProviderNames).toBeUndefined();
-      expect(call.payload.agents).toEqual([{ name: 'Coder' }]);
+      expect(payload.selectedProviderNames).toBeUndefined();
+      expect(payload.agents).toEqual([{ name: 'Coder' }]);
     });
 
     it('rejects an empty selectedProviderNames array (400)', async () => {
@@ -1914,11 +1980,11 @@ describe('ProjectsController', () => {
 
     it('passes no selectedProviderNames when field is absent', async () => {
       const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      (projectsService.importProject as jest.Mock).mockResolvedValue(mockResult);
+      projectsService.importProject.mockResolvedValue(mockResult as never);
 
       await controller.importProject('p1', undefined, {});
 
-      const call = (projectsService.importProject as jest.Mock).mock.calls[0][0];
+      const call = projectsService.importProject.mock.calls[0][0];
       expect(call.selectedProviderNames).toBeUndefined();
     });
   });
@@ -1953,7 +2019,7 @@ describe('ProjectsController', () => {
         version: '1.0.0',
         description: 'A test template',
       };
-      (projectsService.getTemplateManifestForProject as jest.Mock).mockResolvedValue(manifest);
+      projectsService.getTemplateManifestForProject.mockResolvedValue(manifest);
 
       const result = await controller.getTemplateManifest('p1');
 
@@ -1962,7 +2028,7 @@ describe('ProjectsController', () => {
     });
 
     it('returns null when no manifest available', async () => {
-      (projectsService.getTemplateManifestForProject as jest.Mock).mockResolvedValue(null);
+      projectsService.getTemplateManifestForProject.mockResolvedValue(null);
 
       const result = await controller.getTemplateManifest('p1');
 
@@ -1974,10 +2040,10 @@ describe('ProjectsController', () => {
   describe('GET /api/projects/:id/presets', () => {
     beforeEach(() => {
       // Add preset method to settings service mock
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets = jest.fn();
-      (settingsService as { getProjectActivePreset: jest.Mock }).getProjectActivePreset = jest.fn();
-      (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset = jest.fn();
-      (projectsService as { doesProjectMatchPreset: jest.Mock }).doesProjectMatchPreset = jest.fn();
+      settingsService.getProjectPresets = jest.fn();
+      settingsService.getProjectActivePreset = jest.fn();
+      settingsService.setProjectActivePreset = jest.fn();
+      projectsService.doesProjectMatchPreset = jest.fn();
     });
 
     it('returns stored presets for project', async () => {
@@ -1998,27 +2064,19 @@ describe('ProjectsController', () => {
       ];
 
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
-        presets,
-      );
-      (
-        settingsService as { getProjectActivePreset: jest.Mock }
-      ).getProjectActivePreset.mockReturnValue(null);
+      settingsService.getProjectPresets.mockReturnValue(presets);
+      settingsService.getProjectActivePreset.mockReturnValue(null);
 
       const result = await controller.getProjectPresets('p1');
 
       expect(result).toEqual({ presets, activePreset: null });
-      expect(
-        (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets,
-      ).toHaveBeenCalledWith('p1');
+      expect(settingsService.getProjectPresets).toHaveBeenCalledWith('p1');
     });
 
     it('returns empty array when no presets stored', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue([]);
-      (
-        settingsService as { getProjectActivePreset: jest.Mock }
-      ).getProjectActivePreset.mockReturnValue(null);
+      settingsService.getProjectPresets.mockReturnValue([]);
+      settingsService.getProjectActivePreset.mockReturnValue(null);
 
       const result = await controller.getProjectPresets('p1');
 
@@ -2035,23 +2093,15 @@ describe('ProjectsController', () => {
       ];
 
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
-        presets,
-      );
-      (
-        settingsService as { getProjectActivePreset: jest.Mock }
-      ).getProjectActivePreset.mockReturnValue('default');
-      (
-        projectsService as { doesProjectMatchPreset: jest.Mock }
-      ).doesProjectMatchPreset.mockResolvedValue(true);
+      settingsService.getProjectPresets.mockReturnValue(presets);
+      settingsService.getProjectActivePreset.mockReturnValue('default');
+      projectsService.doesProjectMatchPreset.mockResolvedValue(true);
 
       const result = await controller.getProjectPresets('p1');
 
       expect(result).toEqual({ presets, activePreset: 'default' });
       expect(projectsService.doesProjectMatchPreset).toHaveBeenCalledWith('p1', presets[0]);
-      expect(
-        (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
-      ).not.toHaveBeenCalled();
+      expect(settingsService.setProjectActivePreset).not.toHaveBeenCalled();
     });
 
     it('returns null activePreset when drifted (config no longer matches)', async () => {
@@ -2064,24 +2114,16 @@ describe('ProjectsController', () => {
       ];
 
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
-        presets,
-      );
-      (
-        settingsService as { getProjectActivePreset: jest.Mock }
-      ).getProjectActivePreset.mockReturnValue('default');
-      (
-        projectsService as { doesProjectMatchPreset: jest.Mock }
-      ).doesProjectMatchPreset.mockResolvedValue(
+      settingsService.getProjectPresets.mockReturnValue(presets);
+      settingsService.getProjectActivePreset.mockReturnValue('default');
+      projectsService.doesProjectMatchPreset.mockResolvedValue(
         false, // Drifted
       );
 
       const result = await controller.getProjectPresets('p1');
 
       expect(result).toEqual({ presets, activePreset: null });
-      expect(
-        (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
-      ).toHaveBeenCalledWith('p1', null);
+      expect(settingsService.setProjectActivePreset).toHaveBeenCalledWith('p1', null);
     });
 
     it('returns null activePreset when stored preset no longer exists', async () => {
@@ -2094,21 +2136,15 @@ describe('ProjectsController', () => {
       ];
 
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
-        presets,
-      );
-      (
-        settingsService as { getProjectActivePreset: jest.Mock }
-      ).getProjectActivePreset.mockReturnValue(
+      settingsService.getProjectPresets.mockReturnValue(presets);
+      settingsService.getProjectActivePreset.mockReturnValue(
         'default', // This preset no longer exists in the presets array
       );
 
       const result = await controller.getProjectPresets('p1');
 
       expect(result).toEqual({ presets, activePreset: null });
-      expect(
-        (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
-      ).toHaveBeenCalledWith('p1', null);
+      expect(settingsService.setProjectActivePreset).toHaveBeenCalledWith('p1', null);
       expect(projectsService.doesProjectMatchPreset).not.toHaveBeenCalled();
     });
 
@@ -2128,33 +2164,25 @@ describe('ProjectsController', () => {
       ];
 
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
-        presets,
-      );
-      (
-        settingsService as { getProjectActivePreset: jest.Mock }
-      ).getProjectActivePreset.mockReturnValue(
+      settingsService.getProjectPresets.mockReturnValue(presets);
+      settingsService.getProjectActivePreset.mockReturnValue(
         'mypreset', // Stored as lowercase
       );
-      (
-        projectsService as { doesProjectMatchPreset: jest.Mock }
-      ).doesProjectMatchPreset.mockResolvedValue(true);
+      projectsService.doesProjectMatchPreset.mockResolvedValue(true);
 
       const result = await controller.getProjectPresets('p1');
 
       // Should canonicalize to the preset's actual name
       expect(result).toEqual({ presets, activePreset: 'MyPreset' });
-      expect(
-        (settingsService as { setProjectActivePreset: jest.Mock }).setProjectActivePreset,
-      ).toHaveBeenCalledWith('p1', 'MyPreset');
+      expect(settingsService.setProjectActivePreset).toHaveBeenCalledWith('p1', 'MyPreset');
     });
   });
 
   describe('POST /api/projects/:id/presets/apply', () => {
     beforeEach(() => {
       // Add preset method to settings service mock
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets = jest.fn();
-      (projectsService as { applyPreset: jest.Mock }).applyPreset = jest.fn();
+      settingsService.getProjectPresets = jest.fn();
+      projectsService.applyPreset = jest.fn();
     });
 
     it('applies preset and returns updated agents', async () => {
@@ -2170,15 +2198,25 @@ describe('ProjectsController', () => {
           agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
         },
       ];
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
-        presets,
-      );
+      settingsService.getProjectPresets.mockReturnValue(presets);
 
       const applyResult = { applied: 1, warnings: [] };
-      (projectsService as { applyPreset: jest.Mock }).applyPreset.mockResolvedValue(applyResult);
+      projectsService.applyPreset.mockResolvedValue(applyResult);
 
       const updatedAgents = [
-        { id: 'agent-1', name: 'Coder', profileId: 'profile-1', providerConfigId: 'config-1' },
+        {
+          id: 'agent-1',
+          projectId,
+          isProjectOwner: false,
+          profileId: 'profile-1',
+          providerConfigId: 'config-1',
+          modelOverride: null,
+          effortOverride: null,
+          name: 'Coder',
+          description: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
       ];
       storage.listAgents.mockResolvedValue({
         items: updatedAgents,
@@ -2194,10 +2232,7 @@ describe('ProjectsController', () => {
         warnings: [],
         agents: updatedAgents,
       });
-      expect((projectsService as { applyPreset: jest.Mock }).applyPreset).toHaveBeenCalledWith(
-        projectId,
-        presetName,
-      );
+      expect(projectsService.applyPreset).toHaveBeenCalledWith(projectId, presetName);
     });
 
     it('returns warnings when preset application has partial success', async () => {
@@ -2212,12 +2247,10 @@ describe('ProjectsController', () => {
           agentConfigs: [{ agentName: 'MissingAgent', providerConfigName: 'config' }],
         },
       ];
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets.mockReturnValue(
-        presets,
-      );
+      settingsService.getProjectPresets.mockReturnValue(presets);
 
       const applyResult = { applied: 0, warnings: ['Agent "MissingAgent" not found in project'] };
-      (projectsService as { applyPreset: jest.Mock }).applyPreset.mockResolvedValue(applyResult);
+      projectsService.applyPreset.mockResolvedValue(applyResult);
 
       storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
 
@@ -2246,9 +2279,8 @@ describe('ProjectsController', () => {
 
     beforeEach(() => {
       createProjectPresetMock.mockClear();
-      (settingsService as { createProjectPreset: jest.Mock }).createProjectPreset =
-        createProjectPresetMock;
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets = jest.fn();
+      settingsService.createProjectPreset = createProjectPresetMock;
+      settingsService.getProjectPresets = jest.fn();
     });
 
     const validPreset = {
@@ -2348,10 +2380,8 @@ describe('ProjectsController', () => {
     beforeEach(() => {
       updateProjectPresetMock.mockClear();
       getProjectPresetsMock.mockClear();
-      (settingsService as { updateProjectPreset: jest.Mock }).updateProjectPreset =
-        updateProjectPresetMock;
-      (settingsService as { getProjectPresets: jest.Mock }).getProjectPresets =
-        getProjectPresetsMock;
+      settingsService.updateProjectPreset = updateProjectPresetMock;
+      settingsService.getProjectPresets = getProjectPresetsMock;
     });
 
     it('updates preset name', async () => {
@@ -2577,37 +2607,28 @@ describe('ProjectsController', () => {
 
     beforeEach(() => {
       deleteProjectPresetMock.mockClear();
-      (settingsService as { deleteProjectPreset: jest.Mock }).deleteProjectPreset =
-        deleteProjectPresetMock;
+      settingsService.deleteProjectPreset = deleteProjectPresetMock;
     });
 
     it('deletes preset by name', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      (settingsService as { deleteProjectPreset: jest.Mock }).deleteProjectPreset.mockResolvedValue(
-        undefined,
-      );
+      settingsService.deleteProjectPreset.mockResolvedValue(undefined);
 
       const result = await controller.deletePreset('p1', {
         presetName: 'My Preset',
       });
 
       expect(result).toEqual({ deleted: true });
-      expect(
-        (settingsService as { deleteProjectPreset: jest.Mock }).deleteProjectPreset,
-      ).toHaveBeenCalledWith('p1', 'My Preset');
+      expect(settingsService.deleteProjectPreset).toHaveBeenCalledWith('p1', 'My Preset');
     });
 
     it('deletes preset case-insensitively', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      (settingsService as { deleteProjectPreset: jest.Mock }).deleteProjectPreset.mockResolvedValue(
-        undefined,
-      );
+      settingsService.deleteProjectPreset.mockResolvedValue(undefined);
 
       await controller.deletePreset('p1', { presetName: 'my preset' });
 
-      expect(
-        (settingsService as { deleteProjectPreset: jest.Mock }).deleteProjectPreset,
-      ).toHaveBeenCalledWith('p1', 'my preset');
+      expect(settingsService.deleteProjectPreset).toHaveBeenCalledWith('p1', 'my preset');
     });
 
     it('throws BadRequestException for empty preset name', async () => {

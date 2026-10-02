@@ -134,7 +134,7 @@ describe('loadStableIntegrationConnection', () => {
       const storage = setup();
       storage.getIntegrationConnection.mockResolvedValue(before);
 
-      const error = await acquire(storage).then<unknown>(
+      const error = await acquire(storage).then<unknown, unknown>(
         () => undefined,
         (rejection: unknown) => rejection,
       );
@@ -200,7 +200,7 @@ describe('loadStableIntegrationConnection', () => {
     const storage = setup();
     storage.getIntegrationConnection.mockResolvedValue(makeConnection({ generation: 5 }));
 
-    const error = await acquire(storage, { expectedEpoch: 4 }).then<unknown>(
+    const error = await acquire(storage, { expectedEpoch: 4 }).then<unknown, unknown>(
       () => undefined,
       (rejection: unknown) => rejection,
     );
@@ -227,7 +227,7 @@ describe('loadStableIntegrationConnection', () => {
       .mockResolvedValueOnce(makeConnection({ generation: 5 }));
     storage.getIntegrationConnectionCredentials.mockResolvedValue(makeCredentials());
 
-    const error = await acquire(storage, { expectedEpoch: 4 }).then<unknown>(
+    const error = await acquire(storage, { expectedEpoch: 4 }).then<unknown, unknown>(
       () => undefined,
       (rejection: unknown) => rejection,
     );
@@ -246,7 +246,7 @@ describe('loadStableIntegrationConnection', () => {
       .mockResolvedValueOnce(makeConnection({ generation: 5 }));
     storage.getIntegrationConnectionCredentials.mockResolvedValue(null);
 
-    const error = await acquire(storage, { expectedEpoch: 4 }).then<unknown>(
+    const error = await acquire(storage, { expectedEpoch: 4 }).then<unknown, unknown>(
       () => undefined,
       (rejection: unknown) => rejection,
     );
@@ -306,7 +306,7 @@ describe('loadStableIntegrationConnection', () => {
       .mockResolvedValueOnce(makeConnection({ generation: 4 }));
     storage.getIntegrationConnectionCredentials.mockResolvedValue(makeCredentials());
 
-    const error = await acquire(storage).then<unknown>(
+    const error = await acquire(storage).then<unknown, unknown>(
       () => undefined,
       (rejection: unknown) => rejection,
     );
@@ -328,7 +328,7 @@ describe('loadStableIntegrationConnection', () => {
     const unavailable = await acquire(storage, {
       notConnectedMessage: 'custom unavailable',
       connectionChangedMessage: 'custom changed',
-    }).then<unknown>(
+    }).then<unknown, unknown>(
       () => undefined,
       (rejection: unknown) => rejection,
     );
@@ -347,7 +347,7 @@ describe('loadStableIntegrationConnection', () => {
     const changed = await acquire(unstable, {
       notConnectedMessage: 'custom unavailable',
       connectionChangedMessage: 'custom changed',
-    }).then<unknown>(
+    }).then<unknown, unknown>(
       () => undefined,
       (rejection: unknown) => rejection,
     );

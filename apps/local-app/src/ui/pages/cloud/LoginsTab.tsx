@@ -8,6 +8,7 @@ import { Button } from '@/ui/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
+import { BusyStatus } from '@/ui/components/ui/spinner';
 import { useProviderAuth, type ProviderAuthEntryItem } from '@/ui/hooks/useProviderAuth';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { AddLoginDialog, type AddLoginProvider } from './AddLoginDialog';
@@ -114,7 +115,7 @@ function EntryRow({
                 }}
                 className="h-7 w-56 max-w-full"
               />
-              <Button type="submit" size="sm" disabled={!canSave}>
+              <Button type="submit" size="sm" disabled={!canSave} pending={saving}>
                 {saving ? 'Saving…' : 'Save'}
               </Button>
               <Button
@@ -224,7 +225,7 @@ export function LoginsTab({ remotes }: { remotes: readonly RemoteListItemDto[] }
         </Button>
       </div>
       {entriesLoading ? (
-        <p className="text-sm text-muted-foreground">Loading logins…</p>
+        <BusyStatus className="text-sm text-muted-foreground">Loading logins…</BusyStatus>
       ) : (
         sections.map((section) => (
           <Card key={section.key}>

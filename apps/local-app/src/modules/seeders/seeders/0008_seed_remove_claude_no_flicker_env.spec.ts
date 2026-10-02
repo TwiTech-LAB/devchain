@@ -14,6 +14,7 @@ function makeProvider(overrides: Partial<Provider> = {}): Provider {
     mcpRegisteredAt: null,
     env: null,
     autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
     ...overrides,
@@ -32,6 +33,7 @@ function createContext(providers: Provider[]): {
 
   const ctx: SeederContext = {
     storage,
+    providerEffortSeeding: {} as SeederContext['providerEffortSeeding'],
     watchersService: {} as SeederContext['watchersService'],
     db: {} as BetterSQLite3Database,
     logger: {

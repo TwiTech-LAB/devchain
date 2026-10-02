@@ -8,18 +8,22 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import type { Provider } from '../../storage/models/domain.models';
 import * as envConfig from '../../../common/config/env.config';
 
-// Mock getEnvConfig for deterministic PORT
-jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue({
+const baseEnv = envConfig.getEnvConfig();
+const testEnv = (overrides: Partial<envConfig.EnvConfig> = {}): envConfig.EnvConfig => ({
+  ...baseEnv,
   PORT: 3000,
   HOST: '127.0.0.1',
-  DATABASE_PATH: ':memory:',
   LOG_LEVEL: 'info',
   NODE_ENV: 'test',
+  ...overrides,
 });
+
+// Mock getEnvConfig for deterministic PORT
+jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue(testEnv());
 
 describe('ProviderMcpEnsureService', () => {
   let service: ProviderMcpEnsureService;
-  let mockStorage: jest.Mocked<Partial<StorageService>>;
+  let mockStorage: jest.Mocked<Pick<StorageService, 'updateProviderMcpMetadata' | 'listProjects'>>;
   let mockMcpRegistration: {
     listRegistrations: jest.Mock;
     registerProvider: jest.Mock;
@@ -32,6 +36,7 @@ describe('ProviderMcpEnsureService', () => {
   };
   let mockTrustProvisioner: {
     ensure: jest.Mock;
+    provisionProjectPath: jest.Mock;
   };
   let mockClaudeEnsureProjectSettings: jest.Mock;
   let mockAdmission: { getRemoteOwner: jest.Mock };
@@ -43,6 +48,9 @@ describe('ProviderMcpEnsureService', () => {
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
     createdAt: '2024-01-01',
     updatedAt: '2024-01-01',
     ...overrides,
@@ -544,7 +552,7 @@ describe('ProviderMcpEnsureService', () => {
         endpoint: 'http://127.0.0.1:3000/mcp',
         alias: 'devchain',
       });
-      mockStorage.updateProviderMcpMetadata!.mockRejectedValue(
+      mockStorage.updateProviderMcpMetadata.mockRejectedValue(
         new Error('Database connection lost'),
       );
 
@@ -794,13 +802,7 @@ describe('ProviderMcpEnsureService', () => {
 
   describe('regression: no wildcard in generated endpoint URL', () => {
     it('with HOST=0.0.0.0: endpoint does not contain 0.0.0.0', async () => {
-      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue({
-        PORT: 3000,
-        HOST: '0.0.0.0',
-        DATABASE_PATH: ':memory:',
-        LOG_LEVEL: 'info',
-        NODE_ENV: 'test',
-      } as ReturnType<typeof envConfig.getEnvConfig>);
+      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue(testEnv({ HOST: '0.0.0.0' }));
 
       const provider = createProvider();
       mockMcpRegistration.ensureRegistration.mockResolvedValue({
@@ -818,13 +820,7 @@ describe('ProviderMcpEnsureService', () => {
     });
 
     it('with HOST=192.168.1.10: endpoint uses concrete host', async () => {
-      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue({
-        PORT: 3000,
-        HOST: '192.168.1.10',
-        DATABASE_PATH: ':memory:',
-        LOG_LEVEL: 'info',
-        NODE_ENV: 'test',
-      } as ReturnType<typeof envConfig.getEnvConfig>);
+      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue(testEnv({ HOST: '192.168.1.10' }));
 
       const provider = createProvider();
       mockMcpRegistration.ensureRegistration.mockResolvedValue({
@@ -1016,13 +1012,7 @@ describe('ProviderMcpEnsureService', () => {
 
   describe('Side-effect placement bug fix', () => {
     beforeEach(() => {
-      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue({
-        PORT: 3000,
-        HOST: '127.0.0.1',
-        DATABASE_PATH: ':memory:',
-        LOG_LEVEL: 'info',
-        NODE_ENV: 'test',
-      } as ReturnType<typeof envConfig.getEnvConfig>);
+      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue(testEnv());
     });
 
     it('Claude project settings run even when MCP action is already_configured', async () => {

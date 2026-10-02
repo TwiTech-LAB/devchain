@@ -132,7 +132,7 @@ describe('Host skill settings HTTP', () => {
       {
         method: 'PUT',
         headers: { 'content-type': 'application/x-tar' },
-        body: Readable.from([Buffer.alloc(HOME_SKILL_CONTENT_LIMIT + 1)]),
+        body: Readable.from([Buffer.alloc(HOME_SKILL_CONTENT_LIMIT + 1)]) as unknown as BodyInit,
         duplex: 'half',
       } as RequestInit,
     );

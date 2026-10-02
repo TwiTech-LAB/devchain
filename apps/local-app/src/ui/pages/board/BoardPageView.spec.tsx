@@ -233,7 +233,21 @@ describe('BoardPageView presentation', () => {
               status: { ...status, id: 'done', label: 'Done' },
               kind: 'expanded',
               draggedEpic: null,
-              externalSources: new Map([['epic-1', { remoteKey: 'ENG-1' }]]),
+              externalSources: new Map([
+                [
+                  'epic-1',
+                  {
+                    provider: 'jira',
+                    remoteTaskId: 'ENG-1',
+                    remoteKey: 'ENG-1',
+                    title: 'Fixture epic',
+                    workAreaName: 'Delivery',
+                    statusName: 'In Progress',
+                    webUrl: null,
+                    linkedAt: '2026-08-21T10:00:00.000Z',
+                  },
+                ],
+              ]),
               collapse: noop,
               keyboardMove: noop,
             },
@@ -312,7 +326,7 @@ describe('BoardPageView kanban card drag', () => {
     jest.useRealTimers();
     if (originalElementFromPoint)
       Object.defineProperty(document, 'elementFromPoint', originalElementFromPoint);
-    else delete document.elementFromPoint;
+    else Reflect.deleteProperty(document, 'elementFromPoint');
   });
 
   function pointer(type: string, x: number, y: number): void {
@@ -340,6 +354,7 @@ describe('BoardPageView kanban card drag', () => {
       epics,
       statusOrder: [status, doingStatus, doneStatus],
       kind: 'expanded',
+      externalSources: new Map(),
       collapse: noop,
       keyboardMove: noop,
     });

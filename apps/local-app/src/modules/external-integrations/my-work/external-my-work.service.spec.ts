@@ -90,7 +90,14 @@ describe('ExternalMyWorkService', () => {
       provider: 'clickup',
       descriptor: clickupDescriptor,
       verifyCredentials: jest.fn(),
-      myWork: { discover, listComments: jest.fn() },
+      myWork: {
+        discover,
+        listComments: jest.fn(),
+        getTaskDetail: jest.fn(),
+        changeStatus: jest.fn(),
+        addComment: jest.fn(),
+        getTimeEntryHistory: jest.fn(),
+      },
     };
     const jira: ExternalTaskProvider = {
       provider: 'jira',
@@ -111,6 +118,8 @@ describe('ExternalMyWorkService', () => {
       legacySourceConnectionId: null,
       provider: 'clickup',
       generation: 7,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: 1,
       createdAt: '2026-08-19T10:00:00.000Z',
       updatedAt: '2026-08-19T11:00:00.000Z',
     });
@@ -154,6 +163,8 @@ describe('ExternalMyWorkService', () => {
       legacySourceConnectionId: null,
       provider: 'jira',
       generation: 2,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: 1,
       createdAt: '2026-08-19T10:00:00.000Z',
       updatedAt: '2026-08-19T11:00:00.000Z',
     });
@@ -183,6 +194,8 @@ describe('ExternalMyWorkService', () => {
       legacySourceConnectionId: null,
       provider: 'clickup' as const,
       generation,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: 1,
       createdAt: '2026-08-19T10:00:00.000Z',
       updatedAt: '2026-08-19T11:00:00.000Z',
     });
@@ -215,6 +228,8 @@ describe('ExternalMyWorkService', () => {
       legacySourceConnectionId: null,
       provider: 'clickup' as const,
       generation,
+      subtaskSyncEnabled: false,
+      syncSettingRevision: 1,
       createdAt: '2026-08-19T10:00:00.000Z',
       updatedAt: '2026-08-19T11:00:00.000Z',
     });
@@ -232,7 +247,7 @@ describe('ExternalMyWorkService', () => {
 
     await expect(
       service.getMyWork(projectId, 'clickup', { includeCompleted: false }),
-    ).rejects.toMatchObject<BusyError>({
+    ).rejects.toMatchObject<Partial<BusyError>>({
       message: 'Integration connection changed during My Work refresh.',
       code: 'busy',
       details: { provider: 'clickup', reason: 'connection_changed' },
@@ -246,7 +261,7 @@ describe('ExternalMyWorkService', () => {
 
     await expect(
       service.getMyWork(projectId, 'clickup', { includeCompleted: false }),
-    ).rejects.toMatchObject<ValidationError>({
+    ).rejects.toMatchObject<Partial<ValidationError>>({
       message: 'Connect the integration before loading My Work.',
       code: 'validation_error',
       details: { provider: 'clickup', reason: 'not_connected' },
@@ -266,7 +281,7 @@ describe('ExternalMyWorkService', () => {
 
     await expect(
       service.getMyWork(projectId, 'clickup', { includeCompleted: false }),
-    ).rejects.toMatchObject<ValidationError>({
+    ).rejects.toMatchObject<Partial<ValidationError>>({
       details: { projectId, provider: 'clickup', reason: 'not_connected' },
     });
 

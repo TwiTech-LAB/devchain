@@ -250,6 +250,7 @@ describe('TemplatesController', () => {
       mockUnifiedTemplateService.getTemplate.mockResolvedValue({
         content: validContent,
         source: 'bundled',
+        version: null,
       });
 
       const result = await controller.previewTemplate({ slug: 'teams-dev' });
@@ -261,6 +262,7 @@ describe('TemplatesController', () => {
       mockUnifiedTemplateService.getTemplateFromFilePath.mockReturnValue({
         content: validContent,
         source: 'file',
+        version: null,
       });
 
       const result = await controller.previewTemplate({ templatePath: '/tmp/test.json' });
@@ -274,6 +276,7 @@ describe('TemplatesController', () => {
       mockUnifiedTemplateService.getTemplate.mockResolvedValue({
         content: { invalid: true },
         source: 'bundled',
+        version: null,
       });
 
       await expect(controller.previewTemplate({ slug: 'bad' })).rejects.toThrow(

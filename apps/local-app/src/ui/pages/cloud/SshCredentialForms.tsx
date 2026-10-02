@@ -294,7 +294,7 @@ export function HostInstallRetryForm({
         idPrefix="retry-ssh"
         disabled={pending}
       />
-      <Button type="submit" size="sm" disabled={pending || !valid}>
+      <Button type="submit" size="sm" disabled={!valid} pending={pending}>
         {pending ? 'Retrying…' : 'Retry'}
       </Button>
     </form>

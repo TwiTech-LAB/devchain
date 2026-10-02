@@ -30,6 +30,7 @@ const STATS = {
 
 function remote(partial: Record<string, unknown>) {
   return {
+    id: 'r-default',
     kind: 'address',
     baseUrl: null,
     createdAt: '2026-09-01T00:00:00.000Z',

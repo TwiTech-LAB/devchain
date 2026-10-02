@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { SessionCacheService, type SessionCacheEntry } from './session-cache.service';
 import type {
@@ -80,7 +81,7 @@ function makeSession(overrides: Partial<UnifiedSession> = {}): UnifiedSession {
   };
 }
 
-function makeStat(size: number, mtimeMs: number, ino = 12345, dev = 1): fsPromises.FileHandle {
+function makeStat(size: number, mtimeMs: number, ino = 12345, dev = 1): Stats {
   return {
     size,
     ino,
@@ -93,7 +94,7 @@ function makeStat(size: number, mtimeMs: number, ino = 12345, dev = 1): fsPromis
     isFIFO: () => false,
     isSocket: () => false,
     isSymbolicLink: () => false,
-  } as unknown as fsPromises.FileHandle;
+  } as unknown as Stats;
 }
 
 function makeAdapter(overrides: Partial<SessionReaderAdapter> = {}): SessionReaderAdapter {
@@ -163,11 +164,11 @@ describe('SessionCacheService', () => {
     jest
       .spyOn(
         SessionCacheService.prototype as unknown as {
-          snapshotEndsOnLineBoundary: () => Promise<boolean>;
+          parsedLineEnd: (filePath: string, offset: number) => Promise<number>;
         },
-        'snapshotEndsOnLineBoundary',
+        'parsedLineEnd',
       )
-      .mockResolvedValue(true);
+      .mockImplementation(async (_filePath: string, offset: number) => offset);
     service = new SessionCacheService(mockMetricsService);
     adapter = makeAdapter();
     dateSpy = jest.spyOn(Date, 'now').mockReturnValue(1706000000000);
@@ -236,7 +237,7 @@ describe('SessionCacheService', () => {
     // Module-unit deferred I/O exposes ownership races without filesystem timing.
     it('module-unit: does not resurrect an invalidated entry after freshness awaits', async () => {
       await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-      const stat = deferred<fsPromises.FileHandle>();
+      const stat = deferred<Stats>();
       mockedFsStat.mockReturnValueOnce(stat.promise);
       const pending = service.getFreshSession(SESSION_ID, FILE_PATH, adapter);
       service.invalidate(SESSION_ID);
@@ -265,7 +266,7 @@ describe('SessionCacheService', () => {
           enrichmentFingerprint: '',
         });
         expectExactBudget(service);
-        const stat = deferred<fsPromises.FileHandle>();
+        const stat = deferred<Stats>();
         mockedFsStat.mockReturnValueOnce(stat.promise);
         const pending = service.getFreshSession(SESSION_ID, FILE_PATH, adapter);
         dateSpy.mockReturnValue(1706000001000);
@@ -441,7 +442,7 @@ describe('SessionCacheService', () => {
 
     it('module-unit: serializes freshness and hashing as part of the same key operation', async () => {
       mockedFsStat.mockClear();
-      const stat = deferred<fsPromises.FileHandle>();
+      const stat = deferred<Stats>();
       const hashStarted = deferred<void>();
       const finishHash = deferred<{ headDigest: string; tailDigest: string }>();
       mockedFsStat.mockReturnValueOnce(stat.promise);
@@ -1172,7 +1173,7 @@ describe('SessionCacheService', () => {
     });
   });
 
-  it('module-unit heap: leaves no strong chunk root after whole-session eviction', async () => {
+  it('module-unit heap: leaves no strong chunk root when chunks cannot fit the budget', async () => {
     service = new SessionCacheService(mockMetricsService, {
       budgetBytes: 2_500,
       idleTtlMs: 10 * 60 * 1_000,
@@ -1189,7 +1190,7 @@ describe('SessionCacheService', () => {
       return weak;
     })();
 
-    expect(service.getEntry(SESSION_ID)).toBeUndefined();
+    expect(service.getEntry(SESSION_ID)?.chunks).toBeUndefined();
     expect(Array.from(service.getChunksRetainedRoots())).toEqual([]);
 
     const gc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
@@ -1203,6 +1204,164 @@ describe('SessionCacheService', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     expect(weakChunks.deref()).toBeUndefined();
+  });
+
+  describe('budget admission', () => {
+    // module-unit: admission and weighing live in the cache coordinator; adapter I/O is mocked.
+    const dbRef = (providerSessionId: string): SessionSourceRef => ({
+      filePath: '/tmp/opencode.db',
+      providerName: 'opencode',
+      providerSessionId,
+      kind: 'db',
+    });
+
+    function tokenHeavySession(id: string): UnifiedSession {
+      return makeSession({
+        id,
+        providerName: 'opencode',
+        messages: Array.from({ length: 6 }, (_, i) => makeMessage(`${id}-${i}`)),
+        metrics: makeMetrics({
+          totalTokens: 43_800_000,
+          totalContextConsumption: 43_800_000,
+          visibleContextTokens: 43_800_000,
+        }),
+      });
+    }
+
+    beforeEach(() => {
+      service = new SessionCacheService(mockMetricsService, {
+        budgetBytes: 10_000,
+        idleTtlMs: 10 * 60 * 1_000,
+        sweepIntervalMs: 60_000,
+      });
+    });
+
+    it('weighs a DB session by message content, not cumulative tokens', async () => {
+      adapter = makeAdapter({ sourceKind: 'db', providerName: 'opencode' });
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(tokenHeavySession('oc-1'));
+
+      await service.getOrParseWithMeta('oc-1', dbRef('oc-1'), adapter);
+
+      const entry = service.getEntry('oc-1');
+      expect(entry).toBeDefined();
+      expect(entry!.sourceWeightBytes).toBeLessThan(5_000);
+      expect(service.getCacheStats().evictions).toBe(0);
+    });
+
+    it('counts text, thinking, tool and image content in the DB weight', async () => {
+      adapter = makeAdapter({ sourceKind: 'db', providerName: 'opencode' });
+      const session = makeSession({
+        id: 'oc-2',
+        providerName: 'opencode',
+        messages: [
+          makeMessage('m1', 1706000000000, {
+            content: [
+              { type: 'text', text: 'a'.repeat(100) },
+              { type: 'thinking', thinking: 'b'.repeat(200) },
+              {
+                type: 'tool_call',
+                toolCallId: 't1',
+                toolName: 'bash',
+                input: { c: 'd'.repeat(300) },
+              },
+              { type: 'tool_result', toolCallId: 't1', content: 'e'.repeat(400), isError: false },
+              { type: 'image', mediaType: 'image/png', data: 'f'.repeat(500) },
+            ],
+          }),
+        ],
+      });
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
+
+      await service.getOrParseWithMeta('oc-2', dbRef('oc-2'), adapter);
+
+      expect(service.getEntry('oc-2')!.sourceWeightBytes).toBeGreaterThanOrEqual(1_500);
+    });
+
+    it('keeps resident file entries when an oversized DB insert arrives', async () => {
+      mockedFsStat.mockResolvedValue(makeStat(1_000, 1706000000000));
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession({ id: 'file-a' }));
+      await service.getOrParse('file-a', '/tmp/a.jsonl', adapter);
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession({ id: 'file-b' }));
+      await service.getOrParse('file-b', '/tmp/b.jsonl', adapter);
+
+      const bigText = 'x'.repeat(20_000);
+      const dbAdapter = makeAdapter({ sourceKind: 'db', providerName: 'opencode' });
+      (dbAdapter.parseFullSession as jest.Mock).mockResolvedValue(
+        makeSession({
+          id: 'oc-big',
+          providerName: 'opencode',
+          messages: [
+            makeMessage('big', 1706000000000, { content: [{ type: 'text', text: bigText }] }),
+          ],
+        }),
+      );
+      const result = await service.getOrParseWithMeta('oc-big', dbRef('oc-big'), dbAdapter);
+
+      expect(result.session.messages).toHaveLength(1);
+      expect(service.getEntry('oc-big')).toBeUndefined();
+      expect(service.getEntry('file-a')).toBeDefined();
+      expect(service.getEntry('file-b')).toBeDefined();
+      expect(service.getCacheStats()).toMatchObject({ entries: 2, evictions: 0 });
+      expectExactBudget(service);
+    });
+
+    it('does not re-admit an oversized entry on repeated polls', async () => {
+      mockedFsStat.mockResolvedValue(makeStat(1_000, 1706000000000));
+      await service.getOrParse('file-a', '/tmp/a.jsonl', adapter);
+      const dbAdapter = makeAdapter({ sourceKind: 'db', providerName: 'opencode' });
+      (dbAdapter.parseFullSession as jest.Mock).mockResolvedValue(
+        makeSession({
+          id: 'oc-big',
+          providerName: 'opencode',
+          messages: [
+            makeMessage('big', 1706000000000, {
+              content: [{ type: 'text', text: 'x'.repeat(20_000) }],
+            }),
+          ],
+        }),
+      );
+
+      for (let poll = 0; poll < 3; poll += 1) {
+        await service.getOrParseWithMeta('oc-big', dbRef('oc-big'), dbAdapter);
+      }
+
+      expect(service.getEntry('file-a')).toBeDefined();
+      expect(service.getCacheStats()).toMatchObject({ entries: 1, evictions: 0 });
+    });
+
+    it('skips chunks that cannot fit alongside the parsed entry instead of evicting others', async () => {
+      mockedFsStat.mockResolvedValue(makeStat(1_000, 1706000000000));
+      await service.getOrParse('file-a', '/tmp/a.jsonl', adapter);
+      mockedFsStat.mockResolvedValue(makeStat(4_000, 1706000000000));
+      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession({ id: 'file-b' }));
+      await service.getOrParse('file-b', '/tmp/b.jsonl', adapter);
+      const sourceVersion = service.getEntry('file-b')!.sourceVersion;
+
+      // file-b parsed weighs 8_000; its 4_000 chunks would need 12_000 > 10_000 budget.
+      service.setChunks('file-b', sourceVersion, []);
+
+      expect(service.getEntry('file-b')).toBeDefined();
+      expect(service.getEntry('file-b')!.chunks).toBeUndefined();
+      expect(service.getEntry('file-a')).toBeDefined();
+      expect(service.getCacheStats().evictions).toBe(0);
+    });
+
+    it('skips a DTO that cannot fit alongside the parsed entry instead of evicting others', async () => {
+      mockedFsStat.mockResolvedValue(makeStat(4_000, 1706000000000));
+      await service.getOrParse('file-a', '/tmp/a.jsonl', adapter);
+      const sourceVersion = service.getEntry('file-a')!.sourceVersion;
+
+      service.setDto('file-a', {
+        result: { messages: [] },
+        responseBytes: 5_000,
+        maxToolResultLength: 2_000,
+        enrichmentFingerprint: 'claude:200000',
+      });
+
+      expect(service.getEntry('file-a')).toBeDefined();
+      expect(service.getEntry('file-a')!.sourceVersion).toBe(sourceVersion);
+      expect(service.getDto('file-a', 2_000, 'claude:200000')).toBeUndefined();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1796,6 +1955,8 @@ describe('SessionCacheService', () => {
 
     it('should return cacheHit=false when file grew (incremental parse)', async () => {
       const incResult: IncrementalResult = {
+        hasMore: false,
+        messageCount: 1,
         entries: [makeMessage('m3', 1706000010000)],
         nextByteOffset: 1500,
         metrics: makeMetrics({ messageCount: 3 }),
@@ -1841,6 +2002,8 @@ describe('SessionCacheService', () => {
 
       const tentativeMessage = makeMessage('tentative-mixed-suffix', 1706000010000);
       (adapter.parseIncremental as jest.Mock).mockResolvedValue({
+        hasMore: false,
+        messageCount: 1,
         entries: [tentativeMessage],
         nextByteOffset: 1500,
         metrics: makeMetrics({ messageCount: 3 }),
@@ -2086,6 +2249,7 @@ describe('SessionCacheService', () => {
       mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
       (adapter.parseIncremental as jest.Mock).mockResolvedValue({
         hasMore: false,
+        messageCount: 4,
         nextByteOffset: 1500,
         entries: [
           makeMessage('u-1', 1706000000000, { role: 'user', stopReason: undefined }),
@@ -2118,6 +2282,7 @@ describe('SessionCacheService', () => {
       mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
       (adapter.parseIncremental as jest.Mock).mockResolvedValue({
         hasMore: false,
+        messageCount: 1,
         nextByteOffset: 1500,
         entries: [makeMessage('a-cont', 1706000002000, { stopReason: 'end_turn' })],
       } satisfies IncrementalResult);
@@ -2174,7 +2339,9 @@ describe('SessionCacheService', () => {
       const afterFirst = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
       expect(afterFirst.continuationState).toEqual({ baseline: 'A' });
       expect(service.getEntry(SESSION_ID)?.continuationState).toEqual({ baseline: 'A' });
-      expect((afterFirst.session as Record<string, unknown>).continuationState).toBeUndefined();
+      expect(
+        (afterFirst.session as unknown as Record<string, unknown>).continuationState,
+      ).toBeUndefined();
 
       // Second append receives the stored state as options.continuationState.
       mockedFsStat.mockResolvedValue(makeStat(1700, 1706000020000));

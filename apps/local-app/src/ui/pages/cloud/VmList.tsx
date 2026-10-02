@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { Lock, LockOpen, MoreHorizontal, Plus, Server } from 'lucide-react';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
-import { Badge } from '@/ui/components/ui/badge';
+import { RemoteMetricsStrip } from '@/ui/components/remote-metrics/RemoteMetricsStrip';
+import { BusyStatus } from '@/ui/components/ui/spinner';
 import { Button } from '@/ui/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/ui/components/ui/card';
 import {
@@ -11,7 +12,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/ui/components/ui/dropdown-menu';
-import { RemoteMetricsStrip } from '@/ui/components/remote-metrics/RemoteMetricsStrip';
 import {
   Tooltip,
   TooltipContent,
@@ -30,7 +30,7 @@ import {
 } from './remote-status';
 import { addressHost } from './own-vm-address';
 import { TONE_CLASSES } from '@/ui/lib/status-tone';
-import { StatusChip } from './StatusChip';
+import { StatusChip, ToneSpinner } from './StatusChip';
 
 /**
  * A lock after the status when the VM answered over its pinned certificate,
@@ -236,16 +236,17 @@ function VmRow({
                 type="button"
                 onClick={() => onOpenActivity(chip.operationId!)}
                 className={cn(
-                  'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   TONE_CLASSES[chip.tone],
                 )}
               >
+                <ToneSpinner tone={chip.tone} />
                 {chip.label}
               </button>
             ) : (
-              <Badge key={chip.key} variant="outline" className={TONE_CLASSES[chip.tone]}>
+              <StatusChip key={chip.key} tone={chip.tone}>
                 {chip.label}
-              </Badge>
+              </StatusChip>
             ),
           )}
         </div>
@@ -264,7 +265,7 @@ function VmRow({
           <Button
             size="sm"
             variant={status.tone === 'error' ? 'destructive' : 'outline'}
-            disabled={action.kind === 'power-on' && powerOnPending}
+            pending={action.kind === 'power-on' && powerOnPending}
             onClick={() => onAction(action)}
           >
             {action.kind === 'power-on' && powerOnPending ? 'Starting…' : action.label}
@@ -371,7 +372,7 @@ export function VmList({
       </CardHeader>
       <CardContent>
         {loading ? (
-          <p className="text-sm text-muted-foreground">Loading VMs…</p>
+          <BusyStatus className="text-sm text-muted-foreground">Loading VMs…</BusyStatus>
         ) : remotes.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-6 text-center">
             <Server aria-hidden="true" className="h-8 w-8 text-muted-foreground" />

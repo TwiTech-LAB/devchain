@@ -24,6 +24,7 @@ describe('LocalStorageService - Watcher Shared Event Name', () => {
     const project = await service.createProject({
       name: 'Shared Event Watcher Project',
       rootPath: '/tmp/shared-event-watchers',
+      description: null,
       isTemplate: false,
     });
 

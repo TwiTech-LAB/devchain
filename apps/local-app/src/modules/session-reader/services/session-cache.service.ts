@@ -24,11 +24,13 @@ import {
 } from './metrics-merge';
 import {
   anchorsEqual,
+  fileIdentityOf,
   hashFileAnchors,
   type FileContentAnchors,
   type FileFreshnessSnapshot,
 } from './bounded-anchor-proof';
 import { lastCompleteLineEnd } from '../parsers/bounded-line-read';
+import type { TranscriptCursorProof } from './transcript-cursor';
 import { MetricsService } from '../../metrics/services/metrics.service';
 import type { CacheStats } from '../../metrics/types/metrics.types';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
@@ -115,6 +117,12 @@ export interface SessionCacheEntry {
    */
   fileContentAnchors?: FileContentAnchors;
   /**
+   * Append proof for cursors minted from this parse; file sources only. Unlike
+   * {@link fileContentAnchors} it ends at the last complete line, so a snapshot that ends
+   * mid-line still has one.
+   */
+  cursorProof?: TranscriptCursorProof;
+  /**
    * Numeric source revision (file: deterministic stat fingerprint; DB: the
    * token's `maxUpdated`, i.e. max `time_updated` across the session — see
    * {@link dbSourceVersion}).
@@ -137,9 +145,10 @@ export interface SessionCacheEntry {
    */
   boundaryFold: boolean;
   /**
-   * Opaque per-adapter continuation state from the last incremental parse (Codex token
-   * baseline), threaded into the next `parseIncremental` so the adapter skips rescanning
-   * earlier bytes. Cleared (undefined) by a full parse. File-delta adapters only.
+   * Opaque per-adapter continuation state from the last parse (Codex token baseline, Claude turn
+   * evidence), threaded into the next `parseIncremental` so the adapter skips rescanning earlier
+   * bytes. A full parse keeps only what {@link SessionReaderAdapter.continuationFromSession}
+   * derives. File-delta adapters only.
    */
   continuationState?: unknown;
 }
@@ -170,6 +179,10 @@ export interface GetOrParseResult {
    * state can carry the proven anchors without re-hashing.
    */
   fileContentAnchors?: FileContentAnchors;
+  /** See {@link SessionCacheEntry.cursorProof}. */
+  cursorProof?: TranscriptCursorProof;
+  /** `dev:ino` of the parsed file; absent for DB sources. */
+  fileIdentity?: string;
   /**
    * Accepted opaque continuation state for the entry (see
    * {@link SessionCacheEntry.continuationState}). Exposed so downstream lane state can carry
@@ -188,6 +201,7 @@ export interface PreParseGeneration {
   sourceVersion: number;
   messageCount: number;
   chunkCount: number;
+  cursorProof?: TranscriptCursorProof;
 }
 
 export type RefreshIfPresentResult =
@@ -621,8 +635,9 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     let lastOffset: number;
     let boundaryFold = false;
     let acceptedFileAnchors: FileContentAnchors | undefined;
-    // Opaque adapter continuation state to store on the new entry; only an accepted incremental
-    // parse carries one forward. A full parse (any branch below) leaves it undefined = cleared.
+    // Opaque adapter continuation state to store on the new entry: an accepted incremental parse
+    // carries one forward; a full parse derives it from the session when the adapter can, and
+    // otherwise leaves it undefined = cleared.
     let continuationState: unknown;
     const sameFileIdentity =
       ref.kind !== 'file' ||
@@ -782,8 +797,11 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       session = { ...session, messages: coalesced.messages, metrics: coalesced.metrics };
     }
     session = this.withoutDerivedChunks(session);
+    if (continuationState === undefined && adapter.continuationFromSession) {
+      continuationState = adapter.continuationFromSession(session);
+    }
 
-    const fileContentAnchors = await this.resolveStoredAnchors(
+    const { fileContentAnchors, cursorProof } = await this.resolveStoredProofs(
       ref,
       freshness,
       lastOffset,
@@ -802,6 +820,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       lastMtime: freshness.mtimeMs,
       fileIdentity: freshness.fileIdentity,
       fileContentAnchors,
+      cursorProof,
       sourceVersion: freshness.sourceVersion,
       freshnessToken: freshness.token,
       lastAccessedAt: now,
@@ -810,9 +829,13 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       boundaryFold,
       continuationState,
     };
-    this.cache.set(sessionId, entry);
-    this.budgetUsedBytes += entry.weights.parsed;
-    this.enforceBudget();
+    // An entry that exceeds the budget on its own is served without residency; admitting it would
+    // evict every resident entry and then itself.
+    if (this.fitsAlone(entry, {})) {
+      this.cache.set(sessionId, entry);
+      this.budgetUsedBytes += entry.weights.parsed;
+      this.enforceBudget();
+    }
 
     return {
       result: this.toGetOrParseResult(session, entry, false, sourceChangeKind),
@@ -835,6 +858,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       sourceVersion: entry.sourceVersion,
       messageCount: entry.session.messages.length,
       chunkCount: entry.chunks?.chunks.length ?? buildChunks(entry.session.messages).length,
+      cursorProof: entry.cursorProof,
     };
   }
 
@@ -849,6 +873,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       sourceVersion: result.sourceVersion,
       messageCount: result.session.messages.length,
       chunkCount: result.session.chunks?.length ?? buildChunks(result.session.messages).length,
+      cursorProof: result.cursorProof,
     };
   }
 
@@ -866,6 +891,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
   setChunks(sessionId: string, sourceVersion: number, chunks: UnifiedChunk[]): void {
     const entry = this.cache.get(sessionId);
     if (!entry || entry.sourceVersion !== sourceVersion) return;
+    if (!this.fitsAlone(entry, { chunks: entry.sourceWeightBytes })) return;
 
     this.budgetUsedBytes -= entry.weights.chunks;
     entry.chunks = { chunks, sourceVersion };
@@ -899,6 +925,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
   setDto(sessionId: string, dto: CachedTranscriptDto): void {
     const entry = this.cache.get(sessionId);
     if (!entry) return;
+    if (!this.fitsAlone(entry, { dto: dto.responseBytes })) return;
 
     this.budgetUsedBytes -= entry.weights.dto;
     entry.dto = dto;
@@ -991,6 +1018,8 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       sourceVersion: entry.sourceVersion,
       boundaryFold: cacheHit ? false : entry.boundaryFold,
       fileContentAnchors: entry.fileContentAnchors,
+      cursorProof: entry.cursorProof,
+      fileIdentity: entry.fileIdentity,
       continuationState: entry.continuationState,
     };
   }
@@ -1013,6 +1042,18 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  /**
+   * Whether the entry stays within the budget on its own after replacing the given weights.
+   * Growing past the budget would evict every other resident entry, so the caller skips the
+   * representation instead.
+   */
+  private fitsAlone(
+    entry: SessionCacheEntry,
+    next: Partial<SessionCacheEntry['weights']>,
+  ): boolean {
+    return sumWeights({ ...entry.weights, ...next }) <= this.config.budgetBytes;
+  }
+
   private deleteEntry(sessionId: string): void {
     const entry = this.cache.get(sessionId);
     if (!entry) return;
@@ -1021,7 +1062,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
   }
 
   private entryWeight(entry: SessionCacheEntry): number {
-    return entry.weights.parsed + entry.weights.chunks + entry.weights.dto;
+    return sumWeights(entry.weights);
   }
 
   private estimateSourceWeight(
@@ -1031,15 +1072,9 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
   ): number {
     if (ref.kind === 'file') return Math.max(1, sourceSize);
 
-    // A DB container's file size is shared by many sessions. Use session-local token/message
-    // proxies instead so one OpenCode session cannot claim the whole database allocation.
-    const tokenProxy =
-      Math.max(
-        session.metrics.totalContextConsumption,
-        session.metrics.totalTokens,
-        session.metrics.visibleContextTokens,
-      ) * 4;
-    return Math.max(1_024, tokenProxy, session.messages.length * 256);
+    // A DB container's file size is shared by many sessions, so weigh the session's own message
+    // content. Token counts are cumulative across turns and say nothing about retained memory.
+    return Math.max(1_024, estimateMessagesBytes(session.messages));
   }
 
   private withoutDerivedChunks(session: UnifiedSession): UnifiedSession {
@@ -1133,7 +1168,7 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
       mtimeMs: stat.mtime.getTime(),
       dev: stat.dev,
       ino: stat.ino,
-      fileIdentity: `${stat.dev}:${stat.ino}`,
+      fileIdentity: fileIdentityOf(stat),
     };
   }
 
@@ -1173,45 +1208,57 @@ export class SessionCacheService implements OnModuleDestroy, OnModuleInit {
   }
 
   /**
-   * The bounded anchors to store over `[0, lastOffset)` for a new entry; file sources only.
+   * The bounded proofs to store for a new entry; file sources only.
    *
-   * The accepted-append path already proved its anchors and ends on a line boundary by
-   * construction. Every full-parse path (no accepted anchors) hashes them now under a strict
-   * same-snapshot assertion, but ONLY when the snapshot ends on a line boundary. A full parse that
-   * catches the file mid-write — its final line still unterminated — stores NO proof, so the next
-   * change re-parses in full and the completed line is read exactly once. Without this,
-   * `[0, lastOffset)` ending inside that line would be accepted as an append and the incremental
-   * parse would start mid-line and drop the message. lastOffset is never rewound: parseFullSession
-   * already parsed the line when it was complete JSON, so rewinding would duplicate it. Empty
-   * snapshots and a file that changed mid-parse also store no anchors.
+   * `fileContentAnchors` (the next incremental parse's append proof over `[0, lastOffset)`): the
+   * accepted-append path already proved them and ends on a line boundary by construction. Every
+   * full-parse path hashes them now under a strict same-snapshot assertion, but ONLY when the
+   * snapshot ends on a line boundary. A full parse that catches the file mid-write — its final line
+   * still unterminated — stores none, so the next change re-parses in full and the completed line
+   * is read exactly once. Without this, `[0, lastOffset)` ending inside that line would be accepted
+   * as an append and the incremental parse would start mid-line and drop the message. lastOffset is
+   * never rewound: parseFullSession already parsed the line when it was complete JSON, so rewinding
+   * would duplicate it.
+   *
+   * `cursorProof` covers the same parsed snapshot, ending at its last complete line, so a mid-write
+   * snapshot still yields one. A tail only needs that prefix unchanged: its delta replaces from the
+   * last chunk the cursor counted, which covers the unterminated line.
+   *
+   * A file that changed mid-parse, or a failed line-boundary probe, stores neither proof.
    */
-  private async resolveStoredAnchors(
+  private async resolveStoredProofs(
     ref: SessionSourceRef,
     freshness: FileFreshnessSnapshot,
     lastOffset: number,
     acceptedFileAnchors: FileContentAnchors | undefined,
-  ): Promise<FileContentAnchors | undefined> {
-    if (ref.kind !== 'file') return undefined;
-    if (acceptedFileAnchors) return acceptedFileAnchors;
-    if (!(await this.snapshotEndsOnLineBoundary(ref.filePath, lastOffset))) return undefined;
-    return this.tryHashFileAnchors(ref.filePath, freshness, lastOffset);
+  ): Promise<{ fileContentAnchors?: FileContentAnchors; cursorProof?: TranscriptCursorProof }> {
+    const fileIdentity = freshness.fileIdentity;
+    if (ref.kind !== 'file' || fileIdentity === undefined) return {};
+    if (acceptedFileAnchors) {
+      return {
+        fileContentAnchors: acceptedFileAnchors,
+        cursorProof: { fileIdentity, offset: lastOffset, anchors: acceptedFileAnchors },
+      };
+    }
+    const lineEnd = await this.parsedLineEnd(ref.filePath, lastOffset);
+    if (lineEnd === undefined) return {};
+    const anchors = await this.tryHashFileAnchors(ref.filePath, freshness, lineEnd);
+    if (!anchors) return {};
+    const cursorProof = { fileIdentity, offset: lineEnd, anchors };
+    return lineEnd === lastOffset ? { fileContentAnchors: anchors, cursorProof } : { cursorProof };
   }
 
   /**
-   * Whether the parsed snapshot `[0, offset)` ends on a line boundary — the byte before `offset`
-   * is a newline, or the snapshot is empty. A full parse that caught the file mid-write ends inside
-   * an unterminated last line and fails this check, so it stores no append proof. On a read error
-   * the snapshot is treated as NOT on a boundary (fail closed to a safe full re-parse next change).
+   * End of the last complete line in the parsed snapshot `[0, offset)` (`offset` itself when the
+   * snapshot ends on a line boundary or is empty). `undefined` on a read error, which withholds
+   * every proof (fail closed to a safe full re-parse next change).
    */
-  private async snapshotEndsOnLineBoundary(filePath: string, offset: number): Promise<boolean> {
+  private async parsedLineEnd(filePath: string, offset: number): Promise<number | undefined> {
     try {
-      return (await lastCompleteLineEnd(filePath, 0, offset)) === offset;
+      return await lastCompleteLineEnd(filePath, 0, offset);
     } catch (error) {
-      this.logger.debug(
-        { error, filePath },
-        'Line-boundary probe failed — withholding append proof',
-      );
-      return false;
+      this.logger.debug({ error, filePath }, 'Line-boundary probe failed — withholding proofs');
+      return undefined;
     }
   }
 
@@ -1321,4 +1368,41 @@ function positiveIntegerFromEnv(raw: string | undefined, fallback: number): numb
   if (raw === undefined) return fallback;
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sumWeights(weights: SessionCacheEntry['weights']): number {
+  return weights.parsed + weights.chunks + weights.dto;
+}
+
+const MESSAGE_OVERHEAD_BYTES = 256;
+
+/** Retained-content estimate: text lengths plus a fixed per-message overhead, without serializing. */
+function estimateMessagesBytes(messages: UnifiedSession['messages']): number {
+  let total = 0;
+  for (const message of messages) {
+    total += MESSAGE_OVERHEAD_BYTES;
+    for (const block of message.content) {
+      switch (block.type) {
+        case 'text':
+          total += block.text.length;
+          break;
+        case 'thinking':
+          total += block.thinking.length;
+          break;
+        case 'tool_call':
+          total += JSON.stringify(block.input).length;
+          break;
+        case 'tool_result':
+          total +=
+            typeof block.content === 'string'
+              ? block.content.length
+              : JSON.stringify(block.content).length;
+          break;
+        case 'image':
+          total += block.data.length;
+          break;
+      }
+    }
+  }
+  return total;
 }

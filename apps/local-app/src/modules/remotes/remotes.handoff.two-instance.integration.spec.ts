@@ -444,13 +444,15 @@ describe('connect, edit on the host, mirror, and disconnect', () => {
     const exportReplica = client.exportReplica.bind(client);
     jest
       .spyOn(client, 'exportReplica')
-      .mockImplementation(async (remoteId: string, projectId: string, scope: never) => {
-        const replica = await exportReplica(remoteId, projectId, scope);
-        if (scope === 'detach') {
-          atFinalPull = { keys: rowKeys(host(), tables), totals: await totals(host()) };
-        }
-        return replica;
-      });
+      .mockImplementation(
+        async (remoteId: string, projectId: string, scope: 'attach' | 'detach') => {
+          const replica = await exportReplica(remoteId, projectId, scope);
+          if (scope === 'detach') {
+            atFinalPull = { keys: rowKeys(host(), tables), totals: await totals(host()) };
+          }
+          return replica;
+        },
+      );
 
     const done = await runOperation('detach', { projectId: seed.projectId });
 

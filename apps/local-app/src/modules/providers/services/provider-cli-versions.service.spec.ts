@@ -26,7 +26,7 @@ function createLookupMock() {
   return {
     fetchLatestVersion: jest.fn<Promise<string>, [string]>(),
     fetchStableVersions: jest.fn<Promise<string[]>, [string, number?]>(),
-  } as unknown as ProviderCliNpmLookupService;
+  } as unknown as jest.Mocked<ProviderCliNpmLookupService>;
 }
 
 function createSettingsMock() {

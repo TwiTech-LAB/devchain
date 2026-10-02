@@ -60,7 +60,7 @@ const ACCOUNTING_INFO: AccountingInfo = {
   hotPathSafety:
     'byte estimation runs on-demand only (metrics endpoint / periodic log), never on cache read/write paths; entry counts and hit/miss counters are always-on and O(1)',
   budgeting:
-    'transcript composite budget uses deterministic cache-write proxies: file source bytes (2x parsed + 1x chunks), session-local token/message estimates for DB sources, and the DTO wire length already computed at DTO cache creation; aggregate.budgetUsedBytes is the enforced value and aggregate.bytesEstimated remains the independent retained-graph snapshot',
+    'transcript composite budget uses deterministic cache-write proxies: file source bytes (2x parsed + 1x chunks), session-local message-content byte estimates for DB sources, and the DTO wire length already computed at DTO cache creation; aggregate.budgetUsedBytes is the enforced value and aggregate.bytesEstimated remains the independent retained-graph snapshot',
 };
 
 @Injectable()

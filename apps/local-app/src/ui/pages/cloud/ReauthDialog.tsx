@@ -74,7 +74,7 @@ export function ReauthDialog({
           </Button>
           <Button
             onClick={() => onRetry(operationId, setupProviderAuth(choices))}
-            disabled={pending}
+            pending={pending}
             data-testid="reauth-submit"
           >
             Retry with these logins

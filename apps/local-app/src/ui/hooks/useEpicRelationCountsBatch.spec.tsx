@@ -111,7 +111,10 @@ describe('useEpicRelationCountsBatch', () => {
 
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
     expect(result.current.counts?.get('epic-1')?.total).toBe(2);
-    expect(result.current.query.data?.get('epic-1')?.total).toBe(2);
+    // The hook's return type erases the query's Map generic (reported as a
+    // production typing gap); identity with `counts` proves the same active
+    // Map flows through the query result.
+    expect(result.current.query.data).toBe(result.current.counts);
 
     // Disable the consumer: it must expose no active-scope data through any
     // returned field.

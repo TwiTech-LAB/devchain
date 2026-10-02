@@ -40,12 +40,16 @@ describe('LocalStorageService integrations', () => {
       name: 'Integration project',
       description: null,
       rootPath: '/tmp/integration-project',
+      isTemplate: false,
     });
     const statuses = await service.listStatuses(project.id);
     return service.createEpic({
       projectId: project.id,
       title: 'Imported source',
       statusId: statuses.items[0].id,
+      description: null,
+      data: null,
+      tags: [],
     });
   }
 
@@ -55,6 +59,7 @@ describe('LocalStorageService integrations', () => {
         name,
         description: null,
         rootPath,
+        isTemplate: false,
       })
     ).id;
   }
@@ -300,7 +305,7 @@ describe('LocalStorageService integrations', () => {
     ).rejects.toBeInstanceOf(NotFoundError);
     await expect(
       service.assignUnassignedIntegrationConnection(legacyId, occupiedProjectId),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: { projectId: occupiedProjectId, provider: 'jira' },
     });
 
@@ -365,6 +370,9 @@ describe('LocalStorageService integrations', () => {
       projectId: connectionProjectId,
       title: 'Imported source',
       statusId: statuses.items[0].id,
+      description: null,
+      data: null,
+      tags: [],
     });
     const link = await service.createExternalTaskLink({
       epicId: epic.id,
@@ -416,7 +424,7 @@ describe('LocalStorageService integrations', () => {
         remoteTaskId: 'task-cross-project',
         sourceSnapshot: { title: 'Cross-project task' },
       }),
-    ).rejects.toMatchObject<ValidationError>({
+    ).rejects.toMatchObject<Partial<ValidationError>>({
       message: 'External task link project must match its connection.',
     });
     expect(sqlite.prepare('SELECT COUNT(*) AS count FROM external_task_links').get()).toEqual({
@@ -432,6 +440,9 @@ describe('LocalStorageService integrations', () => {
       projectId,
       title: 'Duplicate import',
       statusId: statuses.items[0].id,
+      description: null,
+      data: null,
+      tags: [],
     });
     const input = {
       epicId: firstEpic.id,
@@ -460,6 +471,9 @@ describe('LocalStorageService integrations', () => {
       projectId: otherProjectId,
       title: 'Other project import',
       statusId: otherStatuses.items[0].id,
+      description: null,
+      data: null,
+      tags: [],
     });
     const otherLink = await service.createExternalTaskLink({
       ...input,
@@ -481,17 +495,24 @@ describe('LocalStorageService integrations', () => {
       name: 'Batch project',
       description: null,
       rootPath: '/tmp/batch-project',
+      isTemplate: false,
     });
     const statuses = await service.listStatuses(project.id);
     const epicA = await service.createEpic({
       projectId: project.id,
       title: 'Epic A',
       statusId: statuses.items[0].id,
+      description: null,
+      data: null,
+      tags: [],
     });
     const epicB = await service.createEpic({
       projectId: project.id,
       title: 'Epic B',
       statusId: statuses.items[0].id,
+      description: null,
+      data: null,
+      tags: [],
     });
     await service.createExternalTaskLink({
       epicId: epicB.id,

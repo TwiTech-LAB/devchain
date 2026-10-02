@@ -98,9 +98,9 @@ describe('Jira My Work capability', () => {
     const requestJson = jest.fn();
     const provider = providerWith(requestJson);
 
-    await expect(
-      provider.verifyCredentials({ ...credentials, siteUrl }),
-    ).rejects.toMatchObject<JiraProviderError>({ code: 'jira_request_rejected' });
+    await expect(provider.verifyCredentials({ ...credentials, siteUrl })).rejects.toMatchObject<
+      Partial<JiraProviderError>
+    >({ code: 'jira_request_rejected' });
     expect(requestJson).not.toHaveBeenCalled();
   });
 

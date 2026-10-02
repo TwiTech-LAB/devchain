@@ -5,9 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { TerminalWindowsProvider } from '@/ui/terminal-windows';
 
 // Polyfill DOMRect for floating-ui positioning used by the context menu
-interface GlobalWithDOMRect extends Global {
-  DOMRect?: typeof DOMRect;
-}
+type GlobalWithDOMRect = typeof globalThis & { DOMRect?: typeof DOMRect };
 
 if (!(global as GlobalWithDOMRect).DOMRect) {
   (global as GlobalWithDOMRect).DOMRect = class DOMRect {
@@ -1729,7 +1727,17 @@ describe('ChatPage context bar toggle', () => {
 
     act(() => {
       callback!(
-        [{ target: agentButton, isIntersecting: true } as IntersectionObserverEntry],
+        [
+          {
+            target: agentButton,
+            isIntersecting: true,
+            intersectionRatio: 1,
+            intersectionRect: new DOMRect(0, 0, 10, 10),
+            boundingClientRect: new DOMRect(0, 0, 10, 10),
+            rootBounds: null,
+            time: 0,
+          },
+        ],
         {} as IntersectionObserver,
       );
     });

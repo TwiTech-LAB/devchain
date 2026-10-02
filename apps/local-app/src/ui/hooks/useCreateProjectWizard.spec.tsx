@@ -11,7 +11,20 @@ const BASE: CreateFromTemplateInput = { name: 'X', rootPath: '/tmp/x', templateI
 /** One family (reasoning) with two available providers — used for the ≥1-selected gate. */
 function oneFamilyPreview(): SetupPreviewResponse {
   return {
-    payload: { version: 1, profiles: [], agents: [], teams: [] },
+    payload: {
+      version: 1,
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+      watchers: [],
+      subscribers: [],
+      teams: [],
+      providerModels: [],
+      providerEfforts: [],
+      presets: [],
+      scheduledEpics: [],
+    },
     providerSummary: [
       { name: 'claude', available: true, families: ['reasoning'], agentCount: 1 },
       { name: 'codex', available: true, families: ['reasoning'], agentCount: 0 },
@@ -43,7 +56,20 @@ function oneFamilyPreview(): SetupPreviewResponse {
  */
 function multiAlternativePreview(): SetupPreviewResponse {
   return {
-    payload: { version: 1, profiles: [], agents: [], teams: [] },
+    payload: {
+      version: 1,
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+      watchers: [],
+      subscribers: [],
+      teams: [],
+      providerModels: [],
+      providerEfforts: [],
+      presets: [],
+      scheduledEpics: [],
+    },
     providerSummary: [
       { name: 'claude', available: false, families: ['reasoning'], agentCount: 1 },
       { name: 'codex', available: true, families: ['reasoning'], agentCount: 0 },
@@ -71,7 +97,20 @@ function multiAlternativePreview(): SetupPreviewResponse {
 /** Two families, each with a single available provider — isolates family-coverage from ≥1-selected. */
 function twoFamilyPreview(): SetupPreviewResponse {
   return {
-    payload: { version: 1, profiles: [], agents: [], teams: [] },
+    payload: {
+      version: 1,
+      prompts: [],
+      profiles: [],
+      agents: [],
+      statuses: [],
+      watchers: [],
+      subscribers: [],
+      teams: [],
+      providerModels: [],
+      providerEfforts: [],
+      presets: [],
+      scheduledEpics: [],
+    },
     providerSummary: [
       { name: 'claude', available: true, families: ['reasoning'], agentCount: 1 },
       { name: 'codex', available: true, families: ['vision'], agentCount: 1 },

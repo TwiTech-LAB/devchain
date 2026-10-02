@@ -32,6 +32,7 @@ describe('LocalStorageService', () => {
       name,
       rootPath: `/tmp/${name.toLowerCase().replace(/\s+/g, '-')}`,
       description: null,
+      isTemplate: false,
     });
   }
 
@@ -53,6 +54,8 @@ describe('LocalStorageService', () => {
       profileId: profile.id,
       providerId: provider.id,
       name: `config-${agentName}`,
+      options: null,
+      env: null,
     });
     const agent = await service.createAgent({
       projectId,
@@ -298,6 +301,7 @@ describe('LocalStorageService', () => {
         description: 'A test epic',
         statusId: defaultStatusId,
         tags: ['feature', 'urgent'],
+        data: null,
       });
 
       expect(epic.version).toBe(1);
@@ -312,6 +316,9 @@ describe('LocalStorageService', () => {
         title: 'Attributed Epic',
         statusId: defaultStatusId,
         createdBy: 'Original Creator',
+        description: null,
+        data: null,
+        tags: [],
       });
 
       expect(epic.createdBy).toBe('Original Creator');
@@ -332,6 +339,9 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Original',
         statusId: defaultStatusId,
+        description: null,
+        data: null,
+        tags: [],
       });
 
       const updated = await service.updateEpic(epic.id, { title: 'Updated Title' }, 1);
@@ -346,6 +356,8 @@ describe('LocalStorageService', () => {
         title: 'Tagged Epic',
         statusId: defaultStatusId,
         tags: ['Alpha', 'beta'],
+        description: null,
+        data: null,
       });
 
       const replaced = await service.updateEpic(
@@ -378,11 +390,17 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Active Epic',
         statusId: inProgressId,
+        description: null,
+        data: null,
+        tags: [],
       });
       await service.createEpic({
         projectId: project.id,
         title: 'New Epic',
         statusId: defaultStatusId,
+        description: null,
+        data: null,
+        tags: [],
       });
 
       const result = await service.listProjectEpics(project.id, {
@@ -401,11 +419,17 @@ describe('LocalStorageService', () => {
         title: 'Assigned Epic',
         statusId: defaultStatusId,
         agentId: agent.id,
+        description: null,
+        data: null,
+        tags: [],
       });
       await service.createEpic({
         projectId: project.id,
         title: 'Unassigned Epic',
         statusId: defaultStatusId,
+        description: null,
+        data: null,
+        tags: [],
       });
 
       const result = await service.listAssignedEpics(project.id, {
@@ -467,7 +491,14 @@ describe('LocalStorageService', () => {
       },
       title = 'Imported Epic',
     ): Promise<Epic> {
-      const epic = await service.createEpic({ projectId: project.id, title, statusId });
+      const epic = await service.createEpic({
+        projectId: project.id,
+        title,
+        statusId,
+        description: null,
+        data: null,
+        tags: [],
+      });
       await service.createExternalTaskLink({ ...link, epicId: epic.id, connectionId: null });
       return epic;
     }
@@ -605,6 +636,9 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Legacy snapshot Epic',
         statusId,
+        description: null,
+        data: null,
+        tags: [],
       });
       insertLegacyLinkRow({
         id: 'legacy-link-1',
@@ -629,12 +663,17 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Alpha planning',
         statusId,
+        description: null,
+        data: null,
+        tags: [],
       });
       await service.createEpic({
         projectId: project.id,
         title: 'Unrelated',
         description: 'covers budget review',
         statusId,
+        data: null,
+        tags: [],
       });
 
       const byTitle = await service.listProjectEpics(project.id, { q: 'alpha' });
@@ -692,6 +731,9 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Commented Epic',
         statusId,
+        description: null,
+        data: null,
+        tags: [],
       });
 
       const comment1 = await service.createEpicComment({
@@ -730,6 +772,9 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Prefix Test',
         statusId,
+        description: null,
+        data: null,
+        tags: [],
       });
 
       const prefix = epic.id.slice(0, 8);
@@ -758,6 +803,7 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Custom Prompt',
         content: 'Hello',
+        tags: [],
       });
       const system = await service.createPrompt({
         projectId: project.id,
@@ -810,6 +856,7 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Init Prompt',
         content: 'Welcome',
+        tags: [],
       });
 
       const { randomUUID } = await import('crypto');
@@ -838,6 +885,9 @@ describe('LocalStorageService', () => {
         projectId: project.id,
         title: 'Record Epic',
         statusId: statuses[0].id,
+        description: null,
+        data: null,
+        tags: [],
       });
 
       const record = await service.createRecord({
@@ -980,6 +1030,8 @@ describe('LocalStorageService', () => {
         profileId: profile.id,
         providerId: provider.id,
         name: 'config',
+        options: null,
+        env: null,
       });
 
       await expect(
@@ -1000,6 +1052,8 @@ describe('LocalStorageService', () => {
         profileId: profileB.id,
         providerId: provider.id,
         name: 'config-b',
+        options: null,
+        env: null,
       });
 
       await expect(
@@ -1020,6 +1074,8 @@ describe('LocalStorageService', () => {
         profileId: profileB.id,
         providerId: provider2.id,
         name: 'config-other',
+        options: null,
+        env: null,
       });
 
       await expect(service.updateAgent(agent.id, { providerConfigId: configB.id })).rejects.toThrow(
@@ -1034,11 +1090,15 @@ describe('LocalStorageService', () => {
         profileId: profile.id,
         providerId: provider.id,
         name: 'config-1',
+        options: null,
+        env: null,
       });
       const config2 = await service.createProfileProviderConfig({
         profileId: profile.id,
         providerId: provider.id,
         name: 'config-2',
+        options: null,
+        env: null,
       });
       const agent = await service.createAgent({
         projectId: project.id,
@@ -1063,11 +1123,15 @@ describe('LocalStorageService', () => {
         profileId: profile.id,
         providerId: provider.id,
         name: 'config-1',
+        options: null,
+        env: null,
       });
       const config2 = await service.createProfileProviderConfig({
         profileId: profile.id,
         providerId: provider.id,
         name: 'config-2',
+        options: null,
+        env: null,
       });
       const agent = await service.createAgent({
         projectId: project.id,

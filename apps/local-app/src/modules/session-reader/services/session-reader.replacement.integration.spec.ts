@@ -9,7 +9,8 @@ import { SessionCacheService } from './session-cache.service';
 import { SessionReaderService } from './session-reader.service';
 import type { TranscriptPathValidator } from './transcript-path-validator.service';
 import type { PricingServiceInterface } from './pricing.interface';
-import { decodeCursor } from './transcript-cursor';
+import { decodeCursor, TRANSCRIPT_PARSER_GENERATION } from './transcript-cursor';
+import type { TranscriptTailResponse } from './session-reader.service';
 
 const SESSION_ID = 'equal-size-replacement';
 
@@ -65,6 +66,40 @@ function appendedUser(index: number, content: string): string {
   return `${JSON.stringify(userRow(index, content))}\n`;
 }
 
+/** A later assistant row of the open turn; it joins the last AI chunk, which grows in place. */
+function appendedAssistant(index: number, text: string): string {
+  return `${JSON.stringify({
+    type: 'assistant',
+    uuid: `a-${index.toString().padStart(3, '0')}`,
+    parentUuid: 'a-001',
+    isSidechain: false,
+    timestamp: `2026-01-01T10:01:${(index * 2).toString().padStart(2, '0')}.000Z`,
+    message: {
+      role: 'assistant',
+      model: 'claude-sonnet-4-6',
+      content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 2,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    },
+  })}\n`;
+}
+
+function expectDelta(tail: TranscriptTailResponse | null) {
+  if (tail?.kind !== 'delta') throw new Error(`expected a delta, got ${tail?.kind ?? 'null'}`);
+  return tail;
+}
+
+/** The cursor's leading fields re-encoded without its proof, at `generation`. */
+function withoutProof(cursor: string, generation: number): string {
+  const fields = Buffer.from(cursor, 'base64url').toString().split(':').slice(0, 3);
+  return Buffer.from([...fields, generation].join(':')).toString('base64url');
+}
+
 describe('SessionReaderService file replacement cursor integration', () => {
   let directory: string;
   let filePath: string;
@@ -98,7 +133,7 @@ describe('SessionReaderService file replacement cursor integration', () => {
       kind: 'file',
     };
     resolveSpy = jest
-      .spyOn(service as unknown as { resolveAdapter: () => unknown }, 'resolveAdapter')
+      .spyOn(service as unknown as { resolveAdapter: () => Promise<unknown> }, 'resolveAdapter')
       .mockResolvedValue({
         adapter,
         transcriptPath: filePath,
@@ -236,7 +271,7 @@ describe('SessionReaderService file replacement cursor integration', () => {
     });
   });
 
-  it('requires a full refetch after cache loss makes the prior source identity unprovable', async () => {
+  it('requires a full refetch for a replacement after the cache entry was evicted', async () => {
     await writeFile(filePath, transcript('ORIGINAL'));
     const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
 
@@ -245,9 +280,28 @@ describe('SessionReaderService file replacement cursor integration', () => {
 
     await expect(service.getTranscriptTail(SESSION_ID, summary.cursor)).resolves.toEqual({
       kind: 'full-refetch-required',
-      sourceChangeKind: 'unknown-full-parse',
+      sourceChangeKind: 'file-replacement',
     });
   });
+
+  it.each([
+    ['truncation', 'file-truncation', () => writeFile(filePath, appendedUser(1, 'Short'))],
+    ['growing rewrite', 'same-file-rewrite', () => writeFile(filePath, transcript('REVISED!', 4))],
+  ] as const)(
+    'requires a full refetch for a %s after the cache entry was evicted',
+    async (_label, sourceChangeKind, change) => {
+      await writeFile(filePath, transcript('ORIGINAL', 2));
+      const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
+
+      await change();
+      cache.clear();
+
+      await expect(service.getTranscriptTail(SESSION_ID, summary.cursor)).resolves.toEqual({
+        kind: 'full-refetch-required',
+        sourceChangeKind,
+      });
+    },
+  );
 
   it('returns a safe delta only for a proven same-file append', async () => {
     await writeFile(filePath, transcript('ORIGINAL'));
@@ -327,5 +381,127 @@ describe('SessionReaderService file replacement cursor integration', () => {
     const nextCursor = (changed as { cursor: string }).cursor;
     const followUp = await service.getTranscriptTail(SESSION_ID, nextCursor);
     expect(followUp).toMatchObject({ kind: 'delta', deltaMessages: [{ id: 'u-003' }] });
+  });
+
+  describe('during an active turn (another reader advanced the cache first)', () => {
+    async function mintAtR1() {
+      await writeFile(filePath, transcript('ORIGINAL'));
+      const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
+      const r1Chunks = await service.getUnifiedTranscriptChunks(
+        SESSION_ID,
+        undefined,
+        20,
+        'backward',
+      );
+      return { cursor: summary.cursor, lastChunk: r1Chunks.chunks[r1Chunks.chunks.length - 1] };
+    }
+
+    const advances = [
+      [
+        'a page read',
+        () => service.getUnifiedTranscriptChunks(SESSION_ID, undefined, 20, 'backward'),
+      ],
+      ['the watcher', () => cache.refreshIfPresent(SESSION_ID, filePath, adapter)],
+    ] as const;
+
+    it.each(advances)(
+      'returns a delta with the growing chunk after %s advanced the cache to R2',
+      async (_label, advance) => {
+        const r1 = await mintAtR1();
+        await appendFile(filePath, appendedAssistant(2, 'Second step of the same turn'));
+        await advance();
+        expect(cache.getEntry(SESSION_ID)?.session.messages).toHaveLength(3);
+
+        const delta = expectDelta(await service.getTranscriptTail(SESSION_ID, r1.cursor));
+
+        expect(delta.replaceFromChunkId).toBe(r1.lastChunk.id);
+        expect(delta.deltaChunks[0].id).toBe(r1.lastChunk.id);
+        expect(delta.deltaChunks[0].messages.length).toBeGreaterThan(r1.lastChunk.messages.length);
+        expect(delta.deltaMessages.map((message) => message.id)).toEqual(['a-002']);
+        expect(decodeCursor(delta.cursor)?.proof?.offset).toBe((await stat(filePath)).size);
+      },
+    );
+
+    it.each(advances)(
+      'returns a delta after %s advanced the cache and the entry was then evicted',
+      async (_label, advance) => {
+        const r1 = await mintAtR1();
+        await appendFile(filePath, appendedAssistant(2, 'Second step of the same turn'));
+        await advance();
+        cache.invalidate(SESSION_ID);
+
+        const delta = expectDelta(await service.getTranscriptTail(SESSION_ID, r1.cursor));
+
+        expect(delta.replaceFromChunkId).toBe(r1.lastChunk.id);
+        expect(delta.deltaMessages.map((message) => message.id)).toEqual(['a-002']);
+      },
+    );
+
+    it('returns a delta when the entry was evicted before the append', async () => {
+      const r1 = await mintAtR1();
+      cache.clear();
+      await appendFile(filePath, appendedAssistant(2, 'Second step of the same turn'));
+
+      const delta = expectDelta(await service.getTranscriptTail(SESSION_ID, r1.cursor));
+
+      expect(delta.replaceFromChunkId).toBe(r1.lastChunk.id);
+      expect(delta.deltaMessages.map((message) => message.id)).toEqual(['a-002']);
+    });
+
+    it('fails closed for an older-generation cursor and a cursor without a proof', async () => {
+      const r1 = await mintAtR1();
+      await appendFile(filePath, appendedAssistant(2, 'Second step of the same turn'));
+      await service.getUnifiedTranscriptChunks(SESSION_ID, undefined, 20, 'backward');
+
+      for (const cursor of [
+        withoutProof(r1.cursor, TRANSCRIPT_PARSER_GENERATION - 1),
+        withoutProof(r1.cursor, TRANSCRIPT_PARSER_GENERATION),
+      ]) {
+        await expect(service.getTranscriptTail(SESSION_ID, cursor)).resolves.toMatchObject({
+          kind: 'full-refetch-required',
+        });
+      }
+      // The same position with its proof still answers a delta.
+      expect(await service.getTranscriptTail(SESSION_ID, r1.cursor)).toMatchObject({
+        kind: 'delta',
+      });
+    });
+  });
+
+  describe('a snapshot that ends in the middle of a line', () => {
+    const partialLine = (text: string) => appendedUser(2, text).slice(0, 40);
+
+    it('mints a cursor whose proof ends at the last complete line and proves on the next tail', async () => {
+      const complete = transcript('ORIGINAL');
+      await writeFile(filePath, complete + partialLine('Completed later'));
+      const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
+      expect(decodeCursor(summary.cursor)?.proof?.offset).toBe(Buffer.byteLength(complete));
+      expect(summary.messageCount).toBe(2);
+
+      // The writer finishes the line, and the entry is evicted before the next tail.
+      await writeFile(filePath, complete + appendedUser(2, 'Completed later'));
+      cache.clear();
+
+      const delta = expectDelta(await service.getTranscriptTail(SESSION_ID, summary.cursor));
+      expect(delta.deltaMessages.map((message) => message.id)).toEqual(['u-002']);
+      expect(delta.totalMessageCount).toBe(3);
+    });
+
+    it('answers a delta while the current file ends in a partial line, then reads it once', async () => {
+      await writeFile(filePath, transcript('ORIGINAL'));
+      const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
+
+      await appendFile(filePath, partialLine('Arrives in two writes'));
+      const partial = expectDelta(await service.getTranscriptTail(SESSION_ID, summary.cursor));
+      expect(partial.deltaMessages).toEqual([]);
+      expect(decodeCursor(partial.cursor)?.proof?.offset).toBe(
+        decodeCursor(summary.cursor)?.proof?.offset,
+      );
+
+      await writeFile(filePath, transcript('ORIGINAL') + appendedUser(2, 'Arrives in two writes'));
+      const completed = expectDelta(await service.getTranscriptTail(SESSION_ID, partial.cursor));
+      expect(completed.deltaMessages.map((message) => message.id)).toEqual(['u-002']);
+      expect(completed.totalMessageCount).toBe(3);
+    });
   });
 });

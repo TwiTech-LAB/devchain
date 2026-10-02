@@ -201,7 +201,7 @@ describe('ClickUp time-entry history', () => {
 
     await expect(
       providerWith(requestJson).myWork!.getTimeEntryHistory!(credentials, context, 'task-1'),
-    ).rejects.toMatchObject<ClickUpProviderError>({ code: 'clickup_invalid_response' });
+    ).rejects.toMatchObject<Partial<ClickUpProviderError>>({ code: 'clickup_invalid_response' });
   });
 });
 

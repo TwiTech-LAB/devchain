@@ -299,6 +299,12 @@ export interface SessionReaderAdapter {
   ): Promise<IncrementalResult>;
 
   /**
+   * Continuation state that a full parse of `session` ends with, for adapters that can derive it
+   * from the parsed messages (Claude turn evidence). Without it, a full parse clears the state.
+   */
+  continuationFromSession?(session: UnifiedSession): unknown;
+
+  /**
    * Get filesystem paths to watch for changes (new sessions, file updates)
    *
    * @param projectRoot - Absolute path to the project root

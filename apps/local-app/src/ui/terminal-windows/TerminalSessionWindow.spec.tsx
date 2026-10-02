@@ -29,7 +29,7 @@ jest.mock('@/ui/lib/sessions', () => ({
 }));
 
 jest.mock('@/ui/components/Terminal', () => ({
-  Terminal: React.forwardRef((_props: unknown, ref: unknown) => {
+  Terminal: React.forwardRef((_props: unknown, ref: React.ForwardedRef<unknown>) => {
     React.useImperativeHandle(ref, () => ({}));
     return React.createElement('div', { 'data-testid': 'terminal' });
   }),
@@ -58,12 +58,15 @@ jest.mock('./TerminalWindowsContext', () => ({
 function makeSession(overrides: Partial<ActiveSession> = {}): ActiveSession {
   return {
     id: '00000000-0000-0000-0000-000000000001',
+    epicId: null,
     agentId: 'agent-1',
     tmuxSessionId: 'tmux-1',
     status: 'running',
     startedAt: '2026-01-01T00:00:00Z',
     endedAt: null,
     name: null,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
     ...overrides,
   };
 }

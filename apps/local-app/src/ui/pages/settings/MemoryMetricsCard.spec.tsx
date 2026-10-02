@@ -55,7 +55,7 @@ describe('MemoryMetricsCard', () => {
       isRefetching: false,
       error: null,
       refetch: jest.fn(),
-    } as ReturnType<typeof useDebugMetrics>);
+    } as unknown as ReturnType<typeof useDebugMetrics>);
     render(<MemoryMetricsCard />);
     expect(screen.getByText('Memory & Caches')).toBeInTheDocument();
     expect(screen.getByText('2.0 MiB')).toBeInTheDocument();
@@ -73,7 +73,7 @@ describe('MemoryMetricsCard', () => {
       isRefetching: false,
       error: new Error('metrics failed'),
       refetch,
-    } as ReturnType<typeof useDebugMetrics>);
+    } as unknown as ReturnType<typeof useDebugMetrics>);
     render(<MemoryMetricsCard />);
     expect(screen.getByText('Memory metrics unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));

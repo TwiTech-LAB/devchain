@@ -31,7 +31,7 @@ import { SyncthingManager } from '../../file-sync/syncthing-manager.service';
 import { ensureProvider } from '../replica/__fixtures__/replica-seed';
 import { DockerImportInventoryStore } from './docker-import-inventory.store';
 import { FileSyncHandoff } from './file-sync-handoff';
-import type { RemoteOperation } from '../../../storage/models/domain.models';
+import type { RemoteOperation } from '../../storage/models/domain.models';
 
 function findBinary(): string | null {
   if (process.env.SYNCTHING_BIN) return process.env.SYNCTHING_BIN;

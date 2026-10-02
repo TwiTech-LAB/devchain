@@ -1,4 +1,7 @@
-/** A status tone: one of the semantic colors a status badge or chip can show. */
+/**
+ * A status tone: one of the semantic colors a status badge or chip can show.
+ * `running` means work is in progress right now; steady states must not use it.
+ */
 export type StatusTone = 'ok' | 'warn' | 'error' | 'running' | 'neutral' | 'info';
 
 /** Theme tokens only, so the tones hold in light, dark and ocean. */

@@ -33,7 +33,8 @@ export const DockerArchiveRequestSchema = z
   .object({
     projectId,
     image: identifier,
-    mountType: z.enum(['volume', 'bind']),
+    // `file`: a bound single file; an older VM refuses it instead of misplacing the file.
+    mountType: z.enum(['volume', 'bind', 'file']),
     source: z.string().min(1).max(4096),
   })
   .strict();
@@ -76,7 +77,13 @@ export const DockerBindPrepareSchema = z
     paths: z
       .array(
         z
-          .object({ path: scanPath, replace: z.boolean(), image: identifier.optional() })
+          .object({
+            path: scanPath,
+            replace: z.boolean(),
+            image: identifier.optional(),
+            // A single file: only its folder is created, and the restore replaces the path.
+            file: z.literal(true).optional(),
+          })
           .strict()
           // A replaced folder is emptied by a helper running the owning item's image.
           .refine((bind) => !bind.replace || bind.image !== undefined),
@@ -90,6 +97,27 @@ export const DockerArchiveWriteResultSchema = z
   .object({ sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().nonnegative() })
   .strict();
 export type DockerArchiveWriteResult = z.infer<typeof DockerArchiveWriteResultSchema>;
+
+/**
+ * The answer of `POST images/load`: per image the engine just loaded, the ID the
+ * engine assigned (which differs from the archive's ID on a containerd-store
+ * engine) and its `RootFS.Layers` digests.
+ */
+export const DockerImageLoadResultSchema = z
+  .object({
+    images: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(256),
+            layers: z.array(z.string().min(1).max(256)).max(10000),
+          })
+          .strict(),
+      )
+      .max(10000),
+  })
+  .strict();
+export type DockerImageLoadResult = z.infer<typeof DockerImageLoadResultSchema>;
 
 export const DockerScanRequestSchema = z
   .object({
@@ -118,5 +146,6 @@ export interface DockerScanResult {
     mounts: Array<{ type: string; name?: string; source?: string; destination: string }>;
   }>;
   volumes: Array<{ name: string; driver: string; labels: Record<string, string> }>;
-  paths: Array<{ path: string; exists: boolean } | { path: string; unknown: true }>;
+  /** `file` marks an existing single file; anything else is a folder. */
+  paths: Array<{ path: string; exists: boolean; file?: true } | { path: string; unknown: true }>;
 }

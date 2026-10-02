@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { ProbeResultDto } from '@/modules/remotes/dtos/remote-probe.dto';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
 import { Button } from '@/ui/components/ui/button';
+import { BusyStatus, Spinner } from '@/ui/components/ui/spinner';
 import { Textarea } from '@/ui/components/ui/textarea';
 import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
@@ -121,7 +122,9 @@ export function InstallBlockStep({
         This block installs DevChain&apos;s installer without sending SSH credentials from this PC.
         It asks for {minDiskGib} GiB of free disk.
       </p>
-      {block.isPending && <p className="text-muted-foreground">Generating the install block…</p>}
+      {block.isPending && (
+        <BusyStatus className="text-muted-foreground">Generating the install block…</BusyStatus>
+      )}
       {block.error && (
         <p role="alert" className="text-destructive">
           {block.error.message}
@@ -152,7 +155,12 @@ export function InstallBlockStep({
         <li>Paste the certificate fingerprint that the block printed.</li>
       </ol>
       <p role="status" aria-live="polite" className="text-muted-foreground">
-        {url && !ready ? `Waiting for the installer at ${hostPort(url)}…` : null}
+        {url && !ready && (
+          <>
+            <Spinner className="mr-1" />
+            {`Waiting for the installer at ${hostPort(url)}…`}
+          </>
+        )}
         {url && ready ? `The installer answers at ${hostPort(url)}.` : null}
       </p>
       {ready && (

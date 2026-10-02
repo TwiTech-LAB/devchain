@@ -56,14 +56,25 @@ describe('LocalStorageService managed subtasks', () => {
       name: 'Managed subtasks',
       rootPath: '/tmp/managed-subtasks',
       description: null,
+      isTemplate: false,
     });
     const statusId = (await storage.listStatuses(project.id)).items[0]!.id;
-    parent = await storage.createEpic({ projectId: project.id, statusId, title: 'Parent' });
+    parent = await storage.createEpic({
+      projectId: project.id,
+      statusId,
+      title: 'Parent',
+      description: null,
+      data: null,
+      tags: [],
+    });
     child = await storage.createEpic({
       projectId: project.id,
       statusId,
       title: 'Child',
       parentId: parent.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     connection = await storage.replaceIntegrationConnection(
       {
@@ -294,6 +305,7 @@ describe('LocalStorageService managed subtasks', () => {
       name: 'Mismatched connection project',
       rootPath: '/tmp/mismatched-managed-connection',
       description: null,
+      isTemplate: false,
     });
     const otherConnection = await storage.replaceIntegrationConnection(
       {
@@ -317,9 +329,9 @@ describe('LocalStorageService managed subtasks', () => {
   it('enforces one projection per Epic and parent source snapshot', async () => {
     await createProjection();
 
-    await expect(
-      createProjection({ ownershipToken: 'other-token' }),
-    ).rejects.toMatchObject<ConflictError>({
+    await expect(createProjection({ ownershipToken: 'other-token' })).rejects.toMatchObject<
+      Partial<ConflictError>
+    >({
       code: 'conflict',
       details: { epicIdSnapshot: child.id, parentSourceLinkIdSnapshot: parentSource.id },
     });
@@ -367,7 +379,7 @@ describe('LocalStorageService managed subtasks', () => {
           workAreaRemoteId: 'list-1',
         },
       }),
-    ).rejects.toMatchObject<ConflictError>({ details: { reason: 'ownership_mismatch' } });
+    ).rejects.toMatchObject<Partial<ConflictError>>({ details: { reason: 'ownership_mismatch' } });
 
     const confirmed = await storage.confirmExternalManagedSubtaskLink({
       managedLinkId: managed.id,
@@ -400,12 +412,16 @@ describe('LocalStorageService managed subtasks', () => {
       name: 'Other managed project',
       rootPath: '/tmp/other-managed-project',
       description: null,
+      isTemplate: false,
     });
     const otherStatusId = (await storage.listStatuses(otherProject.id)).items[0]!.id;
     const otherEpic = await storage.createEpic({
       projectId: otherProject.id,
       statusId: otherStatusId,
       title: 'Other project child',
+      description: null,
+      data: null,
+      tags: [],
     });
     const otherConnection = await storage.replaceIntegrationConnection(
       {
@@ -456,6 +472,9 @@ describe('LocalStorageService managed subtasks', () => {
       statusId: (await storage.listStatuses(child.projectId)).items[0]!.id,
       title: 'Sibling child',
       parentId: parent.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     const siblingManaged = await createProjection({
       epicId: sibling.id,
@@ -476,7 +495,7 @@ describe('LocalStorageService managed subtasks', () => {
           workAreaRemoteId: 'list-1',
         },
       }),
-    ).rejects.toMatchObject<ConflictError>({ details: { linkedEpicId: child.id } });
+    ).rejects.toMatchObject<Partial<ConflictError>>({ details: { linkedEpicId: child.id } });
   });
 
   it('rolls back managed confirmation when ordinary recognition insertion fails', async () => {
@@ -566,18 +585,25 @@ describe('LocalStorageService managed subtasks', () => {
       name: 'Other managed subtasks',
       rootPath: '/tmp/other-managed-subtasks',
       description: null,
+      isTemplate: false,
     });
     const statusB = (await storage.listStatuses(projectB.id)).items[0]!.id;
     const parentB = await storage.createEpic({
       projectId: projectB.id,
       statusId: statusB,
       title: 'Other parent',
+      description: null,
+      data: null,
+      tags: [],
     });
     const childB = await storage.createEpic({
       projectId: projectB.id,
       statusId: statusB,
       title: 'Other child',
       parentId: parentB.id,
+      description: null,
+      data: null,
+      tags: [],
     });
     const connectionB = await storage.replaceIntegrationConnection(
       {
@@ -630,7 +656,7 @@ describe('LocalStorageService managed subtasks', () => {
         },
         async () => undefined,
       ),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: {
         connectionId: connection.id,
         reason: 'orphan_risk_ack_required',
@@ -668,7 +694,7 @@ describe('LocalStorageService managed subtasks', () => {
 
     await expect(
       storage.disconnectIntegrationConnection({ connectionId: connectionB.id }),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: { connectionId: connectionB.id, reason: 'orphan_risk_ack_required' },
     });
     await expect(
@@ -692,7 +718,7 @@ describe('LocalStorageService managed subtasks', () => {
     });
     await expect(
       storage.disconnectUnassignedIntegrationConnection(connection.id),
-    ).rejects.toMatchObject<ConflictError>({
+    ).rejects.toMatchObject<Partial<ConflictError>>({
       details: { connectionId: connection.id, reason: 'orphan_risk_ack_required' },
     });
     await expect(

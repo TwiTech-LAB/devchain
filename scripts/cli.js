@@ -347,6 +347,30 @@ async function ensureProvidersInDb(baseUrl, detected, log) {
 
 async function validateMcpForProviders(baseUrl, cli, opts, log, projectPath) {
   try {
+    // The ensure endpoint matches projectPath exactly against a stored project
+    // root, and a folder that is not a registered project can never be
+    // registered there — MCP is registered when a session launches or restores.
+    let effectiveProjectPath = projectPath;
+    if (projectPath) {
+      try {
+        const byPathRes = await fetchWithTimeout(
+          `${baseUrl}/api/projects/by-path?path=${encodeURIComponent(projectPath)}`,
+          {},
+          2500,
+        );
+        if (byPathRes.ok) {
+          const project = await byPathRes.json();
+          // The stored rootPath avoids trailing-slash or normalization mismatches.
+          effectiveProjectPath = project?.rootPath ?? projectPath;
+        } else if (byPathRes.status === 404) {
+          log('info', 'Startup folder is not a registered project; skipping MCP validation (MCP is registered when a session launches)', { startupPath: projectPath });
+          return;
+        }
+      } catch {
+        // Lookup failed (network/timeout): proceed with the raw path as before.
+      }
+    }
+
     // Fetch all providers
     const res = await fetch(`${baseUrl}/api/providers`);
     if (!res.ok) {
@@ -374,7 +398,7 @@ async function validateMcpForProviders(baseUrl, cli, opts, log, projectPath) {
     const results = [];
     for (const provider of providers) {
       try {
-        const body = projectPath ? JSON.stringify({ projectPath }) : JSON.stringify({});
+        const body = effectiveProjectPath ? JSON.stringify({ projectPath: effectiveProjectPath }) : JSON.stringify({});
         const ensureRes = await fetch(`${baseUrl}/api/providers/${provider.id}/mcp/ensure`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1509,6 +1533,7 @@ module.exports = {
   main,
   __test__: {
     waitForHealth,
+    validateMcpForProviders,
     runHostPreflightChecks,
     getDevUiConfig,
     getPreferredDevApiPort,

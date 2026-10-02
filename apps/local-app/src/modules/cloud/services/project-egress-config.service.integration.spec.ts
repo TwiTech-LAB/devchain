@@ -47,7 +47,7 @@ describe('ProjectEgressConfigService', () => {
   }
 
   async function createProject(name: string, rootPath = `/tmp/${name}`) {
-    return storage.createProject({ name, rootPath, description: null });
+    return storage.createProject({ name, rootPath, description: null, isTemplate: false });
   }
 
   it('fails closed without the marker while allowing explicit live-project booleans', async () => {
@@ -74,6 +74,7 @@ describe('ProjectEgressConfigService', () => {
         name: 'template-shell',
         rootPath: '/tmp/template-shell',
         description: null,
+        isTemplate: false,
       }),
     );
 

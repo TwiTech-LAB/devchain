@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { TeamsPage } from './TeamsPage';
 import { ProviderGroupedConfigSelector } from '@/ui/components/team/ProviderGroupedConfigSelector';
+import type { TeamDetail, TeamListItem } from '@/ui/lib/teams';
 
 // ── Mocks ────────────────────────────────────────────────
 
@@ -18,13 +19,16 @@ jest.mock('@/ui/hooks/useProjectSelection', () => ({
 
 // ── Test Data ────────────────────────────────────────────
 
-const mockTeam = {
+const mockTeam: TeamListItem = {
   id: 'team-1',
   projectId: 'project-1',
   name: 'Backend Squad',
   description: 'Handles backend tasks',
   teamLeadAgentId: 'agent-1',
   teamLeadAgentName: 'Agent Alpha',
+  maxMembers: 6,
+  maxConcurrentTasks: 3,
+  allowTeamLeadCreateAgents: false,
   memberCount: 2,
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
@@ -36,13 +40,16 @@ const mockTeamNoLead = {
   teamLeadAgentName: null,
 };
 
-const mockTeamDetail = {
+const mockTeamDetail: TeamDetail = {
   id: 'team-1',
   projectId: 'project-1',
   name: 'Backend Squad',
   description: 'Handles backend tasks',
   teamLeadAgentId: 'agent-1',
   teamLeadAgentName: 'Agent Alpha',
+  maxMembers: 6,
+  maxConcurrentTasks: 3,
+  allowTeamLeadCreateAgents: false,
   members: [
     {
       agentId: 'agent-1',
@@ -114,8 +121,8 @@ function createWrapper() {
 }
 
 function buildFetchMock(overrides?: {
-  teams?: Array<typeof mockTeam | typeof mockTeamNoLead>;
-  teamDetail?: typeof mockTeamDetail | typeof mockTeamDetailNoLead;
+  teams?: TeamListItem[];
+  teamDetail?: TeamDetail;
   teamDetailsMap?: Record<string, unknown>;
   agents?: Array<{ id: string; name: string }>;
 }) {
@@ -321,7 +328,8 @@ describe('TeamsPage', () => {
 
     // Verify the POST body
     const postCall = fetchMock.mock.calls.find(
-      ([url, opts]: [string, RequestInit?]) => url === '/api/teams' && opts?.method === 'POST',
+      ([url, opts]: [RequestInfo | URL, RequestInit?]) =>
+        url === '/api/teams' && opts?.method === 'POST',
     );
     expect(postCall).toBeDefined();
     const body = JSON.parse(postCall![1]!.body as string);
@@ -385,7 +393,7 @@ describe('TeamsPage', () => {
 
     await waitFor(() => {
       const putCall = fetchMock.mock.calls.find(
-        ([url, opts]: [string, RequestInit?]) =>
+        ([url, opts]: [RequestInfo | URL, RequestInit?]) =>
           typeof url === 'string' && url.startsWith('/api/teams/') && opts?.method === 'PUT',
       );
       expect(putCall).toBeDefined();
@@ -626,7 +634,7 @@ describe('TeamsPage', () => {
 
     await waitFor(() => {
       const putCall = fetchMock.mock.calls.find(
-        ([url, opts]: [string, RequestInit?]) =>
+        ([url, opts]: [RequestInfo | URL, RequestInit?]) =>
           typeof url === 'string' && url.startsWith('/api/teams/') && opts?.method === 'PUT',
       );
       expect(putCall).toBeDefined();
@@ -990,7 +998,8 @@ describe('TeamsPage', () => {
     });
 
     const postCall = fetchMock.mock.calls.find(
-      ([url, opts]: [string, RequestInit?]) => url === '/api/teams' && opts?.method === 'POST',
+      ([url, opts]: [RequestInfo | URL, RequestInit?]) =>
+        url === '/api/teams' && opts?.method === 'POST',
     );
     const body = JSON.parse(postCall![1]!.body as string);
     expect(body.allowTeamLeadCreateAgents).toBe(false);
@@ -1010,13 +1019,16 @@ describe('TeamsPage', () => {
       leadId: string,
       leadName: string,
       memberCount: number,
-    ) => ({
+    ): TeamListItem => ({
       id,
       projectId: 'project-1',
       name,
       description: null,
       teamLeadAgentId: leadId,
       teamLeadAgentName: leadName,
+      maxMembers: 6,
+      maxConcurrentTasks: 3,
+      allowTeamLeadCreateAgents: false,
       memberCount,
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
@@ -1028,13 +1040,16 @@ describe('TeamsPage', () => {
       leadId: string,
       leadName: string,
       memberAgents: Array<{ id: string; name: string }>,
-    ) => ({
+    ): TeamDetail => ({
       id,
       projectId: 'project-1',
       name,
       description: null,
       teamLeadAgentId: leadId,
       teamLeadAgentName: leadName,
+      maxMembers: 6,
+      maxConcurrentTasks: 3,
+      allowTeamLeadCreateAgents: false,
       members: memberAgents.map((m) => ({
         agentId: m.id,
         agentName: m.name,

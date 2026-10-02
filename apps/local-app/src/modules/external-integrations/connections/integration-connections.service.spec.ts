@@ -246,7 +246,7 @@ describe('IntegrationConnectionsService', () => {
         provider: 'jira',
         token: 'new-token',
       }),
-    ).rejects.toMatchObject<ValidationError>({
+    ).rejects.toMatchObject<Partial<ValidationError>>({
       details: { projectId: project.id, provider: 'jira' },
     });
 
@@ -407,7 +407,7 @@ describe('IntegrationConnectionsService', () => {
         provider: 'jira',
         token: 'new-token',
       }),
-    ).rejects.toMatchObject<ValidationError>({
+    ).rejects.toMatchObject<Partial<ValidationError>>({
       details: { field: 'siteUrl' },
     });
     expect(storage.replaceIntegrationConnection).not.toHaveBeenCalled();

@@ -20,6 +20,27 @@ import { createMockProject } from '../../../../test/factories';
 import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
+type ParsedExport = ReturnType<typeof devchainShared.ExportSchema.parse>;
+
+// Completes the fields ExportSchema.parse() defaults so payloads carry only the fields under test.
+function mockParseResult(overrides: Partial<ParsedExport>): ParsedExport {
+  return {
+    version: 1,
+    prompts: [],
+    profiles: [],
+    agents: [],
+    statuses: [],
+    watchers: [],
+    subscribers: [],
+    teams: [],
+    providerModels: [],
+    providerEfforts: [],
+    presets: [],
+    scheduledEpics: [],
+    ...overrides,
+  };
+}
+
 describe('ProjectsService', () => {
   let service: ProjectsService;
   let storage: {
@@ -38,6 +59,7 @@ describe('ProjectsService', () => {
     listStatuses: jest.Mock;
     getInitialSessionPrompt: jest.Mock;
     getProvider: jest.Mock;
+    updateProvider: jest.Mock;
     createStatus: jest.Mock;
     createPrompt: jest.Mock;
     createAgentProfile: jest.Mock;
@@ -525,22 +547,14 @@ describe('ProjectsService', () => {
             id: agentId,
             name: 'Test Agent',
             profileId: profId,
+            isProjectOwner: false,
             description: 'Agent description text',
             modelOverride: 'openai/gpt-5',
           },
         ],
         statuses: [],
       };
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...payload,
-        version: 1,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
       storage.listProviders.mockResolvedValue({
         items: [{ id: provId, name: 'claude' }],
@@ -600,22 +614,14 @@ describe('ProjectsService', () => {
             id: agentId,
             name: 'Test Agent',
             profileId: profId,
+            isProjectOwner: false,
             description: null,
             effortOverride: 'medium',
           },
         ],
         statuses: [],
       };
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...payload,
-        version: 1,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
       storage.listProviders.mockResolvedValue({
         items: [{ id: provId, name: 'claude' }],
@@ -758,20 +764,11 @@ describe('ProjectsService', () => {
               familySlug: 'coder',
             },
           ],
-          agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          agents: [{ id: agentId, name: 'Coder', profileId: profileId1, isProjectOwner: false }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         // BOTH providers installed; the wizard deselects codex — the family default.
         storage.listProviders.mockResolvedValue({
@@ -839,21 +836,12 @@ describe('ProjectsService', () => {
               familySlug: 'coder',
             },
           ],
-          agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          agents: [{ id: agentId, name: 'Coder', profileId: profileId1, isProjectOwner: false }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
         // Mock ExportSchema.parse to preserve familySlug (ESM compatibility workaround)
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         // Only claude is available
         storage.listProviders.mockResolvedValue({
@@ -939,20 +927,11 @@ describe('ProjectsService', () => {
               familySlug: 'reviewer',
             },
           ],
-          agents: [{ id: agentIdLocal, name: 'Coder', profileId: profile1 }], // Only references profile1
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          agents: [{ id: agentIdLocal, name: 'Coder', profileId: profile1, isProjectOwner: false }], // Only references profile1
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         // Both claude and agy are available
         storage.listProviders.mockResolvedValue({
@@ -1034,20 +1013,13 @@ describe('ProjectsService', () => {
             },
           ],
           // Agent is assigned to Claude profile (second in array)
-          agents: [{ id: coderAgentId, name: 'Coder', profileId: claudeProfileId }],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          agents: [
+            { id: coderAgentId, name: 'Coder', profileId: claudeProfileId, isProjectOwner: false },
+          ],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         // BOTH providers are available - this is the key condition
         storage.listProviders.mockResolvedValue({
@@ -1136,20 +1108,13 @@ describe('ProjectsService', () => {
             },
           ],
           // Agent is assigned to Codex profile (first in array)
-          agents: [{ id: coderAgentId, name: 'Coder', profileId: codexProfileId }],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          agents: [
+            { id: coderAgentId, name: 'Coder', profileId: codexProfileId, isProjectOwner: false },
+          ],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         // Only Claude is available - Codex (agent's original) is missing
         storage.listProviders.mockResolvedValue({
@@ -1220,20 +1185,13 @@ describe('ProjectsService', () => {
               familySlug: 'special',
             },
           ],
-          agents: [{ id: agentId, name: 'Special Agent', profileId: profileId1 }],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          agents: [
+            { id: agentId, name: 'Special Agent', profileId: profileId1, isProjectOwner: false },
+          ],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         // No providers available at all
         storage.listProviders.mockResolvedValue({
@@ -1296,20 +1254,11 @@ describe('ProjectsService', () => {
               familySlug: 'coder',
             },
           ],
-          agents: [{ id: agentId, name: 'Coder', profileId: profileId1 }],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          agents: [{ id: agentId, name: 'Coder', profileId: profileId1, isProjectOwner: false }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         // Only claude is available (codex is missing)
         storage.listProviders.mockResolvedValue({
@@ -1344,11 +1293,13 @@ describe('ProjectsService', () => {
         });
 
         expect(result.success).toBe(false);
-        expect(result.providerMappingRequired).toBeDefined();
-        expect(result.providerMappingRequired?.missingProviders).toContain('codex');
-        expect(result.providerMappingRequired?.canImport).toBe(true);
-        expect(result.providerMappingRequired?.familyAlternatives).toHaveLength(1);
-        expect(result.providerMappingRequired?.familyAlternatives[0].familySlug).toBe('coder');
+        const mappingRequired =
+          'providerMappingRequired' in result ? result.providerMappingRequired : undefined;
+        expect(mappingRequired).toBeDefined();
+        expect(mappingRequired?.missingProviders).toContain('codex');
+        expect(mappingRequired?.canImport).toBe(true);
+        expect(mappingRequired?.familyAlternatives).toHaveLength(1);
+        expect(mappingRequired?.familyAlternatives[0].familySlug).toBe('coder');
 
         jest.restoreAllMocks();
       });
@@ -1363,7 +1314,7 @@ describe('ProjectsService', () => {
           prompts: [],
           profiles: [],
           agents: [],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
           _manifest: {
             slug: 'bundled-template',
             name: 'Bundled Template',
@@ -1371,15 +1322,7 @@ describe('ProjectsService', () => {
           },
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         storage.listProviders.mockResolvedValue({
           items: [{ id: providerId, name: 'claude' }],
@@ -1435,7 +1378,7 @@ describe('ProjectsService', () => {
           prompts: [],
           profiles: [],
           agents: [],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
           _manifest: {
             slug: 'registry-only-template',
             name: 'Registry Template',
@@ -1443,15 +1386,7 @@ describe('ProjectsService', () => {
           },
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         storage.listProviders.mockResolvedValue({
           items: [{ id: providerId, name: 'claude' }],
@@ -1530,21 +1465,14 @@ describe('ProjectsService', () => {
               id: 'agent-1',
               name: 'Test Agent',
               profileId: 'profile-1',
+              isProjectOwner: false,
               providerConfigName: 'claude',
             },
           ],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         storage.listProviders.mockResolvedValue({
           items: [{ id: providerId, name: 'claude' }],
@@ -1616,21 +1544,14 @@ describe('ProjectsService', () => {
               id: 'agent-1',
               name: 'Legacy Agent',
               profileId: 'profile-1',
+              isProjectOwner: false,
               // No providerConfigName
             },
           ],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0 }],
+          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         storage.listProviders.mockResolvedValue({
           items: [{ id: providerId, name: 'claude' }],
@@ -1791,9 +1712,26 @@ describe('ProjectsService', () => {
 
         const { _manifest: _omittedManifest, ...importPayload } = exported;
         void _omittedManifest;
-        jest
-          .spyOn(devchainShared.ExportSchema, 'parse')
-          .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(
+          mockParseResult({
+            ...importPayload,
+            agents: importPayload.agents.map((agent) => ({ isProjectOwner: false, ...agent })),
+            teams: importPayload.teams?.map((team) => ({
+              allowTeamLeadCreateAgents: false,
+              ...team,
+            })),
+            // Export emits nullable provider/env and omits defaulted fields; parse output
+            // requires both non-null, and the import path maps empty env back to null.
+            profiles: importPayload.profiles.map((profile) => ({
+              ...profile,
+              provider: profile.provider ?? { name: 'unknown' },
+              providerConfigs: profile.providerConfigs?.map((config) => ({
+                ...config,
+                env: config.env ?? {},
+              })),
+            })),
+          }),
+        );
 
         await service.importProject({ projectId, payload: importPayload, dryRun: false });
 
@@ -1838,16 +1776,7 @@ describe('ProjectsService', () => {
           ],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
         storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
@@ -1883,16 +1812,7 @@ describe('ProjectsService', () => {
           ],
         };
 
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-          ...payload,
-          version: 1,
-          exportedAt: undefined,
-          initialPrompt: undefined,
-          projectSettings: undefined,
-          watchers: [],
-          subscribers: [],
-          _manifest: undefined,
-        } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
         storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
         storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
@@ -1924,20 +1844,10 @@ describe('ProjectsService', () => {
       }>,
       providerModels?: Array<{ providerName: string; models: string[] }>,
     ) {
-      return {
-        version: 1,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        prompts: [],
-        profiles: [],
-        agents: [],
-        statuses: [],
-        watchers: [],
-        subscribers: [],
+      return mockParseResult({
         providerModels: providerModels ?? [],
         ...(providerSettings !== undefined ? { providerSettings } : {}),
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>;
+      });
     }
 
     function setupImportMocks() {
@@ -2208,9 +2118,7 @@ describe('ProjectsService', () => {
       });
 
       const importPayload = buildMinimalPayload(undefined, exported.providerModels);
-      jest
-        .spyOn(devchainShared.ExportSchema, 'parse')
-        .mockReturnValue(importPayload as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(importPayload);
 
       await service.importProject({ projectId, payload: importPayload, dryRun: false });
 
@@ -2230,7 +2138,7 @@ describe('ProjectsService', () => {
     const provId = '33333333-3333-3333-3333-333333333333';
     const agentId = '22222222-2222-2222-2222-222222222222';
 
-    function makePayload(scheduledEpics: unknown[]) {
+    function makePayload(scheduledEpics: ParsedExport['scheduledEpics']) {
       const payload = {
         prompts: [],
         profiles: [
@@ -2249,6 +2157,7 @@ describe('ProjectsService', () => {
             id: agentId,
             name: 'Coder',
             profileId: profId,
+            isProjectOwner: false,
             description: null,
             modelOverride: null,
           },
@@ -2256,19 +2165,7 @@ describe('ProjectsService', () => {
         statuses: [],
         scheduledEpics,
       };
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...payload,
-        version: 1,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        teams: [],
-        presets: [],
-        providerModels: [],
-        _manifest: undefined,
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
       return payload;
     }
 
@@ -2466,7 +2363,7 @@ describe('ProjectsService', () => {
       // New template includes only Coder
       const payload = {
         profiles: [{ id: profTplId, name: 'Default Profile', provider: { name: 'claude' } }],
-        agents: [{ id: agentTplId, name: 'Coder', profileId: profTplId }],
+        agents: [{ id: agentTplId, name: 'Coder', profileId: profTplId, isProjectOwner: false }],
         statuses: [],
         prompts: [],
       };
@@ -2476,17 +2373,7 @@ describe('ProjectsService', () => {
       storage.createAgent.mockResolvedValue({ id: 'new-coder-id', name: 'Coder' });
       settings.updateSettings.mockResolvedValue(undefined);
 
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue({
-        ...payload,
-        version: 1,
-        exportedAt: undefined,
-        initialPrompt: undefined,
-        projectSettings: undefined,
-        watchers: [],
-        subscribers: [],
-        _manifest: undefined,
-        scheduledEpics: [],
-      } as ReturnType<typeof devchainShared.ExportSchema.parse>);
+      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
 
       const result = await service.importProject({ projectId, payload, dryRun: false });
 

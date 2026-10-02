@@ -9,6 +9,7 @@ import {
   assertSupportedDocker,
   isDockerNotFound,
   resolveDockerSocket,
+  type DockerDiskUsage,
   type DockerInfo,
 } from '../../core/controllers/docker-engine.client';
 import {
@@ -64,8 +65,26 @@ const size = (value: number | undefined): DockerPlanSize =>
     ? { bytes: value, unknown: false }
     : unknownSize();
 
+/** How long the Connect dialog reuses measurements that its choices cannot change. */
+export const DOCKER_PLAN_REUSE_MS = 120_000;
+
+/** True while a measurement taken at `at` may still be reused. */
+export function reusable(at: number): boolean {
+  return Date.now() - at < DOCKER_PLAN_REUSE_MS;
+}
+
 @Injectable()
 export class DockerPlanSourceService {
+  /**
+   * The disk usage and folder sizes of the last scan. The disk-usage answer walks
+   * every image, volume and build-cache entry, which takes seconds on a busy engine.
+   */
+  private recent: {
+    at: number;
+    usage: DockerDiskUsage;
+    folders: Map<string, DockerPlanSize>;
+  } | null = null;
+
   /** Throws DockerAvailabilityError with a stable reason for each unusable home engine. */
   async connect(signal?: AbortSignal): Promise<DockerEngineClient> {
     let socket: string;
@@ -157,14 +176,20 @@ export class DockerPlanSourceService {
     });
   }
 
+  /**
+   * `reuse` takes the disk usage and folder sizes of a scan less than two minutes
+   * old; containers, images and Compose are always read again.
+   */
   async scan(
     client: DockerEngineClient,
     root: string,
     signal?: AbortSignal,
+    { reuse = false }: { reuse?: boolean } = {},
   ): Promise<DockerSourceScan> {
+    const recent = reuse && this.recent && reusable(this.recent.at) ? this.recent : null;
     const [listed, usage, volumes, composeAttempt] = await Promise.all([
       client.json<Array<{ Id: string }>>('GET', '/containers/json?all=true', undefined, { signal }),
-      client.diskUsage(signal),
+      recent?.usage ?? client.diskUsage(signal),
       client.json<{ Volumes: Volume[] | null }>('GET', '/volumes', undefined, { signal }),
       // A broken Compose file must not fail the whole scan; it becomes one
       // blocked item below, so the other containers still plan.
@@ -174,7 +199,7 @@ export class DockerPlanSourceService {
     ]);
     const items: DockerPlanItem[] = [];
     const imageCache = new Map<string, DockerPlanImage>();
-    const bindCache = new Map<string, DockerPlanSize>();
+    const bindCache = new Map<string, DockerPlanSize>(recent?.folders);
     const image = async (ref: string) => {
       let result = imageCache.get(ref);
       if (!result) {
@@ -332,6 +357,9 @@ export class DockerPlanSourceService {
           if (!group.includes(candidate) && sharesData(member, candidate)) group.push(candidate);
       item.writerGroup = group.map((member) => member.id).sort();
     }
+    // A walk that ran out of time is measured again.
+    const folders = new Map([...bindCache].filter(([, size]) => !size.unknown));
+    this.recent = { at: recent?.at ?? Date.now(), usage, folders };
     return {
       items,
       homePath: this.homePath(),

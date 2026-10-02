@@ -61,6 +61,7 @@ function item(overrides: Partial<DockerPlanItem> = {}): DockerPlanItem {
     warnings: [],
     notes: [DOCKER_WRITABLE_LAYER_NOTE],
     writableLayer: { bytes: 512, unknown: false },
+    dataSize: { bytes: 4096, unknown: false },
     targetAction: 'create',
     ...overrides,
   };
@@ -147,10 +148,13 @@ const PROJECTS = {
   truncated: false,
 };
 
-function renderFlow(props: Partial<Parameters<typeof ConnectDialog>[0]> = {}) {
+type FlowProps = Partial<Parameters<typeof ConnectDialog>[0]>;
+
+/** The handlers, and `rerender` with changed props on the same query client. */
+function renderFlow(props: FlowProps = {}) {
   const handlers = { onClose: jest.fn(), onUpdateVm: jest.fn(), onConnect: jest.fn() };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const tree = (current: FlowProps) => (
     <QueryClientProvider client={client}>
       <ConnectDialog
         initialProjectId="p1"
@@ -160,11 +164,15 @@ function renderFlow(props: Partial<Parameters<typeof ConnectDialog>[0]> = {}) {
         pending={false}
         error={null}
         {...handlers}
-        {...props}
+        {...current}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
-  return handlers;
+  const view = render(tree(props));
+  return {
+    ...handlers,
+    rerender: (changed: FlowProps) => view.rerender(tree({ ...props, ...changed })),
+  };
 }
 
 /** The project's ignore list on the server, and the saves the flow sent. */
@@ -188,13 +196,17 @@ function route(plans: (url: string, init?: RequestInit) => Promise<Response>) {
 }
 
 const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
+const includeDocker = () =>
+  userEvent.click(screen.getByRole('checkbox', { name: 'Include Docker containers' }));
+const planCalls = () => mockApiFetch.mock.calls.filter(([url]) => String(url).endsWith('/plan'));
 
-/** Opens the Files step of a flow that starts from Project One. */
+/** Opens the Files step of a flow that starts from Project One, opted into Docker. */
 async function renderDialog(onConnect = jest.fn()) {
   renderFlow({
     onConnect: (request: ConnectRequest) => onConnect(request.remoteId, request.docker),
   });
   await next();
+  await includeDocker();
 }
 
 /** Review, then Connect. */
@@ -206,6 +218,21 @@ async function connect() {
 
 function row(name: string): HTMLElement {
   return screen.getByText(name).closest('li')!;
+}
+
+/** Holds the project's ignore-list read or save until the test answers it. */
+function holdIgnores(call: 'read' | 'save') {
+  let answer!: (value: Response) => void;
+  const passThrough = mockApiFetch.getMockImplementation()!;
+  mockApiFetch.mockImplementation(async (url, init, options) => {
+    if (String(url).endsWith('/ignores') && (init?.method === 'PUT') === (call === 'save')) {
+      return new Promise<Response>((resolve) => {
+        answer = resolve;
+      });
+    }
+    return passThrough(url, init, options);
+  });
+  return (value: Response) => answer(value);
 }
 
 /** Each plan call resolves only when its deferred is; index 0 is the initial load. */
@@ -229,6 +256,120 @@ beforeEach(() => {
 });
 
 describe('ConnectDialog Docker section', () => {
+  it('reads no Docker plan until the user opts in', async () => {
+    const { onConnect } = renderFlow();
+    await next();
+
+    expect(screen.getByRole('checkbox', { name: 'Include Docker containers' })).not.toBeChecked();
+    expect(screen.queryByText('Reading Docker containers…')).not.toBeInTheDocument();
+    await connect();
+
+    expect(planCalls()).toHaveLength(0);
+    expect(onConnect).toHaveBeenCalledWith(expect.objectContaining({ docker: undefined }));
+  });
+
+  it('blocks Next while the opted-in read runs and releases it on the answer', async () => {
+    const deferreds = deferredPlans();
+    await renderDialog();
+
+    expect(screen.getByText('Reading Docker containers…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // The shared pieces carry the motion: a spinner on the line and on Next.
+    const reading = screen.getByText('Reading Docker containers…');
+    expect(reading).toHaveRole('status');
+    expect(reading.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByRole('button', { name: 'Next' })).toHaveAttribute('aria-busy', 'true');
+
+    await act(async () => deferreds[0](plan()));
+    await screen.findByText('Docker containers');
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+  });
+
+  it('spins on Next and beside the heading while a plan change runs', async () => {
+    const deferreds = deferredPlans();
+    await renderDialog();
+    await act(async () =>
+      deferreds[0](plan({ items: [item({ choices: ['container-and-data', 'without-data'] })] })),
+    );
+    await screen.findByText('Docker containers');
+
+    await userEvent.click(screen.getByRole('combobox', { name: 'Mode for web' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Copy without its data' }));
+
+    const next = screen.getByRole('button', { name: 'Next' });
+    expect(next).toBeDisabled();
+    expect(next).toHaveAttribute('aria-busy', 'true');
+    expect(next.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    const updating = screen.getByText('Updating the plan…');
+    expect(updating).toHaveRole('status');
+    expect(updating.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    // The status line sits beside the heading, whose text stays untouched.
+    expect(screen.getByText('Docker containers').nextElementSibling).toBe(updating);
+
+    await act(async () => deferreds[1](plan()));
+
+    expect(screen.queryByText('Updating the plan…')).not.toBeInTheDocument();
+    expect(next).toBeEnabled();
+    expect(next).not.toHaveAttribute('aria-busy');
+    expect(next.querySelector('svg')).toBeNull();
+  });
+
+  it('drops the read and its late answer when the user opts out', async () => {
+    const deferreds = deferredPlans();
+    const onConnect = jest.fn();
+    await renderDialog(onConnect);
+
+    await includeDocker();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+    await act(async () => deferreds[0](plan()));
+
+    expect(screen.queryByText('Docker containers')).not.toBeInTheDocument();
+    await connect();
+    expect(onConnect).toHaveBeenCalledWith('r1', undefined);
+  });
+
+  it('drops the selection and a pending re-plan when the user opts out', async () => {
+    const deferreds = deferredPlans();
+    const onConnect = jest.fn();
+    const legacy = item({
+      id: 'legacy',
+      name: 'legacy',
+      defaultSelected: false,
+      selectedMode: null,
+    });
+    const two = plan({ items: [item(), legacy] });
+    await renderDialog(onConnect);
+    await act(async () => deferreds[0](two));
+    await userEvent.click(await screen.findByRole('checkbox', { name: 'legacy' }));
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+
+    await includeDocker();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+    await act(async () => deferreds[1](two));
+
+    expect(screen.queryByText('Docker containers')).not.toBeInTheDocument();
+    await connect();
+    expect(onConnect).toHaveBeenCalledWith('r1', undefined);
+  });
+
+  it('starts a fresh read when the user opts in again', async () => {
+    const deferreds = deferredPlans();
+    await renderDialog();
+    await act(async () => deferreds[0](plan()));
+    await screen.findByText('Docker containers');
+
+    await includeDocker();
+    await includeDocker();
+
+    expect(planCalls()).toHaveLength(2);
+    expect(screen.getByText('Reading Docker containers…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    await act(async () => deferreds[1](plan()));
+    expect(within(row('web')).getByRole('checkbox')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+  });
+
   it('lists only linked containers with their defaults and data classes', async () => {
     route(async () =>
       response(
@@ -257,10 +398,45 @@ describe('ConnectDialog Docker section', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText('db-old')).not.toBeInTheDocument();
     expect(screen.queryByText('Other containers on this PC')).not.toBeInTheDocument();
-    expect(screen.getByText(/Linked by Compose label/)).toBeInTheDocument();
-    const webRow = screen.getByText('web').closest('li')!;
+    // One line: the image and the volume, with the details closed.
+    const webRow = row('web');
+    expect(within(webRow).getByText('6.0 KB')).toBeInTheDocument();
+    expect(within(webRow).queryByText(/Linked by/)).not.toBeInTheDocument();
+
+    const details = within(webRow).getByRole('button', { name: 'Details for web' });
+    await userEvent.click(details);
+    expect(details).toHaveAttribute('aria-expanded', 'true');
+    expect(within(webRow).getByText(/Linked by Compose label/)).toBeInTheDocument();
     expect(within(webRow).getByText(/named volume web-data → \/data, 4\.0 KB/)).toBeInTheDocument();
     expect(within(webRow).getByText(/image sha256:1 \(x86_64\), 2\.0 KB/)).toBeInTheDocument();
+
+    await userEvent.click(details);
+    expect(within(webRow).queryByText(/Linked by/)).not.toBeInTheDocument();
+  });
+
+  it('sizes each line by what its mode copies', async () => {
+    route(async () =>
+      response(
+        plan({
+          items: [
+            item({ id: 'legacy', name: 'legacy', choices: ['container-and-data', 'without-data'] }),
+            item({ id: 'kept', name: 'kept', dataAction: 'keep-vm' }),
+            item({ id: 'grow', name: 'grow', dataSize: { bytes: 1024, unknown: true } }),
+          ],
+        }),
+      ),
+    );
+    await renderDialog();
+
+    await screen.findByText('Docker containers');
+    expect(within(row('legacy')).getByText('6.0 KB')).toBeInTheDocument();
+    // Keep VM copy copies no data; a partly unknown size is a lower bound.
+    expect(within(row('kept')).getByText('2.0 KB')).toBeInTheDocument();
+    expect(within(row('grow')).getByText('at least 3.0 KB')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('combobox', { name: 'Mode for legacy' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Copy without its data' }));
+    expect(within(row('legacy')).getByText('2.0 KB')).toBeInTheDocument();
   });
 
   it('shows every note and warning it is given, each once', async () => {
@@ -289,8 +465,12 @@ describe('ConnectDialog Docker section', () => {
     );
     await renderDialog();
 
-    await screen.findByText('compose up recreates their containers on the VM');
+    await screen.findByText('Docker containers');
     const rmRow = row('rm1');
+    // Warnings stay in view; notes open with the details.
+    expect(within(rmRow).getByText('The VM runs as a different uid.')).toBeInTheDocument();
+    expect(within(rmRow).queryByText(DOCKER_TEMPORARY_NOTE)).not.toBeInTheDocument();
+    await userEvent.click(within(rmRow).getByRole('button', { name: 'Details for rm1' }));
     expect(within(rmRow).getAllByText(DOCKER_TEMPORARY_NOTE)).toHaveLength(1);
     expect(within(rmRow).getAllByText(DOCKER_WRITABLE_LAYER_NOTE)).toHaveLength(1);
     expect(within(rmRow).getByText('the agent builds them on the VM')).toBeInTheDocument();
@@ -696,6 +876,8 @@ describe('ConnectDialog Docker section', () => {
     try {
       await renderDialog();
       await screen.findByText('Two.');
+      await userEvent.click(screen.getByRole('button', { name: 'Details for dupe' }));
+      await screen.findByText(/Writable layer/);
     } finally {
       spy.mockRestore();
     }
@@ -733,13 +915,14 @@ it.each(['both-changed', 'unknown'] as const)(
     await renderDialog(onConnect);
     const select = await screen.findByRole('combobox', { name: 'Shared data choice for web' });
     expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    // The choice Connect waits for is marked until it is made.
+    expect(select).toHaveAttribute('aria-invalid', 'true');
     await userEvent.click(select);
     await userEvent.click(await screen.findByRole('option', { name: 'Keep VM copy' }));
+    expect(select).toHaveAttribute('aria-invalid', 'false');
     expect(
       screen.getByRole('combobox', { name: 'Shared data choice for reader' }),
     ).toHaveTextContent('Keep VM copy');
-    const planCalls = () =>
-      mockApiFetch.mock.calls.filter(([url]) => String(url).endsWith('/plan'));
     expect(JSON.parse(String(planCalls().at(-1)?.[1]?.body)).items).toEqual([
       { id: 'web', mode: 'container-and-data', dataChoice: 'keep-vm' },
       { id: 'reader', mode: 'container-and-data', dataChoice: 'keep-vm' },
@@ -971,6 +1154,22 @@ describe('ConnectDialog Files', () => {
       .getAllByRole('listitem')
       .map((item) => item.textContent);
 
+  it('spins on the file-list line and on Next while the list reads', async () => {
+    const answerIgnores = holdIgnores('read');
+    renderFlow();
+    await next();
+
+    const reading = screen.getByText('Reading the file list…');
+    expect(reading).toHaveRole('status');
+    expect(reading.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByRole('button', { name: 'Next' })).toHaveAttribute('aria-busy', 'true');
+
+    await act(async () => answerIgnores(response({ ignores })));
+    await screen.findByRole('list', { name: 'Ignore patterns' });
+    expect(screen.queryByText('Reading the file list…')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).not.toHaveAttribute('aria-busy');
+  });
+
   it('edits the list locally, keeps the edits across Back, and saves them before the attach', async () => {
     const order: string[] = [];
     renderFlow({ onConnect: () => order.push('attach') });
@@ -1136,5 +1335,41 @@ describe('ConnectDialog Files', () => {
         '.env files and other secrets sync unless you add a rule. Git history comes from the VM to this PC only.',
       ),
     ).toBeInTheDocument();
+  });
+});
+
+describe('ConnectDialog Connect button', () => {
+  it('spins on Connect while it starts, with the Starting… label', async () => {
+    const flow = renderFlow();
+    await next();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    await next();
+    flow.rerender({ pending: true });
+
+    const connect = screen.getByRole('button', { name: 'Starting…' });
+    expect(connect).toBeDisabled();
+    expect(connect).toHaveAttribute('aria-busy', 'true');
+    expect(connect.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('spins on Connect while it saves the list, with the Saving… label', async () => {
+    const answerSave = holdIgnores('save');
+    renderFlow();
+    await next();
+    await userEvent.type(await screen.findByLabelText('Add a pattern'), 'tmp{Enter}');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    await next();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Connect' }));
+
+    const connect = screen.getByRole('button', { name: 'Saving…' });
+    expect(connect).toBeDisabled();
+    expect(connect).toHaveAttribute('aria-busy', 'true');
+    expect(connect.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+
+    await act(async () => answerSave(response({})));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Connect' })).toBeInTheDocument(),
+    );
   });
 });

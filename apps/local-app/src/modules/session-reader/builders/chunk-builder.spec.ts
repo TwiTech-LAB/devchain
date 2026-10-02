@@ -9,7 +9,7 @@ import type {
   UnifiedToolResult,
   TokenUsage,
 } from '../dtos/unified-session.types';
-import type { MessageCategory } from '../dtos/unified-chunk.types';
+import type { AIChunk, MessageCategory, UnifiedChunk } from '../dtos/unified-chunk.types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -60,6 +60,13 @@ const ZERO_METRICS: UnifiedMetrics = {
 // ---------------------------------------------------------------------------
 // classifyMessage
 // ---------------------------------------------------------------------------
+
+function expectAiChunk(chunk: UnifiedChunk | undefined): AIChunk {
+  if (chunk?.type !== 'ai') {
+    throw new Error(`expected an ai chunk, got ${chunk?.type ?? 'undefined'}`);
+  }
+  return chunk;
+}
 
 describe('classifyMessage', () => {
   it('should classify real user message as "user"', () => {
@@ -468,13 +475,11 @@ describe('buildChunks', () => {
 
     // u-102/u-104 fold onto a-101/a-103 AND the continuation assistants a-102/a-104 coalesce
     // onto a-101/a-103 — each tool turn is a single assistant message in the AI chunk.
-    const firstAiChunk = chunks[1];
-    expect(firstAiChunk.type).toBe('ai');
+    const firstAiChunk = expectAiChunk(chunks[1]);
     expect(firstAiChunk.messages.map((m) => m.id)).toEqual(['a-101']);
     expect(firstAiChunk.messages[0].toolResults).toHaveLength(1);
 
-    const secondAiChunk = chunks[3];
-    expect(secondAiChunk.type).toBe('ai');
+    const secondAiChunk = expectAiChunk(chunks[3]);
     expect(secondAiChunk.messages.map((m) => m.id)).toEqual(['a-103']);
     expect(secondAiChunk.messages[0].toolResults).toHaveLength(1);
   });
@@ -517,8 +522,7 @@ describe('buildChunks', () => {
     const parsed = await parseClaudeJsonl(fixturePath);
     const chunks = buildChunks(parsed.messages);
 
-    const firstAiChunk = chunks[1];
-    expect(firstAiChunk.type).toBe('ai');
+    const firstAiChunk = expectAiChunk(chunks[1]);
     const firstToolResultTurn = firstAiChunk.turns.find((turn) =>
       turn.steps.some(
         (step) => step.type === 'tool_result' && step.content.toolCallId === 'tool-001',
@@ -526,8 +530,7 @@ describe('buildChunks', () => {
     );
     expect(firstToolResultTurn?.assistantMessageId).toBe('a-101');
 
-    const secondAiChunk = chunks[3];
-    expect(secondAiChunk.type).toBe('ai');
+    const secondAiChunk = expectAiChunk(chunks[3]);
     const secondToolResultTurn = secondAiChunk.turns.find((turn) =>
       turn.steps.some(
         (step) => step.type === 'tool_result' && step.content.toolCallId === 'tool-002',

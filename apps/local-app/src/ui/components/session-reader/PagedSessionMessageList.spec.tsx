@@ -140,7 +140,7 @@ function requireCanonicalRefresh(sessionId = 'session-1') {
   captureWsHandler()({
     topic: `session/${sessionId}/transcript`,
     type: 'updated',
-    ts: Date.now(),
+    ts: new Date().toISOString(),
     payload: { kind: 'full-refetch-required', sessionId, sourceChangeKind: 'file-replacement' },
   });
 }
@@ -241,7 +241,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'updated',
-        ts: Date.now(),
+        ts: new Date().toISOString(),
         payload: {
           kind: 'delta',
           sessionId: 'session-1',
@@ -694,7 +694,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'updated',
-        ts: Date.now(),
+        ts: new Date().toISOString(),
         payload: {
           kind: 'full-refetch-required',
           sessionId: 'session-1',
@@ -731,7 +731,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'updated',
-        ts: Date.now(),
+        ts: new Date().toISOString(),
         payload: {
           kind: 'delta',
           sessionId: 'session-1',
@@ -777,7 +777,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'updated',
-        ts: Date.now(),
+        ts: new Date().toISOString(),
         payload: {
           kind: 'delta',
           sessionId: 'session-1',
@@ -821,7 +821,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'discovered',
-        ts: Date.now(),
+        ts: new Date().toISOString(),
         payload: { sessionId: 'session-1' },
       });
     });
@@ -847,7 +847,7 @@ describe('PagedSessionMessageList WS delta index extension', () => {
       handler({
         topic: 'session/other-session/transcript',
         type: 'updated',
-        ts: Date.now(),
+        ts: new Date().toISOString(),
         payload: {
           kind: 'delta',
           sessionId: 'other-session',
@@ -922,7 +922,7 @@ describe('paged transcript chunk retention', () => {
       }),
     );
     fetchTranscriptChunksMock.mockResolvedValue({
-      chunks: chunkIds.slice(0, 10).map(makeChunk),
+      chunks: chunkIds.slice(0, 10).map((id) => makeChunk(id)),
       nextCursor: null,
       prevCursor: null,
       totalCount: 30,
@@ -939,7 +939,7 @@ describe('paged transcript chunk retention', () => {
       handler({
         topic: 'session/session-1/transcript',
         type: 'updated',
-        ts: Date.now(),
+        ts: new Date().toISOString(),
         payload: {
           kind: 'delta',
           sessionId: 'session-1',
@@ -948,7 +948,7 @@ describe('paged transcript chunk retention', () => {
           replaceFromChunkIndex: 30,
           newChunkIds: deltaIds,
           totalChunkCount: 70,
-          deltaChunks: deltaIds.map(makeChunk),
+          deltaChunks: deltaIds.map((id) => makeChunk(id)),
           deltaMessages: [],
           metrics: {
             totalTokens: 70,
@@ -1016,7 +1016,7 @@ describe('paged transcript chunk retention', () => {
         handler({
           topic: 'session/session-1/transcript',
           type: 'updated',
-          ts: Date.now(),
+          ts: new Date().toISOString(),
           payload: {
             kind: 'delta',
             sessionId: 'session-1',

@@ -298,6 +298,7 @@ export function ProxmoxConnectDialog({
               variant="outline"
               onClick={generateBlock}
               disabled={pending !== null}
+              pending={pending === 'block'}
             >
               {pending === 'block' ? 'Generating…' : 'Generate setup block'}
             </Button>
@@ -464,6 +465,7 @@ export function ProxmoxConnectDialog({
                   type="button"
                   onClick={reviewFingerprint}
                   disabled={!connectionString.trim() || pending !== null}
+                  pending={pending === 'preview'}
                 >
                   {pending === 'preview' ? 'Checking…' : 'Review fingerprint'}
                 </Button>
@@ -473,6 +475,7 @@ export function ProxmoxConnectDialog({
                   type="button"
                   onClick={connect}
                   disabled={!preview || !confirmed || pending !== null}
+                  pending={pending === 'connect'}
                 >
                   {pending === 'connect' ? 'Connecting…' : 'Connect'}
                 </Button>

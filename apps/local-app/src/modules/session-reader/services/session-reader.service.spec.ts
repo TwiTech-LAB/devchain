@@ -2,7 +2,12 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
-import { SessionReaderService, type TranscriptIndexWindow } from './session-reader.service';
+import {
+  SessionReaderService,
+  type TranscriptIndexWindow,
+  type TranscriptTailDeltaResponse,
+  type TranscriptTailResponse,
+} from './session-reader.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
@@ -14,8 +19,21 @@ import { OpenCodeSessionReaderAdapter } from '../adapters/opencode-session-reade
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
 import type { PricingServiceInterface } from './pricing.interface';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
-import { decodeCursor, TRANSCRIPT_PARSER_GENERATION } from './transcript-cursor';
+import {
+  decodeCursor,
+  TRANSCRIPT_PARSER_GENERATION,
+  type TranscriptCursorProof,
+} from './transcript-cursor';
 import { buildChunks } from '../builders/chunk-builder';
+import { checkAppendProof } from './bounded-anchor-proof';
+
+// The proof's file I/O is covered on real files in the replacement integration spec; here each
+// tail test sets the outcome, and the real-file tests in this file keep the actual check.
+jest.mock('./bounded-anchor-proof', () => {
+  const actual = jest.requireActual('./bounded-anchor-proof');
+  return { ...actual, checkAppendProof: jest.fn(actual.checkAppendProof) };
+});
+const mockCheckAppendProof = checkAppendProof as jest.MockedFunction<typeof checkAppendProof>;
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -168,6 +186,13 @@ function setupResolveChain() {
       };
     },
   );
+}
+
+function expectDelta(tail: TranscriptTailResponse | null): TranscriptTailDeltaResponse {
+  if (tail?.kind !== 'delta') {
+    throw new Error(`expected a delta tail response, got ${tail?.kind ?? 'null'}`);
+  }
+  return tail;
 }
 
 describe('SessionReaderService', () => {
@@ -778,12 +803,11 @@ describe('SessionReaderService', () => {
       // Feed the bootstrap cursor straight into the tail path: with no new
       // messages it must be accepted (not expired) and report a TRUE-empty delta.
       const tail = await service.getTranscriptTail('sess-1', summary.cursor);
-      expect(tail).not.toBeNull();
-      expect(tail).toMatchObject({ kind: 'delta' });
-      expect(tail?.totalMessageCount).toBe(3);
-      expect(tail?.deltaMessages).toEqual([]);
-      expect(tail?.deltaChunks).toEqual([]);
-      expect(tail?.replaceFromChunkId).toBeNull();
+      const delta = expectDelta(tail);
+      expect(delta.totalMessageCount).toBe(3);
+      expect(delta.deltaMessages).toEqual([]);
+      expect(delta.deltaChunks).toEqual([]);
+      expect(delta.replaceFromChunkId).toBeNull();
     });
   });
 
@@ -829,12 +853,17 @@ describe('SessionReaderService', () => {
       },
     );
 
-    it('forces a full refetch for a legacy cursor and a different future generation', async () => {
+    it('forces a full refetch for a legacy, an older and a future cursor generation', async () => {
       setupResolveChain();
       mockAdapter.parseFullSession.mockResolvedValue(makeSession());
       const summary = await service.getTranscriptSummaryWithCursor('sess-1');
       const fields = Buffer.from(summary.cursor, 'base64url').toString().split(':').slice(0, 3);
-      for (const parts of [fields, [...fields, String(TRANSCRIPT_PARSER_GENERATION + 1)]]) {
+      for (const generation of [
+        undefined,
+        TRANSCRIPT_PARSER_GENERATION - 1,
+        TRANSCRIPT_PARSER_GENERATION + 1,
+      ]) {
+        const parts = generation === undefined ? fields : [...fields, String(generation)];
         const cursor = Buffer.from(parts.join(':')).toString('base64url');
         expect(await service.getTranscriptTail('sess-1', cursor)).toMatchObject({
           kind: 'full-refetch-required',
@@ -850,153 +879,229 @@ describe('SessionReaderService', () => {
       const summary = await service.getTranscriptSummaryWithCursor('sess-1');
       const tail = await service.getTranscriptTail('sess-1', summary.cursor);
 
-      expect(tail).not.toBeNull();
-      expect(tail).toMatchObject({ kind: 'delta' });
-      expect(tail?.deltaChunks).toEqual([]);
-      expect(tail?.deltaMessages).toEqual([]);
-      expect(tail?.replaceFromChunkId).toBeNull();
+      const delta = expectDelta(tail);
+      expect(delta.deltaChunks).toEqual([]);
+      expect(delta.deltaMessages).toEqual([]);
+      expect(delta.replaceFromChunkId).toBeNull();
       // Cursor unchanged → genuine no-op (preserves client adaptive backoff).
-      expect(tail?.cursor).toBe(summary.cursor);
+      expect(delta.cursor).toBe(summary.cursor);
     });
+
+    const FILE_IDENTITY = '64768:4242';
+    const MINT_PROOF: TranscriptCursorProof = {
+      fileIdentity: FILE_IDENTITY,
+      offset: 1024,
+      anchors: { headDigest: 'a'.repeat(64), tailDigest: 'b'.repeat(64) },
+    };
+
+    /** Cache result for a file parse at `offset` (revision = offset); `null` mints no proof. */
+    function fileParse(
+      session: UnifiedSession,
+      sourceChangeKind: string,
+      offset: number,
+      proof: TranscriptCursorProof | null = { ...MINT_PROOF, offset },
+    ) {
+      return {
+        session,
+        cacheHit: sourceChangeKind === 'cache-hit',
+        sourceChangeKind,
+        lastOffset: offset,
+        lastSize: offset,
+        lastMtime: Date.now(),
+        sourceVersion: offset,
+        boundaryFold: false,
+        fileIdentity: FILE_IDENTITY,
+        cursorProof: proof ?? undefined,
+      };
+    }
+
+    const twoMessages = [
+      makeMessage('m1', 'user', '2026-01-01T10:00:00.000Z'),
+      makeMessage('m2', 'assistant', '2026-01-01T10:00:05.000Z'),
+    ];
+    const threeMessages = [...twoMessages, makeMessage('m3', 'user', '2026-01-01T10:00:10.000Z')];
 
     it('returns the window-stable anchor id of the first delta chunk when the tail grows', async () => {
       setupResolveChain();
-      const twoMessages = [
-        makeMessage('m1', 'user', '2026-01-01T10:00:00.000Z'),
-        makeMessage('m2', 'assistant', '2026-01-01T10:00:05.000Z'),
-      ];
-      // Mint a cursor at the 2-message state.
-      mockAdapter.parseFullSession.mockResolvedValue(makeSession(twoMessages));
-      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
-        session: makeSession(twoMessages),
-        cacheHit: false,
-        sourceChangeKind: 'unknown-full-parse',
-        lastOffset: 1024,
-        lastSize: 1024,
-        lastMtime: Date.now(),
-        sourceVersion: 1024,
-        boundaryFold: false,
-      });
+      mockSessionCacheService.getOrParseWithMeta
+        .mockResolvedValueOnce(fileParse(makeSession(twoMessages), 'unknown-full-parse', 1024))
+        .mockResolvedValueOnce(fileParse(makeSession(threeMessages), 'same-file-append', 2048));
+      mockCheckAppendProof.mockResolvedValueOnce('appended');
+
       const summary = await service.getTranscriptSummaryWithCursor('sess-1');
-
-      // A new message arrives (transcript grew).
-      const threeMessages = [...twoMessages, makeMessage('m3', 'user', '2026-01-01T10:00:10.000Z')];
-      mockAdapter.parseFullSession.mockResolvedValue(makeSession(threeMessages));
-      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
-        session: makeSession(threeMessages),
-        cacheHit: false,
-        sourceChangeKind: 'same-file-append',
-        lastOffset: 2048,
-        lastSize: 2048,
-        lastMtime: Date.now(),
-        sourceVersion: 2048,
-        boundaryFold: false,
-      });
-
       const tail = await service.getTranscriptTail('sess-1', summary.cursor);
 
-      expect(tail).not.toBeNull();
-      expect(tail).toMatchObject({ kind: 'delta' });
-      expect(tail?.deltaChunks.length).toBeGreaterThan(0);
-      expect(tail?.deltaMessages.length).toBeGreaterThan(0);
+      const delta = expectDelta(tail);
+      expect(delta.deltaChunks.length).toBeGreaterThan(0);
+      expect(delta.deltaMessages.length).toBeGreaterThan(0);
       // Anchor is authoritative and equals the first delta chunk's stable id.
-      expect(tail?.replaceFromChunkId).not.toBeNull();
-      expect(tail?.replaceFromChunkId).toBe(tail?.deltaChunks[0].id);
-      expect(tail?.totalMessageCount).toBe(3);
+      expect(delta.replaceFromChunkId).not.toBeNull();
+      expect(delta.replaceFromChunkId).toBe(delta.deltaChunks[0].id);
+      expect(delta.totalMessageCount).toBe(3);
+      expect(mockCheckAppendProof).toHaveBeenCalledWith(
+        '/home/user/.claude/projects/-test/session.jsonl',
+        FILE_IDENTITY,
+        1024,
+        MINT_PROOF.anchors,
+      );
+      // The new cursor carries the proof of the parse that produced the delta.
+      expect(decodeCursor(delta.cursor)?.proof).toEqual({ ...MINT_PROOF, offset: 2048 });
     });
 
-    it('returns an in-place delta on source-revision change even when message count is unchanged', async () => {
+    it('returns a delta for a proven cache hit that another reader already advanced', async () => {
       setupResolveChain();
-      const messages = [
-        makeMessage('m1', 'user', '2026-01-01T10:00:00.000Z'),
-        makeMessage('m2', 'assistant', '2026-01-01T10:00:05.000Z'),
-        makeMessage('m3', 'user', '2026-01-01T10:00:10.000Z'),
-      ];
-      const session = makeSession(messages);
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      // Mint at sourceVersion 1024; the tail then sees a bumped revision (2048)
-      // with the SAME messages (DB in-place part update — no new messages).
       mockSessionCacheService.getOrParseWithMeta
-        .mockResolvedValueOnce({
-          session,
-          cacheHit: false,
-          sourceChangeKind: 'unknown-full-parse',
-          lastOffset: 1024,
-          lastSize: 1024,
-          lastMtime: Date.now(),
-          sourceVersion: 1024,
-        })
-        .mockResolvedValueOnce({
-          session,
-          cacheHit: false,
-          sourceChangeKind: 'db-update',
-          lastOffset: 2048,
-          lastSize: 2048,
-          lastMtime: Date.now(),
-          sourceVersion: 2048,
-        });
+        .mockResolvedValueOnce(fileParse(makeSession(twoMessages), 'unknown-full-parse', 1024))
+        .mockResolvedValueOnce(fileParse(makeSession(threeMessages), 'cache-hit', 2048));
+      mockCheckAppendProof.mockResolvedValueOnce('appended');
 
       const summary = await service.getTranscriptSummaryWithCursor('sess-1');
-      const tail = await service.getTranscriptTail('sess-1', summary.cursor);
+      const delta = expectDelta(await service.getTranscriptTail('sess-1', summary.cursor));
 
-      expect(tail).not.toBeNull();
-      expect(tail).toMatchObject({ kind: 'delta' });
-      expect(tail?.totalMessageCount).toBe(3);
-      // In-place last-chunk replacement: delta chunks present, but no NEW messages.
-      expect(tail?.deltaChunks.length).toBeGreaterThan(0);
-      expect(tail?.deltaMessages).toEqual([]);
-      expect(tail?.replaceFromChunkId).not.toBeNull();
-      // Cursor advanced to the new revision (NOT a no-op).
-      expect(tail?.cursor).not.toBe(summary.cursor);
+      expect(delta.replaceFromChunkIndex).toBe(buildChunks(twoMessages).length - 1);
+      expect(delta.deltaMessages.map((message) => message.id)).toEqual(['m3']);
+      expect(delta.totalMessageCount).toBe(3);
     });
 
     it.each([
-      'file-replacement',
-      'file-truncation',
-      'same-file-rewrite',
-      'cache-hit',
-      'unknown-full-parse',
+      ['replaced', 'file-replacement'],
+      ['truncated', 'file-truncation'],
+      ['rewritten', 'same-file-rewrite'],
+      ['unavailable', 'unknown-full-parse'],
     ] as const)(
-      'requires a cursor-free full refetch for an unsafe %s revision change',
-      async (sourceChangeKind) => {
+      'requires a cursor-free full refetch for an unproven cache hit (%s)',
+      async (outcome, sourceChangeKind) => {
         setupResolveChain();
-        const session = makeSession();
-        mockAdapter.parseFullSession.mockResolvedValue(session);
         mockSessionCacheService.getOrParseWithMeta
-          .mockResolvedValueOnce({
-            session,
-            cacheHit: false,
-            sourceChangeKind: 'unknown-full-parse',
-            lastOffset: 1024,
-            lastSize: 1024,
-            lastMtime: Date.now(),
-            sourceVersion: 1024,
-            boundaryFold: false,
-          })
-          .mockResolvedValueOnce({
-            session,
-            cacheHit: sourceChangeKind === 'cache-hit',
-            sourceChangeKind,
-            lastOffset: 2048,
-            lastSize: 2048,
-            lastMtime: Date.now(),
-            sourceVersion: 2048,
-            boundaryFold: false,
-          });
+          .mockResolvedValueOnce(fileParse(makeSession(), 'unknown-full-parse', 1024))
+          .mockResolvedValueOnce(fileParse(makeSession(), 'cache-hit', 2048));
+        mockCheckAppendProof.mockResolvedValueOnce(outcome);
 
         const summary = await service.getTranscriptSummaryWithCursor('sess-1');
         const tail = await service.getTranscriptTail('sess-1', summary.cursor);
 
-        expect(tail).toEqual({
-          kind: 'full-refetch-required',
-          sourceChangeKind,
-        });
+        expect(tail).toEqual({ kind: 'full-refetch-required', sourceChangeKind });
         expect(tail).not.toHaveProperty('cursor');
         expect(tail).not.toHaveProperty('deltaChunks');
         expect(tail).not.toHaveProperty('deltaMessages');
       },
     );
+
+    it('requires a full refetch for a changed file revision when the cursor carries no proof', async () => {
+      setupResolveChain();
+      mockSessionCacheService.getOrParseWithMeta
+        .mockResolvedValueOnce(
+          fileParse(makeSession(twoMessages), 'unknown-full-parse', 1024, null),
+        )
+        .mockResolvedValueOnce(fileParse(makeSession(threeMessages), 'same-file-append', 2048));
+
+      const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+      expect(decodeCursor(summary.cursor)?.proof).toBeUndefined();
+
+      await expect(service.getTranscriptTail('sess-1', summary.cursor)).resolves.toEqual({
+        kind: 'full-refetch-required',
+        sourceChangeKind: 'unknown-full-parse',
+      });
+      expect(mockCheckAppendProof).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an older parse than the cursor', { lastOffset: 512 }],
+      ['a parse of another file', { fileIdentity: '64768:9999' }],
+    ])(
+      'requires a full refetch when the proof holds but the tail read %s',
+      async (_label, parseOverrides) => {
+        setupResolveChain();
+        mockSessionCacheService.getOrParseWithMeta
+          .mockResolvedValueOnce(fileParse(makeSession(twoMessages), 'unknown-full-parse', 1024))
+          .mockResolvedValueOnce({
+            ...fileParse(makeSession(threeMessages), 'cache-hit', 2048),
+            ...parseOverrides,
+          });
+        mockCheckAppendProof.mockResolvedValueOnce('appended');
+
+        const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+        await expect(service.getTranscriptTail('sess-1', summary.cursor)).resolves.toEqual({
+          kind: 'full-refetch-required',
+          sourceChangeKind: 'unknown-full-parse',
+        });
+      },
+    );
+
+    it('does not prove an unchanged file revision again', async () => {
+      setupResolveChain();
+      mockSessionCacheService.getOrParseWithMeta
+        .mockResolvedValueOnce(fileParse(makeSession(), 'same-file-append', 1024))
+        .mockResolvedValueOnce(fileParse(makeSession(), 'cache-hit', 1024));
+
+      const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+      const delta = expectDelta(await service.getTranscriptTail('sess-1', summary.cursor));
+
+      expect(delta).toMatchObject({ cursor: summary.cursor, deltaChunks: [], deltaMessages: [] });
+      expect(mockCheckAppendProof).not.toHaveBeenCalled();
+    });
+
+    describe('DB sources', () => {
+      beforeEach(() => {
+        Object.assign(mockAdapter, { sourceKind: 'db' });
+      });
+      afterEach(() => {
+        delete (mockAdapter as { sourceKind?: string }).sourceKind;
+      });
+
+      function dbParse(session: UnifiedSession, sourceChangeKind: string, sourceVersion: number) {
+        return {
+          session,
+          cacheHit: sourceChangeKind === 'cache-hit',
+          sourceChangeKind,
+          lastOffset: 4096,
+          lastSize: 4096,
+          lastMtime: Date.now(),
+          sourceVersion,
+          boundaryFold: false,
+        };
+      }
+
+      it('returns an in-place delta on source-revision change even when message count is unchanged', async () => {
+        setupResolveChain();
+        const session = makeSession();
+        // Mint at revision 1024; the tail then sees a bumped revision (2048) with the SAME
+        // messages (DB in-place part update — no new messages).
+        mockSessionCacheService.getOrParseWithMeta
+          .mockResolvedValueOnce(dbParse(session, 'unknown-full-parse', 1024))
+          .mockResolvedValueOnce(dbParse(session, 'db-update', 2048));
+
+        const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+        expect(decodeCursor(summary.cursor)?.proof).toBeUndefined();
+        const delta = expectDelta(await service.getTranscriptTail('sess-1', summary.cursor));
+
+        expect(delta.totalMessageCount).toBe(3);
+        // In-place last-chunk replacement: delta chunks present, but no NEW messages.
+        expect(delta.deltaChunks.length).toBeGreaterThan(0);
+        expect(delta.deltaMessages).toEqual([]);
+        expect(delta.replaceFromChunkId).not.toBeNull();
+        // Cursor advanced to the new revision (NOT a no-op).
+        expect(delta.cursor).not.toBe(summary.cursor);
+        expect(mockCheckAppendProof).not.toHaveBeenCalled();
+      });
+
+      it.each(['cache-hit', 'unknown-full-parse'] as const)(
+        'keeps requiring a full refetch for a %s revision change',
+        async (sourceChangeKind) => {
+          setupResolveChain();
+          mockSessionCacheService.getOrParseWithMeta
+            .mockResolvedValueOnce(dbParse(makeSession(), 'unknown-full-parse', 1024))
+            .mockResolvedValueOnce(dbParse(makeSession(), sourceChangeKind, 2048));
+
+          const summary = await service.getTranscriptSummaryWithCursor('sess-1');
+          await expect(service.getTranscriptTail('sess-1', summary.cursor)).resolves.toEqual({
+            kind: 'full-refetch-required',
+            sourceChangeKind,
+          });
+          expect(mockCheckAppendProof).not.toHaveBeenCalled();
+        },
+      );
+    });
 
     it('returns null on an expired cursor (message count exceeds the current total)', async () => {
       setupResolveChain();
@@ -1793,6 +1898,7 @@ describe('SessionReaderService', () => {
       resolveFirstParse({
         session: firstSession,
         cacheHit: false,
+        sourceChangeKind: 'unknown-full-parse',
         lastOffset: 1000,
         lastSize: 1000,
         lastMtime: Date.now(),
@@ -2361,7 +2467,7 @@ describe('SessionReaderService', () => {
       };
       // Stub only the resolution seam; cache + adapter + reader are all real.
       resolveSpy = jest
-        .spyOn(dbService as unknown as { resolveAdapter: () => unknown }, 'resolveAdapter')
+        .spyOn(dbService as unknown as { resolveAdapter: () => Promise<unknown> }, 'resolveAdapter')
         .mockResolvedValue({
           adapter,
           transcriptPath: dbPath,
@@ -2405,16 +2511,15 @@ describe('SessionReaderService', () => {
 
       const tail = await dbService.getTranscriptTail(SES, summary.cursor);
 
-      expect(tail).not.toBeNull();
-      expect(tail).toMatchObject({ kind: 'delta' });
+      const delta = expectDelta(tail);
       // Same number of messages — the change is an in-place part mutation.
-      expect(tail?.totalMessageCount).toBe(2);
-      expect(tail?.deltaMessages).toEqual([]);
+      expect(delta.totalMessageCount).toBe(2);
+      expect(delta.deltaMessages).toEqual([]);
       // In-place last-chunk replacement: a delta chunk with a real anchor id.
-      expect(tail?.deltaChunks.length).toBeGreaterThan(0);
-      expect(tail?.replaceFromChunkId).not.toBeNull();
+      expect(delta.deltaChunks.length).toBeGreaterThan(0);
+      expect(delta.replaceFromChunkId).not.toBeNull();
       // Cursor advanced to the new revision (NOT a no-op).
-      expect(tail?.cursor).not.toBe(summary.cursor);
+      expect(delta.cursor).not.toBe(summary.cursor);
     });
   });
 

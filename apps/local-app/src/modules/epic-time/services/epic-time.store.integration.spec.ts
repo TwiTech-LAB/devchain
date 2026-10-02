@@ -573,6 +573,42 @@ describe('EpicTimeStore', () => {
     expect(segments()).toHaveLength(countAfterFirst + 1);
   });
 
+  it('credits an exact turn, prompt to turn end, across a quiet stretch longer than the idle timeout', async () => {
+    insertEpic('turn-epic', '2026-01-01T00:00:09.000Z');
+    const activation = await store.activate(new Date('2026-01-01T00:00:10.000Z'));
+    const promptAt = Date.parse('2026-01-01T00:01:00.000Z');
+    const iso = (offsetMs: number) => new Date(promptAt + offsetMs).toISOString();
+    const reconcileAt = (offsetMs: number) =>
+      store.reconcileSession(
+        SESSION_ID,
+        activation.trackingStartedAt,
+        activation.idleTimeoutMs,
+        new Date(promptAt + offsetMs),
+      );
+
+    // A silent 95 s turn: TerminalActivityService stamps an open turn every idle-timeout / 3.
+    for (let offsetMs = 0; offsetMs <= 90_000; offsetMs += 10_000) {
+      updateSession({ lastActivityAt: iso(offsetMs), busySince: iso(0) });
+      await reconcileAt(offsetMs);
+    }
+    // The turn end (Stop) goes idle and stamps the end.
+    updateSession({ lastActivityAt: iso(95_000), busySince: iso(0), activityState: 'idle' });
+    await reconcileAt(95_000);
+
+    expect(segments()).toEqual([
+      expect.objectContaining({
+        epic_id: 'turn-epic',
+        started_at: iso(0),
+        last_activity_at: iso(95_000),
+        duration_ms: 95_000,
+      }),
+    ]);
+
+    // No idle tail: time after the turn end adds nothing.
+    await reconcileAt(300_000);
+    expect(segments()).toEqual([expect.objectContaining({ duration_ms: 95_000 })]);
+  });
+
   it('claims buffered time on the next exact-agent creation exactly once', async () => {
     insertEpic('target-create', '2026-01-01T00:00:19.000Z', false);
     insertBufferedSegment('buffer-create', '2026-01-01T00:00:11.000Z', '2026-01-01T00:00:15.000Z');
@@ -2609,7 +2645,9 @@ describe('EpicTimeStore related-time route resolution', () => {
     const segments = store.listResolvedScope(['batch-1', 'batch-2']).segments;
     const byFocal = new Map<string, string[]>();
     for (const segment of segments) {
-      byFocal.set(segment.rootEpicId, [...(byFocal.get(segment.rootEpicId) ?? []), segment.epicId]);
+      const focalId = segment.rootEpicId;
+      if (focalId === null) throw new Error('batch segment is missing its focal Epic');
+      byFocal.set(focalId, [...(byFocal.get(focalId) ?? []), segment.epicId]);
     }
     expect(byFocal.get('batch-1')?.sort()).toEqual(['batch-1', 'shared-routed']);
     expect(byFocal.get('batch-2')?.sort()).toEqual(['batch-2']);

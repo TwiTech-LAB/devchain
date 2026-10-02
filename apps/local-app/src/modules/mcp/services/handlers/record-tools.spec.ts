@@ -26,6 +26,7 @@ function createContext(): RecordToolContext {
       updateRecord: jest.fn().mockResolvedValue({ ...RECORD, version: 3 }),
       getRecord: jest.fn().mockResolvedValue(RECORD),
       listRecords: jest.fn().mockResolvedValue({ items: [RECORD], total: 1, limit: 50, offset: 0 }),
+      deleteRecord: jest.fn().mockResolvedValue(undefined),
     },
   };
 }

@@ -494,6 +494,41 @@ describe('RemoteOperationRunner', () => {
     expect(attach.rollback).toHaveBeenCalledTimes(1);
   });
 
+  it('does not start a step when the cancel arrives while its start is being saved', async () => {
+    const slow = step('slow');
+    const interrupt = jest.fn(async () => undefined);
+    const attach = definition([slow], { interrupt });
+    const runner = runnerFor(attach);
+    const gate = deferred();
+    let startWriteHeld = false;
+    const write = storage.updateRemoteOperation.bind(storage);
+    jest.spyOn(storage, 'updateRemoteOperation').mockImplementation(async (id, data) => {
+      if (!startWriteHeld && data.steps?.some((s) => s.id === 'slow' && s.state === 'running')) {
+        startWriteHeld = true;
+        await gate.promise;
+      }
+      return write(id, data);
+    });
+    const operation = await runner.start({
+      kind: 'attach',
+      remoteId: 'remote-1',
+      projectId: 'project-1',
+      details: {},
+    });
+    while (!startWriteHeld) await new Promise((resolve) => setImmediate(resolve));
+
+    const cancelling = runner.cancel(operation.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(interrupt).toHaveBeenCalledWith(operation.id);
+    gate.resolve();
+    const cancelled = await cancelling;
+
+    expect(cancelled.state).toBe('cancelled');
+    expect(slow.run).not.toHaveBeenCalled();
+    expect(cancelled.steps[0]).toMatchObject({ id: 'slow', state: 'pending', startedAt: null });
+    expect(attach.rollback).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a failed operation open with the cancel error when the rollback throws', async () => {
     const attach = definition([step('fails', async () => Promise.reject(new Error('x')))], {
       rollback: jest.fn(async () => Promise.reject(new Error('host unreachable'))),

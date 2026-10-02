@@ -92,15 +92,15 @@ describe('IntegrationConnectionsController', () => {
         token: 'token',
         siteUrl: 'https://acme.atlassian.net',
       }),
-    ).rejects.toMatchObject<ValidationError>({
+    ).rejects.toMatchObject<Partial<ValidationError>>({
       details: { field: 'email' },
     });
   });
 
   it('validates the DELETE provider path', async () => {
-    await expect(
-      controller.disconnectConnection('github', { projectId }),
-    ).rejects.toMatchObject<ValidationError>({ details: { field: 'provider' } });
+    await expect(controller.disconnectConnection('github', { projectId })).rejects.toMatchObject<
+      Partial<ValidationError>
+    >({ details: { field: 'provider' } });
     expect(service.disconnectConnection).not.toHaveBeenCalled();
   });
 

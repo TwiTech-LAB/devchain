@@ -1,12 +1,13 @@
 import { dataGroupIdentity, groupDockerData, supersedeGroupRecords } from './docker-data-groups';
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { AppError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
-import { readDockerArchive } from '../../core/controllers/docker-archive';
+import { dockerArchiveLayout, readDockerArchive } from '../../core/controllers/docker-archive';
 import {
   DockerEngineClient,
   DockerEngineError,
@@ -21,7 +22,11 @@ import {
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import { IGNORE_PATTERNS_MAX } from '../../file-sync/file-sync.dto';
 import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-managed-exclusions.store';
-import { DockerImportInventoryStore } from '../operations/docker-import-inventory.store';
+import {
+  DockerImportInventoryStore,
+  vmImageCandidates,
+  type DockerImportInventory,
+} from '../operations/docker-import-inventory.store';
 import { RemoteHostClient, RemoteHostRequestError } from '../operations/remote-host.client';
 import { RemoteOperationStepRefusedError } from '../operations/remote-operation.errors';
 import {
@@ -165,6 +170,10 @@ export class DockerHandoff {
         previousRecord?.inventoryBefore !== undefined
           ? previousRecord.inventoryBefore
           : this.inventory.get(projectId, run.operation.remoteId);
+      for (const kept of record.keptInventory ?? []) {
+        const prior = record.inventoryBefore?.items.find((item) => item.name === kept.name);
+        if (prior?.vmImageId && prior.imageId === kept.imageId) kept.vmImageId = prior.vmImageId;
+      }
       // Folders of earlier imports that this Connect does not re-select stay on the VM
       // and must stay out of file sync too.
       const managed = [
@@ -262,24 +271,33 @@ export class DockerHandoff {
       await this.journal.reconcile(client, signal);
 
       const pendingImages = record.images.filter((i) => !record.verified.images.includes(i.id));
+      const candidates = new Map(
+        pendingImages.map((image) => [
+          image.id,
+          vmImageCandidates(record.inventoryBefore, image.id),
+        ]),
+      );
       const present = pendingImages.length
         ? (
             await this.host.dockerImagesPresent(
               remoteId,
-              pendingImages.map((i) => i.id),
+              [...new Set([...candidates.values()].flat())],
               options,
             )
           ).ids
         : [];
       for (const image of pendingImages) {
         progress.item(image.id, 'image', image.sizeBytes);
-        if (!present.includes(image.id)) {
+        const vmId = candidates.get(image.id)!.find((id) => present.includes(id));
+        if (vmId) image.vmId = vmId;
+        else {
           const saved = await saveImage(client, image.id, signal);
-          await this.host.dockerLoadImage(remoteId, progress.count(saved), options);
-          const loaded = await this.host.dockerImagesPresent(remoteId, [image.id], options);
-          // Image IDs are content digests: presence by ID verifies the load.
-          if (!loaded.ids.includes(image.id))
-            throw new DockerHandoffError('The VM did not load an image with the expected ID.');
+          const loaded = await this.host.dockerLoadImage(
+            remoteId,
+            progress.count(saved.archive),
+            options,
+          );
+          image.vmId = loadedVmId(image.id, saved.layers, loaded.images);
         }
         record.verified.images.push(image.id);
         await this.store.write(run.operation.id, record);
@@ -338,6 +356,7 @@ export class DockerHandoff {
             progress,
             remoteId,
             { projectId, image: volume.helperImage, mountType: 'volume', source: volume.name },
+            vmImageId(record, volume.helperImage),
             options,
           );
           (record.copiedData ??= { volumes: [], binds: [] }).volumes.push(volume.name);
@@ -372,6 +391,10 @@ export class DockerHandoff {
           options,
         );
       const binds = record.binds.filter((b) => !record.verified.binds.includes(b.path));
+      // A bound single file moves as a file, so the VM never puts a folder in its place.
+      const files = new Set<string>();
+      for (const bind of binds) if (await isFile(bind.path)) files.add(bind.path);
+      const fileFlag = (path: string) => (files.has(path) ? { file: true as const } : {});
       const created = binds.filter((b) => !b.replace);
       for (let offset = 0; offset < created.length; offset += 64)
         await this.host.dockerPrepareBinds(
@@ -380,7 +403,7 @@ export class DockerHandoff {
             projectId,
             paths: created
               .slice(offset, offset + 64)
-              .map((b) => ({ path: b.path, replace: false })),
+              .map((b) => ({ path: b.path, replace: false, ...fileFlag(b.path) })),
           },
           options,
         );
@@ -389,7 +412,17 @@ export class DockerHandoff {
         try {
           await this.host.dockerPrepareBinds(
             remoteId,
-            { projectId, paths: [{ path: bind.path, replace: true, image: bind.helperImage }] },
+            {
+              projectId,
+              paths: [
+                {
+                  path: bind.path,
+                  replace: true,
+                  image: vmImageId(record, bind.helperImage),
+                  ...fileFlag(bind.path),
+                },
+              ],
+            },
             options,
           );
         } catch (error) {
@@ -406,7 +439,13 @@ export class DockerHandoff {
           client,
           progress,
           remoteId,
-          { projectId, image: bind.helperImage, mountType: 'bind', source: bind.path },
+          {
+            projectId,
+            image: bind.helperImage,
+            mountType: files.has(bind.path) ? 'file' : 'bind',
+            source: bind.path,
+          },
+          vmImageId(record, bind.helperImage),
           options,
         );
         (record.copiedData ??= { volumes: [], binds: [] }).binds.push(bind.path);
@@ -450,7 +489,14 @@ export class DockerHandoff {
         await this.store.write(run.operation.id, record);
         await this.host.dockerCreateContainer(
           remoteId,
-          { projectId, name: item.name, config: captured.config },
+          {
+            projectId,
+            name: item.name,
+            config: {
+              ...captured.config,
+              Image: vmImageId(record, String(captured.config.Image)),
+            },
+          },
           options,
         );
         record.verified.containers.push(item.name);
@@ -458,7 +504,12 @@ export class DockerHandoff {
       }
       await progress.finish();
 
-      const imported = record.items
+      // This push's verified pair wins over a carried one: it reflects the VM now.
+      const vmPair = (imageId: string, carried?: string) => {
+        const vmId = record.images.find((i) => i.id === imageId)?.vmId ?? carried;
+        return vmId && vmId !== imageId ? { vmImageId: vmId } : {};
+      };
+      const imported: DockerImportInventory['items'] = record.items
         .filter(
           (item) =>
             item.targetAction !== 'leave-as-is' &&
@@ -467,6 +518,7 @@ export class DockerHandoff {
         .map((item) => ({
           name: item.name,
           imageId: item.imageIds[0] ?? item.id,
+          ...vmPair(item.imageIds[0] ?? item.id),
           volumes: item.volumes.map((name) => ({
             name,
             sizeBytes: record.volumes.find((v) => v.name === name)?.sizeBytes ?? null,
@@ -477,7 +529,12 @@ export class DockerHandoff {
             .map((path) => projectAnchoredPath(record.projectRoot, path)),
           sizeBytes: item.sizeBytes,
         }));
-      imported.push(...(record.keptInventory ?? []));
+      imported.push(
+        ...(record.keptInventory ?? []).map(({ vmImageId: carried, ...item }) => ({
+          ...item,
+          ...vmPair(item.imageId, carried),
+        })),
+      );
       // An earlier import's item that this Connect did not re-import keeps its VM copy.
       const kept = (this.inventory.get(projectId, remoteId)?.items ?? []).filter(
         (prior) => !imported.some((item) => item.name === prior.name),
@@ -738,25 +795,35 @@ export class DockerHandoff {
     }
   }
 
-  /** Streams one volume or folder from a never-started home helper; the VM's digest must match. */
+  /**
+   * Streams one volume or folder from a never-started home helper; the VM's digest
+   * must match. `request.image` is the home ID; the VM helper runs `vmImage`.
+   */
   private async copy(
     client: DockerEngineClient,
     progress: TransferProgress,
     remoteId: string,
     request: DockerArchiveRequest,
+    vmImage: string,
     options: DockerHostOptions,
   ): Promise<void> {
+    const layout = dockerArchiveLayout(request.mountType, request.source);
     const helper = await this.journal.create(
       client,
       request.image,
-      [{ Type: request.mountType, Source: request.source, Target: '/data', ReadOnly: true }],
+      [{ ...layout.mount, ReadOnly: true }],
       options.signal,
     );
     try {
-      const archive = await readDockerArchive(client, helper.id, options.signal);
+      const archive = await readDockerArchive(client, helper.id, options.signal, layout.readPath);
       const hash = createHash('sha256');
       const body = progress.count(archive, (chunk) => hash.update(chunk));
-      const { sha256 } = await this.host.dockerWriteArchive(remoteId, request, body, options);
+      const { sha256 } = await this.host.dockerWriteArchive(
+        remoteId,
+        { ...request, image: vmImage },
+        body,
+        options,
+      );
       if (sha256 !== hash.digest('hex'))
         throw new DockerHandoffError('The copied data did not match on the VM; retry the copy.');
     } finally {
@@ -1005,16 +1072,52 @@ async function saveImage(
   client: DockerEngineClient,
   id: string,
   signal: AbortSignal,
-): Promise<Readable> {
-  const image = await client.json<{ RepoTags?: string[] | null }>(
-    'GET',
-    `/images/${encodeURIComponent(id)}/json`,
-    undefined,
-    { signal },
-  );
+): Promise<{ archive: Readable; layers: string[] }> {
+  const image = await client.json<{
+    RepoTags?: string[] | null;
+    RootFS?: { Layers?: string[] | null };
+  }>('GET', `/images/${encodeURIComponent(id)}/json`, undefined, { signal });
   const names = image.RepoTags?.length ? image.RepoTags : [id];
   const query = names.map((n) => `names=${encodeURIComponent(n)}`).join('&');
-  return client.stream('GET', `/images/get?${query}`, { signal });
+  return {
+    archive: await client.stream('GET', `/images/get?${query}`, { signal }),
+    layers: image.RootFS?.Layers ?? [],
+  };
+}
+
+/**
+ * The VM ID of a loaded home image: the reported image with the same layers in
+ * the same order. Both image stores keep layer digests, while the image ID of a
+ * containerd-store engine is its manifest digest, not the home config digest.
+ */
+function loadedVmId(
+  homeId: string,
+  homeLayers: string[],
+  reported: Array<{ id: string; layers: string[] }>,
+): string {
+  const matches = reported.filter(
+    (image) =>
+      image.layers.length === homeLayers.length &&
+      image.layers.every((layer, index) => layer === homeLayers[index]),
+  );
+  const match = matches.find((image) => image.id === homeId) ?? matches[0];
+  if (!match)
+    throw new DockerHandoffError(
+      `The VM loaded image ${homeId}, but none of the images it reported (${reported.map((i) => i.id).join(', ') || 'none'}) has the same layers. The VM engine can store images under its own IDs. Retry the copy.`,
+    );
+  return match.id;
+}
+
+function isFile(path: string): Promise<boolean> {
+  return stat(path).then(
+    (stats) => stats.isFile(),
+    () => false,
+  );
+}
+
+/** Every VM-side request names an image by its VM ID; the home ID when none is known. */
+function vmImageId(record: DockerHandoffRecord, homeId: string): string {
+  return record.images.find((image) => image.id === homeId)?.vmId ?? homeId;
 }
 
 /** Bytes, rate and ETA for `details.docker`; the rate appears after five seconds of samples. */

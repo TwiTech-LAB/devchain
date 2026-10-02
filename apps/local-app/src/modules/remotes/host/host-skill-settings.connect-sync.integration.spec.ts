@@ -22,6 +22,7 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { SkillSourceLifecycleService } from '../../skills/services/skill-source-lifecycle.service';
 import { SkillSourceRegistryService } from '../../skills/services/skill-source-registry.service';
 import { SkillSyncService } from '../../skills/services/skill-sync.service';
+import type { SyncResult } from '../../skills/services/skill-sync.types';
 import { SkillsService } from '../../skills/services/skills.service';
 import { SkillCategoryService } from '../../skills/services/skill-category.service';
 import { SKILL_SOURCE_ADAPTERS } from '../../skills/adapters/skill-source.adapter';
@@ -44,7 +45,7 @@ jest.mock('node:os', () => {
 });
 
 const community = { name: 'home-source', repoOwner: 'owner', repoName: 'repo', branch: 'main' };
-const syncSuccess = {
+const syncSuccess: SyncResult = {
   status: 'completed',
   added: 0,
   updated: 0,

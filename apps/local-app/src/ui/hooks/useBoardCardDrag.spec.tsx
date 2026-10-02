@@ -1,4 +1,4 @@
-import { createRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { type PointerEvent as ReactPointerEvent } from 'react';
 import { act, fireEvent, renderHook } from '@testing-library/react';
 import type { BoardCardDragPreviewHandle } from '@/ui/components/board/BoardCardDragPreview';
 import type { BoardCardDragModel } from '@/ui/pages/board/board-page-presentation';
@@ -24,17 +24,16 @@ const epic: Epic = {
 function setup() {
   const cardDrag = { start: jest.fn(), drop: jest.fn(), cancel: jest.fn() };
   const preview = { show: jest.fn(), update: jest.fn(), hide: jest.fn() };
-  const previewRef = createRef<BoardCardDragPreviewHandle>();
-  previewRef.current = preview;
-  const scrollContainerRef = createRef<HTMLDivElement>();
-  scrollContainerRef.current = document.createElement('div');
+  const previewRef: { current: BoardCardDragPreviewHandle | null } = { current: preview };
+  const scrollContainer = document.createElement('div');
+  const scrollContainerRef: { current: HTMLDivElement | null } = { current: scrollContainer };
   const source = document.createElement('div');
   source.dataset.boardCardDragSource = '';
   source.setPointerCapture = jest.fn();
   const title = document.createElement('button');
   source.appendChild(title);
-  scrollContainerRef.current.appendChild(source);
-  document.body.appendChild(scrollContainerRef.current);
+  scrollContainer.appendChild(source);
+  document.body.appendChild(scrollContainer);
   const column = document.createElement('div');
   column.dataset.boardDropStatusId = 'done';
   document.body.appendChild(column);

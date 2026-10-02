@@ -12,6 +12,11 @@ import type {
 import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { parseClaudeJsonl } from '../parsers/claude-jsonl.parser';
+import {
+  claudeTurnFromMessages,
+  readClaudeContinuation,
+  type ClaudeContinuationState,
+} from '../parsers/claude-turn-evidence';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
 import { isSyncthingMarker } from '../../../common/constants/syncthing-markers';
 
@@ -115,6 +120,7 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
         nextByteOffset: byteOffset,
         messageCount: 0,
         entries: [],
+        continuationState: options.continuationState,
       };
     }
 
@@ -124,9 +130,11 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
       endByteOffset: options.endByteOffset,
       includeToolCalls: options.includeToolCalls ?? true,
       pricingService: this.pricingService,
+      turnBaseline: readClaudeContinuation(options.continuationState)?.turn,
     });
 
     const hasMore = result.bytesRead < fileSize;
+    const continuationState: ClaudeContinuationState = { turn: result.turn };
 
     return {
       hasMore,
@@ -135,7 +143,13 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
       entries: result.messages,
       metrics: result.metrics,
       warnings: result.warnings,
+      continuationState,
     };
+  }
+
+  /** The turn evidence of a full parse, so the next incremental parse resumes from it. */
+  continuationFromSession(session: UnifiedSession): ClaudeContinuationState {
+    return { turn: claudeTurnFromMessages(session.messages) };
   }
 
   /**
@@ -199,7 +213,7 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
       metrics: result.metrics,
       warnings: result.warnings,
       exactFields: EXACT_SUMMARY_FIELDS,
-      // Seed for the watcher's metrics-only lane (file+delta). Claude carries no continuation state.
+      // Seed for the watcher's metrics-only lane (file+delta), including the turn evidence.
       laneSeed: {
         endOffset: result.bytesRead,
         tail: result.tail,
@@ -207,6 +221,7 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
         lastMessageTimestamp: result.lastMessageTimestamp,
         visibleContextTokens: result.visibleContextTokensMerge,
         messageCount: result.metrics.messageCount,
+        continuationState: { turn: result.turn } satisfies ClaudeContinuationState,
       },
     };
   }

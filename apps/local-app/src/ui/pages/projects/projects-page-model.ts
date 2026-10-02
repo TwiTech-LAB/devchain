@@ -307,7 +307,8 @@ function buildRow(
 
 export function describeRemoteLock(owner: ProjectRemoteOwner): string {
   const remote = owner.remoteName ? `remote "${owner.remoteName}"` : 'a remote';
-  if (owner.state === 'attaching') return `Connecting to ${remote}; changes are paused.`;
+  if (owner.state === 'attaching')
+    return `Connecting to ${remote}; changes are paused. Cancel it in Cloud.`;
   if (owner.state === 'detaching') return `Disconnecting from ${remote}; changes are paused.`;
   if (owner.state === 'failed')
     return `Connection to ${remote} failed; retry or cancel it in Cloud.`;

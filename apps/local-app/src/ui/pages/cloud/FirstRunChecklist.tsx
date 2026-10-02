@@ -134,7 +134,7 @@ export function FirstRunChecklist({
                 />
               </ul>
             )}
-            <Button size="sm" variant="outline" onClick={onCheckAgain} disabled={checking}>
+            <Button size="sm" variant="outline" onClick={onCheckAgain} pending={checking}>
               {checking ? 'Checking…' : 'Check again'}
             </Button>
           </Step>

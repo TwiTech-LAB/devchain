@@ -30,6 +30,7 @@ describe('WatchersController', () => {
     scopeFilterId: null,
     pollIntervalMs: 5000,
     viewportLines: 50,
+    idleAfterSeconds: 0,
     condition: { type: 'contains', pattern: 'error' },
     cooldownMs: 60000,
     cooldownMode: 'time',
