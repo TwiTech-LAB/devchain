@@ -6,7 +6,12 @@ import * as fs from 'node:fs/promises';
 import { StorageError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { GitHubSkillSourceBase, ParsedSkillMarkdown } from './github-skill-source.base';
-import { SkillManifest, SkillSourceAdapter, SkillSourceSyncContext } from './skill-source.adapter';
+import {
+  SkillDiscoveryError,
+  SkillManifest,
+  SkillSourceAdapter,
+  SkillSourceSyncContext,
+} from './skill-source.adapter';
 
 const logger = createLogger('MicrosoftSkillSource');
 const SKILLS_DIRECTORY = '.github/skills';
@@ -34,6 +39,7 @@ export class MicrosoftSkillSource extends GitHubSkillSourceBase implements Skill
   async createSyncContext(): Promise<SkillSourceSyncContext> {
     const repoContext = await this.prepareExtractedRepository();
     const manifests = new Map<string, SkillManifest>();
+    const discoveryErrors: SkillDiscoveryError[] = [];
     let disposed = false;
     const dispose = async (): Promise<void> => {
       if (disposed) {
@@ -57,12 +63,10 @@ export class MicrosoftSkillSource extends GitHubSkillSourceBase implements Skill
           }
           manifests.set(skillName, this.toSkillManifest(skillName, parsedSkill));
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          discoveryErrors.push({ skillName, message });
           logger.warn(
-            {
-              sourceName: this.sourceName,
-              skillName,
-              error: error instanceof Error ? error.message : String(error),
-            },
+            { sourceName: this.sourceName, skillName, error: message },
             'Failed processing Microsoft skill. Skipping.',
           );
         }
@@ -70,6 +74,7 @@ export class MicrosoftSkillSource extends GitHubSkillSourceBase implements Skill
 
       return {
         manifests,
+        discoveryErrors,
         downloadSkill: async (skillName: string, targetPath: string) =>
           this.downloadSkillFromExtractedRepo(skillName, targetPath, repoContext.extractedRepoRoot),
         dispose,

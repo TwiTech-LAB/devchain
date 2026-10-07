@@ -321,22 +321,17 @@ describe('Phase 7 architecture invariants', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('AMD source files contain zero references to SessionsMessagePoolService (facade-only)', () => {
-    const amdFiles = listNonSpecSourceFiles(join(MODULES_ROOT, 'agent-message-delivery'));
-    const offenders = amdFiles
-      .filter((file) => readText(file).includes('SessionsMessagePoolService'))
-      .map((file) => relative(APP_ROOT, file));
-
-    expect(offenders).toEqual([]);
-  });
-
-  it('No non-test source file references the deleted events domain module (Phase 7 7D.5)', () => {
-    const files = listNonSpecSourceFiles(SRC_ROOT);
-    const offenders = files
-      .filter((file) => readText(file).includes(EVENTS_DOMAIN_MODULE_TOKEN))
-      .map((file) => relative(APP_ROOT, file));
-
-    expect(offenders).toEqual([]);
+  it.each([
+    ['agent-message-delivery', 'SessionsMessagePoolService'],
+    ['', EVENTS_DOMAIN_MODULE_TOKEN],
+    ['terminal', 'SessionsService'],
+  ])('%s source excludes %s', (domain, token) => {
+    const files = listNonSpecSourceFiles(domain ? join(MODULES_ROOT, domain) : SRC_ROOT);
+    expect(
+      files
+        .filter((file) => readText(file).includes(token))
+        .map((file) => relative(APP_ROOT, file)),
+    ).toEqual([]);
   });
 
   it('TerminalModule.providers does not contain TerminalIOService (relocated to TerminalDeliveryModule)', () => {
@@ -352,15 +347,6 @@ describe('Phase 7 architecture invariants', () => {
     const importNames = imports.map(moduleName).filter((name): name is string => Boolean(name));
 
     expect(importNames).not.toContain('SessionsModule');
-  });
-
-  it('Terminal source does not depend on broad SessionsService', () => {
-    const files = listNonSpecSourceFiles(join(MODULES_ROOT, 'terminal'));
-    const offenders = files
-      .filter((file) => readText(file).includes('SessionsService'))
-      .map((file) => relative(APP_ROOT, file));
-
-    expect(offenders).toEqual([]);
   });
 
   it('terminal prompt protection never synthesizes editor preservation keys', () => {
@@ -416,15 +402,6 @@ describe('Phase 7 architecture invariants', () => {
         .filter((file) => /forwardRef\s*\(/.test(readText(file)))
         .map((file) => relative(APP_ROOT, file));
     });
-
-    expect(offenders).toEqual([]);
-  });
-
-  it('Registry source files contain zero ProjectsService references', () => {
-    const files = listNonSpecSourceFiles(join(MODULES_ROOT, 'registry'));
-    const offenders = files
-      .filter((file) => readText(file).includes('ProjectsService'))
-      .map((file) => relative(APP_ROOT, file));
 
     expect(offenders).toEqual([]);
   });
@@ -672,5 +649,25 @@ describe('UI feature boundaries', () => {
     ['local storage', "localStorage.setItem('board', 'value');", 'storage'],
   ] as const)('rejects %s ownership in BoardPageView', (_name, source, expectedViolation) => {
     expect(boardViewBoundaryViolations(source)).toContain(expectedViolation);
+  });
+});
+
+describe('Registry/Projects boundary', () => {
+  it('keeps Registry source free of Projects-owned service/module tokens', () => {
+    const registryDir = join(MODULES_ROOT, 'registry');
+    const forbiddenTokens = [
+      'Projects' + 'Service',
+      'Projects' + 'Module',
+      'Project' + 'TemplateUpgradeService',
+      'Project' + 'RegistryImportService',
+      'ModuleRef',
+    ];
+    const offenders = listTypeScriptFiles(registryDir).flatMap((file) => {
+      const source = readText(file);
+      return forbiddenTokens
+        .filter((token) => source.includes(token))
+        .map((token) => `${relative(registryDir, file)} contains ${token}`);
+    });
+    expect(offenders).toEqual([]);
   });
 });

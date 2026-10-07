@@ -89,16 +89,10 @@ describe('EpicTableRow estimated-time badge', () => {
 
 describe('EpicTableRow selection', () => {
   // data-state="selected" is what the Table primitive keys its selected fill on.
-  it('marks a selected row with data-state="selected"', () => {
-    renderRow(createEpic(), undefined, true);
-
-    expect(screen.getByRole('row')).toHaveAttribute('data-state', 'selected');
-  });
-
-  it('leaves an unselected row without data-state', () => {
-    renderRow(createEpic(), undefined, false);
-
-    expect(screen.getByRole('row')).not.toHaveAttribute('data-state');
+  it.each([true, false])('marks selection=%s', (selected) => {
+    renderRow(createEpic(), undefined, selected);
+    if (selected) expect(screen.getByRole('row')).toHaveAttribute('data-state', 'selected');
+    else expect(screen.getByRole('row')).not.toHaveAttribute('data-state');
   });
 });
 

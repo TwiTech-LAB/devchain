@@ -52,67 +52,56 @@ describe('EpicTimeCard', () => {
     expect(screen.getByText('45m')).toBeInTheDocument();
   });
 
-  it('shows only the self total for a sub-epic', () => {
-    // A child focal is self-only on the server, so its direct and total match.
+  it.each([
+    { name: 'child self', root: false, related: false, label: 'Total', direct: false },
+    {
+      name: 'related rollup',
+      root: true,
+      related: true,
+      label: 'Total (incl. sub-epics and related Epics)',
+      direct: true,
+    },
+    {
+      name: 'root self',
+      root: true,
+      related: false,
+      label: 'Total (incl. sub-epics)',
+      direct: false,
+    },
+  ])('renders $name summary', ({ root, related, label, direct }) => {
     render(
       <EpicTimeCard
-        isRoot={false}
-        summary={{ ...summary, directMinutes: summary.totalMinutes }}
+        isRoot={root}
+        summary={{
+          ...summary,
+          ...(!direct ? { directMinutes: summary.totalMinutes } : {}),
+          includesRelatedTime: related,
+        }}
         isLoading={false}
         isError={false}
       />,
     );
-
-    expect(screen.getByText('Total')).toBeInTheDocument();
-    expect(screen.queryByText('Direct')).not.toBeInTheDocument();
-    expect(screen.getByText('1h 45m')).toBeInTheDocument();
+    expect(screen.getByText(label)).toBeInTheDocument();
+    if (direct) {
+      expect(screen.getByText('Direct')).toBeInTheDocument();
+      expect(screen.queryByText('Total (incl. sub-epics)')).not.toBeInTheDocument();
+    } else expect(screen.queryByText('Direct')).not.toBeInTheDocument();
+    if (!root) expect(screen.getByText('1h 45m')).toBeInTheDocument();
   });
 
-  it('names related scope in the total label when the rollup admits routed roots', () => {
-    render(
-      <EpicTimeCard
-        isRoot
-        summary={{ ...summary, includesRelatedTime: true }}
-        isLoading={false}
-        isError={false}
-      />,
-    );
-
-    expect(screen.getByText('Total (incl. sub-epics and related Epics)')).toBeInTheDocument();
-    expect(screen.queryByText('Total (incl. sub-epics)')).not.toBeInTheDocument();
-    expect(screen.getByText('Direct')).toBeInTheDocument();
-  });
-
-  it('hides the direct split when the total contains no indirect time', () => {
-    render(
-      <EpicTimeCard
-        isRoot
-        summary={{ ...summary, directMinutes: summary.totalMinutes }}
-        isLoading={false}
-        isError={false}
-      />,
-    );
-
-    expect(screen.getByText('Total (incl. sub-epics)')).toBeInTheDocument();
-    expect(screen.queryByText('Direct')).not.toBeInTheDocument();
-  });
-
-  it('labels team work rows with the credited lead and team', () => {
-    render(<EpicTimeCard isRoot summary={teamRowSummary} isLoading={false} isError={false} />);
-
-    expect(screen.getByText('2026-08-22 · Alpha')).toBeInTheDocument();
-    expect(screen.getByText('2026-08-22 · Alpha · Team work: Builders')).toBeInTheDocument();
-    expect(screen.getByText('1h')).toBeInTheDocument();
-    expect(screen.getByText('30m')).toBeInTheDocument();
-  });
-
-  it('keeps same-date direct and team rows distinct without duplicate key warnings', () => {
+  it('renders distinct team work rows with accessible labels', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      render(<EpicTimeCard isRoot summary={teamRowSummary} isLoading={false} isError={false} />);
-
+      const { container } = render(
+        <EpicTimeCard isRoot summary={teamRowSummary} isLoading={false} isError={false} />,
+      );
+      expect(screen.getByText('2026-08-22 · Alpha')).toBeInTheDocument();
+      expect(screen.getByText('2026-08-22 · Alpha · Team work: Builders')).toBeInTheDocument();
+      expect(screen.getByText('1h')).toBeInTheDocument();
+      expect(screen.getByText('30m')).toBeInTheDocument();
       const warnings = consoleError.mock.calls.map((args) => args.join(' '));
       expect(warnings.some((text) => text.includes('unique "key"'))).toBe(false);
+      expect(await axe(container)).toHaveNoViolations();
     } finally {
       consoleError.mockRestore();
     }
@@ -180,13 +169,5 @@ describe('EpicTimeCard', () => {
       />,
     );
     expect(screen.getByText('No estimated time recorded yet.')).toBeInTheDocument();
-  });
-
-  it('passes composed accessibility checks', async () => {
-    const { container } = render(
-      <EpicTimeCard isRoot summary={teamRowSummary} isLoading={false} isError={false} />,
-    );
-
-    expect(await axe(container)).toHaveNoViolations();
   });
 });

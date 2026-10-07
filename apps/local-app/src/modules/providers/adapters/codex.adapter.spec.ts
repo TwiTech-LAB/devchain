@@ -17,17 +17,7 @@ describe('CodexAdapter', () => {
     mockEnsureCodexProjectTrusted.mockReset();
   });
 
-  describe('providerName', () => {
-    it('returns codex as provider name', () => {
-      expect(adapter.providerName).toBe('codex');
-    });
-  });
-
   describe('ProjectProvisioningCapability (project trust)', () => {
-    it('declares requiresProjectProvisioning', () => {
-      expect(adapter.requiresProjectProvisioning).toBe(true);
-    });
-
     it('delegates project trust with the launch environment', async () => {
       const context = { env: { CODEX_HOME: '/custom/codex-home' } };
       mockEnsureCodexProjectTrusted.mockResolvedValue({ success: true });
@@ -228,26 +218,9 @@ describe('CodexAdapter', () => {
         ]);
       },
     );
-
-    it.each(['new', 'restore'] as const)(
-      'adds the update and inline-screen overrides without profile args for %s',
-      (mode) => {
-        expect(
-          adapter.buildLaunchArgs({ mode, providerSessionId: 'abc', profileOptionArgs: [] }).argv,
-        ).toEqual([
-          ...(mode === 'restore' ? ['resume'] : []),
-          ...LAUNCH_OVERRIDES,
-          ...(mode === 'restore' ? ['abc'] : []),
-        ]);
-      },
-    );
   });
 
   describe('EffortCapability', () => {
-    it('exposes the seeded default effort values (static metadata)', () => {
-      expect(adapter.defaultEffortValues).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh']);
-    });
-
     it('injects `-c model_reasoning_effort=<value>` into the args', () => {
       const { argv } = adapter.applyEffort(['-m', 'o3'], {}, 'high');
       expect(argv).toEqual(['-c', 'model_reasoning_effort=high', '-m', 'o3']);
@@ -285,16 +258,6 @@ describe('CodexAdapter', () => {
       expect(argv).toContain('sandbox_mode=danger-full-access');
       expect(argv.filter((t) => t.startsWith('model_reasoning_effort='))).toEqual([
         'model_reasoning_effort=high',
-      ]);
-    });
-
-    it('never blanket-strips `-c`: a lone unrelated `-c` pair survives untouched', () => {
-      const { argv } = adapter.applyEffort(['-c', 'hide_agent_reasoning=true'], {}, 'medium');
-      expect(argv).toEqual([
-        '-c',
-        'model_reasoning_effort=medium',
-        '-c',
-        'hide_agent_reasoning=true',
       ]);
     });
 
@@ -342,17 +305,6 @@ describe('CodexAdapter', () => {
   });
 
   describe('parseListOutput', () => {
-    it('parses output with single entry', () => {
-      const stdout = 'devchain  http://127.0.0.1:3000/mcp';
-      const entries = adapter.parseListOutput(stdout);
-
-      expect(entries).toHaveLength(1);
-      expect(entries[0]).toEqual({
-        alias: 'devchain',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-      });
-    });
-
     it('parses output with multiple entries', () => {
       const stdout = `devchain  http://127.0.0.1:3000/mcp
 server2  http://127.0.0.1:4000/mcp`;

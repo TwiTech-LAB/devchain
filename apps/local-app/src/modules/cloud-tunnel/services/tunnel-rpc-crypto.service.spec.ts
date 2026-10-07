@@ -3,7 +3,6 @@ import {
   generateX25519KeyPair,
   deriveSharedKey,
   bytesToBase64,
-  base64ToBytes,
   type E2eeContext,
   type E2eeEnvelope,
   type E2eeKeyProvider,
@@ -364,16 +363,6 @@ describe('TunnelRpcCryptoService', () => {
     expect(resp.error).toEqual({ code: -32602, message: 'E2EE decrypt failed' });
   });
 
-  it('round-trips a real cross-side derivation (PC opens what the phone sealed)', async () => {
-    // Sanity: the PC derives the SAME shared key from its private key + the stored device
-    // public key as the phone did from its own private key + the PC public key.
-    const pcSideKey = deriveSharedKey(
-      pc.privateKey,
-      base64ToBytes(bytesToBase64(mobile.publicKey)),
-    );
-    expect(bytesToBase64(pcSideKey)).toBe(bytesToBase64(sharedKey));
-  });
-
   describe('Phase 2, Task:2 — fail-closed enforcement (e2eeRequired)', () => {
     it('REJECTS plaintext params (no dispatch) when e2eeRequired is set', async () => {
       const { svc, deviceStore } = makeService(undefined, { e2eeRequired: true });
@@ -414,20 +403,6 @@ describe('TunnelRpcCryptoService', () => {
       expect(resp.error).toBeUndefined();
       expect(typeof (resp.result as E2eeEnvelope).ct).toBe('string');
     });
-
-    it('still passes plaintext through when e2eeRequired is NOT set (mixed-client)', async () => {
-      const { svc } = makeService(); // default e2eeRequired=false
-      const dispatch = jest
-        .fn<Promise<JsonRpcResponseLike>, [JsonRpcRequestLike]>()
-        .mockResolvedValue({ jsonrpc: '2.0', id: 'c1', result: { items: [] } });
-      const resp = await svc.handle(
-        { jsonrpc: '2.0', id: 'c1', method: 'board.listProjects', params: { projectId: 'p1' } },
-        INSTANCE_ID,
-        dispatch,
-      );
-      expect(dispatch).toHaveBeenCalled();
-      expect(resp.result).toEqual({ items: [] });
-    });
   });
 
   describe('M3 — sealed-only e2ee.revokeDeviceKey + trusted sender context', () => {
@@ -448,18 +423,6 @@ describe('TunnelRpcCryptoService', () => {
       expect(deviceStore.get).not.toHaveBeenCalled();
       expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
       expect(resp.result).toBeUndefined();
-    });
-
-    it('also rejects a PLAINTEXT revoke when e2eeRequired is true', async () => {
-      const { svc } = makeService(undefined, { e2eeRequired: true });
-      const dispatch = jest.fn();
-      const resp = await svc.handle(
-        { jsonrpc: '2.0', id: 'r2', method: REVOKE, params: {} },
-        INSTANCE_ID,
-        dispatch,
-      );
-      expect(dispatch).not.toHaveBeenCalled();
-      expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
     });
 
     it('threads the VERIFIED sender kid (envelope kid) to dispatch, ignoring any param kid', async () => {

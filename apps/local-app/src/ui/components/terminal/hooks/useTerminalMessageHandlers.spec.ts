@@ -370,7 +370,12 @@ describe('useTerminalMessageHandlers', () => {
       result.current.handler({
         topic: `terminal/${sessionId}`,
         type: 'full_history',
-        payload: { history: 'HISTORY', capturedSequence: 5, correlationId: token },
+        payload: {
+          history: 'HISTORY',
+          capturedSequence: 5,
+          hasHistory: false,
+          correlationId: token,
+        },
         ts: new Date().toISOString(),
       });
     });
@@ -394,6 +399,7 @@ describe('useTerminalMessageHandlers', () => {
     expect(result.current.historySync.hasActiveAttempt()).toBe(false);
     expect(result.current.historySync.isDirty()).toBe(false);
 
+    expect(result.current.historySync.hasMore()).toBe(false);
     jest.useRealTimers();
   });
 
@@ -423,34 +429,15 @@ describe('useTerminalMessageHandlers', () => {
     jest.useRealTimers();
   });
 
-  it('never pins snapshotHasMore true — it follows the payload', () => {
-    jest.useFakeTimers();
-    const { sessionId, result } = renderHarness({ inFlight: true, withActiveAttempt: true });
-    const token = result.current.token;
-
-    act(() => {
-      result.current.handler({
-        topic: `terminal/${sessionId}`,
-        type: 'full_history',
-        payload: {
-          history: 'HISTORY',
-          capturedSequence: 5,
-          hasHistory: false,
-          correlationId: token,
-        },
-        ts: new Date().toISOString(),
-      });
-    });
-
-    expect(result.current.historySync.hasMore()).toBe(false);
-    jest.useRealTimers();
-  });
-
-  it('restores captured cursor position after full history write before replaying buffered frames', () => {
+  it.each([
+    { x: 3, y: 4, live: true, expected: ['HISTORY', '\x1b[5;4HLIVE'] },
+    { x: -5, y: 999, live: false, expected: ['HISTORY', '\x1b[24;1H'] },
+    { x: Number.NaN, y: Infinity, live: true, expected: ['HISTORY', 'LIVE'] },
+  ])('restores cursor x=$x y=$y before buffered output', ({ x, y, live, expected }) => {
     jest.useFakeTimers();
     const { sessionId, result } = renderHarness({
       inFlight: true,
-      pendingFrames: [{ sequence: 10, data: 'LIVE' }],
+      pendingFrames: live ? [{ sequence: 10, data: 'LIVE' }] : [],
       withActiveAttempt: true,
     });
     const token = result.current.token;
@@ -462,8 +449,8 @@ describe('useTerminalMessageHandlers', () => {
         payload: {
           history: 'HISTORY',
           capturedSequence: 5,
-          cursorX: 3,
-          cursorY: 4,
+          cursorX: x,
+          cursorY: y,
           correlationId: token,
         },
         ts: new Date().toISOString(),
@@ -475,71 +462,7 @@ describe('useTerminalMessageHandlers', () => {
     });
 
     const writes = result.current.mockTerminal.write.mock.calls.map(([data]) => data);
-    expect(writes).toEqual(['HISTORY', '\x1b[5;4HLIVE']);
-
-    jest.useRealTimers();
-  });
-
-  it('clamps captured cursor position to terminal bounds', () => {
-    jest.useFakeTimers();
-    const { sessionId, result } = renderHarness({ inFlight: true, withActiveAttempt: true });
-    const token = result.current.token;
-
-    act(() => {
-      result.current.handler({
-        topic: `terminal/${sessionId}`,
-        type: 'full_history',
-        payload: {
-          history: 'HISTORY',
-          capturedSequence: 5,
-          cursorX: -5,
-          cursorY: 999,
-          correlationId: token,
-        },
-        ts: new Date().toISOString(),
-      });
-    });
-
-    act(() => {
-      jest.runOnlyPendingTimers();
-    });
-
-    const writes = result.current.mockTerminal.write.mock.calls.map(([data]) => data);
-    expect(writes).toEqual(['HISTORY', '\x1b[24;1H']);
-
-    jest.useRealTimers();
-  });
-
-  it('skips cursor restore when captured cursor position is invalid', () => {
-    jest.useFakeTimers();
-    const { sessionId, result } = renderHarness({
-      inFlight: true,
-      pendingFrames: [{ sequence: 10, data: 'LIVE' }],
-      withActiveAttempt: true,
-    });
-    const token = result.current.token;
-
-    act(() => {
-      result.current.handler({
-        topic: `terminal/${sessionId}`,
-        type: 'full_history',
-        payload: {
-          history: 'HISTORY',
-          capturedSequence: 5,
-          cursorX: Number.NaN,
-          cursorY: Infinity,
-          correlationId: token,
-        },
-        ts: new Date().toISOString(),
-      });
-    });
-
-    act(() => {
-      jest.runOnlyPendingTimers();
-    });
-
-    const writes = result.current.mockTerminal.write.mock.calls.map(([data]) => data);
-    expect(writes).toEqual(['HISTORY', 'LIVE']);
+    expect(writes).toEqual(expected);
 
     jest.useRealTimers();
   });

@@ -10,6 +10,7 @@ import type { AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { resetEnvConfig } from '../../common/config/env.config';
+import { fixtureTls, installFixtureTlsFront } from '../../common/test/tls-fixture';
 import { AllExceptionsFilter } from '../../common/filters/http-exception.filter';
 import { RemoteHostClient } from '../remotes/operations/remote-host.client';
 import { DB_CONNECTION } from '../storage/db/db.provider';
@@ -101,6 +102,7 @@ describeWithBinary(
         new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
       );
       hostApp.useGlobalFilters(new AllExceptionsFilter());
+      installFixtureTlsFront(hostApp);
       await hostApp.listen(0, '127.0.0.1');
       homeModule = await compile('home');
       await homeModule.init();
@@ -121,10 +123,16 @@ describeWithBinary(
     });
 
     it('pairs, syncs with ignores, reports and reverts receiver edits, and flips direction', async () => {
-      const baseUrl = `http://127.0.0.1:${(hostApp.getHttpServer().address() as AddressInfo).port}`;
+      const baseUrl = `https://127.0.0.1:${(hostApp.getHttpServer().address() as AddressInfo).port}`;
       const client = new RemoteHostClient(
         {
-          getRemote: async () => ({ id: 'r1', name: 'host', baseUrl, kind: 'address' }),
+          getRemote: async () => ({
+            id: 'r1',
+            name: 'host',
+            baseUrl,
+            kind: 'address',
+            tlsCertificate: fixtureTls.cert,
+          }),
         } as never,
         { get: async () => null, headers: async () => ({}) } as never,
       );

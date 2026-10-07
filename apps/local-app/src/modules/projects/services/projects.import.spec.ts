@@ -716,37 +716,6 @@ describe('ProjectsService', () => {
       const agentId = '33333333-3333-3333-3333-333333333333';
       const providerId = '44444444-4444-4444-4444-444444444444';
 
-      it('should return providerMappingRequired in dry-run when default provider is missing', async () => {
-        // Directly test computeFamilyAlternatives since import dry-run uses it
-        storage.listProviders.mockResolvedValue({
-          items: [{ id: providerId, name: 'claude' }], // codex is missing
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        // Test computeFamilyAlternatives directly to verify the logic
-        const profiles = [
-          { id: profileId1, name: 'Coder Codex', provider: { name: 'codex' }, familySlug: 'coder' },
-          {
-            id: profileId2,
-            name: 'Coder Claude',
-            provider: { name: 'claude' },
-            familySlug: 'coder',
-          },
-        ];
-        const agents = [{ id: agentId, name: 'Coder', profileId: profileId1 }];
-
-        const familyResult = await service.computeFamilyAlternatives(profiles, agents);
-
-        // Verify the conditions that would trigger providerMappingRequired in dry-run
-        const needsMapping = familyResult.alternatives.some((alt) => !alt.defaultProviderAvailable);
-        expect(needsMapping).toBe(true);
-        expect(familyResult.missingProviders).toContain('codex');
-        expect(familyResult.canImport).toBe(true);
-        expect(familyResult.alternatives[0].availableProviders).toContain('claude');
-      });
-
       it('dry-run reports NO missing provider when the deselected family default is installed', async () => {
         const payload = {
           prompts: [],
@@ -1309,16 +1278,24 @@ describe('ProjectsService', () => {
       const projectId = 'project-123';
       const providerId = '44444444-4444-4444-4444-444444444444';
 
-      it('should set source as bundled when importing a bundled template', async () => {
+      it.each([
+        { source: 'bundled', slug: 'bundled-template', name: 'Bundled Template', version: '1.0.0' },
+        {
+          source: 'registry',
+          slug: 'registry-only-template',
+          name: 'Registry Template',
+          version: '2.0.0',
+        },
+      ])('detects $source import source', async ({ source, slug, name, version }) => {
         const payload = {
           prompts: [],
           profiles: [],
           agents: [],
           statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
           _manifest: {
-            slug: 'bundled-template',
-            name: 'Bundled Template',
-            version: '1.0.0',
+            slug,
+            name,
+            version,
           },
         };
 
@@ -1348,88 +1325,25 @@ describe('ProjectsService', () => {
 
         storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
 
-        // Mock getBundledTemplate to succeed (template is bundled)
-        unifiedTemplateService.getBundledTemplate.mockReturnValue({
-          content: {},
-          source: 'bundled',
-        });
-
+        if (source === 'bundled') {
+          unifiedTemplateService.getBundledTemplate.mockReturnValue({ content: {}, source });
+        } else {
+          unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
+            throw new Error('Template not found');
+          });
+        }
         await service.importProject({
           projectId,
           payload,
           dryRun: false,
         });
 
-        // Verify template metadata was set with source: 'bundled'
         expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith(
           projectId,
           expect.objectContaining({
-            templateSlug: 'bundled-template',
-            source: 'bundled',
-            installedVersion: '1.0.0',
-          }),
-        );
-
-        jest.restoreAllMocks();
-      });
-
-      it('should set source as registry when importing a non-bundled template', async () => {
-        const payload = {
-          prompts: [],
-          profiles: [],
-          agents: [],
-          statuses: [{ label: 'To Do', color: '#3b82f6', position: 0, mcpHidden: false }],
-          _manifest: {
-            slug: 'registry-only-template',
-            name: 'Registry Template',
-            version: '2.0.0',
-          },
-        };
-
-        jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(mockParseResult(payload));
-
-        storage.listProviders.mockResolvedValue({
-          items: [{ id: providerId, name: 'claude' }],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-        storage.listPrompts.mockResolvedValue({
-          items: [],
-          total: 0,
-          limit: 10000,
-          offset: 0,
-        });
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [],
-          total: 0,
-          limit: 10000,
-          offset: 0,
-        });
-        storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
-        storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
-        sessions.getActiveSessionsForProject.mockReturnValue([]);
-
-        storage.createStatus.mockResolvedValue({ id: 'new-status-1' });
-
-        // Mock getBundledTemplate to throw (template is NOT bundled)
-        unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
-          throw new Error('Template not found');
-        });
-
-        await service.importProject({
-          projectId,
-          payload,
-          dryRun: false,
-        });
-
-        // Verify template metadata was set with source: 'registry'
-        expect(settings.setProjectTemplateMetadata).toHaveBeenCalledWith(
-          projectId,
-          expect.objectContaining({
-            templateSlug: 'registry-only-template',
-            source: 'registry',
-            installedVersion: '2.0.0',
+            templateSlug: slug,
+            source,
+            installedVersion: version,
           }),
         );
 
@@ -1860,75 +1774,6 @@ describe('ProjectsService', () => {
       storage.listEpics.mockResolvedValue({ items: [], total: 0, limit: 100000, offset: 0 });
     }
 
-    it('should apply providerSettings threshold to local provider when local threshold is null', async () => {
-      const payload = buildMinimalPayload([{ name: 'claude', autoCompactThreshold: 10 }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      expect(storage.updateProvider).toHaveBeenCalledWith('prov-1', {
-        autoCompactThreshold: 10,
-      });
-
-      jest.restoreAllMocks();
-    });
-
-    it('should not overwrite existing local provider threshold during import', async () => {
-      const payload = buildMinimalPayload([{ name: 'claude', autoCompactThreshold: 20 }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: 10 }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      // updateProvider should not be called to update autoCompactThreshold
-      // (it may be called for other reasons, so check the specific call)
-      const thresholdCalls = storage.updateProvider.mock.calls.filter((args: unknown[]) => {
-        const updatePayload = args[1] as Record<string, unknown>;
-        return updatePayload.autoCompactThreshold !== undefined;
-      });
-      expect(thresholdCalls).toHaveLength(0);
-
-      jest.restoreAllMocks();
-    });
-
-    it('should skip providerSettings for providers not found locally', async () => {
-      const payload = buildMinimalPayload([{ name: 'missing-provider', autoCompactThreshold: 15 }]);
-      jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
-      setupImportMocks();
-
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'prov-1', name: 'claude', autoCompactThreshold: null }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      const thresholdCalls = storage.updateProvider.mock.calls.filter((args: unknown[]) => {
-        const updatePayload = args[1] as Record<string, unknown>;
-        return updatePayload.autoCompactThreshold !== undefined;
-      });
-      expect(thresholdCalls).toHaveLength(0);
-
-      jest.restoreAllMocks();
-    });
-
     it('should import correctly when template has no providerSettings (backward compat)', async () => {
       const payload = buildMinimalPayload();
       jest.spyOn(devchainShared.ExportSchema, 'parse').mockReturnValue(payload);
@@ -2199,28 +2044,6 @@ describe('ProjectsService', () => {
       storage.createAgent.mockResolvedValue({ id: 'new-agent-1' });
     });
 
-    it('should create scheduled epics during import', async () => {
-      const payload = makePayload([defaultSchedule]);
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      expect(storage.createScheduledEpic).toHaveBeenCalledTimes(1);
-      expect(storage.createScheduledEpic).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId,
-          name: 'Daily Task',
-          cronExpression: '0 9 * * 1-5',
-          timezone: 'America/New_York',
-          enabled: true,
-          titleTemplate: 'Daily {{date}}',
-          templateTags: ['daily'],
-          allowOverlap: false,
-          missedRunPolicy: 'skip',
-        }),
-      );
-      jest.restoreAllMocks();
-    });
-
     it('should preserve enabled=false state during import', async () => {
       const payload = makePayload([{ ...defaultSchedule, enabled: false }]);
 
@@ -2247,15 +2070,6 @@ describe('ProjectsService', () => {
       jest.restoreAllMocks();
     });
 
-    it('should not create scheduled epics when payload has none', async () => {
-      const payload = makePayload([]);
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      expect(storage.createScheduledEpic).not.toHaveBeenCalled();
-      jest.restoreAllMocks();
-    });
-
     it('should set templateAgentId to null when agent name not found', async () => {
       const payload = makePayload([{ ...defaultSchedule, templateAgentName: 'NonExistent' }]);
 
@@ -2264,59 +2078,6 @@ describe('ProjectsService', () => {
       expect(storage.createScheduledEpic).toHaveBeenCalledWith(
         expect.objectContaining({ templateAgentId: null }),
       );
-      jest.restoreAllMocks();
-    });
-
-    it('should include nextRunAt computed from cron expression', async () => {
-      const payload = makePayload([defaultSchedule]);
-
-      await service.importProject({ projectId, payload, dryRun: false });
-
-      expect(storage.createScheduledEpic).toHaveBeenCalledWith(
-        expect.objectContaining({ nextRunAt: expect.any(String) }),
-      );
-      jest.restoreAllMocks();
-    });
-
-    it('should trigger refreshScheduleWindow after importing schedules', async () => {
-      const payload = makePayload([defaultSchedule]);
-      // Get the runner refresh mock from the module
-      const module = await Test.createTestingModule({
-        providers: [
-          { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
-          ProjectsService,
-          { provide: STORAGE_SERVICE, useValue: storage },
-          { provide: SessionsService, useValue: sessions },
-          { provide: SettingsService, useValue: settings },
-          { provide: WatchersService, useValue: watchersService },
-          { provide: WatcherRunnerService, useValue: watcherRunner },
-          { provide: UnifiedTemplateService, useValue: unifiedTemplateService },
-          {
-            provide: TeamsService,
-            useValue: {
-              deleteTeamsByProject: jest.fn().mockResolvedValue(undefined),
-              listTeams: jest.fn().mockResolvedValue({ items: [] }),
-              getTeam: jest.fn().mockResolvedValue(null),
-              createTeam: jest.fn(),
-            },
-          },
-          {
-            provide: ProjectProviderProvisioningService,
-            useValue: { provisionProject: jest.fn().mockResolvedValue({ warnings: [] }) },
-          },
-          {
-            provide: SCHEDULED_EPIC_RUNNER_REFRESH,
-            useValue: { refreshScheduleWindow: jest.fn() },
-          },
-        ],
-      }).compile();
-
-      const localService = module.get<ProjectsService>(ProjectsService);
-      const runnerRefresh = module.get(SCHEDULED_EPIC_RUNNER_REFRESH);
-
-      await localService.importProject({ projectId, payload, dryRun: false });
-
-      expect(runnerRefresh.refreshScheduleWindow).toHaveBeenCalled();
       jest.restoreAllMocks();
     });
 

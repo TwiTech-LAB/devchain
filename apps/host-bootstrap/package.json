@@ -7,7 +7,8 @@
   "bin": {
     "devchain-bootstrap": "bin/devchain-bootstrap.js",
     "devchain-host-update": "bin/devchain-host-update.js",
-    "devchain-host-project-root": "bin/devchain-host-project-root.js"
+    "devchain-host-project-root": "bin/devchain-host-project-root.js",
+    "devchain-host-project-chown": "bin/devchain-host-project-chown.js"
   },
   "files": [
     "bin",

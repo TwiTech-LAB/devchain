@@ -46,8 +46,11 @@ describe('DevicesPanel', () => {
     expect(screen.getByText('Loading devices...')).toBeInTheDocument();
   });
 
-  it('returns null on 404 (endpoint-missing, Inv 11)', async () => {
-    mockFetch.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+  it.each([
+    { label: 'returns null on 404 (endpoint-missing, Inv 11)', status: 404 },
+    { label: 'returns null on 501 (endpoint-missing, Inv 11)', status: 501 },
+  ] as const)('$label', async ({ status }) => {
+    mockFetch.mockResolvedValue({ ok: false, status: status, json: async () => ({}) });
     const { container } = renderWithClient(<DevicesPanel />);
     await waitFor(() => {
       // Loading state should be gone and panel should render null
@@ -56,59 +59,36 @@ describe('DevicesPanel', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('returns null on 501 (endpoint-missing, Inv 11)', async () => {
-    mockFetch.mockResolvedValue({ ok: false, status: 501, json: async () => ({}) });
-    const { container } = renderWithClient(<DevicesPanel />);
-    await waitFor(() => {
-      expect(screen.queryByText('Loading devices...')).not.toBeInTheDocument();
-    });
-    expect(container.firstChild).toBeNull();
-  });
-
-  it('renders error UI with retry button on 500', async () => {
+  it('shows device state and its recovery or navigation action: renders error UI with retry button on 500', async () => {
     mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
     renderWithClient(<DevicesPanel />);
-    await waitFor(() => expect(screen.getByText(/Couldn't load device list/)).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument();
+    {
+      await waitFor(() =>
+        expect(screen.getByText(/Couldn't load device list/)).toBeInTheDocument(),
+      );
+      expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument();
+    }
+    {
+      await waitFor(() =>
+        expect(screen.getByText(/Couldn't load device list/)).toBeInTheDocument(),
+      );
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => TWO_DEVICES });
+      await userEvent.click(screen.getByRole('button', { name: /Retry/ }));
+      await waitFor(() => expect(screen.getByText('iOS')).toBeInTheDocument());
+    }
   });
 
-  it('renders error UI with retry button on 401', async () => {
-    mockFetch.mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
-    renderWithClient(<DevicesPanel />);
-    await waitFor(() => expect(screen.getByText(/Couldn't load device list/)).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument();
-  });
-
-  it('renders error UI on network fetch rejection', async () => {
-    mockFetch.mockRejectedValue(new TypeError('Failed to fetch'));
-    renderWithClient(<DevicesPanel />);
-    await waitFor(() => expect(screen.getByText(/Couldn't load device list/)).toBeInTheDocument());
-  });
-
-  it('retry button triggers refetch', async () => {
-    mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
-    renderWithClient(<DevicesPanel />);
-    await waitFor(() => expect(screen.getByText(/Couldn't load device list/)).toBeInTheDocument());
-
-    // Now make fetch succeed
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => TWO_DEVICES });
-    await userEvent.click(screen.getByRole('button', { name: /Retry/ }));
-
-    await waitFor(() => expect(screen.getByText('iOS')).toBeInTheDocument());
-  });
-
-  it('renders empty state on 200 with empty devices', async () => {
+  it('shows device state and its recovery or navigation action: renders empty state on 200 with empty devices', async () => {
     mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ devices: [] }) });
     renderWithClient(<DevicesPanel />);
-    await waitFor(() => expect(screen.getByText(/No mobile devices yet/)).toBeInTheDocument());
-  });
-
-  it('empty state cross-links to the account download section', async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ devices: [] }) });
-    renderWithClient(<DevicesPanel />);
-    await waitFor(() => expect(screen.getByText(/No mobile devices yet/)).toBeInTheDocument());
-    const link = screen.getByRole('link', { name: /get the devchain mobile app/i });
-    expect(link).toHaveAttribute('href', '/cloud?section=account');
+    {
+      await waitFor(() => expect(screen.getByText(/No mobile devices yet/)).toBeInTheDocument());
+    }
+    {
+      await waitFor(() => expect(screen.getByText(/No mobile devices yet/)).toBeInTheDocument());
+      const link = screen.getByRole('link', { name: /get the devchain mobile app/i });
+      expect(link).toHaveAttribute('href', '/cloud?section=account');
+    }
   });
 
   it('renders list on 200 with devices', async () => {

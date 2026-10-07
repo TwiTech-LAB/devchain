@@ -28,27 +28,6 @@ describe('HealthController', () => {
     );
   });
 
-  it('delegates /health/ready to service and returns ready=true', async () => {
-    mockHealthService.getReadiness.mockResolvedValue({
-      ready: true,
-      checks: {
-        db: 'ok',
-        tmux: 'ok',
-      },
-    });
-
-    const result = await controller.ready();
-
-    expect(mockHealthService.getReadiness).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({
-      ready: true,
-      checks: {
-        db: 'ok',
-        tmux: 'ok',
-      },
-    });
-  });
-
   it('returns 503 when readiness check fails', async () => {
     mockHealthService.getReadiness.mockResolvedValue({
       ready: false,

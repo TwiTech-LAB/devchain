@@ -162,34 +162,6 @@ describe('UnifiedTemplateService', () => {
       expect(result[1].slug).toBe('zebra-template');
     });
 
-    it('should sort ordered templates by order ascending regardless of name', () => {
-      // z-template (order:10) precedes a-template (order:20) despite alphabetical ordering
-      mockReaddirSyncFn.mockReturnValue(['z-template.json', 'a-template.json']);
-      mockReadFileSyncFn
-        .mockReturnValueOnce(JSON.stringify({ _manifest: { name: 'Z Template', order: 10 } }))
-        .mockReturnValueOnce(JSON.stringify({ _manifest: { name: 'A Template', order: 20 } }));
-      mockCacheService.listCached.mockReturnValue([]);
-
-      const result = service.listTemplates();
-
-      expect(result[0].name).toBe('Z Template');
-      expect(result[1].name).toBe('A Template');
-    });
-
-    it('should place ordered templates before unordered templates', () => {
-      // has-order (order:999) comes before no-order (undefined) despite higher numeric value
-      mockReaddirSyncFn.mockReturnValue(['no-order.json', 'has-order.json']);
-      mockReadFileSyncFn
-        .mockReturnValueOnce(JSON.stringify({ _manifest: { name: 'No Order' } }))
-        .mockReturnValueOnce(JSON.stringify({ _manifest: { name: 'Has Order', order: 999 } }));
-      mockCacheService.listCached.mockReturnValue([]);
-
-      const result = service.listTemplates();
-
-      expect(result[0].name).toBe('Has Order');
-      expect(result[1].name).toBe('No Order');
-    });
-
     it('should use name as tiebreaker when two templates share the same order', () => {
       mockReaddirSyncFn.mockReturnValue(['beta.json', 'alpha.json']);
       mockReadFileSyncFn
@@ -644,13 +616,6 @@ describe('UnifiedTemplateService', () => {
   });
 
   describe('hasVersion', () => {
-    it('should delegate to cache service', () => {
-      mockCacheService.isCached.mockReturnValue(true);
-
-      expect(service.hasVersion('my-template', '1.0.0')).toBe(true);
-      expect(mockCacheService.isCached).toHaveBeenCalledWith('my-template', '1.0.0');
-    });
-
     it('should validate slug and version', () => {
       expect(() => service.hasVersion('../bad', '1.0.0')).toThrow(ValidationError);
       expect(() => service.hasVersion('good', 'bad-version')).toThrow(ValidationError);

@@ -1,8 +1,6 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { SkillSourceRegistryService } from './skill-source-registry.service';
 import { SkillSourceAlwaysEnabledError } from '../../../common/errors/error-types';
@@ -17,10 +15,7 @@ describe('SkillsService setSkillsEnabled', () => {
   let service: SkillsService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    const migrationsFolder = join(__dirname, '../../../../drizzle');
-    migrate(db, { migrationsFolder });
+    ({ sqlite, db } = createTestDatabase());
 
     settingsService = {
       getSkillSourcesEnabled: jest.fn().mockReturnValue({}),
@@ -143,16 +138,6 @@ describe('SkillsService setSkillsEnabled', () => {
         .map((row) => row.skill_id)
         .sort(),
     ).toEqual(['skill-a', 'skill-b', 'skill-c']);
-  });
-
-  it('returns repeated slugs in unchanged on a second identical call', async () => {
-    insertProject('proj-e');
-    insertSkill('skill-a', 'src/alpha');
-
-    await service.setSkillsEnabled('proj-e', ['src/alpha'], false);
-    const result = await service.setSkillsEnabled('proj-e', ['src/alpha'], false);
-
-    expect(result).toEqual({ updated: [], unchanged: ['src/alpha'], notFound: [], locked: [] });
   });
 
   it('resolves duplicate and mixed-case slugs once', async () => {

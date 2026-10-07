@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isAbsolute, normalize } from 'node:path';
 import type { DockerFilesystem } from '../../core/controllers/docker-runtime';
+import { DockerImageMetadataSchema } from '../../core/controllers/docker-image-metadata';
 
 const identifier = z
   .string()
@@ -9,8 +10,38 @@ const identifier = z
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/);
 const projectId = z.string().uuid();
 const labels = z.record(z.string()).default({});
-export const DockerOwnerSchema = z.object({ projectId }).strict();
+const scanPath = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((path) => isAbsolute(path) && normalize(path) === path && !path.includes('\0'));
+export const DockerOwnerSchema = z.object({ projectId, projectRoot: scanPath.optional() }).strict();
 export const DockerIdsSchema = z.object({ ids: z.array(identifier).max(10000) }).strict();
+// Docker allows a bracketed IPv6 registry, e.g. [2001:db8::1]:5000/app:latest.
+const imageReference = z
+  .string()
+  .min(1)
+  .max(4096)
+  .regex(/^(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9])[a-zA-Z0-9_.:/@-]*$/);
+export const DockerImageMatchRequestSchema = z
+  .object({ refs: z.array(imageReference).max(10000) })
+  .strict();
+export const DockerImageMatchResultSchema = z
+  .object({
+    images: z
+      .array(
+        z
+          .object({
+            ref: imageReference,
+            id: identifier,
+            metadata: DockerImageMetadataSchema,
+          })
+          .strict(),
+      )
+      .max(10000),
+  })
+  .strict();
+export type DockerImageMatchResult = z.infer<typeof DockerImageMatchResultSchema>;
 export const DockerVolumeCreateSchema = z.object({ projectId, name: identifier, labels }).strict();
 export const DockerNetworkCreateSchema = z
   .object({
@@ -20,6 +51,24 @@ export const DockerNetworkCreateSchema = z
     internal: z.boolean().default(false),
     attachable: z.boolean().default(false),
     options: z.record(z.string()).default({}),
+    ipam: z
+      .object({
+        Config: z
+          .array(
+            z
+              .object({
+                Subnet: z.string().min(1).max(64),
+                Gateway: z.string().ip({ version: 'v4' }).optional(),
+                IPRange: z.string().min(1).max(64).optional(),
+              })
+              .strict(),
+          )
+          .min(1),
+      })
+      .strict()
+      .optional(),
+    // A network several projects use, not made by Compose; an older VM refuses it.
+    shared: z.literal(true).optional(),
   })
   .strict();
 export const DockerContainerCreateSchema = z
@@ -49,10 +98,14 @@ export interface DockerVolumeHolder {
 }
 export const DOCKER_PROJECT_LABEL = 'dev.devchain.project';
 export const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
+export const COMPOSE_SERVICE_LABEL = 'com.docker.compose.service';
 
 export interface DockerHostOptions {
   signal?: AbortSignal;
   apiVersion?: string;
+}
+export interface DockerOwnerOptions extends DockerHostOptions {
+  projectRoot?: string;
 }
 export const DOCKER_API_VERSION_HEADER = 'x-devchain-docker-api-version';
 /** HTTP trailer of `GET archive`: the sha256 of the archive bytes the VM sent. */
@@ -66,11 +119,6 @@ export interface DockerCapacityResult {
   paths: DockerPathCapacity[];
 }
 
-const scanPath = z
-  .string()
-  .min(1)
-  .max(4096)
-  .refine((path) => isAbsolute(path) && normalize(path) === path && !path.includes('\0'));
 export const DockerBindPrepareSchema = z
   .object({
     projectId,
@@ -101,7 +149,7 @@ export type DockerArchiveWriteResult = z.infer<typeof DockerArchiveWriteResultSc
 /**
  * The answer of `POST images/load`: per image the engine just loaded, the ID the
  * engine assigned (which differs from the archive's ID on a containerd-store
- * engine) and its `RootFS.Layers` digests.
+ * engine), its `RootFS.Layers` digests, and the resolving load-stream aliases.
  */
 export const DockerImageLoadResultSchema = z
   .object({
@@ -111,6 +159,7 @@ export const DockerImageLoadResultSchema = z
           .object({
             id: z.string().min(1).max(256),
             layers: z.array(z.string().min(1).max(256)).max(10000),
+            references: z.array(z.string().min(1).max(256)).max(10000).optional(),
           })
           .strict(),
       )
@@ -123,6 +172,7 @@ export const DockerScanRequestSchema = z
   .object({
     paths: z.array(scanPath).max(64).default([]),
     volumes: z.array(identifier).max(10000).optional(),
+    networks: z.array(identifier).max(10000).optional(),
   })
   .strict();
 /** When a data holder was created and started, and whether it runs: what the change check reads. */
@@ -137,9 +187,16 @@ export interface DockerInspectTimes {
   State?: { StartedAt?: string; Running?: boolean };
 }
 export interface DockerScanResult {
+  routes?: string[];
+  networks?: Array<{
+    name: string;
+    subnets: string[];
+    addresses?: Array<{ address: string; containerId: string; containerName: string }>;
+  }>;
   architecture: string;
   containers: Array<{
     id: string;
+    image?: string;
     metadata?: DockerHolderMetadata;
     name: string;
     labels: Record<string, string>;

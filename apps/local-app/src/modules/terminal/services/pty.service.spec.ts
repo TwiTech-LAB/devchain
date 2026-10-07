@@ -118,39 +118,17 @@ describe('PtyService.startStreaming', () => {
     expect(observed).toEqual(['handler:first', 'after:first', 'handler:second', 'after:second']);
   });
 
-  it('falls back to 80x24 when no options provided', async () => {
+  it.each([
+    { options: undefined, expected: { cols: 80, rows: 24 } },
+    { options: { cols: 0, rows: 40 }, expected: { cols: 80, rows: 40 } },
+    { options: { cols: 120, rows: 0 }, expected: { cols: 120, rows: 24 } },
+  ])('defaults PTY dimensions for $options', async ({ options, expected }) => {
     const { service } = createService();
-
-    await service.startStreaming('sid-default', 'tmux-default');
-
+    await service.startStreaming('dims-session', 'tmux-dims', options);
     expect(ptyMod.spawn).toHaveBeenCalledWith(
       'tmux',
       expect.any(Array),
-      expect.objectContaining({ cols: 80, rows: 24 }),
-    );
-  });
-
-  it('falls back to 80 cols when cols is 0', async () => {
-    const { service } = createService();
-
-    await service.startStreaming('sid-zero-cols', 'tmux-zero', { cols: 0, rows: 40 });
-
-    expect(ptyMod.spawn).toHaveBeenCalledWith(
-      'tmux',
-      expect.any(Array),
-      expect.objectContaining({ cols: 80, rows: 40 }),
-    );
-  });
-
-  it('falls back to 24 rows when rows is 0', async () => {
-    const { service } = createService();
-
-    await service.startStreaming('sid-zero-rows', 'tmux-zero', { cols: 120, rows: 0 });
-
-    expect(ptyMod.spawn).toHaveBeenCalledWith(
-      'tmux',
-      expect.any(Array),
-      expect.objectContaining({ cols: 120, rows: 24 }),
+      expect.objectContaining(expected),
     );
   });
 
@@ -225,39 +203,6 @@ describe('PtyService — OpenCode mouseTrackingMode survival (user-reported symp
     ptyMod.spawn.mockReturnValue(makePtyProcess());
   });
 
-  it('preserves the ?1000h mouse-tracking enable inside a combined DECSET for TUI providers', async () => {
-    const { service, outputHandler } = createService({ usesAlternateScreen: true });
-    await service.startStreaming('tui-mouse', 'tmux-tui-mouse');
-
-    const ptyProc = ptyMod.spawn.mock.results[0].value;
-    const onData = ptyProc.onData.mock.calls[0][0] as (d: string) => void;
-    // Full-screen TUI repaint: alt-screen enter + vt200 mouse enable together.
-    onData('\x1b[?1049;1000h');
-
-    // Byte-for-byte preservation (existing assertion)…
-    expect(outputHandler).toHaveBeenCalledWith('tui-mouse', '\x1b[?1049;1000h');
-    // …AND the mouse-tracking mode number (1000) survives inside the combined
-    // DECSET parameter list. This is what flips xterm's mouseTrackingMode off
-    // 'none' so the wheel forwards into the TUI (the user-reported symptom).
-    const broadcast = outputHandler.mock.calls[0][1] as string;
-    expect(broadcast).toContain('1000');
-    expect(broadcast).toContain('1049');
-  });
-
-  it('loses the ?1000h mouse-tracking enable for non-TUI providers (documented collateral)', async () => {
-    const { service, outputHandler } = createService({ usesAlternateScreen: false });
-    await service.startStreaming('cli-mouse', 'tmux-cli-mouse');
-
-    const ptyProc = ptyMod.spawn.mock.results[0].value;
-    const onData = ptyProc.onData.mock.calls[0][0] as (d: string) => void;
-    onData('\x1b[?1049;1000h');
-
-    // The whole combined DECSET is stripped (contains 1049) — mouse enable is
-    // collateral damage. This is WHY non-TUI providers don't get wheel
-    // passthrough (and is intentional: they don't run a mouse-driven TUI).
-    expect(outputHandler).toHaveBeenCalledWith('cli-mouse', '');
-  });
-
   it('preserves a standalone ?1000h mouse enable for BOTH provider types (no alt-screen code to strip)', async () => {
     // ?1000h alone contains no 47/1047/1049, so the sanitizer leaves it intact
     // regardless of provider policy — defensive assertion that the strip only
@@ -288,11 +233,6 @@ describe('PtyService.triggerRedraw', () => {
 
   afterEach(() => {
     jest.useRealTimers();
-  });
-
-  it('is a no-op when no active session exists', async () => {
-    const { service } = createService();
-    await expect(service.triggerRedraw('nonexistent')).resolves.toBeUndefined();
   });
 
   it('skips jiggle when pty dimensions are unavailable', async () => {

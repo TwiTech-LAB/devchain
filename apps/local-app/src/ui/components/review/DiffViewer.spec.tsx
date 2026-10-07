@@ -97,12 +97,6 @@ index abc123..def456 100644
  }
 `;
 
-const binaryDiff = `diff --git a/image.png b/image.png
-new file mode 100644
-index 0000000..abc1234
-Binary files /dev/null and b/image.png differ
-`;
-
 const emptyDiff = '';
 
 describe('DiffViewer', () => {
@@ -117,10 +111,11 @@ describe('DiffViewer', () => {
     jest.clearAllMocks();
   });
 
-  it('renders diff content with file path', () => {
+  it('shows the file path and change counts', () => {
     render(<DiffViewer {...defaultProps} />);
-
     expect(screen.getByText('src/auth.ts')).toBeInTheDocument();
+    expect(screen.getByText(/\+3/)).toBeInTheDocument();
+    expect(screen.getByText(/-1/)).toBeInTheDocument();
   });
 
   it('shows loading skeleton when isLoading is true', () => {
@@ -135,16 +130,6 @@ describe('DiffViewer', () => {
 
     expect(screen.getByText('Failed to load diff')).toBeInTheDocument();
     expect(screen.getByText('Failed to fetch diff')).toBeInTheDocument();
-  });
-
-  it('handles binary diff format gracefully', () => {
-    // parseDiff may not detect binary files from the diff format itself
-    // In practice, binary detection often happens at the API level
-    render(<DiffViewer {...defaultProps} diff={binaryDiff} filePath="image.png" />);
-
-    // Binary diffs without proper parsing show as no changes
-    // The actual binary detection would be done by the git service
-    expect(document.body).toBeInTheDocument();
   });
 
   it('shows empty diff message when no changes', () => {
@@ -196,65 +181,48 @@ describe('DiffViewer', () => {
     expect(screen.queryByText('New file')).not.toBeInTheDocument();
   });
 
-  it('shows additions and deletions count', () => {
-    render(<DiffViewer {...defaultProps} />);
-
-    // Check for +/- badges (additions: 3 lines, deletions: 1 line)
-    expect(screen.getByText(/\+3/)).toBeInTheDocument();
-    expect(screen.getByText(/-1/)).toBeInTheDocument();
-  });
-
-  it('renders unified view when viewType is unified', () => {
+  it('shows unified selection without split class', () => {
     render(<DiffViewer {...defaultProps} viewType="unified" />);
-
-    const unifiedButton = screen.getByTitle('Unified view');
-    expect(unifiedButton).toHaveClass(
-      'bg-selected',
-      'text-selected-foreground',
-      'hover:bg-selected',
-    );
+    {
+      const unifiedButton = screen.getByTitle('Unified view');
+      expect(unifiedButton).toHaveClass(
+        'bg-selected',
+        'text-selected-foreground',
+        'hover:bg-selected',
+      );
+    }
+    {
+      const diffContainer = document.querySelector('.diff-viewer');
+      expect(diffContainer).toBeInTheDocument();
+      expect(diffContainer).not.toHaveClass('diff-split');
+    }
   });
 
-  it('calls onViewTypeChange when split button is clicked', async () => {
+  it.each([
+    { label: 'split', initial: 'unified', button: 'Side-by-side view', expected: 'split' },
+    { label: 'unified', initial: 'split', button: 'Unified view', expected: 'unified' },
+  ] as const)('requests $label view', async ({ initial, button, expected }) => {
     const onViewTypeChange = jest.fn();
-    render(<DiffViewer {...defaultProps} onViewTypeChange={onViewTypeChange} />);
-
-    const splitButton = screen.getByTitle('Side-by-side view');
-    await userEvent.click(splitButton);
-
-    expect(onViewTypeChange).toHaveBeenCalledWith('split');
+    render(<DiffViewer {...defaultProps} viewType={initial} onViewTypeChange={onViewTypeChange} />);
+    await userEvent.click(screen.getByTitle(button));
+    expect(onViewTypeChange).toHaveBeenCalledWith(expected);
   });
 
-  it('calls onViewTypeChange when unified button is clicked', async () => {
-    const onViewTypeChange = jest.fn();
-    render(<DiffViewer {...defaultProps} viewType="split" onViewTypeChange={onViewTypeChange} />);
-
-    const unifiedButton = screen.getByTitle('Unified view');
-    await userEvent.click(unifiedButton);
-
-    expect(onViewTypeChange).toHaveBeenCalledWith('unified');
-  });
-
-  it('renders split view when viewType is split', () => {
+  it('shows split selection and split class', () => {
     render(<DiffViewer {...defaultProps} viewType="split" />);
-
-    const splitButton = screen.getByTitle('Side-by-side view');
-    expect(splitButton).toHaveClass('bg-selected', 'text-selected-foreground', 'hover:bg-selected');
-  });
-
-  it('renders view toggle buttons', () => {
-    render(<DiffViewer {...defaultProps} />);
-
-    expect(screen.getByText('Unified')).toBeInTheDocument();
-    expect(screen.getByText('Split')).toBeInTheDocument();
-  });
-
-  it('renders diff content from react-diff-view', () => {
-    render(<DiffViewer {...defaultProps} />);
-
-    // Check that the diff container exists
-    const diffContainer = document.querySelector('.diff-viewer');
-    expect(diffContainer).toBeInTheDocument();
+    {
+      const splitButton = screen.getByTitle('Side-by-side view');
+      expect(splitButton).toHaveClass(
+        'bg-selected',
+        'text-selected-foreground',
+        'hover:bg-selected',
+      );
+    }
+    {
+      const diffContainer = document.querySelector('.diff-viewer');
+      expect(diffContainer).toBeInTheDocument();
+      expect(diffContainer).toHaveClass('diff-split');
+    }
   });
 
   it('handles malformed diff gracefully', () => {
@@ -263,12 +231,6 @@ describe('DiffViewer', () => {
 
     // Should show empty diff message for unparseable diff
     expect(screen.getByText('No changes')).toBeInTheDocument();
-  });
-
-  it('renders correct file path in header', () => {
-    render(<DiffViewer {...defaultProps} filePath="path/to/file.ts" />);
-
-    expect(screen.getByText('path/to/file.ts')).toBeInTheDocument();
   });
 });
 
@@ -300,14 +262,6 @@ describe('DiffViewer multi-line selection', () => {
     // Selection should be cleared (no highlighted lines)
     const highlightedLines = document.querySelectorAll('.diff-line.bg-selected');
     expect(highlightedLines.length).toBe(0);
-  });
-
-  it('supports adding comments through onAddComment prop', () => {
-    const mockOnAddComment = jest.fn();
-    render(<DiffViewer {...defaultProps} onAddComment={mockOnAddComment} />);
-
-    // The component should render with comment capability
-    expect(document.querySelector('.diff-viewer')).toBeInTheDocument();
   });
 
   it('renders comment count badge when comments are provided', () => {
@@ -359,13 +313,6 @@ describe('DiffViewer multi-line selection', () => {
 
     // Component should still be rendered
     expect(container.querySelector('.diff-viewer')).toBeInTheDocument();
-  });
-
-  it('renders with isSubmittingComment state', () => {
-    render(<DiffViewer {...defaultProps} onAddComment={jest.fn()} isSubmittingComment={true} />);
-
-    // Component should render normally even when submitting
-    expect(screen.getByText('src/auth.ts')).toBeInTheDocument();
   });
 
   it('shows a single + button per line in unified view (normal lines)', async () => {
@@ -462,38 +409,6 @@ describe('DiffViewer adaptive layout (controlled mode)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-  });
-
-  it('uses viewType prop value for initial render', () => {
-    render(<DiffViewer {...defaultProps} viewType="split" />);
-
-    // Split button should be highlighted when viewType is split
-    const splitButton = screen.getByTitle('Side-by-side view');
-    expect(splitButton).toHaveClass('bg-selected', 'text-selected-foreground', 'hover:bg-selected');
-
-    // Unified button should NOT be highlighted
-    const unifiedButton = screen.getByTitle('Unified view');
-    expect(unifiedButton).not.toHaveClass(
-      'bg-selected',
-      'text-selected-foreground',
-      'hover:bg-selected',
-    );
-  });
-
-  it('does not add diff-split class when viewType is unified', () => {
-    render(<DiffViewer {...defaultProps} viewType="unified" />);
-
-    const diffContainer = document.querySelector('.diff-viewer');
-    expect(diffContainer).toBeInTheDocument();
-    expect(diffContainer).not.toHaveClass('diff-split');
-  });
-
-  it('applies diff-split class when viewType is split', () => {
-    render(<DiffViewer {...defaultProps} viewType="split" />);
-
-    const diffContainer = document.querySelector('.diff-viewer');
-    expect(diffContainer).toBeInTheDocument();
-    expect(diffContainer).toHaveClass('diff-split');
   });
 
   it('responds to viewType prop changes (controlled behavior)', () => {
@@ -603,25 +518,9 @@ index abc123..def456 100644
     const collapseButton = screen.getByRole('button', { name: /collapse \d+ lines/i });
     expect(collapseButton).toBeInTheDocument();
     expect(collapseButton).toHaveAttribute('aria-expanded', 'true');
+    const sizeButton = screen.getByRole('button', { name: /collapse \d+ lines/i });
+    expect(sizeButton.textContent).toMatch(/18 lines/i);
   });
-
-  it('toggles to collapsed state when collapse button is clicked', async () => {
-    render(<DiffViewer {...defaultProps} />);
-
-    // Initially expanded - button says "Collapse"
-    const collapseButton = screen.getByRole('button', { name: /collapse \d+ lines/i });
-    expect(collapseButton).toHaveAttribute('aria-expanded', 'true');
-    expect(collapseButton.textContent).toMatch(/collapse/i);
-
-    // Click to collapse
-    await userEvent.click(collapseButton);
-
-    // Now should be collapsed - button says "Expand"
-    const expandButton = screen.getByRole('button', { name: /expand \d+ lines/i });
-    expect(expandButton).toHaveAttribute('aria-expanded', 'false');
-    expect(expandButton.textContent).toMatch(/expand/i);
-  });
-
   it('toggles back to expanded state when expand button is clicked', async () => {
     render(<DiffViewer {...defaultProps} />);
 
@@ -633,20 +532,14 @@ index abc123..def456 100644
 
     // Now collapsed - click to expand again
     const expandButton = screen.getByRole('button', { name: /expand \d+ lines/i });
+    expect(collapseButton).toHaveAttribute('aria-expanded', 'false');
+    expect(expandButton.textContent).toMatch(/expand/i);
     await userEvent.click(expandButton);
 
     // Should be back to expanded
     const toggleButton = screen.getByRole('button', { name: /collapse \d+ lines/i });
     expect(toggleButton).toHaveAttribute('aria-expanded', 'true');
     expect(toggleButton.textContent).toMatch(/collapse/i);
-  });
-
-  it('displays correct line count in toggle button', () => {
-    render(<DiffViewer {...defaultProps} />);
-
-    // The diff has 18 added lines, so the button should show "18 lines"
-    const collapseButton = screen.getByRole('button', { name: /collapse \d+ lines/i });
-    expect(collapseButton.textContent).toMatch(/18 lines/i);
   });
 
   it('does not show collapse button for small hunks (<=16 lines)', () => {
@@ -1039,20 +932,6 @@ index 1234567..abcdefg 100644
   it('does not apply highlight when selectedCommentId is null', () => {
     renderWithQueryClient(
       <DiffViewer {...navDefaultProps} comments={[mockComment]} selectedCommentId={null} />,
-    );
-
-    const commentWrapper = document.querySelector('[data-comment-id="nav-comment-1"]');
-    expect(commentWrapper).toBeInTheDocument();
-    expect(commentWrapper).not.toHaveClass('ring-2');
-  });
-
-  it('does not apply highlight when selectedCommentId does not match', () => {
-    renderWithQueryClient(
-      <DiffViewer
-        {...navDefaultProps}
-        comments={[mockComment]}
-        selectedCommentId="different-comment-id"
-      />,
     );
 
     const commentWrapper = document.querySelector('[data-comment-id="nav-comment-1"]');

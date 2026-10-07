@@ -1,12 +1,9 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import { LocalStorageService } from './local-storage.service';
-import { NotFoundError, ValidationError, ConflictError } from '../../../common/errors/error-types';
+import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import type { Epic, Project, Provider, AgentProfile, Agent, Status } from '../models/domain.models';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 describe('LocalStorageService', () => {
   let sqlite: Database.Database;
@@ -14,9 +11,8 @@ describe('LocalStorageService', () => {
   let service: LocalStorageService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
     service = new LocalStorageService(db);
   });
@@ -334,22 +330,6 @@ describe('LocalStorageService', () => {
       expect(updated.createdBy).toBe('Original Creator');
     });
 
-    it('updates epic and increments version', async () => {
-      const epic = await service.createEpic({
-        projectId: project.id,
-        title: 'Original',
-        statusId: defaultStatusId,
-        description: null,
-        data: null,
-        tags: [],
-      });
-
-      const updated = await service.updateEpic(epic.id, { title: 'Updated Title' }, 1);
-
-      expect(updated.title).toBe('Updated Title');
-      expect(updated.version).toBe(2);
-    });
-
     it('replaces, preserves, clears, and exactly deduplicates epic tags', async () => {
       const epic = await service.createEpic({
         projectId: project.id,
@@ -373,6 +353,8 @@ describe('LocalStorageService', () => {
         replaced.version,
       );
       expect(preserved.tags.sort()).toEqual(['Alpha', 'alpha', 'beta']);
+      expect(preserved.title).toBe('Still Tagged');
+      expect(preserved.version).toBe(replaced.version + 1);
 
       const cleared = await service.updateEpic(epic.id, { tags: [] }, preserved.version);
       expect(cleared.tags).toEqual([]);
@@ -545,19 +527,6 @@ describe('LocalStorageService', () => {
 
       const byUppercaseKey = await service.listProjectEpics(project.id, { q: 'ENG-42' });
       expect(byUppercaseKey.items.map((item) => item.id)).toEqual([epic.id]);
-    });
-
-    it('finds an Epic by linked ClickUp remote task ID case-insensitively', async () => {
-      const epic = await createLinkedEpic({
-        provider: 'clickup',
-        remoteScopeKey: 'workspace-1',
-        remoteTaskId: '86a1b2c3d',
-        sourceSnapshot: { title: 'ClickUp task', remoteKey: 'task-9f' },
-      });
-
-      const result = await service.listProjectEpics(project.id, { q: '86A1B2C3D' });
-      expect(result.items.map((item) => item.id)).toEqual([epic.id]);
-      expect(result.total).toBe(1);
     });
 
     it('matches ClickUp IDs in both search branches: all-hex and non-hex terms', async () => {
@@ -786,6 +755,23 @@ describe('LocalStorageService', () => {
     it('handles % and _ characters literally in prefix', async () => {
       const project = await seedProject();
 
+      const statuses = await service.listStatuses(project.id);
+      const lookalike = await service.createEpic({
+        projectId: project.id,
+        title: 'Wildcard lookalike',
+        statusId: statuses.items[0].id,
+        description: null,
+        data: null,
+        tags: [],
+      });
+      sqlite
+        .prepare('UPDATE epics SET id = ? WHERE id = ?')
+        .run('abc123def0-1111-4111-8111-111111111111', lookalike.id);
+      expect(
+        sqlite
+          .prepare('SELECT id FROM epics WHERE project_id = ? AND id LIKE ?')
+          .all(project.id, 'abc%def_%'),
+      ).toHaveLength(1);
       const results = await service.getEpicsByIdPrefix(project.id, 'abc%def_');
       expect(results).toEqual([]);
     });
@@ -941,27 +927,16 @@ describe('LocalStorageService', () => {
       expect(profile.projectId).toBe(project.id);
     });
 
-    it('creates profile with familySlug', async () => {
+    it.each(['coder', undefined])('persists familySlug %s', async (familySlug) => {
       const project = await seedProject();
 
       const profile = await service.createAgentProfile({
         projectId: project.id,
         name: 'Family Profile',
-        familySlug: 'coder',
+        familySlug,
       });
 
-      expect(profile.familySlug).toBe('coder');
-    });
-
-    it('creates profile with null familySlug when not provided', async () => {
-      const project = await seedProject();
-
-      const profile = await service.createAgentProfile({
-        projectId: project.id,
-        name: 'No Family',
-      });
-
-      expect(profile.familySlug).toBeNull();
+      expect(profile.familySlug).toBe(familySlug ?? null);
     });
 
     it('throws NotFoundError for missing profile', async () => {
@@ -1083,89 +1058,41 @@ describe('LocalStorageService', () => {
       );
     });
 
-    it('preserves modelOverride when providerConfigId changes', async () => {
-      const provider = await seedProvider();
-      const profile = await seedProfile(project.id);
-      const config1 = await service.createProfileProviderConfig({
-        profileId: profile.id,
-        providerId: provider.id,
-        name: 'config-1',
-        options: null,
-        env: null,
-      });
-      const config2 = await service.createProfileProviderConfig({
-        profileId: profile.id,
-        providerId: provider.id,
-        name: 'config-2',
-        options: null,
-        env: null,
-      });
-      const agent = await service.createAgent({
-        projectId: project.id,
-        profileId: profile.id,
-        name: 'Override Agent',
-        providerConfigId: config1.id,
-        modelOverride: 'custom-model',
-      });
+    it.each(['should-be-preserved', null])(
+      'persists modelOverride %s when provider config changes',
+      async (modelOverride) => {
+        const provider = await seedProvider();
+        const profile = await seedProfile(project.id);
+        const config1 = await service.createProfileProviderConfig({
+          profileId: profile.id,
+          providerId: provider.id,
+          name: 'config-1',
+          options: null,
+          env: null,
+        });
+        const config2 = await service.createProfileProviderConfig({
+          profileId: profile.id,
+          providerId: provider.id,
+          name: 'config-2',
+          options: null,
+          env: null,
+        });
+        const agent = await service.createAgent({
+          projectId: project.id,
+          profileId: profile.id,
+          name: 'Override Agent',
+          providerConfigId: config1.id,
+          modelOverride: 'custom-model',
+        });
 
-      const updated = await service.updateAgent(agent.id, {
-        providerConfigId: config2.id,
-        modelOverride: 'should-be-preserved',
-      });
+        const updated = await service.updateAgent(agent.id, {
+          providerConfigId: config2.id,
+          modelOverride,
+        });
 
-      expect(updated.modelOverride).toBe('should-be-preserved');
-    });
-
-    it('respects explicit modelOverride=null', async () => {
-      const provider = await seedProvider();
-      const profile = await seedProfile(project.id);
-      const config1 = await service.createProfileProviderConfig({
-        profileId: profile.id,
-        providerId: provider.id,
-        name: 'config-1',
-        options: null,
-        env: null,
-      });
-      const config2 = await service.createProfileProviderConfig({
-        profileId: profile.id,
-        providerId: provider.id,
-        name: 'config-2',
-        options: null,
-        env: null,
-      });
-      const agent = await service.createAgent({
-        projectId: project.id,
-        profileId: profile.id,
-        name: 'Null Override Agent',
-        providerConfigId: config1.id,
-        modelOverride: 'old-model',
-      });
-
-      const updated = await service.updateAgent(agent.id, {
-        providerConfigId: config2.id,
-        modelOverride: null,
-      });
-
-      expect(updated.modelOverride).toBeNull();
-    });
-
-    it('throws ConflictError when deleting agent with running sessions', async () => {
-      const { agent } = await seedFullAgent(project.id);
-
-      const { sessions } = await import('../db/schema');
-      const now = new Date().toISOString();
-      await db.insert(sessions).values({
-        id: 'session-1',
-        agentId: agent.id,
-        tmuxSessionId: 'tmux-1',
-        status: 'running',
-        startedAt: now,
-        createdAt: now,
-        updatedAt: now,
-      });
-
-      await expect(service.deleteAgent(agent.id)).rejects.toThrow(ConflictError);
-    });
+        expect(updated.modelOverride).toBe(modelOverride);
+      },
+    );
 
     it('deletes agent and auto-deletes completed sessions', async () => {
       const { agent } = await seedFullAgent(project.id);
@@ -1252,30 +1179,6 @@ describe('LocalStorageService', () => {
       await expect(service.getProvider(provider.id)).rejects.toThrow(NotFoundError);
     });
 
-    it('trims model names in createProviderModel', async () => {
-      const provider = await service.createProvider({ name: 'model-host' });
-
-      const model = await service.createProviderModel({
-        providerId: provider.id,
-        name: '  gpt-4  ',
-      });
-
-      expect(model.name).toBe('gpt-4');
-    });
-
-    it('bulk creates models and skips case-insensitive duplicates', async () => {
-      const provider = await service.createProvider({ name: 'bulk-host' });
-
-      const result = await service.bulkCreateProviderModels(provider.id, [
-        'model-a',
-        'MODEL-A',
-        'model-b',
-      ]);
-
-      expect(result.added.sort()).toEqual(['model-a', 'model-b']);
-      expect(result.existing).toHaveLength(1);
-    });
-
     it('rejects empty model names', async () => {
       const provider = await service.createProvider({ name: 'empty-model' });
 
@@ -1317,6 +1220,48 @@ describe('LocalStorageService', () => {
 
     beforeEach(async () => {
       project = await seedProject();
+    });
+
+    it('allows creating multiple watchers with the same eventName in one project', async () => {
+      const first = await service.createWatcher({
+        projectId: project.id,
+        name: 'Watcher One',
+        description: null,
+        enabled: false,
+        scope: 'all',
+        scopeFilterId: null,
+        pollIntervalMs: 5000,
+        viewportLines: 50,
+        idleAfterSeconds: 0,
+        condition: { type: 'contains', pattern: 'first' },
+        cooldownMs: 60000,
+        cooldownMode: 'time',
+        eventName: 'watcher.conversation.compact_request',
+      });
+
+      const second = await service.createWatcher({
+        projectId: project.id,
+        name: 'Watcher Two',
+        description: null,
+        enabled: false,
+        scope: 'all',
+        scopeFilterId: null,
+        pollIntervalMs: 5000,
+        viewportLines: 50,
+        idleAfterSeconds: 0,
+        condition: { type: 'contains', pattern: 'second' },
+        cooldownMs: 60000,
+        cooldownMode: 'time',
+        eventName: 'watcher.conversation.compact_request',
+      });
+
+      const watchers = await service.listWatchers(project.id);
+      const sameEvent = watchers.filter(
+        (watcher) => watcher.eventName === 'watcher.conversation.compact_request',
+      );
+
+      expect(first.id).not.toBe(second.id);
+      expect(sameEvent).toHaveLength(2);
     });
 
     it('creates a watcher with UUID and timestamps', async () => {

@@ -120,30 +120,21 @@ describe('AgentFormDialog', () => {
 
   // ---- Create mode ----
 
-  it('renders "Create Agent" title in create mode', () => {
-    setupFetchMock();
-    const { Wrapper } = createWrapper();
-    render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
-
-    expect(screen.getByText('Create Agent')).toBeInTheDocument();
-  });
-
-  it('renders "Create" submit button text in create mode', () => {
-    setupFetchMock();
-    const { Wrapper } = createWrapper();
-    render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
-
-    expect(screen.getByRole('button', { name: /^create$/i })).toBeInTheDocument();
-  });
-
-  it('renders project name in create mode description', () => {
+  it('shows create title, submit action and project name', () => {
     setupFetchMock();
     const { Wrapper } = createWrapper();
     render(<AgentFormDialog {...buildProps({ projectName: 'My Project' })} />, {
       wrapper: Wrapper,
     });
-
-    expect(screen.getByText(/create a new agent for My Project/i)).toBeInTheDocument();
+    {
+      expect(screen.getByText(/create a new agent for My Project/i)).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Create Agent')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByRole('button', { name: /^create$/i })).toBeInTheDocument();
+    }
   });
 
   it('calls onSubmit with trimmed form data on create submit', async () => {
@@ -176,54 +167,6 @@ describe('AgentFormDialog', () => {
   });
 
   // ---- Edit mode ----
-
-  it('renders "Edit Agent" title in edit mode', () => {
-    setupFetchMock();
-    const { Wrapper } = createWrapper();
-    render(
-      <AgentFormDialog
-        {...buildProps({
-          mode: 'edit',
-          initialValues: {
-            name: 'Agent One',
-            profileId: 'profile-1',
-            providerConfigId: 'config-1',
-            description: 'A description',
-            modelOverride: null,
-            effortOverride: null,
-          },
-          editAgentId: 'agent-1',
-        })}
-      />,
-      { wrapper: Wrapper },
-    );
-
-    expect(screen.getByText('Edit Agent')).toBeInTheDocument();
-  });
-
-  it('renders "Save changes" submit button in edit mode', () => {
-    setupFetchMock();
-    const { Wrapper } = createWrapper();
-    render(
-      <AgentFormDialog
-        {...buildProps({
-          mode: 'edit',
-          initialValues: {
-            name: 'Agent One',
-            profileId: 'profile-1',
-            providerConfigId: 'config-1',
-            description: '',
-            modelOverride: null,
-            effortOverride: null,
-          },
-          editAgentId: 'agent-1',
-        })}
-      />,
-      { wrapper: Wrapper },
-    );
-
-    expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument();
-  });
 
   it('exposes the project owner checkbox only in edit mode with replacement guidance', () => {
     setupFetchMock();
@@ -314,7 +257,7 @@ describe('AgentFormDialog', () => {
     },
   );
 
-  it('populates form with initialValues in edit mode', () => {
+  it('shows edit title, submit action and populated fields', () => {
     setupFetchMock();
     const { Wrapper } = createWrapper();
     render(
@@ -334,9 +277,16 @@ describe('AgentFormDialog', () => {
       />,
       { wrapper: Wrapper },
     );
-
-    expect(screen.getByLabelText('Name *')).toHaveValue('Agent One');
-    expect(screen.getByLabelText(/description/i)).toHaveValue('Test desc');
+    {
+      expect(screen.getByLabelText('Name *')).toHaveValue('Agent One');
+      expect(screen.getByLabelText(/description/i)).toHaveValue('Test desc');
+    }
+    {
+      expect(screen.getByText('Edit Agent')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument();
+    }
   });
 
   it('shows "Saving…" spinner in edit mode when isSubmitting', () => {

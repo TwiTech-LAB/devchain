@@ -1,9 +1,9 @@
+import { processIdsEnv } from '../../common/process-ids-env';
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import { mkdtemp, readFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { ClaudeAdapter } from '../providers/adapters/claude.adapter';
 import { CodexAdapter } from '../providers/adapters/codex.adapter';
 import type { ProviderAdapter } from '../providers/adapters/provider-adapter.interface';
@@ -32,10 +32,9 @@ describe('provider plugin policy preparation workflow integration', () => {
 
   beforeEach(async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), 'devchain-plugin-policy-workflow-'));
-    sqlite = new Database(':memory:');
-    sqlite.pragma('foreign_keys = ON');
-    const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: join(__dirname, '../../../drizzle') });
+    const database = createTestDatabase();
+    sqlite = database.sqlite;
+    const db = database.db;
     storage = new LocalStorageService(db);
     policyService = new ProviderPluginPolicyService(storage);
     preparationService = new ProviderRuntimePreparationService(
@@ -194,6 +193,7 @@ describe('provider plugin policy preparation workflow integration', () => {
         'env',
         '-u',
         'DEVCHAIN_CONTEXT_WINDOW_TOKENS',
+        ...Object.entries(processIdsEnv()).map(([key, value]) => `${key}=${value}`),
         '/usr/bin/codex',
         ...expectedArgv,
       ]);

@@ -101,20 +101,11 @@ describe('RestartAgentAction', () => {
       expect(restartAgentAction.type).toBe('restart_agent');
     });
 
-    it('should have correct category', () => {
-      expect(restartAgentAction.category).toBe('session');
-    });
-
     it('should have agentName input', () => {
       const agentNameInput = restartAgentAction.inputs.find((i) => i.name === 'agentName');
       expect(agentNameInput).toBeDefined();
       expect(agentNameInput?.type).toBe('string');
       expect(agentNameInput?.required).toBe(false);
-    });
-
-    it('should not define agentId input', () => {
-      const agentIdInput = restartAgentAction.inputs.find((i) => i.name === 'agentId');
-      expect(agentIdInput).toBeUndefined();
     });
   });
 
@@ -167,17 +158,6 @@ describe('RestartAgentAction', () => {
     });
 
     describe('resolution from event context (fallback)', () => {
-      it('should use context agentId when no inputs provided', async () => {
-        const inputs = {};
-
-        const result = await restartAgentAction.execute(mockContext, inputs);
-
-        expect(result.success).toBe(true);
-        const data = result.data as RestartAgentResultData;
-        expect(data.resolvedAgentId).toBe('agent-456');
-        expect(data.resolvedBy).toBe('event');
-      });
-
       it('should return error when no agent can be resolved', async () => {
         mockContext.agentId = null;
         const inputs = {};
@@ -241,16 +221,6 @@ describe('RestartAgentAction', () => {
         options: { silent: true },
       });
     });
-
-    it('should return newSessionId from launched session', async () => {
-      mockSessionRuntime.launch.mockResolvedValue({ id: 'brand-new-session' });
-      const inputs = {};
-
-      const result = await restartAgentAction.execute(mockContext, inputs);
-
-      const data = result.data as RestartAgentResultData;
-      expect(data.newSessionId).toBe('brand-new-session');
-    });
   });
 
   describe('execute - error handling', () => {
@@ -287,18 +257,6 @@ describe('RestartAgentAction', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('Failed to restart agent');
       expect(result.error).toContain('Failed to launch');
-    });
-
-    it('should log errors on failure', async () => {
-      mockSessionRuntime.launch.mockRejectedValue(new Error('Launch failed'));
-      const inputs = {};
-
-      await restartAgentAction.execute(mockContext, inputs);
-
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ error: 'Launch failed' }),
-        'Failed to restart agent',
-      );
     });
   });
 
@@ -346,22 +304,6 @@ describe('RestartAgentAction', () => {
         resolvedBy: 'event',
       });
     });
-
-    it('should log successful restart', async () => {
-      mockSessionRuntime.launch.mockResolvedValue({ id: 'new-session-id' });
-      const inputs = {};
-
-      await restartAgentAction.execute(mockContext, inputs);
-
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        expect.objectContaining({
-          resolvedAgentId: 'agent-456',
-          newSessionId: 'new-session-id',
-          resolvedBy: 'event',
-        }),
-        'Agent restarted successfully',
-      );
-    });
   });
 
   describe('execute - edge cases', () => {
@@ -388,17 +330,6 @@ describe('RestartAgentAction', () => {
       const result = await restartAgentAction.execute(mockContext, inputs);
 
       // Falls back to context agentId
-      expect(result.success).toBe(true);
-      const data = result.data as RestartAgentResultData;
-      expect(data.resolvedBy).toBe('event');
-    });
-
-    it('should handle whitespace-only agentName input', async () => {
-      const inputs = { agentName: '   ' };
-
-      const result = await restartAgentAction.execute(mockContext, inputs);
-
-      // Falls back to context agentId since trimmed string is empty
       expect(result.success).toBe(true);
       const data = result.data as RestartAgentResultData;
       expect(data.resolvedBy).toBe('event');

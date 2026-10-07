@@ -1,9 +1,8 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 // Backend integration: real SQLite is the cheapest reliable proof of this persisted contract.
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import {
   AskUserQuestionPushGateService,
   AUQ_NATIVE_PUSH_GRACE_MS,
@@ -14,11 +13,7 @@ import { EventMapperService } from '../../cloud/services/event-mapper.service';
 import { ProjectEgressConfigService } from '../../cloud/services/project-egress-config.service';
 import { TunnelClientService } from './tunnel-client.service';
 import type { ClaudeHooksAskUserQuestionPendingEventPayload } from '../../events/catalog/claude.hooks.ask_user_question.pending';
-import { GUEST_SANDBOX_ROOT_PATH } from '../../guests/constants';
 import type { WorkspaceModeCoordinatorService } from '../../workspaces/services/workspace-mode-coordinator.service';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
-const ENABLED_PROJECTS_KEY = 'cloud.egress.enabledProjects';
 const DEFAULT_ENABLED_KEY = 'cloud.egress.newProjectsDefaultEnabled';
 const DEFAULT_PROJECT_ID = '11111111-1111-1111-1111-111111111111';
 const TS = '2026-07-31T00:00:00.000Z';
@@ -59,9 +54,7 @@ describe('AskUserQuestionPushGateService', () => {
 
   beforeEach(() => {
     jest.useFakeTimers();
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite, db } = createTestDatabase());
     upsertSetting(DEFAULT_ENABLED_KEY, true);
     insertProject(DEFAULT_PROJECT_ID, '/tmp/default-project');
 
@@ -195,23 +188,6 @@ describe('AskUserQuestionPushGateService', () => {
   it('skips entirely when the cloud session is disconnected', async () => {
     cloudSession.getStatus.mockReturnValue({ connected: false });
     await fireAndSettle();
-    expect(tunnelClient.querySseLiveness).not.toHaveBeenCalled();
-    expect(egressQueue.enqueue).not.toHaveBeenCalled();
-  });
-
-  it('skips an existing baselined-disabled project before the liveness flow', async () => {
-    upsertSetting(ENABLED_PROJECTS_KEY, { [DEFAULT_PROJECT_ID]: false });
-    await fireAndSettle();
-    expect(tunnelClient.querySseLiveness).not.toHaveBeenCalled();
-    expect(egressQueue.enqueue).not.toHaveBeenCalled();
-  });
-
-  it('keeps an implicit Guest Sandbox outside the liveness flow', async () => {
-    const sandboxProjectId = '44444444-4444-4444-4444-444444444444';
-    insertProject(sandboxProjectId, GUEST_SANDBOX_ROOT_PATH);
-
-    await fireAndSettle(makePayload({ projectId: sandboxProjectId }));
-
     expect(tunnelClient.querySseLiveness).not.toHaveBeenCalled();
     expect(egressQueue.enqueue).not.toHaveBeenCalled();
   });

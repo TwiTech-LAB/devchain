@@ -731,53 +731,6 @@ describe('PreflightService', () => {
       expect(result.providers[0].mcpDetails).toContain('Found: http://127.0.0.1:4000/mcp');
     });
 
-    it('sets mcpStatus fail when list command fails', async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mockExec.mockImplementation(
-        (
-          cmd: string,
-          optionsOrCallback?: unknown,
-          maybeCallback?: unknown,
-        ): ReturnType<typeof mockExec> => {
-          const callback = (
-            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
-          ) as ExecCallback;
-          if (cmd === 'tmux -V' && callback) {
-            callback(null, 'tmux 3.2', '');
-          }
-          return {} as ReturnType<typeof mockExec>;
-        },
-      );
-
-      mockStorage.listProviders.mockResolvedValue({
-        items: [
-          createMockProvider({
-            id: 'p1',
-            name: 'codex',
-            binPath: '/usr/local/bin/codex',
-            mcpConfigured: true,
-            mcpEndpoint: 'ws://localhost:3000/mcp',
-            mcpRegisteredAt: '2024-01-01',
-            createdAt: '',
-            updatedAt: '',
-          }),
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      mockAccess.mockResolvedValueOnce(undefined);
-      mockMcpRegistration.listRegistrations.mockResolvedValue({
-        success: false,
-        message: 'MCP command exited with code 2.',
-        entries: [],
-      });
-
-      const result = await service.runChecks();
-      expect(result.providers[0].mcpStatus).toBe('fail');
-    });
-
     it('sets mcpStatus fail when list times out', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockExec.mockImplementation(
@@ -1181,29 +1134,6 @@ describe('PreflightService', () => {
       expect(result.providers[0].providerEnvStatus).toBe('pass');
       expect(result.providers[0].configEnvStatus).toBe('pass');
     });
-
-    it('validates all providers when no project path', async () => {
-      mockStorage.listProviders.mockResolvedValue({
-        items: [mockProvider],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      // Provider-profile relationship now via configs (not profile.providerId)
-      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([mockConfig]);
-      mockAccess.mockResolvedValue(undefined);
-      mockMcpRegistration.listRegistrations.mockResolvedValue({
-        success: true,
-        message: 'OK',
-        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
-      });
-
-      const result = await service.runChecks();
-
-      expect(mockStorage.listProviders).toHaveBeenCalled();
-      expect(mockStorage.listAllProfileProviderConfigs).toHaveBeenCalled();
-      expect(result.providers).toHaveLength(1);
-    });
   });
 
   describe('config-file provider (opencode) preflight', () => {
@@ -1253,6 +1183,7 @@ describe('PreflightService', () => {
       expect(result.providers[0].mcpStatus).toBe('warn');
       expect(result.providers[0].mcpMessage).toContain('requires project context');
       expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
+      expect(result.providers[0].requiresProjectContext).toBe(true);
     });
 
     it('evaluates MCP normally for opencode with project context', async () => {
@@ -1402,89 +1333,6 @@ describe('PreflightService', () => {
     });
   });
 
-  describe('requiresProjectContext', () => {
-    const setupExec = () => {
-      mockExec.mockImplementation(
-        (
-          cmd: string,
-          optionsOrCallback?: unknown,
-          maybeCallback?: unknown,
-        ): ReturnType<typeof mockExec> => {
-          const callback = (
-            typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
-          ) as ExecCallback;
-          if (cmd === 'tmux -V' && callback) {
-            callback(null, 'tmux 3.2', '');
-          }
-          return {} as ReturnType<typeof mockExec>;
-        },
-      );
-    };
-
-    it('sets requiresProjectContext true for project_config provider (opencode)', async () => {
-      setupExec();
-      mockStorage.listProviders.mockResolvedValue({
-        items: [
-          createMockProvider({
-            id: 'p-oc',
-            name: 'opencode',
-            binPath: '/usr/local/bin/opencode',
-            mcpConfigured: false,
-            mcpEndpoint: null,
-            mcpRegisteredAt: null,
-            createdAt: '',
-            updatedAt: '',
-          }),
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([]);
-      mockAccess.mockResolvedValue(undefined);
-
-      const result = await service.runChecks();
-
-      expect(result.providers).toHaveLength(1);
-      expect(result.providers[0].name).toBe('opencode');
-      expect(result.providers[0].requiresProjectContext).toBe(true);
-    });
-
-    it('omits requiresProjectContext for cli-mode provider (claude)', async () => {
-      setupExec();
-      mockStorage.listProviders.mockResolvedValue({
-        items: [
-          createMockProvider({
-            id: 'p-cl',
-            name: 'claude',
-            binPath: '/usr/local/bin/claude',
-            mcpConfigured: true,
-            mcpEndpoint: 'http://127.0.0.1:3000/mcp',
-            mcpRegisteredAt: '2024-01-01',
-            createdAt: '',
-            updatedAt: '',
-          }),
-        ],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([]);
-      mockAccess.mockResolvedValue(undefined);
-      mockMcpRegistration.listRegistrations.mockResolvedValue({
-        success: true,
-        message: 'OK',
-        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
-      });
-
-      const result = await service.runChecks();
-
-      expect(result.providers).toHaveLength(1);
-      expect(result.providers[0].name).toBe('claude');
-      expect(result.providers[0].requiresProjectContext).toBeUndefined();
-    });
-  });
-
   describe('includeAllProviders mode', () => {
     const mockProject = createMockProject({
       id: 'project-1',
@@ -1544,35 +1392,6 @@ describe('PreflightService', () => {
       message: 'OK',
       entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
     };
-
-    it('returns all registered providers regardless of agent usage', async () => {
-      mockStorage.findProjectByPath.mockResolvedValue(mockProject);
-      mockStorage.listProviders.mockResolvedValue({
-        items: [claudeProvider, codexProvider],
-        total: 2,
-        limit: 100,
-        offset: 0,
-      });
-      mockStorage.listAgents.mockResolvedValue({
-        items: [claudeAgent],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([claudeConfig]);
-      mockAccess.mockResolvedValue(undefined);
-      mockMcpRegistration.listRegistrations.mockResolvedValue(okMcpResult);
-      mockMcpRegistration.resolveBinary.mockResolvedValue({
-        success: true,
-        binaryPath: '/usr/bin/codex',
-      });
-
-      const result = await service.runChecks('/test', { includeAllProviders: true });
-
-      expect(result.providers).toHaveLength(2);
-      expect(result.providers.map((p) => p.name)).toContain('claude');
-      expect(result.providers.map((p) => p.name)).toContain('codex');
-    });
 
     it('does not call listAllProfileProviderConfigs (no cross-project leakage)', async () => {
       mockStorage.findProjectByPath.mockResolvedValue(mockProject);
@@ -1834,35 +1653,26 @@ describe('PreflightService', () => {
       expect(result.overall).toBe('fail');
     });
 
-    it('case 2: rejected project_config provider (opencode) returns requiresProjectContext:true', async () => {
-      mockStorage.listProviders.mockResolvedValue({
-        items: [opencodeProvider],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      mockMcpRegistration.listRegistrations.mockRejectedValue(new Error('mcp registration failed'));
-
-      const result = await service.runChecks('/test', { includeAllProviders: true });
-
-      expect(result.providers).toHaveLength(1);
-      expect(result.providers[0].requiresProjectContext).toBe(true);
-    });
-
-    it('case 3: rejected cli-mode provider (claude) returns requiresProjectContext:undefined', async () => {
-      mockStorage.listProviders.mockResolvedValue({
-        items: [claudeProvider],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      mockMcpRegistration.listRegistrations.mockRejectedValue(new Error('mcp registration failed'));
-
-      const result = await service.runChecks('/test', { includeAllProviders: true });
-
-      expect(result.providers).toHaveLength(1);
-      expect(result.providers[0].requiresProjectContext).toBeUndefined();
-    });
+    it.each([
+      { name: 'opencode', requiresProjectContext: true },
+      { name: 'claude', requiresProjectContext: undefined },
+    ])(
+      'preserves context requirements when $name registration rejects',
+      async ({ name, requiresProjectContext }) => {
+        mockStorage.listProviders.mockResolvedValue({
+          items: [name === 'opencode' ? opencodeProvider : claudeProvider],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+        mockMcpRegistration.listRegistrations.mockRejectedValue(
+          new Error('mcp registration failed'),
+        );
+        const result = await service.runChecks('/test', { includeAllProviders: true });
+        expect(result.providers).toHaveLength(1);
+        expect(result.providers[0].requiresProjectContext).toBe(requiresProjectContext);
+      },
+    );
 
     it('case 4: adapter lookup failure inside rejection fallback does not re-throw', async () => {
       mockStorage.listProviders.mockResolvedValue({

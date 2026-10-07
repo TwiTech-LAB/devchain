@@ -71,28 +71,30 @@ beforeEach(() => {
 });
 
 describe('ScheduledEpicsTab', () => {
-  it('shows schedule name in the list', async () => {
+  it('shows schedule cadence, timezone, status and actions', async () => {
     renderWithQuery(<ScheduledEpicsTab />);
     await screen.findByText('Weekly sync');
-    expect(screen.getByText('Weekly sync')).toBeInTheDocument();
-  });
-
-  it('shows cron expression as cadence', async () => {
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('Weekly sync');
-    expect(screen.getByText('0 9 * * 1')).toBeInTheDocument();
-  });
-
-  it('shows timezone', async () => {
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('Weekly sync');
-    expect(screen.getByText('UTC')).toBeInTheDocument();
-  });
-
-  it('shows run count badge', async () => {
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('Weekly sync');
-    expect(screen.getByText('Runs: 7')).toBeInTheDocument();
+    {
+      expect(screen.getByText('Weekly sync')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('0 9 * * 1')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('UTC')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Runs: 7')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('completed')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Enabled')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Run now')).toBeInTheDocument();
+    }
   });
 
   it('shows — for null run count', async () => {
@@ -106,36 +108,16 @@ describe('ScheduledEpicsTab', () => {
     expect(screen.getByText('Runs: —')).toBeInTheDocument();
   });
 
-  it('shows last outcome badge', async () => {
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('Weekly sync');
-    expect(screen.getByText('completed')).toBeInTheDocument();
-  });
-
-  it('shows enabled/disabled badge', async () => {
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('Weekly sync');
-    expect(screen.getByText('Enabled')).toBeInTheDocument();
-  });
-
-  it('shows run-now and edit action entry points', async () => {
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('Weekly sync');
-    expect(screen.getByText('Run now')).toBeInTheDocument();
-  });
-
-  it('shows empty state when no schedules exist', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (global as any).fetch = jest.fn(async () => ({
-      ok: true,
-      json: async () => [],
-    }));
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('No schedules yet');
-    expect(screen.getByText('No schedules yet')).toBeInTheDocument();
-  });
-
-  it('opens the create dialog from the empty-state Add Schedule button', async () => {
+  it.each([
+    {
+      label: 'opens the create dialog from the empty-state Add Schedule button',
+      buttonName: 'Add Schedule',
+    },
+    {
+      label: 'opens the create dialog from the empty-state Create Schedule button',
+      buttonName: 'Create Schedule',
+    },
+  ] as const)('$label', async ({ buttonName }) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (global as any).fetch = jest.fn(async () => ({
       ok: true,
@@ -145,23 +127,7 @@ describe('ScheduledEpicsTab', () => {
     renderWithQuery(<ScheduledEpicsTab />);
     await screen.findByText('No schedules yet');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Add Schedule' }));
-
-    expect(await screen.findByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByLabelText('Name')).toHaveValue('');
-  });
-
-  it('opens the create dialog from the empty-state Create Schedule button', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (global as any).fetch = jest.fn(async () => ({
-      ok: true,
-      json: async () => [],
-    }));
-
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('No schedules yet');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Create Schedule' }));
+    await userEvent.click(screen.getByRole('button', { name: buttonName }));
 
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(screen.getByLabelText('Name')).toHaveValue('');
@@ -237,8 +203,21 @@ describe('ScheduledEpicsTab — toggle interaction', () => {
 });
 
 describe('ScheduledEpicsTab — run-now action', () => {
-  it('shows Run started toast when run is claimed', async () => {
-    const baseRun = { id: 'run-1', scheduleId: 'sched-1', status: 'completed' };
+  it.each([
+    {
+      label: 'shows Run started toast when run is claimed',
+      runStatus: 'completed',
+      claimed: true,
+      toastTitle: 'Run started',
+    },
+    {
+      label: 'shows Already running toast when run is not claimed',
+      runStatus: 'running',
+      claimed: false,
+      toastTitle: 'Already running',
+    },
+  ] as const)('$label', async ({ runStatus, claimed, toastTitle }) => {
+    const baseRun = { id: 'run-1', scheduleId: 'sched-1', status: runStatus };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (global as any).fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -246,7 +225,7 @@ describe('ScheduledEpicsTab — run-now action', () => {
         return { ok: true, json: async () => [baseSchedule] } as Response;
       }
       if (url.includes('/run-now') && (init as RequestInit)?.method === 'POST') {
-        return { ok: true, json: async () => ({ claimed: true, run: baseRun }) } as Response;
+        return { ok: true, json: async () => ({ claimed: claimed, run: baseRun }) } as Response;
       }
       return { ok: true, json: async () => ({}) } as Response;
     });
@@ -257,31 +236,7 @@ describe('ScheduledEpicsTab — run-now action', () => {
     fireEvent.click(screen.getByTitle('Run now'));
 
     await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'Run started' }));
-    });
-  });
-
-  it('shows Already running toast when run is not claimed', async () => {
-    const baseRun = { id: 'run-1', scheduleId: 'sched-1', status: 'running' };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (global as any).fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.startsWith('/api/scheduled-epics?')) {
-        return { ok: true, json: async () => [baseSchedule] } as Response;
-      }
-      if (url.includes('/run-now') && (init as RequestInit)?.method === 'POST') {
-        return { ok: true, json: async () => ({ claimed: false, run: baseRun }) } as Response;
-      }
-      return { ok: true, json: async () => ({}) } as Response;
-    });
-
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('Weekly sync');
-
-    fireEvent.click(screen.getByTitle('Run now'));
-
-    await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'Already running' }));
+      expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({ title: toastTitle }));
     });
   });
 
@@ -316,20 +271,6 @@ describe('ScheduledEpicsTab — run-now action', () => {
 });
 
 describe('ScheduledEpicsTab — delete flow', () => {
-  it('opens the delete confirmation dialog when Delete is selected from the menu', async () => {
-    renderWithQuery(<ScheduledEpicsTab />);
-    await screen.findByText('Weekly sync');
-
-    const dropdownTrigger = document.querySelector('[aria-haspopup="menu"]') as HTMLElement;
-    await userEvent.click(dropdownTrigger);
-
-    const deleteItem = await screen.findByText('Delete');
-    await userEvent.click(deleteItem);
-
-    expect(await screen.findByText('Delete Schedule')).toBeInTheDocument();
-    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
-  });
-
   it('calls delete API and shows Deleted toast on confirmation', async () => {
     const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

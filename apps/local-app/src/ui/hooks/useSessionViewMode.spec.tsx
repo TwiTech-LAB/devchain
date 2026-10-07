@@ -39,28 +39,21 @@ describe('useSessionViewMode', () => {
     localStorage.clear();
   });
 
-  it('defaults to reader mode', () => {
+  it.each([
+    {
+      label: 'restores mode from localStorage',
+      storedMode: 'diagnostic',
+      expectedMode: 'diagnostic',
+    },
+    {
+      label: 'falls back to reader on invalid stored value',
+      storedMode: 'invalid-mode',
+      expectedMode: 'reader',
+    },
+  ] as const)('$label', ({ storedMode, expectedMode }) => {
+    localStorage.setItem('devchain.session.viewMode', storedMode);
     renderWithProvider();
-    expect(screen.getByTestId('current-mode').textContent).toBe('reader');
-  });
-
-  it('persists mode to localStorage', () => {
-    renderWithProvider();
-    fireEvent.click(screen.getByTestId('set-diagnostic'));
-    expect(screen.getByTestId('current-mode').textContent).toBe('diagnostic');
-    expect(localStorage.getItem('devchain.session.viewMode')).toBe('diagnostic');
-  });
-
-  it('restores mode from localStorage', () => {
-    localStorage.setItem('devchain.session.viewMode', 'diagnostic');
-    renderWithProvider();
-    expect(screen.getByTestId('current-mode').textContent).toBe('diagnostic');
-  });
-
-  it('falls back to reader on invalid stored value', () => {
-    localStorage.setItem('devchain.session.viewMode', 'invalid-mode');
-    renderWithProvider();
-    expect(screen.getByTestId('current-mode').textContent).toBe('reader');
+    expect(screen.getByTestId('current-mode').textContent).toBe(expectedMode);
   });
 
   it('toggles between reader and diagnostic', () => {
@@ -69,6 +62,7 @@ describe('useSessionViewMode', () => {
 
     fireEvent.click(screen.getByTestId('set-diagnostic'));
     expect(screen.getByTestId('current-mode').textContent).toBe('diagnostic');
+    expect(localStorage.getItem('devchain.session.viewMode')).toBe('diagnostic');
 
     fireEvent.click(screen.getByTestId('set-reader'));
     expect(screen.getByTestId('current-mode').textContent).toBe('reader');

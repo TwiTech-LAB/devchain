@@ -280,50 +280,24 @@ describe('useChatSessionControls', () => {
     const sessionId = 'stopped-sess-1';
     const agentId = 'agent-1';
 
-    it('calls restoreSession with sessionId and projectId', async () => {
+    it('restores the session, shows success and clears pending state', async () => {
       mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
-
       const { wrapper } = createWrapper();
       const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
-
       await act(async () => {
         await result.current.handleRestoreSession(sessionId, agentId);
       });
-
-      expect(mockRestore).toHaveBeenCalledWith(sessionId, 'proj-1', expect.any(Function));
-    });
-
-    it('shows success toast after restore', async () => {
-      mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
-
-      const { wrapper } = createWrapper();
-      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
-
-      await act(async () => {
-        await result.current.handleRestoreSession(sessionId, agentId);
-      });
-
-      expect(mockToast).toHaveBeenCalledWith(
-        expect.objectContaining({ title: 'Session restored' }),
-      );
-    });
-
-    it('attaches a restored session for the selected agent', async () => {
-      const onInlineTerminalAttach = jest.fn();
-      const restoredSess = makeSession({ id: sessionId, agentId });
-      mockRestore.mockResolvedValue(restoredSess);
-
-      const { wrapper } = createWrapper();
-      const { result } = renderHook(
-        () => useChatSessionControls(buildOptions({ onInlineTerminalAttach })),
-        { wrapper },
-      );
-
-      await act(async () => {
-        await result.current.handleRestoreSession(sessionId, agentId);
-      });
-
-      expect(onInlineTerminalAttach).toHaveBeenCalledWith(agentId, sessionId);
+      {
+        expect(mockRestore).toHaveBeenCalledWith(sessionId, 'proj-1', expect.any(Function));
+      }
+      {
+        expect(mockToast).toHaveBeenCalledWith(
+          expect.objectContaining({ title: 'Session restored' }),
+        );
+      }
+      {
+        expect(result.current.restoringSessionIds[sessionId]).toBeUndefined();
+      }
     });
 
     it('primes presence and active-session cache before attaching restored terminal', async () => {
@@ -391,15 +365,40 @@ describe('useChatSessionControls', () => {
       expect(onInlineTerminalAttach).not.toHaveBeenCalled();
     });
 
-    it('shows PROVIDER_MISMATCH toast with specific title on 409', async () => {
+    it.each([
+      {
+        label: 'shows PROVIDER_MISMATCH toast with specific title on 409',
+        errorMessage: 'Current provider differs from launch-time provider',
+        apiMessage: 'Current provider differs from launch-time provider',
+        detailMessage: 'Current provider differs from launch-time provider',
+        code: 'PROVIDER_MISMATCH',
+        toastTitle: 'Provider mismatch',
+      },
+      {
+        label: 'shows NO_PROVIDER_SESSION_ID toast with specific title on 409',
+        errorMessage: 'Session has no provider session ID',
+        apiMessage: 'Session has no provider session ID',
+        detailMessage: 'Session has no provider session ID',
+        code: 'NO_PROVIDER_SESSION_ID',
+        toastTitle: 'Cannot restore',
+      },
+      {
+        label: 'shows INVALID_SESSION_STATE toast with specific title on 409',
+        errorMessage: 'Session is not in a restorable state',
+        apiMessage: 'Session is not in a restorable state',
+        detailMessage: 'Session is not in a restorable state',
+        code: 'INVALID_SESSION_STATE',
+        toastTitle: 'Invalid session state',
+      },
+    ] as const)('$label', async ({ errorMessage, apiMessage, detailMessage, code, toastTitle }) => {
       mockRestore.mockRejectedValue(
-        new SessionApiError('Current provider differs from launch-time provider', 409, {
+        new SessionApiError(errorMessage, 409, {
           statusCode: 409,
           code: 'http_exception',
-          message: 'Current provider differs from launch-time provider',
+          message: apiMessage,
           details: {
-            message: 'Current provider differs from launch-time provider',
-            code: 'PROVIDER_MISMATCH',
+            message: detailMessage,
+            code: code,
           },
           timestamp: new Date().toISOString(),
           path: '/api/sessions/x/restore',
@@ -414,61 +413,7 @@ describe('useChatSessionControls', () => {
       });
 
       expect(mockToast).toHaveBeenCalledWith(
-        expect.objectContaining({ title: 'Provider mismatch', variant: 'destructive' }),
-      );
-    });
-
-    it('shows NO_PROVIDER_SESSION_ID toast with specific title on 409', async () => {
-      mockRestore.mockRejectedValue(
-        new SessionApiError('Session has no provider session ID', 409, {
-          statusCode: 409,
-          code: 'http_exception',
-          message: 'Session has no provider session ID',
-          details: {
-            message: 'Session has no provider session ID',
-            code: 'NO_PROVIDER_SESSION_ID',
-          },
-          timestamp: new Date().toISOString(),
-          path: '/api/sessions/x/restore',
-        }),
-      );
-
-      const { wrapper } = createWrapper();
-      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
-
-      await act(async () => {
-        await result.current.handleRestoreSession(sessionId, agentId);
-      });
-
-      expect(mockToast).toHaveBeenCalledWith(
-        expect.objectContaining({ title: 'Cannot restore', variant: 'destructive' }),
-      );
-    });
-
-    it('shows INVALID_SESSION_STATE toast with specific title on 409', async () => {
-      mockRestore.mockRejectedValue(
-        new SessionApiError('Session is not in a restorable state', 409, {
-          statusCode: 409,
-          code: 'http_exception',
-          message: 'Session is not in a restorable state',
-          details: {
-            message: 'Session is not in a restorable state',
-            code: 'INVALID_SESSION_STATE',
-          },
-          timestamp: new Date().toISOString(),
-          path: '/api/sessions/x/restore',
-        }),
-      );
-
-      const { wrapper } = createWrapper();
-      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
-
-      await act(async () => {
-        await result.current.handleRestoreSession(sessionId, agentId);
-      });
-
-      expect(mockToast).toHaveBeenCalledWith(
-        expect.objectContaining({ title: 'Invalid session state', variant: 'destructive' }),
+        expect.objectContaining({ title: toastTitle, variant: 'destructive' }),
       );
     });
 
@@ -489,20 +434,6 @@ describe('useChatSessionControls', () => {
           variant: 'destructive',
         }),
       );
-    });
-
-    it('clears restoringSessionIds after restore completes', async () => {
-      mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
-
-      const { wrapper } = createWrapper();
-      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
-
-      await act(async () => {
-        await result.current.handleRestoreSession(sessionId, agentId);
-      });
-
-      // After completion, the id should be cleared from the map
-      expect(result.current.restoringSessionIds[sessionId]).toBeUndefined();
     });
   });
 

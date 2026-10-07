@@ -27,9 +27,9 @@ rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd
 
 step 'System packages'
 apt-get update
+# shellcheck disable=SC2086
 apt-get install -y --no-install-recommends \
-  qemu-guest-agent tmux git curl ca-certificates xz-utils build-essential python3 \
-  jq ripgrep python-is-python3 python3-pip python3-venv file sqlite3 bsdextrautils rsync unzip openssl
+  $DEVCHAIN_REQUIRED_PACKAGES $DEVCHAIN_TOOL_PACKAGES
 # The unit has no [Install] section: udev starts it when the hypervisor
 # exposes the guest agent's virtio port.
 systemctl enable qemu-guest-agent 2>/dev/null || true
@@ -42,6 +42,12 @@ curl -fsSLo /tmp/SHASUMS256.txt "https://nodejs.org/dist/v${NODE_VERSION}/SHASUM
 tar -xJf "/tmp/${node_tarball}" -C /usr/local --strip-components=1 --no-same-owner \
   --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE'
 rm -f "/tmp/${node_tarball}" /tmp/SHASUMS256.txt
+
+step "ast-grep ${AST_GREP_VERSION}"
+npm install -g --no-fund --no-audit --allow-scripts=@ast-grep/cli --registry=https://registry.npmjs.org/ \
+  "@ast-grep/cli@${AST_GREP_VERSION}"
+# The package also links sg, which would hide /usr/bin/sg (switch group); agents call ast-grep.
+rm -f /usr/local/bin/sg
 
 step "Syncthing ${SYNCTHING_VERSION}"
 install -m 0755 -d /etc/apt/keyrings

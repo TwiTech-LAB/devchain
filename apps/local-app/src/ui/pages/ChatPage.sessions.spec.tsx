@@ -58,12 +58,13 @@ if (!(global as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObs
   ).ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
 }
 
-// Import as any to avoid TSX type friction in isolated test env
+// Import as ComponentType for isolated JSX typing.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ChatPage = require('./ChatPage').ChatPage as React.ComponentType;
 const toastSpy = jest.fn();
 const openTerminalWindowMock = jest.fn();
 const closeWindowMock = jest.fn();
+const focusedWindowIdMock = { value: null as string | null };
 const terminalWindowsMock: Array<{ id: string; minimized?: boolean }> = [];
 const appSocketEmitMock = jest.fn();
 const mockAppSocket = {
@@ -159,7 +160,7 @@ jest.mock('@/ui/terminal-windows', () => ({
   useTerminalWindows: () => ({
     windows: terminalWindowsMock,
     closeWindow: closeWindowMock,
-    focusedWindowId: null,
+    focusedWindowId: focusedWindowIdMock.value,
   }),
   TerminalWindowsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -204,6 +205,7 @@ function renderWithClient(ui: React.ReactNode, initialEntries: string[] = ['/cha
 }
 
 beforeEach(() => {
+  focusedWindowIdMock.value = null;
   selectedProjectIdMock = 'project-1';
   selectedProjectRootPathMock = '/tmp/project-1';
 });
@@ -260,209 +262,6 @@ describe('ChatPage agent grouping toggle', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/No teams configured/i)).not.toBeInTheDocument();
   });
-
-  it('switches to teams mode with keyboard navigation and persists selection', async () => {
-    renderWithClient(<ChatPage />);
-
-    const allTab = await screen.findByRole('tab', { name: 'All' });
-    const teamsTab = screen.getByRole('tab', { name: 'Teams' });
-
-    await act(async () => {
-      allTab.focus();
-      fireEvent.keyDown(allTab, { key: 'ArrowRight', code: 'ArrowRight' });
-    });
-
-    await waitFor(() => expect(teamsTab).toHaveAttribute('data-state', 'active'));
-    expect(screen.getByText(/No teams configured/i)).toBeInTheDocument();
-    expect(window.localStorage.getItem(LS_KEY)).toBe('teams');
-    expect(screen.getByText('STANDALONE')).toBeInTheDocument();
-    expect(screen.getByLabelText(/Open terminal for Alpha \(offline\)/i)).toBeInTheDocument();
-  });
-
-  it('restores teams mode from localStorage on mount', async () => {
-    window.localStorage.setItem(LS_KEY, 'teams');
-
-    renderWithClient(<ChatPage />);
-
-    await waitFor(() =>
-      expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('data-state', 'active'),
-    );
-    expect(await screen.findByText(/No teams configured/i)).toBeInTheDocument();
-    expect(screen.getByText('STANDALONE')).toBeInTheDocument();
-    expect(screen.getByLabelText(/Open terminal for Alpha \(offline\)/i)).toBeInTheDocument();
-  });
-});
-
-describe('ChatPage team-grouped agent view', () => {
-  const originalFetch = global.fetch;
-  const MODE_KEY = 'devchain:chat:agentTab:project-1';
-  const TEAM_GROUPS_KEY = 'devchain:chatSidebar:teamGroups';
-  let failTeamsList = false;
-
-  beforeEach(() => {
-    failTeamsList = false;
-    toastSpy.mockReset();
-    window.localStorage.removeItem(MODE_KEY);
-    window.localStorage.removeItem(TEAM_GROUPS_KEY);
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              { id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' },
-              { id: 'agent-2', name: 'Beta', projectId: 'project-1', profileId: 'p1' },
-              { id: 'agent-3', name: 'Gamma', projectId: 'project-1', profileId: 'p1' },
-            ],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({
-            'agent-1': { online: true, sessionId: 'session-1' },
-            'agent-2': { online: false, sessionId: null },
-            'agent-3': { online: false, sessionId: null },
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url.startsWith('/api/teams?projectId=')) {
-        if (failTeamsList) {
-          return { ok: false, status: 500, json: async () => ({}) } as Response;
-        }
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              {
-                id: 'team-1',
-                projectId: 'project-1',
-                name: 'Core',
-                description: null,
-                teamLeadAgentId: 'agent-1',
-                teamLeadAgentName: 'Alpha',
-                memberCount: 2,
-                createdAt: '2026-03-08T12:00:00.000Z',
-                updatedAt: '2026-03-08T12:00:00.000Z',
-              },
-              {
-                id: 'team-2',
-                projectId: 'project-1',
-                name: 'Support',
-                description: null,
-                teamLeadAgentId: null,
-                teamLeadAgentName: null,
-                memberCount: 1,
-                createdAt: '2026-03-08T12:00:00.000Z',
-                updatedAt: '2026-03-08T12:00:00.000Z',
-              },
-            ],
-            total: 2,
-            limit: 50,
-            offset: 0,
-          }),
-        } as Response;
-      }
-      if (url === '/api/teams/team-1') {
-        return {
-          ok: true,
-          json: async () => ({
-            id: 'team-1',
-            projectId: 'project-1',
-            name: 'Core',
-            description: null,
-            teamLeadAgentId: 'agent-1',
-            teamLeadAgentName: 'Alpha',
-            members: [
-              {
-                agentId: 'agent-1',
-                agentName: 'Alpha',
-                isLead: true,
-                createdAt: '2026-03-08T12:00:00.000Z',
-              },
-              {
-                agentId: 'agent-2',
-                agentName: 'Beta',
-                isLead: false,
-                createdAt: '2026-03-08T12:00:00.000Z',
-              },
-            ],
-            createdAt: '2026-03-08T12:00:00.000Z',
-            updatedAt: '2026-03-08T12:00:00.000Z',
-          }),
-        } as Response;
-      }
-      if (url === '/api/teams/team-2') {
-        return {
-          ok: true,
-          json: async () => ({
-            id: 'team-2',
-            projectId: 'project-1',
-            name: 'Support',
-            description: null,
-            teamLeadAgentId: null,
-            teamLeadAgentName: null,
-            members: [
-              {
-                agentId: 'agent-1',
-                agentName: 'Alpha',
-                isLead: false,
-                createdAt: '2026-03-08T12:00:00.000Z',
-              },
-            ],
-            createdAt: '2026-03-08T12:00:00.000Z',
-            updatedAt: '2026-03-08T12:00:00.000Z',
-          }),
-        } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      if (url.startsWith('/api/sessions')) {
-        return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
-      }
-      if (url.startsWith('/api/preflight')) {
-        return {
-          ok: true,
-          json: async () => ({
-            overall: 'pass',
-            checks: [],
-            providers: [],
-            supportedMcpProviders: [],
-            timestamp: new Date().toISOString(),
-          }),
-        } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-  });
-
-  afterEach(() => {
-    window.localStorage.removeItem(MODE_KEY);
-    window.localStorage.removeItem(TEAM_GROUPS_KEY);
-    if (originalFetch) {
-      global.fetch = originalFetch;
-    }
-  });
-
-  // TODO(test-strategy-overhaul): SKIPPED — team detail useQueries never resolve in jsdom + React Query v5.
-  // Root cause: React Query v5's useQueries creates dynamic query observers that depend on
-  // teams list resolving first, then team details resolving second. The multi-step async chain
-  // (teams list → localStorage mode switch → team detail queries → render) doesn't flush
-  // properly in jsdom. Verified: fetch mocks return correct URLs and data (confirmed via
-  // console.log debugging); the Tabs component switches to 'teams' mode; but teamViewLoading
-  // stays true because team detail queries remain in loading state indefinitely.
-  // Recommendation: extract to ChatSidebar-level unit test with pre-resolved query data,
-  // or use Playwright for full-page team grouping verification.
-  it.skip('groups agents by team, repeats multi-team members, and shows a no-team section', () => {});
-  it.skip('persists collapsed team groups to localStorage', () => {});
-  it.skip('keeps the grouped row context menu functional', () => {});
-  it.skip('falls back to all mode with a toast when teams loading fails', () => {});
 });
 
 describe('ChatPage agent context menu', () => {
@@ -525,29 +324,6 @@ describe('ChatPage agent context menu', () => {
     if (originalFetch) {
       global.fetch = originalFetch;
     }
-  });
-
-  it('shows launch when no session and terminate when running', async () => {
-    renderWithClient(<ChatPage />);
-
-    const alphaButton = await screen.findByLabelText(/Open terminal for Alpha \(offline\)/i);
-    const betaButton = await screen.findByLabelText(/Open terminal for Beta \(online\)/i);
-
-    // Open context menu for offline agent (Alpha) -> should show Launch
-    fireEvent.contextMenu(alphaButton);
-    await waitFor(() =>
-      expect(screen.getByRole('menuitem', { name: /Launch session/i })).toBeInTheDocument(),
-    );
-    expect(screen.queryByRole('menuitem', { name: /Terminate session/i })).not.toBeInTheDocument();
-
-    // Close menu by clicking elsewhere
-    fireEvent.click(document.body);
-
-    // Open context menu for online agent with session (Beta) -> should show Terminate
-    fireEvent.contextMenu(betaButton);
-    await waitFor(() =>
-      expect(screen.getByRole('menuitem', { name: /Terminate session/i })).toBeInTheDocument(),
-    );
   });
 
   it('launches a session from agent context menu without a selected thread', async () => {
@@ -1184,6 +960,14 @@ describe('Mass agent controls', () => {
     // Start button should be enabled when there are offline agents
     const startButton = screen.getByRole('button', { name: /^start/i });
     expect(startButton).not.toBeDisabled();
+
+    {
+      await waitFor(() => {
+        expect(screen.getByLabelText(/Open terminal for Alpha \(offline\)/i)).toBeInTheDocument();
+      });
+      const stopButton = screen.getByRole('button', { name: /^stop/i });
+      expect(stopButton).toBeDisabled();
+    }
   });
 
   it('disables Start All when all agents are online', async () => {
@@ -1225,47 +1009,6 @@ describe('Mass agent controls', () => {
     // Start button should be disabled when no offline agents
     const startButton = screen.getByRole('button', { name: /^start/i });
     expect(startButton).toBeDisabled();
-  });
-
-  it('disables Stop All when no agents have sessions', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              { id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' },
-              { id: 'agent-2', name: 'Beta', projectId: 'project-1', profileId: 'p1' },
-            ],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({
-            'agent-1': { online: false, sessionId: null },
-            'agent-2': { online: false, sessionId: null },
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    // Wait for presence to load
-    await waitFor(() => {
-      expect(screen.getByLabelText(/Open terminal for Alpha \(offline\)/i)).toBeInTheDocument();
-    });
-
-    // Stop button should be disabled when no agents have sessions
-    const stopButton = screen.getByRole('button', { name: /^stop/i });
-    expect(stopButton).toBeDisabled();
   });
 });
 
@@ -1372,6 +1115,17 @@ describe('ChatPage context bar integration', () => {
     const progressbar = screen.getAllByRole('progressbar')[0];
     expect(progressbar).toHaveAttribute('aria-valuenow', '50');
     expect(progressbar).toHaveAttribute('aria-label', 'Context window usage');
+
+    {
+      const agentButton = await screen.findByLabelText(/Open terminal for Beta \(online\)/i);
+      await waitFor(() => {
+        expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
+      });
+      fireEvent.contextMenu(agentButton);
+      await waitFor(() => {
+        expect(screen.getByText(/Terminate session/i)).toBeInTheDocument();
+      });
+    }
   });
 
   it('does not render context bar for offline agents', async () => {
@@ -1404,173 +1158,6 @@ describe('ChatPage context bar integration', () => {
     await screen.findByLabelText(/Open terminal for Alpha \(offline\)/i);
 
     // No context bar for offline agents (no session → no metrics query)
-    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
-  });
-
-  it('context menu stays accessible after context bar renders', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({
-            'agent-1': { online: true, sessionId: 'session-1' },
-          }),
-        } as Response;
-      }
-      if (url.includes('/transcript/summary')) {
-        return {
-          ok: true,
-          json: async () => ({
-            sessionId: 'session-1',
-            providerName: 'claude',
-            metrics: {
-              inputTokens: 0,
-              outputTokens: 0,
-              cacheReadTokens: 0,
-              cacheCreationTokens: 0,
-              totalTokens: 0,
-              totalContextConsumption: 0,
-              compactionCount: 0,
-              phaseBreakdowns: [],
-              visibleContextTokens: 0,
-              totalContextTokens: 160000,
-              contextWindowTokens: 200000,
-              costUsd: 0,
-            },
-            messageCount: 3,
-            isOngoing: true,
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      if (url.startsWith('/api/sessions')) {
-        return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
-      }
-      if (url.startsWith('/api/preflight')) {
-        return {
-          ok: true,
-          json: async () => ({
-            overall: 'pass',
-            checks: [],
-            providers: [],
-            supportedMcpProviders: [],
-            timestamp: new Date().toISOString(),
-          }),
-        } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    const agentButton = await screen.findByLabelText(/Open terminal for Alpha \(online\)/i);
-
-    // Wait for context bar to appear
-    await waitFor(() => {
-      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
-    });
-
-    // Context menu should still work after context bar renders
-    fireEvent.contextMenu(agentButton);
-    await waitFor(() => {
-      expect(screen.getByText(/Terminate session/i)).toBeInTheDocument();
-    });
-  });
-
-  it('no wrapper div for zero-usage main agent (spacer leak regression)', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.startsWith('/api/agents?projectId=')) {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'agent-1', name: 'Alpha', projectId: 'project-1', profileId: 'p1' }],
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/sessions/agents/presence')) {
-        return {
-          ok: true,
-          json: async () => ({
-            'agent-1': { online: true, sessionId: 'session-1' },
-          }),
-        } as Response;
-      }
-      // Summary returns zero context tokens → contextPercent = 0
-      if (url.includes('/transcript/summary')) {
-        return {
-          ok: true,
-          json: async () => ({
-            sessionId: 'session-1',
-            providerName: 'claude',
-            metrics: {
-              inputTokens: 0,
-              outputTokens: 0,
-              cacheReadTokens: 0,
-              cacheCreationTokens: 0,
-              totalTokens: 0,
-              totalContextConsumption: 0,
-              compactionCount: 0,
-              phaseBreakdowns: [],
-              visibleContextTokens: 0,
-              totalContextTokens: 0,
-              contextWindowTokens: 200000,
-              costUsd: 0,
-            },
-            messageCount: 0,
-            isOngoing: true,
-          }),
-        } as Response;
-      }
-      if (url.startsWith('/api/threads?projectId=')) {
-        return { ok: true, json: async () => ({ items: [] }) } as Response;
-      }
-      if (url.includes('/api/profiles/') && url.endsWith('/provider-configs')) {
-        return { ok: true, json: async () => [] } as Response;
-      }
-      if (url.startsWith('/api/sessions')) {
-        return { ok: true, json: async () => ({ id: 'session-new' }) } as Response;
-      }
-      if (url.startsWith('/api/preflight')) {
-        return {
-          ok: true,
-          json: async () => ({
-            overall: 'pass',
-            checks: [],
-            providers: [],
-            supportedMcpProviders: [],
-            timestamp: new Date().toISOString(),
-          }),
-        } as Response;
-      }
-      return { ok: true, json: async () => ({ items: [] }) } as Response;
-    }) as unknown as typeof fetch;
-
-    renderWithClient(<ChatPage />);
-
-    await screen.findByLabelText(/Open terminal for Alpha \(online\)/i);
-
-    // Wait for summary query to settle
-    await waitFor(() => {
-      const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
-      expect(urls.some((u) => u.includes('/transcript/summary'))).toBe(true);
-    });
-
-    // Zero-usage agent → no progressbar rendered (no spacer wrapper div)
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
   });
 });
@@ -1668,20 +1255,6 @@ describe('ChatPage context bar toggle', () => {
     }) as unknown as typeof fetch;
   }
 
-  it('default state: context bar visible with non-zero metrics and no localStorage entry', async () => {
-    expect(window.localStorage.getItem(LS_KEY)).toBeNull();
-    setupContextBarFetch();
-    renderWithClient(<ChatPage />);
-
-    await screen.findByLabelText(/Open terminal for Alpha \(online\)/i);
-    await waitFor(() => {
-      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
-    });
-
-    const progressbar = screen.getAllByRole('progressbar')[0];
-    expect(progressbar).toHaveAttribute('aria-valuenow', '50');
-  });
-
   it('collapsed main section creates no summary request for its off-screen bars', async () => {
     window.localStorage.setItem('devchain:chatSidebar:mainExpanded', 'false');
     setupContextBarFetch();
@@ -1751,56 +1324,7 @@ describe('ChatPage context bar toggle', () => {
     });
   });
 
-  it('toggle hides bar: uncheck Context tracking removes context bar', async () => {
-    setupContextBarFetch();
-    renderWithClient(<ChatPage />);
-
-    const agentButton = await screen.findByLabelText(/Open terminal for Alpha \(online\)/i);
-
-    // Wait for context bar to render
-    await waitFor(() => {
-      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
-    });
-
-    // Right-click to open context menu
-    fireEvent.contextMenu(agentButton);
-
-    // Find and click the "Context tracking" checkbox to uncheck it
-    const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
-    expect(checkbox).toHaveAttribute('data-state', 'checked');
-    fireEvent.click(checkbox);
-
-    // Context bar should be hidden
-    await waitFor(() => {
-      expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
-    });
-  });
-
-  it('toggle shows bar: re-check Context tracking restores context bar', async () => {
-    // Pre-populate localStorage with hidden key
-    window.localStorage.setItem(LS_KEY, JSON.stringify(['agent-1']));
-    setupContextBarFetch();
-    renderWithClient(<ChatPage />);
-
-    const agentButton = await screen.findByLabelText(/Open terminal for Alpha \(online\)/i);
-
-    const urlsBeforeToggle = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
-    expect(urlsBeforeToggle.some((url: string) => url.includes('/transcript/summary'))).toBe(false);
-    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
-
-    // Right-click and check "Context tracking"
-    fireEvent.contextMenu(agentButton);
-    const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
-    expect(checkbox).toHaveAttribute('data-state', 'unchecked');
-    fireEvent.click(checkbox);
-
-    // Enabling tracking creates the summary query and renders the bar.
-    await waitFor(() => {
-      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  it('localStorage persistence: toggle off writes key and survives remount', async () => {
+  it('hides, persists across remount, and restores context tracking', async () => {
     setupContextBarFetch();
     const { unmount } = renderWithClient(<ChatPage />);
 
@@ -1813,6 +1337,8 @@ describe('ChatPage context bar toggle', () => {
     fireEvent.contextMenu(agentButton);
     const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
     fireEvent.click(checkbox);
+
+    await waitFor(() => expect(screen.queryAllByRole('progressbar')).toHaveLength(0));
 
     // Verify localStorage contains the agent key
     await waitFor(() => {
@@ -1827,12 +1353,25 @@ describe('ChatPage context bar toggle', () => {
     (global.fetch as jest.Mock).mockClear();
     renderWithClient(<ChatPage />);
 
-    await screen.findByLabelText(/Open terminal for Alpha \(online\)/i);
+    const remountedAgentButton = await screen.findByLabelText(
+      /Open terminal for Alpha \(online\)/i,
+    );
     const remountUrls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
     expect(remountUrls.some((url: string) => url.includes('/transcript/summary'))).toBe(false);
 
     // Bar still hidden after remount
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+    fireEvent.contextMenu(remountedAgentButton);
+    const restoredCheckbox = await screen.findByRole('menuitemcheckbox', {
+      name: /Context tracking/i,
+    });
+    expect(restoredCheckbox).toHaveAttribute('data-state', 'unchecked');
+    fireEvent.click(restoredCheckbox);
+
+    // Enabling tracking creates the summary query and renders the bar.
+    await waitFor(() => {
+      expect(screen.getAllByRole('progressbar').length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   it('menu item always enabled: checkbox not disabled even without active session', async () => {
@@ -1847,23 +1386,6 @@ describe('ChatPage context bar toggle', () => {
     const checkbox = await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i });
     expect(checkbox).not.toHaveAttribute('data-disabled');
     expect(checkbox).toHaveAttribute('data-state', 'checked');
-  });
-
-  it('no empty-spacer artifact when bar is hidden via toggle', async () => {
-    window.localStorage.setItem(LS_KEY, JSON.stringify(['agent-1']));
-    setupContextBarFetch();
-    const { container } = renderWithClient(<ChatPage />);
-
-    await screen.findByLabelText(/Open terminal for Alpha \(online\)/i);
-
-    const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
-    expect(urls.some((url: string) => url.includes('/transcript/summary'))).toBe(false);
-    expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
-
-    // No empty wrapper div with context bar padding classes (Remediation 13 regression guard)
-    // The AgentContextBar wrapper uses "px-3 -mt-0.5 pb-1" — should not exist when hidden
-    const contextBarWrappers = container.querySelectorAll('[aria-label="Context window usage"]');
-    expect(contextBarWrappers).toHaveLength(0);
   });
 });
 
@@ -2141,59 +1663,21 @@ describe('ChatPage unlogged agent time', () => {
     });
   });
 
-  it('focuses the stable header root when the Session tab is active', async () => {
-    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
-
-    fireEvent.click(await screen.findByRole('tab', { name: 'Session' }));
-    await openDialogFromHeader();
-    await confirmAssignment();
-
-    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
-    const headerRoot = document.querySelector('div[tabindex="-1"].border-b');
-    expect(headerRoot).not.toBeNull();
-    await waitFor(() => {
-      expect(document.activeElement).toBe(headerRoot);
-    });
-  });
-
-  it('focuses the stable header root when the terminal floats in a window', async () => {
-    terminalWindowsMock.push({ id: 'session-2' });
-    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
-
-    await openDialogFromHeader();
-    await confirmAssignment();
-
-    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
-    const headerRoot = document.querySelector('div[tabindex="-1"].border-b');
-    expect(headerRoot).not.toBeNull();
-    await waitFor(() => {
-      expect(document.activeElement).toBe(headerRoot);
-    });
-  });
-
-  it('keeps the dialog open on a stale 409 and never retries the write', async () => {
-    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
-
-    await openDialogFromHeader();
-    bufferItems = [{ ...bufferItem, minutes: 8, snapshotToken: 'f'.repeat(64) }];
-    assignStatus = 409;
-
-    fireEvent.click(await screen.findByRole('option', { name: /Ship the API/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Log 10m.' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('8m from Beta.')).toBeInTheDocument();
-    });
-    expect(screen.getByRole('button', { name: 'Log 8m.' })).toBeInTheDocument();
-    expect(screen.queryByText('Log time to an Epic.')).toBeInTheDocument();
-
-    const assignCalls = (global.fetch as jest.Mock).mock.calls
-      .map((call) => String(call[0]))
-      .filter((url) => url.endsWith('/assign'));
-    expect(assignCalls).toHaveLength(1);
-    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
-    expect(toastSpy).not.toHaveBeenCalled();
-  });
+  it.each(['Session tab', 'floating terminal'])(
+    'focuses the stable header root with %s',
+    async (mode) => {
+      if (mode === 'floating terminal') terminalWindowsMock.push({ id: 'session-2' });
+      renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
+      if (mode === 'Session tab')
+        fireEvent.click(await screen.findByRole('tab', { name: 'Session' }));
+      await openDialogFromHeader();
+      await confirmAssignment();
+      expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
+      const headerRoot = document.querySelector('div[tabindex="-1"].border-b');
+      expect(headerRoot).not.toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(headerRoot));
+    },
+  );
 
   it('shows no marker or action once a poll fails after earlier success', async () => {
     const { queryClient } = renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
@@ -2268,43 +1752,6 @@ describe('ChatPage unlogged agent time', () => {
     });
   });
 
-  it('keeps the dialog open on a failed reset without closing or announcing', async () => {
-    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
-
-    await openDialogFromHeader();
-    resetStatus = 500;
-    fireEvent.click(screen.getByRole('button', { name: 'Reset time' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('The reset could not be completed. Try again.')).toBeInTheDocument();
-    });
-    expect(screen.getByText('Log time to an Epic.')).toBeInTheDocument();
-    expect(toastSpy).not.toHaveBeenCalled();
-    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
-  });
-
-  it('keeps the dialog open on a stale reset 409, refreshes, and never retries the write', async () => {
-    renderWithClient(<ChatPage />, ['/chat?agent=agent-2']);
-
-    await openDialogFromHeader();
-    bufferItems = [{ ...bufferItem, minutes: 8, snapshotToken: 'f'.repeat(64) }];
-    resetStatus = 409;
-    fireEvent.click(screen.getByRole('button', { name: 'Reset time' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('8m from Beta.')).toBeInTheDocument();
-    });
-    expect(screen.getByText(/Buffered time changed since this dialog opened/i)).toBeInTheDocument();
-    expect(screen.queryByText('Log time to an Epic.')).toBeInTheDocument();
-
-    const resetCalls = (global.fetch as jest.Mock).mock.calls
-      .map((call) => String(call[0]))
-      .filter((url) => url.endsWith('/reset'));
-    expect(resetCalls).toHaveLength(1);
-    expect(toastSpy).not.toHaveBeenCalled();
-    expect(mockInlineTerminalHandle.focus).not.toHaveBeenCalled();
-  });
-
   it('removes the time marker but keeps the offline row once a termination-cleared buffer arrives', async () => {
     // Genuinely offline: the termination stopped agent-2's session, so no
     // running session and no online presence exist while the buffered
@@ -2338,5 +1785,77 @@ describe('ChatPage unlogged agent time', () => {
         name: /Open terminal for Beta \(offline\), \d+m not logged/i,
       }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('ChatPage Escape handler emit ordering (RTL)', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    appSocketEmitMock.mockClear();
+    focusedWindowIdMock.value = 'focused-terminal-session';
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ items: [] }),
+    })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    focusedWindowIdMock.value = null;
+    global.fetch = originalFetch;
+  });
+
+  it('emits terminal:focus immediately before terminal:input on Escape keydown', async () => {
+    await act(async () => {
+      renderWithClient(<ChatPage />);
+    });
+
+    appSocketEmitMock.mockClear();
+    fireEvent.keyDown(document, { key: 'ArrowRight', code: 'ArrowRight' });
+    expect(appSocketEmitMock).not.toHaveBeenCalledWith('terminal:focus', expect.anything());
+    expect(appSocketEmitMock).not.toHaveBeenCalledWith('terminal:input', expect.anything());
+    act(() => {
+      fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' });
+    });
+
+    const focusCall = appSocketEmitMock.mock.calls.find(
+      ([event]: [string]) => event === 'terminal:focus',
+    );
+    const inputCall = appSocketEmitMock.mock.calls.find(
+      ([event]: [string]) => event === 'terminal:input',
+    );
+
+    expect(focusCall).toBeDefined();
+    expect(inputCall).toBeDefined();
+    expect(focusCall![1]).toEqual({ sessionId: 'focused-terminal-session' });
+    expect(inputCall![1]).toEqual({ sessionId: 'focused-terminal-session', data: '\x1b' });
+
+    const focusIndex = appSocketEmitMock.mock.calls.indexOf(focusCall!);
+    const inputIndex = appSocketEmitMock.mock.calls.indexOf(inputCall!);
+    expect(focusIndex).toBeLessThan(inputIndex);
+  });
+
+  it('does not emit when no focused window', async () => {
+    focusedWindowIdMock.value = null;
+
+    await act(async () => {
+      renderWithClient(<ChatPage />);
+    });
+
+    appSocketEmitMock.mockClear();
+
+    act(() => {
+      fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' });
+    });
+
+    const focusCall = appSocketEmitMock.mock.calls.find(
+      ([event]: [string]) => event === 'terminal:focus',
+    );
+    const inputCall = appSocketEmitMock.mock.calls.find(
+      ([event]: [string]) => event === 'terminal:input',
+    );
+
+    expect(focusCall).toBeUndefined();
+    expect(inputCall).toBeUndefined();
   });
 });

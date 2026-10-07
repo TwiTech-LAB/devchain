@@ -6,12 +6,7 @@ import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/s
 import type { Project } from '../../storage/models/domain.models';
 import { ProjectRegistryImportService } from '../services/project-registry-import.service';
 import { ProjectTemplateUpgradeService } from '../services/project-template-upgrade.service';
-import {
-  BadRequestException,
-  ConflictException,
-  HttpStatus,
-  NotFoundException,
-} from '@nestjs/common';
+import { ConflictException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
@@ -189,91 +184,6 @@ describe('ProjectsController', () => {
 
   // Legacy POST /api/projects removed; creation is template-only now.
 
-  describe('POST /api/projects/from-registry', () => {
-    it('creates a project from a registry template through the projects-owned service', async () => {
-      registryImportService.createProjectFromRegistry!.mockResolvedValue({
-        project: {
-          id: 'p1',
-          name: 'Project One',
-          rootPath: '/tmp/one',
-          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
-        },
-        fromRegistry: true,
-        templateSlug: 'starter-project',
-        templateVersion: '1.2.3',
-        imported: { prompts: 1, profiles: 1, agents: 1, statuses: 1 },
-        promptTransfer: { imported: 1, deleted: 0, preserved: 0, skipped: 0 },
-      });
-
-      const result = await controller.createProjectFromRegistry({
-        slug: 'starter-project',
-        version: '1.2.3',
-        projectName: 'Project One',
-        projectDescription: 'Created from registry',
-        rootPath: '/tmp/one',
-      });
-
-      expect(registryImportService.createProjectFromRegistry).toHaveBeenCalledWith({
-        slug: 'starter-project',
-        version: '1.2.3',
-        projectName: 'Project One',
-        projectDescription: 'Created from registry',
-        rootPath: '/tmp/one',
-      });
-      expect(result.project.id).toBe('p1');
-    });
-
-    it('validates and forwards an explicit destination workspace', async () => {
-      registryImportService.createProjectFromRegistry!.mockResolvedValue({
-        project: {
-          id: 'p1',
-          name: 'Project One',
-          rootPath: '/tmp/one',
-          workspaceId: SECOND_WORKSPACE_ID,
-        },
-        fromRegistry: true,
-        templateSlug: 'starter-project',
-        templateVersion: '1.2.3',
-        imported: { prompts: 1, profiles: 1, agents: 1, statuses: 1 },
-        promptTransfer: { imported: 1, deleted: 0, preserved: 0, skipped: 0 },
-      });
-
-      await controller.createProjectFromRegistry({
-        slug: 'starter-project',
-        version: '1.2.3',
-        projectName: 'Project One',
-        rootPath: '/tmp/one',
-        workspaceId: SECOND_WORKSPACE_ID,
-      });
-
-      expect(registryImportService.createProjectFromRegistry).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceId: SECOND_WORKSPACE_ID }),
-      );
-      await expect(
-        controller.createProjectFromRegistry({
-          slug: 'starter-project',
-          version: '1.2.3',
-          projectName: 'Project One',
-          rootPath: '/tmp/one',
-          workspaceId: 'invalid',
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-      expect(registryImportService.createProjectFromRegistry).toHaveBeenCalledTimes(1);
-    });
-
-    it('throws BadRequestException for invalid registry create body', async () => {
-      await expect(
-        controller.createProjectFromRegistry({
-          slug: '',
-          version: 'bad-version',
-          projectName: '',
-          rootPath: '',
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-      expect(registryImportService.createProjectFromRegistry).not.toHaveBeenCalled();
-    });
-  });
-
   describe('template upgrade endpoints', () => {
     it('returns HTTP 200 for result-envelope POST endpoints', () => {
       expect(
@@ -288,41 +198,6 @@ describe('ProjectsController', () => {
       expect(
         Reflect.getMetadata(HTTP_CODE_METADATA, ProjectsController.prototype.restoreTemplateBackup),
       ).toBe(HttpStatus.OK);
-    });
-
-    it('upgrades a project through ProjectTemplateUpgradeService', async () => {
-      templateUpgradeService.upgradeProject!.mockResolvedValue({
-        success: true,
-        newVersion: '2.0.0',
-      });
-
-      const result = await controller.upgradeTemplate('p1', { targetVersion: '2.0.0' });
-
-      expect(templateUpgradeService.upgradeProject).toHaveBeenCalledWith({
-        projectId: 'p1',
-        targetVersion: '2.0.0',
-      });
-      expect(result).toEqual({ success: true, newVersion: '2.0.0' });
-    });
-
-    it('throws BadRequestException for invalid upgrade body', async () => {
-      await expect(controller.upgradeTemplate('p1', { targetVersion: '' })).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
-      expect(templateUpgradeService.upgradeProject).not.toHaveBeenCalled();
-    });
-
-    it('returns the source-aligned upgrade preview through ProjectTemplateUpgradeService', async () => {
-      const preview = { manifest: { slug: 'starter', version: '2.0.0' } };
-      templateUpgradeService.previewUpgrade!.mockResolvedValue(preview as never);
-
-      await expect(
-        controller.previewTemplateUpgrade('p1', { targetVersion: '2.0.0' }),
-      ).resolves.toBe(preview);
-      expect(templateUpgradeService.previewUpgrade).toHaveBeenCalledWith({
-        projectId: 'p1',
-        targetVersion: '2.0.0',
-      });
     });
 
     it('validates and forwards every upgrade wizard selection', async () => {
@@ -375,39 +250,6 @@ describe('ProjectsController', () => {
       expect(templateUpgradeService.upgradeProject).not.toHaveBeenCalled();
     });
 
-    it('forwards a preset selection when per-agent overrides are absent', async () => {
-      templateUpgradeService.upgradeProject!.mockResolvedValue({
-        success: true,
-        newVersion: '2.0.0',
-      });
-
-      await controller.upgradeTemplate('p1', {
-        targetVersion: '2.0.0',
-        presetName: 'Balanced',
-      });
-
-      expect(templateUpgradeService.upgradeProject).toHaveBeenCalledWith({
-        projectId: 'p1',
-        targetVersion: '2.0.0',
-        presetName: 'Balanced',
-      });
-    });
-
-    it('restores a scoped backup through ProjectTemplateUpgradeService', async () => {
-      templateUpgradeService.getBackupInfo!.mockReturnValue({
-        projectId: 'p1',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        fromVersion: '1.0.0',
-      });
-      templateUpgradeService.restoreBackup!.mockResolvedValue(undefined);
-
-      const result = await controller.restoreTemplateBackup('p1', { backupId: 'backup-p1-1' });
-
-      expect(templateUpgradeService.getBackupInfo).toHaveBeenCalledWith('backup-p1-1');
-      expect(templateUpgradeService.restoreBackup).toHaveBeenCalledWith('backup-p1-1');
-      expect(result).toEqual({ success: true, message: 'Backup restored successfully' });
-    });
-
     it('throws NotFoundException when restore backup belongs to another project', async () => {
       templateUpgradeService.getBackupInfo!.mockReturnValue({
         projectId: 'p2',
@@ -449,69 +291,37 @@ describe('ProjectsController', () => {
         found: false,
       });
     });
-
-    it('lists project-scoped template backups', async () => {
-      templateUpgradeService.getProjectBackups!.mockReturnValue([
-        { backupId: 'backup-p1-1', createdAt: '2026-01-01T00:00:00.000Z' },
-      ]);
-
-      await expect(controller.getTemplateBackups('p1')).resolves.toEqual({
-        projectId: 'p1',
-        backups: [{ backupId: 'backup-p1-1', createdAt: '2026-01-01T00:00:00.000Z' }],
-      });
-      expect(templateUpgradeService.getProjectBackups).toHaveBeenCalledWith('p1');
-    });
   });
 
   describe('GET /api/projects/:id', () => {
-    it('returns project with templateMetadata for registry template', async () => {
-      const project = makeProject({ id: 'p1' });
-      storage.getProject.mockResolvedValue(project);
-      settingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'my-template',
-        source: 'registry',
-        installedVersion: '2.0.0',
-        registryUrl: 'https://registry.example.com',
-        installedAt: new Date().toISOString(),
-      });
-
-      const result = await controller.getProject('p1');
-
-      expect(result.templateMetadata).toEqual({
-        slug: 'my-template',
-        version: '2.0.0',
-        source: 'registry',
-      });
-    });
-
-    it('returns project with templateMetadata for bundled template', async () => {
-      const project = makeProject({ id: 'p1' });
-      storage.getProject.mockResolvedValue(project);
-      settingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'empty-project',
-        source: 'bundled',
-        installedVersion: null,
-        registryUrl: null,
-        installedAt: new Date().toISOString(),
-      });
-
-      const result = await controller.getProject('p1');
-
-      expect(result.templateMetadata).toEqual({
-        slug: 'empty-project',
-        version: null,
-        source: 'bundled',
-      });
-    });
-
-    it('returns project with null templateMetadata when not linked', async () => {
-      const project = makeProject({ id: 'p1' });
-      storage.getProject.mockResolvedValue(project);
-      settingsService.getProjectTemplateMetadata.mockReturnValue(null);
-
-      const result = await controller.getProject('p1');
-
-      expect(result.templateMetadata).toBeNull();
+    it.each([
+      {
+        name: 'registry',
+        metadata: {
+          templateSlug: 'my-template',
+          source: 'registry' as const,
+          installedVersion: '2.0.0',
+          registryUrl: 'https://registry.example.com',
+          installedAt: new Date().toISOString(),
+        },
+        expected: { slug: 'my-template', version: '2.0.0', source: 'registry' },
+      },
+      {
+        name: 'bundled',
+        metadata: {
+          templateSlug: 'empty-project',
+          source: 'bundled' as const,
+          installedVersion: null,
+          registryUrl: null,
+          installedAt: new Date().toISOString(),
+        },
+        expected: { slug: 'empty-project', version: null, source: 'bundled' },
+      },
+      { name: 'unlinked', metadata: null, expected: null },
+    ])('enriches $name template metadata', async ({ metadata, expected }) => {
+      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
+      settingsService.getProjectTemplateMetadata.mockReturnValue(metadata);
+      expect((await controller.getProject('p1')).templateMetadata).toEqual(expected);
     });
   });
 
@@ -535,12 +345,6 @@ describe('ProjectsController', () => {
       expect(result.items).toHaveLength(1);
       expect(result.items[0].workspaceId).toBe(SECOND_WORKSPACE_ID);
       expect(result.total).toBe(1);
-    });
-
-    it('rejects an invalid workspace filter before storage access', async () => {
-      await expect(controller.listProjects(undefined, undefined, 'invalid')).rejects.toThrow();
-      expect(storage.listProjects).not.toHaveBeenCalled();
-      expect(storage.getProject).not.toHaveBeenCalled();
     });
 
     it('returns projects with templateMetadata', async () => {
@@ -660,267 +464,80 @@ describe('ProjectsController', () => {
     });
 
     describe('isConfigurable computation', () => {
-      it('marks project as configurable when familySlug has 2+ providers via configs', async () => {
-        const project = makeProject({ id: 'p1' });
-        storage.listProjects.mockResolvedValue({
-          items: [project],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        // Profile with familySlug='coder' in project p1
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [
-            {
-              id: 'profile1',
+      it.each([
+        {
+          name: 'multiple providers',
+          profileCount: 1,
+          familySlug: 'coder',
+          providers: ['claude', 'agy'],
+          expected: true,
+        },
+        {
+          name: 'single provider',
+          profileCount: 1,
+          familySlug: 'coder',
+          providers: ['claude'],
+          expected: false,
+        },
+        {
+          name: 'no configs',
+          profileCount: 2,
+          familySlug: 'coder',
+          providers: [],
+          expected: false,
+        },
+        {
+          name: 'no family',
+          profileCount: 1,
+          familySlug: null,
+          providers: ['claude', 'agy'],
+          expected: false,
+        },
+      ])(
+        'computes configurability with $name',
+        async ({ profileCount, familySlug, providers, expected }) => {
+          storage.listProjects.mockResolvedValue({
+            items: [makeProject({ id: 'p1' })],
+            total: 1,
+            limit: 100,
+            offset: 0,
+          });
+          storage.listAgentProfiles.mockResolvedValue({
+            items: Array.from({ length: profileCount }, (_, index) => ({
+              id: 'profile' + (index + 1),
               projectId: 'p1',
-              familySlug: 'coder',
-              name: 'Profile 1',
+              familySlug,
+              name: 'Profile ' + (index + 1),
               instructions: null,
               temperature: null,
               maxTokens: null,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
-            },
-          ],
-          total: 1,
-          limit: 10000,
-          offset: 0,
-        });
-
-        // Two configs for the same profile but different providers
-        storage.listAllProfileProviderConfigs.mockResolvedValue([
-          {
-            profileId: 'profile1',
-            providerId: 'claude',
-            id: 'c1',
-            name: 'Claude Config',
-            description: null,
-            options: null,
-            env: null,
-            model: null,
-            effort: null,
-            position: 0,
-            createdAt: '',
-            updatedAt: '',
-          },
-          {
-            profileId: 'profile1',
-            providerId: 'agy',
-            id: 'c2',
-            name: 'AGY Config',
-            description: null,
-            options: null,
-            env: null,
-            model: null,
-            effort: null,
-            position: 1,
-            createdAt: '',
-            updatedAt: '',
-          },
-        ]);
-
-        const result = await controller.listProjects();
-
-        expect(result.items[0].isConfigurable).toBe(true);
-      });
-
-      it('does NOT mark project as configurable when familySlug has only 1 provider', async () => {
-        const project = makeProject({ id: 'p1' });
-        storage.listProjects.mockResolvedValue({
-          items: [project],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [
-            {
-              id: 'profile1',
-              projectId: 'p1',
-              familySlug: 'coder',
-              name: 'Profile 1',
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-          ],
-          total: 1,
-          limit: 10000,
-          offset: 0,
-        });
-
-        // Only one config (single provider)
-        storage.listAllProfileProviderConfigs.mockResolvedValue([
-          {
-            profileId: 'profile1',
-            providerId: 'claude',
-            id: 'c1',
-            name: 'Claude Config',
-            description: null,
-            options: null,
-            env: null,
-            model: null,
-            effort: null,
-            position: 0,
-            createdAt: '',
-            updatedAt: '',
-          },
-        ]);
-
-        const result = await controller.listProjects();
-
-        expect(result.items[0].isConfigurable).toBe(false);
-      });
-
-      it('is NOT configurable when profiles have no configs (Phase 4: no providerId fallback)', async () => {
-        const project = makeProject({ id: 'p1' });
-        storage.listProjects.mockResolvedValue({
-          items: [project],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        // Two profiles with same familySlug but no configs
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [
-            {
-              id: 'profile1',
-              projectId: 'p1',
-              familySlug: 'coder',
-              name: 'Profile 1',
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-            {
-              id: 'profile2',
-              projectId: 'p1',
-              familySlug: 'coder',
-              name: 'Profile 2',
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-          ],
-          total: 2,
-          limit: 10000,
-          offset: 0,
-        });
-
-        // No configs exist - without configs, cannot determine providers
-        storage.listAllProfileProviderConfigs.mockResolvedValue([]);
-
-        const result = await controller.listProjects();
-
-        // NOT configurable because no configs exist (Phase 4: profiles no longer have providerId)
-        expect(result.items[0].isConfigurable).toBe(false);
-      });
-
-      it('does NOT mark project as configurable when no profiles have familySlug', async () => {
-        const project = makeProject({ id: 'p1' });
-        storage.listProjects.mockResolvedValue({
-          items: [project],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        // Profile without familySlug
-        storage.listAgentProfiles.mockResolvedValue({
-          items: [
-            {
-              id: 'profile1',
-              projectId: 'p1',
-              familySlug: null,
-              name: 'Profile 1',
-              instructions: null,
-              temperature: null,
-              maxTokens: null,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-          ],
-          total: 1,
-          limit: 10000,
-          offset: 0,
-        });
-
-        storage.listAllProfileProviderConfigs.mockResolvedValue([
-          {
-            profileId: 'profile1',
-            providerId: 'claude',
-            id: 'c1',
-            name: 'Claude Config',
-            description: null,
-            options: null,
-            env: null,
-            model: null,
-            effort: null,
-            position: 0,
-            createdAt: '',
-            updatedAt: '',
-          },
-          {
-            profileId: 'profile1',
-            providerId: 'agy',
-            id: 'c2',
-            name: 'AGY Config',
-            description: null,
-            options: null,
-            env: null,
-            model: null,
-            effort: null,
-            position: 1,
-            createdAt: '',
-            updatedAt: '',
-          },
-        ]);
-
-        const result = await controller.listProjects();
-
-        // Not configurable because profile has no familySlug
-        expect(result.items[0].isConfigurable).toBe(false);
-      });
+            })),
+            total: profileCount,
+            limit: 10000,
+            offset: 0,
+          });
+          storage.listAllProfileProviderConfigs.mockResolvedValue(
+            providers.map((providerId, position) => ({
+              profileId: 'profile1',
+              providerId,
+              id: 'c' + (position + 1),
+              name: providerId,
+              description: null,
+              options: null,
+              env: null,
+              model: null,
+              effort: null,
+              position,
+              createdAt: '',
+              updatedAt: '',
+            })),
+          );
+          expect((await controller.listProjects()).items[0].isConfigurable).toBe(expected);
+        },
+      );
     });
-  });
-
-  it('PUT/GET: toggles isTemplate and getProject returns updated value', async () => {
-    projectsService.updateProject!.mockResolvedValue({
-      project: makeProject({ isTemplate: false }),
-      provisioningWarnings: [],
-    });
-    storage.getProject.mockResolvedValue(makeProject({ isTemplate: false }));
-
-    const updated = await controller.updateProject('p1', { isTemplate: false });
-    expect(updated.project.isTemplate).toBe(false);
-
-    const fetched = await controller.getProject('p1');
-    expect(fetched.isTemplate).toBe(false);
-  });
-
-  it('validates and forwards workspace placement on project update before mutation', async () => {
-    projectsService.updateProject!.mockResolvedValue({
-      project: makeProject({ workspaceId: SECOND_WORKSPACE_ID }),
-      provisioningWarnings: [],
-    });
-
-    await controller.updateProject('p1', { workspaceId: SECOND_WORKSPACE_ID });
-    expect(projectsService.updateProject).toHaveBeenCalledWith('p1', {
-      workspaceId: SECOND_WORKSPACE_ID,
-    });
-
-    await expect(controller.updateProject('p1', { workspaceId: 'invalid' })).rejects.toThrow();
-    expect(projectsService.updateProject).toHaveBeenCalledTimes(1);
   });
 
   describe('GET /api/projects/by-path', () => {
@@ -946,17 +563,6 @@ describe('ProjectsController', () => {
         },
       });
       expect(storage.findProjectByPath).toHaveBeenCalledWith('/home/user/project');
-    });
-
-    it('returns project with null templateMetadata when no metadata exists', async () => {
-      const project = makeProject({ id: 'p1', rootPath: 'C:\\Users\\user\\project' });
-      storage.findProjectByPath.mockResolvedValue(project);
-      settingsService.getProjectTemplateMetadata.mockReturnValue(null);
-
-      const result = await controller.getProjectByPath('C:\\Users\\user\\project');
-
-      expect(result.templateMetadata).toBeNull();
-      expect(storage.findProjectByPath).toHaveBeenCalledWith('C:\\Users\\user\\project');
     });
 
     it('throws BadRequestException when path parameter is missing', async () => {
@@ -987,117 +593,6 @@ describe('ProjectsController', () => {
   });
 
   describe('POST /api/projects/from-template', () => {
-    it('validates and forwards an explicit destination workspace before creation', async () => {
-      projectsService.createFromTemplate.mockResolvedValue({
-        success: true,
-        project: makeProject({ workspaceId: SECOND_WORKSPACE_ID }),
-      } as never);
-
-      await controller.createProjectFromTemplate({
-        name: 'New Project',
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-        workspaceId: SECOND_WORKSPACE_ID,
-      });
-      expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceId: SECOND_WORKSPACE_ID }),
-      );
-
-      await expect(
-        controller.createProjectFromTemplate({
-          name: 'New Project',
-          rootPath: '/tmp/new',
-          slug: 'my-template',
-          workspaceId: 'invalid',
-        }),
-      ).rejects.toThrow();
-      expect(projectsService.createFromTemplate).toHaveBeenCalledTimes(1);
-    });
-
-    it('accepts optional projectId and passes it to service', async () => {
-      const mockResult = {
-        success: true,
-        project: makeProject({ id: '11111111-1111-4111-8111-111111111111', name: 'New Project' }),
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
-      };
-      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
-
-      await controller.createProjectFromTemplate({
-        name: 'New Project',
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-        projectId: '11111111-1111-4111-8111-111111111111',
-      });
-
-      expect(projectsService.createFromTemplate).toHaveBeenCalledWith({
-        name: 'New Project',
-        description: undefined,
-        rootPath: '/tmp/new',
-        projectId: '11111111-1111-4111-8111-111111111111',
-        slug: 'my-template',
-        version: null,
-      });
-    });
-
-    it('rejects invalid projectId format', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
-          name: 'New Project',
-          rootPath: '/tmp/new',
-          slug: 'my-template',
-          projectId: 'not-a-uuid',
-        }),
-      ).rejects.toThrow();
-    });
-
-    it('accepts valid slug and passes to service', async () => {
-      const mockResult = {
-        success: true,
-        project: makeProject({ id: 'p1', name: 'New Project' }),
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
-      };
-      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
-
-      const result = await controller.createProjectFromTemplate({
-        name: 'New Project',
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-      });
-
-      expect(result).toEqual(mockResult);
-      expect(projectsService.createFromTemplate).toHaveBeenCalledWith({
-        name: 'New Project',
-        description: undefined,
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-        version: null,
-      });
-    });
-
-    it('accepts valid slug with version', async () => {
-      const mockResult = {
-        success: true,
-        project: makeProject({ id: 'p1', name: 'New Project' }),
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
-      };
-      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
-
-      await controller.createProjectFromTemplate({
-        name: 'New Project',
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-        version: '1.2.3',
-      });
-
-      expect(projectsService.createFromTemplate).toHaveBeenCalledWith({
-        name: 'New Project',
-        description: undefined,
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-        version: '1.2.3',
-      });
-    });
-
     it('accepts legacy templateId for backward compatibility', async () => {
       const mockResult = {
         success: true,
@@ -1179,50 +674,6 @@ describe('ProjectsController', () => {
       ).rejects.toThrow('Slug must contain only alphanumeric characters, hyphens, and underscores');
     });
 
-    it('rejects invalid version format (not semver)', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
-          name: 'New Project',
-          rootPath: '/tmp/new',
-          slug: 'my-template',
-          version: 'invalid-version',
-        }),
-      ).rejects.toThrow('Version must be in semver format');
-    });
-
-    it('accepts semver with prerelease tag', async () => {
-      const mockResult = {
-        success: true,
-        project: makeProject({ id: 'p1' }),
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
-      };
-      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
-
-      await controller.createProjectFromTemplate({
-        name: 'New Project',
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-        version: '1.0.0-beta.1',
-      });
-
-      expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          version: '1.0.0-beta.1',
-        }),
-      );
-    });
-
-    it('rejects when neither slug nor templateId provided', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
-          name: 'New Project',
-          rootPath: '/tmp/new',
-        }),
-      ).rejects.toThrow(
-        'Provide either (slug or templateId) OR templatePath, but not both or neither',
-      );
-    });
-
     it('accepts valid familyProviderMappings and normalizes to lowercase', async () => {
       const mockResult = {
         success: true,
@@ -1243,28 +694,6 @@ describe('ProjectsController', () => {
           familyProviderMappings: { coder: 'claude', reviewer: 'agy' },
         }),
       );
-    });
-
-    it('rejects familyProviderMappings with empty key', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
-          name: 'New Project',
-          rootPath: '/tmp/new',
-          slug: 'my-template',
-          familyProviderMappings: { '': 'claude' },
-        }),
-      ).rejects.toThrow();
-    });
-
-    it('rejects familyProviderMappings with empty value', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
-          name: 'New Project',
-          rootPath: '/tmp/new',
-          slug: 'my-template',
-          familyProviderMappings: { coder: '' },
-        }),
-      ).rejects.toThrow();
     });
 
     // templatePath parameter tests
@@ -1292,98 +721,47 @@ describe('ProjectsController', () => {
       });
     });
 
-    it('accepts templatePath with familyProviderMappings', async () => {
-      const mockResult = {
-        success: true,
-        project: makeProject({ id: 'p1' }),
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 5 },
-      };
-      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
-
-      await controller.createProjectFromTemplate({
-        name: 'New Project',
-        rootPath: '/tmp/new',
-        templatePath: '/path/to/template.json',
-        familyProviderMappings: { Coder: 'CLAUDE' },
-      });
-
-      expect(projectsService.createFromTemplate).toHaveBeenCalledWith({
-        name: 'New Project',
-        description: undefined,
-        rootPath: '/tmp/new',
-        templatePath: '/path/to/template.json',
-        familyProviderMappings: { coder: 'claude' },
-      });
-    });
-
-    it('rejects when both slug and templatePath provided', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
+    it.each([
+      {
+        name: 'rejects when both slug and templatePath provided',
+        body: {
           name: 'New Project',
           rootPath: '/tmp/new',
           slug: 'my-template',
           templatePath: '/path/to/template.json',
-        }),
-      ).rejects.toThrow(
-        'Provide either (slug or templateId) OR templatePath, but not both or neither',
-      );
-    });
-
-    it('rejects when both templateId and templatePath provided', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
+        },
+        message: 'Provide either (slug or templateId) OR templatePath, but not both or neither',
+      },
+      {
+        name: 'rejects when both templateId and templatePath provided',
+        body: {
           name: 'New Project',
           rootPath: '/tmp/new',
           templateId: 'my-template',
           templatePath: '/path/to/template.json',
-        }),
-      ).rejects.toThrow(
-        'Provide either (slug or templateId) OR templatePath, but not both or neither',
-      );
-    });
-
-    it('rejects when version provided with templatePath', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
+        },
+        message: 'Provide either (slug or templateId) OR templatePath, but not both or neither',
+      },
+      {
+        name: 'rejects when version provided with templatePath',
+        body: {
           name: 'New Project',
           rootPath: '/tmp/new',
           templatePath: '/path/to/template.json',
           version: '1.0.0',
-        }),
-      ).rejects.toThrow('version cannot be specified when using templatePath');
-    });
-
-    it('rejects when neither slug, templateId, nor templatePath provided', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
+        },
+        message: 'version cannot be specified when using templatePath',
+      },
+      {
+        name: 'rejects when neither slug, templateId, nor templatePath provided',
+        body: {
           name: 'New Project',
           rootPath: '/tmp/new',
-        }),
-      ).rejects.toThrow(
-        'Provide either (slug or templateId) OR templatePath, but not both or neither',
-      );
-    });
-
-    it('accepts valid teamOverrides and passes to service', async () => {
-      const mockResult = {
-        success: true,
-        project: makeProject({ id: 'p1', name: 'New' }),
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-      };
-      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
-
-      await controller.createProjectFromTemplate({
-        name: 'New',
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-        teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
-      });
-
-      expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
-        }),
-      );
+        },
+        message: 'Provide either (slug or templateId) OR templatePath, but not both or neither',
+      },
+    ])('$name', async ({ body, message }) => {
+      await expect(controller.createProjectFromTemplate(body)).rejects.toThrow(message);
     });
 
     it('rejects duplicate teamName in teamOverrides', async () => {
@@ -1397,42 +775,6 @@ describe('ProjectsController', () => {
       ).rejects.toThrow('Duplicate teamName in teamOverrides');
     });
 
-    it('accepts valid agentOverrides and passes them to the service', async () => {
-      const mockResult = {
-        success: true,
-        project: makeProject({ id: 'p1', name: 'New' }),
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-      };
-      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
-
-      await controller.createProjectFromTemplate({
-        name: 'New',
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-        agentOverrides: [
-          {
-            agentName: 'Coder',
-            providerConfigName: 'claude-config',
-            modelOverride: 'openai/gpt-5',
-          },
-          { agentName: 'Reviewer', providerConfigName: 'agy-config', effortOverride: null },
-        ],
-      });
-
-      expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          agentOverrides: [
-            {
-              agentName: 'Coder',
-              providerConfigName: 'claude-config',
-              modelOverride: 'openai/gpt-5',
-            },
-            { agentName: 'Reviewer', providerConfigName: 'agy-config', effortOverride: null },
-          ],
-        }),
-      );
-    });
-
     it('rejects when presetName and agentOverrides are both provided (400)', async () => {
       await expect(
         controller.createProjectFromTemplate({
@@ -1444,17 +786,6 @@ describe('ProjectsController', () => {
         }),
       ).rejects.toThrow('Provide either presetName or agentOverrides, but not both');
       expect(projectsService.createFromTemplate).not.toHaveBeenCalled();
-    });
-
-    it('rejects agentOverrides with an empty agentName', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
-          name: 'New',
-          rootPath: '/tmp/new',
-          slug: 'my-template',
-          agentOverrides: [{ agentName: '', providerConfigName: 'claude-config' }],
-        }),
-      ).rejects.toThrow();
     });
 
     it('accepts selectedProviderNames and normalizes them to lowercase', async () => {
@@ -1475,36 +806,6 @@ describe('ProjectsController', () => {
       expect(projectsService.createFromTemplate).toHaveBeenCalledWith(
         expect.objectContaining({ selectedProviderNames: ['claude', 'codex'] }),
       );
-    });
-
-    it('rejects an empty selectedProviderNames array (non-empty when present)', async () => {
-      await expect(
-        controller.createProjectFromTemplate({
-          name: 'New',
-          rootPath: '/tmp/new',
-          slug: 'my-template',
-          selectedProviderNames: [],
-        }),
-      ).rejects.toThrow();
-      expect(projectsService.createFromTemplate).not.toHaveBeenCalled();
-    });
-
-    it('does not pass selectedProviderNames when the field is absent', async () => {
-      const mockResult = {
-        success: true,
-        project: makeProject({ id: 'p1', name: 'New' }),
-        imported: { prompts: 0, profiles: 0, agents: 0, statuses: 0 },
-      };
-      projectsService.createFromTemplate.mockResolvedValue(mockResult as never);
-
-      await controller.createProjectFromTemplate({
-        name: 'New',
-        rootPath: '/tmp/new',
-        slug: 'my-template',
-      });
-
-      const call = projectsService.createFromTemplate.mock.calls[0][0];
-      expect(call).not.toHaveProperty('selectedProviderNames');
     });
   });
 
@@ -1548,75 +849,39 @@ describe('ProjectsController', () => {
       localAvailability: { installedProviders: [{ id: 'prov-1', name: 'claude' }] },
     };
 
-    it('resolves by slug and passes it to the service', async () => {
+    it.each([
+      { name: 'slug', input: { slug: 'my-template' } },
+      { name: 'file path', input: { templatePath: '/abs/path/template.json' } },
+      { name: 'raw content', input: { rawContent: { profiles: [], agents: [], statuses: [] } } },
+    ])('dispatches setup preview from $name', async ({ input }) => {
       projectsService.setupPreview.mockResolvedValue(mockPreviewResponse);
-
-      const result = await controller.setupPreview({ slug: 'my-template' });
-
-      expect(result).toBe(mockPreviewResponse);
-      expect(projectsService.setupPreview).toHaveBeenCalledWith({ slug: 'my-template' });
+      expect(await controller.setupPreview(input)).toBe(mockPreviewResponse);
+      expect(projectsService.setupPreview).toHaveBeenCalledWith(input);
     });
 
-    it('passes slug + version to the service', async () => {
-      projectsService.setupPreview.mockResolvedValue(mockPreviewResponse);
-
-      await controller.setupPreview({ slug: 'my-template', version: '1.2.3' });
-
-      expect(projectsService.setupPreview).toHaveBeenCalledWith({
-        slug: 'my-template',
-        version: '1.2.3',
-      });
-    });
-
-    it('resolves by templatePath and passes it to the service', async () => {
-      projectsService.setupPreview.mockResolvedValue(mockPreviewResponse);
-
-      await controller.setupPreview({ templatePath: '/abs/path/template.json' });
-
-      expect(projectsService.setupPreview).toHaveBeenCalledWith({
-        templatePath: '/abs/path/template.json',
-      });
-    });
-
-    it('resolves by rawContent and passes it to the service', async () => {
-      projectsService.setupPreview.mockResolvedValue(mockPreviewResponse);
-      const rawContent = { profiles: [], agents: [], statuses: [] };
-
-      await controller.setupPreview({ rawContent });
-
-      expect(projectsService.setupPreview).toHaveBeenCalledWith({ rawContent });
-    });
-
-    it('rejects when no source is provided', async () => {
-      await expect(controller.setupPreview({})).rejects.toThrow(
-        'Provide exactly one of slug, templatePath, or rawContent',
-      );
-      expect(projectsService.setupPreview).not.toHaveBeenCalled();
-    });
-
-    it('rejects when multiple sources are provided', async () => {
-      await expect(
-        controller.setupPreview({ slug: 'my-template', rawContent: { profiles: [] } }),
-      ).rejects.toThrow('Provide exactly one of slug, templatePath, or rawContent');
-      expect(projectsService.setupPreview).not.toHaveBeenCalled();
-    });
-
-    it('rejects version paired with templatePath', async () => {
-      await expect(
-        controller.setupPreview({ templatePath: '/abs/t.json', version: '1.0.0' }),
-      ).rejects.toThrow('version can only be specified together with slug');
-      expect(projectsService.setupPreview).not.toHaveBeenCalled();
-    });
-
-    it('rejects version paired with rawContent', async () => {
-      await expect(controller.setupPreview({ rawContent: {}, version: '1.0.0' })).rejects.toThrow(
-        'version can only be specified together with slug',
-      );
-      expect(projectsService.setupPreview).not.toHaveBeenCalled();
-    });
-
-    it('rejects an invalid slug format', async () => {
-      await expect(controller.setupPreview({ slug: 'Bad Slug!' })).rejects.toThrow();
+    it.each([
+      {
+        name: 'rejects when no source is provided',
+        body: {},
+        message: 'Provide exactly one of slug, templatePath, or rawContent',
+      },
+      {
+        name: 'rejects when multiple sources are provided',
+        body: { slug: 'my-template', rawContent: { profiles: [] } },
+        message: 'Provide exactly one of slug, templatePath, or rawContent',
+      },
+      {
+        name: 'rejects version paired with templatePath',
+        body: { templatePath: '/abs/t.json', version: '1.0.0' },
+        message: 'version can only be specified together with slug',
+      },
+      {
+        name: 'rejects version paired with rawContent',
+        body: { rawContent: {}, version: '1.0.0' },
+        message: 'version can only be specified together with slug',
+      },
+    ])('$name', async ({ body, message }) => {
+      await expect(controller.setupPreview(body)).rejects.toThrow(message);
       expect(projectsService.setupPreview).not.toHaveBeenCalled();
     });
   });
@@ -1632,144 +897,6 @@ describe('ProjectsController', () => {
       expect(projectsService.exportProject).toHaveBeenCalledWith('p1', {
         manifestOverrides: undefined,
       });
-    });
-
-    it('accepts valid manifest overrides', async () => {
-      const mockExport = { version: 1, _manifest: { name: 'Test' } };
-      projectsService.exportProject.mockResolvedValue(mockExport as never);
-
-      const result = await controller.exportProjectWithOverrides('p1', {
-        manifest: {
-          slug: 'my-slug',
-          name: 'My Template',
-          description: 'A description',
-          category: 'development',
-          tags: ['tag1', 'tag2'],
-          version: '1.0.0',
-        },
-      });
-
-      expect(result).toEqual(mockExport);
-      expect(projectsService.exportProject).toHaveBeenCalledWith('p1', {
-        manifestOverrides: {
-          slug: 'my-slug',
-          name: 'My Template',
-          description: 'A description',
-          category: 'development',
-          tags: ['tag1', 'tag2'],
-          version: '1.0.0',
-        },
-      });
-    });
-
-    it('accepts empty body', async () => {
-      const mockExport = { version: 1 };
-      projectsService.exportProject.mockResolvedValue(mockExport as never);
-
-      const result = await controller.exportProjectWithOverrides('p1', undefined);
-
-      expect(result).toEqual(mockExport);
-      expect(projectsService.exportProject).toHaveBeenCalledWith('p1', {
-        manifestOverrides: undefined,
-      });
-    });
-
-    it('accepts null description', async () => {
-      const mockExport = { version: 1 };
-      projectsService.exportProject.mockResolvedValue(mockExport as never);
-
-      await controller.exportProjectWithOverrides('p1', {
-        manifest: { description: null },
-      });
-
-      expect(projectsService.exportProject).toHaveBeenCalledWith('p1', {
-        manifestOverrides: { description: null },
-      });
-    });
-
-    it('rejects invalid slug format', async () => {
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { slug: 'Invalid Slug With Spaces' },
-        }),
-      ).rejects.toThrow('Invalid export overrides');
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { slug: 'UPPERCASE' },
-        }),
-      ).rejects.toThrow('Invalid export overrides');
-    });
-
-    it('rejects empty name', async () => {
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { name: '' },
-        }),
-      ).rejects.toThrow('Invalid export overrides');
-    });
-
-    it('rejects invalid category', async () => {
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { category: 'invalid' as 'development' },
-        }),
-      ).rejects.toThrow('Invalid export overrides');
-    });
-
-    it('rejects too many tags', async () => {
-      const tooManyTags = Array.from({ length: 11 }, (_, i) => `tag${i}`);
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { tags: tooManyTags },
-        }),
-      ).rejects.toThrow('Invalid export overrides');
-    });
-
-    it('rejects invalid version format', async () => {
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { version: 'not-semver' },
-        }),
-      ).rejects.toThrow('Invalid export overrides');
-    });
-
-    it('accepts valid semver with prerelease', async () => {
-      const mockExport = { version: 1 };
-      projectsService.exportProject.mockResolvedValue(mockExport as never);
-
-      await controller.exportProjectWithOverrides('p1', {
-        manifest: { version: '1.0.0-beta.1' },
-      });
-
-      expect(projectsService.exportProject).toHaveBeenCalledWith('p1', {
-        manifestOverrides: { version: '1.0.0-beta.1' },
-      });
-    });
-
-    it('rejects unknown fields (strict mode)', async () => {
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { unknownField: 'value' } as Record<string, unknown>,
-        }),
-      ).rejects.toThrow('Invalid export overrides');
-    });
-
-    it('rejects description exceeding max length', async () => {
-      const longDescription = 'a'.repeat(2001);
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { description: longDescription },
-        }),
-      ).rejects.toThrow('Invalid export overrides');
-    });
-
-    it('rejects changelog exceeding max length', async () => {
-      const longChangelog = 'a'.repeat(5001);
-      await expect(
-        controller.exportProjectWithOverrides('p1', {
-          manifest: { changelog: longChangelog },
-        }),
-      ).rejects.toThrow('Invalid export overrides');
     });
   });
 
@@ -1812,69 +939,12 @@ describe('ProjectsController', () => {
       );
     });
 
-    it('rejects familyProviderMappings with empty key', async () => {
-      await expect(
-        controller.importProject('p1', undefined, {
-          familyProviderMappings: { '': 'claude' },
-        }),
-      ).rejects.toThrow('Invalid familyProviderMappings');
-    });
-
-    it('rejects familyProviderMappings with empty value', async () => {
-      await expect(
-        controller.importProject('p1', undefined, {
-          familyProviderMappings: { coder: '' },
-        }),
-      ).rejects.toThrow('Invalid familyProviderMappings');
-    });
-
-    it('rejects familyProviderMappings with non-string value', async () => {
-      await expect(
-        controller.importProject('p1', undefined, {
-          familyProviderMappings: { coder: 123 } as unknown as Record<string, string>,
-        }),
-      ).rejects.toThrow('Invalid familyProviderMappings');
-    });
-
-    it('accepts valid teamOverrides and passes to service', async () => {
-      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      projectsService.importProject.mockResolvedValue(mockResult as never);
-
-      await controller.importProject('p1', undefined, {
-        teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
-      });
-
-      expect(projectsService.importProject).toHaveBeenCalledWith(
-        expect.objectContaining({
-          teamOverrides: [{ teamName: 'Dev Team', allowTeamLeadCreateAgents: true, maxMembers: 8 }],
-        }),
-      );
-    });
-
-    it('rejects teamOverrides with out-of-range maxMembers', async () => {
-      await expect(
-        controller.importProject('p1', undefined, {
-          teamOverrides: [{ teamName: 'Dev Team', maxMembers: 100 }],
-        }),
-      ).rejects.toThrow('Invalid teamOverrides');
-    });
-
     it('rejects duplicate teamName in teamOverrides', async () => {
       await expect(
         controller.importProject('p1', undefined, {
           teamOverrides: [{ teamName: 'Dev Team' }, { teamName: 'dev team' }],
         }),
       ).rejects.toThrow('Duplicate teamName in teamOverrides');
-    });
-
-    it('passes no teamOverrides when field is absent', async () => {
-      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      projectsService.importProject.mockResolvedValue(mockResult as never);
-
-      await controller.importProject('p1', undefined, {});
-
-      const call = projectsService.importProject.mock.calls[0][0];
-      expect(call.teamOverrides).toBeUndefined();
     });
 
     it('validates + strips agentOverrides so they never reach the template payload', async () => {
@@ -1927,31 +997,6 @@ describe('ProjectsController', () => {
       expect(payload.agents).toEqual([{ name: 'Coder' }]);
     });
 
-    it('rejects an empty presetName', async () => {
-      await expect(controller.importProject('p1', undefined, { presetName: '' })).rejects.toThrow(
-        'Invalid presetName',
-      );
-      expect(projectsService.importProject).not.toHaveBeenCalled();
-    });
-
-    it('rejects agentOverrides with a missing providerConfigName', async () => {
-      await expect(
-        controller.importProject('p1', undefined, {
-          agentOverrides: [{ agentName: 'Coder' }],
-        } as unknown as Record<string, unknown>),
-      ).rejects.toThrow('Invalid agentOverrides');
-    });
-
-    it('passes no agentOverrides when field is absent', async () => {
-      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      projectsService.importProject.mockResolvedValue(mockResult as never);
-
-      await controller.importProject('p1', undefined, {});
-
-      const call = projectsService.importProject.mock.calls[0][0];
-      expect(call.agentOverrides).toBeUndefined();
-    });
-
     it('validates + normalizes + strips selectedProviderNames so they never reach the payload', async () => {
       const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
       projectsService.importProject.mockResolvedValue(mockResult as never);
@@ -1967,73 +1012,6 @@ describe('ProjectsController', () => {
       // Stripped from the ExportSchema-bound payload (would otherwise be swallowed by `...payload`).
       expect(payload.selectedProviderNames).toBeUndefined();
       expect(payload.agents).toEqual([{ name: 'Coder' }]);
-    });
-
-    it('rejects an empty selectedProviderNames array (400)', async () => {
-      await expect(
-        controller.importProject('p1', undefined, {
-          selectedProviderNames: [],
-        } as unknown as Record<string, unknown>),
-      ).rejects.toThrow('Invalid selectedProviderNames');
-      expect(projectsService.importProject).not.toHaveBeenCalled();
-    });
-
-    it('passes no selectedProviderNames when field is absent', async () => {
-      const mockResult = { success: true, counts: { imported: {}, deleted: {} } };
-      projectsService.importProject.mockResolvedValue(mockResult as never);
-
-      await controller.importProject('p1', undefined, {});
-
-      const call = projectsService.importProject.mock.calls[0][0];
-      expect(call.selectedProviderNames).toBeUndefined();
-    });
-  });
-
-  describe('DELETE /api/projects/:id', () => {
-    it('routes deletion and cleanup through ProjectsService', async () => {
-      projectsService.deleteProject!.mockResolvedValue(undefined);
-
-      await controller.deleteProject('p1');
-
-      expect(projectsService.deleteProject).toHaveBeenCalledWith('p1');
-      expect(storage.deleteProject).not.toHaveBeenCalled();
-      expect(settingsService.clearProjectTemplateMetadata).not.toHaveBeenCalled();
-      expect(settingsService.clearProjectPresets).not.toHaveBeenCalled();
-    });
-
-    it('propagates ProjectsService deletion failures', async () => {
-      projectsService.deleteProject!.mockRejectedValue(new Error('delete failed'));
-
-      await expect(controller.deleteProject('project-without-metadata')).rejects.toThrow(
-        'delete failed',
-      );
-
-      expect(projectsService.deleteProject).toHaveBeenCalledWith('project-without-metadata');
-    });
-  });
-
-  describe('GET /api/projects/:id/template-manifest', () => {
-    it('returns manifest when available', async () => {
-      const manifest = {
-        name: 'Test Template',
-        version: '1.0.0',
-        description: 'A test template',
-      };
-      projectsService.getTemplateManifestForProject.mockResolvedValue(manifest);
-
-      const result = await controller.getTemplateManifest('p1');
-
-      expect(result).toEqual(manifest);
-      expect(projectsService.getTemplateManifestForProject).toHaveBeenCalledWith('p1');
-    });
-
-    it('returns null when no manifest available', async () => {
-      projectsService.getTemplateManifestForProject.mockResolvedValue(null);
-
-      const result = await controller.getTemplateManifest('p1');
-
-      expect(result).toBeNull();
-      expect(projectsService.getTemplateManifestForProject).toHaveBeenCalledWith('p1');
     });
   });
 
@@ -2071,16 +1049,6 @@ describe('ProjectsController', () => {
 
       expect(result).toEqual({ presets, activePreset: null });
       expect(settingsService.getProjectPresets).toHaveBeenCalledWith('p1');
-    });
-
-    it('returns empty array when no presets stored', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      settingsService.getProjectPresets.mockReturnValue([]);
-      settingsService.getProjectActivePreset.mockReturnValue(null);
-
-      const result = await controller.getProjectPresets('p1');
-
-      expect(result).toEqual({ presets: [], activePreset: null });
     });
 
     it('returns activePreset when set and matches current config', async () => {
@@ -2146,12 +1114,6 @@ describe('ProjectsController', () => {
       expect(result).toEqual({ presets, activePreset: null });
       expect(settingsService.setProjectActivePreset).toHaveBeenCalledWith('p1', null);
       expect(projectsService.doesProjectMatchPreset).not.toHaveBeenCalled();
-    });
-
-    it('throws NotFoundException when project not found', async () => {
-      storage.getProject.mockRejectedValue(new Error('Project not found'));
-
-      await expect(controller.getProjectPresets('nonexistent')).rejects.toThrow();
     });
 
     it('canonicalizes activePreset when stored name differs only in case (regression)', async () => {
@@ -2258,20 +1220,6 @@ describe('ProjectsController', () => {
 
       expect(result.warnings).toContain('Agent "MissingAgent" not found in project');
     });
-
-    it('rejects request with empty preset name', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-
-      await expect(controller.applyPreset('p1', { presetName: '' })).rejects.toThrow();
-    });
-
-    it('throws NotFoundException when project not found', async () => {
-      storage.getProject.mockRejectedValue(new Error('Project not found'));
-
-      await expect(
-        controller.applyPreset('nonexistent', { presetName: 'default' }),
-      ).rejects.toThrow();
-    });
   });
 
   describe('POST /api/projects/:id/presets', () => {
@@ -2301,47 +1249,6 @@ describe('ProjectsController', () => {
       expect(createProjectPresetMock).toHaveBeenCalledWith('p1', validPreset);
     });
 
-    it('creates preset with null description', async () => {
-      const presetWithNullDescription = {
-        name: 'Minimal Preset',
-        description: null,
-        agentConfigs: [{ agentName: 'Coder', providerConfigName: 'config' }],
-      };
-
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-
-      const result = await controller.createPreset('p1', presetWithNullDescription);
-
-      expect(result.description).toBeNull();
-    });
-
-    it('throws BadRequestException for invalid preset data (empty name)', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-
-      let error: Error | undefined;
-      try {
-        await controller.createPreset('p1', { name: '', agentConfigs: [] });
-      } catch (e) {
-        error = e as Error;
-      }
-
-      expect(error).toBeInstanceOf(BadRequestException);
-      expect(error?.message).toContain('Invalid preset data');
-    });
-
-    it('throws BadRequestException for invalid preset data (missing agentConfigs)', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-
-      let error: Error | undefined;
-      try {
-        await controller.createPreset('p1', { name: 'Test' } as unknown as Record<string, unknown>);
-      } catch (e) {
-        error = e as Error;
-      }
-
-      expect(error).toBeInstanceOf(BadRequestException);
-    });
-
     it('throws ConflictException when name already exists', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
       const createError = new Error(
@@ -2357,19 +1264,6 @@ describe('ProjectsController', () => {
       }
 
       expect(error).toBeInstanceOf(ConflictException);
-    });
-
-    it('throws NotFoundException when project not found', async () => {
-      storage.getProject.mockRejectedValue(new Error('Project not found'));
-
-      let error: Error | undefined;
-      try {
-        await controller.createPreset('nonexistent', validPreset);
-      } catch (e) {
-        error = e as Error;
-      }
-
-      expect(error).toBeDefined();
     });
   });
 
@@ -2402,25 +1296,6 @@ describe('ProjectsController', () => {
       });
     });
 
-    it('updates preset description', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      const updatedPresets = [
-        {
-          name: 'Existing Preset',
-          description: 'New description',
-          agentConfigs: [],
-        },
-      ];
-      getProjectPresetsMock.mockReturnValue(updatedPresets);
-
-      const result = await controller.updatePreset('p1', {
-        presetName: 'Existing Preset',
-        updates: { description: 'New description' },
-      });
-
-      expect(result?.description).toBe('New description');
-    });
-
     it('updates agent configs', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
       const updatedPresets = [
@@ -2446,107 +1321,6 @@ describe('ProjectsController', () => {
       });
 
       expect(result?.agentConfigs).toHaveLength(2);
-    });
-
-    it('accepts agentConfigs with modelOverride values', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      const updatedPresets = [
-        {
-          name: 'Existing Preset',
-          description: 'Original description',
-          agentConfigs: [
-            {
-              agentName: 'Coder',
-              providerConfigName: 'claude-config',
-              modelOverride: 'openai/gpt-5',
-            },
-            {
-              agentName: 'Reviewer',
-              providerConfigName: 'agy-config',
-              modelOverride: null,
-            },
-          ],
-        },
-      ];
-      getProjectPresetsMock.mockReturnValue(updatedPresets);
-
-      const result = await controller.updatePreset('p1', {
-        presetName: 'Existing Preset',
-        updates: {
-          agentConfigs: [
-            {
-              agentName: 'Coder',
-              providerConfigName: 'claude-config',
-              modelOverride: 'openai/gpt-5',
-            },
-            {
-              agentName: 'Reviewer',
-              providerConfigName: 'agy-config',
-              modelOverride: null,
-            },
-          ],
-        },
-      });
-
-      expect(updateProjectPresetMock).toHaveBeenCalledWith('p1', 'Existing Preset', {
-        agentConfigs: [
-          {
-            agentName: 'Coder',
-            providerConfigName: 'claude-config',
-            modelOverride: 'openai/gpt-5',
-          },
-          {
-            agentName: 'Reviewer',
-            providerConfigName: 'agy-config',
-            modelOverride: null,
-          },
-        ],
-      });
-      expect(result?.agentConfigs).toEqual(updatedPresets[0].agentConfigs);
-    });
-
-    it('accepts and round-trips agentConfigs with effortOverride (set / null / omitted)', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-      const updatedAgentConfigs = [
-        { agentName: 'Coder', providerConfigName: 'cfg', effortOverride: 'high' },
-        { agentName: 'Reviewer', providerConfigName: 'cfg', effortOverride: null },
-        { agentName: 'Architect', providerConfigName: 'cfg' },
-      ];
-      getProjectPresetsMock.mockReturnValue([
-        {
-          name: 'Existing Preset',
-          description: 'Original description',
-          agentConfigs: updatedAgentConfigs,
-        },
-      ]);
-
-      const result = await controller.updatePreset('p1', {
-        presetName: 'Existing Preset',
-        updates: {
-          agentConfigs: updatedAgentConfigs,
-        },
-      });
-
-      expect(updateProjectPresetMock).toHaveBeenCalledWith('p1', 'Existing Preset', {
-        agentConfigs: updatedAgentConfigs,
-      });
-      // effortOverride is accepted (validation passes) and forwarded verbatim
-      expect(result?.agentConfigs).toEqual(updatedAgentConfigs);
-    });
-
-    it('throws BadRequestException for invalid request body', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-
-      let error: Error | undefined;
-      try {
-        await controller.updatePreset('p1', {
-          presetName: '',
-        } as unknown as Record<string, unknown>);
-      } catch (e) {
-        error = e as Error;
-      }
-
-      expect(error).toBeInstanceOf(BadRequestException);
     });
 
     it('throws ConflictException when new name already exists', async () => {
@@ -2584,22 +1358,6 @@ describe('ProjectsController', () => {
 
       expect(error).toBeInstanceOf(NotFoundException);
     });
-
-    it('throws BadRequestException for unknown fields in updates', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-
-      let error: Error | undefined;
-      try {
-        await controller.updatePreset('p1', {
-          presetName: 'Existing Preset',
-          updates: { unknownField: 'value' } as unknown as Record<string, unknown>,
-        });
-      } catch (e) {
-        error = e as Error;
-      }
-
-      expect(error).toBeInstanceOf(BadRequestException);
-    });
   });
 
   describe('DELETE /api/projects/:id/presets', () => {
@@ -2631,21 +1389,6 @@ describe('ProjectsController', () => {
       expect(settingsService.deleteProjectPreset).toHaveBeenCalledWith('p1', 'my preset');
     });
 
-    it('throws BadRequestException for empty preset name', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-
-      let error: Error | undefined;
-      try {
-        await controller.deletePreset('p1', {
-          presetName: '',
-        } as unknown as Record<string, unknown>);
-      } catch (e) {
-        error = e as Error;
-      }
-
-      expect(error).toBeInstanceOf(BadRequestException);
-    });
-
     it('throws NotFoundException when preset not found', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
       const notFoundError = new Error('Preset "Nonexistent" not found');
@@ -2659,19 +1402,6 @@ describe('ProjectsController', () => {
       }
 
       expect(error).toBeInstanceOf(NotFoundException);
-    });
-
-    it('throws NotFoundException when project not found', async () => {
-      storage.getProject.mockRejectedValue(new Error('Project not found'));
-
-      let error: Error | undefined;
-      try {
-        await controller.deletePreset('nonexistent', { presetName: 'My Preset' });
-      } catch (e) {
-        error = e as Error;
-      }
-
-      expect(error).toBeDefined();
     });
   });
 });

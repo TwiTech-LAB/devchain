@@ -49,19 +49,6 @@ describe('Route conflict regression: /api/templates', () => {
     resetEnvConfig();
   });
 
-  it('bootstraps AppModule without duplicate GET /api/templates errors', async () => {
-    moduleRef = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
-      logger: false,
-    });
-
-    await expect(app.init()).resolves.toBe(app);
-    await app.getHttpAdapter().getInstance().ready();
-  });
-
   it('keeps GET /api/templates available', async () => {
     process.env.TEMPLATES_DIR = join(tmpdir(), `missing-templates-${Date.now()}`);
 

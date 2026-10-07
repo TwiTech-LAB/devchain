@@ -13,8 +13,16 @@ export interface SkillManifest {
   sourceUrl: string;
 }
 
+/** A skill the source lists but discovery could not read; the sync counts it as failed. */
+export interface SkillDiscoveryError {
+  skillName: string;
+  message: string;
+}
+
 export interface SkillSourceSyncContext {
   manifests: Map<string, SkillManifest>;
+  /** Skills skipped because reading them threw; a missing or malformed SKILL.md is not an error. */
+  discoveryErrors: SkillDiscoveryError[];
   downloadSkill(skillName: string, targetPath: string): Promise<string>;
   dispose(): Promise<void>;
 }

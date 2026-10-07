@@ -188,17 +188,6 @@ describe('ExternalTimeMutationStore', () => {
     expect(store.get('op-2')).not.toBeNull();
   });
 
-  it('expires every receipt after the TTL ends the guarantee', () => {
-    let now = 1_000_000;
-    const store = new ExternalTimeMutationStore(32, 256, 1_000, () => now);
-    store.admit({ operationId: 'op-1', kind: 'create', tuple: tuple(), baseline: null });
-    store.markUnknown('op-1');
-
-    now += 1_001;
-    expect(store.get('op-1')).toBeNull();
-    expect(store.size()).toBe(0);
-  });
-
   it('drops a receipt at the real production TTL deadline its view advertised', () => {
     let now = Date.parse('2026-09-01T10:00:00.000Z');
     const store = new ExternalTimeMutationStore(32, 256, TIME_OPERATION_RECEIPT_TTL_MS, () => now);

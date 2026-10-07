@@ -136,22 +136,13 @@ describe('applyEpicDescriptionEdits', () => {
       }
     });
 
-    it('treats a null description with edits as not found', () => {
-      expect(() =>
-        applyEpicDescriptionEdits({
-          text: null,
-          edits: [{ find: 'x', replace: 'y' }],
-        }),
-      ).toThrow(DescriptionEditNotFoundError);
-    });
-
-    it('treats an empty find as no match instead of matching everywhere', () => {
-      expect(() =>
-        applyEpicDescriptionEdits({
-          text: 'abc',
-          edits: [{ find: '', replace: 'y' }],
-        }),
-      ).toThrow(DescriptionEditNotFoundError);
+    it.each([
+      [null, 'x'],
+      ['abc', ''],
+    ])('rejects unmatched edit in %s with find=%s', (text, find) => {
+      expect(() => applyEpicDescriptionEdits({ text, edits: [{ find, replace: 'y' }] })).toThrow(
+        DescriptionEditNotFoundError,
+      );
     });
   });
 
@@ -165,16 +156,8 @@ describe('applyEpicDescriptionEdits', () => {
       expect(result.descriptionEdits).toBeUndefined();
     });
 
-    it('makes the append the whole text for a null description', () => {
-      const result = applyEpicDescriptionEdits({ text: null, append: 'only' });
-
-      expect(result.text).toBe('only');
-      expect(result.appended).toEqual({ context: 'only' });
-    });
-
-    it('makes the append the whole text for an empty description', () => {
-      const result = applyEpicDescriptionEdits({ text: '', append: 'only' });
-
+    it.each([null, ''])('appends as whole text for %s', (text) => {
+      const result = applyEpicDescriptionEdits({ text, append: 'only' });
       expect(result.text).toBe('only');
       expect(result.appended).toEqual({ context: 'only' });
     });

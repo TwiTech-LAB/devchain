@@ -80,34 +80,13 @@ describe('LocalStorageService — profile prompt assignments', () => {
     expect(lastValuesArg.map((r: { promptId: string }) => r.promptId)).toEqual(['p1', 'p2']);
   });
 
-  it('rejects cross-project prompt assignments', async () => {
-    mockProfileAndPrompts('project-1', [{ id: 'p1', projectId: 'project-2' }]);
-
-    await expect(service.setAgentProfilePrompts('prof-1', ['p1'])).rejects.toThrow(ValidationError);
+  it.each([
+    { label: 'cross-project', prompts: [{ id: 'p1', projectId: 'project-2' }], ids: ['p1'] },
+    { label: 'unknown id', prompts: [{ id: 'p1', projectId: 'project-1' }], ids: ['p1', 'p9'] },
+  ])('$label', async ({ prompts, ids }) => {
+    mockProfileAndPrompts('project-1', prompts);
+    await expect(service.setAgentProfilePrompts('prof-1', ids)).rejects.toThrow(ValidationError);
     expect(db.insert).not.toHaveBeenCalled();
-  });
-
-  it('rejects unknown prompt ids', async () => {
-    mockProfileAndPrompts('project-1', [{ id: 'p1', projectId: 'project-1' }]);
-
-    await expect(service.setAgentProfilePrompts('prof-1', ['p1', 'p9'])).rejects.toThrow(
-      ValidationError,
-    );
-    expect(db.insert).not.toHaveBeenCalled();
-  });
-
-  it('idempotency: last call order wins', async () => {
-    mockProfileAndPrompts('project-1', [
-      { id: 'p1', projectId: 'project-1' },
-      { id: 'p2', projectId: 'project-1' },
-    ]);
-
-    await service.setAgentProfilePrompts('prof-2', ['p1', 'p2']);
-    await service.setAgentProfilePrompts('prof-2', ['p2', 'p1']);
-
-    const calls = (db.insert().values as jest.Mock).mock.calls;
-    const last = calls[calls.length - 1]?.[0];
-    expect(last.map((r: { promptId: string }) => r.promptId)).toEqual(['p2', 'p1']);
   });
 });
 

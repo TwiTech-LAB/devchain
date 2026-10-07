@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import {
   DockerEngineClient,
   DockerEngineError,
@@ -13,12 +14,24 @@ import {
   type DockerInfo,
 } from '../../core/controllers/docker-engine.client';
 import {
+  DEFAULT_NETWORKS,
+  fixedIPv4Address,
+  ipv4Ranges,
   projectDockerCreate,
   type DockerContainerInspect,
 } from '../../core/controllers/docker-settings';
-import { COMPOSE_PROJECT_LABEL, type DockerInspectTimes } from '../host/host-docker.dto';
+import {
+  COMPOSE_PROJECT_LABEL,
+  COMPOSE_SERVICE_LABEL,
+  type DockerInspectTimes,
+} from '../host/host-docker.dto';
 import type { DockerDataHolder } from './docker-data-groups';
 import { measureDockerBind, within } from './docker-plan-files';
+import {
+  composeRootLinks,
+  containerLinksProject,
+  DEFAULT_COMPOSE_FILES,
+} from './docker-project-compose';
 import {
   COPYABLE_MOUNT_KINDS,
   DOCKER_TEMPORARY_NOTE,
@@ -28,6 +41,7 @@ import {
   type DockerPlanImage,
   type DockerPlanMount,
   type DockerPlanSize,
+  type DockerPresence,
 } from './docker-plan.dto';
 
 interface Mount {
@@ -38,27 +52,95 @@ interface Mount {
   RW: boolean;
   Driver?: string;
 }
-interface Container extends DockerContainerInspect, DockerInspectTimes {
+export interface Container extends DockerContainerInspect, DockerInspectTimes {
   Id: string;
   Name: string;
   Mounts: Mount[];
+  SizeRw?: number;
 }
 interface Volume {
   Name: string;
   Driver: string;
   Labels?: Record<string, string> | null;
 }
-interface ComposeConfig {
+export interface ComposeConfig {
   name: string;
-  services?: Record<string, { image?: string; build?: unknown }>;
+  services?: Record<
+    string,
+    {
+      image?: string;
+      build?: unknown;
+      user?: string;
+      group_add?: Array<string | number>;
+      profiles?: string[];
+      volumes?: Array<{ type?: string; source?: string; target?: string; read_only?: boolean }>;
+    }
+  >;
   volumes?: Record<string, { name?: string; external?: boolean }>;
 }
 export interface DockerSourceScan {
   holders: DockerDataHolder[];
   items: DockerPlanItem[];
   homePath: string;
-  uid: number | null;
+  codePaths: string[];
 }
+export interface DockerSourceScanOptions {
+  reuse?: boolean;
+  /** Absolute in-project paths from previous imports, including unselected items. */
+  previousBindPaths?: readonly string[];
+  /** Absolute paths whose data is still excluded during Disconnect. */
+  dataBindPaths?: readonly string[];
+}
+
+/** The Compose labels that link a container to the project root. */
+export function containerProjectLinks(root: string, inspect: Container): string[] {
+  return composeRootLinks((inspect.Config.Labels ?? {}) as Record<string, string>, root);
+}
+/** A container's Compose file set from its labels; null without config files. */
+export function composeLabelSet(
+  root: string,
+  container: Container,
+): { directory: string; files: string[]; service: string | null } | null {
+  const labels = (container.Config.Labels ?? {}) as Record<string, string>;
+  const encoded = labels[`${COMPOSE_PROJECT_LABEL}.config_files`];
+  if (!encoded) return null;
+  const directory = resolve(labels[`${COMPOSE_PROJECT_LABEL}.working_dir`] || root);
+  const files = encoded
+    .split(',')
+    .filter(Boolean)
+    .map((file) => resolve(directory, file));
+  if (!files.length) return null;
+  return { directory, files, service: labels[COMPOSE_SERVICE_LABEL] || null };
+}
+/** A Compose service that Compose builds from inside the project and names itself (no `image`). */
+function buildsInProject(
+  root: string,
+  service: NonNullable<ComposeConfig['services']>[string] | undefined,
+): boolean {
+  if (!service || Object.hasOwn(service, 'image')) return false;
+  const build = service.build;
+  return (
+    typeof build === 'object' &&
+    build !== null &&
+    'context' in build &&
+    typeof build.context === 'string' &&
+    isAbsolute(build.context) &&
+    within(root, build.context)
+  );
+}
+async function hasRootCompose(root: string): Promise<boolean> {
+  for (const name of DEFAULT_COMPOSE_FILES) {
+    if (
+      await access(join(root, name)).then(
+        () => true,
+        () => false,
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
 const unknownSize = (): DockerPlanSize => ({ bytes: 0, unknown: true });
 const size = (value: number | undefined): DockerPlanSize =>
   typeof value === 'number' && value >= 0 && Number.isFinite(value)
@@ -75,14 +157,18 @@ export function reusable(at: number): boolean {
 
 @Injectable()
 export class DockerPlanSourceService {
+  constructor(private readonly executor: ProcessExecutor) {}
+
   /**
-   * The disk usage and folder sizes of the last scan. The disk-usage answer walks
-   * every image, volume and build-cache entry, which takes seconds on a busy engine.
+   * Measurements and Compose configurations of the last scan. Disk usage reads image and
+   * volume sizes; writable-layer sizes come from linked containers' sized inspects.
    */
   private recent: {
     at: number;
     usage: DockerDiskUsage;
+    writableLayers: Map<string, DockerPlanSize>;
     folders: Map<string, DockerPlanSize>;
+    compose: Map<string, ComposeConfig | Error | null>;
   } | null = null;
 
   /** Throws DockerAvailabilityError with a stable reason for each unusable home engine. */
@@ -116,6 +202,60 @@ export class DockerPlanSourceService {
     }
     return client;
   }
+  async presence(root: string, signal?: AbortSignal): Promise<DockerPresence> {
+    signal?.throwIfAborted();
+    if (await hasRootCompose(root)) {
+      signal?.throwIfAborted();
+      return { state: 'present' };
+    }
+    const deadline = AbortSignal.timeout(5000);
+    const scanSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    let onAbort: (() => void) | undefined;
+    try {
+      let socket: string;
+      try {
+        // Socket discovery has no signal; bound it with the same deadline as the list.
+        socket = await Promise.race([
+          this.socket(),
+          new Promise<never>((_resolve, reject) => {
+            onAbort = () => reject(scanSignal.reason);
+            scanSignal.addEventListener('abort', onAbort, { once: true });
+            if (scanSignal.aborted) onAbort();
+          }),
+        ]);
+      } catch (error) {
+        if (scanSignal.aborted) throw error;
+        return { state: 'absent' };
+      }
+      try {
+        const containers = await new DockerEngineClient(socket).json<
+          Array<{ Labels?: Record<string, string> | null; Mounts?: Mount[] }>
+        >('GET', '/containers/json?all=true', undefined, { signal: scanSignal });
+        return {
+          state: containers.some((container) =>
+            containerLinksProject(container.Labels, container.Mounts, root),
+          )
+            ? 'present'
+            : 'absent',
+        };
+      } catch (error) {
+        if (scanSignal.aborted) throw error;
+        const failure = await socketAvailability(socket, error);
+        return {
+          state:
+            failure instanceof DockerAvailabilityError &&
+            (failure.reason === 'no-socket' || failure.reason === 'no-socket-access')
+              ? 'absent'
+              : 'unknown',
+        };
+      }
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return { state: 'unknown' };
+    } finally {
+      if (onAbort) scanSignal.removeEventListener('abort', onAbort);
+    }
+  }
   socket(): Promise<string> {
     return resolveDockerSocket();
   }
@@ -125,34 +265,46 @@ export class DockerPlanSourceService {
   uid(): number | null {
     return process.getuid?.() ?? null;
   }
+  gid(): number | null {
+    return process.getgid?.() ?? null;
+  }
   measure(path: string, signal?: AbortSignal): Promise<DockerPlanSize> {
     return measureDockerBind(path, undefined, signal);
   }
 
-  async compose(root: string): Promise<ComposeConfig | null> {
-    let file: string | undefined;
-    for (const name of [
-      'compose.yaml',
-      'compose.yml',
-      'docker-compose.yml',
-      'docker-compose.yaml',
-    ]) {
-      if (
-        await access(join(root, name)).then(
-          () => true,
-          () => false,
-        )
-      ) {
-        file = name;
-        break;
-      }
+  async compose(
+    root: string,
+    options: {
+      files?: readonly string[];
+      allProfiles?: boolean;
+      signal?: AbortSignal;
+      env?: NodeJS.ProcessEnv;
+    } = {},
+  ): Promise<ComposeConfig | null> {
+    // Explicit files skip the default-file probe; without them, Compose needs a default file.
+    if (!options.files?.length) {
+      if (!(await hasRootCompose(root))) return null;
     }
-    if (!file) return null;
-    return new Promise((resolveConfig, reject) => {
+    return new Promise<ComposeConfig>((resolveConfig, reject) => {
       execFile(
         'docker',
-        ['compose', '--project-directory', root, 'config', '--format', 'json'],
-        { cwd: root, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 },
+        [
+          'compose',
+          '--project-directory',
+          root,
+          ...(options.files?.flatMap((path) => ['-f', path]) ?? []),
+          ...(options.allProfiles ? ['--profile', '*'] : []),
+          'config',
+          '--format',
+          'json',
+        ],
+        {
+          cwd: root,
+          timeout: 30_000,
+          maxBuffer: 16 * 1024 * 1024,
+          signal: options.signal,
+          env: options.env,
+        },
         (error, stdout) => {
           // Compose output and stderr can contain interpolated secrets.
           if (error)
@@ -173,22 +325,49 @@ export class DockerPlanSourceService {
           }
         },
       );
+    }).catch((error: unknown) => {
+      if (
+        options.allProfiles &&
+        !options.signal?.aborted &&
+        error instanceof DockerEngineError &&
+        error.code === 'unavailable'
+      )
+        return this.compose(root, { ...options, allProfiles: false });
+      throw error;
     });
   }
 
   /**
-   * `reuse` takes the disk usage and folder sizes of a scan less than two minutes
-   * old; containers, images and Compose are always read again.
+   * `reuse` takes disk usage, writable-layer sizes, folder sizes and linked containers'
+   * Compose configurations from a scan less than two minutes old. Container settings,
+   * images and the root Compose file are read again.
    */
   async scan(
     client: DockerEngineClient,
     root: string,
     signal?: AbortSignal,
-    { reuse = false }: { reuse?: boolean } = {},
+    { reuse = false, previousBindPaths = [], dataBindPaths = [] }: DockerSourceScanOptions = {},
   ): Promise<DockerSourceScan> {
     const recent = reuse && this.recent && reusable(this.recent.at) ? this.recent : null;
+    const composeCache = new Map(recent?.compose);
+    const readCompose = async (directory: string, files: string[]) => {
+      const key = JSON.stringify([resolve(directory), files]);
+      if (!composeCache.has(key)) {
+        const config = await this.compose(directory, { files, signal }).catch(
+          (error: unknown): Error => (error instanceof Error ? error : new Error(String(error))),
+        );
+        signal?.throwIfAborted();
+        composeCache.set(key, config);
+      }
+      return composeCache.get(key)!;
+    };
     const [listed, usage, volumes, composeAttempt] = await Promise.all([
-      client.json<Array<{ Id: string }>>('GET', '/containers/json?all=true', undefined, { signal }),
+      client.json<Array<{ Id: string; Labels?: Record<string, string> | null; Mounts?: Mount[] }>>(
+        'GET',
+        '/containers/json?all=true',
+        undefined,
+        { signal },
+      ),
       recent?.usage ?? client.diskUsage(signal),
       client.json<{ Volumes: Volume[] | null }>('GET', '/volumes', undefined, { signal }),
       // A broken Compose file must not fail the whole scan; it becomes one
@@ -233,30 +412,64 @@ export class DockerPlanSourceService {
       driver: volumes.Volumes?.find((v) => v.Name === name)?.Driver ?? 'unknown',
       size: size(usage.Volumes?.find((v) => v.Name === name)?.UsageData?.Size),
     });
+    const linked = new Set(
+      listed
+        .filter((entry) => containerLinksProject(entry.Labels, entry.Mounts, root))
+        .map((entry) => entry.Id),
+    );
+    const writableLayers = new Map(recent?.writableLayers);
     const inspects = await Promise.all(
-      listed.map((entry) =>
-        client.json<Container>(
+      listed.map(async (entry) => {
+        const measureLayer = linked.has(entry.Id) && !writableLayers.has(entry.Id);
+        const inspect = await client.json<Container>(
           'GET',
-          `/containers/${encodeURIComponent(entry.Id)}/json`,
+          `/containers/${encodeURIComponent(entry.Id)}/json${measureLayer ? '?size=true' : ''}`,
           undefined,
           { signal },
+        );
+        if (measureLayer) writableLayers.set(entry.Id, size(inspect.SizeRw));
+        return inspect;
+      }),
+    );
+    // One inspect per distinct non-default network, run together.
+    const networkNames = [
+      ...new Set(
+        inspects.flatMap((inspect) =>
+          Object.keys(inspect.NetworkSettings?.Networks ?? {}).filter(
+            (name) => !DEFAULT_NETWORKS.has(name),
+          ),
         ),
+      ),
+    ];
+    const networkSubnets = new Map(
+      await Promise.all(
+        networkNames.map(async (name) => {
+          const network = await client.json<{ IPAM?: { Config?: Array<{ Subnet?: string }> } }>(
+            'GET',
+            `/networks/${encodeURIComponent(name)}`,
+            undefined,
+            { signal },
+          );
+          return [name, ipv4Ranges(network.IPAM?.Config).map((range) => range.Subnet)] as const;
+        }),
       ),
     );
     for (const inspect of inspects) {
       const item = baseItem(inspect.Id, inspect.Name.replace(/^\//, ''), 'container');
+      for (const [name, endpoint] of Object.entries(inspect.NetworkSettings?.Networks ?? {})) {
+        if (DEFAULT_NETWORKS.has(name)) continue;
+        const address = fixedIPv4Address(endpoint);
+        const subnets = networkSubnets.get(name) ?? [];
+        (item.networks ??= []).push({ name, subnets });
+        if (address) (item.fixedIPv4 ??= []).push({ network: name, address, subnets });
+      }
       const labels = (inspect.Config.Labels ?? {}) as Record<string, string>;
       item.composeProject = labels[COMPOSE_PROJECT_LABEL] ?? null;
       item.temporary = inspect.HostConfig.AutoRemove === true;
+      if (inspect.HostConfig.Privileged === true) item.privileged = true;
       if (item.temporary) item.notes.push(DOCKER_TEMPORARY_NOTE);
       item.notes.push(DOCKER_WRITABLE_LAYER_NOTE);
-      for (const key of [
-        `${COMPOSE_PROJECT_LABEL}.working_dir`,
-        `${COMPOSE_PROJECT_LABEL}.config_files`,
-      ]) {
-        if (labels[key]?.split(',').some((path) => path.startsWith('/') && within(root, path)))
-          item.linkedReasons.push(key);
-      }
+      item.linkedReasons.push(...containerProjectLinks(root, inspect));
       try {
         projectDockerCreate(inspect, client.socketPath);
       } catch (error) {
@@ -273,10 +486,9 @@ export class DockerPlanSourceService {
         }
       }
       item.images = [await image(inspect.Image)];
-      item.writableLayer = size(usage.Containers?.find((c) => c.Id === inspect.Id)?.SizeRw);
-      const user = String(inspect.Config.User ?? '').split(':')[0];
-      if (this.uid() !== null && user === String(this.uid()))
-        item.warnings.push({ code: 'home-uid', message: 'Container runs as the home user uid.' });
+      item.writableLayer = linked.has(inspect.Id)
+        ? (writableLayers.get(inspect.Id) ?? unknownSize())
+        : unknownSize();
       for (const mount of inspect.Mounts ?? []) {
         if (mount.Type === 'volume') {
           const named =
@@ -291,21 +503,27 @@ export class DockerPlanSourceService {
           );
         } else if (mount.Type === 'bind') {
           const source = resolve(mount.Source);
-          const kind = this.bindKind(root, source, !mount.RW);
-          if (kind === 'project-bind') item.linkedReasons.push(`bind:${source}`);
-          // Only binds the import copies are measured: walking an unrelated
-          // container's `/` read-only mount can take longer than every plan.
-          const copyable = COPYABLE_MOUNT_KINDS.includes(kind);
-          if (copyable && !bindCache.has(source))
-            bindCache.set(source, await this.measure(source, signal));
+          const kind = await this.bindKind(root, source, !mount.RW, dataBindPaths, signal);
+          if (kind === 'project-bind' || kind === 'project-code')
+            item.linkedReasons.push(`bind:${source}`);
           item.mounts.push({
             kind,
             source,
             destination: mount.Destination,
             readOnly: !mount.RW,
-            size: copyable ? (bindCache.get(source) ?? unknownSize()) : unknownSize(),
+            size: unknownSize(),
           });
         }
+      }
+      // Only a linked container can be selected, so only its Compose set is read.
+      const composeSet = item.linkedReasons.length ? composeLabelSet(root, inspect) : null;
+      if (composeSet?.service) {
+        const config = await readCompose(composeSet.directory, composeSet.files);
+        if (
+          !(config instanceof Error) &&
+          buildsInProject(root, config?.services?.[composeSet.service])
+        )
+          item.buildsFromProject = true;
       }
       items.push(item);
     }
@@ -349,6 +567,44 @@ export class DockerPlanSourceService {
       }
       items.push(item);
     }
+    const previous = await Promise.all(
+      [...new Set(previousBindPaths)]
+        .filter((path) => within(root, path))
+        .map(async (path) => ({
+          source: path,
+          kind: await this.bindKind(root, path, false, dataBindPaths, signal),
+        })),
+    );
+    const projectMounts = items
+      .flatMap((item) => item.mounts)
+      .filter((mount) => mount.kind === 'project-bind' || mount.kind === 'project-code');
+    const dataPaths = [
+      ...projectMounts
+        .filter((mount) => mount.kind === 'project-bind')
+        .map((mount) => mount.source),
+      ...previous.filter((mount) => mount.kind === 'project-bind').map((mount) => mount.source),
+      ...dataBindPaths.filter((path) => within(root, path) && resolve(path) !== resolve(root)),
+    ];
+    const classified = [...projectMounts, ...previous];
+    for (const mount of classified)
+      if (mount.kind === 'project-code' && dataPaths.some((path) => within(path, mount.source)))
+        mount.kind = 'project-bind';
+    const codePaths = [
+      ...new Set(
+        classified.filter((mount) => mount.kind === 'project-code').map((mount) => mount.source),
+      ),
+    ];
+    // Measure only after nested code has inherited its enclosing data classification.
+    for (const mount of items.flatMap((item) => item.mounts)) {
+      if (isVolumeMount(mount.kind)) continue;
+      if (COPYABLE_MOUNT_KINDS.includes(mount.kind)) {
+        if (!bindCache.has(mount.source))
+          bindCache.set(mount.source, await this.measure(mount.source, signal));
+        mount.size = bindCache.get(mount.source) ?? unknownSize();
+      } else if (mount.kind === 'project-code') {
+        mount.size = { bytes: 0, unknown: false };
+      }
+    }
     for (const item of items) {
       // A worklist: each member, including ones added on the way, adds the items sharing data with it.
       const group = [item];
@@ -359,11 +615,17 @@ export class DockerPlanSourceService {
     }
     // A walk that ran out of time is measured again.
     const folders = new Map([...bindCache].filter(([, size]) => !size.unknown));
-    this.recent = { at: recent?.at ?? Date.now(), usage, folders };
+    this.recent = {
+      at: recent?.at ?? Date.now(),
+      usage,
+      writableLayers: new Map([...writableLayers].filter(([, size]) => !size.unknown)),
+      folders,
+      compose: composeCache,
+    };
     return {
       items,
       homePath: this.homePath(),
-      uid: this.uid(),
+      codePaths,
       holders: inspects.map((c) => ({
         volumes: (c.Mounts ?? []).filter((m) => m.Type === 'volume').map((m) => m.Name ?? m.Source),
         bindPaths: (c.Mounts ?? []).filter((m) => m.Type === 'bind').map((m) => m.Source),
@@ -372,8 +634,42 @@ export class DockerPlanSourceService {
     };
   }
 
-  private bindKind(root: string, source: string, readOnly: boolean): DockerPlanMount['kind'] {
-    if (within(root, source)) return 'project-bind';
+  async bindKind(
+    root: string,
+    source: string,
+    readOnly: boolean,
+    dataBindPaths: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<DockerPlanMount['kind']> {
+    signal?.throwIfAborted();
+    if (resolve(root) === resolve(source)) return 'project-code';
+    if (within(root, source)) {
+      if (dataBindPaths.some((path) => resolve(path) === resolve(source))) return 'project-bind';
+      try {
+        const result = await this.executor.run({
+          argv: ['git', 'ls-files', '-z', '--', `:(literal)${relative(root, source)}`],
+          mode: 'pipe',
+          cwd: root,
+          timeout: 10_000,
+          outputLimits: { maxBytes: 4096 },
+        });
+        signal?.throwIfAborted();
+        if (result.success) {
+          const tracked =
+            result.truncated ||
+            result.stdout
+              .split('\0')
+              .some(
+                (path) => path && !['.gitkeep', '.keep', '.gitignore'].includes(basename(path)),
+              );
+          return tracked ? 'project-code' : 'project-bind';
+        }
+      } catch {
+        signal?.throwIfAborted();
+        // An unavailable git uses the bind's write permission, never cached classification.
+      }
+      return readOnly ? 'project-code' : 'project-bind';
+    }
     if (within(this.homePath(), source)) return 'home-bind';
     return readOnly ? 'readonly-external-bind' : 'external-bind';
   }
@@ -490,16 +786,17 @@ function explicitlyNamed(inspect: Container, mount: Mount): boolean {
  */
 function sharesData(a: DockerPlanItem, b: DockerPlanItem): boolean {
   const copied = (mount: DockerPlanMount) => COPYABLE_MOUNT_KINDS.includes(mount.kind);
-  return a.mounts.some(
-    (x) =>
-      copied(x) &&
-      b.mounts.some((y) => {
-        if (!copied(y) || (x.readOnly && y.readOnly)) return false;
-        const xv = isVolumeMount(x.kind);
-        const yv = isVolumeMount(y.kind);
-        return xv && yv
-          ? x.source === y.source
-          : !xv && !yv && (within(x.source, y.source) || within(y.source, x.source));
-      }),
+  const writer = (mount: DockerPlanMount) =>
+    copied(mount) || (mount.kind === 'project-code' && !mount.readOnly);
+  return a.mounts.some((x) =>
+    b.mounts.some((y) => {
+      if (x.readOnly && y.readOnly) return false;
+      if (!(copied(x) && writer(y)) && !(copied(y) && writer(x))) return false;
+      const xv = isVolumeMount(x.kind);
+      const yv = isVolumeMount(y.kind);
+      return xv && yv
+        ? x.source === y.source
+        : !xv && !yv && (within(x.source, y.source) || within(y.source, x.source));
+    }),
   );
 }

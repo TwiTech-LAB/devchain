@@ -94,14 +94,13 @@ async function choose(trigger: string, option: string) {
 // page spec covers the data that feeds it.
 describe('ProjectList', () => {
   it('lists every row, VM projects first, with its workspace, state and the caller’s action', () => {
-    const renderAction = renderList();
+    renderList();
     expect(visibleNames()).toEqual(['Billing', 'api-gateway', 'Blog']);
     const billing = screen.getByRole('listitem', { name: 'Billing' });
     expect(billing).toHaveTextContent('Main');
     expect(billing).toHaveTextContent('On lab-vm');
     expect(billing).toHaveTextContent('Files in sync');
     expect(within(billing).getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
-    expect(renderAction).toHaveBeenCalledTimes(3);
   });
 
   it('lists projects on a VM first and sorts each group by name', () => {

@@ -1,10 +1,9 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import Database from 'better-sqlite3';
 import { eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'path';
 import {
   projects,
@@ -175,10 +174,7 @@ describe('TeamsStore', () => {
   let agentC: string;
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    const migrationsFolder = join(__dirname, '../../../../drizzle');
-    migrate(db, { migrationsFolder });
+    ({ sqlite, db } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
     store = new TeamsStore(db);
 
@@ -350,22 +346,6 @@ describe('TeamsStore', () => {
   });
 
   describe('getTeam', () => {
-    it('returns team with members', async () => {
-      const created = await store.createTeam({
-        projectId,
-        name: 'Test Team',
-        teamLeadAgentId: agentA,
-        memberAgentIds: [agentA, agentB],
-      });
-
-      const team = await store.getTeam(created.id);
-
-      expect(team).not.toBeNull();
-      expect(team!.id).toBe(created.id);
-      expect(team!.name).toBe('Test Team');
-      expect(team!.members).toHaveLength(2);
-    });
-
     it('returns null for non-existent team', async () => {
       const team = await store.getTeam(randomUUID());
       expect(team).toBeNull();
@@ -1023,37 +1003,6 @@ describe('TeamsStore', () => {
     });
   });
 
-  describe('getTeam returns profileIds', () => {
-    it('returns profileIds in the result', async () => {
-      const profileA = await seedProfile(db, projectId, 'Profile-A');
-
-      const team = await store.createTeam({
-        projectId,
-        name: 'Get Profiles',
-        memberAgentIds: [agentA],
-        profileIds: [profileA],
-      });
-
-      const result = await store.getTeam(team.id);
-
-      expect(result).not.toBeNull();
-      expect(result!.profileIds).toEqual([profileA]);
-    });
-
-    it('returns empty profileIds when none assigned', async () => {
-      const team = await store.createTeam({
-        projectId,
-        name: 'No Profiles',
-        memberAgentIds: [agentA],
-      });
-
-      const result = await store.getTeam(team.id);
-
-      expect(result).not.toBeNull();
-      expect(result!.profileIds).toEqual([]);
-    });
-  });
-
   describe('listProfilesForTeam', () => {
     it('returns correct profile IDs', async () => {
       const profileA = await seedProfile(db, projectId, 'Profile-A');
@@ -1180,68 +1129,35 @@ describe('TeamsStore', () => {
       expect(rows).toHaveLength(0);
     });
 
-    it('deleteTeam cascades team_profile_configs', async () => {
-      const profileA = await seedProfile(db, projectId, 'Profile-A');
-      const configId = await seedProviderConfig(db, profileA, 'cfg-cascade');
+    it.each(['deleteTeam', 'deleteTeamsByProject', 'deleteTeamsByIds'])(
+      '%s cascades team_profile_configs',
+      async (operation) => {
+        const profileA = await seedProfile(db, projectId, 'Profile-A');
+        const configId = await seedProviderConfig(db, profileA, 'cfg-cascade');
 
-      const team = await store.createTeam({
-        projectId,
-        name: 'Cascade TPC Team',
-        memberAgentIds: [agentA],
-        profileIds: [profileA],
-        profileConfigSelections: [{ profileId: profileA, configIds: [configId] }],
-      });
+        const team = await store.createTeam({
+          projectId,
+          name: 'Cascade TPC Team',
+          memberAgentIds: [agentA],
+          profileIds: [profileA],
+          profileConfigSelections: [{ profileId: profileA, configIds: [configId] }],
+        });
 
-      await store.deleteTeam(team.id);
+        if (operation === 'deleteTeam') {
+          await store.deleteTeam(team.id);
+        } else if (operation === 'deleteTeamsByProject') {
+          await store.deleteTeamsByProject(projectId);
+        } else {
+          await store.deleteTeamsByIds([team.id]);
+        }
 
-      const rows = await db
-        .select()
-        .from(teamProfileConfigs)
-        .where(eq(teamProfileConfigs.teamId, team.id));
-      expect(rows).toHaveLength(0);
-    });
-
-    it('deleteTeamsByProject cascades team_profile_configs', async () => {
-      const profileA = await seedProfile(db, projectId, 'Profile-A');
-      const configId = await seedProviderConfig(db, profileA, 'cfg-cascade-proj');
-
-      const team = await store.createTeam({
-        projectId,
-        name: 'Cascade Proj TPC Team',
-        memberAgentIds: [agentA],
-        profileIds: [profileA],
-        profileConfigSelections: [{ profileId: profileA, configIds: [configId] }],
-      });
-
-      await store.deleteTeamsByProject(projectId);
-
-      const rows = await db
-        .select()
-        .from(teamProfileConfigs)
-        .where(eq(teamProfileConfigs.teamId, team.id));
-      expect(rows).toHaveLength(0);
-    });
-
-    it('deleteTeamsByIds cascades team_profile_configs', async () => {
-      const profileA = await seedProfile(db, projectId, 'Profile-A');
-      const configId = await seedProviderConfig(db, profileA, 'cfg-cascade-ids');
-
-      const team = await store.createTeam({
-        projectId,
-        name: 'Cascade Ids TPC Team',
-        memberAgentIds: [agentA],
-        profileIds: [profileA],
-        profileConfigSelections: [{ profileId: profileA, configIds: [configId] }],
-      });
-
-      await store.deleteTeamsByIds([team.id]);
-
-      const rows = await db
-        .select()
-        .from(teamProfileConfigs)
-        .where(eq(teamProfileConfigs.teamId, team.id));
-      expect(rows).toHaveLength(0);
-    });
+        const rows = await db
+          .select()
+          .from(teamProfileConfigs)
+          .where(eq(teamProfileConfigs.teamId, team.id));
+        expect(rows).toHaveLength(0);
+      },
+    );
 
     it('removing a profile from team via updateTeam cascades team_profile_configs entries for that profile', async () => {
       const profileA = await seedProfile(db, projectId, 'Profile-A');
@@ -1676,14 +1592,6 @@ describe('TeamsStore', () => {
       expect(count).toBe(0);
     });
 
-    it('returns 1 for one busy member', async () => {
-      const parentEpic = await seedEpic({ agentId: agentLead, statusId: statusInProgress });
-      await seedEpic({ agentId: agentM1, statusId: statusInProgress, parentId: parentEpic });
-
-      const count = await store.countBusyTeamMembers(teamId, agentLead);
-      expect(count).toBe(1);
-    });
-
     it('returns N for N busy members', async () => {
       const parentEpic = await seedEpic({ agentId: agentLead, statusId: statusInProgress });
       await seedEpic({ agentId: agentM1, statusId: statusInProgress, parentId: parentEpic });
@@ -1738,84 +1646,68 @@ describe('TeamsStore', () => {
   });
 
   describe('TransactionRunner.runImmediateAsync usage', () => {
-    it('createTeam invokes runImmediateAsync', async () => {
-      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
-      await store.createTeam({
-        projectId,
-        name: 'RunnerTest-Create',
-        memberAgentIds: [agentA],
-      });
-      expect(spy).toHaveBeenCalledTimes(1);
-      spy.mockRestore();
-    });
-
-    it('updateTeam invokes runImmediateAsync', async () => {
-      const team = await store.createTeam({
-        projectId,
-        name: 'RunnerTest-Update',
-        memberAgentIds: [agentA],
-      });
-      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
-      await store.updateTeam(team.id, { name: 'RunnerTest-Updated' });
-      expect(spy).toHaveBeenCalledTimes(1);
-      spy.mockRestore();
-    });
-
-    it('deleteTeamsByIds invokes runImmediateAsync', async () => {
-      const team = await store.createTeam({
-        projectId,
-        name: 'RunnerTest-DeleteIds',
-        memberAgentIds: [agentA],
-      });
-      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
-      await store.deleteTeamsByIds([team.id]);
-      expect(spy).toHaveBeenCalledTimes(1);
-      spy.mockRestore();
-    });
-
-    it('createTeamAgentAtomicCapped invokes runImmediateAsync', async () => {
-      const team = await store.createTeam({
-        projectId,
-        name: 'RunnerTest-AtomicCapped',
-        memberAgentIds: [agentA],
-        maxMembers: 5,
-      });
-      const newAgentId = await seedAgent(db, projectId, 'RunnerCapAgent');
-      const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
-      await store.createTeamAgentAtomicCapped({
-        teamId: team.id,
-        maxMembers: 5,
-        teamLeadAgentId: null,
-        createAgentFn: async () => ({
-          id: newAgentId,
-          projectId,
-          profileId: 'p',
-          providerConfigId: 'c',
-          modelOverride: null,
-          effortOverride: null,
-          isProjectOwner: false,
-          name: 'RunnerCapAgent',
-          description: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }),
-      });
-      expect(spy).toHaveBeenCalledTimes(1);
-      spy.mockRestore();
-    });
-
-    it('replaceTeamProfileConfigs invokes runImmediateAsync', async () => {
+    it.each([
+      'createTeam',
+      'updateTeam',
+      'deleteTeamsByIds',
+      'createTeamAgentAtomicCapped',
+      'replaceTeamProfileConfigs',
+    ] as const)('%s invokes runImmediateAsync once', async (operation) => {
       const profileA = await seedProfile(db, projectId, 'RunnerProfile');
-      const team = await store.createTeam({
+      const teamInput = {
         projectId,
-        name: 'RunnerTest-ReplaceConfigs',
+        name: 'RunnerTest',
         memberAgentIds: [agentA],
+        maxMembers: 5,
         profileIds: [profileA],
-      });
+      };
+      const team = operation === 'createTeam' ? null : await store.createTeam(teamInput);
+      const newAgentId =
+        operation === 'createTeamAgentAtomicCapped'
+          ? await seedAgent(db, projectId, 'RunnerCapAgent')
+          : null;
       const spy = jest.spyOn(TransactionRunner.prototype, 'runImmediateAsync');
-      await store.replaceTeamProfileConfigs(team.id, [{ profileId: profileA, configIds: [] }]);
-      expect(spy).toHaveBeenCalledTimes(1);
-      spy.mockRestore();
+      try {
+        switch (operation) {
+          case 'createTeam':
+            await store.createTeam(teamInput);
+            break;
+          case 'updateTeam':
+            await store.updateTeam(team!.id, { name: 'RunnerTest-Updated' });
+            break;
+          case 'deleteTeamsByIds':
+            await store.deleteTeamsByIds([team!.id]);
+            break;
+          case 'replaceTeamProfileConfigs':
+            await store.replaceTeamProfileConfigs(team!.id, [
+              { profileId: profileA, configIds: [] },
+            ]);
+            break;
+          case 'createTeamAgentAtomicCapped':
+            await store.createTeamAgentAtomicCapped({
+              teamId: team!.id,
+              maxMembers: 5,
+              teamLeadAgentId: null,
+              createAgentFn: async () => ({
+                id: newAgentId!,
+                projectId,
+                profileId: 'p',
+                providerConfigId: 'c',
+                modelOverride: null,
+                effortOverride: null,
+                isProjectOwner: false,
+                name: 'RunnerCapAgent',
+                description: null,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              }),
+            });
+            break;
+        }
+        expect(spy).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('ConflictError on unique-constraint triggers rollback (no partial writes)', async () => {

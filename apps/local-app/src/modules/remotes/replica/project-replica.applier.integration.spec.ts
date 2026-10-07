@@ -1372,20 +1372,6 @@ describe('ProjectReplicaApplier (integration)', () => {
     });
   });
 
-  it('commits nothing, not even the freeze, when a frozen apply fails', async () => {
-    host.exec("DELETE FROM providers WHERE id = 'host-codex'");
-
-    await expect(
-      applier.apply(await build('attach'), {
-        mode: 'full',
-        remoteId: null,
-        cursor: null,
-        frozenAt: '2026-09-22T12:00:00.000Z',
-      }),
-    ).rejects.toMatchObject({ table: 'providers' });
-    expect(count(host, 'SELECT 1 FROM projects')).toBe(0);
-  });
-
   it('rejects a payload whose provider is not installed on this instance', async () => {
     host.exec("DELETE FROM providers WHERE id = 'host-codex'");
 

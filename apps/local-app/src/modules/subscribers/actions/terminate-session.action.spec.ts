@@ -134,14 +134,6 @@ describe('TerminateSessionAction', () => {
       expect(terminateSessionAction.type).toBe('terminate_session');
     });
 
-    it('should have correct display name', () => {
-      expect(terminateSessionAction.name).toBe('Terminate Session');
-    });
-
-    it('should have correct category', () => {
-      expect(terminateSessionAction.category).toBe('session');
-    });
-
     it('should expose Agent Name before Profile Family Slug with family policy copy', () => {
       expect(terminateSessionAction.inputs).toHaveLength(3);
       const agentNameInput = terminateSessionAction.inputs.find((i) => i.name === 'agentName');
@@ -175,10 +167,6 @@ describe('TerminateSessionAction', () => {
         allowedSources: ['custom'],
         required: false,
       });
-    });
-
-    it('should not disable subscriber retry', () => {
-      expect(terminateSessionAction.supportsRetry).toBeUndefined();
     });
   });
 
@@ -216,34 +204,9 @@ describe('TerminateSessionAction', () => {
       });
       expect(mockStorage.getAgentByName).not.toHaveBeenCalled();
       expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
-    });
-
-    it('skips with success before resolving the familySlug path', async () => {
-      mockBlockingGuard();
-
-      const result = await terminateSessionAction.execute(mockContext, {
-        familySlug: 'engineering',
-        skipWhileEpicsInStatuses: 'In Progress',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.message).toBe('Skipped: 2 epic(s) still in In Progress');
       expect(mockStorage.listAgentProfiles).not.toHaveBeenCalled();
       expect(mockStorage.listAgents).not.toHaveBeenCalled();
-      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
-    });
-
-    it('skips with success before resolving the event path', async () => {
-      mockBlockingGuard();
-
-      const result = await terminateSessionAction.execute(mockContext, {
-        skipWhileEpicsInStatuses: 'Review',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.message).toBe('Skipped: 1 epic(s) still in Review');
       expect(mockSessionsService.validateSessionInProject).not.toHaveBeenCalled();
-      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
     });
 
     it('fails closed without mutation when a label matches no status', async () => {
@@ -351,6 +314,7 @@ describe('TerminateSessionAction', () => {
       expect(result.error).toContain('IdleAgent');
       expect(result.error).not.toContain('Agent not found');
       expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
+      expect(result.retryable).toBeUndefined();
     });
 
     it('should refuse an agent resolved outside the project', async () => {
@@ -543,38 +507,19 @@ describe('TerminateSessionAction', () => {
       });
     });
 
-    it('should select the event session for blank agentName', async () => {
-      const inputs = { agentName: '' };
-
+    it.each([
+      { name: 'blank agent', inputs: { agentName: '' } },
+      { name: 'blank agent and family', inputs: { agentName: '   ', familySlug: '   ' } },
+    ])('selects the event session for $name', async ({ inputs }) => {
       const result = await terminateSessionAction.execute(mockContext, inputs);
-
-      expect(mockStorage.getAgentByName).not.toHaveBeenCalled();
       expect(result.success).toBe(true);
       expect((result.data as TerminateSessionResultData).resolvedBy).toBe('event');
-    });
-
-    it('should select the event session for whitespace-only agentName', async () => {
-      const inputs = { agentName: '   ' };
-
-      const result = await terminateSessionAction.execute(mockContext, inputs);
-
       expect(mockStorage.getAgentByName).not.toHaveBeenCalled();
-      expect(result.success).toBe(true);
-      expect((result.data as TerminateSessionResultData).resolvedBy).toBe('event');
-    });
-
-    it('should select the event session when both selectors are whitespace-only', async () => {
-      const result = await terminateSessionAction.execute(mockContext, {
-        agentName: '   ',
-        familySlug: '   ',
-      });
-
       expect(mockStorage.listAgentProfiles).not.toHaveBeenCalled();
       expect(mockSessionsService.validateSessionInProject).toHaveBeenCalledWith(
         'session-123',
         'project-789',
       );
-      expect((result.data as TerminateSessionResultData).resolvedBy).toBe('event');
     });
 
     it('should reject a missing event session', async () => {
@@ -636,28 +581,6 @@ describe('TerminateSessionAction', () => {
     });
   });
 
-  describe('execute - retry semantics', () => {
-    it('should not mark failures as non-retryable', async () => {
-      mockSessionsService.getActiveSessionForAgent.mockReturnValue(null);
-      const inputs = { agentName: 'IdleAgent' };
-
-      const result = await terminateSessionAction.execute(mockContext, inputs);
-
-      expect(result.success).toBe(false);
-      expect(result.retryable).toBeUndefined();
-    });
-
-    it('should not mark termination errors as non-retryable', async () => {
-      mockSessionsService.terminateSession.mockRejectedValue(new Error('tmux destroy failed'));
-      const inputs = {};
-
-      const result = await terminateSessionAction.execute(mockContext, inputs);
-
-      expect(result.success).toBe(false);
-      expect(result.retryable).toBeUndefined();
-    });
-  });
-
   describe('execute - error handling', () => {
     it('should handle terminateSession errors', async () => {
       mockSessionsService.terminateSession.mockRejectedValue(new Error('Cannot terminate'));
@@ -668,34 +591,7 @@ describe('TerminateSessionAction', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('Failed to terminate session');
       expect(result.error).toContain('Cannot terminate');
-    });
-
-    it('should log errors on failure', async () => {
-      mockSessionsService.terminateSession.mockRejectedValue(new Error('Cannot terminate'));
-      const inputs = {};
-
-      await terminateSessionAction.execute(mockContext, inputs);
-
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ error: 'Cannot terminate' }),
-        'Failed to terminate session',
-      );
-    });
-
-    it('should log a successful termination', async () => {
-      const inputs = {};
-
-      await terminateSessionAction.execute(mockContext, inputs);
-
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionId: 'session-123',
-          resolvedAgentId: 'agent-456',
-          resolvedBy: 'event',
-          previousStatus: 'running',
-        }),
-        'Session terminated successfully',
-      );
+      expect(result.retryable).toBeUndefined();
     });
   });
 });

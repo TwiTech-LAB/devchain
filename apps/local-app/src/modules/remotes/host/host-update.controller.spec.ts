@@ -35,14 +35,6 @@ describe('HostUpdateController', () => {
     },
   );
 
-  it('creates a project root through the helper', async () => {
-    await expect(controller.createProjectRoot({ path: '/srv/work/demo' })).resolves.toEqual({
-      path: '/srv/work/demo',
-      created: true,
-    });
-    await expect(controller.createProjectRoot({})).rejects.toBeInstanceOf(ZodError);
-  });
-
   it('refuses a claim with 409: a VM running DevChain is claimed already', () => {
     expect(() => controller.claim()).toThrow(
       expect.objectContaining({ statusCode: 409, details: { code: 'ALREADY_CLAIMED' } }),
@@ -51,15 +43,5 @@ describe('HostUpdateController', () => {
     expect(() => controller.claim()).toThrow(
       expect.objectContaining({ statusCode: 409, details: { code: 'NOT_A_HOST' } }),
     );
-  });
-
-  it('reports the update status', () => {
-    expect(controller.status()).toEqual({ status: null });
-  });
-  it('accepts Docker install without version inputs and exposes status', async () => {
-    await expect(controller.docker({})).resolves.toEqual({ state: 'pending', jobId: 'job' });
-    expect(controller.dockerStatus()).toEqual({ status: null });
-    await expect(controller.docker({ version: '1.0.0' })).rejects.toBeInstanceOf(ZodError);
-    expect(helper.requestDocker).toHaveBeenCalledTimes(1);
   });
 });

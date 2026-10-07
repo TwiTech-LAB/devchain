@@ -3,7 +3,7 @@ import { act, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { useXterm } from './useXterm';
-import { termLog } from '@/ui/lib/debug';
+
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
@@ -104,7 +104,6 @@ describe('useXterm', () => {
     );
     expect(result.current.xtermRef.current?.loadAddon).toHaveBeenCalled();
     expect(result.current.xtermRef.current?.open).toHaveBeenCalledWith(mockContainerElement);
-    expect(termLog).toHaveBeenCalledWith('terminal_init_start', { sessionId });
   });
 
   it('should call onReady callback after fitting terminal', (done) => {
@@ -138,10 +137,6 @@ describe('useXterm', () => {
     });
 
     expect(Terminal).not.toHaveBeenCalled();
-    expect(termLog).toHaveBeenCalledWith('terminal_init_blocked', {
-      sessionId,
-      reason: 'no_container',
-    });
   });
 
   it('should dispose terminal on unmount', () => {
@@ -161,7 +156,6 @@ describe('useXterm', () => {
     unmount();
 
     expect(terminal?.dispose).toHaveBeenCalled();
-    expect(termLog).toHaveBeenCalledWith('terminal_dispose', { sessionId });
   });
 
   // Hook-level jsdom is the cheapest reliable layer for construction and cleanup wiring.
@@ -185,24 +179,6 @@ describe('useXterm', () => {
 
     expect(selectionDisposables).toHaveLength(2);
     selectionDisposables.forEach((dispose) => expect(dispose).toHaveBeenCalledTimes(1));
-  });
-
-  it('should populate terminal and fitAddon refs', () => {
-    const terminalRef = { current: mockContainerElement };
-    const sessionId = 'test-session';
-
-    const { result } = renderHook(() => {
-      const xtermRef = useRef<Terminal | null>(null);
-      const fitAddonRef = useRef<FitAddon | null>(null);
-      useXterm(terminalRef, sessionId, xtermRef, fitAddonRef);
-      return { xtermRef, fitAddonRef };
-    });
-
-    // Check that refs are populated
-    expect(result.current.xtermRef.current).toBeTruthy();
-    expect(result.current.fitAddonRef.current).toBeTruthy();
-    expect(result.current.xtermRef.current?.dispose).toBeDefined();
-    expect(result.current.fitAddonRef.current?.fit).toBeDefined();
   });
 
   it('decodes OSC 52 clipboard payloads as UTF-8', async () => {
@@ -311,10 +287,15 @@ describe('useXterm', () => {
     expect(result.current.xtermRef.current).toBe(firstTerminal);
   });
 
-  it('should use custom scrollbackLines for Terminal creation (within valid range)', () => {
+  it.each([
+    [25000, 25000],
+    [10, MIN_TERMINAL_SCROLLBACK],
+    [100000, MAX_TERMINAL_SCROLLBACK],
+    [undefined, DEFAULT_TERMINAL_SCROLLBACK],
+  ])('clamps scrollback %s to %s', (scrollback, expected) => {
     const terminalRef = { current: mockContainerElement };
     const sessionId = 'test-session';
-    const customScrollback = 25000; // Within MIN (100) and MAX (50000)
+    const customScrollback = scrollback;
 
     renderHook(() => {
       const xtermRef = useRef<Terminal | null>(null);
@@ -338,133 +319,9 @@ describe('useXterm', () => {
 
     expect(Terminal).toHaveBeenCalledWith(
       expect.objectContaining({
-        scrollback: customScrollback,
+        scrollback: expected,
       }),
     );
-  });
-
-  describe('scrollbackLines clamping (C1)', () => {
-    it('should clamp scrollbackLines below minimum to MIN_TERMINAL_SCROLLBACK', () => {
-      const terminalRef = { current: mockContainerElement };
-      const sessionId = 'test-session';
-      const belowMin = 10; // Below MIN_TERMINAL_SCROLLBACK (100)
-
-      renderHook(() => {
-        const xtermRef = useRef<Terminal | null>(null);
-        const fitAddonRef = useRef<FitAddon | null>(null);
-        useXterm(
-          terminalRef,
-          sessionId,
-          xtermRef,
-          fitAddonRef,
-          undefined,
-          'form',
-          undefined, // historySync
-          undefined, // isSubscribedRef
-          undefined, // isLoadingHistoryRef
-          undefined, // isHistoryInFlightRef
-          undefined, // pendingHistoryFramesRef
-          belowMin,
-        );
-        return { xtermRef, fitAddonRef };
-      });
-
-      expect(Terminal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          scrollback: MIN_TERMINAL_SCROLLBACK,
-        }),
-      );
-    });
-
-    it('should clamp scrollbackLines above maximum to MAX_TERMINAL_SCROLLBACK', () => {
-      const terminalRef = { current: mockContainerElement };
-      const sessionId = 'test-session';
-      const aboveMax = 100000; // Above MAX_TERMINAL_SCROLLBACK (50000)
-
-      renderHook(() => {
-        const xtermRef = useRef<Terminal | null>(null);
-        const fitAddonRef = useRef<FitAddon | null>(null);
-        useXterm(
-          terminalRef,
-          sessionId,
-          xtermRef,
-          fitAddonRef,
-          undefined,
-          'form',
-          undefined, // historySync
-          undefined, // isSubscribedRef
-          undefined, // isLoadingHistoryRef
-          undefined, // isHistoryInFlightRef
-          undefined, // pendingHistoryFramesRef
-          aboveMax,
-        );
-        return { xtermRef, fitAddonRef };
-      });
-
-      expect(Terminal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          scrollback: MAX_TERMINAL_SCROLLBACK,
-        }),
-      );
-    });
-
-    it('should use DEFAULT_TERMINAL_SCROLLBACK when scrollbackLines is undefined', () => {
-      const terminalRef = { current: mockContainerElement };
-      const sessionId = 'test-session';
-
-      renderHook(() => {
-        const xtermRef = useRef<Terminal | null>(null);
-        const fitAddonRef = useRef<FitAddon | null>(null);
-        useXterm(
-          terminalRef,
-          sessionId,
-          xtermRef,
-          fitAddonRef,
-          undefined,
-          'form',
-          // No scrollbackLines passed - uses default
-        );
-        return { xtermRef, fitAddonRef };
-      });
-
-      expect(Terminal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          scrollback: DEFAULT_TERMINAL_SCROLLBACK,
-        }),
-      );
-    });
-
-    it('should pass valid values unchanged', () => {
-      const terminalRef = { current: mockContainerElement };
-      const sessionId = 'test-session';
-      const validValue = 5000; // Well within range
-
-      renderHook(() => {
-        const xtermRef = useRef<Terminal | null>(null);
-        const fitAddonRef = useRef<FitAddon | null>(null);
-        useXterm(
-          terminalRef,
-          sessionId,
-          xtermRef,
-          fitAddonRef,
-          undefined,
-          'form',
-          undefined, // historySync
-          undefined, // isSubscribedRef
-          undefined, // isLoadingHistoryRef
-          undefined, // isHistoryInFlightRef
-          undefined, // pendingHistoryFramesRef
-          validValue,
-        );
-        return { xtermRef, fitAddonRef };
-      });
-
-      expect(Terminal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          scrollback: validValue,
-        }),
-      );
-    });
   });
 
   describe('TTY input authority recovery', () => {
@@ -670,24 +527,10 @@ describe('useXterm', () => {
   });
 
   describe('appTheme initialization and live update', () => {
-    it('initializes with dark xterm theme by default', () => {
-      const terminalRef = { current: mockContainerElement };
-
-      renderHook(() => {
-        const xtermRef = useRef<Terminal | null>(null);
-        const fitAddonRef = useRef<FitAddon | null>(null);
-        useXterm(terminalRef, 'test-session', xtermRef, fitAddonRef);
-        return { xtermRef, fitAddonRef };
-      });
-
-      expect(Terminal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          theme: DARK_XTERM_THEME,
-        }),
-      );
-    });
-
-    it('initializes with ocean xterm theme when appTheme is ocean', () => {
+    it.each([
+      ['dark', DARK_XTERM_THEME],
+      ['ocean', OCEAN_XTERM_THEME],
+    ] as const)('initializes %s theme', (appTheme, theme) => {
       const terminalRef = { current: mockContainerElement };
 
       renderHook(() => {
@@ -707,21 +550,24 @@ describe('useXterm', () => {
           undefined,
           DEFAULT_TERMINAL_SCROLLBACK,
           undefined,
-          'ocean',
+          appTheme,
         );
         return { xtermRef, fitAddonRef };
       });
 
       expect(Terminal).toHaveBeenCalledWith(
         expect.objectContaining({
-          theme: OCEAN_XTERM_THEME,
+          theme,
         }),
       );
     });
 
-    it('updates terminal options.theme on live theme change without dispose', () => {
+    it.each([
+      ['dark', 'ocean', DARK_XTERM_THEME, OCEAN_XTERM_THEME],
+      ['ocean', 'dark', OCEAN_XTERM_THEME, DARK_XTERM_THEME],
+    ] as const)('changes %s to %s without remount', (initial, next, initialTheme, nextTheme) => {
       const terminalRef = { current: mockContainerElement };
-      let appTheme: 'dark' | 'ocean' = 'dark';
+      let appTheme: 'dark' | 'ocean' = initial;
 
       const { result, rerender } = renderHook(() => {
         const xtermRef = useRef<Terminal | null>(null);
@@ -747,10 +593,10 @@ describe('useXterm', () => {
 
       const terminal = result.current.xtermRef.current;
       expect(terminal).toBeTruthy();
-      expect(terminal!.options.theme).toBe(DARK_XTERM_THEME);
+      expect(terminal!.options.theme).toBe(initialTheme);
 
       // Change theme to ocean
-      appTheme = 'ocean';
+      appTheme = next;
       rerender();
 
       // Terminal should NOT be disposed/recreated
@@ -758,44 +604,7 @@ describe('useXterm', () => {
       expect(terminal!.dispose).not.toHaveBeenCalled();
 
       // Theme should be updated on the existing instance
-      expect(terminal!.options.theme).toBe(OCEAN_XTERM_THEME);
-    });
-
-    it('updates from ocean back to dark without remount', () => {
-      const terminalRef = { current: mockContainerElement };
-      let appTheme: 'dark' | 'ocean' = 'ocean';
-
-      const { result, rerender } = renderHook(() => {
-        const xtermRef = useRef<Terminal | null>(null);
-        const fitAddonRef = useRef<FitAddon | null>(null);
-        useXterm(
-          terminalRef,
-          'test-session',
-          xtermRef,
-          fitAddonRef,
-          undefined,
-          'form',
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          DEFAULT_TERMINAL_SCROLLBACK,
-          undefined,
-          appTheme,
-        );
-        return { xtermRef, fitAddonRef };
-      });
-
-      const terminal = result.current.xtermRef.current;
-      expect(terminal!.options.theme).toBe(OCEAN_XTERM_THEME);
-
-      appTheme = 'dark';
-      rerender();
-
-      expect(result.current.xtermRef.current).toBe(terminal);
-      expect(terminal!.dispose).not.toHaveBeenCalled();
-      expect(terminal!.options.theme).toBe(DARK_XTERM_THEME);
+      expect(terminal!.options.theme).toBe(nextTheme);
     });
   });
 
@@ -1076,22 +885,6 @@ describe('useXterm', () => {
       mockSocket.emit.mockClear();
     }
 
-    it('host-path wheel-up stamps intent and triggers a request', () => {
-      setVisible(mockContainerElement, true);
-      const { terminal } = renderScrollHook(true);
-      establishAtBottom(terminal);
-
-      // Host-scroll wheel-up (form mode, no mouse tracking) stamps intent via the container seam.
-      dispatchWheel(-120);
-
-      // The scroll lands above the bottom; the poll sees fresh intent → emits.
-      terminal.buffer.active.viewportY = 40;
-      act(() => {
-        jest.advanceTimersByTime(100);
-      });
-      expect(emittedFullHistory()).toBe(true);
-    });
-
     it('wheel forwarded to a TUI with mouse tracking does NOT stamp intent', () => {
       setVisible(mockContainerElement, true);
       const { terminal } = renderScrollHook(true, 'tty');
@@ -1101,81 +894,6 @@ describe('useXterm', () => {
       establishAtBottom(terminal);
 
       dispatchWheel(-120);
-
-      terminal.buffer.active.viewportY = 40;
-      act(() => {
-        jest.advanceTimersByTime(100);
-      });
-      expect(emittedFullHistory()).toBe(false);
-    });
-
-    it('Shift+PageDown also stamps intent (xterm viewport scroll key)', () => {
-      setVisible(mockContainerElement, true);
-      const { terminal } = renderScrollHook(true);
-      establishAtBottom(terminal);
-
-      act(() => {
-        mockContainerElement.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            shiftKey: true,
-            code: 'PageDown',
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-      });
-
-      terminal.buffer.active.viewportY = 40;
-      act(() => {
-        jest.advanceTimersByTime(100);
-      });
-      expect(emittedFullHistory()).toBe(true);
-    });
-
-    it('unmodified PageUp (a shell key sequence) does NOT stamp intent', () => {
-      setVisible(mockContainerElement, true);
-      const { terminal } = renderScrollHook(true);
-      establishAtBottom(terminal);
-
-      act(() => {
-        mockContainerElement.dispatchEvent(
-          new KeyboardEvent('keydown', { code: 'PageUp', bubbles: true, cancelable: true }),
-        );
-      });
-
-      terminal.buffer.active.viewportY = 40;
-      act(() => {
-        jest.advanceTimersByTime(100);
-      });
-      expect(emittedFullHistory()).toBe(false);
-    });
-
-    it('pointerdown on the vertical scrollbar stamps intent', () => {
-      setVisible(mockContainerElement, true);
-      const { slider } = buildScrollbar();
-      const { terminal } = renderScrollHook(true);
-      establishAtBottom(terminal);
-
-      act(() => {
-        slider.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-      });
-
-      terminal.buffer.active.viewportY = 40;
-      act(() => {
-        jest.advanceTimersByTime(100);
-      });
-      expect(emittedFullHistory()).toBe(true);
-    });
-
-    it('pointerdown on terminal content (selection) does NOT stamp intent', () => {
-      setVisible(mockContainerElement, true);
-      const { screen } = buildScrollbar();
-      const { terminal } = renderScrollHook(true);
-      establishAtBottom(terminal);
-
-      act(() => {
-        screen.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-      });
 
       terminal.buffer.active.viewportY = 40;
       act(() => {

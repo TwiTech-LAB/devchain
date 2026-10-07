@@ -77,45 +77,36 @@ describe('FileNavigator', () => {
     jest.clearAllMocks();
   });
 
-  it('renders file list with all files', () => {
+  it('shows file tree, statuses, change counts and footer', () => {
     renderFileNavigator();
-
-    expect(screen.getByText('login.ts')).toBeInTheDocument();
-    expect(screen.getByText('logout.ts')).toBeInTheDocument();
-    expect(screen.getByText('helpers.ts')).toBeInTheDocument();
-    expect(screen.getByText('old-file.ts')).toBeInTheDocument();
-    expect(screen.getByText('README.md')).toBeInTheDocument();
-  });
-
-  it('renders folder structure in tree view', () => {
-    renderFileNavigator();
-
-    // Should show folder names
-    expect(screen.getByText('src')).toBeInTheDocument();
-    expect(screen.getByText('auth')).toBeInTheDocument();
-    expect(screen.getByText('utils')).toBeInTheDocument();
-  });
-
-  it('shows status indicators for files via icon color and sr-only text', () => {
-    renderFileNavigator();
-
-    // Check for sr-only status text (screen reader accessible)
-    const addedStatuses = screen.getAllByText('added');
-    const modifiedStatuses = screen.getAllByText('modified');
-    const deletedStatuses = screen.getAllByText('deleted');
-
-    expect(addedStatuses.length).toBe(1); // logout.ts
-    expect(modifiedStatuses.length).toBe(3); // login.ts, helpers.ts, README.md
-    expect(deletedStatuses.length).toBe(1); // old-file.ts
-  });
-
-  it('shows line changes for files', () => {
-    renderFileNavigator();
-
-    // Check for additions/deletions display
-    expect(screen.getByText('+10')).toBeInTheDocument();
-    expect(screen.getByText('-5')).toBeInTheDocument();
-    expect(screen.getByText('+20')).toBeInTheDocument();
+    {
+      expect(screen.getByText('login.ts')).toBeInTheDocument();
+      expect(screen.getByText('logout.ts')).toBeInTheDocument();
+      expect(screen.getByText('helpers.ts')).toBeInTheDocument();
+      expect(screen.getByText('old-file.ts')).toBeInTheDocument();
+      expect(screen.getByText('README.md')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('src')).toBeInTheDocument();
+      expect(screen.getByText('auth')).toBeInTheDocument();
+      expect(screen.getByText('utils')).toBeInTheDocument();
+    }
+    {
+      const addedStatuses = screen.getAllByText('added');
+      const modifiedStatuses = screen.getAllByText('modified');
+      const deletedStatuses = screen.getAllByText('deleted');
+      expect(addedStatuses.length).toBe(1);
+      expect(modifiedStatuses.length).toBe(3);
+      expect(deletedStatuses.length).toBe(1);
+    }
+    {
+      expect(screen.getByText('+10')).toBeInTheDocument();
+      expect(screen.getByText('-5')).toBeInTheDocument();
+      expect(screen.getByText('+20')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('5 files changed')).toBeInTheDocument();
+    }
   });
 
   it('highlights selected file', async () => {
@@ -164,6 +155,9 @@ describe('FileNavigator', () => {
     expect(screen.getByText('login.ts')).toBeInTheDocument();
     expect(screen.queryByText('logout.ts')).not.toBeInTheDocument();
     expect(screen.queryByText('helpers.ts')).not.toBeInTheDocument();
+    await userEvent.clear(searchInput);
+    await userEvent.type(searchInput, 'auth');
+    expect(screen.getByText(/2 shown/)).toBeInTheDocument();
   });
 
   it('shows no results message when search has no matches', async () => {
@@ -198,21 +192,6 @@ describe('FileNavigator', () => {
     // Should show full paths in flat view
     expect(screen.getByText('src/auth/login.ts')).toBeInTheDocument();
     expect(screen.queryByText('src')).not.toBeInTheDocument();
-  });
-
-  it('shows file count summary in footer', () => {
-    renderFileNavigator();
-
-    expect(screen.getByText('5 files changed')).toBeInTheDocument();
-  });
-
-  it('shows filtered count when searching', async () => {
-    renderFileNavigator();
-
-    const searchInput = screen.getByPlaceholderText('Filter files...');
-    await userEvent.type(searchInput, 'auth');
-
-    expect(screen.getByText(/2 shown/)).toBeInTheDocument();
   });
 
   it('shows empty state when no files', () => {
@@ -257,27 +236,23 @@ describe('FileNavigator', () => {
     expect(screen.getByText('README.md')).toBeInTheDocument(); // Root level file
   });
 
-  it('handles renamed file status', () => {
-    const filesWithRename: ChangedFile[] = [
-      {
+  it.each([
+    {
+      status: 'renamed',
+      file: {
         path: 'src/new-name.ts',
         status: 'renamed',
         additions: 0,
         deletions: 0,
         oldPath: 'src/old-name.ts',
       },
-    ];
-    renderFileNavigator({ files: filesWithRename });
-
-    expect(screen.getByText('renamed')).toBeInTheDocument();
-  });
-
-  it('handles copied file status', () => {
-    const filesWithCopy: ChangedFile[] = [
-      { path: 'src/copy.ts', status: 'copied', additions: 5, deletions: 0 },
-    ];
-    renderFileNavigator({ files: filesWithCopy });
-
-    expect(screen.getByText('copied')).toBeInTheDocument();
+    },
+    {
+      status: 'copied',
+      file: { path: 'src/copy.ts', status: 'copied', additions: 5, deletions: 0 },
+    },
+  ] as const)('renders $status file status', ({ status, file }) => {
+    renderFileNavigator({ files: [file] });
+    expect(screen.getByText(status)).toBeInTheDocument();
   });
 });

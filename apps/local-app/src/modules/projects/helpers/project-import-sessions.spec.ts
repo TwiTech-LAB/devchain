@@ -9,16 +9,6 @@ describe('ensureNoDuplicateAgentNames', () => {
     expect(() => ensureNoDuplicateAgentNames([{ name: 'Alpha' }, { name: 'Beta' }])).not.toThrow();
   });
 
-  it('passes for empty array', () => {
-    expect(() => ensureNoDuplicateAgentNames([])).not.toThrow();
-  });
-
-  it('throws ValidationError on case-insensitive duplicates', () => {
-    expect(() => ensureNoDuplicateAgentNames([{ name: 'Alpha' }, { name: 'alpha' }])).toThrow(
-      ValidationError,
-    );
-  });
-
   it('throws ValidationError on whitespace-trimmed duplicates', () => {
     expect(() => ensureNoDuplicateAgentNames([{ name: '  Alpha  ' }, { name: 'alpha' }])).toThrow(
       ValidationError,

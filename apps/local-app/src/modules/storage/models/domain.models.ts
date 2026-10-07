@@ -173,6 +173,8 @@ export interface UpdateRemoteProjectBinding {
 export const REMOTE_OPERATION_KIND_IDS = [
   'attach',
   'detach',
+  'force_sync',
+  'git_owner',
   'create_vm',
   'destroy_vm',
   'claim',

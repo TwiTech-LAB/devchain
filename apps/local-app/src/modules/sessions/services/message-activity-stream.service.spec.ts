@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { MessageActivityStreamService } from './message-activity-stream.service';
 import type { RealtimeBroadcaster } from '../../realtime/ports/realtime-broadcaster.port';
 import type { MessageLogEntry, PoolDetails } from './sessions-message-pool.service';
@@ -136,18 +137,14 @@ describe('MessageActivityStreamService', () => {
         pools,
       );
     });
-
-    it('should broadcast empty pools array', () => {
-      service.broadcastPoolsUpdated([]);
-
-      expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith('messages/pools', 'updated', []);
-    });
   });
 
   describe('error handling', () => {
     it('should catch and log errors without throwing', () => {
+      const error = new Error('WebSocket error');
+      const logged = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       mockBroadcaster.broadcastEvent.mockImplementation(() => {
-        throw new Error('WebSocket error');
+        throw error;
       });
 
       // Should not throw
@@ -164,6 +161,11 @@ describe('MessageActivityStreamService', () => {
           immediate: false,
         });
       }).not.toThrow();
+      expect(logged).toHaveBeenCalledWith(
+        { topic: 'messages/activity', type: 'enqueued', error },
+        'Failed to broadcast message activity update',
+      );
+      logged.mockRestore();
     });
   });
 });

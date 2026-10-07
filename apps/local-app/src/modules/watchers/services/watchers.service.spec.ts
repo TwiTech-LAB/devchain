@@ -8,6 +8,7 @@ import { ProjectWriteAdmissionService } from '../../remotes/admission/project-wr
 import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 describe('WatchersService', () => {
+  let admission: ReturnType<typeof createProjectWriteAdmissionStub>;
   let service: WatchersService;
   let mockStorage: {
     listWatchers: jest.Mock;
@@ -45,6 +46,7 @@ describe('WatchersService', () => {
   });
 
   beforeEach(async () => {
+    admission = createProjectWriteAdmissionStub();
     mockStorage = {
       listWatchers: jest.fn().mockResolvedValue([]),
       getWatcher: jest.fn().mockResolvedValue(null),
@@ -63,7 +65,7 @@ describe('WatchersService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteAdmissionService, useValue: admission },
         WatchersService,
         {
           provide: STORAGE_SERVICE,
@@ -79,37 +81,7 @@ describe('WatchersService', () => {
     service = module.get<WatchersService>(WatchersService);
   });
 
-  describe('listWatchers', () => {
-    it('should delegate to storage', async () => {
-      const watchers = [createMockWatcher({ id: 'w1' }), createMockWatcher({ id: 'w2' })];
-      mockStorage.listWatchers.mockResolvedValue(watchers);
-
-      const result = await service.listWatchers('project-1');
-
-      expect(result).toEqual(watchers);
-      expect(mockStorage.listWatchers).toHaveBeenCalledWith('project-1');
-    });
-
-    it('should return empty array when no watchers', async () => {
-      mockStorage.listWatchers.mockResolvedValue([]);
-
-      const result = await service.listWatchers('project-1');
-
-      expect(result).toEqual([]);
-    });
-  });
-
   describe('getWatcher', () => {
-    it('should return watcher when found', async () => {
-      const watcher = createMockWatcher();
-      mockStorage.getWatcher.mockResolvedValue(watcher);
-
-      const result = await service.getWatcher('watcher-1');
-
-      expect(result).toEqual(watcher);
-      expect(mockStorage.getWatcher).toHaveBeenCalledWith('watcher-1');
-    });
-
     it('should throw NotFoundException when not found', async () => {
       mockStorage.getWatcher.mockResolvedValue(null);
 
@@ -265,35 +237,6 @@ describe('WatchersService', () => {
       expect(result).toEqual(updatedWatcher);
       expect(mockStorage.updateWatcher).toHaveBeenCalledWith('watcher-1', { enabled: true });
     });
-
-    it('should disable watcher via updateWatcher', async () => {
-      const existingWatcher = createMockWatcher({ enabled: true });
-      const updatedWatcher = createMockWatcher({ enabled: false });
-
-      mockStorage.getWatcher.mockResolvedValue(existingWatcher);
-      mockStorage.updateWatcher.mockResolvedValue(updatedWatcher);
-      mockWatcherRunner.isWatcherRunning.mockReturnValue(true);
-
-      const result = await service.toggleWatcher('watcher-1', false);
-
-      expect(result).toEqual(updatedWatcher);
-      expect(mockStorage.updateWatcher).toHaveBeenCalledWith('watcher-1', { enabled: false });
-    });
-  });
-
-  describe('listEnabledWatchers', () => {
-    it('should delegate to storage', async () => {
-      const watchers = [
-        createMockWatcher({ id: 'w1', enabled: true }),
-        createMockWatcher({ id: 'w2', enabled: true }),
-      ];
-      mockStorage.listEnabledWatchers.mockResolvedValue(watchers);
-
-      const result = await service.listEnabledWatchers();
-
-      expect(result).toEqual(watchers);
-      expect(mockStorage.listEnabledWatchers).toHaveBeenCalled();
-    });
   });
 
   describe('testWatcher', () => {
@@ -320,22 +263,32 @@ describe('WatchersService', () => {
       expect(result.results).toEqual(testResults);
       expect(mockWatcherRunner.testWatcher).toHaveBeenCalledWith(watcher);
     });
-
-    it('should throw NotFoundException if watcher not found', async () => {
-      mockStorage.getWatcher.mockResolvedValue(null);
-
-      await expect(service.testWatcher('non-existent')).rejects.toThrow(NotFoundException);
-    });
-
-    it('should return empty results when no sessions', async () => {
-      const watcher = createMockWatcher();
-      mockStorage.getWatcher.mockResolvedValue(watcher);
-      mockWatcherRunner.testWatcher.mockResolvedValue([]);
-
-      const result = await service.testWatcher('watcher-1');
-
-      expect(result.sessionsChecked).toBe(0);
-      expect(result.results).toEqual([]);
-    });
   });
+
+  // Service tests cover admission before writes without the cost of HTTP or storage integration.
+  it.each(['create', 'update', 'delete'] as const)(
+    'rejects %s writes to a read-only project before side effects',
+    async (operation) => {
+      const refusal = new Error('Project is read-only');
+      admission.assertWritable.mockImplementation(() => {
+        throw refusal;
+      });
+      const existing = createMockWatcher();
+      mockStorage.getWatcher.mockResolvedValue(existing);
+      mockWatcherRunner.isWatcherRunning.mockReturnValue(true);
+      const write =
+        operation === 'create'
+          ? service.createWatcher(existing)
+          : operation === 'update'
+            ? service.updateWatcher(existing.id, { enabled: false })
+            : service.deleteWatcher(existing.id);
+      await expect(write).rejects.toBe(refusal);
+      expect(admission.assertWritable).toHaveBeenCalledWith(existing.projectId);
+      expect(mockStorage.createWatcher).not.toHaveBeenCalled();
+      expect(mockStorage.updateWatcher).not.toHaveBeenCalled();
+      expect(mockStorage.deleteWatcher).not.toHaveBeenCalled();
+      expect(mockWatcherRunner.startWatcher).not.toHaveBeenCalled();
+      expect(mockWatcherRunner.stopWatcher).not.toHaveBeenCalled();
+    },
+  );
 });

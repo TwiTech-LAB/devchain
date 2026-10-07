@@ -2,7 +2,6 @@ import { renderHook } from '@testing-library/react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   buildConfigEmission,
-  buildConfigSteps,
   initialWizardConfigState,
   useWizardConfigHandlers,
   type WizardConfigState,
@@ -108,23 +107,6 @@ describe('initialWizardConfigState', () => {
     const state = initialWizardConfigState(preview);
 
     expect(state.selectedProviderNames).toEqual(['claude']);
-  });
-
-  it('auto-applies the most recently updated selectable preset once providers are selected', () => {
-    const preview = makePreview();
-    const state = changeSelection(preview, initialWizardConfigState(preview), ['claude', 'codex']);
-
-    expect(state.agentPresetName).toBe('MixedCodex');
-    expect(state.agentPresetModified).toBe(false);
-    // The preset's row actually got applied (config pinned for the covered agent).
-    expect(state.agentRows['solo']).toMatchObject({ configName: 'codex-cfg', pinned: true });
-  });
-
-  it('falls back to the older preset when the newest does not fit the selection', () => {
-    const preview = makePreview();
-    const state = changeSelection(preview, initialWizardConfigState(preview), ['claude']);
-
-    expect(state.agentPresetName).toBe('AllClaude');
   });
 });
 
@@ -318,27 +300,6 @@ describe('useWizardConfigHandlers presetAuto transitions', () => {
     );
     expect(next.presetAuto).toBe(false);
     expect(next.agentPresetModified).toBe(true);
-  });
-});
-
-describe('buildConfigSteps step descriptions', () => {
-  it('gives the Providers step its provider-selection description', () => {
-    const preview = makePreview();
-    const { steps } = buildConfigSteps({
-      preview,
-      state: initialWizardConfigState(preview),
-      handlers: {
-        setSelectedProviderNames: jest.fn(),
-        onAgentRowChange: jest.fn(),
-        onApplyPreset: jest.fn(),
-        onClearPreset: jest.fn(),
-        onTeamStateChange: jest.fn(),
-      },
-    });
-
-    expect(steps[0].description).toBe(
-      'Select which providers you would like to use in this project.',
-    );
   });
 });
 

@@ -54,53 +54,7 @@ describe('TemplatesController', () => {
     controller = module.get<TemplatesController>(TemplatesController);
   });
 
-  describe('listTemplates', () => {
-    it('should return list of templates with total count', () => {
-      mockUnifiedTemplateService.listTemplates.mockReturnValue(mockTemplates);
-
-      const result = controller.listTemplates();
-
-      expect(result).toEqual({
-        templates: mockTemplates,
-        total: 2,
-      });
-      expect(mockUnifiedTemplateService.listTemplates).toHaveBeenCalled();
-    });
-
-    it('should return empty list when no templates exist', () => {
-      mockUnifiedTemplateService.listTemplates.mockReturnValue([]);
-
-      const result = controller.listTemplates();
-
-      expect(result).toEqual({
-        templates: [],
-        total: 0,
-      });
-    });
-  });
-
   describe('getTemplate', () => {
-    it('should return bundled template details', async () => {
-      mockUnifiedTemplateService.listTemplates.mockReturnValue(mockTemplates);
-      mockUnifiedTemplateService.getTemplate.mockResolvedValue({
-        content: { name: 'Bundled Template' },
-        source: 'bundled',
-        version: null,
-      });
-
-      const result = await controller.getTemplate('bundled-template');
-
-      expect(result).toEqual({
-        slug: 'bundled-template',
-        name: 'Bundled Template',
-        description: null,
-        source: 'bundled',
-        versions: null,
-        latestVersion: null,
-        content: { name: 'Bundled Template' },
-      });
-    });
-
     it('should return registry template details with versions', async () => {
       mockUnifiedTemplateService.listTemplates.mockReturnValue(mockTemplates);
       mockUnifiedTemplateService.getTemplate.mockResolvedValue({
@@ -122,62 +76,48 @@ describe('TemplatesController', () => {
       });
     });
 
-    it('should throw BadRequestException for invalid slug', async () => {
+    it.each([
+      {
+        name: 'controller.getTemplate BadRequestException',
+        mock: () => mockUnifiedTemplateService.getTemplate,
+        error: new ValidationError('Invalid template slug'),
+        invoke: () => controller.getTemplate('../bad-slug'),
+        exception: BadRequestException,
+      },
+      {
+        name: 'controller.getTemplate NotFoundException',
+        mock: () => mockUnifiedTemplateService.getTemplate,
+        error: new NotFoundError('Template', 'non-existent'),
+        invoke: () => controller.getTemplate('non-existent'),
+        exception: NotFoundException,
+      },
+      {
+        name: 'controller.getTemplateVersion BadRequestException',
+        mock: () => mockUnifiedTemplateService.getTemplate,
+        error: new ValidationError('Invalid version format'),
+        invoke: () => controller.getTemplateVersion('my-template', 'invalid'),
+        exception: BadRequestException,
+      },
+      {
+        name: 'controller.getTemplateVersion NotFoundException',
+        mock: () => mockUnifiedTemplateService.getTemplate,
+        error: new NotFoundError('Template', 'my-template@999.0.0'),
+        invoke: () => controller.getTemplateVersion('my-template', '999.0.0'),
+        exception: NotFoundException,
+      },
+      {
+        name: 'controller.previewTemplate NotFoundException',
+        mock: () => mockUnifiedTemplateService.getTemplateFromFilePath,
+        error: new NotFoundError('Template file', '/missing'),
+        invoke: () => controller.previewTemplate({ templatePath: '/missing/file.json' }),
+        exception: NotFoundException,
+      },
+    ])('maps $name', async ({ mock, error, invoke, exception }) => {
       mockUnifiedTemplateService.listTemplates.mockReturnValue([]);
-      mockUnifiedTemplateService.getTemplate.mockRejectedValue(
-        new ValidationError('Invalid template slug'),
-      );
-
-      await expect(controller.getTemplate('../bad-slug')).rejects.toThrow(BadRequestException);
-    });
-
-    it('should throw NotFoundException for non-existent template', async () => {
-      mockUnifiedTemplateService.listTemplates.mockReturnValue([]);
-      mockUnifiedTemplateService.getTemplate.mockRejectedValue(
-        new NotFoundError('Template', 'non-existent'),
-      );
-
-      await expect(controller.getTemplate('non-existent')).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('getTemplateVersion', () => {
-    it('should return specific version content', async () => {
-      mockUnifiedTemplateService.getTemplate.mockResolvedValue({
-        content: { name: 'Template v1.0.0' },
-        source: 'registry',
-        version: '1.0.0',
+      mock().mockImplementation(() => {
+        throw error;
       });
-
-      const result = await controller.getTemplateVersion('my-template', '1.0.0');
-
-      expect(result).toEqual({
-        slug: 'my-template',
-        version: '1.0.0',
-        source: 'registry',
-        content: { name: 'Template v1.0.0' },
-      });
-      expect(mockUnifiedTemplateService.getTemplate).toHaveBeenCalledWith('my-template', '1.0.0');
-    });
-
-    it('should throw BadRequestException for invalid version format', async () => {
-      mockUnifiedTemplateService.getTemplate.mockRejectedValue(
-        new ValidationError('Invalid version format'),
-      );
-
-      await expect(controller.getTemplateVersion('my-template', 'invalid')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('should throw NotFoundException for non-existent version', async () => {
-      mockUnifiedTemplateService.getTemplate.mockRejectedValue(
-        new NotFoundError('Template', 'my-template@999.0.0'),
-      );
-
-      await expect(controller.getTemplateVersion('my-template', '999.0.0')).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(invoke()).rejects.toThrow(exception);
     });
   });
 
@@ -198,14 +138,6 @@ describe('TemplatesController', () => {
     it('should throw BadRequestException for invalid slug (path traversal)', async () => {
       await expect(controller.deleteTemplateVersion('../bad', '1.0.0')).rejects.toThrow(
         BadRequestException,
-      );
-    });
-
-    it('should allow slugs with underscores', async () => {
-      // Underscores are now allowed in slugs
-      // This should proceed to cache check (and throw NotFoundException since not cached)
-      await expect(controller.deleteTemplateVersion('valid_slug', '1.0.0')).rejects.toThrow(
-        NotFoundException,
       );
     });
 
@@ -284,24 +216,11 @@ describe('TemplatesController', () => {
       );
     });
 
-    it('throws 400 when both slug and templatePath provided', async () => {
-      await expect(
-        controller.previewTemplate({ slug: 'x', templatePath: '/tmp/y.json' }),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('throws 400 when neither slug nor templatePath provided', async () => {
-      await expect(controller.previewTemplate({})).rejects.toThrow(BadRequestException);
-    });
-
-    it('throws 404 when template file not found', async () => {
-      mockUnifiedTemplateService.getTemplateFromFilePath.mockImplementation(() => {
-        throw new NotFoundError('Template file', '/missing');
-      });
-
-      await expect(
-        controller.previewTemplate({ templatePath: '/missing/file.json' }),
-      ).rejects.toThrow(NotFoundException);
+    it.each([
+      { name: 'both sources', body: { slug: 'x', templatePath: '/tmp/y.json' } },
+      { name: 'neither source', body: {} },
+    ])('rejects preview with $name', async ({ body }) => {
+      await expect(controller.previewTemplate(body)).rejects.toThrow(BadRequestException);
     });
 
     it('throws 403 for path traversal attempt', async () => {

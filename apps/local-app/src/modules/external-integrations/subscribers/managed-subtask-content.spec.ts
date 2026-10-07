@@ -265,55 +265,48 @@ describe('redactManagedSubtaskContent', () => {
 });
 
 describe('managedSubtaskContentMatches', () => {
-  it('accepts ClickUp bullet and escape normalization', () => {
-    expect(
-      managedSubtaskContentMatches(
-        'clickup',
-        {
-          ...snapshot,
-          description: '### Context\n*   Rationale: use devchain\\_get\\_prompt',
-        },
-        {
-          title: 'Managed child',
-          description: '### Context\n- Rationale: use devchain_get_prompt',
-        },
-      ),
-    ).toBe(true);
-  });
-
-  it('accepts ClickUp escaping around project names with supported metacharacters', () => {
-    expect(
-      managedSubtaskContentMatches(
-        'clickup',
-        {
-          ...snapshot,
-          description: 'Path: {project:$&\\_\\[docs\\]\\-\\#}/README.md',
-        },
-        {
-          title: 'Managed child',
-          description: 'Path: {project:$&_[docs]-#}/README.md',
-        },
-      ),
-    ).toBe(true);
-  });
-
-  it('still rejects real ClickUp content differences', () => {
-    expect(
-      managedSubtaskContentMatches(
-        'clickup',
-        { ...snapshot, description: '- Remote text' },
-        { title: 'Managed child', description: '- Local text' },
-      ),
-    ).toBe(false);
-  });
-
-  it('keeps Jira comparison exact', () => {
-    expect(
-      managedSubtaskContentMatches(
-        'jira',
-        { ...snapshot, description: '* Remote list item' },
-        { title: 'Managed child', description: '- Remote list item' },
-      ),
-    ).toBe(false);
+  it.each([
+    {
+      name: 'accepts ClickUp bullet and escape normalization',
+      provider: 'clickup' as 'clickup' | 'jira',
+      remote: {
+        ...snapshot,
+        description: '### Context\n*   Rationale: use devchain\\_get\\_prompt',
+      },
+      local: {
+        title: 'Managed child',
+        description: '### Context\n- Rationale: use devchain_get_prompt',
+      },
+      expected: true,
+    },
+    {
+      name: 'accepts ClickUp escaping around project names with supported metacharacters',
+      provider: 'clickup' as 'clickup' | 'jira',
+      remote: {
+        ...snapshot,
+        description: 'Path: {project:$&\\_\\[docs\\]\\-\\#}/README.md',
+      },
+      local: {
+        title: 'Managed child',
+        description: 'Path: {project:$&_[docs]-#}/README.md',
+      },
+      expected: true,
+    },
+    {
+      name: 'still rejects real ClickUp content differences',
+      provider: 'clickup' as 'clickup' | 'jira',
+      remote: { ...snapshot, description: '- Remote text' },
+      local: { title: 'Managed child', description: '- Local text' },
+      expected: false,
+    },
+    {
+      name: 'keeps Jira comparison exact',
+      provider: 'jira' as 'clickup' | 'jira',
+      remote: { ...snapshot, description: '* Remote list item' },
+      local: { title: 'Managed child', description: '- Remote list item' },
+      expected: false,
+    },
+  ])('$name', ({ provider, remote, local, expected }) => {
+    expect(managedSubtaskContentMatches(provider, remote, local)).toBe(expected);
   });
 });

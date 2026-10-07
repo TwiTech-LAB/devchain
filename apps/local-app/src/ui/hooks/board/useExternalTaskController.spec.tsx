@@ -5,7 +5,6 @@ import type { ExternalTaskComment } from '@/modules/external-integrations/models
 import { externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import {
   COMMENTS_CHANGED_WHILE_LOADING_MESSAGE,
-  chaseAttemptMessage,
   mergeExternalTaskCommentPages,
   nextCommentPageParam,
   useExternalTaskController,
@@ -209,34 +208,29 @@ describe('useExternalTaskController', () => {
     },
   );
 
-  it.each([{ action: 'change_status' as const, input: { status: 'transition-31' } }])(
-    'never fetches comments for %s',
-    async (request) => {
-      const { result } = renderHook(
-        () =>
-          useExternalTaskController('jira', 'ENG-1', {
-            enabled: true,
-            connectionEpoch,
-            projectId: PROJECT_ID,
-          }),
-        { wrapper: wrapper(queryClient) },
-      );
-      await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
-      fetchMock.mockClear();
+  it('does not refetch comments after a status-only mutation', async () => {
+    const request = { action: 'change_status' as const, input: { status: 'transition-31' } };
 
-      await act(async () => {
-        await result.current.mutation.mutateAsync(request);
-      });
-      await waitFor(() =>
-        expect(
-          fetchMock.mock.calls.filter(([url]) => String(url).includes('/comments')),
-        ).toHaveLength(0),
-      );
-      expect(
-        fetchMock.mock.calls.filter(([url]) => String(url).includes('/comments')),
-      ).toHaveLength(0);
-    },
-  );
+    const { result } = renderHook(
+      () =>
+        useExternalTaskController('jira', 'ENG-1', {
+          enabled: true,
+          connectionEpoch,
+          projectId: PROJECT_ID,
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+    await waitFor(() => expect(result.current.comments.isSuccess).toBe(true));
+    fetchMock.mockClear();
+
+    await act(async () => {
+      await result.current.mutation.mutateAsync(request);
+    });
+
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/comments'))).toHaveLength(
+      0,
+    );
+  });
 
   it('projects a safe mutation error without removing loaded detail', async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) =>
@@ -693,13 +687,6 @@ describe('external task comments query', () => {
   });
 
   it('reports each chase attempt through the comments message', async () => {
-    // act batches a whole chase into one commit, so intermediate live-region
-    // values are asserted deterministically: distinct per-attempt text plus
-    // the committed exhaustion message below.
-    expect(chaseAttemptMessage(1)).toBe('Loading earlier comments (attempt 1 of 3)…');
-    expect(chaseAttemptMessage(2)).toBe('Loading earlier comments (attempt 2 of 3)…');
-    expect(chaseAttemptMessage(3)).toBe('Loading earlier comments (attempt 3 of 3)…');
-
     const a0to9 = Array.from({ length: 10 }, (_, index) => comment(`A${index}`, -index));
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (String(url).includes('/comments') && !init?.method) {

@@ -329,6 +329,18 @@ describe('provider CLI policy across home and VM', () => {
     await home.health.refresh(remoteId);
     await eventually(() => host.hostPolicy.status().acceptedRevision !== null);
     const revision = host.hostPolicy.status().acceptedRevision;
+    const lookup = jest.spyOn(host.versions, 'getLookup').mockReturnValue(null);
+    const install = jest.spyOn(host.installer, 'getStatus').mockReturnValue({
+      ...host.installer.getStatus('claude'),
+      state: 'idle',
+      error: null,
+    });
+    try {
+      expect(host.hostPolicy.status().providers.claude.state).toBe('accepted');
+    } finally {
+      lookup.mockRestore();
+      install.mockRestore();
+    }
     latest.host = '2.0.0';
     failed.add('host:codex');
     expect((await fetch(`${home.url}/api/provider-clis/check`, { method: 'POST' })).status).toBe(

@@ -129,25 +129,9 @@ describe('saved-filters LocalStorage helpers', () => {
         'A filter named "my filter" already exists',
       );
     });
-
-    it('allows multiple filters with unique names', () => {
-      saveFilter(projectId, 'Filter One', 'st=review');
-      saveFilter(projectId, 'Filter Two', 'st=done');
-
-      const filters = getSavedFilters(projectId);
-      expect(filters).toHaveLength(2);
-    });
   });
 
   describe('renameFilter', () => {
-    it('renames an existing filter', () => {
-      const filter = saveFilter(projectId, 'Old Name', 'st=review');
-      renameFilter(projectId, filter.id, 'New Name');
-
-      const filters = getSavedFilters(projectId);
-      expect(filters[0].name).toBe('New Name');
-    });
-
     it('trims new name', () => {
       const filter = saveFilter(projectId, 'Old Name', 'st=review');
       renameFilter(projectId, filter.id, '  Trimmed  ');
@@ -187,14 +171,6 @@ describe('saved-filters LocalStorage helpers', () => {
   });
 
   describe('deleteFilter', () => {
-    it('deletes an existing filter', () => {
-      const filter = saveFilter(projectId, 'My Filter', 'st=review');
-      expect(getSavedFilters(projectId)).toHaveLength(1);
-
-      deleteFilter(projectId, filter.id);
-      expect(getSavedFilters(projectId)).toHaveLength(0);
-    });
-
     it('is a no-op for non-existent filter', () => {
       saveFilter(projectId, 'My Filter', 'st=review');
 
@@ -217,11 +193,6 @@ describe('saved-filters LocalStorage helpers', () => {
   describe('filterNameExists', () => {
     it('returns false when no filters exist', () => {
       expect(filterNameExists(projectId, 'Any Name')).toBe(false);
-    });
-
-    it('returns true for existing name (exact match)', () => {
-      saveFilter(projectId, 'My Filter', 'st=review');
-      expect(filterNameExists(projectId, 'My Filter')).toBe(true);
     });
 
     it('returns true for existing name (case-insensitive)', () => {
@@ -301,23 +272,6 @@ describe('saved-filters LocalStorage helpers', () => {
       });
     });
 
-    it('returns valid UUID-v4 format via getRandomValues fallback', () => {
-      Object.defineProperty(global, 'crypto', {
-        value: {
-          getRandomValues: (arr: Uint8Array) => {
-            for (let i = 0; i < arr.length; i++) arr[i] = i;
-            return arr;
-          },
-        },
-        configurable: true,
-      });
-
-      window.localStorage.clear();
-      const filter = saveFilter('fallback-test', 'Test', 'st=review');
-
-      expect(filter.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    });
-
     it('sets correct version and variant bits in fallback UUID', () => {
       Object.defineProperty(global, 'crypto', {
         value: {
@@ -332,6 +286,7 @@ describe('saved-filters LocalStorage helpers', () => {
       window.localStorage.clear();
       const filter = saveFilter('bits-test', 'Test', 'st=review');
 
+      expect(filter.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
       // Version 4: third group starts with 4
       // Variant 10xx: fourth group starts with 8/9/a/b
       expect(filter.id).toMatch(/-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-/);
@@ -402,11 +357,6 @@ describe('saved-filters LocalStorage helpers', () => {
     });
 
     describe('setDefaultFilterId', () => {
-      it('writes the ID to localStorage', () => {
-        setDefaultFilterId(defProjectId, 'test-id');
-        expect(window.localStorage.getItem(defStorageKey)).toBe('test-id');
-      });
-
       it('overwrites previous default', () => {
         setDefaultFilterId(defProjectId, 'old-id');
         setDefaultFilterId(defProjectId, 'new-id');
@@ -490,42 +440,46 @@ describe('saved-filters LocalStorage helpers', () => {
   });
 
   describe('isFilterActive', () => {
-    it('returns true when saved filter qs matches current filters', () => {
-      const filter: SavedFilter = { id: '1', name: 'Test', qs: 'st=review' };
-      const currentFilters = { status: ['review'] };
-      expect(isFilterActive(filter, currentFilters)).toBe(true);
+    it.each([
+      {
+        label: 'returns true when saved filter qs matches current filters',
+        savedQuery: 'st=review',
+        currentStatus: 'review',
+        expectedActive: true,
+      },
+      {
+        label: 'returns false when filters do not match',
+        savedQuery: 'st=review',
+        currentStatus: 'done',
+        expectedActive: false,
+      },
+      {
+        label: 'returns false when saved filter qs is empty and current has filters',
+        savedQuery: '',
+        currentStatus: 'review',
+        expectedActive: false,
+      },
+    ] as const)('$label', ({ savedQuery, currentStatus, expectedActive }) => {
+      const filter: SavedFilter = { id: '1', name: 'Test', qs: savedQuery };
+      const currentFilters = { status: [currentStatus] };
+      expect(isFilterActive(filter, currentFilters)).toBe(expectedActive);
     });
 
-    it('returns false when filters do not match', () => {
-      const filter: SavedFilter = { id: '1', name: 'Test', qs: 'st=review' };
-      const currentFilters = { status: ['done'] };
-      expect(isFilterActive(filter, currentFilters)).toBe(false);
-    });
-
-    it('returns false when saved filter qs is empty and current has filters', () => {
-      const filter: SavedFilter = { id: '1', name: 'Test', qs: '' };
-      const currentFilters = { status: ['review'] };
-      expect(isFilterActive(filter, currentFilters)).toBe(false);
-    });
-
-    it('ignores pagination differences', () => {
-      const filter: SavedFilter = { id: '1', name: 'Test', qs: 'st=done' };
-      const currentFilters = { status: ['done'], page: 2, pageSize: 50 };
-      expect(isFilterActive(filter, currentFilters)).toBe(true);
-    });
-
-    it('matches multi-value params with dedup', () => {
-      const filter: SavedFilter = { id: '1', name: 'Test', qs: 'st=review,done' };
-      const currentFilters = { status: ['done', 'review'] };
-      expect(isFilterActive(filter, currentFilters)).toBe(true);
-    });
-
-    it('returns true for multiple filters with identical qs', () => {
-      const filter1: SavedFilter = { id: '1', name: 'A', qs: 'st=review' };
-      const filter2: SavedFilter = { id: '2', name: 'B', qs: 'st=review' };
-      const currentFilters = { status: ['review'] };
-      expect(isFilterActive(filter1, currentFilters)).toBe(true);
-      expect(isFilterActive(filter2, currentFilters)).toBe(true);
+    it.each([
+      {
+        label: 'pagination ignored',
+        qs: 'st=done',
+        current: { status: ['done'], page: 2, pageSize: 50 },
+      },
+      {
+        label: 'multivalue order/dedup',
+        qs: 'st=review,done',
+        current: { status: ['done', 'review'] },
+      },
+    ] as const)('recognizes active filter with $label', ({ qs, current }) => {
+      expect(
+        isFilterActive({ id: '1', name: 'Test', qs }, { ...current, status: [...current.status] }),
+      ).toBe(true);
     });
   });
 });

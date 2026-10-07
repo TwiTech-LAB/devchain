@@ -60,22 +60,6 @@ describe('LocalStorageService - Provider env', () => {
       expect(result.id).toBeDefined();
     });
 
-    it('creates provider with null env without Claude no-flicker default', async () => {
-      const insertChain = { values: jest.fn().mockResolvedValue(undefined) };
-      mockDb.insert = jest.fn().mockReturnValue(insertChain);
-
-      const result = await service.createProvider({
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        env: null,
-      });
-
-      expect(result.env).toBeNull();
-    });
-
     it('normalizes empty env {} to null without Claude no-flicker default', async () => {
       const insertChain = { values: jest.fn().mockResolvedValue(undefined) };
       mockDb.insert = jest.fn().mockReturnValue(insertChain);

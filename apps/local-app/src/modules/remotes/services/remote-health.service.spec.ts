@@ -424,6 +424,7 @@ describe('RemoteHealthService', () => {
       online: true,
       versionMatches: true,
       error: null,
+      docker: docker && 'installed' in docker ? docker : undefined,
     });
   });
 
@@ -478,6 +479,54 @@ describe('RemoteHealthService', () => {
     await tick();
     expect(service.getState('remote-1').uid).toBeNull();
     expect(service.getState('remote-1').gid).toBeNull();
+  });
+
+  // Health-port layer proves the parsed runtime conflict reaches initial reads and live updates.
+  it('publishes a holder conflict even when only its holder changes, then clears a resolved mismatch', async () => {
+    jest.spyOn(process, 'getuid').mockReturnValue(1000);
+    jest.spyOn(process, 'getgid').mockReturnValue(1000);
+    let runtime = {
+      version: '1.2.3',
+      uid: 1001,
+      gid: 1000,
+      uidConflict: { requestedUid: 1000, holder: 'ubuntu' },
+    };
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(jsonResponse(url.endsWith('/api/runtime') ? runtime : HOST_STATS)),
+    );
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(service.getState('remote-1').uidConflict).toEqual(runtime.uidConflict);
+    expect(broadcaster.broadcastEvent).toHaveBeenLastCalledWith(
+      'remotes',
+      'state',
+      expect.objectContaining({
+        dockerUserMismatch: expect.objectContaining({
+          homeUid: 1000,
+          homeGid: 1000,
+          vmUid: 1001,
+          vmGid: 1000,
+          uidConflict: runtime.uidConflict,
+        }),
+      }),
+    );
+    broadcaster.broadcastEvent.mockClear();
+    runtime = { ...runtime, uidConflict: { requestedUid: 1000, holder: 'another-account' } };
+    await tick();
+    expect(broadcaster.broadcastEvent).toHaveBeenCalledWith(
+      'remotes',
+      'state',
+      expect.objectContaining({
+        dockerUserMismatch: expect.objectContaining({ uidConflict: runtime.uidConflict }),
+      }),
+    );
+    runtime = { ...runtime, uid: 1000 };
+    await tick();
+    expect(broadcaster.broadcastEvent).toHaveBeenLastCalledWith(
+      'remotes',
+      'state',
+      expect.objectContaining({ dockerUserMismatch: null }),
+    );
   });
 
   it('carries the provider env overrides the runtime reports, null when absent or malformed', async () => {

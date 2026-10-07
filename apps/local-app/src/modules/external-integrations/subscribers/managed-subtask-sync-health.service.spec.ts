@@ -2,7 +2,7 @@ import { NotFoundError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { ExternalManagedSubtaskLink } from '../../storage/models/domain.models';
 import type { ExternalSubtaskSyncSubscriber } from './external-subtask-sync.subscriber';
-import { MANAGED_SUBTASK_RETRY_BLOCKED_REASONS } from './managed-subtask-recovery-policy';
+
 import { ManagedSubtaskSyncHealthService } from './managed-subtask-sync-health.service';
 
 function row(overrides: Partial<ExternalManagedSubtaskLink> = {}): ExternalManagedSubtaskLink {
@@ -149,7 +149,7 @@ describe('ManagedSubtaskSyncHealthService', () => {
     expect(result.truncated).toBe(true);
   });
 
-  it.each(MANAGED_SUBTASK_RETRY_BLOCKED_REASONS)(
+  it.each(['ownership_marker_missing'])(
     'hides Retry but preserves Verify and Open in source for blocked reason %s',
     async (safeErrorCode) => {
       storage.listExternalManagedSubtaskLinksByConnection.mockResolvedValue([

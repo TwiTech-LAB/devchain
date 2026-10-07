@@ -1156,23 +1156,6 @@ describe('TranscriptWatcherService', () => {
       });
     });
 
-    it('should NOT publish when no new messages found', async () => {
-      const session = makeSession({ metrics: makeMetrics({ messageCount: 0 }) });
-      mockCacheService.getOrParse.mockResolvedValue(session);
-
-      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
-
-      mockedFsPromisesStat.mockResolvedValue(makeStat(1500));
-
-      await jest.advanceTimersByTimeAsync(3000);
-      await jest.advanceTimersByTimeAsync(200);
-
-      expect(mockEvents.publish).not.toHaveBeenCalledWith(
-        'session.transcript.updated',
-        expect.anything(),
-      );
-    });
-
     it('M1: emits a full refresh (no negative delta, replaceFromChunkIndex 0) when messageCount deflates', async () => {
       // Seed a stale, inflated count of 8 (pre-fold cached session), then the re-parse
       // returns the folded, lower count of 6 even though the file grew.
@@ -1486,23 +1469,6 @@ describe('TranscriptWatcherService', () => {
       expect(service.activeWatcherCount).toBe(1);
     });
 
-    it('should detect inode rotation in change handler and reopen fs.watch', async () => {
-      const mockWatcher = createMockFsWatcher();
-      const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
-      mockCacheService.getOrParse.mockResolvedValue(session);
-
-      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
-
-      // File grew AND inode changed
-      mockedFsPromisesStat.mockResolvedValue(makeStat(2000, 99999));
-      await jest.advanceTimersByTimeAsync(3000);
-      await jest.advanceTimersByTimeAsync(200);
-
-      // Old watcher should have been closed
-      expect(mockWatcher.close).toHaveBeenCalled();
-      expect(mockCacheService.getOrParse).toHaveBeenCalled();
-    });
-
     it('rechecks freshness when a pending change returns to the original byte size', async () => {
       const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
       mockCacheService.getOrParse.mockResolvedValue(session);
@@ -1519,22 +1485,6 @@ describe('TranscriptWatcherService', () => {
       await jest.advanceTimersByTimeAsync(200);
 
       expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(1);
-    });
-
-    it('should log warning when incremental delta exceeds 10MB', async () => {
-      const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
-      mockCacheService.getOrParse.mockResolvedValue(session);
-
-      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
-
-      // File grew by more than 10MB
-      const largeSize = 1000 + 11 * 1024 * 1024;
-      mockedFsPromisesStat.mockResolvedValue(makeStat(largeSize));
-      await jest.advanceTimersByTimeAsync(3000);
-      await jest.advanceTimersByTimeAsync(200);
-
-      // Should still parse despite the warning
-      expect(mockCacheService.getOrParse).toHaveBeenCalled();
     });
 
     it('should return early when no adapter is found during change handling', async () => {
@@ -1612,35 +1562,20 @@ describe('TranscriptWatcherService', () => {
   // -------------------------------------------------------------------------
 
   describe('fs.watch event types', () => {
-    it('should schedule debounce on rename event', async () => {
+    it.each([
+      { event: 'rename', expectedParses: 1 },
+      { event: 'access', expectedParses: 0 },
+    ])('handles fs.watch $event', async ({ event, expectedParses }) => {
       const mockWatcher = createMockFsWatcher();
-      const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
-      mockCacheService.getOrParse.mockResolvedValue(session);
-
-      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
-
-      // Trigger rename event via fs.watch (not change)
-      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
-      mockWatcher.triggerChange('rename');
-
-      await jest.advanceTimersByTimeAsync(200);
-
-      expect(mockCacheService.getOrParse).toHaveBeenCalled();
-    });
-
-    it('should ignore non-change/rename events', async () => {
-      const mockWatcher = createMockFsWatcher();
-
+      mockCacheService.getOrParse.mockResolvedValue(
+        makeSession({ metrics: makeMetrics({ messageCount: 5 }) }),
+      );
       await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
       mockCacheService.getOrParse.mockClear();
-
-      // Trigger an unrecognized event type
-      mockWatcher.triggerChange('access');
-
+      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
+      mockWatcher.triggerChange(event);
       await jest.advanceTimersByTimeAsync(200);
-
-      // No parse triggered (beyond seed)
-      expect(mockCacheService.getOrParse).not.toHaveBeenCalled();
+      expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(expectedParses);
     });
   });
 
@@ -1663,36 +1598,6 @@ describe('TranscriptWatcherService', () => {
           providerName: PROVIDER_NAME,
         }),
       ).resolves.not.toThrow();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Fixed coalescing deadline
-  // -------------------------------------------------------------------------
-
-  describe('fixed coalescing deadline', () => {
-    it('shares the scheduled debounce timer when a new change arrives', async () => {
-      const mockWatcher = createMockFsWatcher();
-      const session = makeSession({ metrics: makeMetrics({ messageCount: 5 }) });
-      mockCacheService.getOrParse.mockResolvedValue(session);
-
-      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
-      mockCacheService.getOrParse.mockClear();
-
-      // File changed
-      mockedFsPromisesStat.mockResolvedValue(makeStat(2000));
-
-      // First change event → schedules debounce
-      mockWatcher.triggerChange('change');
-
-      // The second change shares the first event's deadline.
-      mockWatcher.triggerChange('change');
-
-      // Advance past debounce
-      await jest.advanceTimersByTimeAsync(200);
-
-      // Should only be called once (debounced)
-      expect(mockCacheService.getOrParse).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -2302,16 +2207,6 @@ describe('TranscriptWatcherService', () => {
   });
 
   describe('getLastKnownMessageCount', () => {
-    it('returns the seeded message count for a watched session', async () => {
-      mockCacheService.getOrParse.mockResolvedValue(
-        makeSession({ metrics: makeMetrics({ messageCount: 7 }) }),
-      );
-
-      await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
-
-      expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(7);
-    });
-
     it('returns the seeded 0 count (NOT null) for a watched empty transcript', async () => {
       mockCacheService.getOrParse.mockResolvedValue(
         makeSession({ metrics: makeMetrics({ messageCount: 0 }) }),

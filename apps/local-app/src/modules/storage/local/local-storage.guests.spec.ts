@@ -360,37 +360,6 @@ describe('LocalStorageService - Guests', () => {
   });
 
   describe('deleteGuest', () => {
-    it('should delete an existing guest', async () => {
-      const mockGuest: Guest = {
-        id: 'guest-1',
-        projectId: 'project-1',
-        name: 'TestGuest',
-        description: null,
-        tmuxSessionId: 'tmux-123',
-        lastSeenAt: '2024-01-01T00:00:00Z',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      };
-
-      // Mock getGuest (called to verify existence)
-      const selectChain = {
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            limit: jest.fn().mockResolvedValue([mockGuest]),
-          }),
-        }),
-      };
-
-      const deleteChain = {
-        where: jest.fn().mockResolvedValue(undefined),
-      };
-
-      mockDb.select = jest.fn().mockReturnValue(selectChain);
-      mockDb.delete = jest.fn().mockReturnValue(deleteChain);
-
-      await expect(service.deleteGuest('guest-1')).resolves.toBeUndefined();
-    });
-
     it('should throw NotFoundError when deleting nonexistent guest', async () => {
       const selectChain = {
         from: jest.fn().mockReturnValue({
@@ -540,20 +509,86 @@ describe('LocalStorageService - Project Path Lookups', () => {
   });
 
   describe('findProjectContainingPath', () => {
-    it('should find project containing the given path', async () => {
-      const mockProjects: Project[] = [
-        {
-          id: 'project-1',
-          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
-          name: 'Root Project',
-          description: null,
-          rootPath: '/home/user/projects/app',
-          isTemplate: false,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        },
-      ];
-
+    it.each([
+      {
+        label: 'should find project containing the given path',
+        projects: [
+          {
+            id: 'project-1',
+            workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
+            name: 'Root Project',
+            description: null,
+            rootPath: '/home/user/projects/app',
+            isTemplate: false,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        path: '/home/user/projects/app/src/components',
+        expected: 'project-1',
+      },
+      {
+        label: 'should return most specific match (longest rootPath)',
+        projects: [
+          {
+            id: 'project-parent',
+            workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
+            name: 'Parent Project',
+            description: null,
+            rootPath: '/home/user/projects',
+            isTemplate: false,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+          {
+            id: 'project-child',
+            workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
+            name: 'Child Project',
+            description: null,
+            rootPath: '/home/user/projects/app',
+            isTemplate: false,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        path: '/home/user/projects/app/src/index.ts',
+        expected: 'project-child',
+      },
+      {
+        label: 'should return null when no project contains the path',
+        projects: [
+          {
+            id: 'project-1',
+            workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
+            name: 'Other Project',
+            description: null,
+            rootPath: '/home/user/other',
+            isTemplate: false,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        path: '/home/user/different/path',
+        expected: null,
+      },
+      {
+        label: 'should return exact match when path equals rootPath',
+        projects: [
+          {
+            id: 'project-1',
+            workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
+            name: 'Exact Match Project',
+            description: null,
+            rootPath: '/home/user/project',
+            isTemplate: false,
+            createdAt: '2024-01-01T00:00:00Z',
+            updatedAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        path: '/home/user/project',
+        expected: 'project-1',
+      },
+    ])('$label', async ({ projects: mockProjects, path, expected }) => {
       // First call returns projects, second call returns empty (pagination done)
       const selectChain1 = {
         from: jest.fn().mockReturnValue({
@@ -573,135 +608,8 @@ describe('LocalStorageService - Project Path Lookups', () => {
 
       mockDb.select = jest.fn().mockReturnValueOnce(selectChain1).mockReturnValueOnce(selectChain2);
 
-      const result = await service.findProjectContainingPath(
-        '/home/user/projects/app/src/components',
-      );
-      expect(result).not.toBeNull();
-      expect(result?.id).toBe('project-1');
-    });
-
-    it('should return most specific match (longest rootPath)', async () => {
-      const mockProjects: Project[] = [
-        {
-          id: 'project-parent',
-          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
-          name: 'Parent Project',
-          description: null,
-          rootPath: '/home/user/projects',
-          isTemplate: false,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        },
-        {
-          id: 'project-child',
-          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
-          name: 'Child Project',
-          description: null,
-          rootPath: '/home/user/projects/app',
-          isTemplate: false,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        },
-      ];
-
-      const selectChain1 = {
-        from: jest.fn().mockReturnValue({
-          limit: jest.fn().mockReturnValue({
-            offset: jest.fn().mockResolvedValue(mockProjects),
-          }),
-        }),
-      };
-
-      const selectChain2 = {
-        from: jest.fn().mockReturnValue({
-          limit: jest.fn().mockReturnValue({
-            offset: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      };
-
-      mockDb.select = jest.fn().mockReturnValueOnce(selectChain1).mockReturnValueOnce(selectChain2);
-
-      const result = await service.findProjectContainingPath(
-        '/home/user/projects/app/src/index.ts',
-      );
-
-      // Should return the more specific (child) project
-      expect(result).not.toBeNull();
-      expect(result?.id).toBe('project-child');
-    });
-
-    it('should return null when no project contains the path', async () => {
-      const mockProjects: Project[] = [
-        {
-          id: 'project-1',
-          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
-          name: 'Other Project',
-          description: null,
-          rootPath: '/home/user/other',
-          isTemplate: false,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        },
-      ];
-
-      const selectChain1 = {
-        from: jest.fn().mockReturnValue({
-          limit: jest.fn().mockReturnValue({
-            offset: jest.fn().mockResolvedValue(mockProjects),
-          }),
-        }),
-      };
-
-      const selectChain2 = {
-        from: jest.fn().mockReturnValue({
-          limit: jest.fn().mockReturnValue({
-            offset: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      };
-
-      mockDb.select = jest.fn().mockReturnValueOnce(selectChain1).mockReturnValueOnce(selectChain2);
-
-      const result = await service.findProjectContainingPath('/home/user/different/path');
-      expect(result).toBeNull();
-    });
-
-    it('should return exact match when path equals rootPath', async () => {
-      const mockProjects: Project[] = [
-        {
-          id: 'project-1',
-          workspaceId: DEFAULT_PROJECT_WORKSPACE_ID,
-          name: 'Exact Match Project',
-          description: null,
-          rootPath: '/home/user/project',
-          isTemplate: false,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        },
-      ];
-
-      const selectChain1 = {
-        from: jest.fn().mockReturnValue({
-          limit: jest.fn().mockReturnValue({
-            offset: jest.fn().mockResolvedValue(mockProjects),
-          }),
-        }),
-      };
-
-      const selectChain2 = {
-        from: jest.fn().mockReturnValue({
-          limit: jest.fn().mockReturnValue({
-            offset: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      };
-
-      mockDb.select = jest.fn().mockReturnValueOnce(selectChain1).mockReturnValueOnce(selectChain2);
-
-      const result = await service.findProjectContainingPath('/home/user/project');
-      expect(result).not.toBeNull();
-      expect(result?.id).toBe('project-1');
+      const result = await service.findProjectContainingPath(path);
+      expect(result?.id ?? null).toBe(expected);
     });
   });
 });

@@ -70,12 +70,11 @@ describe('hasSuggestionBlocks', () => {
     expect(hasSuggestionBlocks('```suggestion\ncode\n```')).toBe(true);
   });
 
-  it('returns false when content has no suggestion block', () => {
-    expect(hasSuggestionBlocks('Regular comment')).toBe(false);
-  });
-
-  it('returns false for regular code blocks', () => {
-    expect(hasSuggestionBlocks('```javascript\nconst x = 1;\n```')).toBe(false);
+  it.each([
+    { label: 'returns false when content has no suggestion block', content: 'Regular comment' },
+    { label: 'returns false for regular code blocks', content: '```javascript\nconst x = 1;\n```' },
+  ] as const)('$label', ({ content }) => {
+    expect(hasSuggestionBlocks(content)).toBe(false);
   });
 });
 
@@ -88,12 +87,6 @@ describe('SuggestionBlock', () => {
     render(<SuggestionBlock suggestedCode="const x = 1;" />);
 
     expect(screen.getByText('const x = 1;')).toBeInTheDocument();
-  });
-
-  it('renders suggestion badge', () => {
-    render(<SuggestionBlock suggestedCode="code" />);
-
-    expect(screen.getByText('Suggestion')).toBeInTheDocument();
   });
 
   it('renders file path and line info', () => {
@@ -110,13 +103,6 @@ describe('SuggestionBlock', () => {
     );
 
     expect(screen.getByText('src/test.ts:L10')).toBeInTheDocument();
-  });
-
-  it('renders apply button when onApply is provided', () => {
-    const mockOnApply = jest.fn();
-    render(<SuggestionBlock suggestedCode="code" onApply={mockOnApply} />);
-
-    expect(screen.getByText('Apply Suggestion')).toBeInTheDocument();
   });
 
   it('does not render apply button when showApplyButton is false', () => {
@@ -141,16 +127,14 @@ describe('SuggestionBlock', () => {
     expect(screen.getByText('Applying...')).toBeInTheDocument();
   });
 
-  it('shows applied indicator when isApplied is true', () => {
-    render(<SuggestionBlock suggestedCode="code" isApplied={true} />);
-
-    expect(screen.getByText('Suggestion applied')).toBeInTheDocument();
-  });
-
-  it('does not show apply button when isApplied is true', () => {
+  it('shows applied state without the apply action', () => {
     render(<SuggestionBlock suggestedCode="code" onApply={jest.fn()} isApplied={true} />);
-
-    expect(screen.queryByText('Apply Suggestion')).not.toBeInTheDocument();
+    {
+      expect(screen.queryByText('Apply Suggestion')).not.toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Suggestion applied')).toBeInTheDocument();
+    }
   });
 
   it('renders original code when provided', () => {

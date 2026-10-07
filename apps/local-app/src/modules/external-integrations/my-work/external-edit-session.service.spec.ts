@@ -16,7 +16,10 @@ import type {
 import type { ExternalEditSessionView } from '../models/external-edit-session.models';
 import type { ExternalRichCapabilityFlags } from '../models/external-rich-capabilities';
 import { ExternalEditSessionService } from './external-edit-session.service';
-import { ExternalEditSessionStore } from '../sessions/external-edit-session.store';
+import {
+  ExternalEditSessionStore,
+  DEFAULT_SESSION_STORE_LIMITS,
+} from '../sessions/external-edit-session.store';
 import { ProviderOperationGate } from '../sessions/provider-operation-gate';
 import { adfToRichDocument } from '../adapters/rich/jira-adf-converter';
 
@@ -230,13 +233,25 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function setup(provider: IntegrationProvider = 'jira') {
+function documentWithText(text: string): ExternalRichDocumentV1 {
+  return {
+    version: 1,
+    blocks: [{ type: 'paragraph', content: [{ type: 'text', text, marks: [] }] }],
+  };
+}
+function setup(
+  provider: IntegrationProvider = 'jira',
+  options: { clock?: () => number; limits?: Partial<typeof DEFAULT_SESSION_STORE_LIMITS> } = {},
+) {
   const storage = new FakeStorage();
   storage.connection = { id: 'connection-1', projectId: PROJECT_ID, provider, generation: 1 };
   const adapter = new FakeAdapter();
   const registry = new FakeRegistry(adapter);
   const gate = new ProviderOperationGate();
-  const store = new ExternalEditSessionStore();
+  const store = new ExternalEditSessionStore(
+    { ...DEFAULT_SESSION_STORE_LIMITS, ...options.limits },
+    options.clock,
+  );
   const service = new ExternalEditSessionService(
     storage as unknown as StorageService,
     registry as never,
@@ -247,17 +262,6 @@ function setup(provider: IntegrationProvider = 'jira') {
 }
 
 describe('ExternalEditSessionService', () => {
-  it('stateless reads leave the session store untouched (sessions come only from explicit actions)', async () => {
-    const { store, service } = setup();
-    // Read-only description reads happen through the adapter directly; the
-    // session store stays empty until an explicit create call.
-    expect(store.size()).toBe(0);
-    await expect(
-      service.touchSession(PROJECT_ID, '00000000-0000-4000-8000-000000000000'),
-    ).rejects.toThrow();
-    expect(store.size()).toBe(0);
-  });
-
   it('creates a description session pinned to the connection with a canonical baseline', async () => {
     const { service, store } = setup();
     const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
@@ -637,23 +641,6 @@ describe('ExternalEditSessionService', () => {
         outcome: 'rejected',
         reason: 'connection_superseded',
       });
-    });
-
-    it('ClickUp lookup performs at most two page fetches', async () => {
-      const { service, adapter } = setup('clickup');
-      adapter.findImpl = () =>
-        Promise.resolve({
-          remoteId: 'comment-1',
-          authorRemoteId: 'owner-1',
-          createdAt: '2026-08-22T00:00:00.000Z',
-          raw: [{ text: 'comment body' }],
-          metadata: { assignee: null, resolved: null, groupAssignee: null },
-        });
-      // The bounded-lookup bound is enforced inside the ClickUp adapter's
-      // findComment loop; through the service it appears as exactly one
-      // findComment call per session create (plus one per verify).
-      await service.createCommentDeleteSession(PROJECT_ID, 'clickup', 'task-1', 'comment-1', null);
-      expect(adapter.findCalls).toBe(1);
     });
   });
 
@@ -1318,6 +1305,262 @@ describe('ExternalEditSessionService', () => {
         canEdit: false,
         canDeleteOwnedComments: false,
       });
+    });
+  });
+  describe('session lifecycle matrix', () => {
+    it('multiple verified saves advance baseline and revision monotonically', async () => {
+      const { service, adapter } = setup('jira', {});
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+      expect(session.revision).toBe(0);
+
+      for (let round = 1; round <= 3; round += 1) {
+        const payload = documentWithText(`revision ${round}`);
+        const written = await service.saveSession(
+          PROJECT_ID,
+          session.sessionId,
+          payload,
+          round - 1,
+        );
+        expect(written.outcome).toBe('saved_unverified');
+        adapter.descriptionRaw = adfWithText(`revision ${round}`);
+        const verified = await service.verifySession(PROJECT_ID, session.sessionId);
+        expect(verified.remoteState).toBe('new_payload');
+        expect(verified.session?.revision).toBe(round);
+        expect(verified.session?.baselineFingerprint).toBeTruthy();
+      }
+    });
+    it('idle touch keeps a session alive across the idle limit; non-touched sessions expire', async () => {
+      let nowMs = 1_700_000_000_000;
+      const { service, store } = setup('jira', {
+        clock: () => nowMs,
+        limits: { idleLimitMs: 60_000 },
+      });
+      const touchedSession = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-A');
+      const idleSession = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-B');
+
+      for (let tick = 0; tick < 5; tick += 1) {
+        nowMs += 50_000;
+        await service.touchSession(PROJECT_ID, touchedSession.sessionId);
+      }
+      nowMs += 50_001;
+
+      const stillAlive = await service.touchSession(PROJECT_ID, touchedSession.sessionId);
+      expect(stillAlive.state).toBe('editable');
+      const verifyIdle = await service.verifySession(PROJECT_ID, idleSession.sessionId);
+      expect(verifyIdle).toMatchObject({
+        session: null,
+        remoteState: null,
+        reason: 'session_not_found',
+      });
+      expect(store.size()).toBe(1);
+    });
+    it('absolute expiry stops a constantly-touched session; no writable revision survives', async () => {
+      let nowMs = 1_700_000_000_000;
+      const { service } = setup('jira', {
+        clock: () => nowMs,
+        limits: { idleLimitMs: 60_000, absoluteLimitMs: 120_000 },
+      });
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+      // Keep the idle window constantly refreshed up to the absolute limit.
+      nowMs += 55_000;
+      expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe('editable');
+      nowMs += 55_000;
+      expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe('editable');
+      nowMs += 15_000; // 125s > the 120s absolute limit, idle still refreshed
+      const write = await service.saveSession(
+        PROJECT_ID,
+        session.sessionId,
+        documentWithText('late'),
+        0,
+      );
+      expect(write).toMatchObject({
+        outcome: 'pre_dispatch_rejected',
+        reason: 'session_not_found',
+      });
+    });
+    it('lookup expiry: a delete session whose comment proof ages out still verifies gone-or-present', async () => {
+      const { service, adapter, provider } = setup('clickup', {});
+      const session = await service.createCommentDeleteSession(
+        PROJECT_ID,
+        'clickup',
+        'task-1',
+        'comment-1',
+        null,
+      );
+      expect(session.state).toBe('editable');
+
+      // Someone deletes the comment elsewhere: the bounded lookup now misses.
+      adapter.snapshot = null;
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
+      expect(verified.remoteState).toBe('gone');
+      expect(verified.session?.state).toBe('invalidated');
+      const after = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
+      expect(after).toMatchObject({ outcome: 'rejected', reason: 'session_not_editable' });
+      void provider;
+    });
+    it('ambiguous write: dispatched timeout yields outcome_unknown, old baseline keeps it locked, exact retry lands', async () => {
+      const { service, adapter, provider } = setup('jira', {});
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+
+      adapter.writeImpl = () => {
+        throw new ExternalProviderError(provider, 'timeout', { dispatched: true });
+      };
+      const ambiguous = await service.saveSession(
+        PROJECT_ID,
+        session.sessionId,
+        documentWithText('maybe'),
+        0,
+      );
+      expect(ambiguous.outcome).toBe('outcome_unknown');
+
+      // Remote still shows the old baseline: no re-arm for a new payload.
+      const oldBaseline = await service.verifySession(PROJECT_ID, session.sessionId);
+      expect(oldBaseline.remoteState).toBe('old_baseline');
+      const newPayload = await service.saveSession(
+        PROJECT_ID,
+        session.sessionId,
+        documentWithText('different'),
+        0,
+      );
+      expect(newPayload).toMatchObject({ outcome: 'pre_dispatch_rejected' });
+
+      // The exact same payload may retry.
+      adapter.writeImpl = null;
+      const retried = await service.saveSession(
+        PROJECT_ID,
+        session.sessionId,
+        documentWithText('maybe'),
+        0,
+      );
+      expect(retried.outcome).toBe('saved_unverified');
+      adapter.descriptionRaw = adfWithText('maybe');
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
+      expect(verified.remoteState).toBe('new_payload');
+      expect(verified.session?.revision).toBe(1);
+    });
+    it('divergence after an unknown outcome is terminal for writes', async () => {
+      const { service, adapter, provider } = setup('jira', {});
+      const session = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+      adapter.writeImpl = () => {
+        throw new ExternalProviderError(provider, 'unavailable', { dispatched: true });
+      };
+      await service.saveSession(PROJECT_ID, session.sessionId, documentWithText('lost cause'), 0);
+      adapter.descriptionRaw = adfWithText('remote drifted');
+      const verified = await service.verifySession(PROJECT_ID, session.sessionId);
+      expect(verified.remoteState).toBe('diverged');
+      const blocked = await service.saveSession(
+        PROJECT_ID,
+        session.sessionId,
+        documentWithText('anything'),
+        1,
+      );
+      expect(blocked).toMatchObject({ outcome: 'pre_dispatch_rejected' });
+    });
+    it('connection replacement invalidates every live session of that provider', async () => {
+      const { service, storage } = setup('jira', {});
+      const description = await service.createDescriptionSession(PROJECT_ID, 'jira', 'KAN-1');
+      storage.connection = {
+        id: 'connection-1',
+        projectId: PROJECT_ID,
+        provider: 'jira',
+        generation: 2,
+      };
+      const blocked = await service.saveSession(
+        PROJECT_ID,
+        description.sessionId,
+        documentWithText('after swap'),
+        0,
+      );
+      expect(blocked).toMatchObject({
+        outcome: 'pre_dispatch_rejected',
+        reason: 'connection_superseded',
+      });
+      expect((await service.touchSession(PROJECT_ID, description.sessionId)).state).toBe(
+        'invalidated',
+      );
+    });
+    it('delete outcomes: deleted, already_deleted (404), outcome_unknown, and known failure each land in their bucket', async () => {
+      // deleted
+      {
+        const { service } = setup('clickup', {});
+        const session = await service.createCommentDeleteSession(
+          PROJECT_ID,
+          'clickup',
+          't',
+          'c',
+          null,
+        );
+        const outcome = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
+        expect(outcome.outcome).toBe('deleted');
+      }
+      // already_deleted on a later 404
+      {
+        const { service, adapter, provider } = setup('clickup', {});
+        const session = await service.createCommentDeleteSession(
+          PROJECT_ID,
+          'clickup',
+          't',
+          'c',
+          null,
+        );
+        adapter.deleteImpl = () => {
+          throw new ExternalProviderError(provider, 'not_found');
+        };
+        const outcome = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
+        expect(outcome.outcome).toBe('already_deleted');
+      }
+      // outcome_unknown on a dispatched timeout, then verify sees it gone
+      {
+        const { service, adapter, provider } = setup('clickup', {});
+        const session = await service.createCommentDeleteSession(
+          PROJECT_ID,
+          'clickup',
+          't',
+          'c',
+          null,
+        );
+        adapter.deleteImpl = () => {
+          throw new ExternalProviderError(provider, 'timeout', { dispatched: true });
+        };
+        const unknown = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
+        expect(unknown.outcome).toBe('outcome_unknown');
+        adapter.deleteImpl = null;
+        adapter.snapshot = null;
+        const verified = await service.verifySession(PROJECT_ID, session.sessionId);
+        expect(verified.remoteState).toBe('gone');
+      }
+      // known rejection fails closed
+      {
+        const { service, adapter, provider } = setup('clickup', {});
+        const session = await service.createCommentDeleteSession(
+          PROJECT_ID,
+          'clickup',
+          't',
+          'c',
+          null,
+        );
+        adapter.deleteImpl = () => {
+          throw new ExternalProviderError(provider, 'permission_denied');
+        };
+        const rejected = await service.executeCommentDelete(PROJECT_ID, session.sessionId);
+        expect(rejected).toMatchObject({ outcome: 'rejected', reason: 'delete_rejected' });
+        expect((await service.touchSession(PROJECT_ID, session.sessionId)).state).toBe(
+          'invalidated',
+        );
+      }
+    });
+    it('not-owned comments never open a delete session (bounded current-owner revalidation)', async () => {
+      const { service, adapter, store } = setup('clickup', {});
+      adapter.snapshot = {
+        ...adapter.snapshot!,
+        remoteId: 'comment-1',
+        authorRemoteId: 'someone-else',
+        createdAt: '2026-08-22T00:00:00.000Z',
+      };
+      await expect(
+        service.createCommentDeleteSession(PROJECT_ID, 'clickup', 't', 'c', null),
+      ).rejects.toMatchObject({ details: { reason: 'not_owned' } });
+      expect(store.size()).toBe(0);
     });
   });
 });

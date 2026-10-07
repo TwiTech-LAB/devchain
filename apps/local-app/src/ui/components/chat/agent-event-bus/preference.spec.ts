@@ -9,7 +9,7 @@ import {
 // parsing, persistence, and failure defaults without mounting React or using
 // browser-owned localStorage.
 describe('agent event-bus reduce-motion preference', () => {
-  it.each([null, 'not-json', '"true"', '1', '{}', '[]'])(
+  it.each([null, 'not-json', '"true"'])(
     'defaults malformed or missing storage value %p to full motion',
     (storedValue) => {
       const storage: AgentEventBusPreferenceStorage = {

@@ -141,19 +141,12 @@ describe('teams codec — apply (resolution against live storage)', () => {
     });
   });
 
-  it('throws when a member agent name is not found in storage', async () => {
-    const teamsService = makeTeamsService();
-    await expect(
-      teamsCodec.apply(
-        teamSection([{ name: 'Team X', memberAgentNames: ['Agent A', 'Ghost'] }]),
-        seedCtx(),
-        'replace',
-        rt(teamsService, makeStorage({ agents: [{ id: 'agent-1', name: 'Agent A' }] })),
-      ),
-    ).rejects.toThrow('references agent "Ghost" which was not found');
-  });
-
   it.each([
+    {
+      label: 'member agent name',
+      teams: [{ name: 'Team X', memberAgentNames: ['Agent A', 'Ghost'] }],
+      message: 'references agent "Ghost" which was not found',
+    },
     {
       label: 'team lead agent name',
       teams: [{ name: 'Team X', teamLeadAgentName: 'Ghost', memberAgentNames: ['Agent A'] }],

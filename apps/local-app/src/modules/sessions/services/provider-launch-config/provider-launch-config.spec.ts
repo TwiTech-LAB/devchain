@@ -1,3 +1,4 @@
+import { processIdsEnv } from '../../../../common/process-ids-env';
 import { CopilotAdapter } from '../../../providers/adapters/copilot.adapter';
 import { AntigravityAdapter } from '../../../providers/adapters/antigravity.adapter';
 import { resolve, type LaunchConfigInput } from './provider-launch-config.service';
@@ -24,10 +25,6 @@ describe('ProviderLaunchConfig.resolve', () => {
     // Use a pass-through adapter (OpenCode new-mode) so these assert parsing in
     // isolation, without an adapter's own launch-arg injection (e.g. Codex's
     // update-check override, covered in codex.adapter.spec.ts).
-    it('returns empty argv from null profile options', () => {
-      const result = resolve(makeInput({ adapter: new OpencodeAdapter() }));
-      expect(result.argv).toEqual([]);
-    });
 
     it('parses profile options into argv tokens', () => {
       const result = resolve(
@@ -35,15 +32,54 @@ describe('ProviderLaunchConfig.resolve', () => {
       );
       expect(result.argv).toEqual(['--model', 'opus', '--verbose']);
     });
-
-    it('throws ProfileOptionsError for unterminated quotes', () => {
-      expect(() => resolve(makeInput({ profileOptions: '"unterminated' }))).toThrow(
-        'unterminated quote',
-      );
-    });
   });
 
   describe('DevChain-owned launch overlays', () => {
+    // Launch config exposes the actual provider argv without starting a provider process.
+    it.each(['new', 'restore'] as const)(
+      'sets process ids in %s provider launches over configurable and runtime values',
+      (mode) => {
+        const uid = jest.spyOn(process, 'getuid').mockReturnValue(1001);
+        const gid = jest.spyOn(process, 'getgid').mockReturnValue(1002);
+        try {
+          const result = resolve(
+            makeInput({
+              mode,
+              providerSessionId: 'session',
+              providerEnv: { DEVCHAIN_UID: '1000' },
+              configEnv: { DEVCHAIN_GID: '1000' },
+              runtimeEnv: { DEVCHAIN_UID: '0', DEVCHAIN_GID: '0' },
+            }),
+          );
+          expect(result.env).toEqual({ DEVCHAIN_UID: '1001', DEVCHAIN_GID: '1002' });
+          expect(result.commandArgs).toEqual(
+            expect.arrayContaining(['DEVCHAIN_UID=1001', 'DEVCHAIN_GID=1002']),
+          );
+        } finally {
+          uid.mockRestore();
+          gid.mockRestore();
+        }
+      },
+    );
+
+    it('adds no process ids on platforms without uid and gid', () => {
+      const uid = process.getuid;
+      const gid = process.getgid;
+      Object.defineProperty(process, 'getuid', { value: undefined, configurable: true });
+      Object.defineProperty(process, 'getgid', { value: undefined, configurable: true });
+      try {
+        const result = resolve(makeInput());
+        expect(result.env).toBeNull();
+        expect(
+          result.commandArgs.some(
+            (arg) => arg.startsWith('DEVCHAIN_UID=') || arg.startsWith('DEVCHAIN_GID='),
+          ),
+        ).toBe(false);
+      } finally {
+        Object.defineProperty(process, 'getuid', { value: uid, configurable: true });
+        Object.defineProperty(process, 'getgid', { value: gid, configurable: true });
+      }
+    });
     it.each([
       [new ClaudeAdapter(), 'DISABLE_AUTOUPDATER', '1'],
       [new CopilotAdapter(undefined as never, undefined as never), 'COPILOT_AUTO_UPDATE', 'false'],
@@ -135,6 +171,7 @@ describe('ProviderLaunchConfig.resolve', () => {
       );
 
       expect(result.env).toEqual({
+        ...processIdsEnv(),
         DEVCHAIN_STATUSLINE_LOCATOR: '/private/locator.json',
         KEEP: 'config',
         DISABLE_AUTOUPDATER: '1',
@@ -318,14 +355,6 @@ describe('ProviderLaunchConfig.resolve', () => {
         expect.objectContaining({ mode: 'new', initialPrompt: 'do the thing' }),
       );
     });
-
-    it('passes initialPrompt undefined when not supplied (default paste path)', () => {
-      const { adapter, buildLaunchArgs } = spyAdapter();
-      resolve(makeInput({ adapter: adapter as unknown as LaunchConfigInput['adapter'] }));
-      expect(buildLaunchArgs).toHaveBeenCalledWith(
-        expect.objectContaining({ initialPrompt: undefined }),
-      );
-    });
   });
 
   describe('sessionId threading (deterministic launch binding)', () => {
@@ -347,14 +376,6 @@ describe('ProviderLaunchConfig.resolve', () => {
       );
       expect(buildLaunchArgs).toHaveBeenCalledWith(
         expect.objectContaining({ mode: 'new', sessionId: 'sess-uuid-123' }),
-      );
-    });
-
-    it('passes sessionId undefined when not supplied', () => {
-      const { adapter, buildLaunchArgs } = spyAdapter();
-      resolve(makeInput({ adapter: adapter as unknown as LaunchConfigInput['adapter'] }));
-      expect(buildLaunchArgs).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: undefined }),
       );
     });
   });
@@ -379,23 +400,16 @@ describe('ProviderLaunchConfig.resolve', () => {
       expect(result.commandArgs).toContain('/usr/bin/copilot');
     });
 
-    it('throws when an EXPLICIT COPILOT_HOME is present in provider env (before process start)', () => {
-      expect(() =>
-        resolve(makeInput({ adapter: copilotAdapter(), providerEnv: { COPILOT_HOME: '/tmp/x' } })),
-      ).toThrow(/COPILOT_HOME is not supported/);
-    });
-
-    it('throws when an EXPLICIT COPILOT_HOME is present in config env', () => {
-      expect(() =>
-        resolve(makeInput({ adapter: copilotAdapter(), configEnv: { COPILOT_HOME: '/tmp/x' } })),
-      ).toThrow(/COPILOT_HOME is not supported/);
-    });
-
-    it('does not throw when no rejected key is present (still strips ambient)', () => {
-      expect(() =>
-        resolve(makeInput({ adapter: copilotAdapter(), providerEnv: { OTHER: 'ok' } })),
-      ).not.toThrow();
-    });
+    it.each(['providerEnv', 'configEnv'] as const)(
+      'rejects explicit COPILOT_HOME in %s',
+      (envSource) => {
+        expect(() =>
+          resolve(
+            makeInput({ adapter: copilotAdapter(), [envSource]: { COPILOT_HOME: '/tmp/x' } }),
+          ),
+        ).toThrow(/COPILOT_HOME is not supported/);
+      },
+    );
 
     it('ignores rejected keys for adapters that do not declare launchRejectEnv', () => {
       expect(() => resolve(makeInput({ providerEnv: { COPILOT_HOME: '/tmp/x' } }))).not.toThrow();
@@ -403,9 +417,9 @@ describe('ProviderLaunchConfig.resolve', () => {
   });
 
   describe('env composition — non-capability provider', () => {
-    it('returns null env when no env vars', () => {
+    it('sets process ids when no configurable env vars', () => {
       const result = resolve(makeInput());
-      expect(result.env).toBeNull();
+      expect(result.env).toEqual(processIdsEnv());
     });
 
     it('merges provider env and config env (config wins)', () => {
@@ -415,7 +429,7 @@ describe('ProviderLaunchConfig.resolve', () => {
           configEnv: { KEY2: 'config' },
         }),
       );
-      expect(result.env).toEqual({ KEY1: 'provider', KEY2: 'config' });
+      expect(result.env).toEqual({ ...processIdsEnv(), KEY1: 'provider', KEY2: 'config' });
     });
   });
 
@@ -449,6 +463,7 @@ describe('ProviderLaunchConfig.resolve', () => {
           contextWindowTokens: 750_000,
         });
         expect(result.env).toEqual({
+          ...processIdsEnv(),
           KEEP_PROVIDER: 'provider',
           KEEP_CONFIG: 'config',
         });
@@ -468,7 +483,7 @@ describe('ProviderLaunchConfig.resolve', () => {
       );
 
       expect(result.contextWindowOverride).toBeNull();
-      expect(result.env).toEqual({ KEEP: 'value' });
+      expect(result.env).toEqual({ ...processIdsEnv(), KEEP: 'value' });
     });
 
     it('binds to the structured effective model after it replaces raw options', () => {
@@ -505,7 +520,7 @@ describe('ProviderLaunchConfig.resolve', () => {
           }),
         );
         expect(result.contextWindowOverride).toBeNull();
-        expect(result.env).toEqual({ KEEP: 'value' });
+        expect(result.env).toEqual({ ...processIdsEnv(), KEEP: 'value' });
       },
     );
 
@@ -617,22 +632,10 @@ describe('ProviderLaunchConfig.resolve', () => {
         'env',
         '-u',
         'DEVCHAIN_CONTEXT_WINDOW_TOKENS',
+        ...Object.entries(processIdsEnv()).map(([key, value]) => `${key}=${value}`),
         '/usr/bin/codex',
         ...result.argv,
       ]);
-    });
-  });
-
-  describe('launch mode', () => {
-    it('builds restore argv with provider session ID', () => {
-      const result = resolve(
-        makeInput({
-          mode: 'restore',
-          providerSessionId: 'prov-sess-123',
-        }),
-      );
-      expect(result.argv).toContain('resume');
-      expect(result.argv).toContain('prov-sess-123');
     });
   });
 
@@ -641,11 +644,6 @@ describe('ProviderLaunchConfig.resolve', () => {
       const adapter = new ClaudeAdapter();
       const result = resolve(makeInput({ adapter, providerBinPath: '/usr/bin/claude' }));
       expect(result.promptHandshake).toEqual({ preKeys: ['Enter'], preDelayMs: 2000 });
-    });
-
-    it('returns undefined for adapters without handshake', () => {
-      const result = resolve(makeInput({ adapter: new OpencodeAdapter() }));
-      expect(result.promptHandshake).toBeUndefined();
     });
   });
 

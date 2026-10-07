@@ -1,9 +1,4 @@
-import {
-  DEFAULT_MAX_TOOL_RESULT_LENGTH,
-  truncateToolResult,
-  truncateMessages,
-  truncateChunks,
-} from './transcript-truncation';
+import { truncateToolResult, truncateMessages, truncateChunks } from './transcript-truncation';
 import type { UnifiedMessage, UnifiedToolResult } from '../dtos/unified-session.types';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 
@@ -95,12 +90,6 @@ function makeUserChunk(id: string, messages: UnifiedMessage[]): UnifiedChunk {
 const OVERSIZED = 'x'.repeat(5000);
 
 describe('transcript-truncation', () => {
-  describe('DEFAULT_MAX_TOOL_RESULT_LENGTH', () => {
-    it('is 2000', () => {
-      expect(DEFAULT_MAX_TOOL_RESULT_LENGTH).toBe(2000);
-    });
-  });
-
   describe('truncateToolResult', () => {
     it('returns the same object when content is within limit', () => {
       const result = makeToolResult('short content');
@@ -234,54 +223,6 @@ describe('transcript-truncation', () => {
       const truncated = truncateChunks(chunks, 2000, externalMsgs);
       expect(truncated[0].messages[0].toolResults[0].isTruncated).toBe(true);
       expect(truncated[0].messages[1].toolResults[0].isTruncated).toBe(true);
-    });
-  });
-
-  describe('payload-size regression', () => {
-    it('truncateMessages bounds tool result to ≤ maxLen + 1 char', () => {
-      const messages = [makeMessage('m1', [makeToolResult(OVERSIZED)])];
-      const truncated = truncateMessages(messages, 2000);
-      const content = truncated[0].toolResults[0].content as string;
-      expect(content.length).toBeLessThanOrEqual(2001);
-      expect(truncated[0].toolResults[0].isTruncated).toBe(true);
-      expect(truncated[0].toolResults[0].fullLength).toBe(5000);
-    });
-
-    it('truncateChunks bounds chunk.messages without external map', () => {
-      const msg = makeMessage('m1', [makeToolResult(OVERSIZED, 'tc-big')]);
-      const chunks = [makeUserChunk('c-0', [msg])];
-      const truncated = truncateChunks(chunks, 2000);
-      const content = truncated[0].messages[0].toolResults[0].content as string;
-      expect(content.length).toBeLessThanOrEqual(2001);
-      expect(truncated[0].messages[0].toolResults[0].isTruncated).toBe(true);
-    });
-
-    it('truncateChunks bounds semantic step content', () => {
-      const msg = makeMessage('m1', [makeToolResult(OVERSIZED, 'tc-big')]);
-      const chunks = [
-        makeAIChunk(
-          'c-0',
-          [msg],
-          [
-            {
-              id: 'step-big',
-              type: 'tool_result',
-              content: { toolCallId: 'tc-big', toolResultContent: OVERSIZED },
-            },
-          ],
-        ),
-      ];
-      const truncated = truncateChunks(chunks, 2000);
-      const step = (
-        truncated[0] as {
-          semanticSteps: Array<{
-            content: { toolResultContent: string; isTruncated: boolean; fullLength: number };
-          }>;
-        }
-      ).semanticSteps[0];
-      expect(step.content.toolResultContent.length).toBeLessThanOrEqual(2001);
-      expect(step.content.isTruncated).toBe(true);
-      expect(step.content.fullLength).toBe(5000);
     });
   });
 

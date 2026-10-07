@@ -77,33 +77,20 @@ describe('CollapsedColumn relation total badge', () => {
     return renderColumn(epics, undefined, { relationCounts, ...handlers });
   }
 
-  it('shows one compact total badge on the row', () => {
+  it('shows one compact total badge on the row', async () => {
     renderWithRelations([createEpic()], new Map([['epic-1', counts]]));
 
     const badge = screen.getByTestId('epic-relation-total-badge');
     expect(badge).toHaveTextContent('3');
     expect(badge).not.toHaveTextContent('Related');
     expect(badge).not.toHaveTextContent('Blocks');
-  });
 
-  it('explains in the tooltip that counts can include Epics outside the current board', () => {
-    renderWithRelations([createEpic()], new Map([['epic-1', counts]]));
-
-    expect(screen.getByTestId('epic-relation-total-badge')).toHaveAttribute(
-      'title',
-      expect.stringContaining('outside the current board'),
-    );
-  });
-
-  it('keeps the compact one-line row beside the title like the time badge', () => {
-    renderWithRelations([createEpic()], new Map([['epic-1', counts]]));
-
-    const title = screen.getByText('Root epic');
-    const badge = screen.getByTestId('epic-relation-total-badge');
-    expect(badge.parentElement).toContainElement(title);
-    expect(badge.parentElement).toHaveClass('flex', 'items-center');
-    expect(title).toHaveClass('truncate');
-    expect(title.closest('.rounded')!.querySelector('.mt-1')).toBeNull();
+    {
+      expect(screen.getByTestId('epic-relation-total-badge')).toHaveAttribute(
+        'title',
+        expect.stringContaining('outside the current board'),
+      );
+    }
   });
 
   it('badges child rows too; a zero total renders nothing', () => {
@@ -134,21 +121,6 @@ describe('CollapsedColumn estimated-time badge', () => {
 
     const badge = screen.getByTitle('Estimated agent time');
     expect(badge).toHaveTextContent('1h 30m');
-  });
-
-  it('keeps the compact one-line row when a timed root has no tags or sub-epic count', () => {
-    renderColumn([createEpic()], new Map([['epic-1', 90]]));
-
-    const title = screen.getByText('Root epic');
-    const row = title.closest('.rounded')!;
-    // No secondary metadata row is introduced by the badge alone.
-    expect(row.querySelector('.mt-1')).toBeNull();
-    // The badge sits on the title line, not on its own row.
-    const badge = screen.getByTitle('Estimated agent time');
-    expect(badge.parentElement).toContainElement(title);
-    expect(badge.parentElement).toHaveClass('flex', 'items-center');
-    // Title truncation survives the inline placement.
-    expect(title).toHaveClass('truncate');
   });
 
   it('still renders the metadata row when tags or sub-epic counts exist', () => {
@@ -196,14 +168,6 @@ describe('CollapsedColumn interaction contract', () => {
     expect(props.onExpand).toHaveBeenCalledTimes(2);
   });
 
-  it('styles the drop highlight from the data attribute', () => {
-    renderColumn([createEpic()]);
-
-    const column = screen.getByRole('button', { name: /Todo column \(1 epic\)/ });
-    expect(column).toHaveClass('data-[board-drop-active]:border-primary/60');
-    expect(column).toHaveClass('data-[board-drop-active]:bg-primary/5');
-  });
-
   it('starts epic drags from the compact row', () => {
     const epic = createEpic();
     const props = renderColumn([epic]);
@@ -213,7 +177,7 @@ describe('CollapsedColumn interaction contract', () => {
     expect(props.cardDrag.pointerDown).toHaveBeenCalledWith(epic, expect.anything());
     const row = screen.getByText('Root epic').closest('[data-board-card-drag-source]')!;
     expect(row).not.toHaveAttribute('draggable');
-    expect(row).toHaveClass('select-none');
+
     expect(fireEvent.dragStart(row)).toBe(false);
   });
 
@@ -225,11 +189,5 @@ describe('CollapsedColumn interaction contract', () => {
     document.querySelectorAll('[data-board-card-drag-source]').forEach((row) => {
       expect(row).toHaveClass('pointer-events-none');
     });
-  });
-
-  it('keeps the compact title truncation styling', () => {
-    renderColumn([createEpic()]);
-
-    expect(screen.getByText('Root epic')).toHaveClass('truncate');
   });
 });

@@ -151,46 +151,26 @@ describe('SessionsService.terminateSession — size_bytes', () => {
     );
   });
 
-  it('writes the file size to size_bytes when transcript_path is set and stat succeeds', async () => {
-    mockStat.mockResolvedValue({ size: 4096 } as Awaited<ReturnType<typeof stat>>);
-
+  it.each([
+    {
+      label: 'stat success',
+      transcriptPath: TRANSCRIPT_PATH,
+      statFails: false,
+      expectedSize: 4096,
+    },
+    { label: 'stat failure', transcriptPath: TRANSCRIPT_PATH, statFails: true, expectedSize: null },
+    { label: 'no transcript', transcriptPath: null, statFails: false, expectedSize: null },
+  ])('accounts transcript size for $label', async ({ transcriptPath, statFails, expectedSize }) => {
+    selectGetMock.mockReturnValue({ ...RUNNING_SESSION_ROW, transcript_path: transcriptPath });
+    if (statFails) mockStat.mockRejectedValue(new Error('ENOENT: no such file'));
+    else mockStat.mockResolvedValue({ size: 4096 } as Awaited<ReturnType<typeof stat>>);
     await service.terminateSession(SESSION_ID, TEST_TERMINATION);
-
-    expect(mockStat).toHaveBeenCalledWith(TRANSCRIPT_PATH);
-    expect(updateRunMock).toHaveBeenCalledWith(
-      'stopped',
-      expect.any(String), // ended_at
-      4096, // size_bytes
-      expect.any(String), // updated_at
-      SESSION_ID,
-    );
-  });
-
-  it('writes NULL to size_bytes when stat throws (best-effort)', async () => {
-    mockStat.mockRejectedValue(new Error('ENOENT: no such file'));
-
-    await service.terminateSession(SESSION_ID, TEST_TERMINATION);
-
+    if (transcriptPath) expect(mockStat).toHaveBeenCalledWith(transcriptPath);
+    else expect(mockStat).not.toHaveBeenCalled();
     expect(updateRunMock).toHaveBeenCalledWith(
       'stopped',
       expect.any(String),
-      null, // size_bytes remains NULL
-      expect.any(String),
-      SESSION_ID,
-    );
-  });
-
-  it('writes NULL to size_bytes when transcript_path is null', async () => {
-    // Override selectGetMock to return a session without transcript_path
-    selectGetMock.mockReturnValue({ ...RUNNING_SESSION_ROW, transcript_path: null });
-
-    await service.terminateSession(SESSION_ID, TEST_TERMINATION);
-
-    expect(mockStat).not.toHaveBeenCalled();
-    expect(updateRunMock).toHaveBeenCalledWith(
-      'stopped',
-      expect.any(String),
-      null,
+      expectedSize,
       expect.any(String),
       SESSION_ID,
     );

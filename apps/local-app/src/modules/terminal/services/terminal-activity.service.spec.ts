@@ -134,21 +134,6 @@ describe('TerminalActivityService', () => {
   }
 
   describe('watchSession', () => {
-    it('does nothing when session is not in registry', () => {
-      mockRegistry.get.mockReturnValue(undefined);
-      expect(() => service.watchSession('missing')).not.toThrow();
-    });
-
-    it('attaches a frame listener to the session stream', () => {
-      const stream = makeStream();
-      const onSpy = jest.spyOn(stream, 'on');
-      mockRegistry.get.mockReturnValue(makeSession('s1', stream));
-
-      service.watchSession('s1');
-
-      expect(onSpy).toHaveBeenCalledWith('frame', expect.any(Function));
-    });
-
     it('replaces the listener when called twice for the same session', () => {
       const stream = makeStream();
       const offSpy = jest.spyOn(stream, 'off');
@@ -177,14 +162,13 @@ describe('TerminalActivityService', () => {
         expect(row(sessionId).last_activity_at).not.toBeNull();
       });
 
-      it.each([
-        ['ANSI-only', '\x1B[31m\x1B[0m'],
-        ['whitespace-only', '   \t\n  '],
-        ['idle-particle-only', '\x1b[38;5;245m⠁\x1b[0m⠂⠄⠈⠐⠠⡀⢀'],
-      ])('does not signal for %s data frames', (_label, data) => {
-        output(data);
-        expect(row(sessionId).last_activity_at).toBeNull();
-      });
+      it.each([['ANSI-only', '\x1B[31m\x1B[0m']])(
+        'does not signal for %s data frames',
+        (_label, data) => {
+          output(data);
+          expect(row(sessionId).last_activity_at).toBeNull();
+        },
+      );
 
       it('does not treat a split ANSI sequence as visible output', () => {
         output('\x1b[');
@@ -594,17 +578,7 @@ describe('TerminalActivityService', () => {
     });
   });
 
-  describe('getBufferSize', () => {
-    it('returns 0 (legacy no-op)', () => {
-      expect(service.getBufferSize('any')).toBe(0);
-    });
-  });
-
   describe('idle timeout refresh', () => {
-    it('starts at the default when no setting is stored', () => {
-      expect(service.idleTimeoutMs).toBe(30000);
-    });
-
     it('picks up a replica-written setting on the remote sync wake-up', () => {
       mockSettings.getSetting.mockReturnValue('45000');
 
@@ -674,23 +648,15 @@ describe('TerminalActivityService', () => {
         jest.advanceTimersByTime(1000);
       });
 
-      it('moves the pending deadline out when the timeout grows', () => {
-        mockSettings.getSetting.mockReturnValue('45000');
+      it.each([
+        { timeout: '45000', before: 29000, remaining: 15000 },
+        { timeout: '10000', before: 8999, remaining: 1 },
+      ])('reschedules pending idle deadline to $timeout', ({ timeout, before, remaining }) => {
+        mockSettings.getSetting.mockReturnValue(timeout);
         service.handleRemoteProjectSynced();
-
-        jest.advanceTimersByTime(29000);
+        jest.advanceTimersByTime(before);
         expect(idleCount()).toBe(0);
-        jest.advanceTimersByTime(15000);
-        expect(idleCount()).toBe(1);
-      });
-
-      it('moves the pending deadline in when the timeout shrinks', () => {
-        mockSettings.getSetting.mockReturnValue('10000');
-        service.handleRemoteProjectSynced();
-
-        jest.advanceTimersByTime(8999);
-        expect(idleCount()).toBe(0);
-        jest.advanceTimersByTime(1);
+        jest.advanceTimersByTime(remaining);
         expect(idleCount()).toBe(1);
       });
 

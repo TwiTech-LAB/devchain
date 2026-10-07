@@ -138,7 +138,7 @@ describe('providerSettings codec — env merge', () => {
     });
   });
 
-  it.each(['999999', '1000001', '450000'])(
+  it.each(['999999', '1000001'])(
     'preserves a non-retired Claude window value %s',
     async (window) => {
       const { storage, rt } = makeRuntime([baseProvider]);

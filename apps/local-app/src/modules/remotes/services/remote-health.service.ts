@@ -29,6 +29,7 @@ import type { RemoteHealthPort, RemoteHealthState } from '../ports/remote-health
 import { matchesHomePath } from '../home-identity';
 import { isHostApiKeyRejection } from '../host-api-key';
 import { remoteFetch, requireRemoteTls } from '../transport/remote-tls';
+import { reportedVmUserMismatch, VmUidConflictSchema } from '../vm-user-identity';
 
 const logger = createLogger('RemoteHealthService');
 
@@ -64,6 +65,7 @@ interface RuntimeResponse {
   homePath?: unknown;
   uid?: unknown;
   gid?: unknown;
+  uidConflict?: unknown;
   providerEnvOverrides?: unknown;
 }
 
@@ -223,6 +225,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
       const homePath = typeof runtime.homePath === 'string' ? runtime.homePath : null;
       const uid = typeof runtime.uid === 'number' ? runtime.uid : null;
       const gid = typeof runtime.gid === 'number' ? runtime.gid : null;
+      const uidConflict = VmUidConflictSchema.safeParse(runtime.uidConflict).data ?? null;
       const overrides = HostEnvOverridesSchema.safeParse(runtime.providerEnvOverrides);
       const providerEnvOverrides: HostEnvOverrideEntry[] | null = overrides.success
         ? overrides.data
@@ -238,6 +241,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
         homePath,
         uid,
         gid,
+        uidConflict,
         providerEnvOverrides,
         cliVersions: z.record(z.string()).safeParse(runtime.cliVersions).data ?? null,
         providerClis: ProviderCliRuntimeReportSchema.safeParse(runtime.providerClis).data ?? null,
@@ -308,6 +312,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
         remoteId,
         ...nextState,
         homePathMatches: matchesHomePath(nextState.homePath),
+        dockerUserMismatch: reportedVmUserMismatch(nextState),
       });
     }
   }
@@ -324,6 +329,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
       a.homePath === b.homePath &&
       a.uid === b.uid &&
       a.gid === b.gid &&
+      JSON.stringify(a.uidConflict ?? null) === JSON.stringify(b.uidConflict ?? null) &&
       a.error === b.error &&
       a.powerState === b.powerState &&
       JSON.stringify(a.providerEnvOverrides ?? null) ===

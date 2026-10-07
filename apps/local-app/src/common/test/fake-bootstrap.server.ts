@@ -27,7 +27,7 @@ export class FakeBootstrapServer {
   /** The certificate this VM serves; home must hold it to reach the VM. */
   readonly certificate = fixtureTls.cert;
   version: string | null = null;
-  imageVersion = '1.3.0';
+  imageVersion = '1.4.0';
   bootId = 'b';
   dockerRequests = 0;
   docker = {
@@ -126,7 +126,8 @@ export class FakeBootstrapServer {
       this.version = String(body.version);
       this.cliVersions = pinnedCliVersions();
       this.uid = this.legacyAllocatedIds?.uid ?? (typeof body.uid === 'number' ? body.uid : null);
-      this.gid = this.legacyAllocatedIds?.gid ?? this.uid;
+      this.gid =
+        this.legacyAllocatedIds?.gid ?? (typeof body.gid === 'number' ? body.gid : this.uid);
       return { status: 200, body: { claimed: true, cliVersions: this.cliVersions } };
     }
     if (route === 'POST /api/host/provider-auth/verify') {

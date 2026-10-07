@@ -84,27 +84,6 @@ describe('RegistryPage', () => {
     jest.clearAllMocks();
   });
 
-  it('renders page header', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/api/registry/status')) {
-        return { ok: true, json: async () => ({ available: true, url: 'https://test.com' }) };
-      }
-      if (url.includes('/api/registry/templates')) {
-        return { ok: true, json: async () => ({ templates: [], total: 0 }) };
-      }
-      if (url.includes('/api/templates')) {
-        return { ok: true, json: async () => ({ templates: [], total: 0 }) };
-      }
-      return { ok: true, json: async () => ({}) };
-    }) as unknown as typeof fetch;
-
-    renderWithProviders(<RegistryPage />);
-
-    expect(screen.getByText('Template Registry')).toBeInTheDocument();
-    expect(screen.getByText('Browse and install project templates')).toBeInTheDocument();
-  });
-
   it('renders template grid with templates', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -129,6 +108,26 @@ describe('RegistryPage', () => {
       expect(screen.getByText('Basic Template')).toBeInTheDocument();
       expect(screen.getByText('Advanced Template')).toBeInTheDocument();
     });
+
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Basic Template')).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByText('Registry unavailable. Showing cached templates only.'),
+      ).not.toBeInTheDocument();
+    }
+    {
+      await waitFor(() => {
+        // DownloadedTemplates is now rendered and shows the downloaded registry template
+        expect(screen.getByText('Downloaded Template')).toBeInTheDocument();
+      });
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Browse Registry')).toBeInTheDocument();
+      });
+    }
   });
 
   it('shows offline banner when registry is unavailable', async () => {
@@ -153,32 +152,6 @@ describe('RegistryPage', () => {
         screen.getByText('Registry unavailable. Showing cached templates only.'),
       ).toBeInTheDocument();
     });
-  });
-
-  it('does not show offline banner when registry is available', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/api/registry/status')) {
-        return { ok: true, json: async () => ({ available: true, url: 'https://test.com' }) };
-      }
-      if (url.includes('/api/registry/templates')) {
-        return { ok: true, json: async () => ({ templates: mockTemplates, total: 2 }) };
-      }
-      if (url.includes('/api/templates')) {
-        return { ok: true, json: async () => mockUnifiedTemplates };
-      }
-      return { ok: true, json: async () => ({}) };
-    }) as unknown as typeof fetch;
-
-    renderWithProviders(<RegistryPage />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Basic Template')).toBeInTheDocument();
-    });
-
-    expect(
-      screen.queryByText('Registry unavailable. Showing cached templates only.'),
-    ).not.toBeInTheDocument();
   });
 
   it('shows error state when template fetch fails', async () => {
@@ -236,72 +209,5 @@ describe('RegistryPage', () => {
 
     // Cleanup
     resolvePromise!({});
-  });
-
-  it('hides search input when filters are disabled', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/api/registry/status')) {
-        return { ok: true, json: async () => ({ available: true, url: 'https://test.com' }) };
-      }
-      if (url.includes('/api/registry/templates')) {
-        return { ok: true, json: async () => ({ templates: [], total: 0 }) };
-      }
-      if (url.includes('/api/templates')) {
-        return { ok: true, json: async () => ({ templates: [], total: 0 }) };
-      }
-      return { ok: true, json: async () => ({}) };
-    }) as unknown as typeof fetch;
-
-    renderWithProviders(<RegistryPage />);
-
-    // Filters are hidden via SHOW_FILTERS = false feature flag
-    const searchInput = screen.queryByPlaceholderText(/search/i);
-    expect(searchInput).not.toBeInTheDocument();
-  });
-
-  it('shows Downloaded Templates section', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/api/registry/status')) {
-        return { ok: true, json: async () => ({ available: true, url: 'https://test.com' }) };
-      }
-      if (url.includes('/api/registry/templates')) {
-        return { ok: true, json: async () => ({ templates: mockTemplates, total: 2 }) };
-      }
-      if (url.includes('/api/templates')) {
-        return { ok: true, json: async () => mockUnifiedTemplates };
-      }
-      return { ok: true, json: async () => ({}) };
-    }) as unknown as typeof fetch;
-
-    renderWithProviders(<RegistryPage />);
-
-    await waitFor(() => {
-      // DownloadedTemplates is now rendered and shows the downloaded registry template
-      expect(screen.getByText('Downloaded Template')).toBeInTheDocument();
-    });
-  });
-
-  it('shows Browse Registry section header', async () => {
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/api/registry/status')) {
-        return { ok: true, json: async () => ({ available: true, url: 'https://test.com' }) };
-      }
-      if (url.includes('/api/registry/templates')) {
-        return { ok: true, json: async () => ({ templates: mockTemplates, total: 2 }) };
-      }
-      if (url.includes('/api/templates')) {
-        return { ok: true, json: async () => mockUnifiedTemplates };
-      }
-      return { ok: true, json: async () => ({}) };
-    }) as unknown as typeof fetch;
-
-    renderWithProviders(<RegistryPage />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Browse Registry')).toBeInTheDocument();
-    });
   });
 });

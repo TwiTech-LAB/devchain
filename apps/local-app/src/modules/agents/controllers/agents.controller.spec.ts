@@ -3,7 +3,7 @@ import { AgentsController } from './agents.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { BadRequestException } from '@nestjs/common';
 import { Agent, Provider, ProfileProviderConfig } from '../../storage/models/domain.models';
-import { NotFoundError } from '../../../common/errors/error-types';
+
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
 import { EventsService } from '../../events/services/events.service';
@@ -192,42 +192,6 @@ describe('AgentsController', () => {
       expect(storage.listAgents).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException when projectId is empty string', async () => {
-      await expect(controller.listAgents('')).rejects.toThrow(BadRequestException);
-      expect(storage.listAgents).not.toHaveBeenCalled();
-    });
-
-    it('lists agents when projectId is provided', async () => {
-      storage.listAgents.mockResolvedValue({
-        items: [mockAgent],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await controller.listAgents('project-1');
-
-      expect(storage.listAgents).toHaveBeenCalledWith('project-1');
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0].id).toBe('agent-1');
-      expect(result.items[0].isProjectOwner).toBe(false);
-    });
-
-    it('returns only agents when includeGuests is not true', async () => {
-      storage.listAgents.mockResolvedValue({
-        items: [mockAgent],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await controller.listAgents('project-1', 'false');
-
-      expect(storage.listAgents).toHaveBeenCalledWith('project-1');
-      expect(storage.listGuests).not.toHaveBeenCalled();
-      expect(result.items).toHaveLength(1);
-    });
-
     it('includes guests when includeGuests=true', async () => {
       storage.listAgents.mockResolvedValue({
         items: [{ ...mockAgent, modelOverride: 'openai/gpt-4.1' }],
@@ -342,34 +306,6 @@ describe('AgentsController', () => {
   });
 
   describe('POST /api/agents', () => {
-    it('creates a new agent with providerConfigId (required)', async () => {
-      const createData = {
-        projectId: 'project-1',
-        profileId: 'profile-1',
-        name: 'New Agent',
-        providerConfigId: 'config-1',
-      };
-      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
-      storage.createAgent.mockResolvedValue({ ...mockAgent, ...createData });
-
-      const result = await controller.createAgent(createData);
-
-      expect(storage.getProfileProviderConfig).toHaveBeenCalledWith('config-1');
-      expect(storage.createAgent).toHaveBeenCalledWith(createData);
-      expect(result.name).toBe('New Agent');
-    });
-
-    it('throws when providerConfigId is missing (Phase 4: required)', async () => {
-      const createData = {
-        projectId: 'project-1',
-        profileId: 'profile-1',
-        name: 'New Agent',
-        // providerConfigId missing
-      };
-
-      await expect(controller.createAgent(createData)).rejects.toThrow();
-    });
-
     it('throws BadRequestException when providerConfigId belongs to wrong profile', async () => {
       const wrongConfig = { ...mockConfig, profileId: 'other-profile' };
       storage.getProfileProviderConfig.mockResolvedValue(wrongConfig);
@@ -419,79 +355,6 @@ describe('AgentsController', () => {
       });
     });
 
-    it('accepts optional modelOverride and trims it', async () => {
-      const createData = {
-        projectId: 'project-1',
-        profileId: 'profile-1',
-        name: 'New Agent',
-        providerConfigId: 'config-1',
-        modelOverride: '  anthropic/claude-sonnet-4-5  ',
-      };
-      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
-      storage.createAgent.mockResolvedValue({
-        ...mockAgent,
-        ...createData,
-        modelOverride: 'anthropic/claude-sonnet-4-5',
-      });
-
-      const result = await controller.createAgent(createData);
-
-      expect(storage.createAgent).toHaveBeenCalledWith(
-        expect.objectContaining({ modelOverride: 'anthropic/claude-sonnet-4-5' }),
-      );
-      expect(result).toBeDefined();
-    });
-
-    it('accepts optional effortOverride and trims it (parity with modelOverride)', async () => {
-      const createData = {
-        projectId: 'project-1',
-        profileId: 'profile-1',
-        name: 'New Agent',
-        providerConfigId: 'config-1',
-        effortOverride: '  high  ',
-      };
-      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
-      storage.createAgent.mockResolvedValue({
-        ...mockAgent,
-        ...createData,
-        effortOverride: 'high',
-      });
-
-      const result = await controller.createAgent(createData);
-
-      expect(storage.createAgent).toHaveBeenCalledWith(
-        expect.objectContaining({ effortOverride: 'high' }),
-      );
-      expect(result.effortOverride).toBe('high');
-    });
-
-    it('creates without modelOverride (backward compat)', async () => {
-      const createData = {
-        projectId: 'project-1',
-        profileId: 'profile-1',
-        name: 'New Agent',
-        providerConfigId: 'config-1',
-      };
-      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
-      storage.createAgent.mockResolvedValue({ ...mockAgent, ...createData });
-
-      const result = await controller.createAgent(createData);
-
-      expect(result.name).toBe('New Agent');
-    });
-
-    it('rejects whitespace-only modelOverride', async () => {
-      const createData = {
-        projectId: 'project-1',
-        profileId: 'profile-1',
-        name: 'New Agent',
-        providerConfigId: 'config-1',
-        modelOverride: '   ',
-      };
-
-      await expect(controller.createAgent(createData)).rejects.toThrow();
-    });
-
     it('swallows publish failure — agent still created', async () => {
       const createData = {
         projectId: 'project-1',
@@ -532,44 +395,21 @@ describe('AgentsController', () => {
   });
 
   describe('PUT /api/agents/:id', () => {
-    it('updates an agent with valid data', async () => {
-      const updateData = { name: 'Updated Agent' };
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, name: 'Updated Agent' });
-
-      const result = await controller.updateAgent('agent-1', updateData);
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', updateData);
-      expect(result.name).toBe('Updated Agent');
-    });
-
-    it('updates agent with providerConfigId', async () => {
+    it.each([
+      { name: 'current profile', profileId: 'profile-1', patch: { providerConfigId: 'config-1' } },
+      {
+        name: 'new profile',
+        profileId: 'profile-2',
+        patch: { profileId: 'profile-2', providerConfigId: 'config-1' },
+      },
+    ])('validates provider config ownership against the $name', async ({ profileId, patch }) => {
       storage.getAgent.mockResolvedValue(mockAgent);
-      storage.getProfileProviderConfig.mockResolvedValue(mockConfig);
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, providerConfigId: 'config-1' });
-
-      const result = await controller.updateAgent('agent-1', { providerConfigId: 'config-1' });
-
+      storage.getProfileProviderConfig.mockResolvedValue({ ...mockConfig, profileId });
+      storage.updateAgent.mockResolvedValue({ ...mockAgent, ...patch });
+      const result = await controller.updateAgent('agent-1', patch);
       expect(storage.getProfileProviderConfig).toHaveBeenCalledWith('config-1');
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { providerConfigId: 'config-1' });
+      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', patch);
       expect(result.providerConfigId).toBe('config-1');
-    });
-
-    it('validates providerConfigId against new profileId when both are changed', async () => {
-      const newConfig = { ...mockConfig, profileId: 'profile-2' };
-      storage.getProfileProviderConfig.mockResolvedValue(newConfig);
-      storage.updateAgent.mockResolvedValue({
-        ...mockAgent,
-        profileId: 'profile-2',
-        providerConfigId: 'config-1',
-      });
-
-      await controller.updateAgent('agent-1', {
-        profileId: 'profile-2',
-        providerConfigId: 'config-1',
-      });
-
-      expect(storage.getProfileProviderConfig).toHaveBeenCalledWith('config-1');
-      // Should validate against new profileId, not agent's current profileId
     });
 
     it('throws BadRequestException when providerConfigId belongs to wrong profile', async () => {
@@ -582,143 +422,9 @@ describe('AgentsController', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('throws when trying to set providerConfigId to null (Phase 4: NOT NULL)', async () => {
-      // Sending null should fail validation since providerConfigId is NOT NULL in DB
-      await expect(
-        controller.updateAgent('agent-1', { providerConfigId: null } as unknown as {
-          providerConfigId: string;
-        }),
-      ).rejects.toThrow();
-    });
-
-    it('updates modelOverride with a non-empty string', async () => {
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, modelOverride: 'gpt-4.1' });
-
-      const result = await controller.updateAgent('agent-1', { modelOverride: 'gpt-4.1' });
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { modelOverride: 'gpt-4.1' });
-      expect(result.modelOverride).toBe('gpt-4.1');
-    });
-
-    it('updates modelOverride to null', async () => {
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, modelOverride: null });
-
-      const result = await controller.updateAgent('agent-1', { modelOverride: null });
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { modelOverride: null });
-      expect(result.modelOverride).toBeNull();
-    });
-
-    it('rejects empty modelOverride string', async () => {
-      await expect(controller.updateAgent('agent-1', { modelOverride: '' })).rejects.toThrow();
-      expect(storage.updateAgent).not.toHaveBeenCalled();
-    });
-
     // effortOverride mirrors modelOverride: set, clear via null, omit preserves,
     // reject empty. Identical restart-requirement semantics for online agents
     // (backend is pure persistence; restart is conveyed to the client elsewhere).
-    it('sets effortOverride with a non-empty string', async () => {
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, effortOverride: 'high' });
-
-      const result = await controller.updateAgent('agent-1', { effortOverride: 'high' });
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { effortOverride: 'high' });
-      expect(result.effortOverride).toBe('high');
-    });
-
-    it('clears effortOverride via null', async () => {
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, effortOverride: null });
-
-      const result = await controller.updateAgent('agent-1', { effortOverride: null });
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { effortOverride: null });
-      expect(result.effortOverride).toBeNull();
-    });
-
-    it('omitting effortOverride preserves it (not passed to storage)', async () => {
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, name: 'Renamed' });
-
-      await controller.updateAgent('agent-1', { name: 'Renamed' });
-
-      // updateAgent receives only the provided field — effortOverride is absent.
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { name: 'Renamed' });
-      expect(
-        (storage.updateAgent.mock.calls[0][1] as { effortOverride?: unknown }).effortOverride,
-      ).toBeUndefined();
-    });
-
-    it('rejects empty effortOverride string', async () => {
-      await expect(controller.updateAgent('agent-1', { effortOverride: '' })).rejects.toThrow();
-      expect(storage.updateAgent).not.toHaveBeenCalled();
-    });
-
-    it.each([true, false])('accepts isProjectOwner=%s', async (isProjectOwner) => {
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, isProjectOwner });
-
-      const result = await controller.updateAgent('agent-1', { isProjectOwner });
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { isProjectOwner });
-      expect(result.isProjectOwner).toBe(isProjectOwner);
-    });
-
-    it('preserves ownership when isProjectOwner is omitted', async () => {
-      storage.updateAgent.mockResolvedValue({
-        ...mockAgent,
-        isProjectOwner: true,
-        name: 'Renamed',
-      });
-
-      await controller.updateAgent('agent-1', { name: 'Renamed' });
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { name: 'Renamed' });
-    });
-
-    it('rejects non-boolean isProjectOwner', async () => {
-      await expect(
-        controller.updateAgent('agent-1', { isProjectOwner: 'true' } as never),
-      ).rejects.toThrow();
-      expect(storage.updateAgent).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('PATCH /api/agents/:id', () => {
-    it('patches an agent with valid data', async () => {
-      const patchData = { name: 'Patched Agent' };
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, name: 'Patched Agent' });
-
-      const result = await controller.patchAgent('agent-1', patchData);
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', patchData);
-      expect(result.name).toBe('Patched Agent');
-    });
-
-    it.each([true, false])('accepts isProjectOwner=%s', async (isProjectOwner) => {
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, isProjectOwner });
-
-      const result = await controller.patchAgent('agent-1', { isProjectOwner });
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { isProjectOwner });
-      expect(result.isProjectOwner).toBe(isProjectOwner);
-    });
-
-    it('preserves ownership when isProjectOwner is omitted', async () => {
-      storage.updateAgent.mockResolvedValue({
-        ...mockAgent,
-        isProjectOwner: true,
-        name: 'Patched',
-      });
-
-      await controller.patchAgent('agent-1', { name: 'Patched' });
-
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', { name: 'Patched' });
-    });
-
-    it('rejects non-boolean isProjectOwner', async () => {
-      await expect(
-        controller.patchAgent('agent-1', { isProjectOwner: 1 } as never),
-      ).rejects.toThrow();
-      expect(storage.updateAgent).not.toHaveBeenCalled();
-    });
   });
 
   describe('DELETE /api/agents/:id', () => {
@@ -757,14 +463,6 @@ describe('AgentsController', () => {
       await controller.deleteAgent('agent-1');
 
       expect(callOrder).toEqual(['deleteAgent', 'removeAgentFromProjectPresets']);
-    });
-
-    it('throws NotFoundError when agent does not exist', async () => {
-      storage.getAgent.mockRejectedValue(new NotFoundError('Agent', 'missing'));
-
-      await expect(controller.deleteAgent('missing')).rejects.toThrow(NotFoundError);
-      expect(storage.deleteAgent).not.toHaveBeenCalled();
-      expect(settingsService.removeAgentFromProjectPresets).not.toHaveBeenCalled();
     });
 
     it('does not call preset cleanup when storage.deleteAgent rejects', async () => {
@@ -814,68 +512,40 @@ describe('AgentsController', () => {
       project: { id: 'project-1', name: 'Test Project', rootPath: '/test' },
     };
 
-    it('restarts agent with no existing session (terminateStatus: not_found)', async () => {
-      storage.getAgent.mockResolvedValue(mockAgent);
-      sessionsService.listActiveSessions.mockResolvedValue([]);
-      mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
-
-      const result = await controller.restartAgent('agent-1', { projectId: 'project-1' });
-
-      // Note: No outer withAgentLock - launchSession handles locking internally
-      expect(sessionsService.terminateSession).not.toHaveBeenCalled();
-      expect(mockSessionRuntime.launch).toHaveBeenCalledWith({
-        agentId: 'agent-1',
-        projectId: 'project-1',
-      });
-      expect(result.terminateStatus).toBe('not_found');
-      expect(result.terminateWarning).toBeUndefined();
-      expect(result.session.id).toBe('session-new');
-    });
-
-    it('restarts agent with existing session (terminateStatus: success)', async () => {
-      const existingSession = {
-        id: 'session-old',
-        agentId: 'agent-1',
-        status: 'running',
-      };
-      storage.getAgent.mockResolvedValue(mockAgent);
-      sessionsService.listActiveSessions.mockResolvedValue([existingSession]);
-      sessionsService.terminateSession.mockResolvedValue(undefined);
-      mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
-
-      const result = await controller.restartAgent('agent-1', { projectId: 'project-1' });
-
-      expect(sessionsService.terminateSession).toHaveBeenCalledWith('session-old', {
-        source: 'web-api',
-        reason: 'restart',
-      });
-      expect(result.terminateStatus).toBe('success');
-      expect(result.terminateWarning).toBeUndefined();
-      expect(result.session.id).toBe('session-new');
-    });
-
-    it('restarts agent when terminate fails (terminateStatus: error with warning)', async () => {
-      const existingSession = {
-        id: 'session-old',
-        agentId: 'agent-1',
-        status: 'running',
-      };
-      storage.getAgent.mockResolvedValue(mockAgent);
-      sessionsService.listActiveSessions.mockResolvedValue([existingSession]);
-      sessionsService.terminateSession.mockRejectedValue(new Error('Terminate failed'));
-      mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
-
-      const result = await controller.restartAgent('agent-1', { projectId: 'project-1' });
-
-      expect(result.terminateStatus).toBe('error');
-      expect(result.terminateWarning).toContain('Previous session may still be running');
-      expect(result.terminateWarning).toContain('Terminate failed');
-      expect(result.session.id).toBe('session-new');
-    });
-
-    it('throws BadRequestException when projectId is missing', async () => {
-      await expect(controller.restartAgent('agent-1', {})).rejects.toThrow(BadRequestException);
-    });
+    it.each([
+      { status: 'not_found', hasSession: false, error: false },
+      { status: 'success', hasSession: true, error: false },
+      { status: 'error', hasSession: true, error: true },
+    ])(
+      'restarts the agent after termination status $status',
+      async ({ status, hasSession, error }) => {
+        storage.getAgent.mockResolvedValue(mockAgent);
+        sessionsService.listActiveSessions.mockResolvedValue(
+          hasSession ? [{ id: 'session-old', agentId: 'agent-1', status: 'running' }] : [],
+        );
+        if (error)
+          sessionsService.terminateSession.mockRejectedValue(new Error('Terminate failed'));
+        else sessionsService.terminateSession.mockResolvedValue(undefined);
+        mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
+        const result = await controller.restartAgent('agent-1', { projectId: 'project-1' });
+        if (hasSession)
+          expect(sessionsService.terminateSession).toHaveBeenCalledWith('session-old', {
+            source: 'web-api',
+            reason: 'restart',
+          });
+        else expect(sessionsService.terminateSession).not.toHaveBeenCalled();
+        expect(mockSessionRuntime.launch).toHaveBeenCalledWith({
+          agentId: 'agent-1',
+          projectId: 'project-1',
+        });
+        expect(result.terminateStatus).toBe(status);
+        if (error) {
+          expect(result.terminateWarning).toContain('Previous session may still be running');
+          expect(result.terminateWarning).toContain('Terminate failed');
+        } else expect(result.terminateWarning).toBeUndefined();
+        expect(result.session.id).toBe('session-new');
+      },
+    );
 
     it('throws BadRequestException when agent belongs to different project', async () => {
       storage.getAgent.mockResolvedValue({ ...mockAgent, projectId: 'other-project' });

@@ -226,7 +226,7 @@ export async function writeDockerArchive(
 ): Promise<void> {
   const response = await client.stream(
     'PUT',
-    `/containers/${encodeURIComponent(helperId)}/archive?copyUIDGID=true&path=${archivePath(path)}`,
+    `/containers/${encodeURIComponent(helperId)}/archive?copyUIDGID=false&path=${archivePath(path)}`,
     {
       body: archive,
       headers: { 'Content-Type': 'application/x-tar' },

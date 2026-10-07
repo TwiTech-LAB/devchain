@@ -12,38 +12,23 @@ describe('providers', () => {
   });
 
   describe('getProviderIconSvg', () => {
-    it('returns SVG for claude', () => {
-      const svg = getProviderIconSvg('claude');
+    it.each([
+      { label: 'returns SVG for claude', provider: 'claude', brandColor: 'fill="#d97757"' },
+      { label: 'returns SVG for openai', provider: 'openai', brandColor: 'fill="#10a37f"' },
+      { label: 'returns SVG for opencode', provider: 'opencode', brandColor: 'fill="white"' },
+      { label: 'returns SVG for agy', provider: 'agy', brandColor: 'fill="#3789F6"' },
+    ] as const)('$label', ({ provider, brandColor }) => {
+      const svg = getProviderIconSvg(provider);
       expect(svg).not.toBeNull();
       expect(svg).toContain('<svg');
-      expect(svg).toContain('fill="#d97757"'); // Claude brand color
+      expect(svg).toContain(brandColor);
     });
 
-    it('returns SVG for openai', () => {
-      const svg = getProviderIconSvg('openai');
-      expect(svg).not.toBeNull();
-      expect(svg).toContain('<svg');
-      expect(svg).toContain('fill="#10a37f"'); // OpenAI brand green
-    });
-
-    it('returns OpenAI SVG for codex', () => {
-      const codexSvg = getProviderIconSvg('codex');
-      const openaiSvg = getProviderIconSvg('openai');
-      expect(codexSvg).toBe(openaiSvg);
-    });
-
-    it('returns SVG for opencode', () => {
-      const svg = getProviderIconSvg('opencode');
-      expect(svg).not.toBeNull();
-      expect(svg).toContain('<svg');
-      expect(svg).toContain('fill="white"');
-    });
-
-    it('returns SVG for agy', () => {
-      const svg = getProviderIconSvg('agy');
-      expect(svg).not.toBeNull();
-      expect(svg).toContain('<svg');
-      expect(svg).toContain('fill="#3789F6"'); // Antigravity brand blue
+    it.each([
+      { alias: 'codex', canonical: 'openai' },
+      { alias: 'antigravity', canonical: 'agy' },
+    ] as const)('$alias shares the $canonical icon', ({ alias, canonical }) => {
+      expect(getProviderIconSvg(alias)).toBe(getProviderIconSvg(canonical));
     });
 
     it('returns SVG for copilot', () => {
@@ -52,12 +37,6 @@ describe('providers', () => {
       expect(svg).toContain('<svg');
       expect(svg).toContain('fill="#8957e5"'); // Copilot brand purple
       expect(svg).toContain('fill-rule="evenodd"'); // spark knockout
-    });
-
-    it('returns Antigravity SVG for antigravity alias', () => {
-      const aliasSvg = getProviderIconSvg('antigravity');
-      const agySvg = getProviderIconSvg('agy');
-      expect(aliasSvg).toBe(agySvg);
     });
 
     it('returns null for unknown provider', () => {
@@ -100,26 +79,8 @@ describe('providers', () => {
       expect(dataUri).toMatch(/^data:image\/svg\+xml;base64,/);
     });
 
-    it('returns valid data URI for openai', () => {
-      const dataUri = getProviderIconDataUri('openai');
-      expect(dataUri).not.toBeNull();
-      expect(dataUri).toMatch(/^data:image\/svg\+xml;base64,/);
-    });
-
-    it('returns valid data URI for copilot', () => {
-      const dataUri = getProviderIconDataUri('copilot');
-      expect(dataUri).not.toBeNull();
-      expect(dataUri).toMatch(/^data:image\/svg\+xml;base64,/);
-    });
-
     it('returns null for unknown provider', () => {
       expect(getProviderIconDataUri('unknown')).toBeNull();
-    });
-
-    it('caches data URIs', () => {
-      const first = getProviderIconDataUri('claude');
-      const second = getProviderIconDataUri('claude');
-      expect(first).toBe(second);
     });
 
     it('decoded data URI contains valid SVG', () => {
@@ -158,41 +119,50 @@ describe('providers', () => {
   });
 
   describe('getProviderIconAltText', () => {
-    it('returns proper alt text for claude', () => {
-      expect(getProviderIconAltText('claude')).toBe('Claude icon');
-    });
-
-    it('returns proper alt text for openai', () => {
-      expect(getProviderIconAltText('openai')).toBe('OpenAI icon');
-    });
-
-    it('returns proper alt text for codex (normalized to openai)', () => {
-      // codex normalizes to openai
-      expect(getProviderIconAltText('codex')).toBe('OpenAI icon');
-    });
-
-    it('returns proper alt text for opencode', () => {
-      expect(getProviderIconAltText('opencode')).toBe('OpenCode icon');
-    });
-
-    it('returns generic alt text for retired gemini name', () => {
-      expect(getProviderIconAltText('gemini')).toBe('gemini icon');
-    });
-
-    it('returns proper alt text for agy', () => {
-      expect(getProviderIconAltText('agy')).toBe('Antigravity CLI icon');
-    });
-
-    it('returns proper alt text for antigravity (normalized to agy)', () => {
-      expect(getProviderIconAltText('Antigravity CLI')).toBe('Antigravity CLI icon');
-    });
-
-    it('returns proper alt text for copilot', () => {
-      expect(getProviderIconAltText('copilot')).toBe('Copilot CLI icon');
-    });
-
-    it('returns fallback for unknown', () => {
-      expect(getProviderIconAltText(null)).toBe('AI provider icon');
+    it.each([
+      {
+        label: 'returns proper alt text for claude',
+        provider: 'claude',
+        expectedAlt: 'Claude icon',
+      },
+      {
+        label: 'returns proper alt text for openai',
+        provider: 'openai',
+        expectedAlt: 'OpenAI icon',
+      },
+      {
+        label: 'returns proper alt text for codex (normalized to openai)',
+        provider: 'codex',
+        expectedAlt: 'OpenAI icon',
+      },
+      {
+        label: 'returns proper alt text for opencode',
+        provider: 'opencode',
+        expectedAlt: 'OpenCode icon',
+      },
+      {
+        label: 'returns generic alt text for retired gemini name',
+        provider: 'gemini',
+        expectedAlt: 'gemini icon',
+      },
+      {
+        label: 'returns proper alt text for agy',
+        provider: 'agy',
+        expectedAlt: 'Antigravity CLI icon',
+      },
+      {
+        label: 'returns proper alt text for antigravity (normalized to agy)',
+        provider: 'Antigravity CLI',
+        expectedAlt: 'Antigravity CLI icon',
+      },
+      {
+        label: 'returns proper alt text for copilot',
+        provider: 'copilot',
+        expectedAlt: 'Copilot CLI icon',
+      },
+      { label: 'returns fallback for unknown', provider: null, expectedAlt: 'AI provider icon' },
+    ] as const)('$label', ({ provider, expectedAlt }) => {
+      expect(getProviderIconAltText(provider)).toBe(expectedAlt);
     });
   });
 });

@@ -34,6 +34,7 @@ function installTls(dir, source = FIXTURE_TLS) {
 function fakeSystem({
   tls = true,
   users = [],
+  groups = [],
   failOn,
   pinsByVersion = {},
   missingPins = false,
@@ -42,6 +43,7 @@ function fakeSystem({
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "host-bootstrap-"));
   const paths = {
     etcDir: path.join(root, "etc/devchain-host"),
+    profileDir: path.join(root, "etc/profile.d"),
     tlsDir: path.join(root, "etc/devchain-host/tls"),
     manifestFile: path.join(root, "manifest.json"),
     systemdDir: path.join(root, "systemd"),
@@ -61,6 +63,10 @@ function fakeSystem({
   );
   if (tls) installTls(paths.tlsDir);
   const accounts = new Map(users.map((user) => [user.name, user]));
+  const primaryGroups = new Map([
+    ...users.map((user) => [user.name, { name: user.name, gid: user.gid }]),
+    ...groups.map((group) => [group.name, group]),
+  ]);
   const calls = [];
   const callDetails = [];
   const owners = new Map();
@@ -93,13 +99,30 @@ function fakeSystem({
         args[args.indexOf("-out") + 1],
       );
     }
+    if (command === "groupadd") {
+      const name = args.at(-1);
+      const gidIndex = args.indexOf("-g");
+      let gid = gidIndex === -1 ? 1001 : Number(args[gidIndex + 1]);
+      while (
+        gidIndex === -1 &&
+        [...primaryGroups.values()].some((group) => group.gid === gid)
+      )
+        gid++;
+      primaryGroups.set(name, { name, gid });
+    }
     if (command === "useradd") {
       const home = args[args.indexOf("-d") + 1];
       const name = args.at(-1);
       const uidIndex = args.indexOf("-u");
-      const uid = uidIndex === -1 ? 1001 : Number(args[uidIndex + 1]);
+      let uid = uidIndex === -1 ? 1001 : Number(args[uidIndex + 1]);
+      while (
+        uidIndex === -1 &&
+        [...accounts.values()].some((account) => account.uid === uid)
+      )
+        uid++;
+      const gid = Number(args[args.indexOf("-g") + 1]);
       fs.mkdirSync(home);
-      accounts.set(name, { name, uid, gid: uid, home });
+      accounts.set(name, { name, uid, gid, home });
     }
     if (command === "npm") {
       const spec = args.at(-1);
@@ -172,7 +195,13 @@ function fakeSystem({
       const cliVersions = await installClis(args[1], sys);
       return { stdout: JSON.stringify({ cliVersions }) + "\n", stderr: "" };
     }
-    if (command === "id") return { stdout: `${args.at(-1)}\n`, stderr: "" };
+    if (command === "id") {
+      const account = accounts.get(args.at(-1));
+      const group = [...primaryGroups.values()].find(
+        (group) => group.gid === account?.gid,
+      );
+      return { stdout: `${group?.name ?? args.at(-1)}\n`, stderr: "" };
+    }
     if (command.endsWith("/agy")) return { stdout: "agy 1.0.0\n", stderr: "" };
     if (command.endsWith("/devchain"))
       return { stdout: `${installed}\n`, stderr: "" };
@@ -184,6 +213,10 @@ function fakeSystem({
     lookupUser: async (name) => accounts.get(name) ?? null,
     lookupUid: async (uid) =>
       [...accounts.values()].find((account) => account.uid === uid) ?? null,
+    lookupGroup: async (nameOrGid) =>
+      (typeof nameOrGid === "number"
+        ? [...primaryGroups.values()].find((group) => group.gid === nameOrGid)
+        : primaryGroups.get(nameOrGid)) ?? null,
     listUsers: async () => [...accounts.values()],
     chown: (file, uid, gid) => owners.set(file, `${uid}:${gid}`),
     now: () => new Date("2026-09-24T10:00:00.000Z"),
@@ -195,6 +228,7 @@ function fakeSystem({
     callDetails,
     owners,
     accounts,
+    groups: primaryGroups,
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
   };
 }

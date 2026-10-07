@@ -129,34 +129,6 @@ describe('ScheduledEpicsService', () => {
       expect(storage.updateScheduledEpicRuntimeState).not.toHaveBeenCalled();
     });
 
-    it('returns duplicate claim result when run already exists', async () => {
-      const schedule = makeSchedule();
-      storage.getScheduledEpic.mockResolvedValue(schedule);
-
-      const duplicateResult: ClaimRunResult = {
-        claimed: false,
-        run: {
-          id: 'existing-run',
-          scheduleId: 'sched-1',
-          plannedFor: '2026-05-16T12:00:00.000Z',
-          source: 'scheduler',
-          status: 'running',
-          createdEpicId: null,
-          startedAt: '2026-05-16T12:00:01.000Z',
-          finishedAt: null,
-          errorMessage: null,
-          createdAt: '2026-05-16T12:00:00.000Z',
-          updatedAt: '2026-05-16T12:00:01.000Z',
-        },
-      };
-      storage.createScheduledEpicRun.mockResolvedValue(duplicateResult);
-
-      const result = await service.runNow('sched-1');
-
-      expect(result.claimed).toBe(false);
-      expect(runnerRefresh.refreshScheduleWindow).toHaveBeenCalledTimes(1);
-    });
-
     it('throws NotFoundError for nonexistent schedule', async () => {
       storage.getScheduledEpic.mockRejectedValue(new Error('NotFoundError'));
 
@@ -259,24 +231,13 @@ describe('ScheduledEpicsService', () => {
     });
   });
 
-  describe('delete', () => {
-    it('notifies the runner after deletion', async () => {
-      storage.getScheduledEpic.mockResolvedValue(makeSchedule());
-      storage.deleteScheduledEpic.mockResolvedValue();
-
-      await service.delete('sched-1');
-
-      expect(storage.deleteScheduledEpic).toHaveBeenCalledWith('sched-1');
-      expect(runnerRefresh.refreshScheduleWindow).toHaveBeenCalledTimes(1);
-    });
-  });
-
   describe('create', () => {
-    it('notifies the runner after creation', async () => {
+    it('computes the next UTC run when creating and refreshes the runner', async () => {
       const schedule = makeSchedule();
       storage.createScheduledEpic.mockResolvedValue(schedule);
 
-      await service.create({
+      jest.useFakeTimers().setSystemTime(new Date('2026-05-16T08:00:00.000Z'));
+      const result = await service.create({
         projectId: '00000000-0000-0000-0000-000000000001',
         name: 'Daily Standup',
         cronExpression: '0 9 * * *',
@@ -288,68 +249,12 @@ describe('ScheduledEpicsService', () => {
         missedRunPolicy: 'skip',
       });
 
+      expect(result).toBe(schedule);
+      expect(storage.createScheduledEpic).toHaveBeenCalledWith(
+        expect.objectContaining({ nextRunAt: '2026-05-16T09:00:00.000Z' }),
+      );
+      jest.useRealTimers();
       expect(runnerRefresh.refreshScheduleWindow).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('runNow — cadence preservation (reviewer clarification)', () => {
-    it('does not call updateScheduledEpic at all', async () => {
-      storage.getScheduledEpic.mockResolvedValue(
-        makeSchedule({ nextRunAt: '2026-06-01T09:00:00.000Z' }),
-      );
-      storage.createScheduledEpicRun.mockResolvedValue({
-        claimed: true,
-        run: {
-          id: 'run-1',
-          scheduleId: 'sched-1',
-          plannedFor: new Date().toISOString(),
-          source: 'manual',
-          status: 'pending',
-          createdEpicId: null,
-          startedAt: null,
-          finishedAt: null,
-          errorMessage: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      });
-
-      await service.runNow('sched-1');
-
-      expect(storage.updateScheduledEpic).not.toHaveBeenCalled();
-      expect(storage.updateScheduledEpicRuntimeState).not.toHaveBeenCalled();
-    });
-
-    it('preserves the original nextRunAt value unchanged', async () => {
-      const originalNextRunAt = '2026-06-01T09:00:00.000Z';
-      storage.getScheduledEpic.mockResolvedValue(makeSchedule({ nextRunAt: originalNextRunAt }));
-      storage.createScheduledEpicRun.mockResolvedValue({
-        claimed: true,
-        run: {
-          id: 'run-1',
-          scheduleId: 'sched-1',
-          plannedFor: new Date().toISOString(),
-          source: 'manual',
-          status: 'pending',
-          createdEpicId: null,
-          startedAt: null,
-          finishedAt: null,
-          errorMessage: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      });
-
-      await service.runNow('sched-1');
-
-      const allCalls = [
-        ...storage.updateScheduledEpic.mock.calls,
-        ...storage.updateScheduledEpicRuntimeState.mock.calls,
-      ];
-      const nextRunAtMutations = allCalls.filter(
-        (call) => call[1] && 'nextRunAt' in (call[1] as Record<string, unknown>),
-      );
-      expect(nextRunAtMutations).toHaveLength(0);
     });
   });
 

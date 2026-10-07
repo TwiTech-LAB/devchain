@@ -24,39 +24,44 @@ describe('TranscriptPathValidator', () => {
 
   describe('validateShape', () => {
     describe('valid paths', () => {
-      it('should accept a valid Claude transcript path', () => {
-        const input = `${homeDir}/.claude/projects/my-project/session.jsonl`;
-        const result = validator.validateShape(input, 'claude');
-        expect(result).toBe(input);
+      it.each([
+        { input: `${homeDir}/.claude/projects/my-project/session.jsonl`, provider: 'claude' },
+        { input: `${homeDir}/.codex/sessions/abc123/transcript.json`, provider: 'codex' },
+        { input: `${homeDir}/.local/share/opencode/opencode.db`, provider: 'opencode' },
+        {
+          input: `${homeDir}/.copilot/session-state/11111111-2222-3333-4444-555555555555/events.jsonl`,
+          provider: 'copilot',
+        },
+      ])('accepts $provider root at $input', ({ input, provider }) => {
+        expect(validator.validateShape(input, provider)).toBe(input);
       });
 
-      it('should accept a valid Codex transcript path', () => {
-        const input = `${homeDir}/.codex/sessions/abc123/transcript.json`;
-        const result = validator.validateShape(input, 'codex');
-        expect(result).toBe(input);
-      });
-
-      it('should accept a valid OpenCode DB container path', () => {
-        const input = `${homeDir}/.local/share/opencode/opencode.db`;
-        const result = validator.validateShape(input, 'opencode');
-        expect(result).toBe(input);
-      });
-
-      it('should accept a valid Copilot events.jsonl transcript path', () => {
-        // Copilot stores one append-only JSONL per session under session-state/<uuid>/.
-        const input = `${homeDir}/.copilot/session-state/11111111-2222-3333-4444-555555555555/events.jsonl`;
-        const result = validator.validateShape(input, 'copilot');
-        expect(result).toBe(input);
-      });
-
-      it('should reject a Copilot path under the wrong provider (cross-provider guard)', () => {
-        const input = `${homeDir}/.copilot/session-state/abc/events.jsonl`;
-        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
-      });
-
-      it('should reject an OpenCode path under the wrong provider', () => {
-        const input = `${homeDir}/.local/share/opencode/opencode.db`;
-        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
+      it.each([
+        {
+          input: `${homeDir}/.copilot/session-state/abc/events.jsonl`,
+          provider: 'claude',
+          message: undefined,
+        },
+        {
+          input: `${homeDir}/.local/share/opencode/opencode.db`,
+          provider: 'claude',
+          message: undefined,
+        },
+        {
+          input: `${homeDir}/.config/something`,
+          provider: 'claude',
+          message: /outside allowed root/,
+        },
+        {
+          input: `${homeDir}/.claude/projects/session.jsonl`,
+          provider: 'codex',
+          message: undefined,
+        },
+        { input: '/etc/passwd', provider: 'claude', message: undefined },
+      ])('rejects $input outside $provider roots', ({ input, provider, message }) => {
+        const validate = () => validator.validateShape(input, provider);
+        expect(validate).toThrow(ValidationError);
+        if (message) expect(validate).toThrow(message);
       });
 
       it('should resolve ~ to home directory', () => {
@@ -123,26 +128,31 @@ describe('TranscriptPathValidator', () => {
     });
 
     describe('control character rejection', () => {
-      it('should reject path with null byte', () => {
-        const input = `${homeDir}/.claude/projects/session\x00.jsonl`;
-        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
-        expect(() => validator.validateShape(input, 'claude')).toThrow(/null bytes/);
-      });
-
-      it('should reject path with control characters', () => {
-        const input = `${homeDir}/.claude/projects/session\x01.jsonl`;
-        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
-        expect(() => validator.validateShape(input, 'claude')).toThrow(/control characters/);
-      });
-
-      it('should reject path with escape character', () => {
-        const input = `${homeDir}/.claude/projects/session\x1B.jsonl`;
-        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
-      });
-
-      it('should reject path with DEL character', () => {
-        const input = `${homeDir}/.claude/projects/session\x7F.jsonl`;
-        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
+      it.each([
+        {
+          name: 'should reject path with null byte',
+          input: `${homeDir}/.claude/projects/session\x00.jsonl`,
+          message: /null bytes/,
+        },
+        {
+          name: 'should reject path with control characters',
+          input: `${homeDir}/.claude/projects/session\x01.jsonl`,
+          message: /control characters/,
+        },
+        {
+          name: 'should reject path with escape character',
+          input: `${homeDir}/.claude/projects/session\x1B.jsonl`,
+          message: undefined,
+        },
+        {
+          name: 'should reject path with DEL character',
+          input: `${homeDir}/.claude/projects/session\x7F.jsonl`,
+          message: undefined,
+        },
+      ])('$name', ({ input, message }) => {
+        const validate = () => validator.validateShape(input, 'claude');
+        expect(validate).toThrow(ValidationError);
+        if (message) expect(validate).toThrow(message);
       });
     });
 
@@ -155,22 +165,6 @@ describe('TranscriptPathValidator', () => {
     });
 
     describe('path outside allowed roots', () => {
-      it('should reject path outside provider root', () => {
-        const input = `${homeDir}/.config/something`;
-        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
-        expect(() => validator.validateShape(input, 'claude')).toThrow(/outside allowed root/);
-      });
-
-      it('should reject Claude path with Codex provider', () => {
-        const input = `${homeDir}/.claude/projects/session.jsonl`;
-        expect(() => validator.validateShape(input, 'codex')).toThrow(ValidationError);
-      });
-
-      it('should reject absolute path outside home directory', () => {
-        const input = '/etc/passwd';
-        expect(() => validator.validateShape(input, 'claude')).toThrow(ValidationError);
-      });
-
       it('should reject empty path', () => {
         expect(() => validator.validateShape('', 'claude')).toThrow(ValidationError);
         expect(() => validator.validateShape('', 'claude')).toThrow(/non-empty string/);
@@ -231,14 +225,6 @@ describe('TranscriptPathValidator', () => {
       const err = await validator.validateForRead(validPath, 'claude').catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ValidationError);
       expect((err as ValidationError).message).toMatch(/not a regular file/);
-    });
-
-    it('should accept files larger than 10MB (no size cap)', async () => {
-      mockFs.realpath.mockResolvedValueOnce(validPath);
-      mockFs.stat.mockResolvedValueOnce(mockStat({ isFile: true, size: 50 * 1024 * 1024 }));
-
-      const result = await validator.validateForRead(validPath, 'claude');
-      expect(result).toBe(validPath);
     });
 
     it('should accept files larger than 100MB (no size cap)', async () => {

@@ -3,22 +3,15 @@
  * integration specs: projects A, B and C in the default workspace, with global
  * and cross-project rows, settled/open/batch segments and a session.
  */
-import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../../drizzle');
+import type Database from 'better-sqlite3';
+import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { createTestDatabase } from '../../../../common/test/test-database.helper';
 export const WORKSPACE_ID = '0defa017-0000-4000-8000-000000000001';
 export const T = '2026-09-22T10:00:00.000Z';
 export const stamps = { created_at: T, updated_at: T };
 
 export function createReplicaDb(): { sqlite: Database.Database; db: BetterSQLite3Database } {
-  const sqlite = new Database(':memory:');
-  const db = drizzle(sqlite);
-  migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
-  sqlite.pragma('foreign_keys = ON');
-  return { sqlite, db };
+  return createTestDatabase();
 }
 
 export function replicaSeeder(sqlite: Database.Database) {

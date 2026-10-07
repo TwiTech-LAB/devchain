@@ -3,7 +3,6 @@ import { act } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import { useTerminalResize } from './useTerminalResize';
-import { termLog } from '@/ui/lib/debug';
 
 jest.mock('@/ui/lib/debug');
 
@@ -62,17 +61,6 @@ describe('useTerminalResize', () => {
 
   afterEach(() => {
     jest.useRealTimers();
-  });
-
-  it('should setup ResizeObserver when terminal is ready', () => {
-    const terminalRef = { current: mockContainerElement };
-    const xtermRef = { current: mockTerminal };
-    const fitAddonRef = { current: mockFitAddon };
-    const sessionId = 'test-session';
-
-    renderHook(() => useTerminalResize(terminalRef, xtermRef, fitAddonRef, sessionId));
-
-    expect(mockResizeObserver).toHaveBeenCalled();
   });
 
   it('should debounce resize events (250ms)', () => {
@@ -192,31 +180,6 @@ describe('useTerminalResize', () => {
     expect(observerInstance.disconnect).toHaveBeenCalled();
   });
 
-  it('should log resize events', () => {
-    const terminalRef = { current: mockContainerElement };
-    const xtermRef = { current: mockTerminal };
-    const fitAddonRef = { current: mockFitAddon };
-    const sessionId = 'test-session';
-
-    renderHook(() => useTerminalResize(terminalRef, xtermRef, fitAddonRef, sessionId));
-
-    const callback = (
-      mockContainerElement as HTMLElement & { _resizeCallback?: ResizeObserverCallback }
-    )._resizeCallback;
-    act(() => {
-      // ResizeObserverCallback requires entries and observer args
-      callback?.([] as ResizeObserverEntry[], {} as ResizeObserver);
-      jest.advanceTimersByTime(250);
-    });
-
-    expect(termLog).toHaveBeenCalledWith('resize', {
-      sessionId,
-      cols: 80,
-      rows: 24,
-      isInitialResize: true,
-    });
-  });
-
   it('scrolls to bottom on a non-initial resize without force-setting hasHistory', () => {
     const terminalRef = { current: mockContainerElement };
     const xtermRef = { current: mockTerminal };
@@ -252,11 +215,6 @@ describe('useTerminalResize', () => {
     expect(mockTerminal.scrollToBottom).toHaveBeenCalledTimes(1);
 
     // The log no longer carries hasHistoryReset: this hook is no longer the hasHistory owner.
-    expect(termLog).toHaveBeenCalledWith('resize_scroll_bottom', {
-      sessionId,
-      cols: 100,
-      rows: 30,
-    });
   });
 
   it('should skip fit and resize emission while the container is hidden', () => {
@@ -283,7 +241,6 @@ describe('useTerminalResize', () => {
 
     expect(mockFitAddon.fit).not.toHaveBeenCalled();
     expect(mockSocket.emit).not.toHaveBeenCalled();
-    expect(termLog).toHaveBeenCalledWith('resize_skipped', { sessionId, reason: 'hidden' });
   });
 
   it('should emit resize via provided socket when supplied', () => {

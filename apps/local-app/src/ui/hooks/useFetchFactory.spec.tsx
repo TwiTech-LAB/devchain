@@ -27,11 +27,6 @@ describe('useFetchFactory', () => {
     }
   });
 
-  it('returns a callable fetch function', () => {
-    const { result } = renderHook(() => useFetchFactory(), { wrapper: createWrapper() });
-    expect(typeof result.current).toBe('function');
-  });
-
   it('forwards the request to window.fetch unchanged', async () => {
     const fetchMock = jest.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -48,8 +43,11 @@ describe('useFetchFactory', () => {
     expect(fetchMock.mock.calls[0][1]).toBe(init);
   });
 
-  it('returns a stable function identity across rerenders', () => {
-    const { result, rerender } = renderHook(() => useFetchFactory(), { wrapper: createWrapper() });
+  it.each([
+    { label: 'active backend', useSubject: useFetchFactory },
+    { label: 'Home backend', useSubject: useHomeFetch },
+  ] as const)('$label fetch factory retains identity', ({ useSubject }) => {
+    const { result, rerender } = renderHook(() => useSubject(), { wrapper: createWrapper() });
     const first = result.current;
     rerender();
     expect(result.current).toBe(first);
@@ -116,12 +114,5 @@ describe('useFetchFactory', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe('/api/skills/sources');
-  });
-
-  it('useHomeFetch returns a stable function identity across rerenders', () => {
-    const { result, rerender } = renderHook(() => useHomeFetch(), { wrapper: createWrapper() });
-    const first = result.current;
-    rerender();
-    expect(result.current).toBe(first);
   });
 });

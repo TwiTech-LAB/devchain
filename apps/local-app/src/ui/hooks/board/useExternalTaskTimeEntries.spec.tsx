@@ -828,7 +828,10 @@ describe('useExternalTaskTimeEntries', () => {
     expect(result.current.blockedByUnknown).toBe(true);
   });
 
-  it('re-checks the wall clock when a suspended tab regains focus or visibility', async () => {
+  it.each([
+    { event: 'focus', target: window },
+    { event: 'visibilitychange', target: document },
+  ] as const)('rechecks wall clock on $event after tab suspension', async ({ event, target }) => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-09-01T10:00:00Z'));
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
@@ -865,46 +868,10 @@ describe('useExternalTaskTimeEntries', () => {
     expect(result.current.canVerifyUnknown).toBe(true);
 
     act(() => {
-      window.dispatchEvent(new Event('focus'));
+      target.dispatchEvent(new Event(event));
     });
     expect(result.current.canVerifyUnknown).toBe(false);
     expect(result.current.blockedByUnknown).toBe(true);
-  });
-
-  it('re-checks the wall clock on the visibilitychange resume', async () => {
-    jest.useFakeTimers();
-    jest.setSystemTime(new Date('2026-09-01T10:00:00Z'));
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
-        return Promise.resolve(
-          jsonResponse({
-            outcome: 'outcome_unknown',
-            receipt: {
-              operationId: '00000000-0000-4000-8000-000000000002',
-              phase: 'outcome_unknown',
-              canVerify: true,
-              expiresAt: '2026-09-01T11:00:00.000Z',
-            },
-          }),
-        );
-      }
-      return Promise.resolve(jsonResponse(historyPayload));
-    });
-
-    const { result } = renderTimeEntries(queryClient, { historyOpen: false });
-    await act(async () => {
-      result.current.submitCreate({
-        startedAt: '2026-08-22T11:30:00.000Z',
-        durationMs: 1_800_000,
-        note: null,
-      });
-    });
-
-    jest.setSystemTime(new Date('2026-09-01T11:30:00.000Z'));
-    act(() => {
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-    expect(result.current.canVerifyUnknown).toBe(false);
   });
 
   it.each([

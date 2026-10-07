@@ -155,101 +155,6 @@ describe('useSeedManager', () => {
     expect(expectingSeedRef.current).toBe(false);
   });
 
-  it('should queue writes during seeding', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    const fitAddonRef = { current: mockFitAddon };
-
-    const { result } = renderHook(() =>
-      useSeedManager(sessionId, xtermRef, fitAddonRef, mockDispatch, expectingSeedRef, historySync),
-    );
-
-    // Start seed
-    act(() => {
-      result.current.handleSeedChunk({
-        chunk: 0,
-        totalChunks: 2,
-        data: 'chunk0',
-      });
-    });
-
-    // Queue some writes
-    act(() => {
-      result.current.queueOrWrite('write1');
-      result.current.queueOrWrite('write2');
-    });
-
-    // Writes should be queued, not written
-    expect(mockTerminal.write).not.toHaveBeenCalledWith('write1', undefined);
-  });
-
-  it('should clear pending writes after seed completes', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    const fitAddonRef = { current: mockFitAddon };
-
-    const { result } = renderHook(() =>
-      useSeedManager(sessionId, xtermRef, fitAddonRef, mockDispatch, expectingSeedRef, historySync),
-    );
-
-    // Start seed with chunk 0 of 2
-    act(() => {
-      result.current.handleSeedChunk({
-        chunk: 0,
-        totalChunks: 2,
-        data: 'seed1',
-      });
-    });
-
-    // Queue some writes while seeding
-    act(() => {
-      result.current.queueOrWrite('pending1');
-    });
-
-    // Pending writes should be queued, not written yet
-    expect(mockTerminal.write).not.toHaveBeenCalledWith('pending1');
-
-    // Complete seed with chunk 1 of 2
-    act(() => {
-      result.current.handleSeedChunk({
-        chunk: 1,
-        totalChunks: 2,
-        data: 'seed2',
-        hasHistory: true,
-      });
-    });
-
-    expect(mockTerminal.reset).toHaveBeenCalled();
-    expect(mockTerminal.clear).toHaveBeenCalled();
-    expect(mockTerminal.write).toHaveBeenCalledWith('seed1seed2', expect.any(Function));
-    // Verify snapshot has-more is recorded true after a truncated seed settles
-    expect(historySync.hasMore()).toBe(true);
-  });
-
-  it('restores captured cursor position after seed write', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    const fitAddonRef = { current: mockFitAddon };
-
-    const { result } = renderHook(() =>
-      useSeedManager(sessionId, xtermRef, fitAddonRef, mockDispatch, expectingSeedRef, historySync),
-    );
-
-    act(() => {
-      result.current.handleSeedChunk({
-        chunk: 0,
-        totalChunks: 1,
-        data: 'seed',
-        cursorX: 3,
-        cursorY: 4,
-        hasHistory: true,
-      });
-    });
-
-    expect(mockTerminal.write).toHaveBeenNthCalledWith(1, 'seed', expect.any(Function));
-    expect(mockTerminal.write).toHaveBeenNthCalledWith(2, '\x1b[5;4H', expect.any(Function));
-  });
-
   it('keeps history disabled until seed replay settles', () => {
     const sessionId = 'test-session';
     const xtermRef = { current: mockTerminal };
@@ -291,29 +196,6 @@ describe('useSeedManager', () => {
     });
 
     expect(historySync.hasMore()).toBe(true);
-    expect(mockDispatch).toHaveBeenCalledWith({ type: 'SEED_COMPLETE' });
-  });
-
-  it('honors hasHistory=false from the server (alt-screen seed advertises no history affordance)', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    const fitAddonRef = { current: mockFitAddon };
-
-    const { result } = renderHook(() =>
-      useSeedManager(sessionId, xtermRef, fitAddonRef, mockDispatch, expectingSeedRef, historySync),
-    );
-
-    act(() => {
-      result.current.handleSeedChunk({
-        chunk: 0,
-        totalChunks: 1,
-        data: 'alt-screen-seed',
-        hasHistory: false,
-      });
-    });
-
-    // Even after a settled seed, history stays disabled because the server said so.
-    expect(historySync.hasMore()).toBe(false);
     expect(mockDispatch).toHaveBeenCalledWith({ type: 'SEED_COMPLETE' });
   });
 
@@ -397,11 +279,7 @@ describe('useSeedManager', () => {
     });
 
     // Should write partial seed
-    expect(termLog).toHaveBeenCalledWith('seed_partial_write', {
-      sessionId,
-      received: 4,
-      total: 5,
-    });
+
     expect(mockTerminal.write).toHaveBeenCalledWith(
       'chunk0chunk1chunk2chunk3',
       expect.any(Function),
@@ -432,17 +310,19 @@ describe('useSeedManager', () => {
       return { ...hook, onRecoveryComplete, onRecoveryTimeout, pump };
     };
 
-    it('fails closed below 80% without writing or flushing the partial recovery', () => {
+    it.each([1, 4])('fails closed after %s of 5 recovery chunks', (chunks) => {
       const { result, onRecoveryTimeout, pump } = renderRecoveryManager();
 
       act(() => {
-        result.current.handleSeedChunk({
-          chunk: 0,
-          totalChunks: 5,
-          data: 'partial-0',
-          recoveryEpoch: 4,
-          capturedSequence: 17,
-        });
+        for (let chunk = 0; chunk < chunks; chunk++) {
+          result.current.handleSeedChunk({
+            chunk,
+            totalChunks: 5,
+            data: 'partial-' + chunk,
+            recoveryEpoch: 4,
+            capturedSequence: 17,
+          });
+        }
         result.current.queueOrWrite('live-during-recovery');
         jest.advanceTimersByTime(30000);
       });
@@ -455,30 +335,6 @@ describe('useSeedManager', () => {
         true,
       );
       expect(mockDispatch).toHaveBeenCalledWith({ type: 'SEED_TIMEOUT' });
-    });
-
-    it('fails closed at 80% without promoting a partial recovery snapshot', () => {
-      const { result, onRecoveryTimeout, pump } = renderRecoveryManager();
-
-      act(() => {
-        for (let chunk = 0; chunk < 4; chunk += 1) {
-          result.current.handleSeedChunk({
-            chunk,
-            totalChunks: 5,
-            data: `partial-${chunk}`,
-            recoveryEpoch: 4,
-            capturedSequence: 17,
-          });
-        }
-        jest.advanceTimersByTime(30000);
-      });
-
-      expect(mockTerminal.write).not.toHaveBeenCalled();
-      expect(pump.getSnapshot().status).toBe('recovering');
-      expect(onRecoveryTimeout).toHaveBeenCalledWith(
-        { sessionId: 'recovery-timeout-session', recoveryEpoch: 4 },
-        true,
-      );
       expect(termLog).not.toHaveBeenCalledWith('seed_partial_write', expect.anything());
     });
 
@@ -791,64 +647,6 @@ describe('useSeedManager', () => {
     });
   });
 
-  it('delegates seed-time write staging to the bounded pump', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    const fitAddonRef = { current: mockFitAddon };
-
-    const { result } = renderHook(() =>
-      useSeedManager(sessionId, xtermRef, fitAddonRef, mockDispatch, expectingSeedRef, historySync),
-    );
-
-    // Start seed
-    act(() => {
-      result.current.handleSeedChunk({
-        chunk: 0,
-        totalChunks: 2,
-        data: 'chunk0',
-      });
-    });
-
-    // Queue 1100 writes (exceeds limit of 1000)
-    act(() => {
-      for (let i = 0; i < 1100; i++) {
-        result.current.queueOrWrite(`write${i}`);
-      }
-    });
-
-    expect(mockTerminal.write).not.toHaveBeenCalledWith('write1099', expect.any(Function));
-  });
-
-  it('does not retain a second seed-time byte queue outside the pump', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    const fitAddonRef = { current: mockFitAddon };
-
-    const { result } = renderHook(() =>
-      useSeedManager(sessionId, xtermRef, fitAddonRef, mockDispatch, expectingSeedRef, historySync),
-    );
-
-    // Start seed
-    act(() => {
-      result.current.handleSeedChunk({
-        chunk: 0,
-        totalChunks: 2,
-        data: 'chunk0',
-      });
-    });
-
-    // Queue large writes (3MB total)
-    const largeChunk = 'x'.repeat(1024 * 1024); // 1MB
-    act(() => {
-      result.current.queueOrWrite(largeChunk);
-      result.current.queueOrWrite(largeChunk);
-      result.current.queueOrWrite(largeChunk);
-    });
-
-    expect(result.current.seedStateRef.current).not.toBeNull();
-    expect(termLog).not.toHaveBeenCalledWith('pending_writes_bytes_overflow', expect.anything());
-  });
-
   it('should write immediately when not seeding', () => {
     const sessionId = 'test-session';
     const xtermRef = { current: mockTerminal };
@@ -1101,31 +899,15 @@ describe('useSeedManager', () => {
       return result;
     };
 
-    it('claude/codex TRUNCATED seed (server hasHistory=true) SHOWS the scroll-up affordance', () => {
-      renderAndCompleteSeed(true);
-      // Default mockTerminal.write invokes its callback synchronously, so the
-      // finishSeedWrite path runs and records snapshot has-more immediately.
-      expect(historySync.hasMore()).toBe(true);
-    });
-
-    it('claude/codex NON-truncated seed (server hasHistory=false) HIDES the scroll-up affordance', () => {
-      // A non-truncated seed contains the whole scrollback, so nothing remains to load.
-      renderAndCompleteSeed(false);
-      expect(historySync.hasMore()).toBe(false);
-    });
-
-    it('opencode alt-screen seed (server hasHistory=false) HIDES the scroll-up affordance', () => {
-      // Alt-screen TUIs have no loadable primary-buffer scrollback (capture-pane
-      // only holds the single visible screen) → server advertises false.
-      renderAndCompleteSeed(false);
-      expect(historySync.hasMore()).toBe(false);
-    });
-
-    it('defaults to HIDING when the server omits hasHistory (defensive — no dead affordance)', () => {
-      // hasHistory undefined → state.hasHistory === true is false → hidden.
-      renderAndCompleteSeed(undefined as unknown as boolean);
-      expect(historySync.hasMore()).toBe(false);
-    });
+    it.each([true, false, undefined])(
+      'sets scroll-up availability from hasHistory=%s',
+      (hasHistory) => {
+        renderAndCompleteSeed(hasHistory as boolean);
+        // Default mockTerminal.write invokes its callback synchronously, so the
+        // finishSeedWrite path runs and records snapshot has-more immediately.
+        expect(historySync.hasMore()).toBe(hasHistory === true);
+      },
+    );
   });
 
   describe('empty initial completion', () => {

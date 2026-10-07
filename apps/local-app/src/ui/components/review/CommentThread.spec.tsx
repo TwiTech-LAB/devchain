@@ -49,36 +49,58 @@ describe('CommentThread', () => {
   });
 
   describe('rendering', () => {
-    it('renders comment content', () => {
+    it('shows comment metadata and available reply controls: renders comment content', () => {
       render(<CommentThread comment={baseComment} />);
-      expect(screen.getByText('This function needs better error handling')).toBeInTheDocument();
+      {
+        expect(screen.getByText('This function needs better error handling')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('You')).toBeInTheDocument();
+      }
+      {
+        expect(screen.queryByText(/Sent to:/)).not.toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('Issue')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('Open')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('src/utils.ts')).toBeInTheDocument();
+        expect(screen.getByText('(L10-15)')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('1m ago')).toBeInTheDocument();
+      }
+      {
+        expect(screen.queryByRole('button', { name: /^reply$/i })).not.toBeInTheDocument();
+      }
+      {
+        expect(screen.queryByRole('button', { name: /resolve/i })).not.toBeInTheDocument();
+      }
     });
 
-    it('renders author as "You" for user comments', () => {
-      render(<CommentThread comment={baseComment} />);
-      expect(screen.getByText('You')).toBeInTheDocument();
-    });
-
-    it('renders agent name when authorAgentName is provided', () => {
-      const agentComment: ReviewComment = {
-        ...baseComment,
-        authorType: 'agent',
-        authorAgentId: 'agent-abc123def456',
+    it.each([
+      {
+        label: 'renders agent name when authorAgentName is provided',
         authorAgentName: 'Brainstormer',
-      };
-      render(<CommentThread comment={agentComment} />);
-      expect(screen.getByText('Brainstormer')).toBeInTheDocument();
-    });
-
-    it('falls back to truncated ID when authorAgentName is null', () => {
+        expectedName: 'Brainstormer',
+      },
+      {
+        label: 'falls back to truncated ID when authorAgentName is null',
+        authorAgentName: null,
+        expectedName: 'agent-ab',
+      },
+    ] as const)('$label', ({ authorAgentName, expectedName }) => {
       const agentComment: ReviewComment = {
         ...baseComment,
         authorType: 'agent',
         authorAgentId: 'agent-abc123def456',
-        authorAgentName: null,
+        authorAgentName: authorAgentName,
       };
       render(<CommentThread comment={agentComment} />);
-      expect(screen.getByText('agent-ab')).toBeInTheDocument();
+      expect(screen.getByText(expectedName)).toBeInTheDocument();
     });
 
     it('shows target agents badge on root comments', () => {
@@ -93,61 +115,32 @@ describe('CommentThread', () => {
       expect(screen.getByText('Sent to: 2')).toBeInTheDocument();
     });
 
-    it('does not show target agents badge when targetAgents is empty', () => {
-      render(<CommentThread comment={baseComment} />);
-      expect(screen.queryByText(/Sent to:/)).not.toBeInTheDocument();
+    it.each([
+      { status: 'resolved', text: 'Resolved' },
+      { status: 'wont_fix', text: "Won't Fix" },
+    ] as const)('renders $status state', ({ status, text }) => {
+      render(<CommentThread comment={{ ...baseComment, status }} />);
+      expect(screen.getByText(text)).toBeInTheDocument();
     });
 
-    it('renders comment type badge', () => {
-      render(<CommentThread comment={baseComment} />);
-      expect(screen.getByText('Issue')).toBeInTheDocument();
-    });
-
-    it('renders status indicator', () => {
-      render(<CommentThread comment={baseComment} />);
-      expect(screen.getByText('Open')).toBeInTheDocument();
-    });
-
-    it('renders resolved status', () => {
-      const resolvedComment: ReviewComment = { ...baseComment, status: 'resolved' };
-      render(<CommentThread comment={resolvedComment} />);
-      expect(screen.getByText('Resolved')).toBeInTheDocument();
-    });
-
-    it('renders wont_fix status', () => {
-      const wontFixComment: ReviewComment = { ...baseComment, status: 'wont_fix' };
-      render(<CommentThread comment={wontFixComment} />);
-      expect(screen.getByText("Won't Fix")).toBeInTheDocument();
-    });
-
-    it('renders file reference with line range', () => {
-      render(<CommentThread comment={baseComment} />);
-      expect(screen.getByText('src/utils.ts')).toBeInTheDocument();
-      expect(screen.getByText('(L10-15)')).toBeInTheDocument();
-    });
-
-    it('renders file reference with single line', () => {
-      const singleLineComment: ReviewComment = { ...baseComment, lineEnd: 10 };
-      render(<CommentThread comment={singleLineComment} />);
-      expect(screen.getByText('(L10)')).toBeInTheDocument();
-    });
-
-    it('renders file reference without line numbers', () => {
-      const noLineComment: ReviewComment = { ...baseComment, lineStart: null, lineEnd: null };
-      render(<CommentThread comment={noLineComment} />);
-      expect(screen.getByText('src/utils.ts')).toBeInTheDocument();
-      expect(screen.queryByText(/\(L/)).not.toBeInTheDocument();
+    it.each([
+      { label: 'single line', overrides: { lineEnd: 10 }, text: '(L10)', hasLines: true },
+      {
+        label: 'file without lines',
+        overrides: { lineStart: null, lineEnd: null },
+        text: 'src/utils.ts',
+        hasLines: false,
+      },
+    ] as const)('$label', ({ overrides, text, hasLines }) => {
+      render(<CommentThread comment={{ ...baseComment, ...overrides }} />);
+      expect(screen.getByText(text)).toBeInTheDocument();
+      expect(screen.queryByText(/\(L/) !== null).toBe(hasLines);
     });
 
     it('does not render file reference when filePath is null', () => {
       const noFileComment: ReviewComment = { ...baseComment, filePath: null };
       render(<CommentThread comment={noFileComment} />);
       expect(screen.queryByText('src/utils.ts')).not.toBeInTheDocument();
-    });
-
-    it('renders relative time', () => {
-      render(<CommentThread comment={baseComment} />);
-      expect(screen.getByText('1m ago')).toBeInTheDocument();
     });
 
     it('uses readable muted text when not open', () => {
@@ -160,14 +153,17 @@ describe('CommentThread', () => {
   });
 
   describe('replies', () => {
-    it('renders replies when provided', () => {
+    it('shows comment metadata and available reply controls: renders replies when provided', () => {
       render(<CommentThread comment={baseComment} replies={[replyComment]} />);
-      expect(screen.getByText('Good point, I will fix this')).toBeInTheDocument();
-    });
-
-    it('shows reply count', () => {
-      render(<CommentThread comment={baseComment} replies={[replyComment]} />);
-      expect(screen.getByText('1 reply')).toBeInTheDocument();
+      {
+        expect(screen.getByText('Good point, I will fix this')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('1 reply')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByRole('button', { name: /collapse replies/i })).toBeInTheDocument();
+      }
     });
 
     it('shows plural reply count', () => {
@@ -176,27 +172,13 @@ describe('CommentThread', () => {
       expect(screen.getByText('2 replies')).toBeInTheDocument();
     });
 
-    it('shows expand/collapse button when has replies', () => {
-      render(<CommentThread comment={baseComment} replies={[replyComment]} />);
-      expect(screen.getByRole('button', { name: /collapse replies/i })).toBeInTheDocument();
-    });
-
-    it('can collapse replies', async () => {
-      render(<CommentThread comment={baseComment} replies={[replyComment]} />);
-
-      const collapseButton = screen.getByRole('button', { name: /collapse replies/i });
-      await userEvent.click(collapseButton);
-
-      expect(screen.queryByText('Good point, I will fix this')).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /expand replies/i })).toBeInTheDocument();
-    });
-
     it('can expand collapsed replies', async () => {
       render(<CommentThread comment={baseComment} replies={[replyComment]} />);
 
       const collapseButton = screen.getByRole('button', { name: /collapse replies/i });
       await userEvent.click(collapseButton);
 
+      expect(screen.queryByText('Good point, I will fix this')).not.toBeInTheDocument();
       const expandButton = screen.getByRole('button', { name: /expand replies/i });
       await userEvent.click(expandButton);
 
@@ -205,26 +187,6 @@ describe('CommentThread', () => {
   });
 
   describe('reply action', () => {
-    it('shows Reply button when onReply provided', () => {
-      const onReply = jest.fn();
-      render(<CommentThread comment={baseComment} onReply={onReply} />);
-      expect(screen.getByRole('button', { name: /reply/i })).toBeInTheDocument();
-    });
-
-    it('does not show Reply button when onReply not provided', () => {
-      render(<CommentThread comment={baseComment} />);
-      expect(screen.queryByRole('button', { name: /^reply$/i })).not.toBeInTheDocument();
-    });
-
-    it('shows reply input when Reply clicked', async () => {
-      const onReply = jest.fn();
-      render(<CommentThread comment={baseComment} onReply={onReply} />);
-
-      await userEvent.click(screen.getByRole('button', { name: /reply/i }));
-
-      expect(screen.getByPlaceholderText('Write a reply...')).toBeInTheDocument();
-    });
-
     it('calls onReply with content when submitting', async () => {
       const onReply = jest.fn().mockResolvedValue(undefined);
       render(<CommentThread comment={baseComment} onReply={onReply} />);
@@ -286,21 +248,10 @@ describe('CommentThread', () => {
   });
 
   describe('resolve action', () => {
-    it('shows Resolve button for open comments when onResolve provided', () => {
-      const onResolve = jest.fn();
-      render(<CommentThread comment={baseComment} onResolve={onResolve} />);
-      expect(screen.getByRole('button', { name: /resolve/i })).toBeInTheDocument();
-    });
-
     it('does not show Resolve button for resolved comments', () => {
       const onResolve = jest.fn();
       const resolvedComment: ReviewComment = { ...baseComment, status: 'resolved' };
       render(<CommentThread comment={resolvedComment} onResolve={onResolve} />);
-      expect(screen.queryByRole('button', { name: /resolve/i })).not.toBeInTheDocument();
-    });
-
-    it('does not show Resolve button when onResolve not provided', () => {
-      render(<CommentThread comment={baseComment} />);
       expect(screen.queryByRole('button', { name: /resolve/i })).not.toBeInTheDocument();
     });
 

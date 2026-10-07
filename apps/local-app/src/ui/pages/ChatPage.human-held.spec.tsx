@@ -189,33 +189,29 @@ describe('ChatPage human-held message counts mapping', () => {
     if (originalFetch) global.fetch = originalFetch;
   });
 
-  it('maps only positive human-held counts into the sidebar data bundle', async () => {
-    global.fetch = stubFetch(
-      () => [
+  it.each<{ name: string; pools: PoolFixture[]; expected: Record<string, number> }>([
+    {
+      name: 'mixed counts',
+      pools: [
         { agentId: 'agent-a', messageCount: 2, humanHeldMessageCount: 2 },
         { agentId: 'agent-b', messageCount: 1, humanHeldMessageCount: 0 },
         { agentId: 'agent-c', messageCount: 3, humanHeldMessageCount: 1 },
       ],
-      () => 1000,
-    ) as unknown as typeof fetch;
-
-    await setup();
-
-    await waitFor(() =>
-      expect(sidebarData().humanHeldMessageCounts).toEqual({ 'agent-a': 2, 'agent-c': 1 }),
-    );
-  });
-
-  it('yields an empty map when every pool has zero held messages', async () => {
+      expected: { 'agent-a': 2, 'agent-c': 1 },
+    },
+    {
+      name: 'all zero',
+      pools: [{ agentId: 'agent-a', messageCount: 4, humanHeldMessageCount: 0 }],
+      expected: {},
+    },
+  ])('maps positive human-held counts: $name', async ({ pools, expected }) => {
     global.fetch = stubFetch(
-      () => [{ agentId: 'agent-a', messageCount: 4, humanHeldMessageCount: 0 }],
+      () => pools,
       () => 1000,
     ) as unknown as typeof fetch;
-
     await setup();
-
     await waitFor(() => expect(poolsFetchCount()).toBeGreaterThan(0));
-    await waitFor(() => expect(sidebarData().humanHeldMessageCounts).toEqual({}));
+    await waitFor(() => expect(sidebarData().humanHeldMessageCounts).toEqual(expected));
   });
 
   it('shows the count immediately and enables release after the eligibility timestamp', async () => {
@@ -307,28 +303,13 @@ describe('ChatPage human-held message counts mapping', () => {
     expect(
       screen.getByRole('heading', { name: 'Release queued messages, my draft is clear' }),
     ).toBeInTheDocument();
+    expect(screen.getByText(/will send when the terminal is quiet/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Yes' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'No' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'No' }));
     expect(
       screen.queryByRole('heading', { name: 'Release queued messages, my draft is clear' }),
     ).not.toBeInTheDocument();
-  });
-
-  it('uses truthful draft-release copy about quiet waiting', async () => {
-    global.fetch = stubFetch(
-      () => [{ agentId: 'agent-a', messageCount: 2, humanHeldMessageCount: 2 }],
-      () => 31_000,
-    ) as unknown as typeof fetch;
-    await setup();
-    await waitFor(() => expect(sidebarData().humanHeldMessageCounts).toEqual({ 'agent-a': 2 }));
-
-    const controller = mockSidebarProps.current?.sessionController as {
-      onReleaseHeldMessages: (agentId: string) => void;
-    };
-    act(() => controller.onReleaseHeldMessages('agent-a'));
-
-    expect(screen.getByText(/will send when the terminal is quiet/)).toBeInTheDocument();
   });
 
   describe('force delivery flow', () => {
@@ -342,32 +323,26 @@ describe('ChatPage human-held message counts mapping', () => {
       deferredMessageIds: ['msg-1'],
     };
 
-    it('exposes forceEligibleAgentIds for awaiting_stable_idle with humanHeldMessageCount=1', async () => {
+    it.each<{ name: string; pool: PoolFixture; expected: Record<string, true> }>([
+      { name: 'awaiting quiet', pool: forcePool, expected: { 'agent-a': true } },
+      {
+        name: 'human draft',
+        pool: {
+          agentId: 'agent-a',
+          messageCount: 2,
+          humanHeldMessageCount: 2,
+          holdReason: 'human_draft',
+        },
+        expected: {},
+      },
+    ])('maps force eligibility: $name', async ({ pool, expected }) => {
       global.fetch = stubFetch(
-        () => [forcePool],
-        () => 35_000,
+        () => [pool],
+        () => 35000,
       ) as unknown as typeof fetch;
       await setup();
-
-      await waitFor(() => expect(sidebarData().forceEligibleAgentIds).toEqual({ 'agent-a': true }));
-    });
-
-    it('does not expose force for draft_active', async () => {
-      global.fetch = stubFetch(
-        () => [
-          {
-            agentId: 'agent-a',
-            messageCount: 2,
-            humanHeldMessageCount: 2,
-            holdReason: 'human_draft',
-          },
-        ],
-        () => 35_000,
-      ) as unknown as typeof fetch;
-      await setup();
-
       await waitFor(() => expect(poolsFetchCount()).toBeGreaterThan(0));
-      expect(sidebarData().forceEligibleAgentIds).toEqual({});
+      await waitFor(() => expect(sidebarData().forceEligibleAgentIds).toEqual(expected));
     });
 
     it('opens force confirmation dialog and Cancel sends nothing', async () => {

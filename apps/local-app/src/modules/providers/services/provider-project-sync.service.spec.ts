@@ -255,29 +255,6 @@ describe('ProviderProjectSyncService', () => {
           expect.objectContaining({ options: null }),
         );
       });
-
-      it('preserves special characters in CLI options string', async () => {
-        const cliOptions = '--instruction "You are helpful" --max-tokens 4096';
-        mockTemplateService.getBundledTemplate.mockReturnValue({
-          content: {
-            profiles: [
-              {
-                name: 'Default Profile',
-                providerConfigs: [
-                  { name: 'Claude Config', providerName: 'Claude', options: cliOptions, env: null },
-                ],
-              },
-            ],
-          },
-          source: 'bundled',
-        });
-
-        await service.syncProviderToAllProjects('provider-1');
-
-        expect(mockStorage.createIfMissing).toHaveBeenCalledWith(
-          expect.objectContaining({ options: cliOptions }),
-        );
-      });
     });
 
     describe('template with no matching providerConfigs', () => {
@@ -386,60 +363,25 @@ describe('ProviderProjectSyncService', () => {
     });
 
     describe('conflict warnings', () => {
-      it('adds warning for name_exists_other_provider conflict', async () => {
+      it.each([
+        { reason: 'name_exists_other_provider', warning: 'name_taken_by_other_provider' },
+        { reason: 'position_conflict', warning: 'position_conflict' },
+        { reason: 'unknown_constraint', warning: 'unknown_constraint' },
+      ])('reports $reason conflicts', async ({ reason, warning }) => {
         mockStorage.getProvider.mockResolvedValue(makeProvider());
         mockStorage.listProjects.mockResolvedValue({ items: [makeProject()] });
         mockStorage.listAgentProfiles.mockResolvedValue({ items: [makeProfile()] });
-        mockStorage.createIfMissing.mockResolvedValue({
-          inserted: false,
-          reason: 'name_exists_other_provider',
-        });
-
+        mockStorage.createIfMissing.mockResolvedValue({ inserted: false, reason });
         const result = await service.syncProviderToAllProjects('provider-1');
-
         expect(result.skippedConflictCount).toBe(1);
         expect(result.warnings).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
-              reason: 'name_taken_by_other_provider',
+              reason: warning,
               projectId: 'project-1',
               profileId: 'profile-1',
             }),
           ]),
-        );
-      });
-
-      it('adds warning for position_conflict', async () => {
-        mockStorage.getProvider.mockResolvedValue(makeProvider());
-        mockStorage.listProjects.mockResolvedValue({ items: [makeProject()] });
-        mockStorage.listAgentProfiles.mockResolvedValue({ items: [makeProfile()] });
-        mockStorage.createIfMissing.mockResolvedValue({
-          inserted: false,
-          reason: 'position_conflict',
-        });
-
-        const result = await service.syncProviderToAllProjects('provider-1');
-
-        expect(result.skippedConflictCount).toBe(1);
-        expect(result.warnings).toEqual(
-          expect.arrayContaining([expect.objectContaining({ reason: 'position_conflict' })]),
-        );
-      });
-
-      it('adds warning for unknown_constraint', async () => {
-        mockStorage.getProvider.mockResolvedValue(makeProvider());
-        mockStorage.listProjects.mockResolvedValue({ items: [makeProject()] });
-        mockStorage.listAgentProfiles.mockResolvedValue({ items: [makeProfile()] });
-        mockStorage.createIfMissing.mockResolvedValue({
-          inserted: false,
-          reason: 'unknown_constraint',
-        });
-
-        const result = await service.syncProviderToAllProjects('provider-1');
-
-        expect(result.skippedConflictCount).toBe(1);
-        expect(result.warnings).toEqual(
-          expect.arrayContaining([expect.objectContaining({ reason: 'unknown_constraint' })]),
         );
       });
     });

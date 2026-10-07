@@ -16,32 +16,26 @@ jest.mock('@/ui/components/automation/ScheduledEpicsTab', () => ({
 }));
 
 describe('AutomationPage', () => {
-  it('renders Watchers, Subscribers, and Scheduled Epics tab triggers', () => {
+  it('renders Watchers, Subscribers, and Scheduled Epics tab triggers', async () => {
     render(<AutomationPage />);
     expect(screen.getByRole('tab', { name: /watchers/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /subscribers/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /scheduled epics/i })).toBeInTheDocument();
+
+    {
+      expect(screen.getByText('Watchers Content')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByRole('heading', { name: 'Automation' })).toBeInTheDocument();
+    }
   });
 
-  it('defaults to the Watchers tab', () => {
+  it.each([
+    ['Scheduled Epics', 'Scheduled Epics Content'],
+    ['Subscribers', 'Subscribers Content'],
+  ])('opens %s tab content', async (tab, content) => {
     render(<AutomationPage />);
-    expect(screen.getByText('Watchers Content')).toBeInTheDocument();
-  });
-
-  it('shows Scheduled Epics content when Scheduled Epics tab is clicked', async () => {
-    render(<AutomationPage />);
-    await userEvent.click(screen.getByRole('tab', { name: /scheduled epics/i }));
-    expect(screen.getByText('Scheduled Epics Content')).toBeInTheDocument();
-  });
-
-  it('shows Subscribers content when Subscribers tab is clicked', async () => {
-    render(<AutomationPage />);
-    await userEvent.click(screen.getByRole('tab', { name: /subscribers/i }));
-    expect(screen.getByText('Subscribers Content')).toBeInTheDocument();
-  });
-
-  it('renders the Automation heading', () => {
-    render(<AutomationPage />);
-    expect(screen.getByRole('heading', { name: 'Automation' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: tab }));
+    expect(screen.getByText(content)).toBeInTheDocument();
   });
 });

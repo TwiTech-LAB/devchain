@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { resolve, join } from 'path';
 import { CodexPluginProfileMaterializerService } from './codex-plugin-profile-materializer.service';
@@ -14,12 +14,23 @@ const describeCodex0147OrNewer = codexVersionAtLeast0147 ? describe : describe.s
 
 describeCodex0147OrNewer('Codex 0.147+ plugin profile effect contract', () => {
   let codexHome: string;
+  let templateHome: string;
 
-  beforeEach(async () => {
-    codexHome = await mkdtemp(join(tmpdir(), 'devchain-codex-profile-contract-'));
+  beforeAll(async () => {
+    templateHome = await mkdtemp(join(tmpdir(), 'devchain-codex-profile-template-'));
+    codexHome = templateHome;
     const fixtureRoot = resolve(__dirname, '__fixtures__', 'codex-plugin-marketplace');
     runCodex(['plugin', 'marketplace', 'add', fixtureRoot, '--json']);
     runCodex(['plugin', 'add', 'profile-effect@devchain-contract', '--json']);
+  });
+
+  beforeEach(async () => {
+    codexHome = await mkdtemp(join(tmpdir(), 'devchain-codex-profile-contract-'));
+    await cp(templateHome, codexHome, { recursive: true });
+  });
+
+  afterAll(async () => {
+    await rm(templateHome, { recursive: true, force: true });
   });
 
   afterEach(async () => {

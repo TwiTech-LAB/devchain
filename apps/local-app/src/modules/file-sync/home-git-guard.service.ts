@@ -9,6 +9,7 @@ import { GitService, type GitVersion } from '../git/services/git.service';
 import { STORAGE_SERVICE, type StorageService } from '../storage/interfaces/storage.interface';
 import { quoteShellArg } from '../terminal/services/terminal-io/quote-shell-arg';
 import { FileSyncService } from './file-sync.service';
+import type { GitGuardRemoveResult, VmGitGuardRequest } from './git-guard.dto';
 
 const logger = createLogger('HomeGitGuard');
 
@@ -38,11 +39,22 @@ function safeRemoteName(name: string, fallback: string): string {
 const STASH_COMMAND = ['st', 'ash'].join('');
 
 function guardMessage(remoteName: string): string {
-  return `This project runs on the remote VM "${remoteName}". Normal file editing is allowed: your changes sync to the VM. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here until you disconnect. Run them on the VM, or ask an agent.`;
+  return `This project runs on the remote VM "${remoteName}". Normal file editing is allowed: your changes sync to the VM. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. Run them on the VM. To use Git on this PC, run \`devchain git take\` in the project folder.`;
+}
+
+function vmGuardMessage({ homeName, reason }: VmGitGuardRequest): string {
+  if (reason === 'pc-git') {
+    return `Git for this project is on the PC '${homeName}'. You can edit files here: your changes sync to the PC. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. To move Git back to this VM, run \`devchain git return\` in the project folder on the PC '${homeName}'.`;
+  }
+  const location =
+    reason === 'disconnect'
+      ? `This project is now on the PC '${homeName}'. You can edit files here. At the next Connect, DevChain brings your edits to the PC.`
+      : `This project is on the PC '${homeName}'. A Connect was cancelled, so at the next Connect the PC's files replace the files here.`;
+  return `${location} Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. Make them on the PC. To use Git on this VM, connect the project to it again from the PC.`;
 }
 
 function referenceTransactionScript(message: string): string {
-  return `${OWNED_HEADER}# Installed while a remote DevChain VM owns this project; removed on disconnect.
+  return `${OWNED_HEADER}# Git ownership belongs to the other instance of this project.
 # Git passes the transaction state ("prepared", "committed" or "aborted") as $1.
 case "$1" in
   prepared)
@@ -55,15 +67,15 @@ exit 0
 }
 
 function postCheckoutScript(message: string): string {
-  return `${OWNED_HEADER}# Installed while a remote DevChain VM owns this project; removed on disconnect.
+  return `${OWNED_HEADER}# Git ownership belongs to the other instance of this project.
 marker="$(dirname "$0")/${SWITCHBACK_MARKER}"
 
 # Only branch checkouts concern the guard, never file checkouts.
 [ "$3" = "1" ] || exit 0
 
 # This checkout logged "moving from <previous> to <current>" in HEAD's reflog,
-# so @{-1} is the branch the VM owned right before it, also after the VM
-# switched branches. A no-op checkout logs the same branch on both sides.
+# so @{-1} is the previous branch, even after HEAD was synced from the owner.
+# A no-op checkout logs the same branch on both sides.
 previous=$(git rev-parse --symbolic-full-name '@{-1}' 2>/dev/null)
 current=$(git symbolic-ref -q HEAD) || exit 0
 case "$previous" in refs/heads/*) ;; *) exit 0 ;; esac
@@ -85,9 +97,8 @@ exit 0
 }
 
 /**
- * Refuses git ref changes at home while a remote VM owns the project, so no
- * home commit or branch switch can race the VM's one-way `.git` sync. File
- * editing stays open: worktree changes are outside git's ref machinery.
+ * Refuses git ref changes on the non-owning project copy on either instance.
+ * File editing stays open: worktree changes are outside git's ref machinery.
  */
 @Injectable()
 export class HomeGitGuardService {
@@ -97,13 +108,12 @@ export class HomeGitGuardService {
     @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
   ) {}
 
-  async install(projectId: string, remoteId: string): Promise<string | null> {
+  async install(projectId: string, owner: string | VmGitGuardRequest): Promise<string | null> {
     const root = await this.fileSync.folderPath(projectId);
+    const onVm = typeof owner !== 'string';
+    const skip = (reason: string) => this.skipWarning(projectId, reason, onVm);
     if (!(await this.isDirectory(join(root, '.git')))) {
-      return this.skipWarning(
-        projectId,
-        'the project root has no .git directory (worktrees are unsupported)',
-      );
+      return skip('the project root has no .git directory (worktrees are unsupported)');
     }
     // The guard protects the flip; it must never fail it. If its own
     // preconditions cannot be verified, degrade to a warning instead.
@@ -112,38 +122,43 @@ export class HomeGitGuardService {
     try {
       hooksPath = await this.git.getConfigValue(projectId, 'core.hooksPath', root);
       if (hooksPath) {
-        return this.skipWarning(
-          projectId,
+        return skip(
           `core.hooksPath is set (${hooksPath}); the guard cannot install into .git/hooks`,
         );
       }
       version = await this.git.getVersion(projectId, root);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return this.skipWarning(projectId, `git could not be consulted (${reason})`);
+      return skip(`git could not be consulted (${reason})`);
     }
     if (!isSupportedGit(version)) {
-      return this.skipWarning(
-        projectId,
+      return skip(
         `git ${version.major}.${version.minor}.${version.patch} is older than 2.28; the reference-transaction hook is unavailable`,
       );
     }
-    const remoteName = safeRemoteName(await this.remoteName(projectId, remoteId), remoteId);
-    await this.installHooks(root, remoteName);
-    logger.info({ projectId, remoteId }, 'Remote git guard installed');
+    const message = onVm
+      ? vmGuardMessage(owner)
+      : guardMessage(safeRemoteName(await this.remoteName(projectId, owner), owner));
+    await this.installHooks(root, message);
+    logger.info({ projectId, side: onVm ? 'vm' : 'home' }, 'Git guard installed');
     return null;
   }
 
-  async remove(projectId: string, options: { refreshIndex: boolean }): Promise<void> {
+  async remove(
+    projectId: string,
+    options: { refreshIndex: boolean; failOnReadError?: boolean },
+  ): Promise<GitGuardRemoveResult> {
     const root = await this.fileSync.folderPath(projectId);
-    await this.stripHooks(root);
-    if (!options.refreshIndex) return;
-    // The VM's index never syncs home, so once ownership returns the local
-    // index is stale; rebuild it from the mirrored HEAD once, here.
+    const removed = await this.stripHooks(root, options.failOnReadError);
+    if (!options.refreshIndex) return { removed, indexRefreshed: null, warning: null };
+    // Indexes do not sync between sides; rebuild the new owner's index from HEAD.
     try {
       await this.git.refreshIndexFromHead(projectId, root);
+      return { removed, indexRefreshed: true, warning: null };
     } catch (error) {
       logger.warn({ error, projectId }, 'Guard index refresh failed (non-fatal)');
+      const reason = error instanceof Error ? error.message : String(error);
+      return { removed, indexRefreshed: false, warning: `Git index rebuild failed: ${reason}` };
     }
   }
 
@@ -153,8 +168,10 @@ export class HomeGitGuardService {
     return this.install(projectId, remoteId);
   }
 
-  private skipWarning(projectId: string, reason: string): string {
-    const warning = `Git guard skipped: ${reason}. Git changes at home are not blocked while the project runs on the VM.`;
+  private skipWarning(projectId: string, reason: string, vm = false): string {
+    const warning = vm
+      ? `VM git guard skipped: ${reason}. Git changes on the VM are not blocked while the project is on the PC.`
+      : `Git guard skipped: ${reason}. Git changes at home are not blocked while the project runs on the VM.`;
     logger.warn({ projectId }, warning);
     return warning;
   }
@@ -176,10 +193,9 @@ export class HomeGitGuardService {
     }
   }
 
-  private async installHooks(root: string, remoteName: string): Promise<void> {
+  private async installHooks(root: string, message: string): Promise<void> {
     const hooksDir = join(root, '.git', 'hooks');
     await mkdir(hooksDir, { recursive: true });
-    const message = guardMessage(remoteName);
     for (const name of GUARD_HOOKS) {
       const hookPath = join(hooksDir, name);
       // A repeated install rewrites its own hook and keeps the original saved once.
@@ -201,24 +217,33 @@ export class HomeGitGuardService {
    * Removes only the hooks this service wrote and restores the originals they
    * replaced. Safe to repeat, and safe when nothing was installed.
    */
-  private async stripHooks(root: string): Promise<void> {
+  private async stripHooks(root: string, failOnReadError = false): Promise<boolean> {
     const hooksDir = join(root, '.git', 'hooks');
-    if (!existsSync(hooksDir)) return;
+    if (!existsSync(hooksDir)) return false;
+    let removed = false;
     for (const name of GUARD_HOOKS) {
       const hookPath = join(hooksDir, name);
-      if (await this.isOwnHook(hookPath)) await rm(hookPath, { force: true });
+      if (await this.isOwnHook(hookPath, failOnReadError)) {
+        await rm(hookPath, { force: true });
+        removed = true;
+      }
       // A hook still in place belongs to the user; a saved copy never replaces it.
       const savedPath = `${hookPath}${SAVED_SUFFIX}`;
-      if (existsSync(savedPath) && !existsSync(hookPath)) await rename(savedPath, hookPath);
+      if (existsSync(savedPath) && !existsSync(hookPath)) {
+        await rename(savedPath, hookPath);
+        removed = true;
+      }
     }
     await rm(join(hooksDir, SWITCHBACK_MARKER), { force: true });
+    return removed;
   }
 
-  private async isOwnHook(hookPath: string): Promise<boolean> {
+  private async isOwnHook(hookPath: string, failOnReadError = false): Promise<boolean> {
     try {
       const content = await readFile(hookPath, 'utf8');
       return content.startsWith(OWNED_HEADER);
-    } catch {
+    } catch (error) {
+      if (failOnReadError && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       return false;
     }
   }

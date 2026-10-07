@@ -13,18 +13,6 @@ export const LazyReviewDetailPage = lazy(() =>
 );
 
 /**
- * Preload function to trigger loading the ReviewDetailPage chunk.
- * Call this on hover to eliminate loading delay on click.
- */
-let preloadPromise: Promise<unknown> | null = null;
-
-export function preloadReviewDetailPage(): void {
-  if (!preloadPromise) {
-    preloadPromise = import('./ReviewDetailPage');
-  }
-}
-
-/**
  * Loading skeleton displayed while ReviewDetailPage is loading.
  * Mimics the page structure for a smooth loading experience.
  */

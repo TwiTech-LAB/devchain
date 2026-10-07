@@ -33,30 +33,28 @@ describe('ImportResultDialog', () => {
     jest.clearAllMocks();
   });
 
-  it('renders import counts', () => {
+  it('shows import/delete counts and prompt transfer results', () => {
     render(<ImportResultDialog {...defaultProps} />);
-    expect(screen.getByText('Import Completed')).toBeInTheDocument();
-    const imported = screen.getByText('Imported').parentElement!;
-    const deleted = screen.getByText('Deleted').parentElement!;
-    expect(screen.getAllByText('agents')).toHaveLength(2);
-    expect(within(imported).getByText('3')).toBeInTheDocument();
-    expect(within(imported).getByText('5')).toBeInTheDocument();
-    expect(within(deleted).getByText('1')).toBeInTheDocument();
-    expect(within(deleted).getByText('2')).toBeInTheDocument();
-  });
-
-  it('renders initial prompt mapping status', () => {
-    render(<ImportResultDialog {...defaultProps} />);
-    expect(screen.getByText(/Initial prompt mapping: Set/)).toBeInTheDocument();
-  });
-
-  it('renders preserved and skipped prompt counts', () => {
-    render(<ImportResultDialog {...defaultProps} />);
-    const promptTransfer = screen.getByText('Prompt transfer').parentElement!;
-    expect(within(promptTransfer).getByText('preserved')).toBeInTheDocument();
-    expect(within(promptTransfer).getByText('skipped')).toBeInTheDocument();
-    expect(within(promptTransfer).getByText('3')).toBeInTheDocument();
-    expect(within(promptTransfer).getByText('4')).toBeInTheDocument();
+    {
+      expect(screen.getByText('Import Completed')).toBeInTheDocument();
+      const imported = screen.getByText('Imported').parentElement!;
+      const deleted = screen.getByText('Deleted').parentElement!;
+      expect(screen.getAllByText('agents')).toHaveLength(2);
+      expect(within(imported).getByText('3')).toBeInTheDocument();
+      expect(within(imported).getByText('5')).toBeInTheDocument();
+      expect(within(deleted).getByText('1')).toBeInTheDocument();
+      expect(within(deleted).getByText('2')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText(/Initial prompt mapping: Set/)).toBeInTheDocument();
+    }
+    {
+      const promptTransfer = screen.getByText('Prompt transfer').parentElement!;
+      expect(within(promptTransfer).getByText('preserved')).toBeInTheDocument();
+      expect(within(promptTransfer).getByText('skipped')).toBeInTheDocument();
+      expect(within(promptTransfer).getByText('3')).toBeInTheDocument();
+      expect(within(promptTransfer).getByText('4')).toBeInTheDocument();
+    }
   });
 
   it('renders "Not set" when initialPromptSet is false', () => {

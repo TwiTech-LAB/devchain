@@ -291,49 +291,32 @@ describe('RegistryOrchestrationService', () => {
       });
     });
 
-    it('should return null if project is not linked', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue(null);
-
-      await expect(service.checkForUpdates('project-123')).resolves.toBeNull();
-    });
-
-    it('should return null if template is not found in registry', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'deleted-template',
-        installedVersion: '1.0.0',
-        registryUrl: 'https://test.com',
-        installedAt: new Date().toISOString(),
-      });
-      mockRegistryClient.getTemplate.mockResolvedValue(null);
-
-      await expect(service.checkForUpdates('project-123')).resolves.toBeNull();
-    });
-
-    it('should return null if no latest version exists', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'test-template',
-        installedVersion: '1.0.0',
-        registryUrl: 'https://test.com',
-        installedAt: new Date().toISOString(),
-      });
-      mockRegistryClient.getTemplate.mockResolvedValue(
-        createMockTemplateDetail('test-template', [{ version: '1.0.0', isLatest: false }]),
-      );
-
-      await expect(service.checkForUpdates('project-123')).resolves.toBeNull();
-    });
-
-    it('should return null on registry error', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'test-template',
-        installedVersion: '1.0.0',
-        registryUrl: 'https://test.com',
-        installedAt: new Date().toISOString(),
-      });
-      mockRegistryClient.getTemplate.mockRejectedValue(new Error('Network error'));
-
-      await expect(service.checkForUpdates('project-123')).resolves.toBeNull();
-    });
+    it.each(['unlinked', 'missing template', 'no latest', 'registry error'])(
+      'returns no update for %s',
+      async (scenario) => {
+        mockSettingsService.getProjectTemplateMetadata.mockReturnValue(
+          scenario === 'unlinked'
+            ? null
+            : {
+                templateSlug:
+                  scenario === 'missing template' ? 'deleted-template' : 'test-template',
+                installedVersion: '1.0.0',
+                registryUrl: 'https://test.com',
+                installedAt: new Date().toISOString(),
+              },
+        );
+        if (scenario === 'registry error') {
+          mockRegistryClient.getTemplate.mockRejectedValue(new Error('Network error'));
+        } else {
+          mockRegistryClient.getTemplate.mockResolvedValue(
+            scenario === 'missing template'
+              ? null
+              : createMockTemplateDetail('test-template', [{ version: '1.0.0', isLatest: false }]),
+          );
+        }
+        await expect(service.checkForUpdates('project-123')).resolves.toBeNull();
+      },
+    );
   });
 
   describe('cache reads', () => {

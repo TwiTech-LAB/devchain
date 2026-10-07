@@ -180,6 +180,11 @@ describe('AgentOverridesDialog', () => {
     expect(await screen.findByLabelText('Provider Config')).toBeInTheDocument();
     expect(screen.getByLabelText('Model')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText('Reasoning Effort')).toBeInTheDocument());
+
+    {
+      await screen.findByLabelText('Provider Config');
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    }
   });
 
   it('shows "Default (config: <model>)" when the config has a structured default', async () => {
@@ -336,14 +341,6 @@ describe('AgentOverridesDialog', () => {
       }),
     );
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-  });
-
-  it('disables Save while nothing has changed', async () => {
-    installFetch();
-    renderDialog();
-
-    await screen.findByLabelText('Provider Config');
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('warns about restart only when the agent is online and something changed', async () => {

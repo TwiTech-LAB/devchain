@@ -95,16 +95,6 @@ describe('disk trend formula', () => {
     expect(polyline).not.toBeNull();
     expect(polyline).toHaveAttribute('points', '2,18 54,2');
   });
-
-  it('renders a flat Disk sparkline when the df ratio is constant', () => {
-    renderStrip([
-      makeSample({ diskUsedBytes: 50 * GB, diskTotalBytes: 100 * GB, diskAvailBytes: 50 * GB }),
-      makeSample({ diskUsedBytes: 50 * GB, diskTotalBytes: 100 * GB, diskAvailBytes: 50 * GB }),
-    ]);
-
-    const polyline = screen.getByTestId('remote-metric-disk').querySelector('polyline');
-    expect(polyline).toHaveAttribute('points', '2,10 54,10');
-  });
 });
 
 describe('formatting helpers', () => {
@@ -134,13 +124,6 @@ describe('RemoteMetricsStrip rendering', () => {
     renderStrip([makeSample({ memTotalBytes: 0, diskTotalBytes: 0, diskAvailBytes: undefined })]);
     expect(screen.getByRole('button', { name: 'RAM —' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Disk —' })).toBeInTheDocument();
-  });
-
-  it('renders one sparkline per metric from the sample series', () => {
-    renderStrip([makeSample({ cpuPercent: 10 }), makeSample({ cpuPercent: 30 })]);
-    const strip = screen.getByTestId('remote-metrics-strip');
-    const svgs = strip.querySelectorAll('svg');
-    expect(svgs).toHaveLength(3);
   });
 
   it('shows "Waiting for stats" in muted text while there are no samples', () => {

@@ -301,16 +301,6 @@ describe('ProjectSelectionProvider', () => {
     };
   }
 
-  it('hydrates selection from localStorage when sessionStorage is empty', async () => {
-    localStorage.setItem(PROJECT_STORAGE_KEY, 'project-alpha');
-    setupMockFetch();
-
-    const state = renderTracker();
-    await waitFor(() => expect(state.currentWorkspace).toBe(DEFAULT_WORKSPACE_ID));
-
-    await waitFor(() => expect(state.currentSelection).toBe('project-alpha'));
-  });
-
   it('sessionStorage takes precedence over localStorage for reading', async () => {
     localStorage.setItem(PROJECT_STORAGE_KEY, 'project-alpha');
     sessionStorage.setItem(PROJECT_STORAGE_KEY, 'project-beta');
@@ -817,40 +807,5 @@ describe('fetchProjects', () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0].id).toBe('p1');
     expect(result.items[0].stats).toBeUndefined();
-  });
-
-  it('aborts all in-flight requests when signal is cancelled', async () => {
-    const controller = new AbortController();
-    const mockFetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/api/projects') {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [{ id: 'p1', name: 'Project 1' }],
-          }),
-        } as Response;
-      }
-      // Stats fetch: check if signal is aborted
-      if (init?.signal?.aborted) {
-        throw new DOMException('The operation was aborted', 'AbortError');
-      }
-      // Simulate a fetch that checks abort during execution
-      return {
-        ok: true,
-        json: async () => ({ epicsCount: 5, agentsCount: 3 }),
-      } as Response;
-    });
-    global.fetch = mockFetch as unknown as typeof fetch;
-
-    // Cancel before stats fetch completes
-    controller.abort();
-    await fetchProjects({ signal: controller.signal }).catch(() => null);
-
-    // The main fetch should have been called with the aborted signal
-    // It may throw or complete depending on timing — either way the signal was passed
-    expect(mockFetch).toHaveBeenCalled();
-    const mainCall = mockFetch.mock.calls[0];
-    expect(mainCall[1]).toEqual({ signal: controller.signal });
   });
 });

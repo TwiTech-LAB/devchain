@@ -1,3 +1,4 @@
+import { processIdsEnv } from '../../../../common/process-ids-env';
 import { Test, type TestingModule } from '@nestjs/testing';
 import type { EffortCapability } from '../../../providers/adapters/capabilities/effort.capability';
 import type { HookCapability } from '../../../providers/adapters/capabilities/hook.capability';
@@ -365,6 +366,7 @@ describe('ProviderRuntimePreparationService', () => {
         '--verbose',
       ]);
       expect(prepared.config.env).toEqual({
+        ...processIdsEnv(),
         SHARED: 'runtime',
         PROVIDER: 'yes',
         CONFIG: 'yes',

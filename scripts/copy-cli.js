@@ -47,7 +47,13 @@ function parseVersionsEnv(path) {
     values[match[1]] = match[2].trim().replace(/^(['"])(.*)\1$/, "$2");
   }
 
-  const required = ["NODE_VERSION", "SYNCTHING_VERSION", "NPM_REGISTRY"];
+  const required = [
+    "NODE_VERSION",
+    "SYNCTHING_VERSION",
+    "NPM_REGISTRY",
+    "DEVCHAIN_REQUIRED_PACKAGES",
+    "DEVCHAIN_TOOL_PACKAGES",
+  ];
   for (const name of required) {
     if (!values[name]) {
       throw new Error(
@@ -56,47 +62,6 @@ function parseVersionsEnv(path) {
     }
   }
   return values;
-}
-
-function parseAptPackages(path) {
-  const lines = readFileSync(path, "utf8").split(/\r?\n/);
-  const first = lines.findIndex((line) =>
-    /^\s*apt-get\s+install\s+-y\s+--no-install-recommends(?:\s|\\|$)/.test(
-      line,
-    ),
-  );
-  if (first === -1) {
-    throw new Error(
-      "apps/host-image/customize.sh is missing its apt-get install -y --no-install-recommends package list",
-    );
-  }
-
-  const packages = [];
-  let complete = false;
-  for (let index = first; index < lines.length; index += 1) {
-    let line = lines[index].replace(/\s+#.*$/, "").trim();
-    const continued = line.endsWith("\\");
-    if (continued) line = line.slice(0, -1).trim();
-    if (index === first) {
-      line = line
-        .replace(/^apt-get\s+install\s+-y\s+--no-install-recommends/, "")
-        .trim();
-    }
-    packages.push(
-      ...line.split(/\s+/).filter((name) => name && !name.startsWith("-")),
-    );
-    if (!continued) {
-      complete = true;
-      break;
-    }
-  }
-
-  if (!complete || packages.length === 0) {
-    throw new Error(
-      "Unable to read the apt package list from apps/host-image/customize.sh",
-    );
-  }
-  return packages;
 }
 
 function copyHostInstallInputs(repoRoot, destDir) {
@@ -117,7 +82,6 @@ function copyHostInstallInputs(repoRoot, destDir) {
     "apps/host-bootstrap/systemd/devchain-bootstrap.service",
   );
   const versionsPath = requiredPath(repoRoot, "apps/host-image/versions.env");
-  const customizePath = requiredPath(repoRoot, "apps/host-image/customize.sh");
   const inotifyPath = requiredPath(
     repoRoot,
     "apps/host-image/files/60-devchain-inotify.conf",
@@ -136,7 +100,8 @@ function copyHostInstallInputs(repoRoot, destDir) {
     );
   }
   const versions = parseVersionsEnv(versionsPath);
-  const aptPackages = parseAptPackages(customizePath);
+  const aptPackages = versions.DEVCHAIN_REQUIRED_PACKAGES.split(/\s+/);
+  const toolPackages = versions.DEVCHAIN_TOOL_PACKAGES.split(/\s+/);
   const tempPackDir = mkdtempSync(join(tmpdir(), "devchain-host-bootstrap-"));
 
   try {
@@ -188,6 +153,7 @@ function copyHostInstallInputs(repoRoot, destDir) {
         sha256: bootstrapSha256,
       },
       aptPackages,
+      toolPackages,
     };
 
     mkdirSync(hostInstallDir, { recursive: true });

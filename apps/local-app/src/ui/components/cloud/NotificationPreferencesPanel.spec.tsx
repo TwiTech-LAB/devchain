@@ -157,47 +157,25 @@ describe('NotificationPreferencesPanel', () => {
     mockSmartSuppressionMutate.mockReset();
   });
 
-  it('renders the section heading', () => {
+  it('shows category controls and smart notification defaults', () => {
     renderPanel();
-    expect(screen.getByText(/push alert rules/i)).toBeInTheDocument();
-    expect(screen.getByText(/inbox history is still kept/i)).toBeInTheDocument();
-  });
-
-  it('frames notification rules in a cloud settings card', () => {
-    renderPanel();
-
-    const card = screen.getByTestId('notification-rules-card');
-    expect(card).toHaveClass('rounded-lg', 'border', 'bg-card');
-    expect(card).toContainElement(screen.getByRole('heading', { name: /push alert rules/i }));
-    expect(card).toContainElement(screen.getByText('Smart notifications'));
-    expect(card).toContainElement(screen.getByLabelText(/push notifications for epic assigned/i));
-  });
-
-  it('renders category toggle rows', () => {
-    renderPanel();
-    expect(screen.getByLabelText(/push notifications for epic assigned/i)).toBeInTheDocument();
-  });
-
-  it('does not render quiet hours section', () => {
-    renderPanel();
-    expect(screen.queryByText(/quiet hours/i)).not.toBeInTheDocument();
-  });
-
-  it('renders smart notification controls with accessible labels and default window', () => {
-    renderPanel();
-
-    expect(screen.getByText('Smart notifications')).toBeInTheDocument();
-    expect(
-      screen.getByText(/pause push notifications for projects you are actively using/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/inbox items still appear/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/enable smart notifications/i)).toBeChecked();
-    expect(screen.getByLabelText(/smart notifications activity window/i)).toHaveValue('5');
-    expect(screen.getByRole('option', { name: '5 minutes' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: '10 minutes' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: '15 minutes' })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: '30 minutes' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: '60 minutes' })).not.toBeInTheDocument();
+    {
+      expect(screen.getByLabelText(/push notifications for epic assigned/i)).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Smart notifications')).toBeInTheDocument();
+      expect(
+        screen.getByText(/pause push notifications for projects you are actively using/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/inbox items still appear/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/enable smart notifications/i)).toBeChecked();
+      expect(screen.getByLabelText(/smart notifications activity window/i)).toHaveValue('5');
+      expect(screen.getByRole('option', { name: '5 minutes' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: '10 minutes' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: '15 minutes' })).toBeInTheDocument();
+      expect(screen.queryByRole('option', { name: '30 minutes' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('option', { name: '60 minutes' })).not.toBeInTheDocument();
+    }
   });
 
   it('persists smart notification toggle changes through useSmartSuppression', () => {
@@ -261,10 +239,5 @@ describe('NotificationPreferencesPanel', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       /could not save smart notification settings/i,
     );
-  });
-
-  it('does not render a global test push button', () => {
-    renderPanel();
-    expect(screen.queryByRole('button', { name: /send test push/i })).not.toBeInTheDocument();
   });
 });

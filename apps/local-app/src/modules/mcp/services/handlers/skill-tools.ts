@@ -364,8 +364,8 @@ export async function handleSkillsSync(
 
   try {
     const result: SkillsSyncResponse = validated.sourceName
-      ? await ctx.skillSourceLifecycleService.syncSource(validated.sourceName)
-      : await ctx.skillSourceLifecycleService.syncAll();
+      ? await ctx.skillSourceLifecycleService.syncSource(validated.sourceName, { force: true })
+      : await ctx.skillSourceLifecycleService.syncAll({ force: true });
     return { success: true, data: result };
   } catch (error) {
     if (error instanceof ValidationError) {

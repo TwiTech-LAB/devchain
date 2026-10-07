@@ -53,16 +53,24 @@ describe('RunHistoryPanel', () => {
     expect(screen.getByText('Loading history…')).toBeInTheDocument();
   });
 
-  it('shows completed status badge', async () => {
+  it('shows completed scheduler run details without epic link or pagination', async () => {
     renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
     await screen.findByText('completed');
     expect(screen.getByText('completed')).toBeInTheDocument();
-  });
 
-  it('shows scheduler source badge', async () => {
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('completed');
     expect(screen.getByText('Scheduler')).toBeInTheDocument();
+
+    expect(screen.getByText(/Planned:/)).toBeInTheDocument();
+
+    expect(screen.getByText(/Started:/)).toBeInTheDocument();
+
+    expect(screen.getByText(/Finished:/)).toBeInTheDocument();
+
+    expect(screen.getByText(/Lag:/)).toBeInTheDocument();
+
+    expect(screen.queryByText(/Epic /)).not.toBeInTheDocument();
+
+    expect(screen.queryByText(/Page 1 of/)).not.toBeInTheDocument();
   });
 
   it('shows manual source badge', async () => {
@@ -72,51 +80,18 @@ describe('RunHistoryPanel', () => {
     expect(screen.getByText('Manual')).toBeInTheDocument();
   });
 
-  it('shows failed status badge', async () => {
+  it('shows failed status and error expansion button', async () => {
     mockFetch(makeRunsPage({ status: 'failed', errorMessage: 'timeout' }));
     renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
     await screen.findByText('failed');
     expect(screen.getByText('failed')).toBeInTheDocument();
+    expect(screen.getByText('Show error')).toBeInTheDocument();
   });
 
-  it('shows skipped status badge', async () => {
-    mockFetch(makeRunsPage({ status: 'skipped' }));
+  it.each(['skipped', 'running'] as const)('shows %s status', async (status) => {
+    mockFetch(makeRunsPage({ status, ...(status === 'running' ? { finishedAt: null } : {}) }));
     renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('skipped');
-    expect(screen.getByText('skipped')).toBeInTheDocument();
-  });
-
-  it('shows running status badge', async () => {
-    mockFetch(
-      makeRunsPage({ status: 'running', startedAt: '2026-05-17T09:00:05.000Z', finishedAt: null }),
-    );
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('running');
-    expect(screen.getByText('running')).toBeInTheDocument();
-  });
-
-  it('shows planned time', async () => {
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('completed');
-    expect(screen.getByText(/Planned:/)).toBeInTheDocument();
-  });
-
-  it('shows started time when available', async () => {
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('completed');
-    expect(screen.getByText(/Started:/)).toBeInTheDocument();
-  });
-
-  it('shows finished time when available', async () => {
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('completed');
-    expect(screen.getByText(/Finished:/)).toBeInTheDocument();
-  });
-
-  it('shows lag when start time is available', async () => {
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('completed');
-    expect(screen.getByText(/Lag:/)).toBeInTheDocument();
+    expect(await screen.findByText(status)).toBeInTheDocument();
   });
 
   it('shows created epic link when epicId is present', async () => {
@@ -126,19 +101,6 @@ describe('RunHistoryPanel', () => {
     expect(screen.getByText(/Epic abcdef12/)).toBeInTheDocument();
     const link = screen.getByRole('link', { name: /Epic abcdef12/ });
     expect(link).toHaveAttribute('href', '/epics/abcdef12-0000-0000-0000-000000000000');
-  });
-
-  it('does not show epic link when epicId is null', async () => {
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('completed');
-    expect(screen.queryByText(/Epic /)).not.toBeInTheDocument();
-  });
-
-  it('shows show error button for failed runs', async () => {
-    mockFetch(makeRunsPage({ status: 'failed', errorMessage: 'connection refused' }));
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('failed');
-    expect(screen.getByText('Show error')).toBeInTheDocument();
   });
 
   it('expands error message on click', async () => {
@@ -185,11 +147,5 @@ describe('RunHistoryPanel', () => {
     renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
     await screen.findByText('completed');
     expect(screen.getByText('Page 1 of 3 (25 total)')).toBeInTheDocument();
-  });
-
-  it('does not show pagination for single page', async () => {
-    renderWithProviders(<RunHistoryPanel scheduleId="sched-1" />);
-    await screen.findByText('completed');
-    expect(screen.queryByText(/Page 1 of/)).not.toBeInTheDocument();
   });
 });

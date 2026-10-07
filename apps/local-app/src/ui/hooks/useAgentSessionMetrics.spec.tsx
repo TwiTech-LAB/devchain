@@ -3,7 +3,6 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   useAgentSessionMetrics,
-  getMetricsKey,
   getMetricsWatchdogInterval,
   METRICS_WATCHDOG_MIN_MS,
 } from './useAgentSessionMetrics';
@@ -272,28 +271,35 @@ describe('useAgentSessionMetrics', () => {
   });
 
   it('polling stops when isOngoing === false', async () => {
-    fetchMock.mockResolvedValue(makeSummary({ isOngoing: false }));
+    jest.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(makeSummary({ isOngoing: false }));
 
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const wrapper = ({ children }: { children: React.ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
 
-    const entries: AgentSessionEntry[] = [{ agentId: 'agent-1', sessionId: 'session-1' }];
+      const entries: AgentSessionEntry[] = [{ agentId: 'agent-1', sessionId: 'session-1' }];
 
-    renderHook(() => useAgentSessionMetrics(entries), { wrapper });
+      renderHook(() => useAgentSessionMetrics(entries), { wrapper });
 
-    await waitFor(() => {
-      const state = queryClient.getQueryState(['transcript-summary', 'session-1']);
-      expect(state?.data).toBeDefined();
-    });
+      await waitFor(() => {
+        const state = queryClient.getQueryState(['transcript-summary', 'session-1']);
+        expect(state?.data).toBeDefined();
+      });
 
-    // After query resolves with isOngoing: false, no further fetches should occur
-    fetchMock.mockClear();
-    await new Promise((r) => setTimeout(r, 200));
-    expect(fetchMock).not.toHaveBeenCalled();
+      // After query resolves with isOngoing: false, no further fetches should occur
+      fetchMock.mockClear();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(getMetricsWatchdogInterval(entries[0]) + 1);
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('excludes zero-percent entries from map (spacer leak regression)', async () => {
@@ -321,36 +327,5 @@ describe('useAgentSessionMetrics', () => {
     expect(result.current.has('agent-zero')).toBe(false);
     expect(result.current.has('agent-active')).toBe(true);
     expect(result.current.get('agent-active')!.contextPercent).toBe(50);
-  });
-
-  it('includes all non-zero entries with correct contextPercent', async () => {
-    fetchMock.mockImplementation(async (sessionId: string) => {
-      if (sessionId === 'session-low') {
-        return makeSummary({ totalContextTokens: 20_000, contextWindowTokens: 200_000 });
-      }
-      return makeSummary({ totalContextTokens: 180_000, contextWindowTokens: 200_000 });
-    });
-
-    const entries: AgentSessionEntry[] = [
-      { agentId: 'agent-low', sessionId: 'session-low' },
-      { agentId: 'agent-high', sessionId: 'session-high' },
-    ];
-
-    const { result } = renderHook(() => useAgentSessionMetrics(entries), {
-      wrapper: createWrapper(),
-    });
-
-    await waitFor(() => {
-      expect(result.current.size).toBe(2);
-    });
-
-    expect(result.current.get('agent-low')!.contextPercent).toBe(10);
-    expect(result.current.get('agent-high')!.contextPercent).toBe(90);
-  });
-});
-
-describe('getMetricsKey', () => {
-  it('returns agentId for local agents', () => {
-    expect(getMetricsKey('agent-1')).toBe('agent-1');
   });
 });

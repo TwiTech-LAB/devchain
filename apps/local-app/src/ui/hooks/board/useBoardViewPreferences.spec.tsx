@@ -62,49 +62,26 @@ describe('useBoardViewPreferences', () => {
     expect(result.current.currentPageSize).toBe(100);
   });
 
-  it('resets session-expanded empty columns after a parent-filter change', async () => {
+  it.each([
+    { label: 'parent filter', next: { projectId: 'project-a', parentFilter: 'parent-1' } },
+    { label: 'project', next: { projectId: 'project-b', parentFilter: undefined } },
+  ] as const)('resets expanded empty columns on $label change', async ({ next }) => {
     const { result, rerender } = renderHook(
-      ({ parentFilter }) =>
+      ({ projectId, parentFilter }) =>
         useBoardViewPreferences({
-          selectedProjectId: 'project-a',
+          selectedProjectId: projectId,
           parentFilter,
           routeView: undefined,
           routePageSize: undefined,
           onRouteViewChange: jest.fn(),
           onRoutePageSizeChange: jest.fn(),
         }),
-      { initialProps: { parentFilter: undefined as string | undefined } },
+      { initialProps: { projectId: 'project-a', parentFilter: undefined as string | undefined } },
     );
     await waitFor(() => expect(result.current.isColumnCollapsed('todo', true)).toBe(true));
-
     act(() => result.current.expandColumn('todo'));
     expect(result.current.isColumnCollapsed('todo', true)).toBe(false);
-
-    rerender({ parentFilter: 'parent-1' });
-
-    await waitFor(() => expect(result.current.isColumnCollapsed('todo', true)).toBe(true));
-  });
-
-  it('resets session-expanded empty columns after a project change', async () => {
-    const { result, rerender } = renderHook(
-      ({ projectId }) =>
-        useBoardViewPreferences({
-          selectedProjectId: projectId,
-          parentFilter: undefined,
-          routeView: undefined,
-          routePageSize: undefined,
-          onRouteViewChange: jest.fn(),
-          onRoutePageSizeChange: jest.fn(),
-        }),
-      { initialProps: { projectId: 'project-a' } },
-    );
-    await waitFor(() => expect(result.current.isColumnCollapsed('todo', true)).toBe(true));
-
-    act(() => result.current.expandColumn('todo'));
-    expect(result.current.isColumnCollapsed('todo', true)).toBe(false);
-
-    rerender({ projectId: 'project-b' });
-
+    rerender(next);
     await waitFor(() => expect(result.current.isColumnCollapsed('todo', true)).toBe(true));
   });
 

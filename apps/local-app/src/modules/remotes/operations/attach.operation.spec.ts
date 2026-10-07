@@ -4,11 +4,13 @@
  * fake host client with a skewed home clock proves the cursor origin without
  * booting two apps.
  */
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
+import { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
 import { AttachOperation } from './attach.operation';
+import { FileSyncHandoff } from './file-sync-handoff';
 import { RemoteHostRequestError, type RemoteHostClient } from './remote-host.client';
 
 const HOST_FROZEN_AT = '2026-09-22T10:00:00.000Z';
@@ -47,6 +49,7 @@ function makeOperation(
     {} as never,
     {} as never,
     executor,
+    { clear: jest.fn() } as never,
   );
 }
 
@@ -122,6 +125,8 @@ describe('AttachOperation preflight home gate', () => {
       create: jest.fn().mockResolvedValue(undefined),
     },
     health: { apiKeyRejected?: boolean } = {},
+    host: Partial<RemoteHostClient> = { projectExists: jest.fn().mockResolvedValue(false) },
+    ensureRepository = jest.fn().mockResolvedValue(false),
   ): AttachOperation {
     return new AttachOperation(
       { getState: () => ({ online: true, versionMatches: true, homePath, ...health }) } as never,
@@ -129,24 +134,96 @@ describe('AttachOperation preflight home gate', () => {
       {
         build: jest.fn().mockResolvedValue({ ok: true, replica: {} }),
       } as never,
-      { projectExists: jest.fn().mockResolvedValue(false) } as unknown as RemoteHostClient,
+      host as RemoteHostClient,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
-      { ensureAvailable } as never,
+      { ensureAvailable, ensureRepository } as never,
       {} as never,
       {} as never,
       {} as never,
       new FakeProcessExecutor(),
+      { clear: jest.fn() } as never,
     );
   }
 
   async function runPreflight(attach: AttachOperation): Promise<void> {
     const step = attach.steps.find((definition) => definition.id === 'preflight');
     if (!step) throw new Error('preflight step not found');
-    await step.run({ operation, details: {} } as Parameters<typeof step.run>[0]);
+    await step.run({ operation, details: {}, progress: async () => undefined } as Parameters<
+      typeof step.run
+    >[0]);
   }
+
+  // The step boundary verifies durable details and retries before any copy starts.
+  it('records repository creation and preserves the note on Retry', async () => {
+    const ensureRepository = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+    const attach = makeAttachWithHealth(
+      homedir(),
+      undefined,
+      undefined,
+      {},
+      undefined,
+      ensureRepository,
+    );
+    const details: Record<string, unknown> = {};
+    const progress = jest.fn(async (patch) => {
+      Object.assign(details, patch);
+    });
+    const preflight = attach.steps.find((step) => step.id === 'preflight')!;
+    const run = { operation, details, progress };
+    await preflight.run(run);
+    await preflight.run(run);
+    expect(details.gitInit).toBe('created');
+    expect(progress).toHaveBeenCalledTimes(1);
+    expect(progress).toHaveBeenCalledWith({ gitInit: 'created' }, { durable: true });
+  });
+
+  it('fails preflight with the init error and retries initialization', async () => {
+    const ensureRepository = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('fatal: permission denied'))
+      .mockResolvedValueOnce(true);
+    const attach = makeAttachWithHealth(
+      homedir(),
+      undefined,
+      undefined,
+      {},
+      undefined,
+      ensureRepository,
+    );
+    const details: Record<string, unknown> = {};
+    const run = {
+      operation,
+      details,
+      progress: async (patch: Record<string, unknown>) => {
+        Object.assign(details, patch);
+      },
+    };
+    const preflight = attach.steps.find((step) => step.id === 'preflight')!;
+    await expect(preflight.run(run)).rejects.toThrow('fatal: permission denied');
+    expect(details.gitInit).toBeUndefined();
+    await preflight.run(run);
+    expect(details.gitInit).toBe('created');
+  });
+
+  it('refuses an existing binding before initializing Git', async () => {
+    const ensureRepository = jest.fn();
+    const attach = makeAttachWithHealth(
+      homedir(),
+      undefined,
+      {
+        get: jest.fn().mockResolvedValue({ state: 'remote', remoteId: 'other' }),
+        create: jest.fn(),
+      },
+      {},
+      undefined,
+      ensureRepository,
+    );
+    await expect(runPreflight(attach)).rejects.toMatchObject({ code: 'REMOTE_BINDING_EXISTS' });
+    expect(ensureRepository).not.toHaveBeenCalled();
+  });
 
   it("refuses a remote whose home folder differs from this PC's", async () => {
     await expect(runPreflight(makeAttachWithHealth('/home/someone-else'))).rejects.toMatchObject({
@@ -177,6 +254,34 @@ describe('AttachOperation preflight home gate', () => {
     expect(bindings.create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['releases the copy a cancel left on this remote', 'remote-1', true],
+    ['keeps a copy that no failed cancel on this remote recorded', 'remote-2', false],
+  ])('%s', async (_name, failedRemoteId, released) => {
+    const host = {
+      projectExists: jest.fn().mockResolvedValue(true),
+      freeze: jest.fn().mockResolvedValue({}),
+      release: jest.fn().mockResolvedValue(undefined),
+    };
+    const bindings = {
+      get: jest.fn().mockResolvedValue({ state: 'failed', remoteId: failedRemoteId }),
+      create: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
+    const attach = makeAttachWithHealth(homedir(), undefined, bindings, {}, host);
+
+    if (released) {
+      await expect(runPreflight(attach)).resolves.toBeUndefined();
+      expect(host.release).toHaveBeenCalledWith('remote-1', 'A');
+      expect(host.freeze.mock.invocationCallOrder[0]).toBeLessThan(
+        host.release.mock.invocationCallOrder[0],
+      );
+    } else {
+      await expect(runPreflight(attach)).rejects.toMatchObject({ code: 'HOST_PROJECT_EXISTS' });
+      expect(host.release).not.toHaveBeenCalled();
+    }
+  });
+
   it('allows a matching home and a remote that reports none', async () => {
     await expect(runPreflight(makeAttachWithHealth(homedir()))).resolves.toBeUndefined();
     await expect(runPreflight(makeAttachWithHealth(null))).resolves.toBeUndefined();
@@ -189,12 +294,15 @@ describe('AttachOperation rollback managed exclusions', () => {
     managed: { set: jest.Mock },
     docker: { rollback: jest.Mock } = { rollback: jest.fn().mockResolvedValue({}) },
     freeze: { thaw: jest.Mock } = { thaw: jest.fn() },
+    host: Partial<RemoteHostClient> = {
+      installGitGuard: jest.fn().mockResolvedValue({ warning: null }),
+    },
   ): AttachOperation {
     return new AttachOperation(
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
+      host as RemoteHostClient,
       freeze as never,
       {} as never,
       {} as never,
@@ -204,6 +312,7 @@ describe('AttachOperation rollback managed exclusions', () => {
       {} as never,
       docker as never,
       new FakeProcessExecutor(),
+      { clear: jest.fn() } as never,
     );
   }
 
@@ -213,6 +322,199 @@ describe('AttachOperation rollback managed exclusions', () => {
   ): RemoteOperation {
     return { ...operation, steps, details } as RemoteOperation;
   }
+
+  function removalAttempt() {
+    const home = new FakeFileSyncService();
+    const guarded = { active: true };
+    const host = {
+      syncFolderExists: jest.fn().mockResolvedValue(false),
+      removeGitGuard: jest.fn(async () => ({
+        removed: false,
+        indexRefreshed: null,
+        warning: null,
+      })),
+      syncDevice: jest.fn().mockRejectedValue(new Error('pair failed')),
+      syncRemoveFolder: jest.fn().mockResolvedValue(undefined),
+      installGitGuard: jest.fn(async () => {
+        guarded.active = true;
+        return { warning: null };
+      }),
+      projectExists: jest.fn().mockResolvedValue(true),
+      freeze: jest.fn().mockResolvedValue({}),
+      release: jest.fn(async () => {
+        expect(guarded.active).toBe(true);
+      }),
+    };
+    const handoff = new FileSyncHandoff(
+      home as never,
+      host as never,
+      { get: () => [] } as never,
+      { remove: async () => ({ removed: false, indexRefreshed: null, warning: null }) } as never,
+      new FakeProcessExecutor(),
+      { get: () => 'vm' } as never,
+    );
+    const details: Record<string, unknown> = { pushStarted: true };
+    const started = { id: 'file_sync_initial', state: 'running', startedAt: HOST_FROZEN_AT };
+    const run = {
+      operation: rolledBackOperation([started], details),
+      details,
+      progress: async (patch: Record<string, unknown>) => void Object.assign(details, patch),
+    };
+    const attach = makeRollbackAttach(
+      { removeFolders: jest.fn(handoff.removeFolders.bind(handoff)) },
+      { set: jest.fn() },
+      undefined,
+      undefined,
+      host,
+    );
+    const cancel = (state = 'failed') =>
+      attach.rollback({
+        ...run.operation,
+        steps: [{ ...run.operation.steps[0], state }],
+        details: structuredClone(details),
+      } as RemoteOperation);
+    return { home, guarded, host, handoff, run, cancel };
+  }
+
+  // Service-unit wiring proves cleanup from the persisted step snapshot after
+  // ambiguous network effects, without filesystem or two-instance fixtures.
+  it.each([
+    ['DELETE response lost', false],
+    ['DELETE response lost', true],
+  ] as const)(
+    'restores the VM guard after %s (Retry returns absent: %s)',
+    async (message, retry) => {
+      const { home, guarded, host, handoff, run, cancel } = removalAttempt();
+      const ensure = jest.spyOn(home, 'ensureFolder');
+      host.removeGitGuard.mockImplementationOnce(async () => {
+        expect(run.operation.steps[0].startedAt).toBe(HOST_FROZEN_AT);
+        guarded.active = false;
+        throw new Error(message);
+      });
+
+      await expect(handoff.initial(run, 'A')).rejects.toThrow(message);
+      expect(run.details.vmGuardRemoved).toBeUndefined();
+      expect(ensure).not.toHaveBeenCalled();
+      expect(host.syncDevice).not.toHaveBeenCalled();
+      if (retry) {
+        await expect(handoff.initial(run, 'A')).rejects.toThrow('pair failed');
+        expect(host.removeGitGuard).toHaveBeenCalledTimes(2);
+        expect(run.details.vmGuardRemoved).toBeUndefined();
+      }
+
+      await cancel(retry ? 'pending' : 'failed');
+
+      expect(host.installGitGuard).toHaveBeenCalledWith('remote-1', 'A', {
+        homeName: hostname(),
+        reason: 'cancelled-connect',
+      });
+      expect(host.installGitGuard.mock.invocationCallOrder[0]).toBeLessThan(
+        host.release.mock.invocationCallOrder[0],
+      );
+      expect(guarded.active).toBe(true);
+    },
+  );
+
+  it.each(['success', 'lost'] as const)(
+    'restores the VM guard when cancellation arrives before the removal answer (%s)',
+    async (answer) => {
+      const { guarded, host, handoff, run, cancel } = removalAttempt();
+      let entered!: () => void;
+      let resolveAnswer!: (result: {
+        removed: boolean;
+        indexRefreshed: null;
+        warning: null;
+      }) => void;
+      let rejectAnswer!: (error: Error) => void;
+      const requestStarted = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      host.removeGitGuard.mockImplementationOnce(() => {
+        guarded.active = false;
+        entered();
+        return new Promise((resolve, reject) => {
+          resolveAnswer = resolve;
+          rejectAnswer = reject;
+        });
+      });
+      const initial = handoff.initial(run, 'A');
+      await requestStarted;
+
+      handoff.interrupt(run.operation.id);
+      if (answer === 'success')
+        resolveAnswer({ removed: true, indexRefreshed: null, warning: null });
+      else rejectAnswer(new Error('DELETE response lost'));
+      await expect(initial).rejects.toThrow(
+        answer === 'success' ? 'The Connect was cancelled.' : 'DELETE response lost',
+      );
+      expect(run.details.vmGuardRemoved).toBe(answer === 'success' ? true : undefined);
+      expect(host.syncDevice).not.toHaveBeenCalled();
+
+      await cancel();
+
+      expect(host.installGitGuard).toHaveBeenCalledWith('remote-1', 'A', {
+        homeName: hostname(),
+        reason: 'cancelled-connect',
+      });
+      expect(host.installGitGuard.mock.invocationCallOrder[0]).toBeLessThan(
+        host.release.mock.invocationCallOrder[0],
+      );
+      expect(guarded.active).toBe(true);
+    },
+  );
+
+  // Unit orchestration proves request ordering and best-effort cancellation policy.
+  it.each(['installed', 'skipped', 'failed', 'untouched'] as const)(
+    'restores the cancelled-Connect VM guard before host release (%s)',
+    async (outcome) => {
+      const removeFolders = jest.fn().mockResolvedValue(null);
+      const host = {
+        installGitGuard: jest
+          .fn()
+          .mockResolvedValue({ warning: outcome === 'skipped' ? 'old git' : null }),
+        projectExists: jest.fn().mockResolvedValue(true),
+        freeze: jest.fn().mockResolvedValue({}),
+        release: jest.fn().mockResolvedValue(undefined),
+      };
+      if (outcome === 'failed') host.installGitGuard.mockRejectedValueOnce(new Error('VM offline'));
+      const attach = makeRollbackAttach(
+        { removeFolders },
+        { set: jest.fn() },
+        undefined,
+        undefined,
+        host,
+      );
+      const initialStep = {
+        id: 'file_sync_initial',
+        state: outcome === 'untouched' ? 'pending' : 'failed',
+        startedAt: outcome === 'untouched' ? null : HOST_FROZEN_AT,
+      };
+      const result = await attach.rollback(
+        rolledBackOperation([initialStep], {
+          pushStarted: true,
+          vmGuardRemoved: outcome !== 'untouched',
+        }),
+      );
+      expect(host.release).toHaveBeenCalledWith('remote-1', 'A');
+      if (outcome === 'untouched') {
+        expect(host.installGitGuard).not.toHaveBeenCalled();
+        expect(removeFolders).not.toHaveBeenCalled();
+      } else {
+        expect(host.installGitGuard).toHaveBeenCalledWith('remote-1', 'A', {
+          homeName: hostname(),
+          reason: 'cancelled-connect',
+        });
+        expect(removeFolders.mock.invocationCallOrder[0]).toBeLessThan(
+          host.installGitGuard.mock.invocationCallOrder[0],
+        );
+        expect(host.installGitGuard.mock.invocationCallOrder[0]).toBeLessThan(
+          host.release.mock.invocationCallOrder[0],
+        );
+      }
+      if (outcome === 'skipped') expect(result).toMatchObject({ vmGuardWarning: 'old git' });
+      if (outcome === 'failed') expect(result?.vmGuardWarning).toContain('VM offline');
+    },
+  );
 
   it('restores the set the attempt replaced, next to the folder removal', async () => {
     const removeFolders = jest.fn().mockResolvedValue(null);
@@ -309,6 +611,7 @@ describe('AttachOperation Docker steps', () => {
       { interrupt: jest.fn() } as never,
       docker as never,
       new FakeProcessExecutor(),
+      { clear: jest.fn() } as never,
     );
   };
 

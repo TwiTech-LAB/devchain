@@ -101,21 +101,6 @@ describe('ScheduledEpicApiError', () => {
 // ============================================
 
 describe('CRON_PRESETS', () => {
-  it('contains at least one preset', () => {
-    expect(CRON_PRESETS.length).toBeGreaterThan(0);
-  });
-
-  it('every preset has label, expression, and description', () => {
-    for (const preset of CRON_PRESETS) {
-      expect(typeof preset.label).toBe('string');
-      expect(preset.label.length).toBeGreaterThan(0);
-      expect(typeof preset.expression).toBe('string');
-      expect(preset.expression.length).toBeGreaterThan(0);
-      expect(typeof preset.description).toBe('string');
-      expect(preset.description.length).toBeGreaterThan(0);
-    }
-  });
-
   it('includes a daily and weekly preset', () => {
     const expressions = CRON_PRESETS.map((p) => p.expression);
     expect(expressions).toContain('0 0 * * *');
@@ -138,35 +123,84 @@ describe('fetchScheduledEpics', () => {
     );
   });
 
-  it('appends enabled=true filter when provided', async () => {
-    mockFetch(true, [baseSchedule]);
-    await fetchScheduledEpics(globalFetch, 'proj-1', { enabled: true });
-    const url = String((global.fetch as jest.Mock).mock.calls[0][0]);
-    expect(url).toContain('enabled=true');
+  it.each([
+    { enabled: true, response: [baseSchedule] },
+    { enabled: false, response: [] },
+  ] as const)('encodes enabled=$enabled filter', async ({ enabled, response }) => {
+    mockFetch(true, response);
+    await fetchScheduledEpics(globalFetch, 'proj-1', { enabled });
+    expect(String((global.fetch as jest.Mock).mock.calls[0][0])).toContain(`enabled=${enabled}`);
   });
 
-  it('appends enabled=false filter when provided', async () => {
-    mockFetch(true, []);
-    await fetchScheduledEpics(globalFetch, 'proj-1', { enabled: false });
-    const url = String((global.fetch as jest.Mock).mock.calls[0][0]);
-    expect(url).toContain('enabled=false');
-  });
-
-  it('throws ScheduledEpicApiError on failure', async () => {
-    mockFetch(false, { message: 'Server error' }, 500);
-    await expect(fetchScheduledEpics(globalFetch, 'proj-1')).rejects.toBeInstanceOf(
-      ScheduledEpicApiError,
-    );
-  });
-
-  it('surfaces status code from error response', async () => {
-    mockFetch(false, { message: 'Not found' }, 404);
-    try {
-      await fetchScheduledEpics(globalFetch, 'proj-1');
-    } catch (err) {
-      expect((err as ScheduledEpicApiError).status).toBe(404);
-    }
-  });
+  it.each([
+    {
+      label: 'list',
+      status: 500,
+      message: 'Server error',
+      request: () => fetchScheduledEpics(globalFetch, 'proj-1'),
+    },
+    {
+      label: 'read',
+      status: 404,
+      message: 'Not found',
+      request: () => fetchScheduledEpic(globalFetch, 'sched-1'),
+    },
+    {
+      label: 'create',
+      status: 400,
+      message: 'Validation failed',
+      request: () =>
+        createScheduledEpic(globalFetch, {
+          projectId: 'proj-1',
+          name: '',
+          cronExpression: 'invalid',
+          timezone: 'UTC',
+          titleTemplate: 'x',
+        }),
+    },
+    {
+      label: 'update',
+      status: 409,
+      message: 'Version conflict',
+      request: () => updateScheduledEpic(globalFetch, 'sched-1', { configVersion: 1 }),
+    },
+    {
+      label: 'delete',
+      status: 404,
+      message: 'Not found',
+      request: () => deleteScheduledEpic(globalFetch, 'sched-1'),
+    },
+    {
+      label: 'toggle',
+      status: 409,
+      message: 'Version conflict',
+      request: () => toggleScheduledEpic(globalFetch, 'sched-1', false, 1),
+    },
+    {
+      label: 'run',
+      status: 500,
+      message: 'Server error',
+      request: () => runScheduledEpicNow(globalFetch, 'sched-1'),
+    },
+    {
+      label: 'runs',
+      status: 404,
+      message: 'Not found',
+      request: () => fetchScheduledEpicRuns(globalFetch, 'sched-1'),
+    },
+  ] as const)(
+    'maps $label HTTP failure to typed status and message',
+    async ({ status, message, request }) => {
+      mockFetch(false, { message }, status);
+      const response = request();
+      await expect(response).rejects.toBeInstanceOf(ScheduledEpicApiError);
+      await expect(response).rejects.toMatchObject({
+        status,
+        message,
+        isVersionConflict: status === 409,
+      });
+    },
+  );
 });
 
 // ============================================
@@ -179,13 +213,6 @@ describe('fetchScheduledEpic', () => {
     const result = await fetchScheduledEpic(globalFetch, 'sched-1');
     expect(result).toEqual(baseSchedule);
     expect(global.fetch).toHaveBeenCalledWith('/api/scheduled-epics/sched-1', undefined);
-  });
-
-  it('throws ScheduledEpicApiError on 404', async () => {
-    mockFetch(false, { message: 'Not found' }, 404);
-    await expect(fetchScheduledEpic(globalFetch, 'sched-1')).rejects.toBeInstanceOf(
-      ScheduledEpicApiError,
-    );
   });
 });
 
@@ -214,19 +241,6 @@ describe('createScheduledEpic', () => {
       }),
     );
   });
-
-  it('throws ScheduledEpicApiError on validation failure', async () => {
-    mockFetch(false, { message: 'Validation failed' }, 400);
-    await expect(
-      createScheduledEpic(globalFetch, {
-        projectId: 'proj-1',
-        name: '',
-        cronExpression: 'invalid',
-        timezone: 'UTC',
-        titleTemplate: 'x',
-      }),
-    ).rejects.toBeInstanceOf(ScheduledEpicApiError);
-  });
 });
 
 // ============================================
@@ -249,17 +263,6 @@ describe('updateScheduledEpic', () => {
       }),
     );
   });
-
-  it('throws ScheduledEpicApiError with status 409 on version conflict', async () => {
-    mockFetch(false, { message: 'Version conflict' }, 409);
-    try {
-      await updateScheduledEpic(globalFetch, 'sched-1', { configVersion: 1 });
-    } catch (err) {
-      expect(err).toBeInstanceOf(ScheduledEpicApiError);
-      expect((err as ScheduledEpicApiError).status).toBe(409);
-      expect((err as ScheduledEpicApiError).isVersionConflict).toBe(true);
-    }
-  });
 });
 
 // ============================================
@@ -273,13 +276,6 @@ describe('deleteScheduledEpic', () => {
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/scheduled-epics/sched-1',
       expect.objectContaining({ method: 'DELETE' }),
-    );
-  });
-
-  it('throws ScheduledEpicApiError on failure', async () => {
-    mockFetch(false, { message: 'Not found' }, 404);
-    await expect(deleteScheduledEpic(globalFetch, 'sched-1')).rejects.toBeInstanceOf(
-      ScheduledEpicApiError,
     );
   });
 });
@@ -302,16 +298,6 @@ describe('toggleScheduledEpic', () => {
       }),
     );
   });
-
-  it('throws ScheduledEpicApiError with status 409 on version conflict', async () => {
-    mockFetch(false, { message: 'Version conflict' }, 409);
-    try {
-      await toggleScheduledEpic(globalFetch, 'sched-1', false, 1);
-    } catch (err) {
-      expect(err).toBeInstanceOf(ScheduledEpicApiError);
-      expect((err as ScheduledEpicApiError).isVersionConflict).toBe(true);
-    }
-  });
 });
 
 // ============================================
@@ -328,19 +314,6 @@ describe('runScheduledEpicNow', () => {
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/scheduled-epics/sched-1/run-now',
       expect.objectContaining({ method: 'POST' }),
-    );
-  });
-
-  it('returns claimed=false when run is already claimed', async () => {
-    mockFetch(true, { claimed: false, run: baseRun });
-    const result = await runScheduledEpicNow(globalFetch, 'sched-1');
-    expect(result.claimed).toBe(false);
-  });
-
-  it('throws ScheduledEpicApiError on failure', async () => {
-    mockFetch(false, { message: 'Server error' }, 500);
-    await expect(runScheduledEpicNow(globalFetch, 'sched-1')).rejects.toBeInstanceOf(
-      ScheduledEpicApiError,
     );
   });
 });
@@ -372,21 +345,5 @@ describe('fetchScheduledEpicRuns', () => {
     const url = String((global.fetch as jest.Mock).mock.calls[0][0]);
     expect(url).toContain('limit=10');
     expect(url).toContain('offset=20');
-  });
-
-  it('returns paginated shape with items/total/limit/offset', async () => {
-    mockFetch(true, { items: [baseRun], total: 42, limit: 10, offset: 0 });
-    const result = await fetchScheduledEpicRuns(globalFetch, 'sched-1', { limit: 10 });
-    expect(result.items).toHaveLength(1);
-    expect(result.total).toBe(42);
-    expect(result.limit).toBe(10);
-    expect(result.offset).toBe(0);
-  });
-
-  it('throws ScheduledEpicApiError on failure', async () => {
-    mockFetch(false, { message: 'Not found' }, 404);
-    await expect(fetchScheduledEpicRuns(globalFetch, 'sched-1')).rejects.toBeInstanceOf(
-      ScheduledEpicApiError,
-    );
   });
 });

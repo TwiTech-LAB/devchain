@@ -31,18 +31,12 @@ describe('RefreshGateService', () => {
     expect(result).toBe('permanent_failure');
   });
 
-  it('should return permanent_failure for revoked token errors', async () => {
-    cloudSession.refreshAccessToken.mockRejectedValue(new Error('Token revoked'));
-
-    const result = await gate.attemptRefresh();
-    expect(result).toBe('permanent_failure');
-  });
-
-  it('should return transient_failure for network errors', async () => {
-    cloudSession.refreshAccessToken.mockRejectedValue(new Error('Network timeout'));
-
-    const result = await gate.attemptRefresh();
-    expect(result).toBe('transient_failure');
+  it.each([
+    ['Token revoked', 'permanent_failure'],
+    ['Network timeout', 'transient_failure'],
+  ])('classifies %s as %s', async (message, expected) => {
+    cloudSession.refreshAccessToken.mockRejectedValue(new Error(message));
+    expect(await gate.attemptRefresh()).toBe(expected);
   });
 
   it('should coalesce concurrent refresh attempts (single-flight)', async () => {

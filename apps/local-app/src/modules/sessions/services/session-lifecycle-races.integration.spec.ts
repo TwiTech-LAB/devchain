@@ -1,9 +1,8 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 // Backend integration: real in-memory SQLite is the cheapest layer that proves
 // lifecycle publication windows and persisted row cardinality under contention.
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { SessionsService } from './sessions.service';
 import { SessionLaunchPipeline } from './session-runtime/session-launch-pipeline.service';
@@ -51,7 +50,6 @@ const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 const RESTORE_SESSION_ID = '33333333-3333-4333-8333-333333333333';
 const NOW = '2026-08-08T18:00:00.000Z';
 const TEST_TERMINATION = { source: 'web-api' as const, reason: 'user-requested' as const };
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 describe('session lifecycle race serialization', () => {
   let sqlite: Database.Database;
@@ -105,8 +103,7 @@ describe('session lifecycle race serialization', () => {
   };
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite } = createTestDatabase());
     db = drizzle(sqlite);
     coordinator = new SessionCoordinatorService();
     store = new EpicTimeStore(db);

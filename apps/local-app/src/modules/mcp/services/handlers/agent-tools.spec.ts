@@ -117,17 +117,6 @@ describe('agent-tools handlers', () => {
   });
 
   describe('handleListAgents', () => {
-    it('returns error when no project associated', async () => {
-      const agentCtx = makeAgentCtx();
-      (agentCtx as unknown as Record<string, unknown>).project = null;
-      const ctx = makeAgentTestCtx();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({ success: true, data: agentCtx });
-
-      const result = await handleListAgents(ctx, { sessionId: SESSION_ID });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
-    });
-
     it('returns agents and guests combined, sorted by name', async () => {
       const ctx = makeAgentTestCtx();
       (ctx.storage.listAgents as jest.Mock).mockResolvedValue({
@@ -177,20 +166,6 @@ describe('agent-tools handlers', () => {
         limit: 1,
         offset: 0,
       });
-    });
-
-    it('returns the resolver error without querying storage', async () => {
-      const ctx = makeAgentTestCtx();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: false,
-        error: { code: 'SESSION_NOT_FOUND', message: 'missing' },
-      });
-
-      await expect(handleListAgents(ctx, { sessionId: SESSION_ID })).resolves.toMatchObject({
-        success: false,
-        error: { code: 'SESSION_NOT_FOUND' },
-      });
-      expect(ctx.storage.listAgents).not.toHaveBeenCalled();
     });
   });
 

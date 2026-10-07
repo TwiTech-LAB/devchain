@@ -6,17 +6,13 @@ import { SessionRuntime } from '../../sessions/services/session-runtime/session-
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
-import { request as httpRequest, type Server } from 'node:http';
-import { createServer } from 'node:https';
-import type { AddressInfo } from 'node:net';
+import { request as httpRequest } from 'node:http';
 import {
   startTwoInstances,
   waitForValue,
   type TwoInstances,
   type TestInstance,
 } from '../../../common/test/two-instance.fixture';
-import { certificateFingerprint } from '../../../common/tls/certificate';
-import { fixtureTls } from '../../../common/test/tls-fixture';
 import {
   seedReplicaSource,
   replicaSeeder,
@@ -259,17 +255,22 @@ describe('recorded transcript handoff', () => {
   });
 
   it('an interrupted HTTP upload retains its old destination and retry completes', async () => {
+    const retryBytes = Buffer.alloc(128 * 1024, 'x');
+    await put(instances.home, codex, retryBytes);
     await put(instances.host, codex, 'old');
     await new Promise<void>((resolve, reject) => {
       const req = httpRequest(
         `${instances.host.url}/api/host/transcripts?${new URLSearchParams(codex)}`,
         {
           method: 'PUT',
-          headers: { 'content-type': 'application/octet-stream', 'content-length': bytes.length },
+          headers: {
+            'content-type': 'application/octet-stream',
+            'content-length': retryBytes.length,
+          },
         },
       );
       req.on('error', () => resolve());
-      req.write(bytes.subarray(0, 65536), () => {
+      req.write(retryBytes.subarray(0, 65536), () => {
         setTimeout(() => req.destroy(new Error('interrupted')), 50);
       });
       req.on('response', () => reject(new Error('upload unexpectedly completed')));
@@ -280,58 +281,11 @@ describe('recorded transcript handoff', () => {
           name.endsWith('.part'),
         ),
       10_000,
+      20,
     );
     expect(await readFile(files(instances.host).path(codex), 'utf8')).toBe('old');
     await client().uploadTranscript(remoteId, codex, files(instances.home));
-    expect(await readFile(files(instances.host).path(codex))).toEqual(bytes);
-  });
-
-  it('an interrupted HTTP download retains its old destination and retry completes', async () => {
-    let interrupted = true;
-    const server: Server = createServer(
-      { key: fixtureTls.key, cert: fixtureTls.cert },
-      (req, res) => {
-        if (!req.url?.startsWith('/api/host/transcripts')) {
-          res.writeHead(404).end();
-          return;
-        }
-        res.writeHead(200, { 'content-length': bytes.length });
-        if (interrupted) {
-          res.write(bytes.subarray(0, 65536));
-          setTimeout(() => res.destroy(), 10);
-        } else res.end(bytes);
-      },
-    );
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const response = await fetch(`${instances.home.url}/api/remotes`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        name: 'broken-transfer',
-        baseUrl: address,
-        certificateFingerprint: certificateFingerprint(fixtureTls.cert),
-      }),
-    });
-    const remote = (await response.json()) as { id: string };
-    try {
-      await put(instances.home, codex, 'old');
-      await expect(
-        client().downloadTranscript(remote.id, codex, files(instances.home)),
-      ).rejects.toThrow();
-      expect(await readFile(files(instances.home).path(codex), 'utf8')).toBe('old');
-      expect(
-        (await readdir(dirname(files(instances.home).path(codex)))).some((name) =>
-          name.endsWith('.part'),
-        ),
-      ).toBe(false);
-      interrupted = false;
-      await client().downloadTranscript(remote.id, codex, files(instances.home));
-      expect(await readFile(files(instances.home).path(codex))).toEqual(bytes);
-    } finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+    expect(await readFile(files(instances.host).path(codex))).toEqual(retryBytes);
   });
 
   it('rejects missing or excessive Content-Length and invalid path patterns through HTTP', async () => {

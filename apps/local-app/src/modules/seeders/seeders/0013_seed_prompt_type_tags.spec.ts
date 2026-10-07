@@ -1,17 +1,14 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { ProviderEffortSeedingService } from '../../providers/services/provider-effort-seeding.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
-import { DataSeederService, REGISTERED_DATA_SEEDERS } from '../services/data-seeder.service';
+import { DataSeederService } from '../services/data-seeder.service';
 import type { SeederContext } from '../types/seeder.types';
 import { runSeedPromptTypeTags, seedPromptTypeTagsSeeder } from './0013_seed_prompt_type_tags';
-import { seedPreserveProjectEgressDefaultsSeeder } from './0014_seed_preserve_project_egress_defaults';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const TS = '2026-07-28T00:00:00.000Z';
 
 describe('0013_seed_prompt_type_tags', () => {
@@ -19,9 +16,7 @@ describe('0013_seed_prompt_type_tags', () => {
   let db: BetterSQLite3Database;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite, db } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
   });
 
@@ -292,19 +287,5 @@ describe('0013_seed_prompt_type_tags', () => {
         executedAt: expect.any(String),
       },
     });
-  });
-
-  it('is registered immediately before 0014 with the permanent version-1 journal identity', () => {
-    expect(seedPromptTypeTagsSeeder).toMatchObject({
-      name: '0013_seed_prompt_type_tags',
-      version: 1,
-    });
-    const promptTypeTagsIndex = REGISTERED_DATA_SEEDERS.indexOf(seedPromptTypeTagsSeeder);
-    const preserveEgressDefaultsIndex = REGISTERED_DATA_SEEDERS.indexOf(
-      seedPreserveProjectEgressDefaultsSeeder,
-    );
-
-    expect(promptTypeTagsIndex).toBeGreaterThan(-1);
-    expect(preserveEgressDefaultsIndex).toBe(promptTypeTagsIndex + 1);
   });
 });

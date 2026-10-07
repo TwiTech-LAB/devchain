@@ -5,11 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const {
-  performClaim,
-  readClaim,
-  refreshHostUnit,
-} = require("../lib/claim");
+const { performClaim, readClaim, refreshHostUnit } = require("../lib/claim");
 const { renderEnvFile } = require("../lib/render");
 const {
   fakeSystem,
@@ -54,15 +50,34 @@ test("a claim creates the user, private auth files, the service and the record",
   assert.deepEqual(record, {
     userName: "alice",
     homePath: claim.homePath,
+    uid: 1001,
+    gid: 1001,
+    primaryGroup: "alice",
     version: "0.24.0",
     cliVersions,
     port: 3100,
     claimedAt: "2026-09-24T10:00:00.000Z",
   });
   assert.deepEqual(readClaim(sys), record);
+  const profile = path.join(sys.paths.profileDir, "devchain-ids.sh");
+  assert.equal(
+    fs.readFileSync(profile, "utf8"),
+    'export DEVCHAIN_UID="$(id -u)" DEVCHAIN_GID="$(id -g)"\n',
+  );
+  assert.equal(mode(profile), 0o644);
   assert.deepEqual(
     calls.find(([c]) => c === "useradd"),
-    ["useradd", "-m", "-d", claim.homePath, "-s", "/bin/bash", "-U", "alice"],
+    [
+      "useradd",
+      "-m",
+      "-d",
+      claim.homePath,
+      "-s",
+      "/bin/bash",
+      "-g",
+      "1001",
+      "alice",
+    ],
   );
   assert.deepEqual(
     calls.find(([c]) => c === "npm"),
@@ -125,6 +140,11 @@ test("a claim creates the user, private auth files, the service and the record",
   assert.match(sudoers, /^alice ALL=\(ALL\) NOPASSWD:ALL$/m);
   assert.ok(
     sudoers.includes(
+      `alice ALL=(root) NOPASSWD: ${sys.paths.binDir}/devchain-host-project-chown\n`,
+    ),
+  );
+  assert.ok(
+    sudoers.includes(
       `devchain-host-update, ${sys.paths.binDir}/devchain-host-project-root\n`,
     ),
   );
@@ -166,7 +186,10 @@ function assertUnitPassesTls(unit, homePath) {
       `\nEnvironment=DEVCHAIN_HOST_TLS_CERT_FILE=${homePath}/.devchain/tls/cert.pem\n`,
     ),
   );
-  assert.match(unit, /^ExecStartPre=\/bin\/sh -c .*DEVCHAIN_HOST_TLS_KEY_FILE/m);
+  assert.match(
+    unit,
+    /^ExecStartPre=\/bin\/sh -c .*DEVCHAIN_HOST_TLS_KEY_FILE/m,
+  );
 }
 
 /**
@@ -191,7 +214,10 @@ test("devchain-host.service refuses to start without a readable TLS key and cert
     "utf8",
   );
   const env = {
-    DEVCHAIN_HOST_TLS_KEY_FILE: path.join(claim.homePath, ".devchain/tls/key.pem"),
+    DEVCHAIN_HOST_TLS_KEY_FILE: path.join(
+      claim.homePath,
+      ".devchain/tls/key.pem",
+    ),
     DEVCHAIN_HOST_TLS_CERT_FILE: path.join(
       claim.homePath,
       ".devchain/tls/cert.pem",
@@ -199,7 +225,10 @@ test("devchain-host.service refuses to start without a readable TLS key and cert
   };
   assert.equal(runTlsPrecheck(unit, env).status, 0);
 
-  const unset = runTlsPrecheck(unit, { ...env, DEVCHAIN_HOST_TLS_CERT_FILE: "" });
+  const unset = runTlsPrecheck(unit, {
+    ...env,
+    DEVCHAIN_HOST_TLS_CERT_FILE: "",
+  });
   assert.equal(unset.status, 1);
   assert.match(unset.stderr, /TLS file {2}is missing or unreadable/);
 
@@ -222,7 +251,9 @@ test("a claim without the VM certificate fails at the tls step and records nothi
   });
   assert.equal(readClaim(sys), null);
   assert.ok(!fs.existsSync(sys.paths.tlsDir));
-  assert.ok(!calls.some(([command]) => command === "openssl" || command === "npm"));
+  assert.ok(
+    !calls.some(([command]) => command === "openssl" || command === "npm"),
+  );
 });
 
 test("the claim record holds no credentials", async (t) => {
@@ -236,8 +267,11 @@ test("the claim record holds no credentials", async (t) => {
   assert.deepEqual(Object.keys(JSON.parse(raw)).sort(), [
     "claimedAt",
     "cliVersions",
+    "gid",
     "homePath",
     "port",
+    "primaryGroup",
+    "uid",
     "userName",
     "version",
   ]);
@@ -254,6 +288,7 @@ test("a claim installs all five CLIs between DevChain install and activation", a
   assert.deepEqual(steps, [
     "user",
     "sudoers",
+    "profile",
     "tls",
     "provider-auth",
     "install",
@@ -337,7 +372,9 @@ test("refreshHostUnit re-writes a deleted unit from the claim record and the cur
   assert.doesNotMatch(unit, /@[A-Z]+@/);
   assertUnitPassesTls(unit, path.join(root, "Users/alice"));
   assert.ok(
-    calls.some((call) => call[0] === "systemctl" && call[1] === "daemon-reload"),
+    calls.some(
+      (call) => call[0] === "systemctl" && call[1] === "daemon-reload",
+    ),
   );
   assert.ok(
     calls.some(
@@ -354,9 +391,7 @@ test("refreshHostUnit writes nothing while no claim record exists", async (t) =>
   t.after(cleanup);
   assert.equal(await refreshHostUnit(sys), false);
   assert.ok(
-    !fs.existsSync(
-      path.join(sys.paths.systemdDir, "devchain-host.service"),
-    ),
+    !fs.existsSync(path.join(sys.paths.systemdDir, "devchain-host.service")),
   );
   assert.ok(!calls.some(([command]) => command === "systemctl"));
 });
@@ -436,137 +471,235 @@ test("a failed install leaves no record, and the retry reuses the created user",
   assert.equal(readClaim(sys).version, "0.24.0");
 });
 
-test("a claim with a free uid creates the user with that uid", async (t) => {
-  const { sys, root, calls, accounts, owners, cleanup } = fakeSystem();
+// Command-boundary tests exercise allocation and retries without modifying host accounts.
+for (const uid of [1000, 501]) {
+  test(`a free uid ${uid} is used with its requested primary gid`, async (t) => {
+    const { sys, root, calls, accounts, owners, cleanup } = fakeSystem();
+    t.after(cleanup);
+    const claim = claimIn(root, { uid, gid: uid });
+    const record = await performClaim(claim, sys, silent);
+    assert.deepEqual(
+      calls.find(([c]) => c === "groupadd"),
+      ["groupadd", "-g", String(uid), "alice"],
+    );
+    assert.deepEqual(
+      calls.find(([c]) => c === "useradd"),
+      [
+        "useradd",
+        "-m",
+        "-d",
+        claim.homePath,
+        "-s",
+        "/bin/bash",
+        "-g",
+        String(uid),
+        "-u",
+        String(uid),
+        "alice",
+      ],
+    );
+    assert.equal(accounts.get("alice").uid, uid);
+    assert.equal(
+      owners.get(path.join(claim.homePath, ".devchain")),
+      `${uid}:${uid}`,
+    );
+    assert.deepEqual(
+      { ...record, cliVersions: null, claimedAt: null },
+      {
+        userName: "alice",
+        homePath: claim.homePath,
+        requestedUid: uid,
+        requestedGid: uid,
+        uid,
+        gid: uid,
+        primaryGroup: "alice",
+        version: "0.24.0",
+        cliVersions: null,
+        port: 3100,
+        claimedAt: null,
+      },
+    );
+  });
+}
+
+test("an existing gid becomes the primary group without creating another group", async (t) => {
+  const { sys, root, calls, cleanup } = fakeSystem({
+    groups: [{ name: "dialout", gid: 20 }],
+  });
   t.after(cleanup);
-  const claim = claimIn(root, { uid: 1000 });
-
-  await performClaim(claim, sys, silent);
-
-  assert.deepEqual(
-    calls.find(([c]) => c === "useradd"),
-    [
-      "useradd",
-      "-m",
-      "-d",
-      claim.homePath,
-      "-s",
-      "/bin/bash",
-      "-U",
-      "-u",
-      "1000",
-      "alice",
-    ],
+  const record = await performClaim(
+    claimIn(root, { uid: 501, gid: 20 }),
+    sys,
+    silent,
   );
-  assert.equal(accounts.get("alice").uid, 1000);
-  assert.equal(owners.get(path.join(claim.homePath, ".devchain")), "1000:1000");
+  assert.equal(
+    calls.some(([c]) => c === "groupadd"),
+    false,
+  );
+  assert.equal(record.uid, 501);
+  assert.equal(record.gid, 20);
+  assert.equal(record.primaryGroup, "dialout");
+  assert.equal(record.uidConflict, undefined);
+  assert.match(
+    fs.readFileSync(
+      path.join(sys.paths.systemdDir, "devchain-host.service"),
+      "utf8",
+    ),
+    /^Group=dialout$/m,
+  );
 });
 
-test("a uid another account already holds falls back to the plain command", async (t) => {
-  const { sys, root, calls, accounts, cleanup } = fakeSystem({
+test("a free gid uses a free alternative group name when the username is taken", async (t) => {
+  const { sys, root, calls, cleanup } = fakeSystem({
+    groups: [
+      { name: "alice", gid: 2000 },
+      { name: "alice-1", gid: 2001 },
+    ],
+  });
+  t.after(cleanup);
+  const record = await performClaim(
+    claimIn(root, { uid: 1000, gid: 1000 }),
+    sys,
+    silent,
+  );
+  assert.deepEqual(
+    calls.find(([c]) => c === "groupadd"),
+    ["groupadd", "-g", "1000", "alice-2"],
+  );
+  assert.equal(record.primaryGroup, "alice-2");
+  assert.equal(record.gid, 1000);
+});
+
+test("a taken uid falls back and records the account that holds it", async (t) => {
+  const { sys, root, calls, cleanup } = fakeSystem({
     users: [{ name: "ubuntu", uid: 1000, gid: 1000, home: "/home/ubuntu" }],
   });
   t.after(cleanup);
-  const claim = claimIn(root, { uid: 1000 });
-
-  await performClaim(claim, sys, silent);
-
-  assert.deepEqual(
-    calls.find(([c]) => c === "useradd"),
-    ["useradd", "-m", "-d", claim.homePath, "-s", "/bin/bash", "-U", "alice"],
+  const record = await performClaim(
+    claimIn(root, { uid: 1000, gid: 1000 }),
+    sys,
+    silent,
   );
-  assert.equal(accounts.get("alice").uid, 1001);
+  assert.equal(calls.find(([c]) => c === "useradd").includes("-u"), false);
+  assert.equal(record.uid, 1001);
+  assert.equal(record.gid, 1000);
+  assert.deepEqual(record.uidConflict, {
+    requestedUid: 1000,
+    holder: "ubuntu",
+  });
 });
 
-test("a uid above the regular range falls back to the plain command", async (t) => {
+test("a uid above the claim range uses the next free uid", async (t) => {
   const { sys, root, calls, cleanup } = fakeSystem();
   t.after(cleanup);
-  const claim = claimIn(root, { uid: 70000 });
-
-  await performClaim(claim, sys, silent);
-
-  assert.deepEqual(
-    calls.find(([c]) => c === "useradd"),
-    ["useradd", "-m", "-d", claim.homePath, "-s", "/bin/bash", "-U", "alice"],
-  );
+  const record = await performClaim(claimIn(root, { uid: 70000 }), sys, silent);
+  assert.equal(calls.find(([c]) => c === "useradd").includes("-u"), false);
+  assert.equal(record.uid, 1001);
 });
 
-test("a retry after a partial creation keeps the uid the first attempt gave", async (t) => {
-  let failSudoers = true;
-  const { sys, root, calls, accounts, cleanup } = fakeSystem({
-    failOn: (command, args) => failSudoers && command === "visudo",
+for (const uid of [1005, 501]) {
+  test(`a partial claim retries an account with requested uid ${uid}`, async (t) => {
+    let failSudoers = true;
+    const { sys, root, calls, cleanup } = fakeSystem({
+      failOn: (c) => failSudoers && c === "visudo",
+    });
+    t.after(cleanup);
+    const claim = claimIn(root, { uid, gid: 20 });
+    await assert.rejects(performClaim(claim, sys, silent), { step: "sudoers" });
+    failSudoers = false;
+    const record = await performClaim(claim, sys, silent);
+    assert.equal(calls.filter(([c]) => c === "useradd").length, 1);
+    assert.equal(record.uid, uid);
+    assert.equal(record.gid, 20);
+    assert.equal(record.uidConflict, undefined);
   });
+}
+
+test("an existing account with different ids is reused without inventing a conflict holder", async (t) => {
+  const { sys, root, accounts, cleanup } = fakeSystem();
   t.after(cleanup);
-  const claim = claimIn(root, { uid: 1005 });
-
-  await assert.rejects(performClaim(claim, sys, silent), {
-    step: "sudoers",
-  });
-  assert.equal(accounts.get("alice").uid, 1005);
-
-  failSudoers = false;
-  await performClaim(claim, sys, silent);
-  assert.equal(calls.filter(([c]) => c === "useradd").length, 1);
-  assert.equal(accounts.get("alice").uid, 1005);
-  assert.equal(readClaim(sys).userName, "alice");
-});
-
-test("uid 501 falls back to a regular uid and a partial claim can retry", async (t) => {
-  let failSudoers = true;
-  const { sys, root, calls, accounts, cleanup } = fakeSystem({
-    failOn: (command) => failSudoers && command === "visudo",
-  });
-  t.after(cleanup);
-  const claim = claimIn(root, { uid: 501 });
-  await assert.rejects(performClaim(claim, sys, silent), { step: "sudoers" });
-  assert.equal(accounts.get("alice").uid, 1001);
-  assert.deepEqual(
-    calls.find(([command]) => command === "useradd"),
-    ["useradd", "-m", "-d", claim.homePath, "-s", "/bin/bash", "-U", "alice"],
-  );
-  failSudoers = false;
-  await performClaim(claim, sys, silent);
-  assert.equal(accounts.get("alice").uid, 1001);
-  assert.equal(calls.filter(([command]) => command === "useradd").length, 1);
-  assert.equal(readClaim(sys).userName, "alice");
-});
-
-test("a matching requested uid 501 never authorizes an existing system account", async (t) => {
-  const { sys, root, accounts, calls, cleanup } = fakeSystem();
-  t.after(cleanup);
-  const claim = claimIn(root, { uid: 501 });
+  const claim = claimIn(root, { uid: 1010, gid: 20 });
+  fs.mkdirSync(claim.homePath, { recursive: true });
   accounts.set("alice", {
     name: "alice",
-    uid: 501,
-    gid: 501,
+    uid: 1001,
+    gid: 1001,
     home: claim.homePath,
   });
-  await assert.rejects(performClaim(claim, sys, silent), {
-    code: "USER_EXISTS",
-  });
-  assert.equal(calls.length, 0);
+  const record = await performClaim(claim, sys, silent);
+  assert.equal(record.uid, 1001);
+  assert.equal(record.gid, 1001);
+  assert.deepEqual(record.uidConflict, { requestedUid: 1010, holder: null });
 });
 
-test("an existing account created without a uid keeps its ids on a uid retry", async (t) => {
+test("a gid-only mismatch does not name the claimed account as a uid holder", async (t) => {
+  const { sys, root, accounts, cleanup } = fakeSystem();
+  t.after(cleanup);
+  const claim = claimIn(root, { uid: 1000, gid: 20 });
+  fs.mkdirSync(claim.homePath, { recursive: true });
+  accounts.set("alice", {
+    name: "alice",
+    uid: 1000,
+    gid: 1000,
+    home: claim.homePath,
+  });
+  const record = await performClaim(claim, sys, silent);
+  assert.deepEqual(record.uidConflict, { requestedUid: 1000, holder: null });
+});
+
+test("a retry resolves the current requested-uid holder again", async (t) => {
   let failSudoers = true;
-  const { sys, root, calls, accounts, cleanup } = fakeSystem({
-    failOn: (command) => failSudoers && command === "visudo",
+  const { sys, root, accounts, cleanup } = fakeSystem({
+    users: [{ name: "ubuntu", uid: 1000, gid: 1000, home: "/home/ubuntu" }],
+    failOn: (c) => failSudoers && c === "visudo",
   });
   t.after(cleanup);
-  // A claim from an older home, or one whose uid was taken, left the account
-  // with an allocated uid; a retry that now names a uid must not change it.
-  await assert.rejects(performClaim(claimIn(root), sys, silent), {
-    step: "sudoers",
+  const claim = claimIn(root, { uid: 1000, gid: 1000 });
+  await assert.rejects(performClaim(claim, sys, silent), { step: "sudoers" });
+  accounts.delete("ubuntu");
+  accounts.set("holder-now", {
+    name: "holder-now",
+    uid: 1000,
+    gid: 1000,
+    home: "/home/holder-now",
   });
-  const created = accounts.get("alice");
-  assert.equal(created.uid, 1001);
-
   failSudoers = false;
-  await performClaim(claimIn(root, { uid: 1010 }), sys, silent);
+  const record = await performClaim(claim, sys, silent);
+  assert.deepEqual(record.uidConflict, {
+    requestedUid: 1000,
+    holder: "holder-now",
+  });
+});
 
-  assert.equal(calls.filter(([c]) => c === "useradd").length, 1);
-  assert.equal(accounts.get("alice").uid, 1001);
-  assert.equal(readClaim(sys).userName, "alice");
+for (const [actualUid, requestedUid] of [
+  [499, 499],
+  [501, 502],
+  [501, undefined],
+]) {
+  test(`an existing low account ${actualUid} is refused for requested uid ${requestedUid}`, async (t) => {
+    const { sys, root, accounts, calls, cleanup } = fakeSystem();
+    t.after(cleanup);
+    const claim = claimIn(root, { uid: requestedUid });
+    accounts.set("alice", {
+      name: "alice",
+      uid: actualUid,
+      gid: actualUid,
+      home: claim.homePath,
+    });
+    await assert.rejects(performClaim(claim, sys, silent), {
+      code: "USER_EXISTS",
+    });
+    assert.equal(calls.length, 0);
+  });
+}
+
+test("a uid-only claim still works without a gid", async (t) => {
+  const { sys, root, cleanup } = fakeSystem();
+  t.after(cleanup);
+  const record = await performClaim(claimIn(root, { uid: 501 }), sys, silent);
+  assert.equal(record.uid, 501);
+  assert.equal(record.gid, 501);
+  assert.equal(record.requestedGid, undefined);
 });
 
 test("an existing system account or a foreign home is refused", async (t) => {

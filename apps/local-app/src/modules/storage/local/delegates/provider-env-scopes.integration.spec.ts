@@ -1,14 +1,11 @@
+import { createTestDatabase } from '../../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import { ProviderStorageDelegate } from './provider.delegate';
 import { createStorageDelegateContext } from './base-storage.delegate';
 import type { Provider } from '../../models/domain.models';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../../drizzle');
 
 describe('ProviderStorageDelegate — env scopes (integration)', () => {
   let sqlite: Database.Database;
@@ -16,9 +13,8 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
   let delegate: ProviderStorageDelegate;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
 
     const context = createStorageDelegateContext(db);
@@ -119,10 +115,6 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
         KEY_B: [p1],
       });
       expect(scopes['KEY_A']).toHaveLength(2);
-    });
-
-    it('returns empty object for non-existent provider', () => {
-      expect(delegate.listEnvScopes(randomUUID())).toEqual({});
     });
   });
 

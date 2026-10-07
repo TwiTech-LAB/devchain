@@ -14,22 +14,15 @@ describe('UI root resolution', () => {
     await rm(fixtureRoot, { recursive: true, force: true });
   });
 
-  it('finds apps/local-app/dist/ui from the source module directory', async () => {
-    const runtimeDirectory = join(fixtureRoot, 'apps/local-app/src/modules/ui');
-    const expectedRoot = join(fixtureRoot, 'apps/local-app/dist/ui');
+  it.each([
+    ['apps/local-app/src/modules/ui', 'apps/local-app/dist/ui'],
+    ['dist/server/modules/ui', 'dist/server/ui'],
+  ])('resolves UI root from %s', async (runtimePath, uiPath) => {
+    const runtimeDirectory = join(fixtureRoot, runtimePath);
+    const expectedRoot = join(fixtureRoot, uiPath);
     await mkdir(runtimeDirectory, { recursive: true });
     await mkdir(expectedRoot, { recursive: true });
     await writeFile(join(expectedRoot, 'index.html'), 'source fixture', 'utf8');
-
-    expect(resolveUiRoot(runtimeDirectory)).toBe(expectedRoot);
-  });
-
-  it('finds dist/server/ui from the packed module directory', async () => {
-    const runtimeDirectory = join(fixtureRoot, 'dist/server/modules/ui');
-    const expectedRoot = join(fixtureRoot, 'dist/server/ui');
-    await mkdir(runtimeDirectory, { recursive: true });
-    await mkdir(expectedRoot, { recursive: true });
-    await writeFile(join(expectedRoot, 'index.html'), 'packed fixture', 'utf8');
 
     expect(resolveUiRoot(runtimeDirectory)).toBe(expectedRoot);
   });

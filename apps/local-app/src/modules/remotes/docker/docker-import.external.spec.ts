@@ -1,3 +1,5 @@
+import { Test } from '@nestjs/testing';
+import { ProcessExecutorModule } from '../../terminal/services/process-executor/process-executor.module';
 // Connect's Docker steps between two real engines: home is this machine's engine,
 // the VM is scripts/remote-proofs/docker-import-target.ts reached over the LAN.
 // Opt in with DOCKER_IMPORT_TARGET_URL and DOCKER_IMPORT_TARGET_SSH; setup and
@@ -15,10 +17,12 @@ import type { DockerImportInventory } from '../operations/docker-import-inventor
 import { RemoteHostClient } from '../operations/remote-host.client';
 import type { RemoteOperationStepRun } from '../operations/remote-operation.types';
 import { DockerHandoff } from './docker-handoff';
+import { DockerCopyBack } from './docker-copy-back';
 import { DockerHandoffStore } from './docker-handoff.store';
 import type { DockerSelection, DockerTransferDetails } from './docker-plan.dto';
 import { DockerPlanService } from './docker-plan.service';
 import { DockerPlanSourceService } from './docker-plan-source.service';
+import { fixtureTls } from '../../../common/test/tls-fixture';
 
 const TARGET_URL = process.env.DOCKER_IMPORT_TARGET_URL;
 const TARGET_SSH = process.env.DOCKER_IMPORT_TARGET_SSH;
@@ -36,6 +40,7 @@ const root = join(fixture, 'project');
 // The db's data folder, nested in the app's whole-project bind.
 const pg = join(root, 'data', 'pg');
 const image = `${prefix}:offline`;
+const variantImage = `${prefix}:other-config`;
 const composeDb = `${prefix}-db-1`;
 const runName = `${prefix}-run`;
 const appName = `${prefix}-app`;
@@ -163,6 +168,7 @@ let client: RemoteHostClient;
 let store: DockerHandoffStore;
 let journal: DockerArchiveJournal;
 let handoff: DockerHandoff;
+let copyBack: DockerCopyBack;
 const inventory = new Map<string, DockerImportInventory>();
 const exclusions = new Map<string, string[]>();
 const evidence: Record<string, unknown> = {};
@@ -238,6 +244,7 @@ suite('Docker import across two real engines', () => {
   beforeAll(async () => {
     baseline.home = await engineInventory('home');
     baseline.vm = await engineInventory('vm');
+    const vmImageStore = await docker('vm', 'info', '--format', '{{json .DriverStatus}}');
     evidence.engines = {
       home: await docker(
         'home',
@@ -253,16 +260,26 @@ suite('Docker import across two real engines', () => {
       ),
       composeHome: await docker('home', 'compose', 'version', '--short'),
       composeVm: await docker('vm', 'compose', 'version', '--short'),
+      vmImageStore,
     };
+    expect(vmImageStore).toContain('io.containerd.snapshotter.v1');
 
     scratch = await mkdtemp(join(tmpdir(), `${prefix}-`));
     client = new RemoteHostClient(
       {
-        getRemote: async () => ({ id: REMOTE, baseUrl: TARGET_URL }),
+        getRemote: async () => ({
+          id: REMOTE,
+          baseUrl: TARGET_URL,
+          tlsCertificate: fixtureTls.cert,
+        }),
       } as never,
       { get: async () => null, headers: async () => ({}) } as never,
     );
-    const source = new DockerPlanSourceService();
+    const sourceModule = await Test.createTestingModule({
+      imports: [ProcessExecutorModule],
+      providers: [DockerPlanSourceService],
+    }).compile();
+    const source = sourceModule.get(DockerPlanSourceService);
     const inventoryStore = {
       get: (p: string, r: string) => inventory.get(`${p}/${r}`) ?? null,
       set: (p: string, r: string, value: DockerImportInventory) => {
@@ -273,11 +290,16 @@ suite('Docker import across two real engines', () => {
     const plans = new DockerPlanService(
       {
         getProject: async () => ({ id: PROJECT, rootPath: root }),
-        getRemote: async () => ({ id: REMOTE, baseUrl: TARGET_URL }),
+        getRemote: async () => ({
+          id: REMOTE,
+          baseUrl: TARGET_URL,
+          tlsCertificate: fixtureTls.cert,
+        }),
       } as never,
       source,
       client,
       inventoryStore as never,
+      { get: () => null } as never,
     );
     store = new DockerHandoffStore(scratch);
     journal = new DockerArchiveJournal(scratch);
@@ -292,6 +314,16 @@ suite('Docker import across two real engines', () => {
         get: (p: string) => exclusions.get(p) ?? [],
       } as never,
       inventoryStore as never,
+      { recordPlan: () => undefined } as never,
+    );
+    copyBack = new DockerCopyBack(
+      plans,
+      source,
+      client,
+      store,
+      journal,
+      inventoryStore as never,
+      { getState: () => ({ online: true, versionMatches: true, apiKeyRejected: false }) } as never,
     );
 
     // An offline image with a marker, committed rather than built so no build cache remains.
@@ -320,8 +352,27 @@ suite('Docker import across two real engines', () => {
       seed,
       image,
     );
+    await docker(
+      'home',
+      'commit',
+      '--change',
+      'ENTRYPOINT ["docker-entrypoint.sh"]',
+      '--change',
+      'CMD ["postgres"]',
+      '--change',
+      `LABEL ${TEST_LABEL}`,
+      '--change',
+      'LABEL dev.devchain.proof.config=second',
+      seed,
+      variantImage,
+    );
     await docker('home', 'rm', '-v', seed);
     remember('home', 'images', await docker('home', 'image', 'inspect', '-f', '{{.Id}}', image));
+    remember(
+      'home',
+      'images',
+      await docker('home', 'image', 'inspect', '-f', '{{.Id}}', variantImage),
+    );
 
     // File sync would carry the project folder and its Compose file to the VM.
     const compose = {
@@ -343,6 +394,15 @@ suite('Docker import across two real engines', () => {
     await writeFile(join(root, 'compose.yaml'), JSON.stringify(compose, null, 2));
     await exec('vm', ['mkdir', '-p', root]);
     await exec('vm', ['tee', join(root, 'compose.yaml')], JSON.stringify(compose, null, 2));
+    // The SSH login may differ from the harness's matching-id runtime user.
+    await exec('vm', [
+      'sudo',
+      '-n',
+      'chown',
+      '-R',
+      `${process.getuid!()}:${process.getgid!()}`,
+      fixture,
+    ]);
 
     await docker('home', ...composeArgs, 'up', '-d');
     remember('home', 'networks', network);
@@ -360,7 +420,7 @@ suite('Docker import across two real engines', () => {
       `${runNamed}:/named`,
       '-v',
       `${pg}:/bind`,
-      image,
+      variantImage,
     );
     await docker(
       'home',
@@ -432,19 +492,36 @@ suite('Docker import across two real engines', () => {
     // spread over the window: the saved image's exact size, and the database volume.
     const window = THROTTLE_SECONDS + 20;
     const throttled: Record<string, number> = {};
+    const primary = await inspect<{ Id: string; Config: unknown; RootFS: { Layers: string[] } }>(
+      'home',
+      image,
+    );
+    const variant = await inspect<{ Id: string; Config: unknown; RootFS: { Layers: string[] } }>(
+      'home',
+      variantImage,
+    );
+    expect(variant.Id).not.toBe(primary.Id);
+    expect(variant.Config).not.toEqual(primary.Config);
+    expect(variant.RootFS.Layers).toEqual(primary.RootFS.Layers);
     const load = client.dockerLoadImage.bind(client);
     const write = client.dockerWriteArchive.bind(client);
     const imageBytes = Number(
-      await exec('home', ['sh', '-c', `docker image save ${image} | wc -c`]),
+      await exec('home', [
+        'sh',
+        '-c',
+        `docker image save ${quote(image)} ${quote(variantImage)} | wc -c`,
+      ]),
     );
-    jest.spyOn(client, 'dockerLoadImage').mockImplementation(async (remoteId, body, options) => {
-      if (throttled.imageLoad !== undefined) return load(remoteId, body, options);
-      const started = Date.now();
-      throttled.imageLoad = 0;
-      const loaded = await load(remoteId, paced(body, window, imageBytes), options);
-      throttled.imageLoad = (Date.now() - started) / 1000;
-      return loaded;
-    });
+    const loads = jest
+      .spyOn(client, 'dockerLoadImage')
+      .mockImplementation(async (remoteId, body, options) => {
+        if (throttled.imageLoad !== undefined) return load(remoteId, body, options);
+        const started = Date.now();
+        throttled.imageLoad = 0;
+        const loaded = await load(remoteId, paced(body, window, imageBytes), options);
+        throttled.imageLoad = (Date.now() - started) / 1000;
+        return loaded;
+      });
     jest
       .spyOn(client, 'dockerWriteArchive')
       .mockImplementation(async (remoteId, input, body, options) => {
@@ -460,6 +537,8 @@ suite('Docker import across two real engines', () => {
       });
 
     await connect(r);
+    expect(loads).toHaveBeenCalledTimes(1);
+    const loadCount = loads.mock.calls.length;
     jest.restoreAllMocks();
     evidence.throttledSeconds = throttled;
     expect(throttled.imageLoad).toBeGreaterThanOrEqual(THROTTLE_SECONDS);
@@ -476,9 +555,23 @@ suite('Docker import across two real engines', () => {
     }
     remember('vm', 'networks', network);
     remember('vm', 'images', await docker('vm', 'image', 'inspect', '-f', '{{.Id}}', image));
-    expect(await docker('vm', 'image', 'inspect', '-f', '{{.Id}}', image)).toBe(
-      created.home.images[0],
+    remember('vm', 'images', await docker('vm', 'image', 'inspect', '-f', '{{.Id}}', variantImage));
+    const vmPrimary = await docker('vm', 'image', 'inspect', '-f', '{{.Id}}', image);
+    const vmVariant = await docker('vm', 'image', 'inspect', '-f', '{{.Id}}', variantImage);
+    expect(vmPrimary).not.toBe(vmVariant);
+    expect((await store.read(r.run().operation.id))!.images).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: primary.Id, vmId: vmPrimary }),
+        expect.objectContaining({ id: variant.Id, vmId: vmVariant }),
+      ]),
     );
+    expect((await inspect<{ Image: string }>('vm', composeDb)).Image).toBe(vmPrimary);
+    expect((await inspect<{ Image: string }>('vm', runName)).Image).toBe(vmVariant);
+    evidence.groupedImages = {
+      loads: loadCount,
+      home: [primary.Id, variant.Id],
+      vm: [vmPrimary, vmVariant],
+    };
     expect(
       JSON.parse(await docker('vm', 'volume', 'inspect', '-f', '{{json .Labels}}', dbVolume)),
     ).toMatchObject({ [OWNER]: PROJECT, 'com.docker.compose.project': prefix });
@@ -508,8 +601,7 @@ suite('Docker import across two real engines', () => {
 
     const importedDb = await docker('vm', 'inspect', '-f', '{{.Id}}', composeDb);
     await agentStartsVm();
-    // Compose reuses the imported container and its volumes.
-    expect(await docker('vm', 'inspect', '-f', '{{.Id}}', composeDb)).toBe(importedDb);
+    // Compose can recreate across stores or versions; the imported data must survive.
     for (const name of [composeDb, runName])
       expect(await sql('vm', name, 'SELECT value FROM proof ORDER BY value')).toBe('home-row');
     expect(await docker('vm', 'exec', composeDb, 'cat', '/anon/file')).toBe('anon-proof');
@@ -536,7 +628,7 @@ suite('Docker import across two real engines', () => {
     evidence.connect = {
       imported: [composeDb, runName, appName],
       dataOnly: [rmNamed],
-      composeReused: true,
+      composeRecreated: (await docker('vm', 'inspect', '-f', '{{.Id}}', composeDb)) !== importedDb,
       wholeProjectBind: { excluded: ['/data/pg'], copiedBinds: [pg], rootCopied: false },
     };
   });
@@ -575,8 +667,8 @@ suite('Docker import across two real engines', () => {
       id,
       {
         items: [
-          { id: ids.db, mode: 'container-and-data' },
-          { id: ids.run, mode: 'container-and-data' },
+          { id: ids.db, mode: 'container-and-data', dataChoice: 'replace-home' },
+          { id: ids.run, mode: 'container-and-data', dataChoice: 'replace-home' },
         ],
       },
       (progress) => {
@@ -623,8 +715,8 @@ suite('Docker import across two real engines', () => {
     const run = await docker('home', 'inspect', '-f', '{{.Id}}', runName);
     const r = runner(randomUUID(), {
       items: [
-        { id: db, mode: 'container-and-data' },
-        { id: run, mode: 'container-and-data' },
+        { id: db, mode: 'container-and-data', dataChoice: 'replace-home' },
+        { id: run, mode: 'container-and-data', dataChoice: 'replace-home' },
       ],
     });
     await connect(r);
@@ -647,6 +739,152 @@ suite('Docker import across two real engines', () => {
     await stopVm();
     evidence.reconnect = { holderRemoved: true, vmOnlyFilesGone: true, pgFolderReplaced: true };
   });
+
+  // Only real engines expose the image USER override during archive extraction.
+  it.each([
+    { label: 'named', user: 'postgres' },
+    { label: 'numeric', user: '4321' },
+  ])(
+    'keeps mixed owners and modes to the VM and back with a $label image USER',
+    async ({ label, user }) => {
+      const name = `${prefix}-owners-${label}`;
+      const ownerImage = `${prefix}:owners-${label}`;
+      const volume = `${name}-volume`;
+      const bind = join(root, `owners-${label}`);
+      const uid = process.getuid!();
+      const gid = process.getgid!();
+      const paths = ['/named', '/bind'];
+      const files = ['user', 'root', 'mixed'];
+      const metadata = [`${uid}:${gid} 660`, '0:0 644', '1234:2345 660'].join('\n');
+      await mkdir(bind, { recursive: true });
+      const seed = `${name}-seed`;
+      remember('home', 'containers', seed);
+      for (const side of ['home', 'vm'] as const) remember(side, 'images', ownerImage);
+      await docker('home', 'create', '--name', seed, image);
+      await docker(
+        'home',
+        'commit',
+        '--change',
+        `USER ${user}`,
+        '--change',
+        `LABEL ${TEST_LABEL}`,
+        seed,
+        ownerImage,
+      );
+      await docker('home', 'rm', '-v', seed);
+      remember('home', 'volumes', volume);
+      await docker('home', 'volume', 'create', '--label', TEST_LABEL, volume);
+      remember('home', 'containers', name);
+      await docker(
+        'home',
+        'run',
+        '-d',
+        '--name',
+        name,
+        '--label',
+        TEST_LABEL,
+        '--entrypoint',
+        'sleep',
+        '-v',
+        `${volume}:/named`,
+        '-v',
+        `${bind}:/bind`,
+        ownerImage,
+        '3600',
+      );
+      await rememberMounts('home', name);
+      const seedFiles = paths
+        .map(
+          (path) =>
+            `echo home-user > ${path}/user && echo home-root > ${path}/root && echo home-mixed > ${path}/mixed && ` +
+            `chown ${uid}:${gid} ${path}/user && chown 0:0 ${path}/root && chown 1234:2345 ${path}/mixed && ` +
+            `chmod 660 ${path}/user ${path}/mixed && chmod 644 ${path}/root`,
+        )
+        .join(' && ');
+      await docker('home', 'exec', '--user', '0:0', name, 'sh', '-c', seedFiles);
+      const selected = await docker('home', 'inspect', '-f', '{{.Id}}', name);
+      const r = runner(randomUUID(), {
+        items: [{ id: selected, mode: 'container-and-data', dataChoice: 'replace-home' }],
+      });
+      await connect(r);
+      await rememberMounts('vm', name);
+      expect(await docker('vm', 'inspect', '-f', '{{.Config.User}}', name)).toBe(user);
+      expect(await stateOf('vm', name)).toBe('created');
+      await docker('vm', 'start', name);
+      const transferred: Record<string, string> = {};
+      for (const path of paths) {
+        const entries = files.map((file) => `${path}/${file}`);
+        const actual = await docker(
+          'vm',
+          'exec',
+          '--user',
+          '0:0',
+          name,
+          'stat',
+          '-c',
+          '%u:%g %a',
+          ...entries,
+        );
+        expect(actual).toBe(metadata);
+        expect(await docker('vm', 'exec', '--user', '0:0', name, 'cat', ...entries)).toBe(
+          'home-user\nhome-root\nhome-mixed',
+        );
+        transferred[path] = actual;
+        // Change the VM data so a return copy cannot pass by leaving home untouched.
+        await docker(
+          'vm',
+          'exec',
+          '--user',
+          '0:0',
+          name,
+          'sh',
+          '-c',
+          `echo vm-user > ${path}/user && echo vm-root > ${path}/root && echo vm-mixed > ${path}/mixed`,
+        );
+      }
+      const sync = await copyBack.syncState(PROJECT, { remoteId: REMOTE });
+      expect(sync.availability.available).toBe(true);
+      expect(sync.groups.flatMap((group) => group.volumes)).toContain(volume);
+      expect(sync.groups.flatMap((group) => group.bindPaths)).toContain(bind);
+      const back = runner(randomUUID(), { items: [] });
+      back.details.dockerCopyBack = {
+        choices: Object.fromEntries(sync.groups.map((group) => [group.key, 'copy-home'])),
+      };
+      const detach = (): RemoteOperationStepRun => {
+        const run = back.run();
+        return { ...run, operation: { ...run.operation, kind: 'detach' } };
+      };
+      await copyBack.copyHome(detach());
+      expect(back.details.dockerCopyBackResult).toMatchObject({
+        copied: expect.arrayContaining([name]),
+      });
+      expect(await stateOf('vm', name)).toBe('exited');
+      await docker('home', 'start', name);
+      const returned: Record<string, string> = {};
+      for (const path of paths) {
+        const entries = files.map((file) => `${path}/${file}`);
+        const actual = await docker(
+          'home',
+          'exec',
+          '--user',
+          '0:0',
+          name,
+          'stat',
+          '-c',
+          '%u:%g %a',
+          ...entries,
+        );
+        expect(actual).toBe(metadata);
+        expect(await docker('home', 'exec', '--user', '0:0', name, 'cat', ...entries)).toBe(
+          'vm-user\nvm-root\nvm-mixed',
+        );
+        returned[path] = actual;
+      }
+      await docker('home', 'stop', '-t', '1', name);
+      expect(await journal.hasPending()).toBe(false);
+      evidence[`owners-${label}`] = { user, transferred, returned };
+    },
+  );
 
   it('cleanup leaves both engines as they were', async () => {
     await cleanup();
@@ -678,9 +916,9 @@ async function cleanup(): Promise<void> {
     // This run's unique network and image names, also when a failure preceded recording them.
     for (const name of new Set([...created[side].networks, network]))
       await docker(side, 'network', 'rm', name).catch(() => undefined);
-    for (const id of new Set([...created[side].images, image]))
+    for (const id of new Set([...created[side].images, image, variantImage]))
       await docker(side, 'image', 'rm', id).catch(() => undefined);
-    // Restored data keeps numeric owners, so the fixture needs root to remove.
+    // `copyUIDGID=false` preserves archive owners, so the fixture needs root to remove.
     await exec(side, ['sudo', '-n', 'rm', '-rf', '--', fixture]).catch(() => undefined);
   }
 }

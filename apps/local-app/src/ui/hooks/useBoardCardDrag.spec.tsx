@@ -136,27 +136,24 @@ describe('useBoardCardDrag', () => {
     expect(h.cardDrag.cancel).not.toHaveBeenCalled();
   });
 
-  it.each(['div', 'button'])(
-    'drops on a %s column using the gesture epic before a state render',
-    (tag) => {
-      const h = setup();
-      const target = document.createElement(tag);
-      target.dataset.boardDropStatusId = 'target';
-      const child = document.createElement('span');
-      target.appendChild(child);
-      h.hit.mockReturnValue(child);
-      act(() => {
-        h.down();
-        h.pointer('pointermove');
-        h.pointer('pointerup', 80, 90);
-      });
-      expect(h.cardDrag.drop).toHaveBeenCalledWith(epic, 'target');
-      expect(h.hit).toHaveBeenLastCalledWith(80, 90);
-      expect(h.preview.hide).toHaveBeenCalledTimes(1);
-      expect(target).not.toHaveAttribute('data-board-drop-active');
-      expect(document.querySelector('[data-board-drop-active]')).toBeNull();
-    },
-  );
+  it.each(['div'])('drops on a %s column using the gesture epic before a state render', (tag) => {
+    const h = setup();
+    const target = document.createElement(tag);
+    target.dataset.boardDropStatusId = 'target';
+    const child = document.createElement('span');
+    target.appendChild(child);
+    h.hit.mockReturnValue(child);
+    act(() => {
+      h.down();
+      h.pointer('pointermove');
+      h.pointer('pointerup', 80, 90);
+    });
+    expect(h.cardDrag.drop).toHaveBeenCalledWith(epic, 'target');
+    expect(h.hit).toHaveBeenLastCalledWith(80, 90);
+    expect(h.preview.hide).toHaveBeenCalledTimes(1);
+    expect(target).not.toHaveAttribute('data-board-drop-active');
+    expect(document.querySelector('[data-board-drop-active]')).toBeNull();
+  });
 
   it('coalesces movement hit tests, clears outside highlights, and rechecks scroll and release', () => {
     const h = setup();

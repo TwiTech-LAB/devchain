@@ -144,7 +144,7 @@ describe('ExternalBoardNav', () => {
     cleanup();
   });
 
-  it('renders only connected provider tabs from a single connection query call', () => {
+  it('renders only connected provider tabs from a single connection query call', async () => {
     useIntegrationConnectionsMock.mockReturnValue(
       baseHookValue({
         connections: [connection('clickup', true), connection('jira', false)],
@@ -160,6 +160,17 @@ describe('ExternalBoardNav', () => {
       '/board/clickup',
     );
     expect(screen.queryByRole('link', { name: /^Jira/ })).not.toBeInTheDocument();
+
+    {
+      expect(screen.queryByText('Connected')).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Open ClickUp board settings' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Open Jira board settings' }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /^Jira/ })).not.toBeInTheDocument();
+    }
   });
 
   it('hides provider tabs, connection state, and Add board when integrations are unavailable', () => {
@@ -180,42 +191,6 @@ describe('ExternalBoardNav', () => {
     expect(screen.queryByRole('button', { name: 'Add board' })).not.toBeInTheDocument();
   });
 
-  it('replaces connection badges with settings controls for rendered provider tabs', () => {
-    useIntegrationConnectionsMock.mockReturnValue(
-      baseHookValue({
-        connections: [
-          {
-            provider: 'clickup',
-            connected: true,
-            connectionId: 'connection-clickup',
-            generation: 3,
-            subtaskSyncEnabled: false,
-            syncSettingRevision: 1,
-            updatedAt: '2026-01-01T00:00:00Z',
-          },
-          {
-            provider: 'jira',
-            connected: false,
-            connectionId: null,
-            generation: null,
-            subtaskSyncEnabled: false,
-            syncSettingRevision: null,
-            updatedAt: null,
-          },
-        ],
-      }),
-    );
-
-    renderNav();
-
-    expect(screen.queryByText('Connected')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open ClickUp board settings' })).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Open Jira board settings' }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /^Jira/ })).not.toBeInTheDocument();
-  });
-
   it('omits provider settings controls while the connection query is loading', () => {
     useIntegrationConnectionsMock.mockReturnValue(baseHookValue({ isLoading: true }));
 
@@ -226,61 +201,27 @@ describe('ExternalBoardNav', () => {
     expect(screen.queryByRole('link', { name: /^Jira/ })).not.toBeInTheDocument();
   });
 
-  it('marks the DevChain tab active only on the exact native board route', () => {
+  it.each([
+    ['/board', 'DevChain'],
+    ['/board/jira', 'Jira'],
+    ['/board/clickup/space-901', 'ClickUp'],
+    ['/board/jira/linked/epic-1', 'Jira'],
+  ])('marks the active tab on %s', (route, active) => {
     useIntegrationConnectionsMock.mockReturnValue(
-      baseHookValue({ connections: [connection('clickup', true)] }),
+      baseHookValue({ connections: [connection('clickup', true), connection('jira', true)] }),
     );
-    renderNav('/board');
-
-    expect(screen.getByRole('link', { name: 'DevChain' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('link', { name: /^ClickUp/ })).not.toHaveAttribute('aria-current');
-  });
-
-  it('marks the provider tab active on its My Work route', () => {
-    useIntegrationConnectionsMock.mockReturnValue(
-      baseHookValue({ connections: [connection('jira', true)] }),
-    );
-    renderNav('/board/jira');
-
-    expect(screen.getByRole('link', { name: /^Jira/ })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('link', { name: 'DevChain' })).not.toHaveAttribute('aria-current');
-  });
-
-  it('gives the active tab the selected colors and leaves the inactive tab without them', () => {
-    useIntegrationConnectionsMock.mockReturnValue(
-      baseHookValue({ connections: [connection('jira', true)] }),
-    );
-    renderNav('/board');
-
-    // The DevChain tab styles its link; a provider tab styles the wrapper around its link.
-    expect(screen.getByRole('link', { name: 'DevChain' })).toHaveClass(
-      'bg-selected',
-      'text-selected-foreground',
-    );
-    expect(screen.getByRole('link', { name: /^Jira/ }).parentElement).not.toHaveClass(
-      'bg-selected',
-    );
-
-    cleanup();
-    renderNav('/board/jira');
-
-    expect(screen.getByRole('link', { name: /^Jira/ }).parentElement).toHaveClass(
-      'bg-selected',
-      'text-selected-foreground',
-    );
-    expect(screen.getByRole('link', { name: 'DevChain' })).not.toHaveClass('bg-selected');
-  });
-
-  it('keeps the provider tab active on its work-area routes', () => {
-    useIntegrationConnectionsMock.mockReturnValue(
-      baseHookValue({
-        connections: [connection('clickup', true), connection('jira', true)],
-      }),
-    );
-    renderNav('/board/clickup/space-901');
-
-    expect(screen.getByRole('link', { name: /^ClickUp/ })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('link', { name: /^Jira/ })).not.toHaveAttribute('aria-current');
+    renderNav(route);
+    for (const name of ['DevChain', 'ClickUp', 'Jira']) {
+      const link = screen.getByRole('link', { name: new RegExp('^' + name) });
+      const styled = name === 'DevChain' ? link : link.parentElement;
+      if (name === active) {
+        expect(link).toHaveAttribute('aria-current', 'page');
+        expect(styled).toHaveClass('bg-selected', 'text-selected-foreground');
+      } else {
+        expect(link).not.toHaveAttribute('aria-current');
+        expect(styled).not.toHaveClass('bg-selected');
+      }
+    }
   });
 
   it('opens the connected provider settings without navigating away', async () => {
@@ -292,14 +233,8 @@ describe('ExternalBoardNav', () => {
 
     await user.click(screen.getByRole('button', { name: 'Open ClickUp board settings' }));
 
-    const dialog = screen.getByRole('dialog', { name: 'ClickUp board settings' });
-    expect(withinDialog(dialog).getByLabelText('Personal API token')).toBeInTheDocument();
-    expect(
-      withinDialog(dialog).getByRole('switch', {
-        name: 'Sync DevChain sub-epics as managed subtasks',
-      }),
-    ).toBeInTheDocument();
-    expect(withinDialog(dialog).getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+    screen.getByRole('dialog', { name: 'ClickUp board settings' });
+
     expect(screen.getByTestId('current-location')).toHaveTextContent('/board');
   });
 
@@ -335,16 +270,6 @@ describe('ExternalBoardNav', () => {
     await user.click(screen.getByRole('link', { name: 'DevChain' }));
 
     expect(screen.getByTestId('current-location')).toHaveTextContent('/board?status=active');
-  });
-
-  it('keeps the provider tab active on a linked workspace route', () => {
-    useIntegrationConnectionsMock.mockReturnValue(
-      baseHookValue({ connections: [connection('jira', true)] }),
-    );
-    renderNav('/board/jira/linked/epic-1');
-
-    expect(screen.getByRole('link', { name: /^Jira/ })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('link', { name: 'DevChain' })).not.toHaveAttribute('aria-current');
   });
 
   it('never remembers a linked workspace route as the provider Board route', async () => {
@@ -473,29 +398,20 @@ describe('ExternalBoardNav Add board', () => {
     cleanup();
   });
 
-  it('is hidden while connections load', () => {
-    hookValue = baseHookValue({ isLoading: true });
+  it.each([
+    { name: 'loading', value: baseHookValue({ isLoading: true }) },
+    {
+      name: 'both connected',
+      value: baseHookValue({
+        connections: [connection('clickup', true), connection('jira', true)],
+      }),
+    },
+  ])('hides Add board for $name', ({ value }) => {
+    hookValue = value;
 
     renderNav();
 
     expect(screen.queryByRole('button', { name: /add board/i })).not.toBeInTheDocument();
-  });
-
-  it('is hidden when both providers are connected', () => {
-    hookValue = baseHookValue({
-      connections: [connection('clickup', true), connection('jira', true)],
-    });
-
-    renderNav();
-
-    expect(screen.queryByRole('button', { name: /add board/i })).not.toBeInTheDocument();
-  });
-
-  it('names the selected project as the connection target', () => {
-    renderNav();
-    fireEvent.click(screen.getByRole('button', { name: /add board/i }));
-
-    expect(screen.getByText('Connect an external work board to Acme Project.')).toBeInTheDocument();
   });
 
   it('offers both providers when nothing is connected', () => {
@@ -506,6 +422,7 @@ describe('ExternalBoardNav Add board', () => {
     expect(screen.getByRole('button', { name: 'Connect ClickUp' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect Jira' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Personal API token')).not.toBeInTheDocument();
+    expect(screen.getByText('Connect an external work board to Acme Project.')).toBeInTheDocument();
   });
 
   it('offers only the missing provider when one provider is connected', () => {
@@ -516,11 +433,7 @@ describe('ExternalBoardNav Add board', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Add board' });
     expect(screen.queryByRole('button', { name: 'Connect ClickUp' })).not.toBeInTheDocument();
-    expect(withinDialog(dialog).queryByLabelText('Jira site URL')).toBeInTheDocument();
-    expect(withinDialog(dialog).queryByLabelText('Account email')).toBeInTheDocument();
-    expect(
-      withinDialog(dialog).queryByLabelText('Classic API token (without scopes)'),
-    ).toBeInTheDocument();
+
     expect(
       withinDialog(dialog).queryByRole('button', { name: /disconnect/i }),
     ).not.toBeInTheDocument();

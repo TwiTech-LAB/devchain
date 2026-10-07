@@ -90,6 +90,12 @@ export function useRemotes() {
                     apiKeyRejected: state.apiKeyRejected ?? remote.apiKeyRejected,
                     version: state.version ?? remote.version,
                     versionMatches: state.versionMatches ?? remote.versionMatches,
+                    uid: 'uid' in state ? (state.uid ?? null) : remote.uid,
+                    gid: 'gid' in state ? (state.gid ?? null) : remote.gid,
+                    dockerUserMismatch:
+                      'dockerUserMismatch' in state
+                        ? (state.dockerUserMismatch ?? null)
+                        : remote.dockerUserMismatch,
                     stats: 'stats' in state ? (state.stats ?? null) : remote.stats,
                     cliVersions:
                       'cliVersions' in state ? (state.cliVersions ?? null) : remote.cliVersions,

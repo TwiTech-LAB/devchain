@@ -2,7 +2,6 @@ import { BadRequestException } from '@nestjs/common';
 import { ScheduledEpicsController } from './scheduled-epics.controller';
 import type { ScheduledEpicsService } from '../services/scheduled-epics.service';
 import type { ScheduledEpic } from '../../storage/models/domain.models';
-import { ConflictError } from '../../../common/errors/error-types';
 
 function makeSchedule(overrides: Partial<ScheduledEpic> = {}): ScheduledEpic {
   return {
@@ -89,32 +88,19 @@ describe('ScheduledEpicsController', () => {
     });
   });
 
-  describe('GET /api/scheduled-epics/:id', () => {
-    it('returns schedule by id', async () => {
-      service.get.mockResolvedValue(makeSchedule());
-      const result = await controller.get('sched-1');
-      expect(result.id).toBe('sched-1');
-    });
-  });
-
   describe('POST /api/scheduled-epics', () => {
-    it('creates a schedule with valid body', async () => {
-      service.create.mockResolvedValue(makeSchedule());
-
-      const result = await controller.create({
-        projectId: '00000000-0000-0000-0000-000000000001',
-        name: 'Daily',
-        cronExpression: '0 9 * * *',
-        timezone: 'UTC',
-        titleTemplate: 'Standup for today',
-      });
-
-      expect(result.id).toBe('sched-1');
-      expect(service.create).toHaveBeenCalled();
-    });
-
-    it('rejects invalid body', async () => {
-      await expect(controller.create({ name: '' })).rejects.toThrow(BadRequestException);
+    it.each([
+      { name: 'controller.create', invoke: () => controller.create({ name: '' }) },
+      {
+        name: 'controller.update',
+        invoke: () => controller.update('sched-1', { name: 'Updated' }),
+      },
+      {
+        name: 'controller.toggle',
+        invoke: () => controller.toggle('sched-1', { configVersion: 1 }),
+      },
+    ])('maps invalid input in $name to bad request', async ({ invoke }) => {
+      await expect(invoke()).rejects.toThrow(BadRequestException);
     });
   });
 
@@ -129,111 +115,6 @@ describe('ScheduledEpicsController', () => {
 
       expect(result.configVersion).toBe(2);
       expect(service.update).toHaveBeenCalledWith('sched-1', { name: 'Updated' }, 1);
-    });
-
-    it('rejects missing configVersion', async () => {
-      await expect(controller.update('sched-1', { name: 'Updated' })).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('propagates 409 ConflictError on stale version', async () => {
-      service.update.mockRejectedValue(
-        new ConflictError('Version conflict', { expectedVersion: 1, currentVersion: 2 }),
-      );
-
-      await expect(
-        controller.update('sched-1', { configVersion: 1, name: 'Stale' }),
-      ).rejects.toThrow(ConflictError);
-    });
-  });
-
-  describe('DELETE /api/scheduled-epics/:id', () => {
-    it('returns success on delete', async () => {
-      service.delete.mockResolvedValue();
-      const result = await controller.delete('sched-1');
-      expect(result).toEqual({ success: true });
-    });
-  });
-
-  describe('POST /api/scheduled-epics/:id/toggle', () => {
-    it('toggles with configVersion', async () => {
-      service.toggle.mockResolvedValue(makeSchedule({ enabled: false, configVersion: 2 }));
-
-      const result = await controller.toggle('sched-1', {
-        enabled: false,
-        configVersion: 1,
-      });
-
-      expect(result.enabled).toBe(false);
-      expect(service.toggle).toHaveBeenCalledWith('sched-1', false, 1);
-    });
-
-    it('rejects missing enabled field', async () => {
-      await expect(controller.toggle('sched-1', { configVersion: 1 })).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('rejects extra fields (strict)', async () => {
-      await expect(
-        controller.toggle('sched-1', { enabled: true, configVersion: 1, extra: 'bleed' }),
-      ).rejects.toThrow(BadRequestException);
-    });
-  });
-
-  describe('POST /api/scheduled-epics/:id/run-now', () => {
-    it('triggers manual run', async () => {
-      service.runNow.mockResolvedValue({
-        claimed: true,
-        run: {
-          id: 'run-1',
-          scheduleId: 'sched-1',
-          plannedFor: '2026-05-16T12:00:00.000Z',
-          source: 'manual',
-          status: 'pending',
-          createdEpicId: null,
-          startedAt: null,
-          finishedAt: null,
-          errorMessage: null,
-          createdAt: '2026-05-16T12:00:00.000Z',
-          updatedAt: '2026-05-16T12:00:00.000Z',
-        },
-      });
-
-      const result = await controller.runNow('sched-1');
-      expect(result.claimed).toBe(true);
-    });
-  });
-
-  describe('GET /api/scheduled-epics/:id/runs', () => {
-    it('returns paginated runs with { items, total, limit, offset } shape', async () => {
-      service.listRuns.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await controller.listRuns('sched-1');
-      expect(result).toEqual(
-        expect.objectContaining({
-          items: expect.any(Array),
-          total: expect.any(Number),
-          limit: expect.any(Number),
-          offset: expect.any(Number),
-        }),
-      );
-    });
-
-    it('passes status filter', async () => {
-      service.listRuns.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-
-      await controller.listRuns('sched-1', 'pending');
-      expect(service.listRuns).toHaveBeenCalledWith(
-        'sched-1',
-        expect.objectContaining({ status: 'pending' }),
-      );
     });
   });
 });

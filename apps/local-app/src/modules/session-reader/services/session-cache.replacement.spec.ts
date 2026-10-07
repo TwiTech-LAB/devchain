@@ -257,16 +257,6 @@ describe('SessionCacheService file replacement classification', () => {
     expect(adapter.parseIncremental).not.toHaveBeenCalled();
   });
 
-  it('classifies an unchanged cache hit separately from its cold full parse', async () => {
-    await writeFile(filePath, transcript(1, 70));
-
-    const cold = await service.getOrParseWithMeta(SESSION_ID, filePath, adapter);
-    const unchanged = await service.getOrParseWithMeta(SESSION_ID, filePath, adapter);
-
-    expect(cold).toMatchObject({ cacheHit: false, sourceChangeKind: 'unknown-full-parse' });
-    expect(unchanged).toMatchObject({ cacheHit: true, sourceChangeKind: 'cache-hit' });
-  });
-
   it('classifies a same-inode equal-size rewrite as unsafe', async () => {
     const original = transcript(1, 70);
     const rewritten = transcript(2, 70);

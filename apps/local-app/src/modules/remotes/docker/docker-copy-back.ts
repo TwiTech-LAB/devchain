@@ -1,3 +1,4 @@
+import { projectCompose } from './docker-project-compose';
 import { Inject, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -66,6 +67,7 @@ import {
 } from './docker-plan.dto';
 import { DockerPlanService, pagedDockerScan } from './docker-plan.service';
 import { DockerPlanSourceService } from './docker-plan-source.service';
+import { dockerCopyBackMismatchMessage, vmUserMismatch } from '../vm-user-identity';
 
 const NEEDS_CHOICE: ReadonlySet<DockerDataState> = new Set(['both-changed', 'unknown']);
 const RUNNING_STATES = new Set(['running', 'restarting', 'paused']);
@@ -115,16 +117,18 @@ function holds(container: Mounted, members: DockerDataMembers): boolean {
     overlapsData(mountedData(container.mounts), members)
   );
 }
-/** The VM holders DevChain may stop: the project's own, or of a Compose project owning its volumes. */
+/** Project-labelled, project-root Compose, or imported-volume Compose holders may stop. */
 function projectHolder(
   holder: DockerScanResult['containers'][number],
   vm: DockerScanResult,
   projectId: string,
+  projectRoot: string,
 ): boolean {
   const compose = holder.labels[COMPOSE_PROJECT_LABEL];
   return (
     holder.labels[DOCKER_PROJECT_LABEL] === projectId ||
-    (!holder.labels[DOCKER_PROJECT_LABEL] &&
+    projectCompose(holder.labels, projectRoot, projectId) ||
+    (holder.labels[DOCKER_PROJECT_LABEL] === undefined &&
       compose !== undefined &&
       vm.volumes.some(
         (v) =>
@@ -204,7 +208,10 @@ export class DockerCopyBack {
         imported: true,
         groups: [],
       };
-    const plan = await this.plans.plan(projectId, { remoteId }, signal, { estimate: false });
+    const plan = await this.plans.plan(projectId, { remoteId }, signal, {
+      estimate: false,
+      dataBindPaths: inventory.items.flatMap((item) => item.bindPaths),
+    });
     if (!plan.availability.available)
       return { availability: plan.availability, imported: true, groups: [] };
     const root = await this.plans.projectRoot(projectId);
@@ -251,9 +258,22 @@ export class DockerCopyBack {
       const projectId = requireProjectId(run.operation);
       const { remoteId } = run.operation;
       const request = DockerCopyBackRequestSchema.parse(run.details.dockerCopyBack ?? {});
-      const record =
-        (await this.store.readCopyBack(run.operation.id)) ??
-        (await this.decide(run, request, signal));
+      const previous = await this.store.readCopyBack(run.operation.id);
+      if (previous) {
+        const mismatch = vmUserMismatch(
+          this.source.uid(),
+          this.source.gid(),
+          await this.host.remoteRuntime(remoteId),
+        );
+        if (mismatch)
+          throw new DockerCopyBackError(
+            dockerCopyBackMismatchMessage(mismatch),
+            'DOCKER_COPY_BACK_UNAVAILABLE',
+            409,
+          );
+      }
+      const record = previous ?? (await this.decide(run, request, signal));
+      const projectRoot = await this.plans.projectRoot(projectId);
       const kept = record.groups.filter((g) => g.action === 'keep-home');
       if (kept.length && !record.keptAt) {
         // The discard acknowledges VM changes up to now, so the VM's project writers stop
@@ -266,6 +286,7 @@ export class DockerCopyBack {
             await this.scanVm(remoteId, group, options),
             group,
             options,
+            projectRoot,
           );
         record.keptAt = new Date().toISOString();
         await this.store.writeCopyBack(run.operation.id, record);
@@ -298,6 +319,7 @@ export class DockerCopyBack {
             await this.copyGroup(run.operation.id, record, group, client, projectId, remoteId, {
               options,
               progress,
+              projectRoot,
             });
           } catch (error) {
             if (signal.aborted) throw error;
@@ -348,7 +370,18 @@ export class DockerCopyBack {
     };
     const inventory = this.inventory.get(projectId, remoteId);
     if (inventory) {
-      const plan = await this.plans.plan(projectId, { remoteId }, signal, { estimate: false });
+      const plan = await this.plans.plan(projectId, { remoteId }, signal, {
+        estimate: false,
+        dataBindPaths: inventory.items.flatMap((item) => item.bindPaths),
+      });
+      if (plan.availability.reason?.code === 'vm-user-mismatch')
+        throw new DockerCopyBackError(
+          plan.availability.userMismatch
+            ? dockerCopyBackMismatchMessage(plan.availability.userMismatch)
+            : plan.availability.reason.message,
+          'DOCKER_COPY_BACK_UNAVAILABLE',
+          409,
+        );
       if (!plan.availability.available || !plan.apiVersion) {
         const reason = plan.availability.reason?.message ?? 'Docker is unavailable.';
         throw new DockerCopyBackError(
@@ -416,7 +449,7 @@ export class DockerCopyBack {
     remoteId: string,
     context: CopyContext,
   ): Promise<void> {
-    const { options } = context;
+    const { options, projectRoot } = context;
     const vm = await this.scanVm(remoteId, group, options);
     const members = presentOnVm(group, vm, projectId);
     if (!members.volumes.length && !members.bindPaths.length) {
@@ -424,7 +457,7 @@ export class DockerCopyBack {
       await this.store.writeCopyBack(operationId, record);
       return;
     }
-    const images = await this.helperImages(client, remoteId, group, options);
+    const images = await this.helperImages(client, remoteId, group, vm, options);
     for (const volume of members.volumes)
       if (
         !(await optionalDockerJson(
@@ -440,7 +473,7 @@ export class DockerCopyBack {
     // A stopped unrelated holder writes nothing and is never stopped by DevChain; the
     // check after the stops refuses it if it runs again.
     const unrelated = vmHolders.filter(
-      (c) => !projectHolder(c, vm, projectId) && c.metadata?.running !== false,
+      (c) => !projectHolder(c, vm, projectId, projectRoot) && c.metadata?.running !== false,
     );
     if (unrelated.length)
       throw new DockerCopyBackError(
@@ -457,7 +490,7 @@ export class DockerCopyBack {
         `Running containers on this PC that are not part of this project use its data: ${homeUnrelated.map(homeName).join(', ')}. Stop them and press Retry, or Cancel.`,
         'DOCKER_UNRELATED_HOLDER',
       );
-    await this.stopVmProjectHolders(remoteId, projectId, vm, members, options);
+    await this.stopVmProjectHolders(remoteId, projectId, vm, members, options, projectRoot);
     for (const holder of homeRunning)
       await changeDockerContainerState(client, holder.Id, 'stop', options.signal);
 
@@ -509,14 +542,18 @@ export class DockerCopyBack {
     vm: DockerScanResult,
     members: DockerDataMembers,
     options: DockerHostOptions,
+    projectRoot: string,
   ): Promise<void> {
     for (const holder of vm.containers)
       if (
         holds(holder, members) &&
-        projectHolder(holder, vm, projectId) &&
+        projectHolder(holder, vm, projectId, projectRoot) &&
         holder.metadata?.running !== false
       )
-        await this.host.dockerStopContainer(remoteId, holder.id, projectId, options);
+        await this.host.dockerStopContainer(remoteId, holder.id, projectId, {
+          ...options,
+          projectRoot,
+        });
   }
 
   /** Empties the home volume or folder, then restores the VM's archive; the digests must match. */
@@ -614,6 +651,7 @@ export class DockerCopyBack {
     client: DockerEngineClient,
     remoteId: string,
     group: DockerCopyBackGroup,
+    vm: DockerScanResult,
     options: DockerHostOptions,
   ): Promise<HelperImages> {
     if (!group.images.length)
@@ -624,7 +662,9 @@ export class DockerCopyBack {
     // Records written before VM IDs existed carry one list for both engines.
     const vmCandidates = group.vmImages ?? group.images;
     const { ids } = await this.host.dockerImagesPresent(remoteId, vmCandidates, options);
-    const vmImage = vmCandidates.find((id) => ids.includes(id));
+    const vmImage =
+      vmCandidates.find((id) => ids.includes(id)) ??
+      vm.containers.find((container) => container.image && holds(container, group))?.image;
     if (!vmImage)
       throw new DockerCopyBackError(
         `The VM has none of its images (${vmCandidates.join(', ')}) to read the data.`,
@@ -749,6 +789,7 @@ interface HelperImages {
   homeImage: string;
 }
 interface CopyContext {
+  projectRoot: string;
   options: DockerHostOptions;
   progress: CopyProgress;
 }

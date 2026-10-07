@@ -1,13 +1,14 @@
 ---
 name: improve-codebase-architecture
 displayName: Improve Codebase Architecture
-description: "Plan architecture improvements and refactoring for a codebase: scan for deepening opportunities (shallow modules, leaky seams, low-leverage interfaces), present candidates as a markdown report with before/after diagrams, interview the user through the chosen design, and decompose the outcome into devchain epics. Use when asked to review or improve code architecture, plan a project refactoring, refactor for testability or maintainability, hunt design debt or technical debt, or prepare an architecture-improvement plan."
+description: "Plan architecture improvements and refactoring for a codebase: scan for deepening opportunities (shallow modules, leaky seams, low-leverage interfaces), present candidates as a markdown report with before/after diagrams, interview the user through the chosen design, and decompose the outcome into devchain epics. Optionally reviews the test suite too: duplicate and tautological tests, rules tested at several layers, mergeable spec files and fixture cost. Use when asked to review or improve code architecture, plan a project refactoring, refactor for testability or maintainability, hunt design debt or technical debt, or prepare an architecture-improvement plan."
 license: "MIT — adapted from mattpocock/skills (https://github.com/mattpocock/skills)"
 compatibility: "Any devchain-managed project; intended for architect/planner agent roles"
 resources:
   - VOCABULARY.md
   - REPORT-FORMAT.md
   - DESIGN-IT-TWICE.md
+  - TEST-REFACTORING.md
 ---
 
 # Improve Codebase Architecture
@@ -21,6 +22,7 @@ This skill is multi-file. Call `devchain_get_skill` with slug `devchain/improve-
 1. Read `<contentPath>/VOCABULARY.md` **now** — every term you use in this workflow comes from it.
 2. Read `<contentPath>/REPORT-FORMAT.md` before writing the Phase 2 report.
 3. Read `<contentPath>/DESIGN-IT-TWICE.md` **only** if the optional exploration in Phase 3 is invoked.
+4. Read `<contentPath>/TEST-REFACTORING.md` **only** if the user includes test refactoring (Phase 0).
 
 Do not proceed to Phase 1 until VOCABULARY.md is read. Use its terms exactly — **module, interface, implementation, depth, seam, adapter, leverage, locality** — and never substitute "component," "service," "API," or "boundary."
 
@@ -30,6 +32,7 @@ Do not proceed to Phase 1 until VOCABULARY.md is read. Use its terms exactly —
 - Planning a refactor whose goal is testability, maintainability, or easier navigation.
 - A codebase feels hard to change and the user wants to know where the friction lives.
 - Preparing an architecture-improvement phase that must end as devchain epics.
+- The user wants to reduce, merge or clean up a test suite.
 
 ## When NOT to Use
 
@@ -56,8 +59,9 @@ Do not proceed to Phase 1 until VOCABULARY.md is read. Use its terms exactly —
 2. Read the domain glossary if one exists (`CONTEXT.md`, a glossary section, or equivalent). Use its terms for domain concepts throughout.
 3. Read the project's standing decisions wherever they live — the standards doc, architecture doc, or a decision-record folder. List them as context you must not *re-derive*. They are not vetoes: a candidate may contradict one, it just has to say so.
 4. Note any documented architectural guardrails (module-boundary rules, dependency policies, cycle allowlists).
+5. Ask once: "Include test refactoring in this run?" Recommend yes when the test suite is large or slow. If yes, read TEST-REFACTORING.md.
 
-**Exit:** you can name the project's documented conventions, glossary terms (or their absence), and standing decisions.
+**Exit:** you can name the project's documented conventions, glossary terms (or their absence), and standing decisions, and you know whether test refactoring is included.
 
 ### Phase 1 — Explore for deepening opportunities
 
@@ -73,6 +77,8 @@ If your environment provides read-only exploration subagents (an Agent/Explore t
 
 Apply the **deletion test** (VOCABULARY.md) to anything you suspect is shallow: would deleting it concentrate complexity, or just move it? "Concentrates" is the signal you want. Classify each candidate's dependencies using the dependency categories in VOCABULARY.md — the category determines the testing story you'll claim.
 
+If test refactoring is included, also run the test sweep in TEST-REFACTORING.md.
+
 **Exit:** a list of 3–7 candidates, each with concrete file references, a suspected diagnosis in vocabulary terms, and a dependency category.
 
 ### Phase 2 — Candidate report
@@ -83,6 +89,7 @@ Apply the **deletion test** (VOCABULARY.md) to anything you suspect is shallow: 
 2. **Standing-decision conflicts:** if a candidate contradicts a recorded decision, surface it only when the friction is real enough to warrant revisiting; mark the card clearly. Don't list every theoretical refactor a past decision forbids — and don't drop a candidate merely because one does. The user decides; a past record never has a veto.
 3. Deliver the report as a chat message. If the user wants it persisted, write it to `docs/architecture-reviews/<YYYY-MM-DD>.md` in the target project.
 4. Do **NOT** propose interfaces yet. End by asking: "Which of these would you like to explore?"
+5. If test refactoring is included, add the test candidate cards from TEST-REFACTORING.md.
 
 **Exit:** report delivered; user has picked a candidate (or ended the session).
 
@@ -117,6 +124,7 @@ Interview the user relentlessly about the design until you reach shared understa
 2. Testing tasks follow the **replace, don't layer** rule from VOCABULARY.md: new tests at the deepened interface; deleting obsolete shallow-module tests is part of the work, not an afterthought.
 3. Attach relevant skills to sub-epics via `skillsRequired`, including this skill's slug `devchain/improve-codebase-architecture` where the worker benefits from the vocabulary.
 4. Out-of-scope discoveries go to a backlog epic, not into the sub-epics.
+5. If test refactoring is included, create the test cleanup sub-epics from TEST-REFACTORING.md.
 
 **Exit:** epics exist and reference the recorded decisions; nothing is left only in chat.
 
@@ -128,6 +136,7 @@ Interview the user relentlessly about the design until you reach shared understa
 - [ ] The design interview asked one question at a time, each with a recommended answer.
 - [ ] Load-bearing rejections were recorded in the project's own decision home; accepted designs are traceable to epics.
 - [ ] No application code was written by this workflow.
+- [ ] If test refactoring was included, each removal follows the TEST-REFACTORING.md removal rule, and its epics carry before/after evidence.
 
 ## Attribution
 

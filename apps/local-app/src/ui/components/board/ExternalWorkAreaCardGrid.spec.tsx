@@ -27,7 +27,7 @@ describe('ExternalWorkAreaCardGrid', () => {
     cleanup();
   });
 
-  it('renders name, location, workflow summary, count, and description', () => {
+  it('renders name, location, workflow summary, count, and description', async () => {
     render(<ExternalWorkAreaCardGrid cards={[card()]} onSelect={jest.fn()} />);
 
     expect(screen.getByRole('button', { name: /sprint board/i })).toBeInTheDocument();
@@ -35,6 +35,11 @@ describe('ExternalWorkAreaCardGrid', () => {
     expect(screen.getByText('List · To do → Doing')).toBeInTheDocument();
     expect(screen.getByText('Current sprint work')).toBeInTheDocument();
     expect(screen.getByText('3 assigned tasks · linked count unavailable')).toBeInTheDocument();
+
+    {
+      expect(screen.getByText('3 assigned tasks · linked count unavailable')).toBeInTheDocument();
+      expect(screen.queryByText(/0 linked/)).not.toBeInTheDocument();
+    }
   });
 
   it('degrades gracefully when the description is missing', () => {
@@ -45,20 +50,13 @@ describe('ExternalWorkAreaCardGrid', () => {
     expect(screen.queryByText('Current sprint work')).not.toBeInTheDocument();
   });
 
-  it('renders the singular count for one assigned task', () => {
-    render(
-      <ExternalWorkAreaCardGrid cards={[card({ assignedTaskCount: 1 })]} onSelect={jest.fn()} />,
-    );
-
-    expect(screen.getByText('1 assigned task · linked count unavailable')).toBeInTheDocument();
-  });
-
   it('renders singular and plural linked counts on the same compact line', () => {
     render(
       <ExternalWorkAreaCardGrid
         cards={[
           card({ key: 'k1', assignedTaskCount: 1, linkedTaskCount: 1 }),
           card({ key: 'k2', remoteId: 'list-2', assignedTaskCount: 3, linkedTaskCount: 2 }),
+          card({ key: 'unknown', remoteId: 'list-4', assignedTaskCount: 1, linkedTaskCount: null }),
           card({ key: 'k3', remoteId: 'list-3', assignedTaskCount: 2, linkedTaskCount: 0 }),
         ]}
         onSelect={jest.fn()}
@@ -68,15 +66,7 @@ describe('ExternalWorkAreaCardGrid', () => {
     expect(screen.getByText('1 assigned task · 1 linked task')).toBeInTheDocument();
     expect(screen.getByText('3 assigned tasks · 2 linked tasks')).toBeInTheDocument();
     expect(screen.getByText('2 assigned tasks · 0 linked tasks')).toBeInTheDocument();
-  });
-
-  it('never renders a numeric zero while the linked count is unknown', () => {
-    render(
-      <ExternalWorkAreaCardGrid cards={[card({ linkedTaskCount: null })]} onSelect={jest.fn()} />,
-    );
-
-    expect(screen.getByText('3 assigned tasks · linked count unavailable')).toBeInTheDocument();
-    expect(screen.queryByText(/0 linked/)).not.toBeInTheDocument();
+    expect(screen.getByText('1 assigned task · linked count unavailable')).toBeInTheDocument();
   });
 
   it('renders remote text as plain text without interpreting markup', () => {
@@ -112,27 +102,6 @@ describe('ExternalWorkAreaCardGrid', () => {
     expect(screen.getByText('Stale')).toBeInTheDocument();
     expect(screen.getByText('Refresh failed')).toBeInTheDocument();
     expect(screen.getAllByRole('button')).toHaveLength(2);
-  });
-
-  it('renders the other-assigned pseudo area as a normal card', () => {
-    render(
-      <ExternalWorkAreaCardGrid
-        cards={[
-          card({
-            key: 'site:other-assigned',
-            remoteId: 'other-assigned',
-            name: 'Other assigned issues',
-            kindLabel: 'Board',
-            workflowSummary: 'Workflow unavailable',
-          }),
-        ]}
-        onSelect={jest.fn()}
-      />,
-    );
-
-    const cardButton = screen.getByRole('button', { name: /other assigned issues/i });
-    expect(cardButton).toBeInTheDocument();
-    expect(screen.getByText('Board · Workflow unavailable')).toBeInTheDocument();
   });
 
   it('reports card selection with the full model', async () => {

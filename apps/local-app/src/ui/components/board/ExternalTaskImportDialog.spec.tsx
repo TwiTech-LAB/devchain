@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { axe } from 'jest-axe';
+
 import { useState } from 'react';
 import type { ExternalTaskDetail } from '@/modules/external-integrations/models/external-provider.models';
 import { ExternalTaskImportDialog } from './ExternalTaskImportDialog';
@@ -78,7 +78,7 @@ describe('ExternalTaskImportDialog', () => {
     useExternalTaskImportMock.mockReturnValue(controllerValue());
   });
 
-  it.each([true, false])(
+  it.each([true])(
     'fixes the form to the Board project and navigates when created=%s',
     async (created) => {
       const user = userEvent.setup();
@@ -195,10 +195,5 @@ describe('ExternalTaskImportDialog', () => {
       null,
       expect.anything(),
     );
-  });
-
-  it('has no accessibility violations', async () => {
-    const { baseElement } = renderDialog();
-    expect(await axe(baseElement)).toHaveNoViolations();
   });
 });

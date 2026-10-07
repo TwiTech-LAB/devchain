@@ -57,12 +57,13 @@ describe('POST /api/remotes/probe', () => {
     createRemoteOperation: jest.Mock;
   };
 
-  function controller(options: Partial<RemoteProbeOptions> = {}) {
+  function controller(options: Partial<RemoteProbeOptions> = {}, runtimeTimeoutMs?: number) {
     const service = new RemoteProbeService(
       storage as never,
       new RemoteHostClient(
         storage as never,
         { get: async () => null, headers: async () => ({}) } as never,
+        runtimeTimeoutMs,
       ),
       {} as never,
       {} as never,
@@ -112,7 +113,7 @@ describe('POST /api/remotes/probe', () => {
       kind: 'installer',
       bootstrapUrl: installer.url,
       state: 'unclaimed',
-      imageVersion: '1.3.0',
+      imageVersion: '1.4.0',
       supported: true,
       remoteId: null,
     });
@@ -232,14 +233,15 @@ describe('POST /api/remotes/probe', () => {
     expect(result).toMatchObject({ kind: 'nothing', sshReachable: false });
   });
 
-  it('answers within the 5 s runtime timeout when every probe hangs', async () => {
+  it('runs hanging runtime probes in parallel within one timeout', async () => {
+    const runtimeTimeoutMs = 300;
     const first = await httpsServer(() => 'hang');
     const second = await httpsServer(() => 'hang');
     process.env.PORT = String(first.port);
     resetEnvConfig();
     const started = Date.now();
     try {
-      const result = await controller({ installerPort: second.port }).probe({
+      const result = await controller({ installerPort: second.port }, runtimeTimeoutMs).probe({
         address: '127.0.0.1',
         checkSsh: false,
       });
@@ -248,15 +250,14 @@ describe('POST /api/remotes/probe', () => {
       process.env.PORT = String(homePort);
       resetEnvConfig();
     }
-    // Two sequential probes would take 10 s.
-    expect(Date.now() - started).toBeLessThan(7_000);
+    // Sequential probes would consume two full timeout windows.
+    expect(Date.now() - started).toBeLessThan(2 * runtimeTimeoutMs);
     expect(first.requests).toHaveLength(1);
     expect(second.requests).toHaveLength(1);
   }, 15_000);
 
   it.each([
     'ftp://127.0.0.1',
-    'http://127.0.0.1:4000',
     'https://127.0.0.1:4000/path',
     'https://user:pw@127.0.0.1',
     'https://127.0.0.1:99999',

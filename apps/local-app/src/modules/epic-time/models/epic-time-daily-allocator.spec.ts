@@ -235,89 +235,78 @@ describe('allocateDailyEstimateExport', () => {
     expect(allocation.datedDeltas).toEqual(totals({ '2026-01-02': 40 }));
   });
 
-  it('reports real shrink for a cross-date deficit even when totals match', () => {
-    const allocation = allocateDailyEstimateExport(
-      input({
+  it.each([
+    {
+      label: 'reports real shrink for a cross-date deficit even when totals match',
+      values: {
         liveByDate: totals({ '2026-01-02': 60 }),
         capturedByDate: totals({ '2026-01-02': 60 }),
         ledgerByDate: totals({ '2026-01-01': 60 }),
         storedCanonicalTimeZone: 'UTC',
-      }),
-    );
-    expect(allocation.status).toBe('real_shrink');
-    expect(allocation.rebaseline).toEqual({ required: true, reason: 'dated_deficit' });
-    expect(allocation.safeZoneRebind).toBe(false);
-    expect(allocation.totalNewMinutes).toBe(0);
-  });
-
-  it('does not let scalar credit hide a dated deficit', () => {
-    const allocation = allocateDailyEstimateExport(
-      input({
+      },
+    },
+    {
+      label: 'does not let scalar credit hide a dated deficit',
+      values: {
         liveByDate: totals({ '2026-01-02': 90 }),
         capturedByDate: totals({ '2026-01-02': 90 }),
         ledgerByDate: totals({ '2026-01-01': 60 }),
         unallocatedCreditMinutes: 30,
         storedCanonicalTimeZone: 'UTC',
-      }),
-    );
-    expect(allocation.status).toBe('real_shrink');
-    expect(allocation.rebaseline).toEqual({ required: true, reason: 'dated_deficit' });
-  });
-
-  it('reports real shrink when live time is below the persisted total', () => {
-    const allocation = allocateDailyEstimateExport(
-      input({
+      },
+    },
+    {
+      label: 'reports real shrink when live time is below the persisted total',
+      values: {
         liveByDate: totals({ '2026-01-02': 90 }),
         capturedByDate: totals({ '2026-01-02': 90 }),
         ledgerByDate: totals({ '2026-01-02': 100 }),
         storedCanonicalTimeZone: 'UTC',
-      }),
-    );
+      },
+    },
+    {
+      label: 'counts scalar credit inside the persisted total for the shrink check',
+      values: {
+        liveByDate: totals({ '2026-01-02': 90 }),
+        capturedByDate: totals({ '2026-01-02': 90 }),
+        ledgerByDate: totals({ '2026-01-02': 40 }),
+        unallocatedCreditMinutes: 60,
+        storedCanonicalTimeZone: 'UTC',
+      },
+    },
+  ])('$label', ({ values }) => {
+    const allocation = allocateDailyEstimateExport(input(values));
     expect(allocation.status).toBe('real_shrink');
     expect(allocation.rebaseline).toEqual({ required: true, reason: 'dated_deficit' });
     expect(allocation.safeZoneRebind).toBe(false);
     expect(allocation.totalNewMinutes).toBe(0);
   });
 
-  it('counts scalar credit inside the persisted total for the shrink check', () => {
-    const allocation = allocateDailyEstimateExport(
-      input({
-        liveByDate: totals({ '2026-01-02': 90 }),
-        capturedByDate: totals({ '2026-01-02': 90 }),
-        ledgerByDate: totals({ '2026-01-02': 40 }),
-        unallocatedCreditMinutes: 60,
-        storedCanonicalTimeZone: 'UTC',
-      }),
-    );
-    expect(allocation.status).toBe('real_shrink');
-  });
-
-  it('reports stale capture instead of rebaseline when the capture trails the ledger', () => {
-    const allocation = allocateDailyEstimateExport(
-      input({
+  it.each([
+    {
+      label: 'reports stale capture instead of rebaseline when the capture trails the ledger',
+      values: {
         liveByDate: totals({ '2026-01-02': 150 }),
         capturedByDate: totals({ '2026-01-02': 80 }),
         ledgerByDate: totals({ '2026-01-02': 100 }),
         storedCanonicalTimeZone: 'UTC',
-      }),
-    );
-    expect(allocation.status).toBe('stale_capture');
-    expect(allocation.rebaseline).toEqual({ required: false, reason: null });
-    expect(allocation.safeZoneRebind).toBe(false);
-    expect(allocation.entryChunks).toEqual([]);
-  });
-
-  it('reports stale capture per date when live covers the ledger but the capture drops it', () => {
-    const allocation = allocateDailyEstimateExport(
-      input({
+      },
+    },
+    {
+      label: 'reports stale capture per date when live covers the ledger but the capture drops it',
+      values: {
         liveByDate: totals({ '2026-01-01': 60, '2026-01-02': 30 }),
         capturedByDate: totals({ '2026-01-02': 30 }),
         ledgerByDate: totals({ '2026-01-01': 60 }),
         storedCanonicalTimeZone: 'UTC',
-      }),
-    );
+      },
+    },
+  ])('$label', ({ values }) => {
+    const allocation = allocateDailyEstimateExport(input(values));
     expect(allocation.status).toBe('stale_capture');
     expect(allocation.rebaseline).toEqual({ required: false, reason: null });
+    expect(allocation.safeZoneRebind).toBe(false);
+    expect(allocation.entryChunks).toEqual([]);
   });
 
   it('sorts every output oldest-date first regardless of input order', () => {

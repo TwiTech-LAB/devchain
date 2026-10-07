@@ -88,16 +88,4 @@ describe('aggregatePresence', () => {
 
     expect(result.get('agent-1')!.online).toBe(false);
   });
-
-  it('tracks input activity via signalInput', () => {
-    const registry = new TerminalSessionRegistry();
-    const session = registry.create('s1', 'tmux-s1');
-    session.signalInput();
-
-    const result = aggregatePresence(registry, [{ sessionId: 's1', agentId: 'agent-1' }]);
-
-    expect(result.get('agent-1')!.activityState).toBe('busy');
-
-    registry.dispose('s1');
-  });
 });

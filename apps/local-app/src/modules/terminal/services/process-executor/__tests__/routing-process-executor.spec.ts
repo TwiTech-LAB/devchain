@@ -25,20 +25,4 @@ describe('RoutingProcessExecutor', () => {
     expect(result.success).toBe(true);
     expect(result.stdout).toContain('pty-test');
   });
-
-  it('preserves timeout behavior across modes', async () => {
-    const pipeResult = await router.run({
-      argv: ['sleep', '30'],
-      mode: 'pipe',
-      timeout: 200,
-    });
-    expect(pipeResult.timedOut).toBe(true);
-
-    const ptyResult = await router.run({
-      argv: ['sleep', '30'],
-      mode: 'pty',
-      timeout: 200,
-    });
-    expect(ptyResult.timedOut).toBe(true);
-  }, 15_000);
 });

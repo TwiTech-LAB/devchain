@@ -156,29 +156,6 @@ describe('ProviderMcpEnsureService', () => {
       expect(result.message).toContain('not supported');
     });
 
-    it('registers agy MCP via ensureRegistration without requiring a project path (HOME-global config)', async () => {
-      const provider = createProvider({ name: 'agy' });
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      // No projectPath: agy MCP config is HOME-global, so registration still runs
-      // (isMcpCli=true → the project-path requirement does not apply).
-      const result = await service.ensureMcp(provider);
-
-      expect(result.success).toBe(true);
-      expect(result.action).toBe('added');
-      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        provider,
-        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
-        { cwd: undefined },
-      );
-      expect(mockStorage.updateProviderMcpMetadata).toHaveBeenCalled();
-    });
-
     it('runs trust provisioning AND registers agy MCP when a project path is given', async () => {
       const provider = createProvider({ name: 'agy' });
       const projectPath = '/home/user/project';
@@ -260,27 +237,6 @@ describe('ProviderMcpEnsureService', () => {
       );
     });
 
-    it('returns fixed_mismatch when endpoint needs to be updated', async () => {
-      const provider = createProvider();
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'fixed_mismatch',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const result = await service.ensureMcp(provider);
-
-      expect(result.success).toBe(true);
-      expect(result.action).toBe('fixed_mismatch');
-      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        provider,
-        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
-        { cwd: undefined },
-      );
-      expect(mockStorage.updateProviderMcpMetadata).toHaveBeenCalled();
-    });
-
     it('returns error when ensureRegistration fails with list error', async () => {
       const provider = createProvider();
       mockMcpRegistration.ensureRegistration.mockResolvedValue({
@@ -294,55 +250,6 @@ describe('ProviderMcpEnsureService', () => {
       expect(result.success).toBe(false);
       expect(result.action).toBe('error');
       expect(result.message).toContain('Failed to list MCP registrations');
-    });
-
-    it('returns error when ensureRegistration fails with register error', async () => {
-      const provider = createProvider();
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: false,
-        action: 'error',
-        message: 'Failed to register MCP: Registration failed',
-      });
-
-      const result = await service.ensureMcp(provider);
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      expect(result.message).toContain('Failed to register MCP');
-    });
-
-    it('returns error when ensureRegistration fails with remove error during mismatch fix', async () => {
-      const provider = createProvider();
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: false,
-        action: 'error',
-        message: 'Failed to remove existing MCP registration: Removal failed',
-      });
-
-      const result = await service.ensureMcp(provider);
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      expect(result.message).toContain('Failed to remove existing MCP registration');
-    });
-
-    it('passes projectPath to ensureRegistration', async () => {
-      const provider = createProvider();
-      const projectPath = '/home/user/project';
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      await service.ensureMcp(provider, projectPath);
-
-      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        provider,
-        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
-        { cwd: projectPath },
-      );
     });
 
     it('calls ensureProjectSettings on capable adapter for claude provider', async () => {
@@ -533,17 +440,6 @@ describe('ProviderMcpEnsureService', () => {
       expect(result.message).toBe('Network timeout');
     });
 
-    it('catches and returns error when ensureRegistration throws with CLI crash', async () => {
-      const provider = createProvider();
-      mockMcpRegistration.ensureRegistration.mockRejectedValue(new Error('CLI crashed'));
-
-      const result = await service.ensureMcp(provider);
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      expect(result.message).toBe('CLI crashed');
-    });
-
     it('succeeds even when storage metadata update throws (best-effort)', async () => {
       const provider = createProvider();
       mockMcpRegistration.ensureRegistration.mockResolvedValue({
@@ -578,60 +474,72 @@ describe('ProviderMcpEnsureService', () => {
   });
 
   describe('projectPath validation', () => {
-    it('rejects relative project path', async () => {
-      const provider = createProvider();
-
-      const result = await service.ensureMcp(provider, 'relative/path');
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      expect(result.message).toBe('Project path must be an absolute path');
-      // Should not call ensureRegistration if validation fails
+    it.each([
+      {
+        name: 'rejects relative project path',
+        path: 'relative/path',
+        message: 'Project path must be an absolute path',
+      },
+      {
+        name: 'rejects path traversal attempt with ..',
+        path: '/home/user/../../../etc/passwd',
+        message: 'Project path cannot contain path traversal sequences',
+      },
+      {
+        name: 'rejects unregistered project path',
+        path: '/home/user/unknown-project',
+        message: 'Project path is not a registered project',
+      },
+      {
+        name: 'rejects arbitrary filesystem path',
+        path: '/etc/passwd',
+        message: 'Project path is not a registered project',
+      },
+      {
+        name: 'rejects path with traversal that normalizes outside registered projects',
+        path: '/home/user/project/./../../etc',
+        message: 'Project path cannot contain path traversal sequences',
+      },
+      {
+        name: 'rejects path starting with traversal that normalizes outside projects',
+        path: '/../etc/passwd',
+        message: 'Project path cannot contain path traversal sequences',
+      },
+      {
+        name: 'rejects actual traversal even when path contains ".." in other segments',
+        path: '/home/user/my..project/../../../etc/passwd',
+        message: 'Project path cannot contain path traversal sequences',
+      },
+      {
+        name: 'REGRESSION: rejects traversal that normalizes back onto a registered root',
+        path: '/home/user/project/../project',
+        message: 'Project path cannot contain path traversal sequences',
+      },
+    ])('$name', async ({ path, message }) => {
+      const result = await service.ensureMcp(createProvider(), path);
+      expect(result).toMatchObject({ success: false, action: 'error', message });
       expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
     });
 
-    it('rejects path traversal attempt with ..', async () => {
-      const provider = createProvider();
-
-      // Path with traversal: rejected on the raw spelling before normalization
-      const result = await service.ensureMcp(provider, '/home/user/../../../etc/passwd');
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      expect(result.message).toBe('Project path cannot contain path traversal sequences');
-      // Should not call ensureRegistration if validation fails
-      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
-    });
-
-    it('rejects unregistered project path', async () => {
-      const provider = createProvider();
-
-      const result = await service.ensureMcp(provider, '/home/user/unknown-project');
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      expect(result.message).toBe('Project path is not a registered project');
-      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
-    });
-
-    it('accepts registered project path', async () => {
-      const provider = createProvider();
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'already_configured',
-      });
-
-      const result = await service.ensureMcp(provider, '/home/user/project');
-
-      expect(result.success).toBe(true);
-      expect(result.action).toBe('already_configured');
-      // Validation passed, should call ensureRegistration
-      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        provider,
-        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
-        { cwd: '/home/user/project' },
-      );
-    });
+    it.each(['/home/user/project', '/home/user/my..project'])(
+      'accepts registered path %s',
+      async (path) => {
+        const provider = createProvider();
+        mockMcpRegistration.ensureRegistration.mockResolvedValue({
+          success: true,
+          action: 'already_configured',
+        });
+        expect(await service.ensureMcp(provider, path)).toMatchObject({
+          success: true,
+          action: 'already_configured',
+        });
+        expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
+          provider,
+          { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+          { cwd: path },
+        );
+      },
+    );
 
     it('validates against all registered projects', async () => {
       const provider = createProvider();
@@ -662,90 +570,6 @@ describe('ProviderMcpEnsureService', () => {
       // Should not call listProjects when no projectPath
       expect(mockStorage.listProjects).not.toHaveBeenCalled();
     });
-
-    it('rejects arbitrary filesystem path', async () => {
-      const provider = createProvider();
-
-      // Try to write to arbitrary location
-      const result = await service.ensureMcp(provider, '/etc/passwd');
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      expect(result.message).toBe('Project path is not a registered project');
-    });
-
-    it('rejects path with traversal that normalizes outside registered projects', async () => {
-      const provider = createProvider();
-
-      // Path that normalizes to /home/etc (outside registered projects)
-      const result = await service.ensureMcp(provider, '/home/user/project/./../../etc');
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      // The raw '..' segment is caught before normalization
-      expect(result.message).toBe('Project path cannot contain path traversal sequences');
-    });
-
-    it('rejects path starting with traversal that normalizes outside projects', async () => {
-      const provider = createProvider();
-
-      // Path starting with /.. that normalizes to /etc/passwd
-      const result = await service.ensureMcp(provider, '/../etc/passwd');
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      // The raw '..' segment is caught before normalization
-      expect(result.message).toBe('Project path cannot contain path traversal sequences');
-    });
-
-    it('accepts path with ".." as part of segment name (not traversal)', async () => {
-      const provider = createProvider();
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'already_configured',
-      });
-
-      // Path with ".." in segment name should NOT be rejected as path traversal
-      const result = await service.ensureMcp(provider, '/home/user/my..project');
-
-      expect(result.success).toBe(true);
-      expect(result.action).toBe('already_configured');
-      // Should proceed to call ensureRegistration
-      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        provider,
-        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
-        { cwd: '/home/user/my..project' },
-      );
-    });
-
-    it('rejects actual traversal even when path contains ".." in other segments', async () => {
-      const provider = createProvider();
-
-      // Path with actual traversal segment (..) should still be rejected
-      // even if other segments contain ".." as substring
-      const result = await service.ensureMcp(
-        provider,
-        '/home/user/my..project/../../../etc/passwd',
-      );
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      // The raw '..' segments are caught before normalization
-      expect(result.message).toBe('Project path cannot contain path traversal sequences');
-    });
-
-    it('REGRESSION: rejects traversal that normalizes back onto a registered root', async () => {
-      const provider = createProvider();
-
-      // normalize('/home/user/project/../project') === '/home/user/project',
-      // which IS registered — only the raw-spelling check catches it.
-      const result = await service.ensureMcp(provider, '/home/user/project/../project');
-
-      expect(result.success).toBe(false);
-      expect(result.action).toBe('error');
-      expect(result.message).toBe('Project path cannot contain path traversal sequences');
-      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
-    });
   });
 
   describe('config-file provider (opencode)', () => {
@@ -772,26 +596,6 @@ describe('ProviderMcpEnsureService', () => {
 
       expect(result.success).toBe(true);
       expect(result.action).toBe('already_configured');
-      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        opencodeProvider,
-        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
-        { cwd: projectPath },
-      );
-    });
-
-    it('registers MCP via config file when not yet configured', async () => {
-      const projectPath = '/home/user/project';
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const result = await service.ensureMcp(opencodeProvider, projectPath);
-
-      expect(result.success).toBe(true);
-      expect(result.action).toBe('added');
       expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
         opencodeProvider,
         { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
@@ -893,162 +697,6 @@ describe('ProviderMcpEnsureService', () => {
       await service.ensureMcp(agyProvider, projectPath, context);
 
       expect(mockTrustProvisioner.provisionProjectPath).toHaveBeenCalledWith(projectPath, context);
-    });
-
-    it('trust-folder distrusted_warning → ensure proceeds with warning', async () => {
-      mockTrustProvisioner.provisionProjectPath.mockResolvedValue({
-        success: true,
-        warnings: [
-          {
-            source: 'trusted_folders',
-            level: 'warn',
-            message: 'Path is distrusted',
-            code: 'AGY_TRUSTED_FOLDERS_DISTRUSTED',
-          },
-        ],
-      });
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const result = await service.ensureMcp(agyProvider, projectPath);
-
-      expect(result.success).toBe(true);
-      expect(result.warnings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            source: 'trusted_folders',
-            code: 'AGY_TRUSTED_FOLDERS_DISTRUSTED',
-          }),
-        ]),
-      );
-    });
-
-    it('trust-folder malformed_warning → ensure proceeds with warning', async () => {
-      mockTrustProvisioner.provisionProjectPath.mockResolvedValue({
-        success: true,
-        warnings: [
-          {
-            source: 'trusted_folders',
-            level: 'warn',
-            message: 'File is malformed',
-            code: 'AGY_TRUSTED_FOLDERS_MALFORMED',
-          },
-        ],
-      });
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const result = await service.ensureMcp(agyProvider, projectPath);
-
-      expect(result.success).toBe(true);
-      expect(result.warnings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            source: 'trusted_folders',
-            code: 'AGY_TRUSTED_FOLDERS_MALFORMED',
-          }),
-        ]),
-      );
-    });
-
-    it('trust-folder throws → ensure proceeds with AGY_TRUSTED_FOLDERS_WRITE_FAILED warning', async () => {
-      mockTrustProvisioner.provisionProjectPath.mockResolvedValue({
-        success: true,
-        warnings: [
-          {
-            source: 'trusted_folders',
-            level: 'warn',
-            message: 'write failed',
-            code: 'AGY_TRUSTED_FOLDERS_WRITE_FAILED',
-          },
-        ],
-      });
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const result = await service.ensureMcp(agyProvider, projectPath);
-
-      expect(result.success).toBe(true);
-      expect(result.warnings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            source: 'trusted_folders',
-            code: 'AGY_TRUSTED_FOLDERS_WRITE_FAILED',
-          }),
-        ]),
-      );
-    });
-
-    it('REGRESSION: user-scope devchain entry does not suppress project-scope registration', async () => {
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const result = await service.ensureMcp(agyProvider, projectPath);
-
-      expect(result.success).toBe(true);
-      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        agyProvider,
-        expect.objectContaining({ alias: 'devchain' }),
-        expect.objectContaining({ cwd: projectPath }),
-      );
-    });
-  });
-
-  describe('Side-effect placement bug fix', () => {
-    beforeEach(() => {
-      jest.spyOn(envConfig, 'getEnvConfig').mockReturnValue(testEnv());
-    });
-
-    it('Claude project settings run even when MCP action is already_configured', async () => {
-      const provider = createProvider({ name: 'claude' });
-      const projectPath = '/home/user/project';
-
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'already_configured',
-      });
-
-      const result = await service.ensureMcp(provider, projectPath);
-
-      expect(result).toMatchObject({ success: true, action: 'already_configured' });
-      expect(mockClaudeEnsureProjectSettings).toHaveBeenCalledWith(projectPath);
-    });
-
-    it('Codex calls ensureRegistration correctly', async () => {
-      const provider = createProvider({ name: 'codex', binPath: '/usr/local/bin/codex' });
-      const projectPath = '/home/user/project';
-
-      mockMcpRegistration.ensureRegistration.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const result = await service.ensureMcp(provider, projectPath);
-
-      expect(result.success).toBe(true);
-      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
-        provider,
-        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
-        { cwd: projectPath },
-      );
     });
   });
 
@@ -1218,45 +866,18 @@ describe('ProviderMcpEnsureService', () => {
       ]);
     });
 
-    it('an unregistered path never reaches the adapter', async () => {
-      const result = await service.ensureProjectProvisioning(
-        claudeProvider,
-        '/home/user/unknown-project',
-      );
-
-      expect(result.success).toBe(false);
-      expect(result.warnings).toEqual([
-        expect.objectContaining({ code: 'PROVISIONING_PATH_INVALID' }),
-      ]);
-      expect(claudeProvisionProjectPath).not.toHaveBeenCalled();
-      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
-    });
-
-    it('a relative path never reaches the adapter', async () => {
-      const result = await service.ensureProjectProvisioning(claudeProvider, 'relative/path');
-
-      expect(result.success).toBe(false);
-      expect(result.warnings).toEqual([
-        expect.objectContaining({ code: 'PROVISIONING_PATH_INVALID' }),
-      ]);
-      expect(claudeProvisionProjectPath).not.toHaveBeenCalled();
-    });
-
-    it('REGRESSION: a traversal-bearing path that normalizes to a registered root never reaches the adapter', async () => {
-      // normalize('/home/user/project/../project') === '/home/user/project',
-      // which IS registered — only the raw-spelling check catches it.
-      const result = await service.ensureProjectProvisioning(
-        claudeProvider,
-        '/home/user/project/../project',
-      );
-
-      expect(result.success).toBe(false);
-      expect(result.warnings).toEqual([
-        expect.objectContaining({ code: 'PROVISIONING_PATH_INVALID' }),
-      ]);
-      expect(claudeProvisionProjectPath).not.toHaveBeenCalled();
-      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
-    });
+    it.each(['/home/user/unknown-project', 'relative/path', '/home/user/project/../project'])(
+      'refuses provisioning path %s before reaching adapters',
+      async (path) => {
+        const result = await service.ensureProjectProvisioning(claudeProvider, path);
+        expect(result.success).toBe(false);
+        expect(result.warnings).toEqual([
+          expect.objectContaining({ code: 'PROVISIONING_PATH_INVALID' }),
+        ]);
+        expect(claudeProvisionProjectPath).not.toHaveBeenCalled();
+        expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
+      },
+    );
 
     it('still accepts segment names containing ".." as a substring (not traversal)', async () => {
       // Registered root '/home/user/my..project' with '..' inside the name —

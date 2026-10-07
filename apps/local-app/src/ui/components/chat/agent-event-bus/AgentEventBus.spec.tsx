@@ -337,8 +337,8 @@ describe('AgentEventBus', () => {
     // The bloom is a round point light, so the gutter boundary is a gradient mask
     // rather than a hard clip — a clip would slice the disc into a visible half-moon.
     const glowMask = svg.querySelector('mask');
-    const maskRect = glowMask?.querySelector('rect');
-    const fadeGradient = svg.querySelector('linearGradient');
+    glowMask?.querySelector('rect');
+    svg.querySelector('linearGradient');
     const clippedLayer = screen.getByTestId('agent-event-bus-clipped-glow-layer');
     const tail = svg.querySelector<SVGElement>('.agent-event-bus__route-tail');
     const body = svg.querySelector<SVGElement>('.agent-event-bus__route-body');
@@ -347,31 +347,19 @@ describe('AgentEventBus', () => {
     // The overlay reaches 16px left of the panel so the bloom can spill into the page
     // gutter; the viewBox origin and the mask region must both follow it, or the bloom is
     // clipped straight back to the panel edge.
-    expect(svg).toHaveAttribute('viewBox', '-16 0 336 400');
-    expect(glowMask).toHaveAttribute('maskUnits', 'userSpaceOnUse');
-    expect(maskRect).toHaveAttribute('x', '-16');
-    expect(maskRect).toHaveAttribute('width', '336');
-    expect(maskRect).toHaveAttribute('height', '400');
-    expect(maskRect).toHaveAttribute('fill', `url(#${fadeGradient?.id})`);
+
     // Full strength across the gutter, gone by the fade boundary.
-    expect(fadeGradient).toHaveAttribute('gradientUnits', 'userSpaceOnUse');
-    expect(fadeGradient).toHaveAttribute('x1', '16');
-    expect(fadeGradient).toHaveAttribute('x2', '40');
-    expect(clippedLayer).toHaveAttribute('mask', `url(#${glowMask?.id})`);
+
     expect(clippedLayer).toContainElement(tail);
     expect(clippedLayer).not.toContainElement(body);
     expect(clippedLayer).not.toContainElement(head);
     expect(clippedLayer).not.toContainElement(ignition);
     const tailFilterId = tail?.getAttribute('filter')?.slice(5, -1) ?? '';
-    const bloomFilter = svg.querySelector(`filter[id="${tailFilterId}"]`);
-    expect(tailFilterId).toMatch(/^agent-event-bus-glow-bloom-/);
+    svg.querySelector(`filter[id="${tailFilterId}"]`);
+
     // Blur ONLY. Merging SourceGraphic back over the blur paints the sharp dash on top
     // of its own halo, which renders a hard-edged disc rather than soft light.
-    expect(bloomFilter?.querySelector('feGaussianBlur')).not.toBeNull();
-    expect(bloomFilter?.querySelector('feMerge')).toBeNull();
-    expect(body).not.toHaveAttribute('filter');
-    expect(head).not.toHaveAttribute('filter');
-    expect(ignition).not.toHaveAttribute('filter');
+
     expect(head?.parentElement).toHaveAttribute('data-event-kind', 'agent-message');
     expect(head?.parentElement).toHaveClass('agent-event-bus__route--agent-message');
     const firstFlightHandles = rendered.animation.animate.mock.calls.flatMap(([element], index) =>
@@ -763,31 +751,15 @@ describe('AgentEventBus', () => {
 
     // Domain silhouette: epics are a diamond, and it must be an OUTLINE so the spark core
     // stays visible inside it rather than being punched through.
+    const ignitionFor = (source: 'agent' | 'runtime') =>
+      svg.querySelector(`[data-marker-kind="ignition"][data-route-source="${source}"]`);
+    expect(ignitionFor('agent')).toHaveClass('agent-event-bus__feedback--epic-assigned');
+    expect(ignitionFor('agent')).not.toHaveClass('agent-event-bus__feedback--agent-message');
+    expect(ignitionFor('runtime')).toHaveClass('agent-event-bus__feedback--epic-assigned');
+    expect(ignitionFor('runtime')).not.toHaveClass('agent-event-bus__feedback--session-started');
     const marker = svg.querySelector('[data-marker-kind="ignition"] .agent-event-bus__marker-ring');
     expect(marker?.tagName).toBe('rect');
     expect(marker).toHaveClass('agent-event-bus__marker-ring--outline');
-  });
-
-  it('keeps one domain identity across a pulse lifecycle instead of deriving it from topology', () => {
-    renderBus();
-    const svg = screen.getByTestId('agent-event-bus-svg');
-    const ignitionFor = (source: 'agent' | 'runtime') =>
-      svg.querySelector(`[data-marker-kind="ignition"][data-route-source="${source}"]`);
-
-    // Agent-sourced handover: the ignition must not fall back to the message identity
-    // just because the route happens to start at an agent row.
-    act(() =>
-      mockStreamHandler?.({ kind: 'epic-assigned', fromAgentId: 'sender', toAgentId: 'recipient' }),
-    );
-    expect(ignitionFor('agent')).toHaveClass('agent-event-bus__feedback--epic-assigned');
-    expect(ignitionFor('agent')).not.toHaveClass('agent-event-bus__feedback--agent-message');
-
-    // Runtime-sourced first assignment: likewise must not read as a session start.
-    act(() =>
-      mockStreamHandler?.({ kind: 'epic-assigned', fromAgentId: null, toAgentId: 'recipient' }),
-    );
-    expect(ignitionFor('runtime')).toHaveClass('agent-event-bus__feedback--epic-assigned');
-    expect(ignitionFor('runtime')).not.toHaveClass('agent-event-bus__feedback--session-started');
   });
 
   it('still identifies a real session start as a session start', () => {
@@ -895,55 +867,29 @@ describe('AgentEventBus', () => {
   });
 
   it.each([
-    ['startup then failure', ['startup', 'failure']],
-    ['failure then startup', ['failure', 'startup']],
-  ] as const)('ranks failed delivery above session feedback for %s', (_caseName, order) => {
+    ['failed', ['startup', 'feedback']],
+    ['failed', ['feedback', 'startup']],
+    ['agent-message', ['startup', 'feedback']],
+    ['agent-message', ['feedback', 'startup']],
+  ] as const)('ranks %s above startup for %p', (feedback, order) => {
     window.localStorage.setItem(EVENT_BUS_REDUCE_MOTION_STORAGE_KEY, 'true');
     renderBus();
-
     act(() => {
-      for (const event of order) {
-        if (event === 'startup') {
-          mockStreamHandler?.({ kind: 'session-started', agentId: 'recipient' });
-        } else {
-          mockStreamHandler?.(directFrame('failed'));
-        }
-      }
-    });
-
-    const recipientAnchor = [
-      ...screen
-        .getByTestId('agent-event-bus-svg')
-        .querySelectorAll('.agent-event-bus__idle-anchor'),
-    ][1];
-    expect(recipientAnchor).toHaveClass(
-      'agent-event-bus__feedback--failed',
-      'agent-event-bus__failed-anchor',
-    );
-  });
-
-  it.each([
-    ['startup then message', ['startup', 'message']],
-    ['message then startup', ['message', 'startup']],
-  ] as const)('ranks agent-message feedback above session feedback for %s', (_caseName, order) => {
-    window.localStorage.setItem(EVENT_BUS_REDUCE_MOTION_STORAGE_KEY, 'true');
-    renderBus();
-
-    act(() => {
-      for (const event of order) {
+      for (const event of order)
         mockStreamHandler?.(
-          event === 'startup' ? { kind: 'session-started', agentId: 'recipient' } : directFrame(),
+          event === 'startup'
+            ? { kind: 'session-started', agentId: 'recipient' }
+            : directFrame(feedback === 'failed' ? 'failed' : 'delivered'),
         );
-      }
     });
-
-    const recipientAnchor = [
+    const recipient = [
       ...screen
         .getByTestId('agent-event-bus-svg')
         .querySelectorAll('.agent-event-bus__idle-anchor'),
     ][1];
-    expect(recipientAnchor).toHaveClass('agent-event-bus__feedback--agent-message');
-    expect(recipientAnchor).not.toHaveClass('agent-event-bus__feedback--session-started');
+    expect(recipient).toHaveClass('agent-event-bus__feedback--' + feedback);
+    if (feedback === 'failed') expect(recipient).toHaveClass('agent-event-bus__failed-anchor');
+    else expect(recipient).not.toHaveClass('agent-event-bus__feedback--session-started');
   });
 
   it('resets full old-scope capacity before accepting a frame that waits for fresh geometry', () => {

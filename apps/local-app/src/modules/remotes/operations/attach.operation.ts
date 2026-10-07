@@ -1,7 +1,9 @@
 import { TranscriptHandoff } from './transcript-handoff';
 import { DockerHandoff, dockerSelection } from '../docker/docker-handoff';
 import { Inject, Injectable } from '@nestjs/common';
+import { hostname } from 'node:os';
 import { homeIdentity } from '../home-identity';
+import { GitOwnerStore } from '../git-owner.store';
 import type { ProjectReplicaOfScope } from '@devchain/shared';
 import { ConflictError, ReplicaPreflightError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
@@ -57,6 +59,8 @@ interface AttachDetails {
   gitConfig?: 'sent' | 'not_set_on_pc' | 'failed';
   /** Why the git config copy failed; the host's message, never the file content. */
   gitConfigError?: string;
+  vmGuardRemoved?: boolean;
+  vmGuardWarning?: string | null;
 }
 
 /**
@@ -84,6 +88,7 @@ export class AttachOperation implements RemoteOperationDefinition {
     private readonly transcripts: TranscriptHandoff,
     private readonly docker: DockerHandoff,
     private readonly processExecutor: ProcessExecutor,
+    private readonly gitOwner: GitOwnerStore,
   ) {
     const noDocker = (details: Record<string, unknown>) => !dockerSelection(details);
     this.steps = [
@@ -198,9 +203,23 @@ export class AttachOperation implements RemoteOperationDefinition {
       return { dockerCleanupError: error instanceof Error ? error.message : String(error) };
     });
     // Home keeps its files and stays the only writer; neither side shares the folders any more.
-    const folderError = stepStarted(operation, 'file_sync_initial')
+    const initialStarted = stepStarted(operation, 'file_sync_initial');
+    const folderError = initialStarted
       ? await this.fileSync.removeFolders(operation.remoteId, projectId)
       : null;
+    let vmGuardWarning: string | null = null;
+    if (initialStarted || details.vmGuardRemoved) {
+      try {
+        const result = await this.host.installGitGuard(operation.remoteId, projectId, {
+          homeName: hostname(),
+          reason: 'cancelled-connect',
+        });
+        vmGuardWarning = result.warning;
+      } catch (error) {
+        vmGuardWarning = `VM git guard could not be restored after the cancelled Connect: ${error instanceof Error ? error.message : String(error)}`;
+        logger.warn({ operationId: operation.id, projectId }, 'VM git guard was not restored');
+      }
+    }
     // The set this attempt replaced: a live connection or an earlier import may own it.
     if (details.managedExclusionsBefore)
       this.managedExclusions.set(projectId, details.managedExclusionsBefore);
@@ -232,10 +251,11 @@ export class AttachOperation implements RemoteOperationDefinition {
       ...docker,
       ...(releaseError && { hostReleaseError: releaseError }),
       ...(folderError && { hostFolderRemovalError: folderError }),
+      ...(vmGuardWarning && { vmGuardWarning }),
     };
   }
 
-  private async preflight({ operation, details }: RemoteOperationStepRun): Promise<void> {
+  private async preflight({ operation, details, progress }: RemoteOperationStepRun): Promise<void> {
     const projectId = requireProjectId(operation);
     const { remoteId } = operation;
     const health = this.health.getState(remoteId);
@@ -283,16 +303,35 @@ export class AttachOperation implements RemoteOperationDefinition {
       );
     }
 
+    if (await this.fileSync.ensureRepository(projectId)) {
+      await progress({ gitInit: 'created' }, { durable: true });
+    }
+
     const build = await this.builder.build({ projectIds: [projectId], scope: 'attach' });
     if (!build.ok) {
       throw new ReplicaPreflightError(build.errors);
     }
     if (!ours && (await this.host.projectExists(remoteId, projectId))) {
-      throw new RemoteOperationStepRefusedError(
-        'HOST_PROJECT_EXISTS',
-        'The remote already has a project with this ID.',
-        { projectId, remoteId },
-      );
+      // Only a cancel that could not release its copy leaves a failed binding;
+      // finish that release. Any other copy may hold work, so it stays.
+      if (existing?.state !== 'failed' || existing.remoteId !== remoteId) {
+        throw new RemoteOperationStepRefusedError(
+          'HOST_PROJECT_EXISTS',
+          'The remote already has a project with this ID.',
+          { projectId, remoteId },
+        );
+      }
+      try {
+        await this.host.freeze(remoteId, projectId);
+        await this.host.release(remoteId, projectId);
+      } catch (error) {
+        throw new RemoteOperationStepRefusedError(
+          'HOST_PROJECT_EXISTS',
+          'The remote still has the copy from the cancelled connect, and removing it failed: ' +
+            (error instanceof Error ? error.message : String(error)),
+          { projectId, remoteId },
+        );
+      }
     }
 
     if (existing?.state === 'failed') {
@@ -375,6 +414,7 @@ export class AttachOperation implements RemoteOperationDefinition {
       state: 'remote',
       hostCursor: cursor,
     });
+    this.gitOwner.clear(requireProjectId(operation));
   }
 
   private async thawHost({ operation }: RemoteOperationStepRun): Promise<void> {

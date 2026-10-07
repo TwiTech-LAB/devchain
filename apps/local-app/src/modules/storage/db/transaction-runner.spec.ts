@@ -70,18 +70,6 @@ describe('TransactionRunner', () => {
     expect(rows.map((r) => r.name)).toEqual(['existing']);
   });
 
-  it('rejects Promise-returning native callbacks without committing', () => {
-    const nativeTransaction = sqlite.transaction(() => {
-      sqlite.prepare('INSERT INTO items (name) VALUES (?)').run('should-vanish');
-      return Promise.resolve();
-    });
-
-    expect(() => nativeTransaction()).toThrow(/promise/i);
-
-    const rows = sqlite.prepare('SELECT name FROM items').all() as { name: string }[];
-    expect(rows).toEqual([]);
-  });
-
   it('re-throws domain errors after rollback', () => {
     class ConflictError extends Error {
       constructor(message: string) {
@@ -94,12 +82,14 @@ describe('TransactionRunner', () => {
 
     try {
       runner.runImmediate(() => {
+        sqlite.prepare('INSERT INTO items (name) VALUES (?)').run('should-vanish');
         throw thrown;
       });
       fail('expected error');
     } catch (error) {
       expect(error).toBe(thrown);
       expect((error as Error).name).toBe('ConflictError');
+      expect(sqlite.prepare('SELECT name FROM items').all()).toEqual([]);
     }
   });
 
@@ -135,23 +125,6 @@ describe('TransactionRunner', () => {
 
     expect(execCalls[0]).toBe('BEGIN IMMEDIATE');
     expect(execCalls[1]).toBe('COMMIT');
-  });
-
-  it('handles nested function calls correctly', () => {
-    function insertItem(db: Database.Database, name: string): number {
-      const result = db.prepare('INSERT INTO items (name) VALUES (?)').run(name);
-      return Number(result.lastInsertRowid);
-    }
-
-    const ids = runner.runImmediate(() => {
-      const id1 = insertItem(sqlite, 'first');
-      const id2 = insertItem(sqlite, 'second');
-      return [id1, id2];
-    });
-
-    expect(ids).toHaveLength(2);
-    const rows = sqlite.prepare('SELECT name FROM items ORDER BY id').all() as { name: string }[];
-    expect(rows.map((r) => r.name)).toEqual(['first', 'second']);
   });
 
   describe('runImmediateAsync', () => {

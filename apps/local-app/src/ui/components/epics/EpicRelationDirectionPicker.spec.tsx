@@ -43,19 +43,6 @@ describe('EpicRelationDirectionPicker', () => {
     return { ...view, onChange };
   }
 
-  it('renders no time-route fieldset or route-mode buttons', () => {
-    setup();
-
-    expect(screen.queryByText('Time route')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'No time route' })).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Route time to related Epic' }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Route related time here' }),
-    ).not.toBeInTheDocument();
-  });
-
   it('uses the same focusable arrow for Related and Blocks and swaps source and target', async () => {
     const user = userEvent.setup();
     const { onChange } = setup();
@@ -72,13 +59,17 @@ describe('EpicRelationDirectionPicker', () => {
     expect(onChange).toHaveBeenLastCalledWith({ type: 'blocks', sourceIsFocal: true });
   });
 
-  it('marks the eligible target card and states that it logs time with the source', () => {
+  it('marks the eligible target card and states that it logs time with the source', async () => {
     setup({ draft: { type: 'related', sourceIsFocal: true }, eligible: true });
 
     expect(screen.getAllByLabelText('Logs time')).toHaveLength(1);
     expect(screen.getByTestId('relation-direction-summary')).toHaveTextContent(
       /“Target Epic” logs time with “Source Epic”\./,
     );
+
+    {
+      expect(screen.getByText('logs time')).toBeInTheDocument();
+    }
   });
 
   it('moves the logging copy with the arrow when the target swaps', () => {
@@ -89,48 +80,20 @@ describe('EpicRelationDirectionPicker', () => {
     );
   });
 
-  it('states that ineligible Related links do not affect Epic time', () => {
-    setup({ draft: { type: 'related', sourceIsFocal: true }, eligible: false });
-
-    expect(screen.getByTestId('relation-direction-summary')).toHaveTextContent(
-      /does not affect Epic time/i,
-    );
+  it.each([
+    { cause: undefined, text: /does not affect Epic time/i },
+    { cause: 'child' as const, text: /child Epics never route time./ },
+    { cause: 'cross-project' as const, text: /only Epics in one project route time./ },
+  ])('explains ineligible cause=$cause', ({ cause, text }) => {
+    const { container } = setup({
+      draft: { type: 'related', sourceIsFocal: true },
+      eligible: false,
+      ineligibilityCause: cause,
+    });
+    expect(screen.getByTestId('relation-direction-summary')).toHaveTextContent(text);
     expect(screen.queryByLabelText('Logs time')).not.toBeInTheDocument();
-  });
-
-  it('names the child cause and never claims time logging for ineligible links', () => {
-    const { container } = setup({
-      draft: { type: 'related', sourceIsFocal: true },
-      eligible: false,
-      ineligibilityCause: 'child',
-    });
-
-    const summary = screen.getByTestId('relation-direction-summary');
-    expect(summary).toHaveTextContent(/child Epics never route time\./);
-    // The entire picker — summary, center label, live region — stays free of
-    // time-logging claims for an ineligible Related draft.
     expect(container.textContent).not.toContain('logs time');
-    expect(screen.getByText('no time route')).toBeInTheDocument();
-  });
-
-  it('names the cross-project cause for cross-project links', () => {
-    const { container } = setup({
-      draft: { type: 'related', sourceIsFocal: true },
-      eligible: false,
-      ineligibilityCause: 'cross-project',
-    });
-
-    expect(screen.getByTestId('relation-direction-summary')).toHaveTextContent(
-      /only Epics in one project route time\./,
-    );
-    expect(container.textContent).not.toContain('logs time');
-    expect(screen.getByText('no time route')).toBeInTheDocument();
-  });
-
-  it('keeps the logs-time center label for eligible Related drafts', () => {
-    setup({ draft: { type: 'related', sourceIsFocal: true }, eligible: true });
-
-    expect(screen.getByText('logs time')).toBeInTheDocument();
+    if (cause) expect(screen.getByText('no time route')).toBeInTheDocument();
   });
 
   it('summarizes Blocks direction without time claims', () => {

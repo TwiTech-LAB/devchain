@@ -1,9 +1,5 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../drizzle');
 
 // Layer: backend integration. SQLite is the cheapest reliable proof for generated
 // foreign keys, partial indexes, and AUTOINCREMENT persistence.
@@ -11,8 +7,7 @@ describe('epic-time migration', () => {
   let sqlite: Database.Database;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
   });
 

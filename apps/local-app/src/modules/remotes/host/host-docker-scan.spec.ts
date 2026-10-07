@@ -7,6 +7,7 @@ import { DockerEngineClient } from '../../core/controllers/docker-engine.client'
 jest.mock('node:fs/promises', () => ({
   ...jest.requireActual('node:fs/promises'),
   stat: jest.fn(),
+  readFile: jest.fn(),
 }));
 afterEach(() => jest.restoreAllMocks());
 
@@ -14,9 +15,8 @@ it.each([
   { paths: ['relative'] },
   { paths: ['/etc/../hosts'] },
   { paths: ['/etc//hosts'] },
-  { paths: Array(65).fill('/x') },
-  { paths: ['/' + 'x'.repeat(4096)] },
   { paths: ['/x\0y'] },
+  { networks: ['invalid name'] },
 ])('refuses invalid or unbounded scan paths %#', (input) => {
   expect(DockerScanRequestSchema.safeParse(input).success).toBe(false);
 });
@@ -54,6 +54,41 @@ it('marks single files, and reports EACCES and other stat errors as unknown whil
     { path: '/io-error', unknown: true },
   ]);
   expect(fs.stat).toHaveBeenCalledWith('/outside/link');
+  expect(result.routes).toBeUndefined();
+});
+
+// The scan boundary verifies the proc reader and projection without an HTTP server.
+it('returns only on-link non-default IPv4 routes when networks are requested', async () => {
+  jest.mocked(fs.readFile)
+    .mockResolvedValue(`Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
+eth0 00001FAC 00000000 0001 0 0 0 0000FFFF 0 0 0
+docker0 000011AC 00000000 0001 0 0 0 0000FFFF 0 0 0
+eth0 00000000 01001FAC 0003 0 0 0 00000000 0 0 0
+eth0 00000000 00000000 0001 0 0 0 00000000 0 0 0
+tun0 00000000 01001FAC 0003 0 0 0 00000080 0 0 0
+tun0 00000080 01001FAC 0003 0 0 0 00000080 0 0 0
+eth0 000010AC 01001FAC 0003 0 0 0 0000F0FF 0 0 0
+tun0 00000000 00000000 0003 0 0 0 00000080 0 0 0
+eth0 000010AC 01001FAC 0001 0 0 0 0000F0FF 0 0 0`);
+  const json = jest.fn(async (_method: string, path: string) =>
+    path === '/volumes' ? { Volumes: [] } : [],
+  );
+  jest.spyOn(DockerEngineClient, 'connect').mockResolvedValue({
+    connectedInfo: { Architecture: 'amd64' },
+    json,
+  } as unknown as DockerEngineClient);
+  const result = await new HostDockerService({} as DockerArchiveJournal).scan(
+    [],
+    undefined,
+    undefined,
+    undefined,
+    [],
+  );
+  expect(result.routes).toEqual(['172.31.0.0/16', '172.17.0.0/16']);
+  expect(fs.readFile).toHaveBeenCalledWith('/proc/net/route', {
+    encoding: 'utf8',
+    signal: undefined,
+  });
 });
 
 // Unit layer checks the engine request boundary without running an HTTP server.

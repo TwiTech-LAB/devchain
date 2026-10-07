@@ -97,30 +97,6 @@ describe('ClaudeSessionReaderAdapter', () => {
       expect(results).toHaveLength(0);
     });
 
-    it('should scan encoded directory when no transcriptPath', async () => {
-      // Create temp directory structure mimicking ~/.claude/projects/-test-project/
-      const projectRoot = '/test/project';
-      const encodedDir = '-test-project';
-      const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-projects-'));
-      const projectDir = path.join(baseDir, encodedDir);
-      fs.mkdirSync(projectDir, { recursive: true });
-      createTestJsonlFile(projectDir, 'abc123.jsonl', [userEntry, assistantEntry]);
-
-      // Override homeDir by patching the internal state
-      // Since we can't easily override os.homedir, we test the encoding logic separately
-      // and verify the return structure
-      try {
-        // We can at least verify the encode logic
-        expect(
-          (adapter as unknown as { encodeProjectPath: (p: string) => string }).encodeProjectPath(
-            projectRoot,
-          ),
-        ).toBe(encodedDir);
-      } finally {
-        fs.rmSync(baseDir, { recursive: true, force: true });
-      }
-    });
-
     it('never lists Syncthing markers in a project transcript directory as transcripts', async () => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
       const projectDir = path.join(home, '.claude/projects/-test-project');
@@ -209,9 +185,6 @@ describe('ClaudeSessionReaderAdapter', () => {
       expect(encode('/home/ngsupb/repos/my projects/sundermarch v2')).toBe(
         '-home-ngsupb-repos-my-projects-sundermarch-v2',
       );
-    });
-
-    it('keeps DevChain-style folder names unchanged', () => {
       expect(encode('/home/ngsupb/repos/twitech/devchain')).toBe(
         '-home-ngsupb-repos-twitech-devchain',
       );

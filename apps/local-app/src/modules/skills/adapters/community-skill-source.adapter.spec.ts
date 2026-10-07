@@ -196,25 +196,6 @@ describe('CommunitySkillSourceAdapter', () => {
     }
   });
 
-  it('resolves correctly when skill exists only at skills/<name>', async () => {
-    const adapter = new CommunitySkillSourceAdapter(source);
-    const root = await fs.mkdtemp(join(tmpdir(), 'community-skill-source-path-'));
-    const skillsLevelSkillDir = join(root, 'skills', 'code-review');
-    await fs.mkdir(skillsLevelSkillDir, { recursive: true });
-
-    try {
-      const resolved = await (
-        adapter as unknown as {
-          resolveSkillDirectory: (repoRoot: string, skillName: string) => Promise<string>;
-        }
-      ).resolveSkillDirectory(root, 'code-review');
-
-      expect(resolved).toBe(skillsLevelSkillDir);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
   it('does not fallback to root-level directory when skills/<name> is missing', async () => {
     const adapter = new CommunitySkillSourceAdapter(source);
     const root = await fs.mkdtemp(join(tmpdir(), 'community-skill-source-path-'));

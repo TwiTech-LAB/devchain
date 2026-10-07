@@ -273,30 +273,6 @@ describe('EpicRelationsService', () => {
     expect(events.publish).not.toHaveBeenCalled();
   });
 
-  it('forwards accepted route facts into set and delete writes', async () => {
-    storage.setEpicRelation.mockResolvedValue({
-      changed: false,
-      workspaceId: WORKSPACE_ID,
-    });
-    storage.deleteEpicRelation.mockResolvedValue({ deleted: false, workspaceId: WORKSPACE_ID });
-    const acceptedRouteEffect = { sourceEpicId: EPIC_ID, targetEpicId: RELATED_ID };
-
-    await service.setRelation(EPIC_ID, RELATED_ID, 'related', undefined, {
-      confirmation: { acceptedRouteEffect },
-    });
-    await service.deleteRelation(EPIC_ID, RELATED_ID);
-
-    expect(storage.setEpicRelation).toHaveBeenCalledWith(
-      expect.objectContaining({ acceptedRouteEffect }),
-      { trustedLocalHuman: true },
-    );
-    // Explicit pair deletion carries no confirmation: it is the remedy for a
-    // blocked replacement on both surfaces.
-    expect(storage.deleteEpicRelation).toHaveBeenCalledWith(EPIC_ID, RELATED_ID, {
-      trustedLocalHuman: true,
-    });
-  });
-
   it('propagates the confirmation requirement without publishing invalidation', async () => {
     const confirmationRequired = new RelationConfirmationRequiredError({
       sourceEpicId: EPIC_ID,

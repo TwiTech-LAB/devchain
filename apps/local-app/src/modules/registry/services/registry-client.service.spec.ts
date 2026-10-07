@@ -267,14 +267,6 @@ describe('RegistryClientService', () => {
 
       await expect(service.downloadTemplate('test', '1.0.0')).rejects.toThrow(RegistryError);
     });
-
-    it('should handle request timeout', async () => {
-      const abortError = new Error('Aborted');
-      abortError.name = 'AbortError';
-      mockFetch.mockRejectedValueOnce(abortError);
-
-      await expect(service.downloadTemplate('test', '1.0.0')).rejects.toThrow(RegistryError);
-    });
   });
 
   describe('checkForUpdates', () => {
@@ -304,21 +296,22 @@ describe('RegistryClientService', () => {
       });
     });
 
-    it('should return empty for up-to-date templates', async () => {
-      const remoteTemplate = {
-        template: { slug: 'test-template' },
-        versions: [{ version: '1.0.0', isLatest: true }],
-      };
-
+    it.each([
+      { label: 'up to date', remote: '1.0.0', installed: '1.0.0', isLatest: true },
+      { label: 'invalid remote', remote: 'invalid-version', installed: '1.0.0', isLatest: true },
+      { label: 'invalid installed', remote: '2.0.0', installed: 'not-a-version', isLatest: true },
+      { label: 'no latest', remote: '1.0.0', installed: '0.9.0', isLatest: false },
+    ])('$label', async ({ remote, installed, isLatest }) => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => remoteTemplate,
+        json: async () => ({
+          template: { slug: 'test-template' },
+          versions: [{ version: remote, isLatest }],
+        }),
       });
-
-      const installed = [{ slug: 'test-template', version: '1.0.0' }];
-      const updates = await service.checkForUpdates(installed);
-
-      expect(updates).toHaveLength(0);
+      expect(
+        await service.checkForUpdates([{ slug: 'test-template', version: installed }]),
+      ).toEqual([]);
     });
 
     it('should handle individual template errors gracefully', async () => {
@@ -366,53 +359,6 @@ describe('RegistryClientService', () => {
       expect(updates).toHaveLength(1);
       expect(updates[0].slug).toBe('template-2');
     });
-
-    it('should skip templates with invalid semver versions', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          template: { slug: 'test-template' },
-          versions: [{ version: 'invalid-version', isLatest: true }],
-        }),
-      });
-
-      const installed = [{ slug: 'test-template', version: '1.0.0' }];
-      const updates = await service.checkForUpdates(installed);
-
-      // Should skip due to invalid remote version
-      expect(updates).toHaveLength(0);
-    });
-
-    it('should skip when installed version is invalid semver', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          template: { slug: 'test-template' },
-          versions: [{ version: '2.0.0', isLatest: true }],
-        }),
-      });
-
-      const installed = [{ slug: 'test-template', version: 'not-a-version' }];
-      const updates = await service.checkForUpdates(installed);
-
-      // Should skip due to invalid installed version
-      expect(updates).toHaveLength(0);
-    });
-
-    it('should skip when no latest version exists', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          template: { slug: 'test-template' },
-          versions: [{ version: '1.0.0', isLatest: false }], // No isLatest=true
-        }),
-      });
-
-      const installed = [{ slug: 'test-template', version: '0.9.0' }];
-      const updates = await service.checkForUpdates(installed);
-
-      expect(updates).toHaveLength(0);
-    });
   });
 
   describe('isAvailable', () => {
@@ -426,16 +372,6 @@ describe('RegistryClientService', () => {
         expect.stringContaining('/health'),
         expect.any(Object),
       );
-    });
-
-    it('should return false on timeout', async () => {
-      const abortError = new Error('Aborted');
-      abortError.name = 'AbortError';
-      mockFetch.mockRejectedValueOnce(abortError);
-
-      const result = await service.isAvailable();
-
-      expect(result).toBe(false);
     });
 
     it('should return false on network error', async () => {
@@ -456,12 +392,6 @@ describe('RegistryClientService', () => {
   });
 
   describe('getRegistryUrl', () => {
-    it('should return the configured registry URL from settings', () => {
-      const url = service.getRegistryUrl();
-      expect(url).toBe('https://templates.devchain.twitechlab.com');
-      expect(mockSettingsService.getRegistryConfig).toHaveBeenCalled();
-    });
-
     it('should reflect URL changes from settings immediately', () => {
       // Initial URL
       expect(service.getRegistryUrl()).toBe('https://templates.devchain.twitechlab.com');

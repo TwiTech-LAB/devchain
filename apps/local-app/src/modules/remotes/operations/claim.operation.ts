@@ -41,6 +41,7 @@ import {
 } from './remote-operation.types';
 import { buildGlobalGitConfigClaimFile } from './git-global-config';
 import { isSupportedHostImage, unsupportedHostImageMessage } from '../host-image';
+import { reportedVmUserMismatch, vmUserWarning } from '../vm-user-identity';
 
 const logger = createLogger('ClaimOperation');
 
@@ -80,6 +81,7 @@ export interface ClaimDetails {
   homePath: string;
   /** This PC's uid, asked of the VM when free; an old bootstrap drops it. */
   uid?: number;
+  gid?: number;
   version: string;
   port: number;
   providerAuth: Record<string, ClaimProviderState>;
@@ -379,6 +381,7 @@ export class ClaimOperation implements RemoteOperationDefinition {
             userName: claim.userName,
             homePath: claim.homePath,
             ...(claim.uid !== undefined ? { uid: claim.uid } : {}),
+            ...(claim.gid !== undefined ? { gid: claim.gid } : {}),
             version: claim.version,
             port: claim.port,
             providerAuth: {
@@ -492,7 +495,7 @@ export class ClaimOperation implements RemoteOperationDefinition {
     }
   }
 
-  private async registerRemote({ operation }: RemoteOperationStepRun): Promise<void> {
+  private async registerRemote({ operation, progress }: RemoteOperationStepRun): Promise<void> {
     const health = await this.health.refresh(operation.remoteId);
     if (!health.online || !health.versionMatches) {
       throw refused(
@@ -503,6 +506,8 @@ export class ClaimOperation implements RemoteOperationDefinition {
       );
     }
     if (health.apiKeyRejected) throw refused(HOST_API_KEY_REJECTED, HOST_API_KEY_REJECTED_MESSAGE);
+    const mismatch = reportedVmUserMismatch(health);
+    if (mismatch) await progress({ dockerUserWarning: vmUserWarning(mismatch) });
   }
 
   /** Every provider with a login, or only those a failed check sent back. */

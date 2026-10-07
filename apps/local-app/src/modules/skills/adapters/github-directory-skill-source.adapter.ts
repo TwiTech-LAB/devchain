@@ -10,6 +10,7 @@ import {
 } from './github-skill-source.base';
 import { validateRepositoryRelativePath } from './skill-parsing.utils';
 import type {
+  SkillDiscoveryError,
   SkillManifest,
   SkillSourceAdapter,
   SkillSourceSyncContext,
@@ -51,6 +52,7 @@ export class GitHubDirectorySkillSourceAdapter
   async createSyncContext(): Promise<SkillSourceSyncContext> {
     const repoContext = await this.prepareExtractedRepository();
     const manifests = new Map<string, SkillManifest>();
+    const discoveryErrors: SkillDiscoveryError[] = [];
     let disposed = false;
     const dispose = async (): Promise<void> => {
       if (disposed) {
@@ -74,12 +76,10 @@ export class GitHubDirectorySkillSourceAdapter
           }
           manifests.set(skillName, this.toSkillManifest(skillName, parsedSkill));
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          discoveryErrors.push({ skillName, message });
           logger.warn(
-            {
-              sourceName: this.sourceName,
-              skillName,
-              error: error instanceof Error ? error.message : String(error),
-            },
+            { sourceName: this.sourceName, skillName, error: message },
             'Failed processing GitHub directory skill. Skipping.',
           );
         }
@@ -87,6 +87,7 @@ export class GitHubDirectorySkillSourceAdapter
 
       return {
         manifests,
+        discoveryErrors,
         downloadSkill: async (skillName: string, targetPath: string) =>
           this.downloadSkillFromExtractedRepo(skillName, targetPath, repoContext.extractedRepoRoot),
         dispose,

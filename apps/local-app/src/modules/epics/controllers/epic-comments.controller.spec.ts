@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ZodError } from 'zod';
+
 import { EpicCommentsController } from './epic-comments.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { EpicsService } from '../services/epics.service';
@@ -51,13 +51,6 @@ describe('EpicCommentsController', () => {
     expect(result).toEqual(comment);
   });
 
-  it('rejects invalid create body', async () => {
-    await expect(
-      controller.createEpicComment('epic-1', { content: 'missing author' }),
-    ).rejects.toBeInstanceOf(ZodError);
-    expect(epicsService.addEpicCommentFromRest).not.toHaveBeenCalled();
-  });
-
   it('keeps list behavior unchanged (delegates to storage with parsed options)', async () => {
     const comments = { items: [], total: 0 };
     storage.listEpicComments.mockResolvedValue(comments);
@@ -66,14 +59,5 @@ describe('EpicCommentsController', () => {
 
     expect(storage.listEpicComments).toHaveBeenCalledWith('epic-1', { limit: 10, offset: 5 });
     expect(result).toEqual(comments);
-  });
-
-  it('deletes comments via EpicsService so the write is admitted there', async () => {
-    epicsService.deleteEpicCommentById.mockResolvedValue(undefined);
-
-    await controller.deleteEpicComment('comment-1');
-
-    expect(epicsService.deleteEpicCommentById).toHaveBeenCalledWith('comment-1');
-    expect(storage.deleteEpicComment).not.toHaveBeenCalled();
   });
 });

@@ -114,23 +114,7 @@ describe('useEpicTimeSummariesBatch', () => {
     expect(
       client.getQueryData(epicTimeQueryKeys.batch(['epic-1'], timeZone, 'active')),
     ).toBeDefined();
-  });
-
-  it('re-admits to the primed active cache immediately after a disabled stretch', async () => {
-    fetchMock.mockResolvedValue(batchResponse([{ epicId: 'epic-1', totalMinutes: 90 }]));
-    const { result, rerender } = renderHook(
-      ({ enabled }: { enabled: boolean }) => useEpicTimeSummariesBatch(['epic-1'], { enabled }),
-      { wrapper: wrapper(client), initialProps: { enabled: true } },
-    );
-
-    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
-
-    rerender({ enabled: false });
-    expect(result.current.totals).toBeUndefined();
-
     rerender({ enabled: true });
-    // The active cache entry serves the badge again right away; any later
-    // refresh is a fresh active-scope request, not a disabled-scope leak.
     expect(result.current.totals?.get('epic-1')).toBe(90);
   });
 

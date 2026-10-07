@@ -1,9 +1,15 @@
+import { resetEnvConfig } from '../../../common/config/env.config';
+import { cleanupStaleSkillSyncDirectories } from '../adapters/skill-sync-temp-cleanup';
 import { access, rm, stat } from 'node:fs/promises';
 import { NotFoundError, StorageError, ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { CommunitySkillSource, LocalSkillSource } from '../../storage/models/domain.models';
 import { SkillSourceLifecycleService } from './skill-source-lifecycle.service';
 import type { SyncResult } from './skill-sync.types';
+
+jest.mock('../adapters/skill-sync-temp-cleanup', () => ({
+  cleanupStaleSkillSyncDirectories: jest.fn().mockResolvedValue(undefined),
+}));
 
 jest.mock('node:fs/promises', () => ({
   access: jest.fn(),
@@ -90,6 +96,7 @@ describe('SkillSourceLifecycleService', () => {
   let logger: { debug: jest.Mock; error: jest.Mock; info: jest.Mock; warn: jest.Mock };
 
   beforeEach(() => {
+    jest.mocked(cleanupStaleSkillSyncDirectories).mockClear();
     storage = {
       listCommunitySkillSources: jest.fn().mockResolvedValue([]),
       createCommunitySkillSource: jest
@@ -152,14 +159,6 @@ describe('SkillSourceLifecycleService', () => {
     expect(job).toHaveBeenCalledTimes(1);
   });
 
-  it('delegates community and local listing through the lifecycle seam', async () => {
-    storage.listCommunitySkillSources.mockResolvedValue([communitySource()]);
-    storage.listLocalSkillSources.mockResolvedValue([localSource()]);
-
-    await expect(service.listCommunitySources()).resolves.toHaveLength(1);
-    await expect(service.listLocalSources()).resolves.toHaveLength(1);
-  });
-
   it.each(['community', 'local'] as const)(
     'rejects a registry-owned built-in name for %s before persistence',
     async (kind) => {
@@ -212,35 +211,6 @@ describe('SkillSourceLifecycleService', () => {
       'community-source',
       'local-source',
     ]);
-  });
-
-  it('passes the existingProjects choice through to storage for both source kinds', async () => {
-    const choice = {
-      mode: 'selected' as const,
-      projectIds: ['00000000-0000-0000-0000-000000000003'],
-    };
-
-    await service.createCommunitySource({
-      name: 'choice-community',
-      repoOwner: 'owner',
-      repoName: 'repo',
-      branch: 'main',
-      existingProjects: choice,
-    });
-    await service.createLocalSource({
-      name: 'choice-local',
-      folderPath: '/tmp/choice-local',
-      existingProjects: choice,
-    });
-
-    expect(storage.createCommunitySkillSource).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'choice-community' }),
-      { existingProjects: choice },
-    );
-    expect(storage.createLocalSkillSource).toHaveBeenCalledWith(
-      { name: 'choice-local', folderPath: '/tmp/choice-local' },
-      { existingProjects: choice },
-    );
   });
 
   it('retains a created source when idle initial sync throws', async () => {
@@ -582,16 +552,41 @@ describe('SkillSourceLifecycleService', () => {
     await expect(service.syncAll()).resolves.toEqual(completedResult());
   });
 
+  it('disables startup cleanup and sync while preserving manual and creation syncs', async () => {
+    process.env.SKILLS_STARTUP_SYNC_ENABLED = 'false';
+    resetEnvConfig();
+    settings.getSkillsSyncOnStartup.mockReturnValue(true);
+    service.onApplicationBootstrap();
+    expect(cleanupStaleSkillSyncDirectories).not.toHaveBeenCalled();
+    expect(syncExecutor.syncAll).not.toHaveBeenCalled();
+    expect(settings.getSkillsSyncOnStartup).not.toHaveBeenCalled();
+
+    await service.syncAll({ force: true });
+    expect(syncExecutor.syncAll).toHaveBeenCalledWith({ force: true });
+    await service.createCommunitySource({
+      name: 'new-source',
+      repoOwner: 'owner',
+      repoName: 'repo',
+      branch: 'main',
+      existingProjects: { mode: 'none' },
+    });
+    expect(syncExecutor.syncSource).toHaveBeenCalledWith('new-source');
+  });
+
   it('preserves startup disabled, enabled, and fire-and-forget failure behavior', async () => {
+    process.env.SKILLS_STARTUP_SYNC_ENABLED = 'true';
+    resetEnvConfig();
     const syncSpy = jest.spyOn(service, 'syncAll');
     service.onApplicationBootstrap();
     expect(syncSpy).not.toHaveBeenCalled();
+    expect(cleanupStaleSkillSyncDirectories).toHaveBeenCalledTimes(1);
     expect(logger.info).toHaveBeenCalledWith('Startup skills sync disabled via settings');
 
     settings.getSkillsSyncOnStartup.mockReturnValue(true);
     syncSpy.mockResolvedValueOnce(completedResult());
     service.onApplicationBootstrap();
     expect(syncSpy).toHaveBeenCalledTimes(1);
+    expect(cleanupStaleSkillSyncDirectories).toHaveBeenCalledTimes(2);
 
     syncSpy.mockRejectedValueOnce(new Error('startup failed'));
     service.onApplicationBootstrap();

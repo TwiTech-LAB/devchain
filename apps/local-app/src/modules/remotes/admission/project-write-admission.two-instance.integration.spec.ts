@@ -609,10 +609,13 @@ describe('project write admission between two instances', () => {
 
   beforeAll(async () => {
     instances = await startTwoInstances();
-    seedProjects(instances.home.sqlite, { scheduleDue: true });
+    seedProjects(instances.home.sqlite, { scheduleDue: false });
     seedProjects(instances.host.sqlite, { scheduleDue: false });
     remote = await instances.registerRemote('vm-1');
     await instances.bindProject(ids.project, remote.id, 'remote');
+    instances.home.sqlite
+      .prepare('UPDATE scheduled_epics SET enabled = 1, next_run_at = ? WHERE id = ?')
+      .run('2020-01-01T00:00:00.000Z', ids.schedule);
   }, 60_000);
 
   afterAll(async () => {
@@ -676,6 +679,11 @@ describe('project write admission between two instances', () => {
     });
 
     it('skips the project in the scheduler without claiming a run', async () => {
+      const schedule = instances.home.sqlite
+        .prepare('SELECT enabled, next_run_at FROM scheduled_epics WHERE id = ?')
+        .get(ids.schedule) as { enabled: number; next_run_at: string };
+      expect(schedule.enabled).toBe(1);
+      expect(new Date(schedule.next_run_at).getTime()).toBeLessThan(Date.now());
       const runner = instances.home.app.get(ScheduledEpicRunnerService);
       await (runner as unknown as { scanAndExecute(): Promise<void> }).scanAndExecute();
 

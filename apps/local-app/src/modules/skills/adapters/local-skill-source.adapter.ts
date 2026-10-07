@@ -17,6 +17,7 @@ import {
   validatePathSegment,
 } from './skill-parsing.utils';
 import type {
+  SkillDiscoveryError,
   SkillManifest,
   SkillSourceAdapter,
   SkillSourceSyncContext,
@@ -57,6 +58,7 @@ export class LocalSkillSourceAdapter implements SkillSourceAdapter {
 
   async createSyncContext(): Promise<SkillSourceSyncContext> {
     const manifests = new Map<string, SkillManifest>();
+    const discoveryErrors: SkillDiscoveryError[] = [];
     const skillNames = await this.listSkillNamesFromLocalFolder();
 
     for (const skillName of skillNames) {
@@ -86,12 +88,10 @@ export class LocalSkillSourceAdapter implements SkillSourceAdapter {
 
         manifests.set(skillName, this.toSkillManifest(skillName, parsedSkill));
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        discoveryErrors.push({ skillName, message });
         logger.warn(
-          {
-            sourceName: this.sourceName,
-            skillName,
-            error: error instanceof Error ? error.message : String(error),
-          },
+          { sourceName: this.sourceName, skillName, error: message },
           'Failed processing local skill. Skipping.',
         );
       }
@@ -99,6 +99,7 @@ export class LocalSkillSourceAdapter implements SkillSourceAdapter {
 
     return {
       manifests,
+      discoveryErrors,
       downloadSkill: (skillName: string, targetPath: string) =>
         this.downloadSkill(skillName, targetPath),
       dispose: async () => undefined,

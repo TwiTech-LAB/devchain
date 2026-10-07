@@ -89,60 +89,65 @@ describe('ProjectForwardingList', () => {
     expect(screen.getByText('Add a project to manage its notifications')).toBeInTheDocument();
   });
 
-  it('renders header and rows', async () => {
+  it('shows forwarding rows, summary and filter controls: flips to "Disable all" after all queries resolve enabled', async () => {
     mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: true }));
     mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
     renderWithClient(<ProjectForwardingList />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Per-project forwarding')).toBeInTheDocument();
-    });
-    expect(screen.getByText('Project One')).toBeInTheDocument();
-    expect(screen.getByText('Project Two')).toBeInTheDocument();
-  });
-
-  it('flips to "Disable all" after all queries resolve enabled', async () => {
-    mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: true }));
-    mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
-    renderWithClient(<ProjectForwardingList />);
-
-    // Button starts as "Enable all" while queries load
-    expect(screen.getByRole('button', { name: /Enable all|Disable all/ })).toHaveTextContent(
-      'Enable all',
-    );
-
-    // After queries resolve, button flips to "Disable all"
-    await waitFor(() => {
+    {
       expect(screen.getByRole('button', { name: /Enable all|Disable all/ })).toHaveTextContent(
-        'Disable all',
+        'Enable all',
       );
-    });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Enable all|Disable all/ })).toHaveTextContent(
+          'Disable all',
+        );
+      });
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Per-project forwarding')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Project One')).toBeInTheDocument();
+      expect(screen.getByText('Project Two')).toBeInTheDocument();
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText(/2 enabled/)).toBeInTheDocument();
+      });
+      expect(screen.getByText(/2 projects/)).toBeInTheDocument();
+    }
   });
 
-  it('shows "Enable all" for mixed states', async () => {
+  it('shows forwarding rows, summary and filter controls: shows "Enable all" for mixed states', async () => {
     mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: false }));
     mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
     renderWithClient(<ProjectForwardingList />);
-
-    await waitFor(() => {
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Project One')).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', { name: /Enable all|Disable all/ })).toHaveTextContent(
+        'Enable all',
+      );
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText(/1 enabled/)).toBeInTheDocument();
+      });
+      expect(screen.getByText(/2 projects/)).toBeInTheDocument();
+    }
+    {
+      await waitFor(() => expect(screen.getByText('Project One')).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: /^Enabled$/ }));
       expect(screen.getByText('Project One')).toBeInTheDocument();
-    });
-    expect(screen.getByRole('button', { name: /Enable all|Disable all/ })).toHaveTextContent(
-      'Enable all',
-    );
-  });
-
-  it('shows "Enable all" when all disabled', async () => {
-    mockFetch.mockImplementation(mockGetFetch({ p1: false, p2: false }));
-    mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
-    renderWithClient(<ProjectForwardingList />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Project One')).toBeInTheDocument();
-    });
-    expect(screen.getByRole('button', { name: /Enable all|Disable all/ })).toHaveTextContent(
-      'Enable all',
-    );
+      expect(screen.queryByText('Project Two')).not.toBeInTheDocument();
+    }
+    {
+      await waitFor(() => expect(screen.getByText('Project One')).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: /^Disabled$/ }));
+      expect(screen.queryByText('Project One')).not.toBeInTheDocument();
+      expect(screen.getByText('Project Two')).toBeInTheDocument();
+    }
   });
 
   it('bulk Enable all: fires N PUTs and updates state', async () => {
@@ -313,29 +318,10 @@ describe('ProjectForwardingList', () => {
     });
   });
 
-  it('summary badge shows enabled count and total', async () => {
-    mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: false }));
-    mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
-    renderWithClient(<ProjectForwardingList />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/1 enabled/)).toBeInTheDocument();
-    });
-    expect(screen.getByText(/2 projects/)).toBeInTheDocument();
-  });
-
-  it('summary badge updates when all enabled', async () => {
-    mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: true }));
-    mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
-    renderWithClient(<ProjectForwardingList />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/2 enabled/)).toBeInTheDocument();
-    });
-    expect(screen.getByText(/2 projects/)).toBeInTheDocument();
-  });
-
-  it('search by name filters displayed rows', async () => {
+  it.each([
+    { label: 'name', query: 'One', visible: 'Project One', hidden: 'Project Two' },
+    { label: 'root path', query: '/tmp/p2', visible: 'Project Two', hidden: 'Project One' },
+  ] as const)('filters by $label', async ({ query, visible, hidden }) => {
     mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: true }));
     mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
     renderWithClient(<ProjectForwardingList />);
@@ -343,24 +329,10 @@ describe('ProjectForwardingList', () => {
     await waitFor(() => expect(screen.getByText('Project One')).toBeInTheDocument());
 
     const searchInput = screen.getByRole('textbox', { name: /search projects/i });
-    await userEvent.type(searchInput, 'One');
+    await userEvent.type(searchInput, query);
 
-    expect(screen.getByText('Project One')).toBeInTheDocument();
-    expect(screen.queryByText('Project Two')).not.toBeInTheDocument();
-  });
-
-  it('search by rootPath filters displayed rows', async () => {
-    mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: true }));
-    mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
-    renderWithClient(<ProjectForwardingList />);
-
-    await waitFor(() => expect(screen.getByText('Project One')).toBeInTheDocument());
-
-    const searchInput = screen.getByRole('textbox', { name: /search projects/i });
-    await userEvent.type(searchInput, '/tmp/p2');
-
-    expect(screen.queryByText('Project One')).not.toBeInTheDocument();
-    expect(screen.getByText('Project Two')).toBeInTheDocument();
+    expect(screen.getByText(visible)).toBeInTheDocument();
+    expect(screen.queryByText(hidden)).not.toBeInTheDocument();
   });
 
   it('shows no-match message when search matches nothing', async () => {
@@ -395,32 +367,6 @@ describe('ProjectForwardingList', () => {
     expect(allBtn).toHaveAttribute('aria-pressed', 'false');
     expect(enabledBtn).toHaveAttribute('aria-pressed', 'true');
     expect(disabledBtn).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  it('Enabled filter shows only enabled rows', async () => {
-    mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: false }));
-    mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
-    renderWithClient(<ProjectForwardingList />);
-
-    await waitFor(() => expect(screen.getByText('Project One')).toBeInTheDocument());
-
-    await userEvent.click(screen.getByRole('button', { name: /^Enabled$/ }));
-
-    expect(screen.getByText('Project One')).toBeInTheDocument();
-    expect(screen.queryByText('Project Two')).not.toBeInTheDocument();
-  });
-
-  it('Disabled filter shows only disabled rows', async () => {
-    mockFetch.mockImplementation(mockGetFetch({ p1: true, p2: false }));
-    mockUseSelectedProject.mockReturnValue({ projects: PROJECTS, projectsLoading: false });
-    renderWithClient(<ProjectForwardingList />);
-
-    await waitFor(() => expect(screen.getByText('Project One')).toBeInTheDocument());
-
-    await userEvent.click(screen.getByRole('button', { name: /^Disabled$/ }));
-
-    expect(screen.queryByText('Project One')).not.toBeInTheDocument();
-    expect(screen.getByText('Project Two')).toBeInTheDocument();
   });
 
   it('bulk action applies to ALL projects regardless of active filter (Inv bulk)', async () => {

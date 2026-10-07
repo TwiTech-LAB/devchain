@@ -3,6 +3,7 @@ import type { DockerRuntime } from '../../core/controllers/docker-runtime';
 import type { HostStats } from '../../core/models/host-stats.model';
 import type { HostEnvOverrideEntry } from '../host/host-env-override-report';
 import type { VmPowerState } from '../../vm-providers/vm-provider.port';
+import type { VmUidConflict } from '../vm-user-identity';
 
 export const REMOTE_HEALTH_PORT = Symbol('RemoteHealthPort');
 
@@ -19,6 +20,7 @@ export interface RemoteHealthState {
   /** The remote process's real account ids (`/api/runtime`), when reported. */
   uid: number | null;
   gid: number | null;
+  uidConflict?: VmUidConflict | null;
   /**
    * Keys stored on the remote that shadow its applied `host.env` logins
    * (`/api/runtime`), names only; null when the remote reports none.

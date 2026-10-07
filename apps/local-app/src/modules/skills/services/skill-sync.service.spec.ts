@@ -23,6 +23,7 @@ const makeContext = (
   const manifests = new Map(skillNames.map((skillName) => [skillName, makeManifest(skillName)]));
   return {
     manifests,
+    discoveryErrors: [],
     downloadSkill: jest.fn(
       downloadSkill ?? (async (skillName: string) => `/tmp/skills/${skillName}`),
     ),
@@ -58,6 +59,8 @@ describe('SkillSyncService', () => {
   };
   let settingsService: {
     getSkillSourcesEnabled: jest.Mock;
+    getSkillsCompletedSyncs: jest.Mock;
+    setSkillCompletedSync: jest.Mock;
   };
   let service: SkillSyncService;
 
@@ -77,6 +80,8 @@ describe('SkillSyncService', () => {
     };
     settingsService = {
       getSkillSourcesEnabled: jest.fn().mockReturnValue({}),
+      getSkillsCompletedSyncs: jest.fn().mockReturnValue({}),
+      setSkillCompletedSync: jest.fn(),
     };
     jest.mocked(rm).mockReset();
     jest.mocked(rm).mockResolvedValue(undefined);
@@ -85,6 +90,128 @@ describe('SkillSyncService', () => {
       skillsService as never,
       skillCategoryService as never,
       settingsService as never,
+    );
+  });
+
+  it('skips a completed source and reports its stored skill count', async () => {
+    const adapter = makeAdapter('openai', makeContext(['skill-a', 'skill-b']));
+    skillSourceRegistry.getAdapterBySourceName.mockResolvedValue(adapter);
+    settingsService.getSkillsCompletedSyncs.mockReturnValue({
+      openai: { commit: 'openai-sha', skillCount: 2 },
+    });
+    skillsService.listSkillsBySource.mockResolvedValue([
+      { slug: 'openai/skill-a', status: 'available' },
+      { slug: 'openai/skill-b', status: 'available' },
+    ]);
+
+    const result = await service.syncSource('openai');
+
+    expect(adapter.createSyncContext).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ unchanged: 2, added: 0, failed: 0 });
+    expect(settingsService.setSkillCompletedSync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      reason: 'changed commit',
+      commit: 'old-sha',
+      skillCount: 1,
+      skills: [{ slug: 'openai/skill-a', status: 'available' }],
+    },
+    { reason: 'deleted and re-added source', commit: 'openai-sha', skillCount: 1, skills: [] },
+    {
+      reason: 'sync error',
+      commit: 'openai-sha',
+      skillCount: 1,
+      skills: [{ slug: 'openai/skill-a', status: 'sync_error' }],
+    },
+  ])('downloads the source after $reason', async ({ commit, skillCount, skills }) => {
+    const adapter = makeAdapter('openai', makeContext(['skill-a']));
+    skillSourceRegistry.getAdapterBySourceName.mockResolvedValue(adapter);
+    settingsService.getSkillsCompletedSyncs.mockReturnValue({ openai: { commit, skillCount } });
+    skillsService.listSkillsBySource.mockResolvedValue(skills);
+
+    await service.syncSource('openai');
+
+    expect(adapter.createSyncContext).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['source', 'all'])(
+    'forces a %s sync even with a matching completed entry',
+    async (scope) => {
+      const adapter = makeAdapter('openai', makeContext(['skill-a']));
+      skillSourceRegistry.getAdapterBySourceName.mockResolvedValue(adapter);
+      skillSourceRegistry.getAdapters.mockResolvedValue([adapter]);
+      settingsService.getSkillsCompletedSyncs.mockReturnValue({
+        openai: { commit: 'openai-sha', skillCount: 1 },
+      });
+      skillsService.listSkillsBySource.mockResolvedValue([
+        { slug: 'openai/skill-a', status: 'available' },
+      ]);
+
+      if (scope === 'source') await service.syncSource('openai', { force: true });
+      else await service.syncAll({ force: true });
+
+      expect(adapter.createSyncContext).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([undefined, { commit: 'old-sha', skillCount: 2 }])(
+    'recovers an interrupted sync without replacing its previous completion record',
+    async (previous) => {
+      const stored = new Map<string, { slug: string; sourceCommit: string; status: string }>();
+      const entries = previous ? { openai: previous } : {};
+      settingsService.getSkillsCompletedSyncs.mockImplementation(() => entries);
+      settingsService.setSkillCompletedSync.mockImplementation((name, entry) => {
+        Object.assign(entries, { [name]: entry });
+      });
+      skillsService.getSkillBySlug.mockImplementation(async (slug) => {
+        if (!stored.has(slug)) throw new NotFoundError('Skill', slug);
+        return stored.get(slug);
+      });
+      skillsService.upsertSkill.mockImplementation(async (slug, payload) => {
+        stored.set(slug, { slug, ...payload });
+      });
+      skillsService.listSkillsBySource.mockImplementation(async () => [...stored.values()]);
+      const adapter = makeAdapter('openai', makeContext(['skill-a', 'skill-b']));
+      skillSourceRegistry.getAdapterBySourceName.mockResolvedValue(adapter);
+      skillsService.getSkillBySlug.mockImplementationOnce(async () => {
+        throw new NotFoundError('Skill', 'skill-a');
+      });
+      skillsService.getSkillBySlug.mockImplementationOnce(async () => {
+        throw new Error('interrupted');
+      });
+
+      await expect(service.syncSource('openai')).rejects.toThrow('interrupted');
+      expect(settingsService.setSkillCompletedSync).not.toHaveBeenCalled();
+
+      const result = await service.syncSource('openai');
+      expect(adapter.createSyncContext).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ added: 1, unchanged: 1, failed: 0 });
+      expect(stored.size).toBe(2);
+      expect(settingsService.setSkillCompletedSync).toHaveBeenCalledWith('openai', {
+        commit: 'openai-sha',
+        skillCount: 2,
+      });
+    },
+  );
+
+  it('records the stored count after stale cleanup succeeds', async () => {
+    const adapter = makeAdapter('openai', makeContext(['skill-a']));
+    skillSourceRegistry.getAdapterBySourceName.mockResolvedValue(adapter);
+    skillsService.listSkillsBySource.mockResolvedValueOnce([
+      { slug: 'openai/skill-a' },
+      { slug: 'openai/stale' },
+    ]);
+
+    await service.syncSource('openai');
+
+    expect(settingsService.setSkillCompletedSync).toHaveBeenCalledWith('openai', {
+      commit: 'openai-sha',
+      skillCount: 1,
+    });
+    expect(skillsService.deleteSkillBySlug.mock.invocationCallOrder[0]).toBeLessThan(
+      settingsService.setSkillCompletedSync.mock.invocationCallOrder[0],
     );
   });
 
@@ -124,6 +251,7 @@ describe('SkillSyncService', () => {
 
     expect(result.added).toBe(1);
     expect(result.failed).toBe(1);
+    expect(settingsService.setSkillCompletedSync).not.toHaveBeenCalled();
     expect(result.errors).toEqual([
       expect.objectContaining({
         sourceName: 'openai',
@@ -207,6 +335,7 @@ describe('SkillSyncService', () => {
     expect(skillsService.deleteSkillBySlug).not.toHaveBeenCalled();
     expect(result.removed).toBe(0);
     expect(result.failed).toBe(1);
+    expect(settingsService.setSkillCompletedSync).not.toHaveBeenCalled();
     expect(result.errors).toEqual([
       expect.objectContaining({
         sourceName: 'openai',

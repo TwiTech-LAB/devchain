@@ -176,4 +176,36 @@ describe('SubEpicCreatedNotifierSubscriber', () => {
       }),
     );
   });
+  it('captures child-created text, delivery, and event-log OK', async () => {
+    getEpicMock.mockResolvedValue({
+      id: 'parent-1',
+      title: 'Parent Epic',
+      agentId: 'agent-parent',
+    });
+    getGuestMock.mockResolvedValue({ id: 'guest-1', name: 'Guest User' });
+
+    await subscriber.handleEpicCreated({
+      epicId: 'child-1',
+      projectId: 'project-1',
+      title: 'Child Epic',
+      statusId: 'status-1',
+      parentId: 'parent-1',
+      actor: { type: 'guest', id: 'guest-1' },
+    } as never);
+
+    expect(deliverMock).toHaveBeenCalledWith(
+      ['agent-parent'],
+      {
+        kind: 'pooled',
+        body: "A new sub-epic 'Child Epic' (child-1) was created under your epic 'Parent Epic' (parent-1) by Guest User.",
+        source: 'epic.sub_epic.created',
+        projectId: 'project-1',
+        senderName: 'System',
+      },
+      { submitKeys: ['Enter'] },
+    );
+    expect(eventLogService.recordHandledOk).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: 'event-1', handler: 'SubEpicCreatedNotifier' }),
+    );
+  });
 });

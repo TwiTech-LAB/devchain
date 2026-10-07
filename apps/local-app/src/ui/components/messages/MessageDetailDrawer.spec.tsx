@@ -85,50 +85,55 @@ describe('MessageDetailDrawer', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows status badge', () => {
-    render(<MessageDetailDrawer message={mockMessage} onClose={jest.fn()} />);
-
-    expect(screen.getByText('delivered')).toBeInTheDocument();
-  });
-
-  it('shows delivered time when available', () => {
-    render(<MessageDetailDrawer message={mockMessage} onClose={jest.fn()} />);
-
-    expect(screen.getByText(/Delivered at/)).toBeInTheDocument();
-  });
-
-  it('shows batch ID when present', () => {
-    render(<MessageDetailDrawer message={mockMessage} onClose={jest.fn()} />);
-
-    expect(screen.getByText('batch-789')).toBeInTheDocument();
-  });
-
-  it('shows error for failed messages', () => {
-    render(<MessageDetailDrawer message={mockFailedMessage} onClose={jest.fn()} />);
-
-    expect(screen.getByText('failed')).toBeInTheDocument();
-    expect(screen.getByText('No active session found')).toBeInTheDocument();
-  });
-
-  it('shows metadata section with message ID and agent ID', () => {
-    render(<MessageDetailDrawer message={mockMessage} onClose={jest.fn()} />);
-
-    expect(screen.getByText('msg-123')).toBeInTheDocument();
-    expect(screen.getByText('agent-456')).toBeInTheDocument();
-  });
-
-  it('does not show Immediate badge when immediate is false', () => {
-    render(<MessageDetailDrawer message={mockMessage} onClose={jest.fn()} />);
-
-    // Component only shows "Immediate" badge when true, nothing when false
-    expect(screen.queryByText('Immediate')).not.toBeInTheDocument();
-  });
-
-  it('shows Immediate badge when immediate is true', () => {
-    render(<MessageDetailDrawer message={mockFailedMessage} onClose={jest.fn()} />);
-
-    // Component shows "Immediate" badge with Zap icon when immediate=true
-    expect(screen.getByText('Immediate')).toBeInTheDocument();
+  it.each([
+    [
+      'delivered',
+      mockMessage,
+      () => {
+        expect(screen.getByText('delivered')).toBeInTheDocument();
+        {
+          expect(screen.getByText(/Delivered at/)).toBeInTheDocument();
+        }
+        {
+          expect(screen.getByText('batch-789')).toBeInTheDocument();
+        }
+        {
+          expect(screen.getByText('msg-123')).toBeInTheDocument();
+          expect(screen.getByText('agent-456')).toBeInTheDocument();
+        }
+        {
+          expect(screen.queryByText('Immediate')).not.toBeInTheDocument();
+        }
+        {
+          expect(screen.queryByText('Sender Agent:')).not.toBeInTheDocument();
+        }
+        {
+          expect(screen.getByRole('heading', { name: 'Message Details' })).toBeInTheDocument();
+        }
+      },
+    ],
+    [
+      'failed',
+      mockFailedMessage,
+      () => {
+        expect(screen.getByText('failed')).toBeInTheDocument();
+        expect(screen.getByText('No active session found')).toBeInTheDocument();
+        {
+          expect(screen.getByText('Immediate')).toBeInTheDocument();
+        }
+      },
+    ],
+    [
+      'queued',
+      { ...mockMessage, status: 'queued' as const, deliveredAt: undefined },
+      () => {
+        expect(screen.getByText('queued')).toBeInTheDocument();
+        expect(screen.queryByText(/Delivered at/)).not.toBeInTheDocument();
+      },
+    ],
+  ] as const)('renders %s message details', (_status, message, check) => {
+    render(<MessageDetailDrawer message={message} onClose={jest.fn()} />);
+    check();
   });
 
   it('shows sender agent ID when present', () => {
@@ -140,12 +145,6 @@ describe('MessageDetailDrawer', () => {
     render(<MessageDetailDrawer message={messageWithSender} onClose={jest.fn()} />);
 
     expect(screen.getByText('sender-agent-123')).toBeInTheDocument();
-  });
-
-  it('does not show sender agent ID when not present', () => {
-    render(<MessageDetailDrawer message={mockMessage} onClose={jest.fn()} />);
-
-    expect(screen.queryByText('Sender Agent:')).not.toBeInTheDocument();
   });
 
   it('does not show batch ID when not present', () => {
@@ -167,24 +166,5 @@ describe('MessageDetailDrawer', () => {
     fireEvent.click(closeButton);
 
     expect(onClose).toHaveBeenCalled();
-  });
-
-  it('has accessible title', () => {
-    render(<MessageDetailDrawer message={mockMessage} onClose={jest.fn()} />);
-
-    expect(screen.getByRole('heading', { name: 'Message Details' })).toBeInTheDocument();
-  });
-
-  it('shows queued status correctly', () => {
-    const queuedMessage: MessageLogPreview = {
-      ...mockMessage,
-      status: 'queued',
-      deliveredAt: undefined,
-    };
-
-    render(<MessageDetailDrawer message={queuedMessage} onClose={jest.fn()} />);
-
-    expect(screen.getByText('queued')).toBeInTheDocument();
-    expect(screen.queryByText(/Delivered at/)).not.toBeInTheDocument();
   });
 });

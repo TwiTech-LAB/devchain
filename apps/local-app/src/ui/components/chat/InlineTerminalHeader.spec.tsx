@@ -27,34 +27,43 @@ describe('InlineTerminalHeader', () => {
   // Basic rendering
   // ---------------------------------------------------------------------------
 
-  it('renders static Terminal label when no tab toggle', () => {
+  it('renders static Terminal label when no tab toggle', async () => {
     render(<InlineTerminalHeader {...defaultProps} />);
 
     expect(screen.getByText('Terminal')).toBeInTheDocument();
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+
+    {
+      expect(screen.getByRole('button', { name: /Back to chat messages/i })).toBeInTheDocument();
+    }
+    {
+      expect(
+        screen.queryByRole('button', { name: /Open terminal in window/i }),
+      ).not.toBeInTheDocument();
+    }
+    {
+      expect(
+        screen.queryByRole('button', { name: /Open custom prompts/i }),
+      ).not.toBeInTheDocument();
+    }
+    {
+      expect(screen.queryByTestId('session-chip')).not.toBeInTheDocument();
+    }
+    {
+      expect(screen.queryByRole('button', { name: /Rename session/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Copy session ID/i })).not.toBeInTheDocument();
+    }
   });
 
-  it('renders agent name', () => {
-    render(<InlineTerminalHeader {...defaultProps} agentName="Coder" />);
-
-    expect(screen.getByText(/Coder/)).toBeInTheDocument();
-  });
-
-  it('hides agent name when null', () => {
-    render(<InlineTerminalHeader {...defaultProps} agentName={null} />);
-
-    expect(screen.queryByText('·')).not.toBeInTheDocument();
+  it.each(['Coder', null])('renders agent name=%s', (agentName) => {
+    render(<InlineTerminalHeader {...defaultProps} agentName={agentName} />);
+    if (agentName === null) expect(screen.queryByText('·')).not.toBeInTheDocument();
+    else expect(screen.getByText(`· ${agentName}`)).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
   // Chat toggle
   // ---------------------------------------------------------------------------
-
-  it('shows back-to-chat button by default', () => {
-    render(<InlineTerminalHeader {...defaultProps} />);
-
-    expect(screen.getByRole('button', { name: /Back to chat messages/i })).toBeInTheDocument();
-  });
 
   it('hides back-to-chat button when showChatToggle is false', () => {
     render(<InlineTerminalHeader {...defaultProps} showChatToggle={false} />);
@@ -82,14 +91,6 @@ describe('InlineTerminalHeader', () => {
     expect(screen.getByRole('button', { name: /Open terminal in window/i })).toBeInTheDocument();
   });
 
-  it('hides open-window button when onOpenWindow omitted', () => {
-    render(<InlineTerminalHeader {...defaultProps} />);
-
-    expect(
-      screen.queryByRole('button', { name: /Open terminal in window/i }),
-    ).not.toBeInTheDocument();
-  });
-
   it('renders the prompt button immediately before Window with shortcut metadata', () => {
     render(
       <InlineTerminalHeader {...defaultProps} onOpenPrompts={jest.fn()} onOpenWindow={jest.fn()} />,
@@ -101,12 +102,6 @@ describe('InlineTerminalHeader', () => {
     expect(promptButton.compareDocumentPosition(windowButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
-  });
-
-  it('hides the prompt button when no eligible callback is provided', () => {
-    render(<InlineTerminalHeader {...defaultProps} />);
-
-    expect(screen.queryByRole('button', { name: /Open custom prompts/i })).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -128,76 +123,45 @@ describe('InlineTerminalHeader', () => {
     expect(screen.getByRole('tab', { name: 'Session' })).toBeInTheDocument();
   });
 
-  it('hides tab toggle when hasTranscript is false', () => {
-    render(
-      <InlineTerminalHeader {...defaultProps} hasTranscript={false} onTabChange={jest.fn()} />,
-    );
-
+  it.each([
+    { hasTranscript: false, onTabChange: jest.fn() },
+    { hasTranscript: true, onTabChange: undefined },
+  ])('hides tabs with transcript=$hasTranscript', (props) => {
+    render(<InlineTerminalHeader {...defaultProps} {...props} />);
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
   });
 
-  it('hides tab toggle when onTabChange omitted', () => {
-    render(<InlineTerminalHeader {...defaultProps} hasTranscript={true} />);
-
-    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
-  });
-
-  it('marks Terminal tab as selected when activeTab is terminal', () => {
+  it.each(['terminal', 'session'] as const)('selects %s tab', (activeTab) => {
     render(
       <InlineTerminalHeader
         {...defaultProps}
-        hasTranscript={true}
+        hasTranscript
         onTabChange={jest.fn()}
-        activeTab="terminal"
+        activeTab={activeTab}
       />,
     );
-
-    expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'false');
-  });
-
-  it('marks Session tab as selected when activeTab is session', () => {
-    render(
-      <InlineTerminalHeader
-        {...defaultProps}
-        hasTranscript={true}
-        onTabChange={jest.fn()}
-        activeTab="session"
-      />,
+    expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute(
+      'aria-selected',
+      String(activeTab === 'terminal'),
     );
-
-    expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'false');
-    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute(
+      'aria-selected',
+      String(activeTab === 'session'),
+    );
   });
 
-  it('calls onTabChange with "terminal" when Terminal tab clicked', () => {
+  it.each(['terminal', 'session'] as const)('routes %s tab click', (tab) => {
     const onTabChange = jest.fn();
     render(
       <InlineTerminalHeader
         {...defaultProps}
-        hasTranscript={true}
+        hasTranscript
         onTabChange={onTabChange}
-        activeTab="session"
+        activeTab={tab === 'terminal' ? 'session' : 'terminal'}
       />,
     );
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
-    expect(onTabChange).toHaveBeenCalledWith('terminal');
-  });
-
-  it('calls onTabChange with "session" when Session tab clicked', () => {
-    const onTabChange = jest.fn();
-    render(
-      <InlineTerminalHeader
-        {...defaultProps}
-        hasTranscript={true}
-        onTabChange={onTabChange}
-        activeTab="terminal"
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Session' }));
-    expect(onTabChange).toHaveBeenCalledWith('session');
+    fireEvent.click(screen.getByRole('tab', { name: tab === 'terminal' ? 'Terminal' : 'Session' }));
+    expect(onTabChange).toHaveBeenCalledWith(tab);
   });
 
   // ---------------------------------------------------------------------------
@@ -220,12 +184,6 @@ describe('InlineTerminalHeader', () => {
     expect(screen.getByTestId('session-chip')).toBeInTheDocument();
   });
 
-  it('hides session chip when sessionChip omitted', () => {
-    render(<InlineTerminalHeader {...defaultProps} />);
-
-    expect(screen.queryByTestId('session-chip')).not.toBeInTheDocument();
-  });
-
   // ---------------------------------------------------------------------------
   // Session name/ID chip
   // ---------------------------------------------------------------------------
@@ -237,28 +195,13 @@ describe('InlineTerminalHeader', () => {
     return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
   }
 
-  it('renders session name chip with short ID when no name', () => {
+  it.each([null, 'My Session'])('renders session name=%s', (sessionName) => {
     renderWithQueryClient(
-      <InlineTerminalHeader {...defaultProps} sessionId={SESSION_ID} sessionName={null} />,
+      <InlineTerminalHeader {...defaultProps} sessionId={SESSION_ID} sessionName={sessionName} />,
     );
-
     expect(screen.getByRole('button', { name: /Rename session/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Copy session ID/i })).toBeInTheDocument();
-  });
-
-  it('renders session name when provided', () => {
-    renderWithQueryClient(
-      <InlineTerminalHeader {...defaultProps} sessionId={SESSION_ID} sessionName="My Session" />,
-    );
-
-    expect(screen.getByText('My Session')).toBeInTheDocument();
-  });
-
-  it('hides session name chip when sessionId is omitted', () => {
-    renderWithQueryClient(<InlineTerminalHeader {...defaultProps} />);
-
-    expect(screen.queryByRole('button', { name: /Rename session/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Copy session ID/i })).not.toBeInTheDocument();
+    if (sessionName !== null) expect(screen.getByText(sessionName)).toBeInTheDocument();
   });
 
   it('enters edit mode on chip click', () => {
@@ -404,22 +347,15 @@ describe('InlineTerminalHeader', () => {
     expect(window.localStorage.getItem(UNLOGGED_KEY)).toBe('true');
   });
 
-  it('restores a persisted opt-out on mount', () => {
-    window.localStorage.setItem(UNLOGGED_KEY, 'false');
+  it.each([
+    ['false', false],
+    ['{not-json', true],
+  ] as const)('restores unlogged-time preference %s', (stored, visible) => {
+    window.localStorage.setItem(UNLOGGED_KEY, stored);
     renderHeader({ minutes: 10, onAssign: jest.fn() });
-
-    expect(
-      screen.queryByRole('button', { name: /Log unlogged time to an Epic/i }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('falls back to the default when stored preferences are malformed', () => {
-    window.localStorage.setItem(UNLOGGED_KEY, '{not-json');
-    renderHeader({ minutes: 10, onAssign: jest.fn() });
-
-    expect(
-      screen.getByRole('button', { name: /Log unlogged time to an Epic/i }),
-    ).toBeInTheDocument();
+    const action = screen.queryByRole('button', { name: /Log unlogged time to an Epic/i });
+    if (visible) expect(action).toBeInTheDocument();
+    else expect(action).not.toBeInTheDocument();
   });
 
   it('omits the Unlogged time checkbox when capability is not declared', async () => {

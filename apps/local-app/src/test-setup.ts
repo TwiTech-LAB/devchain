@@ -9,6 +9,17 @@ import { TextEncoder, TextDecoder } from 'util';
 
 import { Logger } from '@nestjs/common';
 
+// Poll asynchronous UI assertions promptly while preserving per-call overrides.
+jest.mock('@testing-library/react', () => {
+  const actual =
+    jest.requireActual<typeof import('@testing-library/react')>('@testing-library/react');
+  return {
+    ...actual,
+    waitFor: ((callback, options) =>
+      actual.waitFor(callback, { interval: 5, ...options })) as typeof actual.waitFor,
+  };
+});
+
 /**
  * Mock HTMLCanvasElement.getContext() to suppress xterm.js canvas warnings.
  * xterm.js uses canvas for rendering, which jsdom doesn't fully support.

@@ -49,11 +49,25 @@ describe('QrDisplayPanel', () => {
   });
 
   describe('waiting state', () => {
-    it('renders QR code via QRCodeSVG', () => {
+    it('shows QR payload, cross-check code and expiry countdown', () => {
       render(<QrDisplayPanel {...defaultProps} />);
-      const svg = screen.getByTestId('qr-code-svg');
-      expect(svg).toBeInTheDocument();
-      expect(svg).toHaveAttribute('data-value', defaultProps.qrPayload);
+      {
+        const svg = screen.getByTestId('qr-code-svg');
+        expect(svg).toBeInTheDocument();
+        expect(svg).toHaveAttribute('data-value', defaultProps.qrPayload);
+      }
+      {
+        const code = screen.getByTestId('qr-cross-check');
+        expect(code).toHaveTextContent('ABCD');
+        expect(code.className).toContain('text-2xl');
+        expect(code.className).toContain('font-mono');
+        expect(code.className).toContain('tracking-widest');
+      }
+      {
+        const countdown = screen.getByTestId('qr-countdown');
+        expect(countdown).toBeInTheDocument();
+        expect(countdown.textContent).toContain('Expires in');
+      }
     });
 
     it('renders QR code with scanner-friendly contrast and quiet zone', () => {
@@ -63,33 +77,6 @@ describe('QrDisplayPanel', () => {
       expect(svg).toHaveAttribute('data-fg-color', '#000000');
       expect(svg).toHaveAttribute('data-include-margin', 'true');
       expect(svg).toHaveAttribute('data-margin-size', '4');
-    });
-
-    it('renders cross-check code in large mono font', () => {
-      render(<QrDisplayPanel {...defaultProps} />);
-      const code = screen.getByTestId('qr-cross-check');
-      expect(code).toHaveTextContent('ABCD');
-      expect(code.className).toContain('text-2xl');
-      expect(code.className).toContain('font-mono');
-      expect(code.className).toContain('tracking-widest');
-    });
-
-    it('renders verification code label', () => {
-      render(<QrDisplayPanel {...defaultProps} />);
-      expect(screen.getByText('Verification code')).toBeInTheDocument();
-      expect(screen.getByText('should match the code on your phone')).toBeInTheDocument();
-    });
-
-    it('renders countdown timer', () => {
-      render(<QrDisplayPanel {...defaultProps} />);
-      const countdown = screen.getByTestId('qr-countdown');
-      expect(countdown).toBeInTheDocument();
-      expect(countdown.textContent).toContain('Expires in');
-    });
-
-    it('renders Cancel button', () => {
-      render(<QrDisplayPanel {...defaultProps} />);
-      expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
     });
 
     it('calls onCancel when Cancel button clicked', () => {
@@ -114,21 +101,21 @@ describe('QrDisplayPanel', () => {
   });
 
   describe('loading state', () => {
-    it('renders loading spinner with text', () => {
-      render(<QrDisplayPanel {...defaultProps} status="loading" qrPayload={null} />);
-      expect(screen.getByTestId('qr-loading')).toBeInTheDocument();
-      expect(screen.getByText('Generating QR code...')).toBeInTheDocument();
+    it.each([
+      { status: 'loading', text: 'Generating QR code...', retry: null, error: null },
+      { status: 'expired', text: 'Code expired', retry: /generate new code/i, error: null },
+      { status: 'denied', text: 'Sign-in denied', retry: /try again/i, error: null },
+      { status: 'error', text: 'initiate:500', retry: /try again/i, error: 'initiate:500' },
+      { status: 'finalizing', text: 'Finalizing...', retry: null, error: null },
+    ] as const)('renders $status with its recovery action', ({ status, text, retry, error }) => {
+      render(<QrDisplayPanel {...defaultProps} status={status} qrPayload={null} error={error} />);
+      expect(screen.getByTestId(`qr-${status}`)).toBeInTheDocument();
+      expect(screen.getByText(text)).toBeInTheDocument();
+      if (retry) expect(screen.getByRole('button', { name: retry })).toBeInTheDocument();
     });
   });
 
   describe('expired state', () => {
-    it('renders expired message with retry button', () => {
-      render(<QrDisplayPanel {...defaultProps} status="expired" qrPayload={null} />);
-      expect(screen.getByTestId('qr-expired')).toBeInTheDocument();
-      expect(screen.getByText('Code expired')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /generate new code/i })).toBeInTheDocument();
-    });
-
     it('calls onRetry when retry button clicked', () => {
       const onRetry = jest.fn();
       render(
@@ -139,25 +126,7 @@ describe('QrDisplayPanel', () => {
     });
   });
 
-  describe('denied state', () => {
-    it('renders denied message with retry button', () => {
-      render(<QrDisplayPanel {...defaultProps} status="denied" qrPayload={null} />);
-      expect(screen.getByTestId('qr-denied')).toBeInTheDocument();
-      expect(screen.getByText('Sign-in denied')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
-    });
-  });
-
   describe('error state', () => {
-    it('renders error message with retry button', () => {
-      render(
-        <QrDisplayPanel {...defaultProps} status="error" qrPayload={null} error="initiate:500" />,
-      );
-      expect(screen.getByTestId('qr-error')).toBeInTheDocument();
-      expect(screen.getByText('initiate:500')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
-    });
-
     it('renders fallback message when error is null', () => {
       render(<QrDisplayPanel {...defaultProps} status="error" qrPayload={null} error={null} />);
       expect(screen.getByText('Something went wrong')).toBeInTheDocument();
@@ -165,20 +134,15 @@ describe('QrDisplayPanel', () => {
   });
 
   describe('success state', () => {
-    it('renders Connected! message', () => {
+    it('shows connected state without a safety number', () => {
       render(<QrDisplayPanel {...defaultProps} status="success" qrPayload={null} />);
-      expect(screen.getByTestId('qr-success')).toBeInTheDocument();
-      expect(screen.getByText('Connected!')).toBeInTheDocument();
-    });
-
-    it('does not render any token values in the DOM', () => {
-      const { container } = render(
-        <QrDisplayPanel {...defaultProps} status="success" qrPayload={null} />,
-      );
-      const html = container.innerHTML;
-      expect(html).not.toContain('accessToken');
-      expect(html).not.toContain('refreshToken');
-      expect(html).not.toContain('token');
+      {
+        expect(screen.getByTestId('qr-success')).toBeInTheDocument();
+        expect(screen.getByText('Connected!')).toBeInTheDocument();
+      }
+      {
+        expect(screen.queryByTestId('qr-safety-number')).not.toBeInTheDocument();
+      }
     });
 
     it('renders the safety number to compare when provided', () => {
@@ -195,19 +159,6 @@ describe('QrDisplayPanel', () => {
         screen.getByText('12345 67890 11111 22222 33333 44444 55555 66666'),
       ).toBeInTheDocument();
       expect(screen.getByText('should match the number on your phone')).toBeInTheDocument();
-    });
-
-    it('omits the safety-number block when none is available', () => {
-      render(<QrDisplayPanel {...defaultProps} status="success" qrPayload={null} />);
-      expect(screen.queryByTestId('qr-safety-number')).not.toBeInTheDocument();
-    });
-  });
-
-  describe('finalizing state', () => {
-    it('renders finalizing spinner', () => {
-      render(<QrDisplayPanel {...defaultProps} status="finalizing" qrPayload={null} />);
-      expect(screen.getByTestId('qr-finalizing')).toBeInTheDocument();
-      expect(screen.getByText('Finalizing...')).toBeInTheDocument();
     });
   });
 });

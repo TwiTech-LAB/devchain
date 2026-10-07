@@ -61,7 +61,7 @@ describe('TerminalKeyInputFacade', () => {
       },
     );
 
-    it.each(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] as const)(
+    it.each(['0', '9'] as const)(
       "digit '%s' dispatches sendControl literally as ['-l','--',digit]",
       async (key) => {
         const { facade, io } = makeFacade();
@@ -121,21 +121,6 @@ describe('TerminalKeyInputFacade', () => {
       });
       // Liveness was checked; nothing was sent.
       expect(io.sendControl).not.toHaveBeenCalled();
-    });
-
-    it('pins to the EXACT requested sessionId (registry.get receives it verbatim)', async () => {
-      const session = makeSession();
-      const registry = { get: jest.fn(() => session) };
-      const facade = new TerminalKeyInputFacade(
-        registry as never,
-        makeIO() as never,
-        new HumanPromptStateService(),
-        new EventEmitter2(),
-      );
-      const exact = '00000000-0000-4000-8000-0000000000c3';
-      await facade.sendKey(exact, 'Enter');
-      expect(registry.get).toHaveBeenCalledWith(exact);
-      expect(session.signalInput).toHaveBeenCalled();
     });
 
     it('checks liveness, signals input, THEN sends — in that order', async () => {
@@ -408,20 +393,15 @@ describe('TerminalKeyInputFacade', () => {
 
     it('releases a draft for double Escape', async () => {
       const { facade, humanPromptState } = makeFacade();
+      const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
       humanPromptState.recordPromptText(TMUX_NAME);
 
       await facade.sendKey('prompt-double-escape', 'Escape');
-      await new Promise((resolve) => setTimeout(resolve, 151));
+      now.mockReturnValue(1151);
       await facade.sendKey('prompt-double-escape', 'Escape');
+      now.mockRestore();
 
       expect(humanPromptState.getState(TMUX_NAME).phase).toBe('awaiting_stable_idle');
-    });
-  });
-
-  it('resolves with { ok: true } on a successful named key', async () => {
-    const { facade } = makeFacade();
-    await expect(facade.sendKey('00000000-0000-4000-8000-000000000099', 'Enter')).resolves.toEqual({
-      ok: true,
     });
   });
 

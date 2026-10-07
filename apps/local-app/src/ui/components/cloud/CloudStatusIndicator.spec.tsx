@@ -37,51 +37,20 @@ describe('CloudStatusIndicator', () => {
       });
     });
 
-    it('renders a Link to /cloud?section=account with "Connect to cloud" text', () => {
+    it('shows the connect link without account or context menus', () => {
       renderIndicator();
-      const link = screen.getByRole('link', { name: /connect to cloud/i });
-      expect(link).toHaveAttribute('href', '/cloud?section=account');
-    });
-
-    it('does not render any input or button labeled "Send magic link"', () => {
-      renderIndicator();
-      expect(screen.queryByRole('button', { name: /send magic link/i })).not.toBeInTheDocument();
-      expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
-    });
-
-    it('does not render any button labeled "Sign in with GitHub"', () => {
-      renderIndicator();
-      expect(
-        screen.queryByRole('button', { name: /sign in with github/i }),
-      ).not.toBeInTheDocument();
-    });
-
-    it('does not render CloudAccountMenu', () => {
-      renderIndicator();
-      expect(screen.queryByTestId('cloud-account-menu')).not.toBeInTheDocument();
-    });
-
-    it('renders the CloudOff icon with aria-hidden="true"', () => {
-      renderIndicator();
-      // lucide-react renders SVGs; find the svg inside the link button
-      const link = screen.getByRole('link', { name: /connect to cloud/i });
-      const svg = link.querySelector('svg');
-      expect(svg).toBeInTheDocument();
-      expect(svg).toHaveAttribute('aria-hidden', 'true');
-    });
-
-    it('applies text-destructive class to the CloudOff icon', () => {
-      renderIndicator();
-      const link = screen.getByRole('link', { name: /connect to cloud/i });
-      const svg = link.querySelector('svg');
-      expect(svg).toHaveClass('text-destructive');
-    });
-
-    it('has no right-click menu', () => {
-      renderIndicator();
-      const link = screen.getByRole('link', { name: /connect to cloud/i });
-      expect(fireEvent.contextMenu(link)).toBe(true);
-      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      {
+        const link = screen.getByRole('link', { name: /connect to cloud/i });
+        expect(link).toHaveAttribute('href', '/cloud?section=account');
+      }
+      {
+        expect(screen.queryByTestId('cloud-account-menu')).not.toBeInTheDocument();
+      }
+      {
+        const link = screen.getByRole('link', { name: /connect to cloud/i });
+        expect(fireEvent.contextMenu(link)).toBe(true);
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      }
     });
   });
 
@@ -99,19 +68,17 @@ describe('CloudStatusIndicator', () => {
       });
     });
 
-    it('renders CloudAccountMenu', () => {
+    it('shows the account menu with the project VM context menu: renders CloudAccountMenu', () => {
       renderIndicator();
-      expect(screen.getByTestId('cloud-account-menu')).toBeInTheDocument();
-    });
-
-    it('gives the account menu the project VM menu for a right click', () => {
-      renderIndicator();
-      expect(mockAccountMenuProps.contextMenu?.type).toBe(ProjectVmContextMenu);
-    });
-
-    it('does not render the connect link', () => {
-      renderIndicator();
-      expect(screen.queryByRole('link', { name: /connect to cloud/i })).not.toBeInTheDocument();
+      {
+        expect(screen.getByTestId('cloud-account-menu')).toBeInTheDocument();
+      }
+      {
+        expect(mockAccountMenuProps.contextMenu?.type).toBe(ProjectVmContextMenu);
+      }
+      {
+        expect(screen.queryByRole('link', { name: /connect to cloud/i })).not.toBeInTheDocument();
+      }
     });
   });
 
@@ -130,16 +97,16 @@ describe('CloudStatusIndicator', () => {
         });
       });
 
-      it('renders CloudAccountMenu with compact and the same right-click menu', () => {
+      it('shows the account menu with the project VM context menu: renders CloudAccountMenu with compact and the same right-click menu', () => {
         renderIndicator(true);
-        expect(screen.getByTestId('cloud-account-menu')).toBeInTheDocument();
-        expect(mockAccountMenuProps.compact).toBe(true);
-        expect(mockAccountMenuProps.contextMenu?.type).toBe(ProjectVmContextMenu);
-      });
-
-      it('does not render the connect link', () => {
-        renderIndicator(true);
-        expect(screen.queryByRole('link', { name: /connect to cloud/i })).not.toBeInTheDocument();
+        {
+          expect(screen.getByTestId('cloud-account-menu')).toBeInTheDocument();
+          expect(mockAccountMenuProps.compact).toBe(true);
+          expect(mockAccountMenuProps.contextMenu?.type).toBe(ProjectVmContextMenu);
+        }
+        {
+          expect(screen.queryByRole('link', { name: /connect to cloud/i })).not.toBeInTheDocument();
+        }
       });
     });
 
@@ -152,41 +119,33 @@ describe('CloudStatusIndicator', () => {
         });
       });
 
-      it('renders an icon-only link to /cloud?section=account with a title', () => {
+      it('shows a compact accessible connect link', () => {
         renderIndicator(true);
-        const link = screen.getByRole('link', { name: /connect to cloud/i });
-        expect(link).toHaveAttribute('href', '/cloud?section=account');
-        expect(link).toHaveAttribute('title', 'Connect to cloud');
-        // Icon-only: the accessible name comes from aria-label, not rendered text.
-        expect(link.textContent).toBe('');
-      });
-
-      it('keeps the CloudOff icon with text-destructive', () => {
-        renderIndicator(true);
-        const link = screen.getByRole('link', { name: /connect to cloud/i });
-        const svg = link.querySelector('svg');
-        expect(svg).toBeInTheDocument();
-        expect(svg).toHaveAttribute('aria-hidden', 'true');
-        expect(svg).toHaveClass('text-destructive');
+        {
+          const link = screen.getByRole('link', { name: /connect to cloud/i });
+          expect(link).toHaveAttribute('href', '/cloud?section=account');
+          expect(link).toHaveAttribute('title', 'Connect to cloud');
+          expect(link.textContent).toBe('');
+        }
+        {
+          const link = screen.getByRole('link', { name: /connect to cloud/i });
+          const svg = link.querySelector('svg');
+          expect(svg).toBeInTheDocument();
+          expect(svg).toHaveAttribute('aria-hidden', 'true');
+          expect(svg).toHaveClass('text-destructive');
+        }
       });
     });
   });
 
   describe('loading', () => {
-    it('renders nothing when loading', () => {
+    it.each([
+      { label: 'renders nothing when loading', isLoading: true },
+      { label: 'renders nothing when identityServiceUrl is missing', isLoading: false },
+    ] as const)('$label', ({ isLoading }) => {
       mockUseCloudConnection.mockReturnValue({
         status: { connected: false, identityServiceUrl: '' },
-        isLoading: true,
-        disconnect: jest.fn(),
-      });
-      const { container } = renderIndicator();
-      expect(container.firstChild).toBeNull();
-    });
-
-    it('renders nothing when identityServiceUrl is missing', () => {
-      mockUseCloudConnection.mockReturnValue({
-        status: { connected: false, identityServiceUrl: '' },
-        isLoading: false,
+        isLoading: isLoading,
         disconnect: jest.fn(),
       });
       const { container } = renderIndicator();

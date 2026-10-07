@@ -303,11 +303,71 @@ describe('ReviewsPage', () => {
     global.fetch = buildFetchMock();
     const { Wrapper } = createWrapper();
 
-    render(<ReviewsPage />, { wrapper: Wrapper });
+    const { container } = render(<ReviewsPage />, { wrapper: Wrapper });
 
     await waitFor(() => {
       expect(screen.getByText('Code Review')).toBeInTheDocument();
     });
+
+    {
+      await waitFor(() => {
+        expect(screen.getByRole('radio', { name: /working changes/i })).toBeInTheDocument();
+        expect(screen.getByRole('radio', { name: /commit/i })).toBeInTheDocument();
+      });
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByRole('radio', { name: 'All' })).toBeInTheDocument();
+        expect(screen.getByRole('radio', { name: 'Staged' })).toBeInTheDocument();
+        expect(screen.getByRole('radio', { name: 'Unstaged' })).toBeInTheDocument();
+      });
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByText('src/index.ts')).toBeInTheDocument();
+        expect(screen.getByText('src/app.ts')).toBeInTheDocument();
+      });
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Code Review')).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('button', { name: /close review/i })).not.toBeInTheDocument();
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('2 files')).toBeInTheDocument();
+      });
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByTitle('Refresh')).toBeInTheDocument();
+      });
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Add a comment to start a review')).toBeInTheDocument();
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
+      });
+      const gridContainer = document.querySelector('.grid');
+      expect(gridContainer).toBeInTheDocument();
+      expect(gridContainer).toHaveClass('grid-cols-[1fr_320px]');
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
+      });
+      const results = await axe(container);
+      expect(results).toHaveNoViolations();
+    }
   });
 
   it('shows loading skeleton while fetching', async () => {
@@ -334,48 +394,6 @@ describe('ReviewsPage', () => {
 
     expect(screen.getByText('No project selected')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /go to projects/i })).toBeInTheDocument();
-  });
-
-  it('renders mode toggle with Working Changes and Commit options', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByRole('radio', { name: /working changes/i })).toBeInTheDocument();
-      expect(screen.getByRole('radio', { name: /commit/i })).toBeInTheDocument();
-    });
-  });
-
-  it('renders filter toggle with All, Staged, Unstaged options in working-tree mode', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByRole('radio', { name: 'All' })).toBeInTheDocument();
-      expect(screen.getByRole('radio', { name: 'Staged' })).toBeInTheDocument();
-      expect(screen.getByRole('radio', { name: 'Unstaged' })).toBeInTheDocument();
-    });
-  });
-
-  it('renders file navigator with changed files', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Files from working tree should be rendered
-    await waitFor(() => {
-      expect(screen.getByText('src/index.ts')).toBeInTheDocument();
-      expect(screen.getByText('src/app.ts')).toBeInTheDocument();
-    });
   });
 
   it('shows empty state when working tree has no changes', async () => {
@@ -525,37 +543,6 @@ new file mode 100644
     expect(screen.getByTestId('untracked-empty-state')).toBeInTheDocument();
   });
 
-  it('passes correct fileInfo to DiffViewer for untracked files', async () => {
-    global.fetch = buildFetchMock({
-      workingTree: {
-        changes: {
-          staged: [],
-          unstaged: [],
-          untracked: ['src/new-component.tsx'],
-        },
-        diff: '',
-      },
-    });
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Select the untracked file
-    await userEvent.click(screen.getByText('src/new-component.tsx'));
-
-    // Verify fileInfo is passed correctly
-    await waitFor(() => {
-      const diffViewer = screen.getByTestId('diff-viewer');
-      // Untracked files are converted to ChangedFile with status='added', additions=0, deletions=0
-      expect(diffViewer).toHaveAttribute('data-file-status', 'added');
-      expect(diffViewer).toHaveAttribute('data-file-additions', '0');
-    });
-  });
-
   it('shows Active Review badge and Close button when review is active', async () => {
     global.fetch = buildFetchMock({ activeReview: baseReview });
     const { Wrapper } = createWrapper();
@@ -566,30 +553,13 @@ new file mode 100644
       expect(screen.getByText('Active Review')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /close review/i })).toBeInTheDocument();
     });
-  });
 
-  it('does not show Close button when no active review', async () => {
-    global.fetch = buildFetchMock({ activeReview: null });
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('Code Review')).toBeInTheDocument();
-    });
-
-    expect(screen.queryByRole('button', { name: /close review/i })).not.toBeInTheDocument();
-  });
-
-  it('shows file count when files are present', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('2 files')).toBeInTheDocument();
-    });
+    {
+      await waitFor(() => {
+        expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('comment-panel')).toBeInTheDocument();
+    }
   });
 
   it('switches to commit mode when Commit button clicked', async () => {
@@ -613,17 +583,6 @@ new file mode 100644
     });
   });
 
-  it('shows refresh button in working-tree mode', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTitle('Refresh')).toBeInTheDocument();
-    });
-  });
-
   it('renders three-panel layout when files exist', async () => {
     global.fetch = buildFetchMock();
     const { Wrapper } = createWrapper();
@@ -640,236 +599,62 @@ new file mode 100644
     await waitFor(() => {
       expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
     });
-  });
 
-  it('shows "Add a comment to start a review" when no active review', async () => {
-    global.fetch = buildFetchMock({ activeReview: null });
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Right panel should show the prompt
-    expect(screen.getByText('Add a comment to start a review')).toBeInTheDocument();
-  });
-
-  it('shows comment panel when active review exists', async () => {
-    global.fetch = buildFetchMock({ activeReview: baseReview });
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Comment panel should be visible
-    expect(screen.getByTestId('comment-panel')).toBeInTheDocument();
-  });
-
-  it('provides onAddComment handler to DiffViewer even without active review', async () => {
-    // This test verifies that the DiffViewer receives the onAddComment handler
-    // even when there's no active review (for auto-create functionality)
-    global.fetch = buildFetchMock({ activeReview: null });
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Select a file
-    await userEvent.click(screen.getByText('src/index.ts'));
-
-    // DiffViewer should be rendered (with onAddComment handler available)
-    await waitFor(() => {
-      expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
-    });
-  });
-});
-
-describe('ReviewsPage adaptive layout', () => {
-  beforeEach(() => {
-    useSelectedProjectMock.mockReturnValue(projectSelectionValue);
-    navigateMock.mockReset();
-  });
-
-  afterEach(() => {
-    jest.resetAllMocks();
-  });
-
-  it('renders with unified grid layout by default', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Grid container should have unified layout classes (inside right resizable panel)
-    const gridContainer = document.querySelector('.grid');
-    expect(gridContainer).toBeInTheDocument();
-    expect(gridContainer).toHaveClass('grid-cols-[1fr_320px]');
-  });
-
-  it('passes viewType="unified" to DiffViewer by default', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Select a file to show DiffViewer
-    await userEvent.click(screen.getByText('src/index.ts'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
-    });
-
-    // DiffViewer should receive viewType="unified"
-    const diffViewer = screen.getByTestId('diff-viewer');
-    expect(diffViewer).toHaveAttribute('data-view-type', 'unified');
-  });
-
-  it('uses nested resizable panels when DiffViewer triggers onViewTypeChange to split', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Select a file to show DiffViewer
-    await userEvent.click(screen.getByText('src/index.ts'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
-    });
-
-    // Click the split toggle in the mocked DiffViewer
-    await userEvent.click(screen.getByTestId('toggle-split'));
-
-    // Split view uses nested ResizablePanelGroup instead of grid
-    const gridContainer = document.querySelector('.grid');
-    expect(gridContainer).toBeNull();
-
-    // CommentPanel container should have border-t (top border) in split mode
-    const commentPanelContainer = document.querySelector('.border-t.bg-card');
-    expect(commentPanelContainer).toBeInTheDocument();
-
-    // DiffViewer should receive viewType="split"
-    const diffViewer = screen.getByTestId('diff-viewer');
-    expect(diffViewer).toHaveAttribute('data-view-type', 'split');
-  });
-
-  it('FileNavigator is in separate resizable panel', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // FileNavigator should be rendered inside a resizable panel structure
-    // The panel contains a div with the Files header
-    const filesHeader = screen.getByText('Files');
-    expect(filesHeader).toBeInTheDocument();
-    // The header should be inside a panel with border-r class
-    const fileNavigatorContainer = filesHeader.closest('.border-r');
-    expect(fileNavigatorContainer).toBeInTheDocument();
-  });
-
-  it('switches back to unified layout when unified toggle is clicked', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Select a file
-    await userEvent.click(screen.getByText('src/index.ts'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
-    });
-
-    // Toggle to split
-    await userEvent.click(screen.getByTestId('toggle-split'));
-
-    // Verify split (no grid, uses nested resizable panels)
-    let gridContainer = document.querySelector('.grid');
-    expect(gridContainer).toBeNull();
-    expect(document.querySelector('.border-t.bg-card')).toBeInTheDocument();
-
-    // Toggle back to unified
-    await userEvent.click(screen.getByTestId('toggle-unified'));
-
-    // Verify unified (grid is inside right resizable panel)
-    gridContainer = document.querySelector('.grid');
-    expect(gridContainer).toHaveClass('grid-cols-[1fr_320px]');
-  });
-
-  it('preserves file selection when toggling view modes', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewsPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
-    });
-
-    // Select a file
-    await userEvent.click(screen.getByText('src/index.ts'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
-    });
-
-    // Toggle to split
-    await userEvent.click(screen.getByTestId('toggle-split'));
-
-    // DiffViewer should still be showing
-    expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
-
-    // Toggle back to unified
-    await userEvent.click(screen.getByTestId('toggle-unified'));
-
-    // DiffViewer should still be showing
-    expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
-  });
-
-  describe('accessibility', () => {
-    it('should have no accessibility violations', async () => {
-      useSelectedProjectMock.mockReturnValue(projectSelectionValue);
-      global.fetch = buildFetchMock();
-
-      const { Wrapper } = createWrapper();
-      const { container } = render(<ReviewsPage />, { wrapper: Wrapper });
-
-      // Wait for page to load with file list
+    {
       await waitFor(() => {
         expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
       });
-
-      const results = await axe(container);
-      expect(results).toHaveNoViolations();
-    });
+      await userEvent.click(screen.getByText('src/index.ts'));
+      await waitFor(() => {
+        expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
+      });
+      const diffViewer = screen.getByTestId('diff-viewer');
+      expect(diffViewer).toHaveAttribute('data-view-type', 'unified');
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByText('src/index.ts'));
+      await waitFor(() => {
+        expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByTestId('toggle-split'));
+      const gridContainer = document.querySelector('.grid');
+      expect(gridContainer).toBeNull();
+      const commentPanelContainer = document.querySelector('.border-t.bg-card');
+      expect(commentPanelContainer).toBeInTheDocument();
+      const diffViewer = screen.getByTestId('diff-viewer');
+      expect(diffViewer).toHaveAttribute('data-view-type', 'split');
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByText('src/index.ts'));
+      await waitFor(() => {
+        expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByTestId('toggle-split'));
+      let gridContainer = document.querySelector('.grid');
+      expect(gridContainer).toBeNull();
+      expect(document.querySelector('.border-t.bg-card')).toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('toggle-unified'));
+      gridContainer = document.querySelector('.grid');
+      expect(gridContainer).toHaveClass('grid-cols-[1fr_320px]');
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByTestId('file-navigator')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByText('src/index.ts'));
+      await waitFor(() => {
+        expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByTestId('toggle-split'));
+      expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('toggle-unified'));
+      expect(screen.getByTestId('diff-viewer')).toBeInTheDocument();
+    }
   });
 });

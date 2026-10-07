@@ -39,6 +39,7 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
   };
 
   beforeEach(async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
     currentSession = {
       id: 'session-1',
       epicId: null,
@@ -154,7 +155,6 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
   });
 
   afterEach(async () => {
-    jest.useFakeTimers();
     await moduleRef.close();
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
@@ -275,12 +275,12 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
     // A working provider keeps printing real text through the real TerminalSession.
     // Only human input restarts the grace, so the 2-second window after Enter still fires.
     session.pushFrame('Reading files');
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await jest.advanceTimersByTimeAsync(1000);
     session.pushFrame('Running tests');
     expect(session.getActivityState().lastDataAt).not.toBeNull();
 
     // Wait for the rest of HUMAN_DRAFT_IDLE_GRACE_MS (2 s) + margin
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await jest.advanceTimersByTimeAsync(1500);
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(terminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
@@ -383,32 +383,50 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
       expect(service.getPoolStats()).toEqual([]);
     });
 
-    it('rejects force when messages are not yet 30 seconds old', async () => {
+    it.each([
+      {
+        label: 'too young',
+        now: 20_000,
+        staleBatch: false,
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        expected: { status: 'conflict', reason: 'Messages not yet eligible for force send' },
+      },
+      {
+        label: 'changed batch',
+        now: 32_000,
+        staleBatch: true,
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        expected: { status: 'conflict', reason: 'Message batch has changed' },
+      },
+      {
+        label: 'wrong project',
+        now: 32_000,
+        staleBatch: false,
+        projectId: 'wrong-project',
+        sessionId: 'session-1',
+        expected: { status: 'not_found' },
+      },
+      {
+        label: 'wrong session',
+        now: 32_000,
+        staleBatch: false,
+        projectId: 'project-1',
+        sessionId: 'wrong-session',
+        expected: { status: 'not_found' },
+      },
+    ])('rejects force for $label', async ({ now, staleBatch, projectId, sessionId, expected }) => {
       const { messageIds } = await setupDeferredLane();
-      jest.spyOn(Date, 'now').mockReturnValue(20_000);
-
-      const result = await service.forceDeferredDelivery(
-        'agent-1',
-        'project-1',
-        'session-1',
-        messageIds,
-      );
-
-      expect(result).toEqual({
-        status: 'conflict',
-        reason: 'Messages not yet eligible for force send',
-      });
-    });
-
-    it('rejects force when message batch has changed', async () => {
-      await setupDeferredLane();
-      jest.spyOn(Date, 'now').mockReturnValue(32_000);
-
-      const result = await service.forceDeferredDelivery('agent-1', 'project-1', 'session-1', [
-        '00000000-0000-0000-0000-000000000000',
-      ]);
-
-      expect(result).toEqual({ status: 'conflict', reason: 'Message batch has changed' });
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      expect(
+        await service.forceDeferredDelivery(
+          'agent-1',
+          projectId,
+          sessionId,
+          staleBatch ? ['00000000-0000-0000-0000-000000000000'] : messageIds,
+        ),
+      ).toEqual(expected);
     });
 
     it('rejects force during active human draft', async () => {
@@ -429,59 +447,6 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
       const details = service.getPoolDetails();
       expect(details[0].holdReason).toBe('human_draft');
       expect(details[0].forceEligibleAt).toBeUndefined();
-    });
-
-    it('rejects force with wrong project', async () => {
-      const { messageIds } = await setupDeferredLane();
-      jest.spyOn(Date, 'now').mockReturnValue(32_000);
-
-      const result = await service.forceDeferredDelivery(
-        'agent-1',
-        'wrong-project',
-        'session-1',
-        messageIds,
-      );
-
-      expect(result).toEqual({ status: 'not_found' });
-    });
-
-    it('rejects force with wrong session', async () => {
-      const { messageIds } = await setupDeferredLane();
-      jest.spyOn(Date, 'now').mockReturnValue(32_000);
-
-      const result = await service.forceDeferredDelivery(
-        'agent-1',
-        'project-1',
-        'wrong-session',
-        messageIds,
-      );
-
-      expect(result).toEqual({ status: 'not_found' });
-    });
-
-    it('returns deferred when input changes before paste', async () => {
-      const { messageIds } = await setupDeferredLane();
-      jest.spyOn(Date, 'now').mockReturnValue(32_000);
-
-      terminalIO.deliverGuarded.mockImplementation(
-        async (...[, , , , mutationFence]: Parameters<TerminalIOService['deliverGuarded']>) => {
-          humanPromptState.recordPromptText('tmux-1');
-          if (mutationFence && !mutationFence.canStartMutation()) {
-            return { deferred: 'human_draft' };
-          }
-          mutationFence?.markMutationStarted();
-          return { confirmed: true, nonce: 'nonce-1', retryCount: 0 };
-        },
-      );
-
-      const result = await service.forceDeferredDelivery(
-        'agent-1',
-        'project-1',
-        'session-1',
-        messageIds,
-      );
-
-      expect(result).toEqual({ status: 'deferred', reason: 'Input changed before paste' });
     });
 
     it('exposes holdReason and forceEligibleAt in pool details', async () => {

@@ -1,11 +1,23 @@
 const fs = require("node:fs");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { randomBytes } = require("node:crypto");
 const { homedir, constants } = require("node:os");
-const { join, resolve } = require("node:path");
+const { delimiter, join, resolve } = require("node:path");
 
 const QUEUE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+// systemd-run execs the command in place: pid, process group, stdio and exit
+// code stay the same. systemd 258 and later expand $VAR in the arguments
+// unless told not to.
+const SCOPE_ARGS = [
+  "--user",
+  "--scope",
+  "--quiet",
+  "--collect",
+  "--expand-environment=no",
+  "--",
+];
+let scopeAvailable;
 
 function isPid(value) {
   return Number.isInteger(value) && value > 0;
@@ -150,13 +162,49 @@ function formatWait(ms) {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+function findExecutable(command, env) {
+  const candidates = command.includes("/")
+    ? [resolve(command)]
+    : (env.PATH || "")
+        .split(delimiter)
+        .filter(Boolean)
+        .map((dir) => join(dir, command));
+  return candidates.find((file) => {
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+// In a user scope of its own, a command that systemd-oomd kills does not take
+// the caller's scope down with it, e.g. an agent's tmux pane.
+function scopedSpawnArgs(command, args, env) {
+  if (process.platform !== "linux") return [command, args];
+  const executable = findExecutable(command, env);
+  // An unknown command spawns directly, so its start error still names it.
+  if (!executable) return [command, args];
+  scopeAvailable ??=
+    spawnSync("systemd-run", [...SCOPE_ARGS, "true"], {
+      env,
+      stdio: "ignore",
+      timeout: 5000,
+    }).status === 0;
+  return scopeAvailable
+    ? ["systemd-run", [...SCOPE_ARGS, executable, ...args]]
+    : [command, args];
+}
+
 async function spawnAndForward(
   { command, args, env, pollMs, name },
   state,
   onSpawn,
 ) {
   if (state.signal) return signalCode(state.signal);
-  const child = spawn(command, args, { env, stdio: "inherit", detached: true });
+  const [file, argv] = scopedSpawnArgs(command, args, env);
+  const child = spawn(file, argv, { env, stdio: "inherit", detached: true });
   state.pgid = child.pid || null;
   const result = new Promise((done) => {
     child.once("error", (error) => {

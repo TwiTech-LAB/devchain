@@ -1,13 +1,12 @@
 import { certificateFingerprint } from '../../../common/tls/certificate';
 import { createHash } from 'node:crypto';
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { getAppVersion } from '../../../common/app-version';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { PROVIDER_AUTH_ADAPTERS } from '../../provider-auth/provider-auth-adapters';
@@ -64,14 +63,13 @@ jest.mock('../../../common/logging/logger', () => ({
   }),
 }));
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const CODEX_FILE = '{"auth_mode":"chatgpt","tokens":{"refresh_token":"codex-secret-refresh"}}';
 const CLAUDE_TOKEN = 'sk-ant-oat01-claude-secret-token';
 const TIMING: RemoteOperationTiming = {
   pollIntervalMs: 20,
   claimInstallTimeoutMs: 10_000,
-  claimStartTimeoutMs: 3_000,
-  hostUpdateTimeoutMs: 3_000,
+  claimStartTimeoutMs: 100,
+  hostUpdateTimeoutMs: 1_000,
 };
 
 /** Isolated logins finish at once with a stored entry, or never (`hold`). */
@@ -250,6 +248,11 @@ describe('claim and update_host operations', () => {
       installDefinition,
       { resolve: async (input: never) => ({ credentials: input }) } as never,
       health,
+      { recordAttach: jest.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
   }
 
@@ -264,10 +267,9 @@ describe('claim and update_host operations', () => {
   beforeEach(async () => {
     mockClaimInfo.mockClear();
     secretDir = mkdtempSync(join(tmpdir(), 'devchain-claim-op-'));
-    sqlite = new Database(':memory:');
-    const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
-    sqlite.pragma('foreign_keys = ON');
+    const database = createTestDatabase();
+    sqlite = database.sqlite;
+    const { db } = database;
     storage = new LocalStorageService(
       db,
       new IntegrationCredentialCipher({
@@ -385,6 +387,7 @@ describe('claim and update_host operations', () => {
     expect(done.state).toBe('done');
     expect(vm.claims).toHaveLength(1);
     expect(vm.claims[0].uid).toBe(requestedUid);
+    expect(vm.claims[0].gid).toBe(process.getgid?.());
     expect(vm.claims[0].uid).not.toBe(actualUid);
     expect(health.getState(done.remoteId)).toMatchObject({ uid: actualUid, gid: actualUid + 1 });
     const controller = new RemotesController(
@@ -595,14 +598,14 @@ describe('claim and update_host operations', () => {
       tokenId: 'root@pam!devchain',
       tokenSecret: 'private-token',
     });
-    process.env.HOST_IMAGE_URL = 'https://images.example/devchain-host-1.3.0.qcow2';
+    process.env.HOST_IMAGE_URL = 'https://images.example/devchain-host-1.4.0.qcow2';
     process.env.HOST_IMAGE_SHA256 = 'a'.repeat(64);
     resetEnvConfig();
     const lifecycle = {
       image: (url: string, sha256: string) => ({
         url,
         sha256,
-        version: '1.3.0',
+        version: '1.4.0',
         filename: 'image.qcow2',
       }),
       assertReachable: async () => undefined,
@@ -681,7 +684,7 @@ describe('claim and update_host operations', () => {
     const delayedBootstrap = new Promise<void>((resolve, reject) => {
       setTimeout(() => {
         void vm.listen({ port: bootstrapPort }).then(resolve, reject);
-      }, 750);
+      }, 250);
     });
     const started = await vmOperations.create(connectionId, {
       name: 'alpha',

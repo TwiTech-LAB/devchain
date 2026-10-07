@@ -22,6 +22,8 @@ export class DockerEngineError extends Error {
     readonly code: DockerErrorCode,
     message: string,
     readonly status?: number,
+    /** The engine's own reason for a refused request, already in `message`. */
+    readonly reason?: string,
   ) {
     super(message);
     this.name = 'DockerEngineError';
@@ -211,8 +213,7 @@ const ENGINE_MESSAGE_CHARACTERS = 1000;
 
 /**
  * The engine's own reason for a refused request, so a failure on either machine
- * can be diagnosed. A create answer may echo its payload, so the request's Env
- * values are masked.
+ * can be diagnosed. An answer may echo environment values, so they are masked.
  */
 async function engineMessage(
   res: IncomingMessage,
@@ -241,8 +242,16 @@ async function engineMessage(
   return maskEnv(message.replace(/\s+/g, ' ').trim(), body).slice(0, ENGINE_MESSAGE_CHARACTERS);
 }
 
-/** Values shorter than four characters stay: masking `1` or `on` would garble the message. */
-function maskEnv(message: string, body: DockerRequestOptions['body']): string {
+/** `NAME=value` with an upper-case name: how an echoed environment entry reads. */
+const ENV_ASSIGNMENT = /\b([A-Z][A-Z0-9_]*)=[^\s"',;]+/g;
+
+/**
+ * Masks the values of the request's own Env and of every `NAME=value` entry, since
+ * an engine may echo any container's environment. Request values shorter than four
+ * characters stay: masking `1` or `on` everywhere would garble the message.
+ */
+function maskEnv(text: string, body: DockerRequestOptions['body']): string {
+  const message = text.replace(ENV_ASSIGNMENT, '$1=***');
   if (typeof body !== 'string' && !Buffer.isBuffer(body)) return message;
   let env: unknown;
   try {
@@ -343,6 +352,7 @@ export class DockerEngineClient {
                     code,
                     `Docker engine request failed (HTTP ${status ?? 0})${detail ? `: ${detail}` : ''}`,
                     status,
+                    detail || undefined,
                   ),
                 ),
               );
@@ -425,7 +435,7 @@ export class DockerEngineClient {
     return info;
   }
   diskUsage(signal?: AbortSignal): Promise<DockerDiskUsage> {
-    return this.json('GET', '/system/df', undefined, { signal });
+    return this.json('GET', '/system/df?type=image&type=volume', undefined, { signal });
   }
 }
 

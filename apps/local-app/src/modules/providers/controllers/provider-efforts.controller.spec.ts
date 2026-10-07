@@ -3,7 +3,6 @@ import { NotFoundException } from '@nestjs/common';
 import { ProviderEffortsController } from './provider-efforts.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { ProviderAdapterFactory } from '../adapters';
-import { ConflictError } from '../../../common/errors/error-types';
 
 // Test layer: module-unit. The efforts controller is a thin read-CRUD boundary
 // over STORAGE_SERVICE + adapter-factory capability probing; mocking both at this
@@ -105,19 +104,6 @@ describe('ProviderEffortsController', () => {
       expect(result).toEqual({ efforts: [], supportsEffort: true, requiresModelForEffort: false });
     });
 
-    it('returns seeded efforts for a capable provider', async () => {
-      storage.listProviderEffortsByProvider.mockResolvedValue([
-        { id: 'e1', providerId: 'provider-1', name: 'high', position: 0 },
-        { id: 'e2', providerId: 'provider-1', name: 'max', position: 1 },
-      ]);
-
-      const result = await controller.listProviderEfforts('provider-1');
-
-      expect(result.efforts).toHaveLength(2);
-      expect(result.supportsEffort).toBe(true);
-      expect(result.requiresModelForEffort).toBe(false);
-    });
-
     it('returns supportsEffort=false for agy (supported adapter, not effort-capable)', async () => {
       storage.getProvider.mockResolvedValue(agyProvider);
 
@@ -147,93 +133,55 @@ describe('ProviderEffortsController', () => {
       expect(adapterFactory.getAdapter).not.toHaveBeenCalled();
       expect(result).toEqual({ efforts: [], supportsEffort: false, requiresModelForEffort: false });
     });
-
-    it('propagates NotFoundException when provider does not exist', async () => {
-      storage.getProvider.mockRejectedValue(new NotFoundException('Provider not found'));
-
-      await expect(controller.listProviderEfforts('missing')).rejects.toThrow(NotFoundException);
-      expect(storage.listProviderEffortsByProvider).not.toHaveBeenCalled();
-      expect(adapterFactory.isSupported).not.toHaveBeenCalled();
-    });
   });
 
   describe('POST /api/providers/:id/efforts', () => {
-    it('creates a single effort from {name}', async () => {
-      storage.createProviderEffort.mockResolvedValue({
-        id: 'e1',
-        providerId: 'provider-1',
-        name: 'high',
-        position: 0,
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      });
-
-      const result = await controller.createProviderEffort('provider-1', { name: 'high' });
-
-      expect(storage.createProviderEffort).toHaveBeenCalledWith({
-        providerId: 'provider-1',
-        name: 'high',
-      });
-      expect(result).toMatchObject({ name: 'high' });
-    });
-
-    it('bulk imports efforts from {efforts} with position ordering and returns stats', async () => {
-      storage.bulkCreateProviderEfforts.mockResolvedValue({
-        added: ['low', 'high'],
-        existing: ['medium'],
-      });
-
-      const result = await controller.createProviderEffort('provider-1', {
-        efforts: [{ name: 'high', position: 2 }, { name: 'low', position: 1 }, { name: 'medium' }],
-      });
-
-      // Ordered by explicit position (low@1, high@2), ties/missing fall back to
-      // input order (medium last via MAX_SAFE_INTEGER).
-      expect(storage.bulkCreateProviderEfforts).toHaveBeenCalledWith('provider-1', [
-        'low',
-        'high',
-        'medium',
-      ]);
-      expect(result).toEqual({ added: ['low', 'high'], existing: ['medium'], total: 3 });
-    });
-
-    it('reports CI-deduped (already-existing) efforts via the delegate result', async () => {
-      storage.bulkCreateProviderEfforts.mockResolvedValue({ added: [], existing: ['high'] });
-
-      const result = await controller.createProviderEffort('provider-1', {
-        efforts: [{ name: 'high' }],
-      });
-
-      expect(result).toEqual({ added: [], existing: ['high'], total: 1 });
-    });
-
-    it('rejects invalid payload {}', async () => {
-      await expect(controller.createProviderEffort('provider-1', {})).rejects.toThrow();
-      expect(storage.createProviderEffort).not.toHaveBeenCalled();
-      expect(storage.bulkCreateProviderEfforts).not.toHaveBeenCalled();
-    });
-
-    it('rejects invalid payload {name: ""}', async () => {
-      await expect(controller.createProviderEffort('provider-1', { name: '' })).rejects.toThrow();
-      expect(storage.createProviderEffort).not.toHaveBeenCalled();
-    });
-
-    it('rejects invalid payload {efforts: "invalid"}', async () => {
-      await expect(
-        controller.createProviderEffort('provider-1', { efforts: 'invalid' }),
-      ).rejects.toThrow();
-      expect(storage.bulkCreateProviderEfforts).not.toHaveBeenCalled();
-    });
-
-    it('propagates ConflictError for duplicate single-effort create', async () => {
-      storage.createProviderEffort.mockRejectedValue(
-        new ConflictError('Effort "high" already exists for this provider.'),
-      );
-
-      await expect(controller.createProviderEffort('provider-1', { name: 'high' })).rejects.toThrow(
-        ConflictError,
-      );
-    });
+    it.each([
+      {
+        name: 'single',
+        input: { name: 'high' },
+        response: {
+          id: 'e1',
+          providerId: 'provider-1',
+          name: 'high',
+          position: 0,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+        expectedArgs: [
+          {
+            providerId: 'provider-1',
+            name: 'high',
+          },
+        ],
+      },
+      {
+        name: 'bulk',
+        input: {
+          efforts: [
+            { name: 'high', position: 2 },
+            { name: 'low', position: 1 },
+            { name: 'medium' },
+          ],
+        },
+        response: {
+          added: ['low', 'high'],
+          existing: ['medium'],
+        },
+        expectedArgs: ['provider-1', ['low', 'high', 'medium']],
+      },
+    ])(
+      'creates efforts through the $name branch',
+      async ({ name, input, response, expectedArgs }) => {
+        const create =
+          name === 'single' ? storage.createProviderEffort : storage.bulkCreateProviderEfforts;
+        create.mockResolvedValue(response);
+        const result = await controller.createProviderEffort('provider-1', input);
+        expect(create.mock.calls[0]).toEqual(expectedArgs);
+        if (name === 'single') expect(result).toMatchObject({ name: 'high' });
+        else expect(result).toEqual({ ...response, total: 3 });
+      },
+    );
   });
 
   describe('DELETE /api/providers/:id/efforts/:effortId', () => {

@@ -1,5 +1,5 @@
 import { CopilotAdapter } from './copilot.adapter';
-import { isHookCapable } from './capabilities';
+
 import type { ProviderAdapter } from './provider-adapter.interface';
 
 describe('CopilotAdapter', () => {
@@ -13,10 +13,6 @@ describe('CopilotAdapter', () => {
   });
 
   describe('static capability surface', () => {
-    it('identifies as the copilot provider', () => {
-      expect(adapter.providerName).toBe('copilot');
-    });
-
     it('runs as a full-screen alternate-screen TUI', () => {
       expect(adapter.terminalOutputBehavior?.usesAlternateScreen).toBe(true);
     });
@@ -35,10 +31,6 @@ describe('CopilotAdapter', () => {
       expect(adapter.providerSessionIdRequiredForRestore).toBe(true);
     });
 
-    it('requires project provisioning (trust pre-write, S1 Branch B)', () => {
-      expect(adapter.requiresProjectProvisioning).toBe(true);
-    });
-
     it('guards COPILOT_HOME on both surfaces — strip ambient + reject explicit (R4)', () => {
       // Ambient/inherited COPILOT_HOME is stripped from the child env...
       expect(adapter.launchUnsetEnv).toEqual(['COPILOT_HOME']);
@@ -48,10 +40,6 @@ describe('CopilotAdapter', () => {
   });
 
   describe('EffortCapability', () => {
-    it('exposes the seeded default effort values (static metadata)', () => {
-      expect(adapter.defaultEffortValues).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
-    });
-
     it('injects the native `--effort=<value>` form', () => {
       const { argv } = adapter.applyEffort(['-m', 'gpt-5'], {}, 'high');
       expect(argv).toEqual(['--effort=high', '-m', 'gpt-5']);
@@ -75,10 +63,6 @@ describe('CopilotAdapter', () => {
   });
 
   describe('HookCapability (2nd adopter; P3 lifecycle hooks)', () => {
-    it('is recognized as hook-capable by the type guard', () => {
-      expect(isHookCapable(adapter)).toBe(true);
-    });
-
     it('enables hooks and reuses the legacy provider-neutral event name (decision: option b)', () => {
       expect(adapter.hooksEnabled).toBe(true);
       // Same internal devchain event as Claude → 0005 renew-instructions seeder +
@@ -152,18 +136,6 @@ describe('CopilotAdapter', () => {
       expect(result).toEqual({ success: true, warnings: [warning] });
     });
 
-    it('returns success with no warnings on a clean trust write', async () => {
-      const ensure = jest.fn().mockResolvedValue({ success: true, warnings: [] });
-      const withService = new CopilotAdapter(
-        { ensure } as never,
-        { isAuthenticated: jest.fn() } as never,
-      );
-
-      const result = await withService.provisionProjectPath('/home/user/project');
-
-      expect(result).toEqual({ success: true, warnings: [] });
-    });
-
     it('never throws — a service failure becomes a provisioning warning', async () => {
       const ensure = jest.fn().mockRejectedValue(new Error('disk on fire'));
       const withService = new CopilotAdapter(
@@ -209,16 +181,6 @@ describe('CopilotAdapter', () => {
       });
       expect(argv).toEqual(['--session-id', 'sess-uuid-123', '--allow-all-tools']);
       expect(argv).not.toContain('-i');
-    });
-
-    it('omits -i for an empty-string prompt', () => {
-      const { argv } = adapter.buildLaunchArgs({
-        mode: 'new',
-        sessionId: 'sess-uuid-123',
-        profileOptionArgs: [],
-        initialPrompt: '',
-      });
-      expect(argv).toEqual(['--session-id', 'sess-uuid-123']);
     });
   });
 

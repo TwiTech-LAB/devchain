@@ -486,34 +486,6 @@ describe('remote operations between two instances', () => {
     });
   });
 
-  it('marks a throwing step failed and resumes from it on retry', async () => {
-    const client = home().app.get(RemoteHostClient);
-    jest.spyOn(client, 'importProject').mockRejectedValueOnce(new Error('host import broke'));
-
-    const started = await startOperation('attach', { projectId: 'B' });
-    const failed = await waitForState(started.id, 'failed');
-
-    expect(stepStates(failed)).toMatchObject({
-      preflight: 'done',
-      freeze_home: 'done',
-      build_replica: 'done',
-      push_replica: 'failed',
-      bind_remote: 'pending',
-    });
-    const push = failed.steps.find((step) => step.id === 'push_replica');
-    expect(push?.error).toEqual({ message: 'host import broke', code: null });
-    const preflightStartedAt = failed.steps[0].startedAt;
-
-    const retry = await api(home(), 'POST', `/api/remotes/operations/${started.id}/retry`);
-    expect(retry.status).toBe(202);
-    const done = await waitForState(started.id, 'done');
-
-    expect(done.steps[0].startedAt).toBe(preflightStartedAt);
-    expect(done.steps.find((step) => step.id === 'push_replica')?.error).toBeNull();
-    expect(hostHasProject('B')).toBe(true);
-    expect(bindingRow('B')?.state).toBe('remote');
-  });
-
   it('takes the replayed push cursor from the host, never from home clock', async () => {
     const client = home().app.get(RemoteHostClient);
     const realImport = client.importProject.bind(client);

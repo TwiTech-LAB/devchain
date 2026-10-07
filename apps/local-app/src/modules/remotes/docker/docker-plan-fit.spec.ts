@@ -5,6 +5,7 @@ import {
   DOCKER_LOAD_MARGIN_BYTES,
   uniqueCopiedMounts,
   writerStops,
+  skipsImageCopy,
 } from './docker-plan-fit';
 import type { DockerPlanItem, DockerPlanMount } from './docker-plan.dto';
 const ROOT = '/home/project';
@@ -44,6 +45,24 @@ const sample = (path: string, filesystemId: string, freeBytes = 1000) => ({
   filesystemId,
   freeBytes,
 });
+// Pure policy inputs determine image copying without either engine.
+it.each<Partial<DockerPlanItem>>([
+  { targetAction: 'create' },
+  { targetAction: 'replace' },
+  { temporary: true },
+  { buildsFromProject: false },
+  { dataAction: 'replace-home', mounts: [mount('db', 10, 'named-volume')] },
+])('copies images when a kept build cannot be skipped: %j', (overrides) => {
+  const selected = {
+    ...item(),
+    buildsFromProject: true,
+    targetAction: 'leave-as-is' as const,
+    dataAction: 'keep-vm' as const,
+    ...overrides,
+  };
+  expect(skipsImageCopy(selected, ROOT)).toBe(false);
+});
+
 it('groups target filesystem IDs while keeping nested mounts separate; refuses >100% and warns >80%', () => {
   const result = planDockerFit(
     [
@@ -75,6 +94,22 @@ it('deduplicates volume and overlapping bind coverage across selected items', ()
     'shared',
   ]);
 });
+it('copies only data kinds while code binds neither count nor hide nested data', () => {
+  const data = mount(`${ROOT}/data`, 50);
+  expect(uniqueCopiedMounts([item([mount(ROOT, 100, 'project-code'), data])], ROOT)).toEqual([
+    data,
+  ]);
+  expect(uniqueCopiedMounts([item([mount(ROOT, 100)])], ROOT)).toEqual([mount(ROOT, 100)]);
+});
+it('totals a shared volume once and marks a total with an unmeasured part', () => {
+  const shared = mount('db', 300, 'named-volume');
+  const partial = { ...mount('/home/project/state', 50), size: { bytes: 50, unknown: true } };
+  const capacity = { dockerRoot: sample('/docker', 'd', 1e9), imageStore: null, binds: [] };
+  const measured = planDockerFit([item([shared]), item([shared])], [], capacity, ROOT);
+  expect([measured.bytes, measured.unknown]).toEqual([300, false]);
+  const result = planDockerFit([item([shared]), item([partial])], [], capacity, ROOT);
+  expect([result.bytes, result.unknown]).toEqual([350, true]);
+});
 it('cached images cost zero; uncached images reserve the largest load plus margin once', () => {
   const a = item();
   a.images = [
@@ -92,6 +127,7 @@ it('cached images cost zero; uncached images reserve the largest load plus margi
     ROOT,
   );
   expect(result.bytes).toBe(100);
+  expect(result.unknown).toBe(false);
   expect(result.filesystems[0]).toMatchObject({
     requiredBytes: 200 + DOCKER_LOAD_MARGIN_BYTES,
     headroomBytes: 100 + DOCKER_LOAD_MARGIN_BYTES,
@@ -203,6 +239,8 @@ describe('writerStops', () => {
     );
     expect(writerStops(withGroup({ selectedMode: null }, data), containers, ROOT)).toEqual([]);
     // A bind of the whole project root is code that file sync carries, not copied data.
-    expect(writerStops(withGroup({}, [mount(ROOT, 1)]), containers, ROOT)).toEqual([]);
+    expect(writerStops(withGroup({}, [mount(ROOT, 1, 'project-code')]), containers, ROOT)).toEqual(
+      [],
+    );
   });
 });

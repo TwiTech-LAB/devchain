@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -5,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import type { EventsService } from '../../events/services/events.service';
 import type { SettingsService } from '../../settings/services/settings.service';
@@ -15,8 +15,6 @@ import { IntegrationCredentialCipher } from '../../storage/local/integration-cre
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { EpicsService } from './epics.service';
 import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 describe('EpicsService external task import', () => {
   let sqlite: Database.Database;
@@ -34,8 +32,7 @@ describe('EpicsService external task import', () => {
   let statusName: string;
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
     secretDirectory = mkdtempSync(join(tmpdir(), 'devchain-external-import-'));
     storage = new LocalStorageService(

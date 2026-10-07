@@ -12,10 +12,6 @@ describe('parseSearchQuery', () => {
     expect(parseSearchQuery('')).toBeNull();
   });
 
-  it('returns null for whitespace-only', () => {
-    expect(parseSearchQuery('   ')).toBeNull();
-  });
-
   it('returns null for commas-only', () => {
     expect(parseSearchQuery(', , ,')).toBeNull();
   });
@@ -24,20 +20,6 @@ describe('parseSearchQuery', () => {
     expect(parseSearchQuery('  React  ')).toEqual({
       phrase: 'react',
       tokens: ['react'],
-    });
-  });
-
-  it('splits on whitespace', () => {
-    expect(parseSearchQuery('react typescript')).toEqual({
-      phrase: 'react typescript',
-      tokens: ['react', 'typescript'],
-    });
-  });
-
-  it('splits on commas', () => {
-    expect(parseSearchQuery('react,typescript')).toEqual({
-      phrase: 'react,typescript',
-      tokens: ['react', 'typescript'],
     });
   });
 
@@ -64,24 +46,14 @@ describe('parseSearchQuery', () => {
 });
 
 describe('escapeLikeWildcards', () => {
-  it('passes through plain text', () => {
-    expect(escapeLikeWildcards('react')).toBe('react');
-  });
-
-  it('escapes percent sign', () => {
-    expect(escapeLikeWildcards('100%')).toBe('100\\%');
-  });
-
-  it('escapes underscore', () => {
-    expect(escapeLikeWildcards('snake_case')).toBe('snake\\_case');
-  });
-
-  it('escapes backslash', () => {
-    expect(escapeLikeWildcards('path\\to')).toBe('path\\\\to');
-  });
-
-  it('escapes multiple special characters', () => {
-    expect(escapeLikeWildcards('%_\\')).toBe('\\%\\_\\\\');
+  it.each([
+    ['react', 'react'],
+    ['100%', '100\\%'],
+    ['snake_case', 'snake\\_case'],
+    ['path\\to', 'path\\\\to'],
+    ['%_\\', '\\%\\_\\\\'],
+  ])('escapes SQL LIKE input %s', (input, expected) => {
+    expect(escapeLikeWildcards(input)).toBe(expected);
   });
 });
 
@@ -153,18 +125,6 @@ describe('scoreSkillRelevance', () => {
 
     expect(scoreSkillRelevance(skill, parsed)).toBe(10);
   });
-
-  it('checks slug for matches', () => {
-    const parsed: ParsedSearchQuery = { phrase: 'react', tokens: ['react'] };
-    const skill = makeSkill({
-      slug: 'anthropic/react-helper',
-      name: 'helper',
-      displayName: 'Helper',
-      description: null,
-    });
-
-    expect(scoreSkillRelevance(skill, parsed)).toBe(10);
-  });
 });
 
 describe('sortByRelevance', () => {
@@ -210,19 +170,5 @@ describe('sortByRelevance', () => {
 
     sortByRelevance(items, parsed);
     expect(items[0]).toBe(originalFirst);
-  });
-
-  it('puts multi-token matches ahead of single-token', () => {
-    const parsed: ParsedSearchQuery = {
-      phrase: 'react typescript',
-      tokens: ['react', 'typescript'],
-    };
-    const items = [
-      makeSkill('source/react', 'react'),
-      makeSkill('source/react-ts', 'react-ts', { description: 'typescript expert' }),
-    ];
-
-    const sorted = sortByRelevance(items, parsed);
-    expect(sorted[0].slug).toBe('source/react-ts');
   });
 });

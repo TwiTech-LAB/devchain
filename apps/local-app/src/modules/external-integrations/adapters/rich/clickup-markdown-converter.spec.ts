@@ -145,33 +145,19 @@ describe('ClickUp markdown converter', () => {
   });
 
   describe('unsupported structure fails the whole document closed', () => {
-    it('rejects provider ordered lists', () => {
-      expect(markdownToRichDocument('1. real item\n2. second')).toEqual({
-        supported: false,
-        reason: 'unsupported_node',
-      });
-    });
-
-    it('rejects indented (code-block-like) and nested-list lines', () => {
-      expect(markdownToRichDocument('    indented code')).toEqual({
-        supported: false,
-        reason: 'unsupported_node',
-      });
-      expect(markdownToRichDocument('\ttabbed')).toEqual({
-        supported: false,
-        reason: 'unsupported_node',
-      });
-      expect(markdownToRichDocument('  - nested bullet')).toEqual({
-        supported: false,
-        reason: 'unsupported_node',
-      });
-    });
-
-    it('rejects fenced code blocks', () => {
-      expect(markdownToRichDocument('```\nfenced\n```')).toEqual({
-        supported: false,
-        reason: 'unsupported_node',
-      });
+    it.each([
+      { name: 'rejects provider ordered lists', inputs: ['1. real item\n2. second'] },
+      {
+        name: 'rejects indented (code-block-like) and nested-list lines',
+        inputs: ['    indented code', '\ttabbed', '  - nested bullet'],
+      },
+      { name: 'rejects fenced code blocks', inputs: ['```\nfenced\n```'] },
+    ])('$name', ({ inputs }) => {
+      for (const input of inputs)
+        expect(markdownToRichDocument(input)).toEqual({
+          supported: false,
+          reason: 'unsupported_node',
+        });
     });
 
     it('rejects non-string input and empty documents', () => {

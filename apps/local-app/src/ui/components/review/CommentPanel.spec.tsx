@@ -173,95 +173,69 @@ describe('CommentPanel', () => {
   });
 
   describe('rendering comments', () => {
-    it('renders Comments header with count', async () => {
+    it('shows root comment metadata and file-filter selection', async () => {
       global.fetch = buildFetchMock();
       const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        expect(screen.getByText('Comments')).toBeInTheDocument();
+      const view = render(<CommentPanel reviewId="review-1" selectedFile={null} />, {
+        wrapper: Wrapper,
       });
-
-      // Root comments count (3 root comments: comment-1, comment-2, comment-3)
-      await waitFor(() => {
+      {
+        await waitFor(() => {
+          expect(screen.getByText('Comments')).toBeInTheDocument();
+        });
+        await waitFor(() => {
+          const threes = screen.getAllByText('3');
+          expect(threes.length).toBeGreaterThan(0);
+        });
+      }
+      {
+        await waitFor(() => {
+          const items = screen.getAllByTestId('comment-reference-item');
+          expect(items).toHaveLength(3); // 3 root comments
+        });
+      }
+      {
+        await waitFor(() => {
+          expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
+        });
+        expect(screen.getByText('Review-level comment')).toBeInTheDocument();
+        expect(screen.getByText('Comment on other file')).toBeInTheDocument();
+      }
+      {
+        await waitFor(() => {
+          expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
+        });
+        const ones = screen.getAllByText('1');
+        expect(ones.length).toBeGreaterThan(0);
+      }
+      {
+        await waitFor(() => {
+          expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Reply to file comment')).not.toBeInTheDocument();
+      }
+      view.rerender(<CommentPanel reviewId="review-1" selectedFile="src/utils.ts" />);
+      {
+        await waitFor(() => {
+          expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
+        });
+        expect(screen.getByRole('button', { name: /files filter/i })).toHaveClass(
+          'bg-selected',
+          'text-selected-foreground',
+          'hover:bg-selected',
+        );
+      }
+      {
+        await waitFor(() => {
+          expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
+        });
         const threes = screen.getAllByText('3');
         expect(threes.length).toBeGreaterThan(0);
-      });
-    });
-
-    it('renders CommentReferenceItem for each root comment', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        const items = screen.getAllByTestId('comment-reference-item');
-        expect(items).toHaveLength(3); // 3 root comments
-      });
-    });
-
-    it('shows content snippets for all root comments', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
-      });
-
-      expect(screen.getByText('Review-level comment')).toBeInTheDocument();
-      expect(screen.getByText('Comment on other file')).toBeInTheDocument();
-    });
-
-    it('shows reply count for comments with replies', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
-      });
-
-      // comment-1 has 1 reply (reply-1) - multiple "1"s may appear (reply count + filter badge)
-      const ones = screen.getAllByText('1');
-      expect(ones.length).toBeGreaterThan(0);
-    });
-
-    it('does not show reply content in sidebar (compact view)', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
-      });
-
-      // Reply content should not be visible (only reply count)
-      expect(screen.queryByText('Reply to file comment')).not.toBeInTheDocument();
+      }
     });
   });
 
   describe('filter functionality', () => {
-    it('renders filter buttons', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        // Use more specific queries - filter buttons have aria-label with "filter"
-        expect(screen.getByRole('button', { name: /all filter/i })).toBeInTheDocument();
-      });
-
-      expect(screen.getByRole('button', { name: /files filter/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /review filter/i })).toBeInTheDocument();
-    });
-
     it('shows review-level comments when Review filter clicked', async () => {
       global.fetch = buildFetchMock();
       const { Wrapper } = createWrapper();
@@ -307,26 +281,6 @@ describe('CommentPanel', () => {
       await waitFor(() => {
         expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
       });
-    });
-
-    it('shows Files filter button with correct label', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile="src/utils.ts" />, {
-        wrapper: Wrapper,
-      });
-
-      await waitFor(() => {
-        expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
-      });
-
-      // Files filter button should be present with label "Files"
-      expect(screen.getByRole('button', { name: /files filter/i })).toHaveClass(
-        'bg-selected',
-        'text-selected-foreground',
-        'hover:bg-selected',
-      );
     });
   });
 
@@ -386,25 +340,6 @@ describe('CommentPanel', () => {
       await userEvent.click(screen.getByRole('button', { name: /review filter/i }));
 
       expect(screen.getByText('No review-level comments')).toBeInTheDocument();
-    });
-  });
-
-  describe('filter counts', () => {
-    it('shows count badges on filter buttons', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile="src/utils.ts" />, {
-        wrapper: Wrapper,
-      });
-
-      await waitFor(() => {
-        expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
-      });
-
-      // Check that count badges exist
-      const threes = screen.getAllByText('3');
-      expect(threes.length).toBeGreaterThan(0);
     });
   });
 
@@ -494,54 +429,6 @@ describe('CommentPanel', () => {
       // comment-1 is pending (has target agents and no target agent has replied)
       expect(screen.getByText('Pending')).toBeInTheDocument();
     });
-
-    it('applies pending styling to pending comments', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
-      });
-
-      // The pending comment should have warning border styling
-      const commentItems = screen.getAllByTestId('comment-reference-item');
-      // Find the pending one (comment-1)
-      const pendingItem = commentItems.find((item) =>
-        item.classList.contains('border-l-status-warn/40'),
-      );
-      expect(pendingItem).toBeDefined();
-    });
-  });
-
-  describe('agent name display', () => {
-    it('renders agent name when authorAgentName is provided', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        // comment-2 has authorAgentName: 'Brainstormer'
-        expect(screen.getByText('Brainstormer')).toBeInTheDocument();
-      });
-    });
-
-    it('renders "You" for user-authored comments', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
-      });
-
-      // User comments show "You" as author
-      const youLabels = screen.getAllByText('You');
-      expect(youLabels.length).toBeGreaterThan(0);
-    });
   });
 
   describe('accessibility', () => {
@@ -559,19 +446,6 @@ describe('CommentPanel', () => {
 
       const results = await axe(container);
       expect(results).toHaveNoViolations();
-    });
-
-    it('uses proper region role with aria-label', async () => {
-      global.fetch = buildFetchMock();
-      const { Wrapper } = createWrapper();
-
-      render(<CommentPanel reviewId="review-1" selectedFile={null} />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        expect(screen.getByText('File-level comment on utils.ts')).toBeInTheDocument();
-      });
-
-      expect(screen.getByRole('region', { name: /comments panel/i })).toBeInTheDocument();
     });
   });
 

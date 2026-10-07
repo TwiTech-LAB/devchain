@@ -69,6 +69,40 @@ describe('evaluateCompletion', () => {
 });
 
 describe('FileSyncService.rescan', () => {
+  it('overrides a send-only folder through Syncthing', async () => {
+    const request = jest.fn(async () => undefined);
+    const service = new FileSyncService(
+      { getConnection: () => ({ client: { request } }) } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    await service.override('git:p1');
+    expect(request).toHaveBeenCalledWith('POST', '/rest/db/override?folder=git%3Ap1');
+  });
+
+  it('reports the receive-only count and at most 200 changed names', async () => {
+    const request = jest.fn(async (_method: string, path: string) =>
+      path.startsWith('/rest/db/localchanged')
+        ? { files: Array.from({ length: 201 }, (_, i) => ({ name: `file-${i}` })) }
+        : status({ receiveOnlyChangedFiles: 300 }),
+    );
+    const service = new FileSyncService(
+      { getConnection: () => ({ client: { request } }) } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const changes = await service.localChanges('code:p1');
+    expect(changes.count).toBe(300);
+    expect(changes.sample).toHaveLength(200);
+    expect(changes.sample.at(-1)).toBe('file-199');
+    expect(request).toHaveBeenCalledWith(
+      'GET',
+      '/rest/db/localchanged?folder=code%3Ap1&page=1&perpage=200',
+    );
+  });
+
   it('waits for the whole scan, because Syncthing answers only when it ends', async () => {
     const request = jest.fn(async () => undefined);
     const syncthing = { getConnection: () => ({ client: { request } }), getState: () => ({}) };
@@ -138,8 +172,111 @@ describe('FileSyncService.ensureAvailable', () => {
   });
 });
 
+describe('FileSyncService.status', () => {
+  const FILE_ERROR = { path: 'pkg/a.py', error: 'chmod pkg/a.py: operation not permitted' };
+
+  it.each([false, true])('keeps a three-file sample unless allErrors=%s', async (allErrors) => {
+    const errors = Array.from({ length: 5 }, (_, index) => ({
+      ...FILE_ERROR,
+      path: `logs/${index}`,
+    }));
+    const request = jest.fn(async (_method: string, path: string) =>
+      path.startsWith('/rest/folder/errors') ? { errors } : { ...status(), errors: 5 },
+    );
+    const service = new FileSyncService(
+      { getConnection: () => ({ client: { request } }) } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const result = await service.status('code:p1', undefined, { allErrors });
+    expect(result.fileErrors).toEqual(allErrors ? errors : errors.slice(0, 3));
+    expect(request).toHaveBeenCalledWith(
+      'GET',
+      allErrors
+        ? '/rest/folder/errors?folder=code%3Ap1'
+        : '/rest/folder/errors?folder=code%3Ap1&page=1&perpage=3',
+    );
+  });
+
+  it('rejects an unreadable full error list instead of reporting no failures', async () => {
+    const service = new FileSyncService(
+      {
+        getConnection: () => ({
+          client: {
+            request: async (_method: string, path: string) => {
+              if (path.startsWith('/rest/folder/errors')) throw new Error('errors unavailable');
+              return { ...status(), errors: 5 };
+            },
+          },
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    await expect(service.status('code:p1', undefined, { allErrors: true })).rejects.toThrow(
+      'errors unavailable',
+    );
+  });
+
+  it.each<[string, number, () => Promise<unknown>, (typeof FILE_ERROR)[] | undefined]>([
+    ['reports no errors', 0, async () => ({ errors: [FILE_ERROR] }), undefined],
+    ['reports errors', 1181, async () => ({ errors: [FILE_ERROR] }), [FILE_ERROR]],
+    [
+      'reports errors but cannot list them',
+      1181,
+      async () => {
+        throw new Error('folder is paused');
+      },
+      undefined,
+    ],
+  ])('names the failed files only when Syncthing %s', async (_case, errors, list, expected) => {
+    const request = jest.fn(async (_method: string, path: string) =>
+      path.startsWith('/rest/folder/errors?folder=code%3Ap1')
+        ? list()
+        : { ...status(), folderId: undefined, peer: undefined, errors },
+    );
+    const syncthing = { getConnection: () => ({ client: { request } }), getState: () => ({}) };
+    const service = new FileSyncService(syncthing as never, {} as never, {} as never, {} as never);
+
+    const result = await service.status('code:p1');
+
+    expect(result.errors).toBe(errors);
+    expect(result.fileErrors).toEqual(expected);
+  });
+});
+
 describe('FileSyncService.waitForComplete', () => {
   const service = new FileSyncService({} as never, {} as never, {} as never, {} as never);
+
+  // Injected indexes and timers prove asynchronous Revert cannot finish the copy early.
+  it('waits for receive-only changes to clear when the copy requires it', async () => {
+    jest.useFakeTimers();
+    try {
+      let changes = 1;
+      let finished = false;
+      const copy = service
+        .waitForComplete('code:p1', {
+          sender: async () => status({ peer: PEER_DONE }),
+          receiver: async () => status({ receiveOnlyChangedFiles: changes }),
+          timeoutMs: 5_000,
+          pollIntervalMs: 10,
+          requireNoReceiveOnlyChanges: true,
+        })
+        .then((result) => {
+          finished = true;
+          return result;
+        });
+      await jest.advanceTimersByTimeAsync(10);
+      expect(finished).toBe(false);
+      changes = 0;
+      await jest.advanceTimersByTimeAsync(10);
+      expect(await copy).toEqual({ completion: 100, needItems: 0, needBytes: 0 });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 
   it('reports progress on every poll and returns once complete', async () => {
     const senders = [
@@ -202,6 +339,30 @@ describe('FileSyncService.waitForComplete', () => {
         progress: { completion: 50, needItems: 5, needBytes: 0 },
         lastError: 'host unreachable',
       },
+    });
+  });
+
+  it("times out with Syncthing's own errors and the side they happened on", async () => {
+    const error: unknown = await service
+      .waitForComplete('code:p1', {
+        sender: async () =>
+          status({ error: 'folder marker missing', peer: { ...PEER_DONE, completion: 52 } }),
+        receiver: async () =>
+          status({
+            errors: 1181,
+            fileErrors: [{ path: 'pkg/a.py', error: 'chmod pkg/a.py: operation not permitted' }],
+          }),
+        timeoutMs: 30,
+        pollIntervalMs: 5,
+        sides: { sender: 'this PC', receiver: 'the VM' },
+      })
+      .catch((e: unknown) => e);
+
+    expect(error).toMatchObject({
+      code: 'FILE_SYNC_TIMEOUT',
+      message:
+        'Folder code:p1 did not finish syncing in time: 1181 files failed to sync on the VM. ' +
+        'First: pkg/a.py: chmod pkg/a.py: operation not permitted; folder marker missing on this PC',
     });
   });
 
@@ -344,7 +505,12 @@ describe('FileSyncService health status projection', () => {
       .mockResolvedValueOnce({ ...status(), error: 'disk full', errors: 2, pullErrors: 99 })
       .mockResolvedValueOnce(PEER_DONE);
     const result = await files.status('code:p1', 'HOSTAAA');
-    expect(result).toMatchObject({ error: 'disk full', errors: 2, peer: PEER_DONE });
+    expect(result).toMatchObject({
+      error: 'disk full',
+      errors: 2,
+      pullErrors: 99,
+      peer: PEER_DONE,
+    });
     expect(request).toHaveBeenNthCalledWith(
       2,
       'GET',

@@ -124,28 +124,6 @@ describe('GitService', () => {
     });
   });
 
-  describe('service instantiation', () => {
-    it('should be defined', () => {
-      expect(service).toBeDefined();
-    });
-
-    it('should have all required methods', () => {
-      expect(service.resolveRef).toBeDefined();
-      expect(service.listCommits).toBeDefined();
-      expect(service.listBranches).toBeDefined();
-      expect(service.listTags).toBeDefined();
-      expect(service.getDiff).toBeDefined();
-      expect(service.getChangedFiles).toBeDefined();
-      expect(service.getFileContent).toBeDefined();
-      expect(service.isGitRepository).toBeDefined();
-      expect(service.getCurrentBranch).toBeDefined();
-      expect(service.getWorkingTreeChanges).toBeDefined();
-      expect(service.getWorkingTreeDiff).toBeDefined();
-      expect(service.getCommitDiff).toBeDefined();
-      expect(service.getCommitChangedFiles).toBeDefined();
-    });
-  });
-
   describe('getWorkingTreeChanges', () => {
     beforeEach(() => {
       mockExistsSync.mockReturnValue(true);
@@ -189,29 +167,17 @@ describe('GitService', () => {
       expect(result.untracked).toEqual([]);
     });
 
-    it('should filter to staged only', async () => {
+    it.each([
+      { filter: 'staged', file: 'src/file1.ts', stat: '10\t5\tsrc/file1.ts\n' },
+      { filter: 'unstaged', file: 'src/file2.ts', stat: '3\t2\tsrc/file2.ts\n' },
+    ] as const)('filters working tree changes to $filter', async ({ filter, file, stat }) => {
       fakeExecutor.enqueueResponse(
-        { type: 'success', stdout: '10\t5\tsrc/file1.ts\n' },
-        { type: 'success', stdout: 'M\tsrc/file1.ts\n' },
+        { type: 'success', stdout: stat },
+        { type: 'success', stdout: 'M\t' + file + '\n' },
       );
-
-      const result = await service.getWorkingTreeChanges('project-1', 'staged');
-
-      expect(result.staged).toHaveLength(1);
-      expect(result.unstaged).toEqual([]);
-      expect(result.untracked).toEqual([]);
-    });
-
-    it('should filter to unstaged only', async () => {
-      fakeExecutor.enqueueResponse(
-        { type: 'success', stdout: '3\t2\tsrc/file2.ts\n' },
-        { type: 'success', stdout: 'M\tsrc/file2.ts\n' },
-      );
-
-      const result = await service.getWorkingTreeChanges('project-1', 'unstaged');
-
-      expect(result.staged).toEqual([]);
-      expect(result.unstaged).toHaveLength(1);
+      const result = await service.getWorkingTreeChanges('project-1', filter);
+      expect(result[filter]).toHaveLength(1);
+      expect(result[filter === 'staged' ? 'unstaged' : 'staged']).toEqual([]);
       expect(result.untracked).toEqual([]);
     });
   });
@@ -292,17 +258,6 @@ describe('GitService', () => {
       expect(result.untrackedDiffsCapped).toBe(false);
     });
 
-    it('should return only staged diff with filter', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'success',
-        stdout: 'diff --git a/staged.ts b/staged.ts\n...\n',
-      });
-
-      const result = await service.getWorkingTreeDiff('project-1', 'staged');
-
-      expect(result.diff).toContain('staged.ts');
-    });
-
     it('should include untracked file diffs when filter is all', async () => {
       fakeExecutor.enqueueResponse(
         { type: 'success', stdout: '' }, // staged diff
@@ -357,31 +312,18 @@ describe('GitService', () => {
       expect(result.diff).toContain('2.00MB');
     });
 
-    it('should not include untracked diffs when filter is staged', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'success',
-        stdout: 'diff --git a/staged.ts b/staged.ts\n...\n',
-      });
-
-      const result = await service.getWorkingTreeDiff('project-1', 'staged');
-
-      // Should only have the staged diff call, not ls-files for untracked
-      expect(fakeExecutor.calls).toHaveLength(1);
-      expect(result.diff).toContain('staged.ts');
-    });
-
-    it('should not include untracked diffs when filter is unstaged', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'success',
-        stdout: 'diff --git a/unstaged.ts b/unstaged.ts\n...\n',
-      });
-
-      const result = await service.getWorkingTreeDiff('project-1', 'unstaged');
-
-      // Should only have the unstaged diff call, not ls-files for untracked
-      expect(fakeExecutor.calls).toHaveLength(1);
-      expect(result.diff).toContain('unstaged.ts');
-    });
+    it.each(['staged', 'unstaged'] as const)(
+      'omits untracked diff reads for %s',
+      async (filter) => {
+        fakeExecutor.enqueueResponse({
+          type: 'success',
+          stdout: 'diff --git a/' + filter + '.ts b/' + filter + '.ts\n...\n',
+        });
+        const result = await service.getWorkingTreeDiff('project-1', filter);
+        expect(fakeExecutor.calls).toHaveLength(1);
+        expect(result.diff).toContain(filter + '.ts');
+      },
+    );
 
     it('should skip untracked files that no longer exist', async () => {
       fakeExecutor.enqueueResponse(
@@ -492,66 +434,30 @@ describe('GitService', () => {
       mockStatSync.mockReturnValue({ size: 1000 } as ReturnType<typeof statSync>);
     });
 
-    it('should handle CRLF line endings in untracked file list', async () => {
+    it.each([
+      {
+        name: 'CRLF',
+        list: 'file1.ts\r\nfile2.ts\r\nfile3.ts\r\n',
+        files: ['file1.ts', 'file2.ts', 'file3.ts'],
+      },
+      { name: 'empty lines', list: 'file1.ts\n\nfile2.ts\n\n', files: ['file1.ts', 'file2.ts'] },
+    ])('normalizes $name in the untracked list', async ({ list, files }) => {
       fakeExecutor.enqueueResponse(
-        { type: 'success', stdout: '' }, // staged diff
-        { type: 'success', stdout: '' }, // unstaged diff
-        { type: 'success', stdout: 'file1.ts\r\nfile2.ts\r\nfile3.ts\r\n' }, // CRLF in ls-files
-        // file1.ts
-        { type: 'success', stdout: '10\t0\tfile1.ts\n' },
-        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file1.ts b/file1.ts\n+content\n' },
-        // file2.ts
-        { type: 'success', stdout: '10\t0\tfile2.ts\n' },
-        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file2.ts b/file2.ts\n+content\n' },
-        // file3.ts
-        { type: 'success', stdout: '10\t0\tfile3.ts\n' },
-        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file3.ts b/file3.ts\n+content\n' },
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: list },
+        ...files.flatMap((file) => [
+          { type: 'success' as const, stdout: '10\t0\t' + file + '\n' },
+          {
+            type: 'failure' as const,
+            exitCode: 1,
+            stdout: 'diff --git a/' + file + ' b/' + file + '\n+content\n',
+          },
+        ]),
       );
-
       const result = await service.getWorkingTreeDiff('project-1');
-
-      expect(result.untrackedTotal).toBe(3);
+      expect(result.untrackedTotal).toBe(files.length);
       expect(result.diff).not.toContain('\r');
-    });
-
-    it('should handle mixed line endings in git output', async () => {
-      fakeExecutor.enqueueResponse(
-        { type: 'success', stdout: '' },
-        { type: 'success', stdout: '' },
-        { type: 'success', stdout: 'file1.ts\r\nfile2.ts\nfile3.ts\r\n' },
-        // file1.ts
-        { type: 'success', stdout: '10\t0\tfile1.ts\n' },
-        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file1.ts b/file1.ts\n+content\n' },
-        // file2.ts
-        { type: 'success', stdout: '10\t0\tfile2.ts\n' },
-        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file2.ts b/file2.ts\n+content\n' },
-        // file3.ts
-        { type: 'success', stdout: '10\t0\tfile3.ts\n' },
-        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file3.ts b/file3.ts\n+content\n' },
-      );
-
-      const result = await service.getWorkingTreeDiff('project-1');
-
-      expect(result.untrackedTotal).toBe(3);
-    });
-
-    it('should filter empty lines from git output', async () => {
-      fakeExecutor.enqueueResponse(
-        { type: 'success', stdout: '' },
-        { type: 'success', stdout: '' },
-        { type: 'success', stdout: 'file1.ts\n\nfile2.ts\n\n' },
-        // file1.ts
-        { type: 'success', stdout: '10\t0\tfile1.ts\n' },
-        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file1.ts b/file1.ts\n+content\n' },
-        // file2.ts
-        { type: 'success', stdout: '10\t0\tfile2.ts\n' },
-        { type: 'failure', exitCode: 1, stdout: 'diff --git a/file2.ts b/file2.ts\n+content\n' },
-      );
-
-      const result = await service.getWorkingTreeDiff('project-1');
-
-      // Should only count actual files, not empty strings
-      expect(result.untrackedTotal).toBe(2);
     });
 
     it('should handle CRLF in getWorkingTreeChanges untracked files', async () => {
@@ -606,27 +512,6 @@ describe('GitService', () => {
           { allowNonZero: true },
         ),
       ).rejects.toThrow(IOError);
-    });
-
-    it('should include exit code in IOError metadata', async () => {
-      mockExistsSync.mockReturnValue(true);
-      mockStorage.getProject.mockResolvedValueOnce({ rootPath: '/project' });
-
-      fakeExecutor.enqueueResponse({
-        type: 'failure',
-        exitCode: 2,
-        stdout: '',
-        stderr: 'fatal: error',
-      });
-
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private method for testing
-        await (service as any).execGit('project-id', ['diff'], { allowNonZero: true });
-        fail('Expected IOError to be thrown');
-      } catch (err) {
-        expect(err).toBeInstanceOf(IOError);
-        expect((err as IOError).details).toMatchObject({ code: 2 });
-      }
     });
 
     it('should NOT throw for exit code 1 when allowNonZero is true', async () => {

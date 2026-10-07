@@ -37,58 +37,21 @@ afterEach(() => {
 });
 
 describe('useTerminalFocus — entry vectors claim authority', () => {
-  it('direct terminal click (pointerdown) then focusin claims authority', () => {
+  it.each([
+    ['pointerdown', true],
+    ['pointerdown', false],
+    ['keydown', false],
+  ] as const)('claims authority after %s inside=%s', (gesture, inside) => {
     const { host, socket } = setup();
 
-    dispatchGesture('pointerdown', host);
+    dispatchGesture(gesture, inside ? host : document.body);
     dispatchFocusIn(host);
 
-    expect(socket.emit).toHaveBeenCalledWith('terminal:focus', { sessionId: 'session-1' });
-  });
-
-  it('floating-window / tab click (pointerdown OUTSIDE the host) then focusin claims authority', () => {
-    const { host, socket } = setup();
-
-    // The click that transfers focus lands on window chrome / a tab button, not the terminal host.
-    dispatchGesture('pointerdown', document.body);
-    dispatchFocusIn(host);
-
-    expect(socket.emit).toHaveBeenCalledWith('terminal:focus', { sessionId: 'session-1' });
-  });
-
-  it('keyboard Tab (keydown originating OUTSIDE the host) then focusin claims authority', () => {
-    const { host, socket } = setup();
-
-    // Tab keydown fires on the previously-focused element — the document-level listener still stamps.
-    dispatchGesture('keydown', document.body);
-    dispatchFocusIn(host);
-
-    expect(socket.emit).toHaveBeenCalledWith('terminal:focus', { sessionId: 'session-1' });
-  });
-
-  it('claim is emitted on focusin BEFORE any input byte (claim-before-input invariant)', () => {
-    const { host, socket } = setup();
-
-    dispatchGesture('keydown', document.body);
-    dispatchFocusIn(host);
-
-    // The only emit so far is the authority claim — it precedes the terminal:input path entirely,
-    // so the first typed byte is delivered with authority already held.
-    expect(socket.emit).toHaveBeenCalledTimes(1);
-    expect(socket.emit).toHaveBeenLastCalledWith('terminal:focus', { sessionId: 'session-1' });
+    expect(socket.emit.mock.calls).toEqual([['terminal:focus', { sessionId: 'session-1' }]]);
   });
 });
 
 describe('useTerminalFocus — programmatic focus does not steal', () => {
-  it('panel re-show fit()+focus() (focusin with no preceding gesture) does NOT claim', () => {
-    const { host, socket } = setup();
-
-    // No pointerdown/keydown precedes this focusin — it is a bare programmatic .focus().
-    dispatchFocusIn(host);
-
-    expect(socket.emit).not.toHaveBeenCalled();
-  });
-
   it('floating-window handle.focus() (focusin with no gesture) does NOT claim', () => {
     const { host, socket } = setup();
 
@@ -111,23 +74,17 @@ describe('useTerminalFocus — programmatic focus does not steal', () => {
 });
 
 describe('useTerminalFocus — preconditions and teardown', () => {
-  it('does not claim when the socket is disconnected', () => {
-    const { host, socket } = setup({ connected: false });
+  it.each([{ connected: false }, { subscribed: false }])(
+    'blocks focus claims with %p',
+    (options) => {
+      const { host, socket } = setup(options);
 
-    dispatchGesture('pointerdown', host);
-    dispatchFocusIn(host);
+      dispatchGesture('pointerdown', host);
+      dispatchFocusIn(host);
 
-    expect(socket.emit).not.toHaveBeenCalled();
-  });
-
-  it('does not claim when the client is not subscribed', () => {
-    const { host, socket } = setup({ subscribed: false });
-
-    dispatchGesture('pointerdown', host);
-    dispatchFocusIn(host);
-
-    expect(socket.emit).not.toHaveBeenCalled();
-  });
+      expect(socket.emit).not.toHaveBeenCalled();
+    },
+  );
 
   it('removes document and host listeners on unmount', () => {
     const { host, socket, rendered } = setup();

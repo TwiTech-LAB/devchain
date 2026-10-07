@@ -63,6 +63,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$WORK/key"
 # default account for the key to land in.
 cat > "$WORK/user-data" <<EOF
 #cloud-config
+users: [default]
 ssh_authorized_keys:
   - $(cat "$WORK/key.pub")
 password: verify-must-not-apply
@@ -164,12 +165,15 @@ if out=$(vm_exec 'timeout 180 cloud-init status --wait' 2>&1); then
   pass "cloud-init completed ($out)"
 else
   fail "cloud-init did not complete successfully: $out"
+  vm_exec 'cloud-init status --long; tail -n 60 /var/log/cloud-init.log' || true
   exit 1
 fi
 
 check 'hostname set by cloud-init' '[ "$(hostname)" = devchain-verify ]'
 check 'no default user: the image ships no ubuntu account' '! getent passwd ubuntu'
 check 'uid 1000 is free (claim fixture uid)' '[ -z "$(getent passwd 1000)" ]'
+check 'no account has a uid in 1000–60000' 'getent passwd | awk -F: '\''$3 >= 1000 && $3 <= 60000 { print $1 ":" $3; found=1 } END { exit found ? 1 : 0 }'\'''
+check 'uid 501 is free (macOS claim fixture uid)' '[ -z "$(getent passwd 501)" ]'
 
 # The pipeline and its PIPESTATUS must run on the guest: ending the remote
 # command at `head` would report the shell's own status and let a missing tool pass
@@ -187,6 +191,11 @@ for cli in 'node --version' 'syncthing --version' 'git --version' 'tmux -V' \
   fi
 done
 
+check 'debug and network tools on PATH' \
+  'for c in screen killall pstree fuser pkill lsof strace htop less nano vi tree zip ifconfig netstat ping telnet nc dig nslookup traceroute mtr tcpdump socat; do command -v "$c" >/dev/null || { echo "missing $c"; exit 1; }; done; for f in /usr/bin/kill /usr/bin/time; do [ -x "$f" ] || { echo "missing $f"; exit 1; }; done'
+check 'research tools on PATH' \
+  'for c in rg fdfind ctags gawk shellcheck cloc git-lfs; do command -v "$c" >/dev/null || { echo "missing $c"; exit 1; }; done; ast-grep --version'
+check 'sg is still the switch-group command, not ast-grep' '[ "$(command -v sg)" = /usr/bin/sg ]'
 check 'dbus-user-session, dbus-x11, gnome-keyring not installed' \
   'for p in dbus-user-session dbus-x11 gnome-keyring; do s=$(dpkg-query -W -f="\${db:Status-Status}" $p 2>/dev/null || true); [ "$s" != installed ] || { echo "$p installed"; exit 1; }; done'
 check 'python3 -m venv builds a working venv (python3-venv + ensurepip)' \

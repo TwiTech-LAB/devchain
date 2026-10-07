@@ -7,6 +7,8 @@ import { Controller, Get, Module, ValidationPipe } from '@nestjs/common';
 import { APP_FILTER, NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { homedir } from 'node:os';
+import { readFileSync } from 'node:fs';
+import { createSecureContext } from 'node:tls';
 import { AllExceptionsFilter } from '../../src/common/filters/http-exception.filter';
 import { DockerArchiveJournal } from '../../src/modules/core/controllers/docker-archive-journal';
 import { readDockerRuntime } from '../../src/modules/core/controllers/docker-runtime';
@@ -15,6 +17,7 @@ import { HostDockerService } from '../../src/modules/remotes/host/host-docker.se
 import { HostDockerBodyParser } from '../../src/modules/remotes/host/host-docker-body.parser';
 import { HostDockerRecoveryService } from '../../src/modules/remotes/host/host-docker-recovery.service';
 import { HostTranscriptBodyParser } from '../../src/modules/remotes/host/host-transcript-body.parser';
+import { installTlsFront } from '../../src/modules/remotes/host/host-tls-front';
 
 /** The `/api/runtime` fields the Docker plan reads, computed as runtime.controller.ts does. */
 @Controller('api/runtime')
@@ -45,8 +48,10 @@ class TargetModule {}
 
 async function main(): Promise<void> {
   const port = Number(process.env.PORT);
-  if (!process.env.DB_PATH || !Number.isInteger(port))
-    throw new Error('DB_PATH and PORT are required');
+  const keyFile = process.env.TLS_KEY_FILE;
+  const certFile = process.env.TLS_CERT_FILE;
+  if (!process.env.DB_PATH || !Number.isInteger(port) || !keyFile || !certFile)
+    throw new Error('DB_PATH, PORT, TLS_KEY_FILE and TLS_CERT_FILE are required');
   // Same adapter options as main.ts, so body limits and timeouts are the product's.
   const app = await NestFactory.create<NestFastifyApplication>(
     TargetModule,
@@ -57,6 +62,12 @@ async function main(): Promise<void> {
     new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
   );
   app.enableShutdownHooks();
+  installTlsFront(app.getHttpServer(), {
+    secureContext: createSecureContext({
+      key: readFileSync(keyFile),
+      cert: readFileSync(certFile),
+    }),
+  });
   await app.listen(port, '0.0.0.0');
   process.stdout.write(`docker-import-target listening on ${port}\n`);
 }

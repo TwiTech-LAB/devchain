@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../../../common/test/test-database.helper';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { IntegrationCredentialCipher } from '../integration-credential-cipher';
@@ -5,7 +6,6 @@ import { RemoteApiKeyService } from '../../../remotes/auth/remote-api-key.servic
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'path';
 import { LocalStorageService } from '../local-storage.service';
 import {
@@ -17,8 +17,6 @@ import { certificateFingerprint } from '../../../../common/tls/certificate';
 import { fixtureTls } from '../../../../common/test/tls-fixture';
 import type { Project } from '../../models/domain.models';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../../drizzle');
-
 describe('RemoteStorageDelegate (integration)', () => {
   let sqlite: Database.Database;
   let db: BetterSQLite3Database;
@@ -26,9 +24,8 @@ describe('RemoteStorageDelegate (integration)', () => {
   let secrets: string;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
     secrets = mkdtempSync(join(tmpdir(), 'remote-key-storage-'));
     service = new LocalStorageService(

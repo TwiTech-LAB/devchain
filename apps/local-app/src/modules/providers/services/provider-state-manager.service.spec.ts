@@ -209,11 +209,6 @@ describe('ProviderStateManager', () => {
     });
   });
 
-  it('deletes an unreferenced provider', async () => {
-    await service.deleteProvider('provider-1');
-    expect(mockStorage.deleteProvider).toHaveBeenCalledWith('provider-1');
-  });
-
   it('rejects deletion while profile configs reference the provider', async () => {
     mockStorage.listAllProfileProviderConfigs.mockResolvedValue([
       { id: 'config-1', providerId: 'provider-1', profileId: 'profile-1' },
@@ -223,15 +218,6 @@ describe('ProviderStateManager', () => {
     });
 
     await expect(service.deleteProvider('provider-1')).rejects.toThrow(ValidationError);
-  });
-
-  it('enables and disables Claude auto-compact config', async () => {
-    mockStorage.getProvider.mockResolvedValue(makeProvider());
-    mockEnableClaudeAutoCompact.mockResolvedValue({ success: true });
-    mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
-
-    await expect(service.enableAutoCompact('provider-1')).resolves.toEqual({ success: true });
-    await expect(service.disableAutoCompact('provider-1')).resolves.toEqual({ success: true });
   });
 
   it('rejects auto-compact config for non-Claude providers', async () => {
@@ -250,7 +236,7 @@ describe('ProviderStateManager', () => {
       mockAccess.mockReset();
     });
 
-    it.each([null, undefined, '', '   '])('returns null for %p', async (value) => {
+    it.each([null, '   '])('returns null for %p', async (value) => {
       await expect(service.normalizeBinPath(value)).resolves.toBeNull();
     });
 

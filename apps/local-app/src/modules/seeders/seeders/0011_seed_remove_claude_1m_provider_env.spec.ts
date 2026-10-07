@@ -1,8 +1,7 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { TransactionRunner } from '../../storage/db/transaction-runner';
 import { createStorageDelegateContext } from '../../storage/local/delegates/base-storage.delegate';
@@ -11,7 +10,6 @@ import type { Provider } from '../../storage/models/domain.models';
 import type { SeederContext } from '../types/seeder.types';
 import { runSeedRemoveClaude1mProviderEnv } from './0011_seed_remove_claude_1m_provider_env';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const TARGET_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
 const DISABLE_KEY = 'CLAUDE_CODE_DISABLE_1M_CONTEXT';
 const TS = '2026-07-26T00:00:00.000Z';
@@ -23,9 +21,7 @@ describe('0011_seed_remove_claude_1m_provider_env', () => {
   let storage: StorageService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite, db } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
 
     delegate = new ProviderStorageDelegate(createStorageDelegateContext(db), {

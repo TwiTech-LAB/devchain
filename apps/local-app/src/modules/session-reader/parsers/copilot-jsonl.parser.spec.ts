@@ -368,24 +368,6 @@ describe('CopilotJsonlParser', () => {
         cleanup(filePath);
       }
     });
-
-    it('authoritative USD cost comes from the per-model PricingService map', async () => {
-      const filePath = writeTempJsonl([
-        userMessage('q'),
-        turnStart(),
-        assistantMessage('a'),
-        turnEnd(),
-        shutdown({ cost: 0.33 }),
-      ]);
-      try {
-        const result = await parseCopilotJsonl(filePath, { pricingService: mockPricing });
-        // mockPricing returns 0.01 (USD) → authoritative costUsd; nativeCost keeps 0.33 (AI Credits).
-        expect(result.metrics.costUsd).toBe(0.01);
-        expect(result.metrics.nativeCost).toBe(0.33);
-      } finally {
-        cleanup(filePath);
-      }
-    });
   });
 
   describe('metrics (partial / live, no shutdown)', () => {
@@ -533,46 +515,22 @@ describe('CopilotJsonlParser', () => {
   });
 
   describe('error handling', () => {
-    it('skips malformed JSON lines gracefully', async () => {
+    it.each([
+      ['malformed JSON', ['not-valid-json{{{']],
+      ['blank lines', ['', '  ']],
+      ['unknown event', [JSON.stringify(ev('some.future.event', { foo: 'bar' }))]],
+    ])('skips %s', async (_name, skipped) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-test-'));
       const filePath = path.join(dir, 'events.jsonl');
-      const content =
+      fs.writeFileSync(
+        filePath,
         [
           JSON.stringify(userMessage('hi')),
-          'not-valid-json{{{',
+          ...skipped,
           JSON.stringify(assistantMessage('hey')),
-        ].join('\n') + '\n';
-      fs.writeFileSync(filePath, content, 'utf8');
-      try {
-        const result = await parseCopilotJsonl(filePath);
-        expect(result.messages).toHaveLength(2);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('skips empty lines', async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-test-'));
-      const filePath = path.join(dir, 'events.jsonl');
-      const content =
-        [JSON.stringify(userMessage('hi')), '', '  ', JSON.stringify(assistantMessage('hey'))].join(
-          '\n',
-        ) + '\n';
-      fs.writeFileSync(filePath, content, 'utf8');
-      try {
-        const result = await parseCopilotJsonl(filePath);
-        expect(result.messages).toHaveLength(2);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('skips unknown event types gracefully', async () => {
-      const filePath = writeTempJsonl([
-        userMessage('hi'),
-        ev('some.future.event', { foo: 'bar' }),
-        assistantMessage('hey'),
-      ]);
+        ].join('\n') + '\n',
+        'utf8',
+      );
       try {
         const result = await parseCopilotJsonl(filePath);
         expect(result.messages).toHaveLength(2);

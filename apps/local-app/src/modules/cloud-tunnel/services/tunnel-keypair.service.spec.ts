@@ -51,10 +51,10 @@ describe('TunnelKeypairService', () => {
     expect(pubKey.asymmetricKeyType).toBe('ed25519');
   });
 
-  it('should persist keypair encrypted on generate', async () => {
-    await service.generate();
-    expect(storedRows['cloud.tunnel.keypair']).toBeDefined();
-    expect(typeof storedRows['cloud.tunnel.keypair']).toBe('string');
+  it('reloads the persisted keypair in a fresh service', async () => {
+    const generated = await service.generate();
+    const reloaded = new TunnelKeypairService({} as any);
+    expect(await reloaded.getOrCreate()).toEqual(generated);
   });
 
   it('should return existing keypair on getOrCreate second call', async () => {

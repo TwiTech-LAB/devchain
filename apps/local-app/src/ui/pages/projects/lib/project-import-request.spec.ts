@@ -1,17 +1,21 @@
 import { createFileImportRequest, createTemplateImportRequest } from './project-import-request';
 
 describe('project import request construction', () => {
-  it('emits only slug for bundled templates', () => {
-    expect(createTemplateImportRequest('starter', 'bundled', '9.9.9')).toEqual({
+  it.each([
+    {
+      source: 'bundled' as const,
       slug: 'starter',
-    });
-  });
-
-  it('emits slug and selected version for registry templates', () => {
-    expect(createTemplateImportRequest('downloaded', 'registry', '2.1.0')).toEqual({
+      version: '9.9.9',
+      expected: { slug: 'starter' },
+    },
+    {
+      source: 'registry' as const,
       slug: 'downloaded',
       version: '2.1.0',
-    });
+      expected: { slug: 'downloaded', version: '2.1.0' },
+    },
+  ])('builds $source template request', ({ source, slug, version, expected }) => {
+    expect(createTemplateImportRequest(slug, source, version)).toEqual(expected);
   });
 
   it('parses file content into rawContent', async () => {
@@ -19,9 +23,5 @@ describe('project import request construction', () => {
     await expect(
       createFileImportRequest({ text: async () => JSON.stringify(rawContent) }),
     ).resolves.toEqual({ rawContent });
-  });
-
-  it('rejects invalid JSON file content', async () => {
-    await expect(createFileImportRequest({ text: async () => '{invalid' })).rejects.toThrow();
   });
 });

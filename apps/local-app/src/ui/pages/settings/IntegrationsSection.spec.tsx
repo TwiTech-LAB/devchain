@@ -125,32 +125,26 @@ describe('IntegrationsSection directory', () => {
 
   afterEach(() => cleanup());
 
-  it('shows an unavailable alert when runtime admission is denied', () => {
-    useAvailabilityMock.mockReturnValue({ canUseIntegrations: false, reason: 'non_loopback_host' });
-
+  it.each(['denied', 'loading', 'failure'])('renders accessible %s directory state', (state) => {
+    if (state === 'denied')
+      useAvailabilityMock.mockReturnValue({
+        canUseIntegrations: false,
+        reason: 'non_loopback_host',
+      });
+    else
+      useDirectoryMock.mockReturnValue({
+        directory: undefined,
+        isLoading: state === 'loading',
+        error: state === 'failure' ? new Error('Directory failed.') : null,
+      });
     renderSection();
-
-    expect(screen.getByRole('alert')).toHaveTextContent(/only from the main local runtime/i);
-  });
-
-  it('exposes an accessible loading state', () => {
-    useDirectoryMock.mockReturnValue({ directory: undefined, isLoading: true, error: null });
-
-    renderSection();
-
-    expect(screen.getByRole('status')).toHaveTextContent(/loading integrations/i);
-  });
-
-  it('exposes an accessible failure state', () => {
-    useDirectoryMock.mockReturnValue({
-      directory: undefined,
-      isLoading: false,
-      error: new Error('Directory failed.'),
-    });
-
-    renderSection();
-
-    expect(screen.getByRole('alert')).toHaveTextContent('Directory failed.');
+    expect(screen.getByRole(state === 'loading' ? 'status' : 'alert')).toHaveTextContent(
+      state === 'denied'
+        ? /only from the main local runtime/i
+        : state === 'loading'
+          ? /loading integrations/i
+          : 'Directory failed.',
+    );
   });
 
   it('shows an accessible empty state when no projects exist', () => {
@@ -166,7 +160,7 @@ describe('IntegrationsSection directory', () => {
     expect(screen.queryByRole('button', { name: /open board/i })).not.toBeInTheDocument();
   });
 
-  it('groups rows by project and shows only safe configured fields', () => {
+  it('groups rows by project and shows only safe configured fields', async () => {
     renderSection();
 
     expect(screen.getByRole('heading', { name: 'Product' })).toBeInTheDocument();
@@ -187,6 +181,20 @@ describe('IntegrationsSection directory', () => {
       screen.queryByRole('button', { name: /replace .* credentials/i }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /health/i })).not.toBeInTheDocument();
+
+    {
+      expect(
+        screen.queryByRole('button', { name: 'Open Jira board for Product' }),
+      ).not.toBeInTheDocument();
+    }
+    {
+      fireEvent.click(screen.getByRole('button', { name: 'Open ClickUp board for Product' }));
+      expect(activateProjectMock).toHaveBeenCalledWith({
+        id: '11111111-1111-4111-8111-111111111111',
+        workspaceId: '44444444-4444-4444-8444-444444444444',
+      });
+      expect(navigateMock).toHaveBeenCalledWith('/board/clickup');
+    }
   });
 
   it('disambiguates duplicate project names with their workspace', () => {
@@ -249,26 +257,6 @@ describe('IntegrationsSection directory', () => {
     renderSection();
 
     expect(screen.getByText(/only the first 100 projects/i)).toBeInTheDocument();
-  });
-
-  it('activates the owning project and workspace, then opens the provider Board', () => {
-    renderSection();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open ClickUp board for Product' }));
-
-    expect(activateProjectMock).toHaveBeenCalledWith({
-      id: '11111111-1111-4111-8111-111111111111',
-      workspaceId: '44444444-4444-4444-8444-444444444444',
-    });
-    expect(navigateMock).toHaveBeenCalledWith('/board/clickup');
-  });
-
-  it('offers no Open Board action for an unconfigured provider row', () => {
-    renderSection();
-
-    expect(
-      screen.queryByRole('button', { name: 'Open Jira board for Product' }),
-    ).not.toBeInTheDocument();
   });
 });
 

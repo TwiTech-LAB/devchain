@@ -5,7 +5,7 @@
  * pages) and assert collapse defaults via DOM queries.
  */
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { SerializedChunk } from '@/ui/hooks/useSessionTranscript';
 import { SessionViewerPanel } from '../SessionViewerPanel';
@@ -137,67 +137,6 @@ describe('Fallback cards — collapse defaults (chunk without semanticSteps, via
     localStorage.clear();
   });
 
-  it('fallback ThinkingBlock starts collapsed', async () => {
-    renderPanelWithChunks([
-      makeFallbackChunk('chunk-thinking', {
-        messages: [
-          {
-            id: 'msg-thinking',
-            parentId: null,
-            role: 'assistant',
-            timestamp: '2026-02-24T12:00:00.000Z',
-            content: [{ type: 'thinking', thinking: 'Deep reasoning here' }],
-            toolCalls: [],
-            toolResults: [],
-            isMeta: false,
-            isSidechain: false,
-          },
-        ],
-      }),
-    ]);
-
-    await waitFor(() => {
-      expect(screen.getByText('Thinking')).toBeInTheDocument();
-    });
-
-    const thinkingTrigger = screen.getByText('Thinking').closest('button');
-    expect(thinkingTrigger).toHaveAttribute('data-state', 'closed');
-  });
-
-  it('fallback ToolCallBlock starts collapsed', async () => {
-    renderPanelWithChunks([
-      makeFallbackChunk('chunk-toolcall', {
-        messages: [
-          {
-            id: 'msg-toolcall',
-            parentId: null,
-            role: 'assistant',
-            timestamp: '2026-02-24T12:00:00.000Z',
-            content: [{ type: 'text', text: 'Using tools' }],
-            toolCalls: [
-              {
-                id: 'tc-1',
-                name: 'Read',
-                input: { file_path: '/foo.ts' },
-                isTask: false,
-              },
-            ],
-            toolResults: [],
-            isMeta: false,
-            isSidechain: false,
-          },
-        ],
-      }),
-    ]);
-
-    await waitFor(() => {
-      expect(screen.getByText('Read')).toBeInTheDocument();
-    });
-
-    const toolTrigger = screen.getByText('Read').closest('button');
-    expect(toolTrigger).toHaveAttribute('data-state', 'closed');
-  });
-
   it('fallback ThinkingBlock expands on trigger click', async () => {
     renderPanelWithChunks([
       makeFallbackChunk('chunk-thinking-2', {
@@ -218,6 +157,7 @@ describe('Fallback cards — collapse defaults (chunk without semanticSteps, via
     ]);
 
     const thinkingTrigger = (await screen.findByText('Thinking')).closest('button')!;
+    expect(thinkingTrigger).toHaveAttribute('data-state', 'closed');
     fireEvent.click(thinkingTrigger);
     expect(thinkingTrigger).toHaveAttribute('data-state', 'open');
   });
@@ -249,6 +189,7 @@ describe('Fallback cards — collapse defaults (chunk without semanticSteps, via
     ]);
 
     const toolTrigger = (await screen.findByText('Write')).closest('button')!;
+    expect(toolTrigger).toHaveAttribute('data-state', 'closed');
     fireEvent.click(toolTrigger);
     expect(toolTrigger).toHaveAttribute('data-state', 'open');
   });

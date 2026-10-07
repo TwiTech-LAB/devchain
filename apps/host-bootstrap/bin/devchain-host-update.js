@@ -4,15 +4,16 @@
 // Root helper behind DevChain's POST /api/host/update (run through sudo).
 //   devchain-host-update <version>        start the update in its own unit and return
 //   devchain-host-update --run <version>  the update itself (run by that unit)
-// Cross-version contract: --clis <version> installs the version's missing base packages, then its CLIs, then re-writes devchain-host.service when a claim record exists.
-// stdout is exactly one JSON line {cliVersions:{...}}; failures use stderr
+// Cross-version contract: --clis <version> requires runtime packages; agent tools may be skipped.
+// It then installs CLIs and re-writes devchain-host.service when a claim record exists.
+// stdout is exactly one JSON line {cliVersions:{...},skippedTools:[...]}; failures use stderr
 // {code,message} and the existing exit codes. Older helpers invoke this mode.
 const { createSystem } = require("../lib/system");
 const { requestDocker, runDocker } = require("../lib/docker");
 const { requestUpdate, runUpdate } = require("../lib/update");
 const { installClis } = require("../lib/clis");
 const { ensureBasePackages } = require("../lib/packages");
-const { refreshHostUnit } = require("../lib/claim");
+const { refreshHostUnit, ensureIdsProfile } = require("../lib/claim");
 const { isSemver, BootstrapError } = require("../lib/validate");
 
 async function main(argv) {
@@ -37,13 +38,14 @@ async function main(argv) {
         "INVALID_VERSION",
         "version must be a semantic version.",
       );
-    await ensureBasePackages(argv[1], sys);
+    ensureIdsProfile(sys);
+    const { skippedTools } = await ensureBasePackages(argv[1], sys);
     const cliVersions = await installClis(argv[1], sys);
     if (await refreshHostUnit(sys))
       process.stderr.write(
         "devchain-host.service refreshed from this version's template.\n",
       );
-    return { cliVersions };
+    return { cliVersions, skippedTools };
   }
   if (argv[0] === "--run") {
     await runUpdate(argv[1], sys);

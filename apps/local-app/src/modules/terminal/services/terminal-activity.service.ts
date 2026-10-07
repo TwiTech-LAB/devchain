@@ -250,10 +250,6 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
     }
   }
 
-  getBufferSize(_sessionId: string): number {
-    return 0;
-  }
-
   private readSession(sessionId: string): SessionRow | undefined {
     return this.sqlite
       .prepare(`SELECT status, activity_state, provider_name_at_launch FROM sessions WHERE id = ?`)

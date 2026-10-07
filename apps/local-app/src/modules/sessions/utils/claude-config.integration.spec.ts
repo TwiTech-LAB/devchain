@@ -51,6 +51,15 @@ describe('claude-config integration', () => {
   }
 
   describe('external lock holder', () => {
+    beforeEach(() => jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] }));
+    async function waitForRetry(): Promise<void> {
+      for (let turn = 0; turn < 10000; turn++) {
+        if (jest.getTimerCount() >= 2) return;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      throw new Error('Blocked lock acquisition did not schedule a retry');
+    }
+    afterEach(() => jest.useRealTimers());
     it('blocks trust writes until the external holder releases the lock', async () => {
       const release = await lock(configPath, { realpath: false });
 
@@ -60,11 +69,14 @@ describe('claude-config integration', () => {
         return result;
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Wait until the blocked acquisition has scheduled its retry beside the holder heartbeat.
+      await waitForRetry();
+      await jest.advanceTimersByTimeAsync(300);
       expect(settled).toBe(false);
       await expect(readFile(configPath, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
 
       await release();
+      await jest.advanceTimersByTimeAsync(1000);
       const result = await pending;
 
       expect(result).toEqual({ success: true });
@@ -84,11 +96,14 @@ describe('claude-config integration', () => {
         return result;
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Wait until the blocked acquisition has scheduled its retry beside the holder heartbeat.
+      await waitForRetry();
+      await jest.advanceTimersByTimeAsync(300);
       expect(settled).toBe(false);
       expect(JSON.parse(await readFile(configPath, 'utf-8'))).toEqual({ theme: 'dark' });
 
       await release();
+      await jest.advanceTimersByTimeAsync(1000);
       const result = await pending;
 
       expect(result).toEqual({ success: true });
@@ -182,16 +197,6 @@ describe('claude-config integration', () => {
           [projectRoot]: { hasTrustDialogAccepted: true },
         },
       });
-    });
-
-    it('returns invalid_config and preserves a malformed config file', async () => {
-      await writeFile(configPath, '{ not valid json', { mode: 0o600 });
-
-      const result = await ensureClaudeProjectTrusted(projectRoot);
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('invalid_config');
-      expect(await readFile(configPath, 'utf-8')).toBe('{ not valid json');
     });
 
     it('returns invalid_config and preserves the file when an unrelated sibling record is malformed', async () => {

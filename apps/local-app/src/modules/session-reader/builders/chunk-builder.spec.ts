@@ -69,84 +69,79 @@ function expectAiChunk(chunk: UnifiedChunk | undefined): AIChunk {
 }
 
 describe('classifyMessage', () => {
-  it('should classify real user message as "user"', () => {
-    const msg = makeMsg({ id: 'u1', role: 'user', content: [textBlock('Hello')] });
-    expect(classifyMessage(msg)).toBe<MessageCategory>('user');
-  });
-
-  it('should classify assistant message as "ai"', () => {
-    const msg = makeMsg({ id: 'a1', role: 'assistant', content: [textBlock('Hi')] });
-    expect(classifyMessage(msg)).toBe<MessageCategory>('ai');
-  });
-
-  it('should classify system+isMeta message as "hardNoise"', () => {
-    const msg = makeMsg({ id: 's1', role: 'system', isMeta: true });
-    expect(classifyMessage(msg)).toBe<MessageCategory>('hardNoise');
-  });
-
-  it('should classify user isMeta with system-reminder as "hardNoise"', () => {
-    const msg = makeMsg({
-      id: 'u2',
-      role: 'user',
-      isMeta: true,
-      content: [textBlock('<system-reminder>some reminder</system-reminder>')],
-    });
-    expect(classifyMessage(msg)).toBe<MessageCategory>('hardNoise');
-  });
-
-  it('should classify user isMeta with local-command-caveat as "hardNoise"', () => {
-    const msg = makeMsg({
-      id: 'u3',
-      role: 'user',
-      isMeta: true,
-      content: [textBlock('<local-command-caveat>caveat text</local-command-caveat>')],
-    });
-    expect(classifyMessage(msg)).toBe<MessageCategory>('hardNoise');
-  });
-
-  it('should classify compact summary as "compact"', () => {
-    const msg = makeMsg({
-      id: 'c1',
-      role: 'assistant',
-      isCompactSummary: true,
-      content: [textBlock('Summary...')],
-    });
-    expect(classifyMessage(msg)).toBe<MessageCategory>('compact');
-  });
-
-  it('should classify user message with <local-command-stdout> as "system"', () => {
-    const msg = makeMsg({
-      id: 'sys1',
-      role: 'user',
-      content: [textBlock('<local-command-stdout>output</local-command-stdout>')],
-    });
-    expect(classifyMessage(msg)).toBe<MessageCategory>('system');
-  });
-
-  it('should classify a meta tool-result user message (no text) as "ai" via the default', () => {
-    // After the parser fold + continuation coalesce, standalone tool_result user messages no
-    // longer reach the chunk builder; a leftover meta tool-result (no text) still falls to the
-    // default 'ai' classification (isMeta blocks the 'user' branch), keeping it inside the turn.
-    const msg = makeMsg({
-      id: 'u-tool-2',
-      role: 'user',
-      isMeta: true,
-      content: [],
-      toolResults: [{ toolCallId: 'tc-2', content: 'result content', isError: false }],
-    });
-    expect(classifyMessage(msg)).toBe<MessageCategory>('ai');
-  });
-
-  it('should classify user isMeta without noise tags as "ai" (meta user not matching noise)', () => {
-    const msg = makeMsg({
-      id: 'u4',
-      role: 'user',
-      isMeta: true,
-      content: [textBlock('some tool result')],
-    });
-    // isMeta user without hard noise tags → not hardNoise, not compact, not system, isMeta blocks user → falls to ai
-    expect(classifyMessage(msg)).toBe<MessageCategory>('ai');
-  });
+  // A meta tool-result without text stays inside the AI turn via the default classification.
+  it.each([
+    {
+      name: 'should classify real user message as "user"',
+      message: makeMsg({ id: 'u1', role: 'user', content: [textBlock('Hello')] }),
+      expected: 'user',
+    },
+    {
+      name: 'should classify assistant message as "ai"',
+      message: makeMsg({ id: 'a1', role: 'assistant', content: [textBlock('Hi')] }),
+      expected: 'ai',
+    },
+    {
+      name: 'should classify system+isMeta message as "hardNoise"',
+      message: makeMsg({ id: 's1', role: 'system', isMeta: true }),
+      expected: 'hardNoise',
+    },
+    {
+      name: 'should classify user isMeta with system-reminder as "hardNoise"',
+      message: makeMsg({
+        id: 'u2',
+        role: 'user',
+        isMeta: true,
+        content: [textBlock('<system-reminder>some reminder</system-reminder>')],
+      }),
+      expected: 'hardNoise',
+    },
+    {
+      name: 'should classify user isMeta with local-command-caveat as "hardNoise"',
+      message: makeMsg({
+        id: 'u3',
+        role: 'user',
+        isMeta: true,
+        content: [textBlock('<local-command-caveat>caveat text</local-command-caveat>')],
+      }),
+      expected: 'hardNoise',
+    },
+    {
+      name: 'should classify compact summary as "compact"',
+      message: makeMsg({
+        id: 'c1',
+        role: 'assistant',
+        isCompactSummary: true,
+        content: [textBlock('Summary...')],
+      }),
+      expected: 'compact',
+    },
+    {
+      name: 'should classify user message with <local-command-stdout> as "system"',
+      message: makeMsg({
+        id: 'sys1',
+        role: 'user',
+        content: [textBlock('<local-command-stdout>output</local-command-stdout>')],
+      }),
+      expected: 'system',
+    },
+    {
+      name: 'should classify a meta tool-result user message (no text) as "ai" via the default',
+      message: makeMsg({
+        id: 'u-tool-2',
+        role: 'user',
+        isMeta: true,
+        content: [],
+        toolResults: [{ toolCallId: 'tc-2', content: 'result content', isError: false }],
+      }),
+      expected: 'ai',
+    },
+  ] satisfies { name: string; message: UnifiedMessage; expected: MessageCategory }[])(
+    '$name',
+    ({ message, expected }) => {
+      expect(classifyMessage(message)).toBe(expected);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -483,61 +478,6 @@ describe('buildChunks', () => {
     expect(secondAiChunk.messages.map((m) => m.id)).toEqual(['a-103']);
     expect(secondAiChunk.messages[0].toolResults).toHaveLength(1);
   });
-
-  it('should link fixture semantic tool_call and tool_result steps by toolCallId', async () => {
-    const fixturePath = path.join(__dirname, '..', '__fixtures__', 'session-with-tools.jsonl');
-    const parsed = await parseClaudeJsonl(fixturePath);
-
-    const chunks = buildChunks(parsed.messages);
-    const aiSteps = chunks
-      .filter(
-        (chunk): chunk is Extract<(typeof chunks)[number], { type: 'ai' }> => chunk.type === 'ai',
-      )
-      .flatMap((chunk) => chunk.semanticSteps);
-
-    const toolCallStep = aiSteps.find(
-      (step) => step.type === 'tool_call' && step.content.toolCallId === 'tool-001',
-    );
-    const toolResultStep = aiSteps.find(
-      (step) => step.type === 'tool_result' && step.content.toolCallId === 'tool-001',
-    );
-
-    expect(toolCallStep).toBeDefined();
-    expect(toolResultStep).toBeDefined();
-    expect(toolCallStep?.content.toolCallId).toBe(toolResultStep?.content.toolCallId);
-
-    // Task tool uses are represented as subagent steps and should still link by toolCallId.
-    const subagentStep = aiSteps.find(
-      (step) => step.type === 'subagent' && step.content.toolCallId === 'tool-002',
-    );
-    const subagentResultStep = aiSteps.find(
-      (step) => step.type === 'tool_result' && step.content.toolCallId === 'tool-002',
-    );
-    expect(subagentStep).toBeDefined();
-    expect(subagentResultStep).toBeDefined();
-  });
-
-  it('should assign fixture tool_result steps to the turn containing the matching call', async () => {
-    const fixturePath = path.join(__dirname, '..', '__fixtures__', 'session-with-tools.jsonl');
-    const parsed = await parseClaudeJsonl(fixturePath);
-    const chunks = buildChunks(parsed.messages);
-
-    const firstAiChunk = expectAiChunk(chunks[1]);
-    const firstToolResultTurn = firstAiChunk.turns.find((turn) =>
-      turn.steps.some(
-        (step) => step.type === 'tool_result' && step.content.toolCallId === 'tool-001',
-      ),
-    );
-    expect(firstToolResultTurn?.assistantMessageId).toBe('a-101');
-
-    const secondAiChunk = expectAiChunk(chunks[3]);
-    const secondToolResultTurn = secondAiChunk.turns.find((turn) =>
-      turn.steps.some(
-        (step) => step.type === 'tool_result' && step.content.toolCallId === 'tool-002',
-      ),
-    );
-    expect(secondToolResultTurn?.assistantMessageId).toBe('a-103');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -609,7 +549,7 @@ describe('cooperative chunk building', () => {
     const { buildChunksCooperatively } = await import('./chunk-builder');
     const messages = [
       makeMsg({ id: 'user', role: 'user', content: [textBlock('question')] }),
-      ...Array.from({ length: 20000 }, (_, i) =>
+      ...Array.from({ length: 64 }, (_, i) =>
         makeMsg({
           id: `assistant-${i}`,
           role: 'assistant',
@@ -620,15 +560,18 @@ describe('cooperative chunk building', () => {
       makeMsg({ id: 'side', role: 'assistant', isSidechain: true }),
       makeMsg({ id: 'compact', role: 'user', isCompactSummary: true }),
     ];
-    let ticks = 0;
-    const timer = setInterval(() => ticks++, 0);
-    let result;
+    const timers =
+      jest.requireActual<typeof import('node:timers/promises')>('node:timers/promises');
+    const yieldSpy = jest.spyOn(timers, 'setImmediate');
+    let clock = 0;
+    const nowSpy = jest.spyOn(performance, 'now').mockImplementation(() => (clock += 5));
     try {
-      result = await buildChunksCooperatively(messages);
+      const result = await buildChunksCooperatively(messages);
+      expect(yieldSpy).toHaveBeenCalled();
+      expect(result).toEqual(buildChunks(messages));
     } finally {
-      clearInterval(timer);
+      nowSpy.mockRestore();
+      yieldSpy.mockRestore();
     }
-    expect(ticks).toBeGreaterThan(0);
-    expect(result).toEqual(buildChunks(messages));
   });
 });

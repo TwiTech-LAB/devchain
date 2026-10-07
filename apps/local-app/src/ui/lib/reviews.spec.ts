@@ -35,178 +35,114 @@ function createComment(overrides: Partial<ReviewComment> = {}): ReviewComment {
 
 describe('isPendingComment', () => {
   describe('returns false', () => {
-    it('when comment is not a root comment (has parentId)', () => {
-      const thread: CommentThread = {
-        comment: createComment({
-          parentId: 'parent-123',
-          targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
-        }),
-        replies: [],
-      };
-      expect(isPendingComment(thread)).toBe(false);
-    });
-
-    it('when comment status is not open (resolved)', () => {
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'resolved',
-          targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
-        }),
-        replies: [],
-      };
-      expect(isPendingComment(thread)).toBe(false);
-    });
-
-    it('when comment status is not open (wont_fix)', () => {
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'wont_fix',
-          targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
-        }),
-        replies: [],
-      };
-      expect(isPendingComment(thread)).toBe(false);
-    });
-
-    it('when comment has no targetAgents', () => {
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'open',
-          targetAgents: [],
-        }),
-        replies: [],
-      };
-      expect(isPendingComment(thread)).toBe(false);
-    });
-
-    it('when a target agent has replied after user message (user → agent)', () => {
-      // User posts at T0, agent replies at T5 → NOT pending (agent addressed the comment)
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'open',
-          createdAt: timestamp(0),
-          targetAgents: [
-            { agentId: 'agent-1', name: 'Coder' },
-            { agentId: 'agent-2', name: 'Reviewer' },
+    it.each([
+      {
+        label: 'when comment is not a root comment (has parentId)',
+        thread: {
+          comment: createComment({
+            parentId: 'parent-123',
+            targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
+          }),
+          replies: [],
+        },
+        expected: false,
+      },
+      {
+        label: 'when comment status is not open (resolved)',
+        thread: {
+          comment: createComment({
+            status: 'resolved',
+            targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
+          }),
+          replies: [],
+        },
+        expected: false,
+      },
+      {
+        label: 'when comment has no targetAgents',
+        thread: {
+          comment: createComment({
+            status: 'open',
+            targetAgents: [],
+          }),
+          replies: [],
+        },
+        expected: false,
+      },
+      {
+        label: 'when a target agent has replied after user message (user → agent)',
+        thread: {
+          comment: createComment({
+            status: 'open',
+            createdAt: timestamp(0),
+            targetAgents: [
+              { agentId: 'agent-1', name: 'Coder' },
+              { agentId: 'agent-2', name: 'Reviewer' },
+            ],
+          }),
+          replies: [
+            createComment({
+              id: 'reply-1',
+              parentId: 'comment-1',
+              authorType: 'agent',
+              authorAgentId: 'agent-1',
+              authorAgentName: 'Coder',
+              createdAt: timestamp(5),
+            }),
           ],
-        }),
-        replies: [
-          createComment({
-            id: 'reply-1',
-            parentId: 'comment-1',
-            authorType: 'agent',
-            authorAgentId: 'agent-1',
-            authorAgentName: 'Coder',
-            createdAt: timestamp(5),
+        },
+        expected: false,
+      },
+      {
+        label: 'when root comment is open with targets and no agent replies',
+        thread: {
+          comment: createComment({
+            status: 'open',
+            targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
           }),
-        ],
-      };
-      expect(isPendingComment(thread)).toBe(false);
-    });
-
-    it('when all target agents have replied after user message', () => {
-      // User posts at T0, agents reply at T5 and T10 → NOT pending
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'open',
-          createdAt: timestamp(0),
-          targetAgents: [
-            { agentId: 'agent-1', name: 'Coder' },
-            { agentId: 'agent-2', name: 'Reviewer' },
+          replies: [],
+        },
+        expected: true,
+      },
+      {
+        label: 'when root comment has targets but only user replies (not agent)',
+        thread: {
+          comment: createComment({
+            status: 'open',
+            targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
+          }),
+          replies: [
+            createComment({
+              id: 'reply-1',
+              parentId: 'comment-1',
+              authorType: 'user',
+              authorAgentId: null,
+            }),
           ],
-        }),
-        replies: [
-          createComment({
-            id: 'reply-1',
-            parentId: 'comment-1',
-            authorType: 'agent',
-            authorAgentId: 'agent-1',
-            authorAgentName: 'Coder',
-            createdAt: timestamp(5),
+        },
+        expected: true,
+      },
+      {
+        label: 'when root comment has targets but replies are from different agents',
+        thread: {
+          comment: createComment({
+            status: 'open',
+            targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
           }),
-          createComment({
-            id: 'reply-2',
-            parentId: 'comment-1',
-            authorType: 'agent',
-            authorAgentId: 'agent-2',
-            authorAgentName: 'Reviewer',
-            createdAt: timestamp(10),
-          }),
-        ],
-      };
-      expect(isPendingComment(thread)).toBe(false);
-    });
-  });
-
-  describe('returns true', () => {
-    it('when root comment is open with targets and no agent replies', () => {
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'open',
-          targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
-        }),
-        replies: [],
-      };
-      expect(isPendingComment(thread)).toBe(true);
-    });
-
-    it('when root comment has targets but only user replies (not agent)', () => {
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'open',
-          targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
-        }),
-        replies: [
-          createComment({
-            id: 'reply-1',
-            parentId: 'comment-1',
-            authorType: 'user',
-            authorAgentId: null,
-          }),
-        ],
-      };
-      expect(isPendingComment(thread)).toBe(true);
-    });
-
-    it('when root comment has targets but replies are from different agents', () => {
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'open',
-          targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
-        }),
-        replies: [
-          createComment({
-            id: 'reply-1',
-            parentId: 'comment-1',
-            authorType: 'agent',
-            authorAgentId: 'agent-other',
-            authorAgentName: 'OtherAgent',
-          }),
-        ],
-      };
-      expect(isPendingComment(thread)).toBe(true);
-    });
-
-    it('when multiple targets and only non-targeted agents replied', () => {
-      const thread: CommentThread = {
-        comment: createComment({
-          status: 'open',
-          targetAgents: [
-            { agentId: 'agent-1', name: 'Coder' },
-            { agentId: 'agent-2', name: 'Reviewer' },
+          replies: [
+            createComment({
+              id: 'reply-1',
+              parentId: 'comment-1',
+              authorType: 'agent',
+              authorAgentId: 'agent-other',
+              authorAgentName: 'OtherAgent',
+            }),
           ],
-        }),
-        replies: [
-          createComment({
-            id: 'reply-1',
-            parentId: 'comment-1',
-            authorType: 'agent',
-            authorAgentId: 'agent-3',
-            authorAgentName: 'Brainstormer',
-          }),
-        ],
-      };
-      expect(isPendingComment(thread)).toBe(true);
+        },
+        expected: true,
+      },
+    ])('$label', ({ thread, expected }) => {
+      expect(isPendingComment(thread)).toBe(expected);
     });
   });
 
@@ -240,30 +176,6 @@ describe('isPendingComment', () => {
         ],
       };
       expect(isPendingComment(thread)).toBe(true);
-    });
-
-    it('user → agent = NOT pending (agent addressed the comment)', () => {
-      // User posts at T0, agent replies at T5 → NOT pending
-      const thread: CommentThread = {
-        comment: createComment({
-          id: 'comment-1',
-          status: 'open',
-          createdAt: timestamp(0),
-          authorType: 'user',
-          targetAgents: [{ agentId: 'agent-1', name: 'Coder' }],
-        }),
-        replies: [
-          createComment({
-            id: 'reply-1',
-            parentId: 'comment-1',
-            authorType: 'agent',
-            authorAgentId: 'agent-1',
-            authorAgentName: 'Coder',
-            createdAt: timestamp(5),
-          }),
-        ],
-      };
-      expect(isPendingComment(thread)).toBe(false);
     });
 
     it('multi-target: user → agent1 → user → agent2 = NOT pending (agent2 replied last)', () => {
@@ -307,41 +219,6 @@ describe('isPendingComment', () => {
         ],
       };
       expect(isPendingComment(thread)).toBe(false);
-    });
-
-    it('multi-target: user → agent1 → user (no agent2 reply yet) = pending', () => {
-      // User posts at T0, agent1 replies at T5, user follows up at T10, agent2 never replies
-      // Latest user message (T10) > latest agent reply (T5) → PENDING
-      const thread: CommentThread = {
-        comment: createComment({
-          id: 'comment-1',
-          status: 'open',
-          createdAt: timestamp(0),
-          authorType: 'user',
-          targetAgents: [
-            { agentId: 'agent-1', name: 'Coder' },
-            { agentId: 'agent-2', name: 'Reviewer' },
-          ],
-        }),
-        replies: [
-          createComment({
-            id: 'reply-1',
-            parentId: 'comment-1',
-            authorType: 'agent',
-            authorAgentId: 'agent-1',
-            authorAgentName: 'Coder',
-            createdAt: timestamp(5),
-          }),
-          createComment({
-            id: 'reply-2',
-            parentId: 'comment-1',
-            authorType: 'user',
-            authorAgentId: null,
-            createdAt: timestamp(10),
-          }),
-        ],
-      };
-      expect(isPendingComment(thread)).toBe(true);
     });
 
     it('handles replies with out-of-order timestamps correctly', () => {

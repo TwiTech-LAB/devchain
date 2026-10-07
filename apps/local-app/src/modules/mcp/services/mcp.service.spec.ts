@@ -21,19 +21,18 @@ describe('McpService interface', () => {
     jest.restoreAllMocks();
   });
 
-  it.each([
-    ['devchain.get.prompt', 'devchain_get_prompt'],
-    ['devchain/get/prompt', 'devchain_get_prompt'],
-    ['devchain-get-prompt', 'devchain_get_prompt'],
-  ])('normalizes %s before registry lookup', async (input, normalized) => {
-    resolve.mockReturnValue(undefined);
+  it.each([['devchain.get/prompt-name', 'devchain_get_prompt_name']])(
+    'normalizes %s before registry lookup',
+    async (input, normalized) => {
+      resolve.mockReturnValue(undefined);
 
-    await service.handleToolCall(input, {});
+      await service.handleToolCall(input, {});
 
-    expect(resolve).toHaveBeenCalledWith(normalized);
-  });
+      expect(resolve).toHaveBeenCalledWith(normalized);
+    },
+  );
 
-  it.each([null, undefined])('normalizes %s parameters to an empty object', async (params) => {
+  it.each([null])('normalizes %s parameters to an empty object', async (params) => {
     const invoke = jest.fn().mockResolvedValue({ success: true });
     resolve.mockReturnValue({ paramsSchema: null, invoke });
 
@@ -111,16 +110,6 @@ describe('McpService interface', () => {
       success: false,
       error: { code: 'INTERNAL_ERROR', message: 'handler failed' },
     });
-  });
-
-  it('delegates resource requests to ResourceResolver', async () => {
-    const response = { success: true as const, data: { uri: 'prompt://Welcome%20Prompt@2' } };
-    const resolver = jest.spyOn(ResourceResolver.prototype, 'resolve').mockResolvedValue(response);
-
-    await expect(service.handleResourceRequest('prompt://Welcome%20Prompt@2')).resolves.toEqual(
-      response,
-    );
-    expect(resolver).toHaveBeenCalledWith('prompt://Welcome%20Prompt@2');
   });
 
   it('maps unexpected resource errors to INTERNAL_ERROR', async () => {

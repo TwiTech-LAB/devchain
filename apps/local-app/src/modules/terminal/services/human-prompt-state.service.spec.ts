@@ -259,7 +259,7 @@ describe('HumanPromptStateService', () => {
       expect(service.applyForceDelivery('pane', snapshot)).toBe(false);
     });
 
-    it('applyForceDelivery rejects when generation changed', () => {
+    it('applyForceDelivery rejects when executed-input epoch changed', () => {
       const draft = service.recordPromptText('pane');
       service.transitionToAwaiting('pane', draft.generation);
       const snapshot = service.getForceSnapshot('pane')!;

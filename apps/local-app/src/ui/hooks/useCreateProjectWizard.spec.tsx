@@ -200,15 +200,6 @@ describe('useCreateProjectWizard — Step 1 provider gating', () => {
     // Selecting one available provider (covering the family) opens the gate.
     fireEvent.click(screen.getByRole('checkbox', { name: 'Claude provider' }));
     await waitFor(() => expect(screen.getByTestId('next')).toBeEnabled());
-  });
-
-  it('disables Next again when the selection is emptied', async () => {
-    renderWizard(oneFamilyPreview());
-
-    await screen.findByRole('checkbox', { name: 'Claude provider' });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Claude provider' }));
-    await waitFor(() => expect(screen.getByTestId('next')).toBeEnabled());
-
     fireEvent.click(screen.getByRole('checkbox', { name: 'Claude provider' }));
     await waitFor(() => expect(screen.getByTestId('next')).toBeDisabled());
   });

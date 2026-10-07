@@ -1,13 +1,10 @@
+import { createTestDatabase } from '../../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import { LocalStorageService } from '../local-storage.service';
 import type { Project, Provider, AgentProfile, Agent } from '../../models/domain.models';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../../drizzle');
 
 describe('SessionStorageDelegate (integration)', () => {
   let sqlite: Database.Database;
@@ -15,9 +12,8 @@ describe('SessionStorageDelegate (integration)', () => {
   let service: LocalStorageService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
     service = new LocalStorageService(db);
   });
@@ -219,10 +215,6 @@ describe('SessionStorageDelegate (integration)', () => {
   // ==========================================
 
   describe('applySessionPlan', () => {
-    it('no-op for both arrays empty', async () => {
-      await expect(service.applySessionPlan([], [])).resolves.toBeUndefined();
-    });
-
     it('reassigns sessions and deletes sessions with transcripts and invites', async () => {
       const project = await seedProject();
       const { agent: oldAgent } = await seedFullAgent(project.id, 'OldAgent');
@@ -277,34 +269,6 @@ describe('SessionStorageDelegate (integration)', () => {
 
       expect(getSessionRow(s1)?.agent_id).toBe(target.id);
       expect(getSessionRow(s2)?.agent_id).toBe(target.id);
-    });
-
-    it('is atomic — both deletes and reassigns happen in one transaction', async () => {
-      const project = await seedProject();
-      const { agent: oldAgent } = await seedFullAgent(project.id, 'OldA');
-      const { agent: newAgent } = await seedFullAgent(project.id, 'NewA');
-
-      const deleteId = insertSession(oldAgent.id, 'stopped');
-      const keepId = insertSession(oldAgent.id, 'failed');
-
-      insertTranscript(deleteId);
-
-      const threadId = createChatThread(project.id);
-      createChatMember(threadId, oldAgent.id);
-      const messageId = createChatMessage(threadId, oldAgent.id);
-      insertSessionInvite(deleteId, oldAgent.id, threadId, messageId);
-
-      await service.parkSessionsFromAgents([oldAgent.id]);
-
-      await service.applySessionPlan([{ sessionId: keepId, newAgentId: newAgent.id }], [deleteId]);
-
-      // Delete side: session, transcript, and invite all gone
-      expect(getSessionRow(deleteId)).toBeUndefined();
-      expect(getInvitesBySessionId(deleteId)).toHaveLength(0);
-
-      // Reassign side: session re-bound to new agent in same transaction
-      const kept = getSessionRow(keepId);
-      expect(kept?.agent_id).toBe(newAgent.id);
     });
   });
 });

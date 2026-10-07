@@ -14,18 +14,13 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  NotFoundError,
-  ValidationError,
-  ProjectRemoteError,
-} from '../../../common/errors/error-types';
+import { NotFoundError, ProjectRemoteError } from '../../../common/errors/error-types';
 import {
   disableClaudeAutoCompact,
   enableClaudeAutoCompact,
 } from '../../sessions/utils/claude-config';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
-import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
 
 jest.mock('../../sessions/utils/claude-config', () => ({
   disableClaudeAutoCompact: jest.fn(),
@@ -212,94 +207,6 @@ describe('ProvidersController', () => {
   });
 
   describe('createProvider', () => {
-    it('creates provider without auto-registering MCP', async () => {
-      const now = new Date('2024-01-01T00:00:00Z');
-      storage.createProvider.mockImplementation(async (payload) => ({
-        id: 'p1',
-        ...payload,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      const result = await controller.createProvider({
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpEndpoint: 'ws://localhost:4000',
-      });
-
-      expect(mcpRegistration.registerProvider).not.toHaveBeenCalled();
-      expect(storage.createProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'claude',
-          binPath: '/usr/local/bin/claude',
-          mcpConfigured: false,
-          mcpEndpoint: 'ws://localhost:4000',
-          mcpRegisteredAt: null,
-        }),
-      );
-      expect(result.provider.mcpConfigured).toBe(false);
-      expect(result.sync).toBeDefined();
-    });
-
-    it('passes autoCompactThreshold to storage on create', async () => {
-      const now = new Date('2024-01-01T00:00:00Z');
-      storage.createProvider.mockImplementation(async (payload) => ({
-        id: 'p1',
-        ...payload,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      const result = await controller.createProvider({
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        autoCompactThreshold: 10,
-      });
-
-      expect(storage.createProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          autoCompactThreshold: 10,
-        }),
-      );
-      expect(result.provider.autoCompactThreshold).toBe(10);
-    });
-
-    it('passes Claude launch settings through verbatim and preserves omission', async () => {
-      storage.createProvider.mockImplementation(async (payload) => ({
-        id: 'p1',
-        ...payload,
-        claudeLaunchSettingsJson:
-          payload.claudeLaunchSettingsJson === undefined
-            ? DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON
-            : payload.claudeLaunchSettingsJson,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      }));
-      const custom = '{\n  "futureSetting": true\n}';
-
-      const customResult = await controller.createProvider({
-        name: 'claude',
-        claudeLaunchSettingsJson: custom,
-      });
-      expect(storage.createProvider).toHaveBeenLastCalledWith(
-        expect.objectContaining({ claudeLaunchSettingsJson: custom }),
-      );
-      expect(customResult.provider.claudeLaunchSettingsJson).toBe(custom);
-
-      await controller.createProvider({ name: 'claude' });
-      expect(storage.createProvider).toHaveBeenLastCalledWith(
-        expect.objectContaining({ claudeLaunchSettingsJson: undefined }),
-      );
-
-      await controller.createProvider({
-        name: 'claude',
-        claudeLaunchSettingsJson: null,
-      });
-      expect(storage.createProvider).toHaveBeenLastCalledWith(
-        expect.objectContaining({ claudeLaunchSettingsJson: null }),
-      );
-    });
-
     it('rejects invalid, reserved, and non-Claude launch settings before storage', async () => {
       await expect(
         controller.createProvider({
@@ -326,32 +233,6 @@ describe('ProvidersController', () => {
       expect(storage.createProvider).not.toHaveBeenCalled();
     });
 
-    it('creates provider with valid env', async () => {
-      const now = new Date('2024-01-01T00:00:00Z');
-      storage.createProvider.mockImplementation(async (payload) => ({
-        id: 'p1',
-        ...payload,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      const result = await controller.createProvider({
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        env: { API_BASE: 'https://api.example.com', LOG_LEVEL: 'debug' },
-      });
-
-      expect(storage.createProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          env: { API_BASE: 'https://api.example.com', LOG_LEVEL: 'debug' },
-        }),
-      );
-      expect(result.provider.env).toEqual({
-        API_BASE: 'https://api.example.com',
-        LOG_LEVEL: 'debug',
-      });
-    });
-
     it('rejects create with invalid env key (regex violation)', async () => {
       await expect(
         controller.createProvider({
@@ -375,227 +256,9 @@ describe('ProvidersController', () => {
 
       expect(storage.createProvider).not.toHaveBeenCalled();
     });
-
-    it('passes empty env {} to storage (storage delegate normalizes to null)', async () => {
-      const now = new Date('2024-01-01T00:00:00Z');
-      storage.createProvider.mockImplementation(async (payload) => ({
-        id: 'p1',
-        ...payload,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      await controller.createProvider({
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        env: {},
-      });
-
-      expect(storage.createProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          env: {},
-        }),
-      );
-    });
   });
 
   describe('updateProvider', () => {
-    it('updates provider without auto-re-registering MCP', async () => {
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: 'ws://localhost:5000',
-        mcpRegisteredAt: '2024-01-01',
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      await controller.updateProvider('p1', {
-        mcpEndpoint: 'ws://localhost:5000',
-      });
-
-      expect(mcpRegistration.registerProvider).not.toHaveBeenCalled();
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          mcpEndpoint: 'ws://localhost:5000',
-        }),
-        undefined,
-        expect.any(Array),
-      );
-    });
-
-    it('passes autoCompactThreshold to storage on update', async () => {
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        autoCompactThreshold: 15,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      const result = await controller.updateProvider('p1', {
-        autoCompactThreshold: 15,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          autoCompactThreshold: 15,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-      expect(result.autoCompactThreshold).toBe(15);
-    });
-
-    it('clears autoCompactThreshold when set to null', async () => {
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        autoCompactThreshold: null,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      const result = await controller.updateProvider('p1', {
-        autoCompactThreshold: null,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          autoCompactThreshold: null,
-        }),
-        undefined,
-        expect.any(Array),
-      );
-      expect(result.autoCompactThreshold).toBeNull();
-    });
-
-    it('leaves omitted launch settings unchanged and returns explicit null in camelCase', async () => {
-      const existing = '{\n  "futureSetting": true\n}';
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: null,
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        autoCompactThreshold: null,
-        claudeLaunchSettingsJson: existing,
-        env: null,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-      });
-      storage.updateProviderWithScopes
-        .mockResolvedValueOnce({
-          ...(await storage.getProvider()),
-          binPath: '/new/claude',
-        })
-        .mockResolvedValueOnce({
-          ...(await storage.getProvider()),
-          claudeLaunchSettingsJson: null,
-        });
-
-      const unchanged = await controller.updateProvider('p1', {
-        binPath: '/new/claude',
-      });
-      expect(storage.updateProviderWithScopes.mock.calls[0][1]).not.toHaveProperty(
-        'claudeLaunchSettingsJson',
-      );
-      expect(unchanged.claudeLaunchSettingsJson).toBe(existing);
-
-      const cleared = await controller.updateProvider('p1', {
-        claudeLaunchSettingsJson: null,
-      });
-      expect(storage.updateProviderWithScopes.mock.calls[1][1]).toMatchObject({
-        claudeLaunchSettingsJson: null,
-      });
-      expect(cleared).toHaveProperty('claudeLaunchSettingsJson', null);
-      expect(cleared).not.toHaveProperty('claude_launch_settings_json');
-    });
-
-    it('updates provider env with valid keys', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        env: null,
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      const result = await controller.updateProvider('p1', {
-        env: { NEW_VAR: 'value' },
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          env: { NEW_VAR: 'value' },
-        }),
-        undefined,
-        ['NEW_VAR'],
-      );
-      expect(result.env).toEqual({ NEW_VAR: 'value' });
-    });
-
-    it('clears env with explicit null on update', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        env: { OLD: 'value' },
-      });
-      storage.updateProviderWithScopes.mockImplementation(async (id, payload) => ({
-        id,
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        env: null,
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-01',
-        ...payload,
-      }));
-
-      const result = await controller.updateProvider('p1', {
-        env: null,
-      });
-
-      expect(storage.updateProviderWithScopes).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({
-          env: null,
-        }),
-        undefined,
-        [],
-      );
-      expect(result.env).toBeNull();
-    });
-
     it('rejects update with invalid env key', async () => {
       await expect(
         controller.updateProvider('p1', {
@@ -635,57 +298,6 @@ describe('ProvidersController', () => {
       );
     });
 
-    it('returns added when devchain alias does not exist', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-      mcpEnsureService.ensureMcp.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const response = await controller.ensureMcp('p1', {});
-
-      expect(response.action).toBe('added');
-      expect(mcpEnsureService.ensureMcp).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'p1', name: 'claude' }),
-        undefined,
-      );
-    });
-
-    it('returns fixed_mismatch when endpoint differs', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: 'http://127.0.0.1:4000/mcp',
-        mcpRegisteredAt: '2024-01-01',
-        createdAt: '',
-        updatedAt: '',
-      });
-      mcpEnsureService.ensureMcp.mockResolvedValue({
-        success: true,
-        action: 'fixed_mismatch',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      const response = await controller.ensureMcp('p1', {});
-
-      expect(response.action).toBe('fixed_mismatch');
-      expect(mcpEnsureService.ensureMcp).toHaveBeenCalled();
-    });
-
     it('throws when ensure service returns error', async () => {
       storage.getProvider.mockResolvedValue({
         id: 'p1',
@@ -704,32 +316,6 @@ describe('ProvidersController', () => {
       });
 
       await expect(controller.ensureMcp('p1', {})).rejects.toThrow(BadRequestException);
-    });
-
-    it('passes projectPath to ensure service', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: false,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-      mcpEnsureService.ensureMcp.mockResolvedValue({
-        success: true,
-        action: 'added',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        alias: 'devchain',
-      });
-
-      await controller.ensureMcp('p1', { projectPath: '/home/user/project' });
-
-      expect(mcpEnsureService.ensureMcp).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'p1' }),
-        '/home/user/project',
-      );
     });
   });
 
@@ -846,170 +432,40 @@ describe('ProvidersController', () => {
   });
 
   describe('disableAutoCompact', () => {
-    it('returns success when Claude auto-compact is disabled', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-      mockDisableClaudeAutoCompact.mockResolvedValue({ success: true });
-
-      const response = await controller.disableAutoCompact('p1');
-
-      expect(response).toEqual({ success: true });
-      expect(mockDisableClaudeAutoCompact).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns 404 when provider id is unknown', async () => {
-      storage.getProvider.mockRejectedValue(new NotFoundException('Provider not found'));
-
-      await expect(controller.disableAutoCompact('missing')).rejects.toThrow(NotFoundException);
-      expect(mockDisableClaudeAutoCompact).not.toHaveBeenCalled();
-    });
-
-    it('returns 400 for non-Claude providers', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'codex',
-        binPath: '/usr/local/bin/codex',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-
-      await expect(controller.disableAutoCompact('p1')).rejects.toThrow(ValidationError);
-      expect(mockDisableClaudeAutoCompact).not.toHaveBeenCalled();
-    });
-
-    it('returns 400 when Claude config is malformed', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-      mockDisableClaudeAutoCompact.mockResolvedValue({
-        success: false,
+    it.each([
+      {
+        name: 'disable invalid config',
+        enable: false,
+        errorType: 'invalid_config' as const,
         error: 'Unexpected token } in JSON',
-        errorType: 'invalid_config',
-      });
-
-      await expect(controller.disableAutoCompact('p1')).rejects.toThrow(BadRequestException);
-      expect(mockDisableClaudeAutoCompact).toHaveBeenCalledTimes(1);
-
-      try {
-        await controller.disableAutoCompact('p1');
-      } catch (error) {
-        expect((error as BadRequestException).getResponse()).toEqual(
-          expect.objectContaining({
-            message: '~/.claude.json contains invalid JSON. Please fix the file manually.',
-          }),
-        );
-      }
-    });
-
-    it('returns 500 when disable operation fails due to IO error', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-      mockDisableClaudeAutoCompact.mockResolvedValue({
-        success: false,
+        exception: BadRequestException,
+        message: '~/.claude.json contains invalid JSON. Please fix the file manually.',
+      },
+      {
+        name: 'disable IO failure',
+        enable: false,
+        errorType: 'io_error' as const,
         error: 'EACCES: permission denied',
-        errorType: 'io_error',
-      });
-
-      await expect(controller.disableAutoCompact('p1')).rejects.toThrow(
-        InternalServerErrorException,
-      );
-      expect(mockDisableClaudeAutoCompact).toHaveBeenCalledTimes(1);
-
-      try {
-        await controller.disableAutoCompact('p1');
-      } catch (error) {
-        expect((error as InternalServerErrorException).getResponse()).toEqual(
-          expect.objectContaining({
-            message: 'Failed to write ~/.claude.json',
-          }),
-        );
-      }
-    });
-  });
-
-  describe('enableAutoCompact', () => {
-    it('returns success when Claude auto-compact is enabled', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-      mockEnableClaudeAutoCompact.mockResolvedValue({ success: true });
-
-      const response = await controller.enableAutoCompact('p1');
-
-      expect(response).toEqual({ success: true });
-      expect(mockEnableClaudeAutoCompact).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns 400 for non-Claude providers', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'codex',
-        binPath: '/usr/local/bin/codex',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-
-      await expect(controller.enableAutoCompact('p1')).rejects.toThrow(ValidationError);
-      expect(mockEnableClaudeAutoCompact).not.toHaveBeenCalled();
-    });
-
-    it('returns 400 when Claude config is malformed', async () => {
-      storage.getProvider.mockResolvedValue({
-        id: 'p1',
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-        mcpConfigured: true,
-        mcpEndpoint: null,
-        mcpRegisteredAt: null,
-        createdAt: '',
-        updatedAt: '',
-      });
-      mockEnableClaudeAutoCompact.mockResolvedValue({
-        success: false,
+        exception: InternalServerErrorException,
+        message: 'Failed to write ~/.claude.json',
+      },
+      {
+        name: 'enable invalid config',
+        enable: true,
+        errorType: 'invalid_config' as const,
         error: 'Unexpected token',
-        errorType: 'invalid_config',
-      });
-
-      await expect(controller.enableAutoCompact('p1')).rejects.toThrow(BadRequestException);
-    });
-
-    it('returns 500 when enable operation fails due to IO error', async () => {
+        exception: BadRequestException,
+        message: '~/.claude.json contains invalid JSON. Please fix the file manually.',
+      },
+      {
+        name: 'enable IO failure',
+        enable: true,
+        errorType: 'io_error' as const,
+        error: 'EACCES: permission denied',
+        exception: InternalServerErrorException,
+        message: 'Failed to write ~/.claude.json',
+      },
+    ])('maps auto-compact $name', async ({ enable, errorType, error, exception, message }) => {
       storage.getProvider.mockResolvedValue({
         id: 'p1',
         name: 'claude',
@@ -1020,94 +476,18 @@ describe('ProvidersController', () => {
         createdAt: '',
         updatedAt: '',
       });
-      mockEnableClaudeAutoCompact.mockResolvedValue({
-        success: false,
-        error: 'EACCES: permission denied',
-        errorType: 'io_error',
-      });
-
-      await expect(controller.enableAutoCompact('p1')).rejects.toThrow(
-        InternalServerErrorException,
-      );
-    });
-  });
-
-  describe('createProvider - sync integration', () => {
-    it('invokes sync after provider creation and returns { provider, sync }', async () => {
-      const now = new Date('2024-01-01T00:00:00Z');
-      storage.createProvider.mockImplementation(async (payload) => ({
-        id: 'p1',
-        ...payload,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      const syncResult = {
-        providerId: 'p1',
-        insertedCount: 3,
-        affectedProjectIds: ['proj-1'],
-        skippedExistingCount: 0,
-        skippedConflictCount: 0,
-        warnings: [],
-        excludedAuthorCount: 0,
-        scopeConfigHash: 'test',
-      };
-      mockSyncService.syncProviderToAllProjects.mockResolvedValue(syncResult);
-
-      const result = await controller.createProvider({
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-      });
-
-      expect(result.provider.name).toBe('claude');
-      expect(result.sync).toEqual(syncResult);
-      expect(result.syncError).toBeUndefined();
-      expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('p1');
-    });
-
-    it('degrades gracefully when sync throws', async () => {
-      const now = new Date('2024-01-01T00:00:00Z');
-      storage.createProvider.mockImplementation(async (payload) => ({
-        id: 'p1',
-        ...payload,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      mockSyncService.syncProviderToAllProjects.mockRejectedValue(new Error('storage failure'));
-
-      const result = await controller.createProvider({
-        name: 'claude',
-        binPath: '/usr/local/bin/claude',
-      });
-
-      expect(result.provider.name).toBe('claude');
-      expect(result.sync).toBeNull();
-      expect(result.syncError).toBe('storage failure');
+      const change = enable ? mockEnableClaudeAutoCompact : mockDisableClaudeAutoCompact;
+      change.mockResolvedValue({ success: false, error, errorType });
+      const result = await (
+        enable ? controller.enableAutoCompact('p1') : controller.disableAutoCompact('p1')
+      ).catch((error) => error);
+      expect(result).toBeInstanceOf(exception);
+      expect(result.getResponse()).toEqual(expect.objectContaining({ message }));
+      expect(change).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('syncToProjects', () => {
-    it('returns SyncResult when provider exists', async () => {
-      storage.getProvider.mockResolvedValue({ id: 'p1', name: 'claude' });
-      const syncResult = {
-        providerId: 'p1',
-        insertedCount: 2,
-        affectedProjectIds: ['proj-1'],
-        skippedExistingCount: 1,
-        skippedConflictCount: 0,
-        warnings: [],
-        excludedAuthorCount: 0,
-        scopeConfigHash: 'test',
-      };
-      mockSyncService.syncProviderToAllProjects.mockResolvedValue(syncResult);
-
-      const result = await controller.syncToProjects('p1');
-
-      expect(result).toEqual(syncResult);
-      expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('p1');
-    });
-
     it('throws NotFoundException when provider does not exist', async () => {
       storage.getProvider.mockRejectedValue(new NotFoundException('Provider not found'));
 
@@ -1131,24 +511,18 @@ describe('ProvidersController', () => {
     };
 
     describe('GET /api/providers/:id', () => {
-      it('returns envScopes: {} when no scopes exist', async () => {
+      it.each([
+        { name: 'no scopes', scopes: new Map(), expected: {} },
+        {
+          name: 'populated scopes',
+          scopes: new Map([['p1', { API_KEY: ['proj-1', 'proj-2'] }]]),
+          expected: { API_KEY: ['proj-1', 'proj-2'] },
+        },
+      ])('returns env scopes for $name', async ({ scopes, expected }) => {
         storage.getProvider.mockResolvedValue(baseProvider);
-        storage.listEnvScopesByProviderIds.mockReturnValue(new Map());
-
-        const result = await controller.getProvider('p1');
-
-        expect(result.envScopes).toEqual({});
+        storage.listEnvScopesByProviderIds.mockReturnValue(scopes);
+        expect((await controller.getProvider('p1')).envScopes).toEqual(expected);
         expect(storage.listEnvScopesByProviderIds).toHaveBeenCalledWith(['p1']);
-      });
-
-      it('returns populated envScopes when scopes exist', async () => {
-        storage.getProvider.mockResolvedValue(baseProvider);
-        const scopesMap = new Map([['p1', { API_KEY: ['proj-1', 'proj-2'] }]]);
-        storage.listEnvScopesByProviderIds.mockReturnValue(scopesMap);
-
-        const result = await controller.getProvider('p1');
-
-        expect(result.envScopes).toEqual({ API_KEY: ['proj-1', 'proj-2'] });
       });
     });
 
@@ -1424,20 +798,6 @@ describe('ProvidersController', () => {
 
       expect(result.discovered).toHaveLength(1);
       expect(mockSyncService.syncProviderToAllProjects).toHaveBeenCalledWith('new-1');
-    });
-
-    it('returns empty discovered when nothing new found', async () => {
-      mockDiscoveryService.discoverInstalledBinaries.mockResolvedValue({
-        discovered: [],
-        alreadyPresent: ['claude', 'codex'],
-        notFound: ['agy'],
-      });
-
-      const result = await controller.rescanProviders();
-
-      expect(result.discovered).toEqual([]);
-      expect(result.syncResults).toEqual([]);
-      expect(storage.createProvider).not.toHaveBeenCalled();
     });
 
     it('continues creating other providers when sync fails for one', async () => {

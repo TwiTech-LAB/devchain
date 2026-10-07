@@ -1,6 +1,6 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +13,6 @@ import type { EpicTimeService } from './epic-time.service';
 import { EpicEstimateLoggingService } from './epic-estimate-logging.service';
 import type { ExternalTimeMutationService } from '../../external-integrations/my-work/external-time-mutation.service';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const LEGACY_UNASSIGNED = '00000000-0000-0000-0000-000000000000';
 
 interface ProjectContext {
@@ -196,9 +195,8 @@ describe('EpicEstimateLoggingService project contributions and legacy recovery',
       .all(projectId) as Array<{ activity_date: string; logged_minutes: number }>;
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
     secretDirectory = mkdtempSync(join(tmpdir(), 'devchain-estimate-service-'));
     storage = new LocalStorageService(
       drizzle(sqlite),

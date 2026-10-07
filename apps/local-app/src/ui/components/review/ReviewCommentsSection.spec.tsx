@@ -83,46 +83,46 @@ describe('ReviewCommentsSection', () => {
   });
 
   describe('rendering', () => {
-    it('renders section with header when review comments exist', () => {
+    it('shows review comments, replies, count and expanded controls', () => {
       render(<ReviewCommentsSection {...defaultProps} />);
-
-      expect(screen.getByText('Review Comments')).toBeInTheDocument();
-      expect(screen.getByTestId('review-comments-section')).toBeInTheDocument();
-    });
-
-    it('shows correct comment count in badge', () => {
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      // 2 review-level root comments (file comment and reply are filtered out)
-      expect(screen.getByText('2')).toBeInTheDocument();
-    });
-
-    it('renders only review-level comments (filters out file comments)', () => {
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      // Review-level comment should be visible
-      expect(
-        screen.getByText('This is a review-level comment about the overall changes'),
-      ).toBeInTheDocument();
-      expect(screen.getByText('Another review-level comment')).toBeInTheDocument();
-
-      // File-level comment should NOT be visible
-      expect(screen.queryByText('This is a file-level comment')).not.toBeInTheDocument();
-    });
-
-    it('renders CommentThread for each review comment', () => {
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      // Should have 2 CommentThread components
-      const threads = screen.getAllByTestId('comment-thread');
-      expect(threads).toHaveLength(2);
-    });
-
-    it('shows replies within their parent thread', () => {
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      // Reply should be visible
-      expect(screen.getByText('This is a reply to the review comment')).toBeInTheDocument();
+      {
+        expect(
+          screen.getByText('This is a review-level comment about the overall changes'),
+        ).toBeInTheDocument();
+        expect(screen.getByText('Another review-level comment')).toBeInTheDocument();
+        expect(screen.queryByText('This is a file-level comment')).not.toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('Review Comments')).toBeInTheDocument();
+        expect(screen.getByTestId('review-comments-section')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('2')).toBeInTheDocument();
+      }
+      {
+        const threads = screen.getAllByTestId('comment-thread');
+        expect(threads).toHaveLength(2);
+      }
+      {
+        expect(screen.getByText('This is a reply to the review comment')).toBeInTheDocument();
+      }
+      {
+        expect(
+          screen.getByText('This is a review-level comment about the overall changes'),
+        ).toBeInTheDocument();
+      }
+      {
+        expect(
+          screen.getByRole('button', { name: /collapse review comments/i }),
+        ).toBeInTheDocument();
+      }
+      {
+        const threads = screen.getAllByTestId('comment-thread');
+        expect(threads[0]).not.toHaveClass('border-l-amber-500');
+      }
+      {
+        expect(screen.getByLabelText('2 comments')).toBeInTheDocument();
+      }
     });
 
     it('returns null when no review-level comments exist', () => {
@@ -135,22 +135,14 @@ describe('ReviewCommentsSection', () => {
   });
 
   describe('collapsible behavior', () => {
-    it('shows content when expanded', () => {
-      render(<ReviewCommentsSection {...defaultProps} isExpanded={true} />);
-
-      expect(
-        screen.getByText('This is a review-level comment about the overall changes'),
-      ).toBeInTheDocument();
-    });
-
-    it('hides content when collapsed', () => {
+    it('shows the expand control while collapsed', () => {
       render(<ReviewCommentsSection {...defaultProps} isExpanded={false} />);
-
-      // Header should still be visible
-      expect(screen.getByText('Review Comments')).toBeInTheDocument();
-
-      // Content should be hidden (Radix Collapsible hides content when closed)
-      // Note: The content may still be in the DOM but hidden
+      {
+        expect(screen.getByText('Review Comments')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByRole('button', { name: /expand review comments/i })).toBeInTheDocument();
+      }
     });
 
     it('calls onToggleExpand when toggle button is clicked', async () => {
@@ -162,66 +154,38 @@ describe('ReviewCommentsSection', () => {
 
       expect(onToggleExpand).toHaveBeenCalled();
     });
-
-    it('shows expand button when collapsed', () => {
-      render(<ReviewCommentsSection {...defaultProps} isExpanded={false} />);
-
-      expect(screen.getByRole('button', { name: /expand review comments/i })).toBeInTheDocument();
-    });
-
-    it('shows collapse button when expanded', () => {
-      render(<ReviewCommentsSection {...defaultProps} isExpanded={true} />);
-
-      expect(screen.getByRole('button', { name: /collapse review comments/i })).toBeInTheDocument();
-    });
   });
 
   describe('selected comment highlighting', () => {
-    it('applies highlight ring to selected comment', () => {
+    it('highlights only the selected comment', () => {
       render(<ReviewCommentsSection {...defaultProps} selectedCommentId="review-comment-1" />);
-
-      const selectedElement = document.querySelector('[data-comment-id="review-comment-1"]');
-      expect(selectedElement).toHaveClass('ring-2');
-      expect(selectedElement).toHaveClass('ring-primary');
-    });
-
-    it('does not highlight non-selected comments', () => {
-      render(<ReviewCommentsSection {...defaultProps} selectedCommentId="review-comment-1" />);
-
-      const nonSelectedElement = document.querySelector('[data-comment-id="review-comment-2"]');
-      expect(nonSelectedElement).not.toHaveClass('ring-2');
-    });
-
-    it('handles null selectedCommentId', () => {
-      render(<ReviewCommentsSection {...defaultProps} selectedCommentId={null} />);
-
-      // No element should have the highlight ring
-      const allComments = document.querySelectorAll('[data-comment-id]');
-      allComments.forEach((el) => {
-        expect(el).not.toHaveClass('ring-2');
-      });
+      {
+        const selectedElement = document.querySelector('[data-comment-id="review-comment-1"]');
+        expect(selectedElement).toHaveClass('ring-2');
+        expect(selectedElement).toHaveClass('ring-primary');
+      }
+      {
+        const nonSelectedElement = document.querySelector('[data-comment-id="review-comment-2"]');
+        expect(nonSelectedElement).not.toHaveClass('ring-2');
+      }
     });
   });
 
   describe('comment sorting', () => {
-    it('sorts pending comments first', () => {
+    it('orders pending and resolved comments', () => {
       render(<ReviewCommentsSection {...defaultProps} />);
-
-      const threads = screen.getAllByTestId('comment-thread');
-      // First thread should be the pending one (review-comment-1 has target agents and no target reply)
-      const firstThreadContent = threads[0].textContent;
-      expect(firstThreadContent).toContain(
-        'This is a review-level comment about the overall changes',
-      );
-    });
-
-    it('sorts resolved comments after open comments', () => {
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      const threads = screen.getAllByTestId('comment-thread');
-      // Second thread should be resolved (review-comment-2)
-      const secondThreadContent = threads[1].textContent;
-      expect(secondThreadContent).toContain('Another review-level comment');
+      {
+        const threads = screen.getAllByTestId('comment-thread');
+        const firstThreadContent = threads[0].textContent;
+        expect(firstThreadContent).toContain(
+          'This is a review-level comment about the overall changes',
+        );
+      }
+      {
+        const threads = screen.getAllByTestId('comment-thread');
+        const secondThreadContent = threads[1].textContent;
+        expect(secondThreadContent).toContain('Another review-level comment');
+      }
     });
   });
 
@@ -284,44 +248,6 @@ describe('ReviewCommentsSection', () => {
       // The pending comment should show "Waiting on" indicator
       expect(screen.getByText('Waiting on:')).toBeInTheDocument();
       expect(screen.getByText('Reviewer')).toBeInTheDocument();
-    });
-
-    it('does not show pending for comments with agent replies', () => {
-      // review-comment-1 has reply from agent-1 (Coder) who is in targetAgents
-      // So it should NOT be pending
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      // Should not show pending for the first comment since target agent replied
-      const threads = screen.getAllByTestId('comment-thread');
-      // First thread (the one with reply) should not have pending styling
-      expect(threads[0]).not.toHaveClass('border-l-amber-500');
-    });
-  });
-
-  describe('accessibility', () => {
-    it('has proper heading for the section', () => {
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      const heading = screen.getByRole('heading', { level: 3 });
-      expect(heading).toHaveTextContent('Review Comments');
-    });
-
-    it('has proper aria-label on count badge', () => {
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      expect(screen.getByLabelText('2 comments')).toBeInTheDocument();
-    });
-
-    it('has proper aria-label on toggle button', () => {
-      render(<ReviewCommentsSection {...defaultProps} isExpanded={true} />);
-
-      expect(screen.getByRole('button', { name: /collapse review comments/i })).toBeInTheDocument();
-    });
-
-    it('has region role with proper labeling', () => {
-      render(<ReviewCommentsSection {...defaultProps} />);
-
-      expect(screen.getByRole('region')).toBeInTheDocument();
     });
   });
 

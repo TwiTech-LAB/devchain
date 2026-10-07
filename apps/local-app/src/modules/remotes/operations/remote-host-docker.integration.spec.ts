@@ -136,3 +136,14 @@ it('authenticates Docker JSON and archive streaming with each saved key', async 
     expect(seen.slice(-2)).toEqual([`Bearer ${key}`, `Bearer ${key}`]);
   }
 });
+
+it('rejects a malformed image-match answer at the LAN boundary', async () => {
+  const answer = { images: [{ ref: 'app:latest', id: 'sha256:vm', metadata: {} }] };
+  server.once('request', (_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(answer));
+  });
+  await expect(client.dockerMatchImages('remote', ['app:latest'])).rejects.toMatchObject({
+    details: { hostCode: 'invalid-response' },
+  });
+});

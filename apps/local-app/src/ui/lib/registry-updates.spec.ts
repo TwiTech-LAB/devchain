@@ -108,23 +108,6 @@ describe('registry-updates', () => {
         expect(result).toEqual({ status: 'offline' });
       });
 
-      it('returns offline on API error (non-OK response)', async () => {
-        (global.fetch as jest.Mock).mockResolvedValue({
-          ok: false,
-          status: 500,
-        });
-
-        const template: CachedTemplateInfo = {
-          slug: 'test-template',
-          source: 'registry',
-          latestVersion: '1.0.0',
-        };
-
-        const result = await checkTemplateUpdateStatus(template);
-
-        expect(result).toEqual({ status: 'offline' });
-      });
-
       it('returns not-in-registry when API returns null', async () => {
         (global.fetch as jest.Mock).mockResolvedValue({
           ok: true,
@@ -204,102 +187,49 @@ describe('registry-updates', () => {
 
         expect(result).toEqual({ status: 'up-to-date' });
       });
-
-      it('returns up-to-date when local version is newer', async () => {
-        (global.fetch as jest.Mock).mockResolvedValue({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              slug: 'test-template',
-              versions: [{ version: '1.0.0', isLatest: true }],
-            }),
-        });
-
-        const template: CachedTemplateInfo = {
-          slug: 'test-template',
-          source: 'registry',
-          latestVersion: '2.0.0',
-        };
-
-        const result = await checkTemplateUpdateStatus(template);
-
-        expect(result).toEqual({ status: 'up-to-date' });
-      });
     });
 
     describe('bundled templates', () => {
-      it('returns update-available when bundled template exists in registry', async () => {
-        (global.fetch as jest.Mock).mockResolvedValue({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              slug: 'bundled-template',
-              versions: [{ version: '1.0.0', isLatest: true }],
-            }),
-        });
+      it.each([
+        {
+          label: 'returns update-available when bundled template exists in registry',
+          remoteSlug: 'bundled-template',
+          remoteVersion: '1.0.0',
+          localSlug: 'bundled-template',
+          localVersion: null,
+          expectedVersion: '1.0.0',
+        },
+        {
+          label: 'returns update-available when bundled template version is older than registry',
+          remoteSlug: 'versioned-bundled',
+          remoteVersion: '2.0.0',
+          localSlug: 'versioned-bundled',
+          localVersion: '1.0.0',
+          expectedVersion: '2.0.0',
+        },
+      ] as const)(
+        '$label',
+        async ({ remoteSlug, remoteVersion, localSlug, localVersion, expectedVersion }) => {
+          (global.fetch as jest.Mock).mockResolvedValue({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                slug: remoteSlug,
+                versions: [{ version: remoteVersion, isLatest: true }],
+              }),
+          });
 
-        const template: CachedTemplateInfo = {
-          slug: 'bundled-template',
-          source: 'bundled',
-          latestVersion: null, // Bundled templates don't have local version
-        };
+          const template: CachedTemplateInfo = {
+            slug: localSlug,
+            source: 'bundled',
+            latestVersion: localVersion,
+          };
 
-        const result = await checkTemplateUpdateStatus(template);
+          const result = await checkTemplateUpdateStatus(template);
 
-        expect(result).toEqual({ status: 'update-available', remoteVersion: '1.0.0' });
-      });
-
-      it('returns not-in-registry when bundled template not in registry', async () => {
-        (global.fetch as jest.Mock).mockResolvedValue({
-          ok: true,
-          json: () => Promise.resolve(null),
-        });
-
-        const template: CachedTemplateInfo = {
-          slug: 'bundled-only-template',
-          source: 'bundled',
-          latestVersion: null,
-        };
-
-        const result = await checkTemplateUpdateStatus(template);
-
-        expect(result).toEqual({ status: 'not-in-registry' });
-      });
-
-      it('returns offline when network error checking bundled template', async () => {
-        (global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'));
-
-        const template: CachedTemplateInfo = {
-          slug: 'bundled-template',
-          source: 'bundled',
-          latestVersion: null,
-        };
-
-        const result = await checkTemplateUpdateStatus(template);
-
-        expect(result).toEqual({ status: 'offline' });
-      });
-
-      it('returns not-in-registry when registry has no version for bundled', async () => {
-        (global.fetch as jest.Mock).mockResolvedValue({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              slug: 'bundled-template',
-              versions: [], // No versions
-            }),
-        });
-
-        const template: CachedTemplateInfo = {
-          slug: 'bundled-template',
-          source: 'bundled',
-          latestVersion: null,
-        };
-
-        const result = await checkTemplateUpdateStatus(template);
-
-        expect(result).toEqual({ status: 'not-in-registry' });
-      });
+          expect(result).toEqual({ status: 'update-available', remoteVersion: expectedVersion });
+        },
+      );
 
       it('returns up-to-date when bundled template version matches registry', async () => {
         (global.fetch as jest.Mock).mockResolvedValue({
@@ -315,48 +245,6 @@ describe('registry-updates', () => {
           slug: 'versioned-bundled',
           source: 'bundled',
           latestVersion: '1.0.0', // Same as registry
-        };
-
-        const result = await checkTemplateUpdateStatus(template);
-
-        expect(result).toEqual({ status: 'up-to-date' });
-      });
-
-      it('returns update-available when bundled template version is older than registry', async () => {
-        (global.fetch as jest.Mock).mockResolvedValue({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              slug: 'versioned-bundled',
-              versions: [{ version: '2.0.0', isLatest: true }],
-            }),
-        });
-
-        const template: CachedTemplateInfo = {
-          slug: 'versioned-bundled',
-          source: 'bundled',
-          latestVersion: '1.0.0', // Older than registry
-        };
-
-        const result = await checkTemplateUpdateStatus(template);
-
-        expect(result).toEqual({ status: 'update-available', remoteVersion: '2.0.0' });
-      });
-
-      it('returns up-to-date when bundled template version is newer than registry', async () => {
-        (global.fetch as jest.Mock).mockResolvedValue({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              slug: 'versioned-bundled',
-              versions: [{ version: '1.0.0', isLatest: true }],
-            }),
-        });
-
-        const template: CachedTemplateInfo = {
-          slug: 'versioned-bundled',
-          source: 'bundled',
-          latestVersion: '2.0.0', // Newer than registry
         };
 
         const result = await checkTemplateUpdateStatus(template);

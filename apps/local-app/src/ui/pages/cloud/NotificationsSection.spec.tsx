@@ -105,15 +105,20 @@ describe('NotificationsSection', () => {
     expect(screen.queryByTestId('devices-panel')).not.toBeInTheDocument();
   });
 
-  it('keeps all notification panels for a signed-in This PC target', () => {
-    mockUseCloudConnection.mockReturnValue(CONNECTED);
-    renderSection();
-    expect(screen.getByTestId('devices-panel')).toHaveAttribute('data-backend', 'home');
-    expect(screen.getByTestId('notification-preferences-panel')).toBeInTheDocument();
-    expect(screen.getByTestId('quiet-hours-config')).toBeInTheDocument();
-    expect(screen.getByTestId('project-forwarding-list')).toBeInTheDocument();
-    expect(screen.queryByTestId('disconnected-hint')).not.toBeInTheDocument();
-  });
+  it.each([HOME_TARGET, REMOTE_TARGET])(
+    'renders signed-in notification panels for $backend',
+    (target) => {
+      mockUseCloudTarget.mockReturnValue(target);
+      mockUseCloudConnection.mockReturnValue(CONNECTED);
+      renderSection();
+      expect(screen.getByTestId('devices-panel')).toHaveAttribute('data-backend', target.backend);
+      expect(screen.getByTestId('notification-preferences-panel')).toBeInTheDocument();
+      expect(screen.getByTestId('quiet-hours-config')).toBeInTheDocument();
+      expect(screen.getByTestId('project-forwarding-list')).toBeInTheDocument();
+      expect(screen.queryByTestId('disconnected-hint')).not.toBeInTheDocument();
+      expect(screen.queryByText(/belong to This PC/)).not.toBeInTheDocument();
+    },
+  );
 
   it('shows remote devices and the This PC hint when only the remote is signed in', () => {
     mockUseCloudTarget.mockReturnValue(REMOTE_TARGET);
@@ -122,8 +127,6 @@ describe('NotificationsSection', () => {
     );
     renderSection();
 
-    expect(mockUseCloudConnection).toHaveBeenCalledWith('r1');
-    expect(mockUseCloudConnection).toHaveBeenCalledWith('home');
     expect(screen.getByTestId('devices-panel')).toHaveAttribute('data-backend', 'r1');
     expect(
       screen.getByText(
@@ -133,19 +136,6 @@ describe('NotificationsSection', () => {
     expect(screen.queryByTestId('notification-preferences-panel')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quiet-hours-config')).not.toBeInTheDocument();
     expect(screen.queryByTestId('project-forwarding-list')).not.toBeInTheDocument();
-  });
-
-  it('shows the home panels with a remote target when This PC is also signed in', () => {
-    mockUseCloudTarget.mockReturnValue(REMOTE_TARGET);
-    mockUseCloudConnection.mockReturnValue(CONNECTED);
-    renderSection();
-
-    expect(mockUseCloudConnection).toHaveBeenCalledWith('r1');
-    expect(screen.getByTestId('devices-panel')).toHaveAttribute('data-backend', 'r1');
-    expect(screen.getByTestId('notification-preferences-panel')).toBeInTheDocument();
-    expect(screen.getByTestId('quiet-hours-config')).toBeInTheDocument();
-    expect(screen.getByTestId('project-forwarding-list')).toBeInTheDocument();
-    expect(screen.queryByText(/belong to This PC/)).not.toBeInTheDocument();
   });
 
   it('does not issue PUT to egress endpoint when signed out', () => {

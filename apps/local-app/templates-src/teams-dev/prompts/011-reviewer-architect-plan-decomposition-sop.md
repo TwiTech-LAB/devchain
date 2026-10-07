@@ -1,4 +1,4 @@
-# Architect — Plan/Research Decomposition SOP (v1.24)
+# Architect — Plan/Research Decomposition SOP (v1.26)
 
 > **Type:** agent-instructions
 > **Priority:** mandatory
@@ -133,6 +133,7 @@ After Planning Complete (normal flow): Call ExitPlanMode, DO NOT start implement
 - Do planning and convert directly into a Master Plan without the Technical Validation Loop.
 - This covers reviews of Phase Epics and of remediation epics, including re-reviews.
 - Triage EACH finding with the §1.7 qualification test (the reviewer's feedback stands in for user approval). Fix every finding that passes yourself first, and run its verification and the project's tests. Put only the findings that fail into a new remediation epic (rules below); when all findings were fixed directly, create no epic.
+- Each finding gets at most one test: a test that reproduces its failure scenario. Extend an existing test when possible. Put this rule in each remediation sub-epic's DoD.
 - After direct fixes, reply to the reviewer once: what changed (files:lines), the tests run, and the remediation epic id if one exists. Re-request review.
 - **ALWAYS create a NEW parent epic** — never add to existing remediation epics: `Code Review Remediation <number>: <Phase Name>`
   - Status: **Draft**
@@ -159,7 +160,7 @@ Anything else — hypothetical scale, misuse-only inputs, future features, "whil
 
 **Blocker definition (shared with all reviewers):** a finding is a blocker only if the plan as written fails the stated goal, or breaks under normal expected use, with `file:line` evidence. Findings that don't meet this bar are backlog candidates or questions — never reasons to expand the plan.
 
-**Testing proportionality:** tests live in the DoD of the sub-epic whose behavior they cover, and they cover the Acceptance Criteria — not every theoretical input. At most ONE separate test sub-epic per phase, and only for cross-cutting integration verification. No blanket coverage targets.
+**Testing proportionality:** tests live in the DoD of the sub-epic whose behavior they cover, and they cover the Acceptance Criteria — not every theoretical input. At most ONE separate test sub-epic per phase, and only for cross-cutting integration verification. No blanket coverage targets. Name each behavior to test once, with its layer.
 
 Put depth of reasoning into verifying assumptions and finding the **smallest plan that meets the goal** — not into enumerating coverage.
 

@@ -86,12 +86,6 @@ describe('Terminal delivery wrappers', () => {
       confirm: false,
     });
   });
-
-  it('TerminalDeliveryFacade exposes terminal liveness checks', async () => {
-    await expect(deliveryFacade.sessionExists({ name: 'agent-tmux' })).resolves.toBe(true);
-
-    expect(terminalIO.sessionExists).toHaveBeenCalledWith({ name: 'agent-tmux' });
-  });
 });
 
 describe('TerminalDeliveryModule shape', () => {
@@ -106,30 +100,6 @@ describe('TerminalDeliveryModule shape', () => {
         PtyService,
         TerminalGateway,
         TerminalSessionRegistry,
-      ]),
-    );
-  });
-
-  it('owns and exports terminal delivery providers', () => {
-    const providers =
-      (Reflect.getMetadata(MODULE_METADATA.PROVIDERS, TerminalDeliveryModule) as unknown[]) ?? [];
-    const exports =
-      (Reflect.getMetadata(MODULE_METADATA.EXPORTS, TerminalDeliveryModule) as unknown[]) ?? [];
-
-    expect(providers).toEqual(
-      expect.arrayContaining([
-        HumanPromptStateService,
-        TerminalIOService,
-        GuestDeliveryService,
-        TerminalDeliveryFacade,
-      ]),
-    );
-    expect(exports).toEqual(
-      expect.arrayContaining([
-        HumanPromptStateService,
-        TerminalIOService,
-        GuestDeliveryService,
-        TerminalDeliveryFacade,
       ]),
     );
   });

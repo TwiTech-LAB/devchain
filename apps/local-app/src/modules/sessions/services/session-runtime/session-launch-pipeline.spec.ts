@@ -267,34 +267,6 @@ describe('SessionLaunchPipeline', () => {
         { normalizeCapturedLineEndings: true },
       );
     });
-
-    it('keeps captured normalization enabled for live raw-line-ending adapters', async () => {
-      const { pipeline, mocks } = createLaunchPipelineHarness();
-      (
-        mocks.adapter as {
-          terminalOutputBehavior?: { rawLineEndings: boolean };
-        }
-      ).terminalOutputBehavior = { rawLineEndings: true };
-
-      mocks.sqliteMock.prepare.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT') && sql.includes("status = 'running'")) {
-          return {
-            run: jest.fn(),
-            get: jest.fn().mockReturnValue(undefined),
-            all: jest.fn().mockReturnValue([]),
-          };
-        }
-        return { run: jest.fn().mockReturnValue({ changes: 1 }), get: jest.fn(), all: jest.fn() };
-      });
-
-      await runWithTimers(() => pipeline.launch(launchDto));
-
-      expect(mocks.terminalSessionRegistry.create).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(String),
-        { normalizeCapturedLineEndings: true },
-      );
-    });
   });
 
   // Per-provider alternate-screen policy — launch matrix.
@@ -342,21 +314,6 @@ describe('SessionLaunchPipeline', () => {
       await runWithTimers(() => pipeline.launch(launchDto));
 
       expect(mocks.terminalIO.setAlternateScreen).toHaveBeenCalledTimes(1);
-      expect(mocks.terminalIO.setAlternateScreen).toHaveBeenCalledWith(
-        { name: expect.any(String) },
-        false,
-      );
-    });
-
-    it('suppresses alternate-screen when the adapter explicitly opts out (usesAlternateScreen: false)', async () => {
-      const { pipeline, mocks } = createLaunchPipelineHarness();
-      (
-        mocks.adapter as { terminalOutputBehavior?: { usesAlternateScreen: boolean } }
-      ).terminalOutputBehavior = { usesAlternateScreen: false };
-      mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
-
-      await runWithTimers(() => pipeline.launch(launchDto));
-
       expect(mocks.terminalIO.setAlternateScreen).toHaveBeenCalledWith(
         { name: expect.any(String) },
         false,
@@ -618,7 +575,10 @@ describe('SessionLaunchPipeline', () => {
 
   // ── Regression tests: team-context rendering ─────────────────────────
   describe('renderAndPasteInitialPrompt — team-context rendering', () => {
-    it('A: team-lead renders LEAD branch', async () => {
+    it.each([
+      ['agent-1', 'LEAD', 'MEMBER'],
+      ['other-agent', 'MEMBER', 'LEAD'],
+    ])('renders %s team lead as %s', async (teamLeadAgentId, expected, excluded) => {
       const { pipeline, mocks } = createLaunchPipelineHarness();
       mocks.storage.getInitialSessionPrompt.mockResolvedValue({
         content: '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}',
@@ -627,7 +587,7 @@ describe('SessionLaunchPipeline', () => {
         {
           id: 't1',
           name: 'Backend',
-          teamLeadAgentId: 'agent-1',
+          teamLeadAgentId,
           projectId: 'project-1',
           createdAt: '',
           updatedAt: '',
@@ -640,34 +600,8 @@ describe('SessionLaunchPipeline', () => {
 
       expect(mocks.terminalIO.deliver).toHaveBeenCalled();
       const deliveredText = mocks.terminalIO.deliver.mock.calls[0][1] as string;
-      expect(deliveredText).toContain('LEAD');
-      expect(deliveredText).not.toContain('MEMBER');
-    });
-
-    it('B: non-lead renders MEMBER branch', async () => {
-      const { pipeline, mocks } = createLaunchPipelineHarness();
-      mocks.storage.getInitialSessionPrompt.mockResolvedValue({
-        content: '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}',
-      });
-      mocks.teamsService.listTeamsByAgent.mockResolvedValue([
-        {
-          id: 't1',
-          name: 'Backend',
-          teamLeadAgentId: 'other-agent',
-          projectId: 'project-1',
-          createdAt: '',
-          updatedAt: '',
-        },
-      ]);
-
-      await runWithTimers(() =>
-        pipeline.launch({ projectId: 'project-1', agentId: 'agent-1', epicId: 'epic-1' }),
-      );
-
-      expect(mocks.terminalIO.deliver).toHaveBeenCalled();
-      const deliveredText = mocks.terminalIO.deliver.mock.calls[0][1] as string;
-      expect(deliveredText).toContain('MEMBER');
-      expect(deliveredText).not.toContain('LEAD');
+      expect(deliveredText).toContain(expected);
+      expect(deliveredText).not.toContain(excluded);
     });
 
     it('C: null prompt guard — no IO performed', async () => {

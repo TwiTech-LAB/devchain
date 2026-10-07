@@ -46,11 +46,6 @@ describe('McpConfigurationModal', () => {
     jest.useRealTimers();
   });
 
-  it('renders nothing when open is false', () => {
-    render(<McpConfigurationModal {...defaultProps} open={false} />);
-    expect(screen.queryByText('Manual MCP Configuration Required')).not.toBeInTheDocument();
-  });
-
   it('displays the dialog title and provider name when open', () => {
     render(<McpConfigurationModal {...defaultProps} />);
 
@@ -91,11 +86,6 @@ describe('McpConfigurationModal', () => {
     render(<McpConfigurationModal {...defaultProps} />);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(defaultProps.onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it('shows Run in Terminal section', () => {
-    render(<McpConfigurationModal {...defaultProps} />);
-    expect(screen.getByText('Run in Terminal')).toBeInTheDocument();
   });
 
   it('shows Verify Configuration button when onVerify is provided', () => {
@@ -182,15 +172,6 @@ describe('McpConfigurationModal', () => {
       await act(async () => {
         resolvePromise!(true);
       });
-    });
-  });
-
-  describe('MCP info section', () => {
-    it('displays MCP explanation text', () => {
-      render(<McpConfigurationModal {...defaultProps} />);
-      expect(
-        screen.getByText(/MCP \(Model Context Protocol\) enables Claude to communicate/),
-      ).toBeInTheDocument();
     });
   });
 

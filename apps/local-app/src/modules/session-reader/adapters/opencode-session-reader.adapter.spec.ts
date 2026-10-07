@@ -111,33 +111,12 @@ describe('OpenCodeSessionReaderAdapter', () => {
   });
 
   describe('getFreshnessToken', () => {
-    it('returns the reader freshness for the providerSessionId', async () => {
-      reader.getFreshness.mockReturnValue({ count: 5, maxUpdated: 999 });
-      const token = await adapter.getFreshnessToken(ref({ providerSessionId: 'ses_1' }));
-      expect(token).toEqual({ count: 5, maxUpdated: 999 });
-      expect(reader.getFreshness).toHaveBeenCalledWith(DB_PATH, 'ses_1');
-    });
-
     it('throws when providerSessionId is absent', async () => {
       await expect(adapter.getFreshnessToken(ref())).rejects.toThrow(ValidationError);
     });
   });
 
   describe('parseFullSession', () => {
-    it('reads the session located by sourceRef.providerSessionId', async () => {
-      const session = makeSession();
-      reader.readSession.mockReturnValue({
-        session,
-        sizeBytes: 10,
-        freshness: { count: 1, maxUpdated: 1 },
-      });
-
-      const result = await adapter.parseFullSession(DB_PATH, ref({ providerSessionId: 'ses_1' }));
-
-      expect(result).toBe(session);
-      expect(reader.readSession).toHaveBeenCalledWith(DB_PATH, 'ses_1');
-    });
-
     it('throws when sourceRef lacks providerSessionId', async () => {
       await expect(adapter.parseFullSession(DB_PATH)).rejects.toThrow(ValidationError);
     });

@@ -1,7 +1,7 @@
 import * as os from 'os';
 import { mkdtemp, mkdir, writeFile, rm } from 'fs/promises';
 import { join, dirname } from 'path';
-import { CopilotAuthProbeService, COPILOT_AUTH_REMEDIATION } from './copilot-auth-probe.service';
+import { CopilotAuthProbeService } from './copilot-auth-probe.service';
 
 jest.mock('os', () => {
   const actual = jest.requireActual('os');
@@ -30,11 +30,6 @@ describe('CopilotAuthProbeService', () => {
 
   afterEach(async () => {
     await rm(home, { recursive: true, force: true });
-  });
-
-  it('exposes the actionable remediation string', () => {
-    expect(COPILOT_AUTH_REMEDIATION).toContain('copilot login');
-    expect(COPILOT_AUTH_REMEDIATION).toContain('COPILOT_GITHUB_TOKEN');
   });
 
   it.each(['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'])(

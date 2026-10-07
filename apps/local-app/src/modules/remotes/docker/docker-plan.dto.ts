@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import type { VmUserMismatch } from '../vm-user-identity';
+
+export interface DockerPresence {
+  state: 'present' | 'absent' | 'unknown';
+}
 
 export const DockerSelectionModeSchema = z.enum([
   'container-and-data',
@@ -12,6 +17,7 @@ export const DockerSelectionItemSchema = z
     id: z.string().min(1).max(512),
     mode: DockerSelectionModeSchema,
     dataChoice: DockerDataChoiceSchema.optional(),
+    acceptPrivileged: z.literal(true).optional(),
   })
   .strict();
 /** Only item identities and choices; the server re-scans and builds what moves itself. */
@@ -42,6 +48,7 @@ export interface DockerPlanMount {
     | 'named-volume'
     | 'anonymous-volume'
     | 'project-bind'
+    | 'project-code'
     | 'home-bind'
     | 'readonly-external-bind'
     | 'external-bind';
@@ -65,8 +72,18 @@ export interface DockerPlanImage {
   id: string;
   architecture: string;
   size: DockerPlanSize;
+  notCopied?: boolean;
+}
+/** A Docker network and its IPv4 subnets. */
+export interface DockerNetworkRange {
+  name: string;
+  subnets: string[];
 }
 export interface DockerPlanItem {
+  buildsFromProject?: boolean;
+  privileged?: boolean;
+  networks?: DockerNetworkRange[];
+  fixedIPv4?: Array<{ network: string; address: string; subnets: string[] }>;
   dataState?: DockerDataState;
   dataGroup?: string[];
   dataChoice?: DockerDataChoice;
@@ -75,7 +92,7 @@ export interface DockerPlanItem {
   missingData?: DockerDataMembers;
   /**
    * The data the item copies when it moves with its data, by the fit check's
-   * copy rule: a bind of the whole project root counts nothing.
+   * copy rule: copyable mount kinds only, each nested bind counted once.
    */
   dataSize?: DockerPlanSize;
   id: string;
@@ -110,7 +127,16 @@ export interface DockerPlanFilesystem {
   unknown: boolean;
   status: 'fits' | 'warning' | 'refused' | 'unknown';
 }
+export type DockerPlanNetwork = DockerNetworkRange &
+  (
+    | { kind: 'home-range' }
+    | { kind: 'automatic-range'; overlaps: string }
+    /** `overlaps`: what else on the VM holds the home range, so recreating would not restore it. */
+    | { kind: 'reused'; vmSubnets: string[]; differs: boolean; overlaps?: string }
+  );
+
 export interface DockerPlan {
+  networks?: DockerPlanNetwork[];
   dataGroups?: DockerDataGroupCheck[];
   projectId: string;
   remoteId: string;
@@ -119,14 +145,19 @@ export interface DockerPlan {
     available: boolean;
     side: 'home' | 'remote' | null;
     reason: DockerPlanIssue | null;
+    userMismatch?: VmUserMismatch;
   };
   apiVersion: string | null;
   items: DockerPlanItem[];
   filesystems: DockerPlanFilesystem[];
+  /** What the selection adds on the VM: images it lacks and copied data, each counted once. */
+  copySize: DockerPlanSize;
   fit: 'fits' | 'warning' | 'refused' | 'unknown';
   canConnect: boolean;
   warnings: DockerPlanIssue[];
   managedExclusions: string[];
+  /** Project-anchored code paths, including paths from previous imports. */
+  codePaths: string[];
   reconnect: { importedAt: string; replacing: string[]; lossNotice: string } | null;
   estimate: {
     minSeconds: number;

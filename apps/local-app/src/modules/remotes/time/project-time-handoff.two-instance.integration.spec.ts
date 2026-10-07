@@ -20,7 +20,7 @@ import { RemoteHostClient } from '../operations/remote-host.client';
 import { ensureProvider, seedReplicaSource } from '../replica/__fixtures__/replica-seed';
 import type { ProjectTimeSettlement } from './project-time-settler.service';
 
-const SETTLE_TIMEOUT_MS = 1_000;
+const SETTLE_TIMEOUT_MS = 300;
 
 interface TimeTotals {
   byEpic: unknown[];

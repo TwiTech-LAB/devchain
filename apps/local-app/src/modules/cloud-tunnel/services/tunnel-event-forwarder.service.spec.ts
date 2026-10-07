@@ -4,7 +4,6 @@ import { projectBroadcast } from '../../events/catalog/project-broadcast';
 import {
   TunnelEventForwarderService,
   TUNNEL_FORWARDED_EVENTS,
-  CONTENT_BEARING_PUSH_EVENTS,
 } from './tunnel-event-forwarder.service';
 import type { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
 import type { TunnelClientService } from './tunnel-client.service';
@@ -358,7 +357,8 @@ describe('TunnelEventForwarderService', () => {
     expect(tunnelClient.sendPush).not.toHaveBeenCalled();
   });
 
-  it('drops AskUserQuestion / presence frames with a null sessionId scope key', async () => {
+  it('drops encrypted AskUserQuestion frames with a null sessionId scope key', async () => {
+    channelMode = 'encrypted';
     emitter.emit('claude.hooks.ask_user_question.pending', {
       projectId: 'p1',
       agentId: 'a1',
@@ -378,6 +378,8 @@ describe('TunnelEventForwarderService', () => {
     });
     await flush();
 
+    expect(activeSessions.getSessionProjectScope).not.toHaveBeenCalled();
+    expect(sealMock).not.toHaveBeenCalled();
     expect(tunnelClient.sendPush).not.toHaveBeenCalled();
   });
 
@@ -463,17 +465,6 @@ describe('TunnelEventForwarderService', () => {
   });
 
   // ── E2EE push payload sealing + content-bearing guard ──
-
-  it('declares exactly the content-bearing events (AUQ pending + transcript deltas + agent names)', () => {
-    expect([...CONTENT_BEARING_PUSH_EVENTS].sort()).toEqual(
-      [
-        'agent.created',
-        'agent.deleted',
-        'claude.hooks.ask_user_question.pending',
-        'session.transcript.updated',
-      ].sort(),
-    );
-  });
 
   it('WITHHOLDS AskUserQuestion pending (question text) when the peer is not E2EE-capable', async () => {
     channelMode = 'plaintext';

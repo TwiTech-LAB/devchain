@@ -107,19 +107,6 @@ describe('useChatSocket', () => {
     ).toBe(false);
   });
 
-  it('exposes socketRef pointing to the socket returned by useAppSocket', () => {
-    const socket = createMockSocket();
-    useAppSocketMock.mockReturnValue(socket);
-
-    const { result, unmount } = renderHook(() => useChatSocket(buildOptions()), {
-      wrapper: createWrapper(),
-    });
-
-    expect(result.current.socketRef.current).toBe(socket);
-
-    unmount();
-  });
-
   describe('project-state topic', () => {
     let queryClient: QueryClient;
     let messageHandler: (envelope: WsEnvelope) => void;
@@ -140,43 +127,27 @@ describe('useChatSocket', () => {
       messageHandler = lastCall[0].message;
     }
 
-    it('team.member.added invalidates team detail', () => {
-      setup();
-      messageHandler({
-        topic: 'project/project-1/state',
+    it.each([
+      {
         type: 'team.member.added',
         payload: { teamId: 't1', teamName: 'Backend', addedAgentId: 'a2', addedAgentName: 'W' },
-        ts: '2026-01-01T00:00:00.000Z',
-      });
-
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['teams', 'detail', 't1'],
-      });
-    });
-
-    it('team.member.removed invalidates team detail', () => {
-      setup();
-      messageHandler({
-        topic: 'project/project-1/state',
+      },
+      {
         type: 'team.member.removed',
         payload: { teamId: 't1', teamName: 'Backend', removedAgentId: 'a2', removedAgentName: 'W' },
-        ts: '2026-01-01T00:00:00.000Z',
-      });
-
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ['teams', 'detail', 't1'],
-      });
-    });
-
-    it('team.config.updated invalidates team detail', () => {
+      },
+      {
+        type: 'team.config.updated',
+        payload: { teamId: 't1', teamName: 'Backend', previous: {}, current: {} },
+      },
+    ] as const)('$type invalidates team detail', ({ type, payload }) => {
       setup();
       messageHandler({
         topic: 'project/project-1/state',
-        type: 'team.config.updated',
-        payload: { teamId: 't1', teamName: 'Backend', previous: {}, current: {} },
+        type,
+        payload,
         ts: '2026-01-01T00:00:00.000Z',
       });
-
       expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
         queryKey: ['teams', 'detail', 't1'],
       });

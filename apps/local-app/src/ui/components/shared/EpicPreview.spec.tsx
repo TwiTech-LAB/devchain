@@ -23,13 +23,6 @@ describe('EpicPreview tags', () => {
     expect(screen.queryByText(/Merged from/i)).not.toBeInTheDocument();
   });
 
-  it('renders regular tags unchanged', () => {
-    render(<EpicPreview tags={['priority:high']} />);
-
-    expect(screen.getByText('priority:high')).toBeInTheDocument();
-    expect(screen.queryByText(/Merged from/i)).not.toBeInTheDocument();
-  });
-
   it('keeps tags on one compact row with full hover values and overflow names', () => {
     render(
       <EpicPreview

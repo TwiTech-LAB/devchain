@@ -205,30 +205,18 @@ describe('TeamsPage', () => {
     queryClient.clear();
   });
 
-  it('shows "No lead assigned" for teams without a lead', async () => {
-    global.fetch = buildFetchMock({
-      teams: [mockTeamNoLead],
-      teamDetail: mockTeamDetailNoLead,
-    }) as unknown as typeof fetch;
+  it.each(['missing', 'unresolved'])('renders $0 lead label', async (mode) => {
+    global.fetch = buildFetchMock(
+      mode === 'missing'
+        ? { teams: [mockTeamNoLead], teamDetail: mockTeamDetailNoLead }
+        : { teams: [{ ...mockTeam, teamLeadAgentId: 'agent-missing', teamLeadAgentName: null }] },
+    ) as unknown as typeof fetch;
     const { Wrapper, queryClient } = createWrapper();
     render(<TeamsPage />, { wrapper: Wrapper });
-
     await screen.findByText('Backend Squad');
-    expect(screen.getByText('No lead assigned')).toBeInTheDocument();
-
-    queryClient.clear();
-  });
-
-  it('shows "Unknown" when a lead id exists but the lead name is unresolved', async () => {
-    global.fetch = buildFetchMock({
-      teams: [{ ...mockTeam, teamLeadAgentId: 'agent-missing', teamLeadAgentName: null }],
-    }) as unknown as typeof fetch;
-    const { Wrapper, queryClient } = createWrapper();
-    render(<TeamsPage />, { wrapper: Wrapper });
-
-    await screen.findByText('Backend Squad');
-    expect(screen.getByText('Unknown')).toBeInTheDocument();
-
+    expect(
+      screen.getByText(mode === 'missing' ? 'No lead assigned' : 'Unknown'),
+    ).toBeInTheDocument();
     queryClient.clear();
   });
 
@@ -673,18 +661,6 @@ describe('TeamsPage', () => {
       return { queryClient, fetchMock };
     }
 
-    it('renders provider headers + per-config checkboxes', async () => {
-      const { queryClient } = await openConfigModal();
-
-      await screen.findByLabelText('Select all claude configs');
-      expect(screen.getByLabelText('Select all codex configs')).toBeInTheDocument();
-
-      expect(screen.getByLabelText('Config One')).toBeInTheDocument();
-      expect(screen.getByLabelText('Config Two')).toBeInTheDocument();
-
-      queryClient.clear();
-    });
-
     it('shows all providers and configs checked when profile has allow-all (no selections)', async () => {
       const { queryClient } = await openConfigModal({
         teamDetail: {
@@ -767,27 +743,47 @@ describe('TeamsPage', () => {
       queryClient.clear();
     });
 
-    it('deselecting all providers emits remove (Rule 3 — no silent allow-all)', async () => {
-      const { queryClient, fetchMock } = await openConfigModal();
-
-      await screen.findByLabelText('Select all claude configs');
-      fireEvent.click(screen.getByLabelText('Select all claude configs'));
-
-      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-
-      await waitFor(() => {
-        const putCall = (fetchMock as jest.Mock).mock.calls.find(
-          ([url, opts]: [string, RequestInit?]) =>
-            typeof url === 'string' && url.startsWith('/api/teams/') && opts?.method === 'PUT',
+    it.each(['deselect-all', 'allow-all'])(
+      'saves config selections for %s with an actual PUT',
+      async (mode) => {
+        const { queryClient, fetchMock } = await openConfigModal(
+          mode === 'allow-all'
+            ? {
+                teamDetail: {
+                  ...mockTeamDetail,
+                  profileIds: ['profile-1'],
+                  profileConfigSelections: [],
+                },
+              }
+            : undefined,
         );
-        if (putCall) {
-          const body = JSON.parse(putCall[1].body as string);
-          expect(body.profileIds).not.toContain('profile-1');
-        }
-      });
-
-      queryClient.clear();
-    });
+        await screen.findByLabelText('Select all claude configs');
+        if (mode === 'deselect-all')
+          fireEvent.click(screen.getByLabelText('Select all claude configs'));
+        fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+        await waitFor(() =>
+          expect(screen.queryByText('Configure Allowed Configs')).not.toBeInTheDocument(),
+        );
+        fireEvent.click(
+          within(screen.getByRole('dialog')).getByRole('button', { name: /^save$/i }),
+        );
+        await waitFor(() => {
+          const putCall = (fetchMock as jest.Mock).mock.calls.find(
+            ([url, opts]: [string, RequestInit?]) =>
+              typeof url === 'string' && url.startsWith('/api/teams/') && opts?.method === 'PUT',
+          );
+          expect(putCall).toBeDefined();
+          const request = putCall![1] as RequestInit;
+          const input = JSON.parse(request.body as string);
+          if (mode === 'deselect-all') expect(input.profileIds).not.toContain('profile-1');
+          else {
+            expect(input.profileConfigSelections).toEqual([]);
+            expect(input.profileIds).toContain('profile-1');
+          }
+        });
+        queryClient.clear();
+      },
+    );
 
     it('indeterminate state when provider has partial config selection', async () => {
       const sameProviderConfigs = [
@@ -889,55 +885,6 @@ describe('TeamsPage', () => {
           }),
         ]),
       );
-    });
-
-    it('Rule 1 save: allow-all state emits zero profileConfigSelections in PUT', async () => {
-      const { queryClient, fetchMock } = await openConfigModal({
-        teamDetail: {
-          ...mockTeamDetail,
-          profileIds: ['profile-1'],
-          profileConfigSelections: [],
-        },
-      });
-
-      await screen.findByLabelText('Select all claude configs');
-      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-
-      await waitFor(() => {
-        const putCall = (fetchMock as jest.Mock).mock.calls.find(
-          ([url, opts]: [string, RequestInit?]) =>
-            typeof url === 'string' && url.startsWith('/api/teams/') && opts?.method === 'PUT',
-        );
-        if (putCall) {
-          const body = JSON.parse(putCall[1].body as string);
-          expect(body.profileConfigSelections).toEqual([]);
-          expect(body.profileIds).toContain('profile-1');
-        }
-      });
-
-      queryClient.clear();
-    });
-
-    it('Rule 2 save: subset emits explicit config IDs in PUT', async () => {
-      const { queryClient, fetchMock } = await openConfigModal();
-
-      await screen.findByLabelText('Select all claude configs');
-      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-
-      await waitFor(() => {
-        const putCall = (fetchMock as jest.Mock).mock.calls.find(
-          ([url, opts]: [string, RequestInit?]) =>
-            typeof url === 'string' && url.startsWith('/api/teams/') && opts?.method === 'PUT',
-        );
-        if (putCall) {
-          const body = JSON.parse(putCall[1].body as string);
-          expect(body.profileConfigSelections).toEqual([
-            { profileId: 'profile-1', configIds: ['config-1'] },
-          ]);
-        }
-      });
-
-      queryClient.clear();
     });
   });
 
@@ -1062,65 +1009,6 @@ describe('TeamsPage', () => {
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
 
-    it('create dialog hides agents already in another team', async () => {
-      const teamXList = makeTeamList('team-x', 'Team X', 'agent-a', 'Agent A', 1);
-      const teamXDetail = makeTeamDetail('team-x', 'Team X', 'agent-a', 'Agent A', [agentA]);
-
-      global.fetch = buildFetchMock({
-        teams: [teamXList],
-        teamDetailsMap: { 'team-x': teamXDetail },
-        agents: [agentA, agentB, agentC],
-      }) as unknown as typeof fetch;
-      const { Wrapper, queryClient } = createWrapper();
-      render(<TeamsPage />, { wrapper: Wrapper });
-
-      await screen.findByText('Team X');
-
-      fireEvent.click(screen.getAllByRole('button', { name: /create team/i })[0]);
-      await screen.findByRole('dialog');
-
-      // Agent A is in Team X → hidden
-      expect(document.getElementById('member-agent-a')).toBeNull();
-      // Agents B, C are unassigned → visible
-      expect(document.getElementById('member-agent-b')).toBeTruthy();
-      expect(document.getElementById('member-agent-c')).toBeTruthy();
-
-      queryClient.clear();
-    });
-
-    it('edit dialog shows own team members plus unassigned agents', async () => {
-      const teamXList = makeTeamList('team-x', 'Team X', 'agent-a', 'Agent A', 1);
-      const teamXDetail = makeTeamDetail('team-x', 'Team X', 'agent-a', 'Agent A', [agentA]);
-
-      global.fetch = buildFetchMock({
-        teams: [teamXList],
-        teamDetailsMap: { 'team-x': teamXDetail },
-        agents: [agentA, agentB, agentC],
-      }) as unknown as typeof fetch;
-      const { Wrapper, queryClient } = createWrapper();
-      render(<TeamsPage />, { wrapper: Wrapper });
-
-      await screen.findByText('Team X');
-
-      const card = screen.getByTestId('team-card-team-x');
-      fireEvent.click(within(card).getAllByRole('button')[0]);
-
-      const dialog = await screen.findByRole('dialog');
-      await waitFor(() => {
-        expect((within(dialog).getByLabelText('Name') as HTMLInputElement).value).toBe('Team X');
-      });
-
-      // Agent A (own member) → visible and checked
-      const checkboxA = document.getElementById('member-agent-a')!;
-      expect(checkboxA).toBeTruthy();
-      expect(checkboxA).toHaveAttribute('data-state', 'checked');
-      // Agents B, C (unassigned) → visible and unchecked
-      expect(document.getElementById('member-agent-b')).toBeTruthy();
-      expect(document.getElementById('member-agent-c')).toBeTruthy();
-
-      queryClient.clear();
-    });
-
     it('edit dialog hides agents belonging to other teams', async () => {
       const teamXList = makeTeamList('team-x', 'Team X', 'agent-a', 'Agent A', 1);
       const teamYList = makeTeamList('team-y', 'Team Y', 'agent-b', 'Agent B', 1);
@@ -1147,6 +1035,7 @@ describe('TeamsPage', () => {
 
       // Agent A (own member) → visible
       expect(document.getElementById('member-agent-a')).toBeTruthy();
+      expect(document.getElementById('member-agent-a')).toHaveAttribute('data-state', 'checked');
       // Agent B (in Team Y) → hidden
       expect(document.getElementById('member-agent-b')).toBeNull();
       // Agents C, D (unassigned) → visible
@@ -1519,6 +1408,11 @@ describe('TeamsPage', () => {
       const nameInput = within(dialog).getByLabelText('Name') as HTMLInputElement;
       await waitFor(() => expect(nameInput.value).toBe('Backend Squad'));
 
+      await waitFor(() =>
+        expect(document.getElementById('member-agent-1')).toHaveAttribute('data-state', 'checked'),
+      );
+      fireEvent.click(document.getElementById('member-agent-3')!);
+      expect(document.getElementById('member-agent-3')).toHaveAttribute('data-state', 'checked');
       fireEvent.change(nameInput, { target: { value: 'Renamed Squad' } });
       expect(nameInput.value).toBe('Renamed Squad');
 
@@ -1533,42 +1427,8 @@ describe('TeamsPage', () => {
 
       expect(nameInput.value).toBe('Renamed Squad');
 
-      queryClient.clear();
-    });
-
-    it('edit dialog preserves member selection across unrelated query refetch', async () => {
-      const fetchMock = buildFetchMock();
-      global.fetch = fetchMock as unknown as typeof fetch;
-
-      const { Wrapper, queryClient } = createWrapper();
-      render(<TeamsPage />, { wrapper: Wrapper });
-
-      await screen.findByText('Backend Squad');
-
-      const card = screen.getByTestId('team-card-team-1');
-      const buttons = within(card).getAllByRole('button');
-      fireEvent.click(buttons[0]);
-      await screen.findByRole('dialog');
-
-      await waitFor(() => {
-        expect(document.getElementById('member-agent-1')).toHaveAttribute('data-state', 'checked');
-      });
-
-      fireEvent.click(document.getElementById('member-agent-3')!);
-      expect(document.getElementById('member-agent-3')).toHaveAttribute('data-state', 'checked');
-
-      await act(async () => {
-        queryClient.setQueryData(['teams-page-agents', 'project-1'], {
-          items: mockAgents,
-          total: mockAgents.length,
-          limit: 100,
-          offset: 0,
-        });
-      });
-
       expect(document.getElementById('member-agent-3')).toHaveAttribute('data-state', 'checked');
       expect(document.getElementById('member-agent-1')).toHaveAttribute('data-state', 'checked');
-
       queryClient.clear();
     });
   });

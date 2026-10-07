@@ -49,48 +49,7 @@ describe('ProviderMappingModal', () => {
     jest.clearAllMocks();
   });
 
-  it('renders nothing when open is false', () => {
-    render(<ProviderMappingModal {...defaultProps} open={false} />);
-    expect(screen.queryByText('Provider Configuration Required')).not.toBeInTheDocument();
-  });
-
-  it('displays the dialog title and warning message when open', () => {
-    render(<ProviderMappingModal {...defaultProps} />);
-
-    expect(screen.getByText('Provider Configuration Required')).toBeInTheDocument();
-    expect(
-      screen.getByText(/The recommended provider configuration is not possible/),
-    ).toBeInTheDocument();
-  });
-
-  it('displays missing providers', () => {
-    render(<ProviderMappingModal {...defaultProps} />);
-
-    expect(screen.getByText('Missing Providers')).toBeInTheDocument();
-    // 'codex' appears in both the missing providers alert and the table
-    // Use getAllByText to verify it appears at least once
-    expect(screen.getAllByText('codex').length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('displays family mapping table with default provider marked as unavailable', () => {
-    render(<ProviderMappingModal {...defaultProps} />);
-
-    // Table headers
-    expect(screen.getByText('Family')).toBeInTheDocument();
-    expect(screen.getByText('Default Provider')).toBeInTheDocument();
-    expect(screen.getByText('Use Instead')).toBeInTheDocument();
-
-    // Family row
-    expect(screen.getByText('coder')).toBeInTheDocument();
-  });
-
-  it('shows Import button when canImport is true', () => {
-    render(<ProviderMappingModal {...defaultProps} />);
-
-    expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument();
-  });
-
-  it('hides Import button when all families are blocked (no alternatives)', () => {
+  it('shows blocked import and missing alternatives', () => {
     const propsAllBlocked = {
       ...defaultProps,
       familyAlternatives: [
@@ -104,53 +63,19 @@ describe('ProviderMappingModal', () => {
       ] as FamilyAlternative[],
       canImport: false,
     };
-
     render(<ProviderMappingModal {...propsAllBlocked} />);
-
-    expect(screen.queryByRole('button', { name: 'Import' })).not.toBeInTheDocument();
-  });
-
-  it('shows cannot import alert when all families are blocked', () => {
-    const propsAllBlocked = {
-      ...defaultProps,
-      familyAlternatives: [
-        {
-          familySlug: 'special',
-          defaultProvider: 'codex',
-          defaultProviderAvailable: false,
-          availableProviders: [],
-          hasAlternatives: false,
-        },
-      ] as FamilyAlternative[],
-      canImport: false,
-    };
-
-    render(<ProviderMappingModal {...propsAllBlocked} />);
-
-    expect(screen.getByText('Cannot Import')).toBeInTheDocument();
-    expect(
-      screen.getByText(/One or more required families have no available providers/),
-    ).toBeInTheDocument();
-  });
-
-  it('shows "No alternatives" for families without available providers', () => {
-    const propsWithNoAlternatives = {
-      ...defaultProps,
-      familyAlternatives: [
-        {
-          familySlug: 'special',
-          defaultProvider: 'codex',
-          defaultProviderAvailable: false,
-          availableProviders: [],
-          hasAlternatives: false,
-        },
-      ] as FamilyAlternative[],
-      canImport: false,
-    };
-
-    render(<ProviderMappingModal {...propsWithNoAlternatives} />);
-
-    expect(screen.getByText('No alternatives')).toBeInTheDocument();
+    {
+      expect(screen.queryByRole('button', { name: 'Import' })).not.toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Cannot Import')).toBeInTheDocument();
+      expect(
+        screen.getByText(/One or more required families have no available providers/),
+      ).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('No alternatives')).toBeInTheDocument();
+    }
   });
 
   it('calls onOpenChange when Cancel button is clicked', () => {
@@ -175,11 +100,15 @@ describe('ProviderMappingModal', () => {
     });
   });
 
-  it('shows loading state when loading prop is true', () => {
+  it('disables import and cancel while importing', () => {
     render(<ProviderMappingModal {...defaultProps} loading={true} />);
-
-    expect(screen.getByRole('button', { name: 'Importing...' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Importing...' })).toBeDisabled();
+    {
+      expect(screen.getByRole('button', { name: 'Importing...' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Importing...' })).toBeDisabled();
+    }
+    {
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    }
   });
 
   it('displays multiple missing providers correctly', () => {
@@ -260,33 +189,6 @@ describe('ProviderMappingModal', () => {
     });
   });
 
-  it('handles single available provider correctly', () => {
-    const propsWithSingleProvider = {
-      ...defaultProps,
-      familyAlternatives: [
-        {
-          familySlug: 'coder',
-          defaultProvider: 'codex',
-          defaultProviderAvailable: false,
-          availableProviders: ['claude'], // Only one alternative
-          hasAlternatives: true,
-        },
-      ] as FamilyAlternative[],
-    };
-
-    render(<ProviderMappingModal {...propsWithSingleProvider} />);
-
-    // Should still show the table and allow import
-    expect(screen.getByText('coder')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import' })).toBeInTheDocument();
-  });
-
-  it('disables Cancel button while loading', () => {
-    render(<ProviderMappingModal {...defaultProps} loading={true} />);
-
-    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
-  });
-
   it('handles mixed families - some with alternatives, some without (canImport=false)', () => {
     const propsWithMixedAlternatives = {
       ...defaultProps,
@@ -328,7 +230,7 @@ describe('ProviderMappingModal', () => {
     expect(screen.queryByText('Partial Provider Coverage')).not.toBeInTheDocument();
   });
 
-  it('includes blocked family names in Cannot Import alert', () => {
+  it('names blocked families and missing providers in the import alert', () => {
     const props = {
       ...defaultProps,
       familyAlternatives: [
@@ -357,36 +259,16 @@ describe('ProviderMappingModal', () => {
       missingProviders: ['codex', 'openai'],
       canImport: false,
     };
-
     render(<ProviderMappingModal {...props} />);
-
-    // The "Cannot Import" alert should enumerate blocked family slugs
-    const alertText = screen.getByText(/One or more required families/);
-    expect(alertText.textContent).toContain('reviewer');
-    expect(alertText.textContent).toContain('planner');
-  });
-
-  it('includes missing provider names in Cannot Import alert', () => {
-    const props = {
-      ...defaultProps,
-      familyAlternatives: [
-        {
-          familySlug: 'special',
-          defaultProvider: 'codex',
-          defaultProviderAvailable: false,
-          availableProviders: [],
-          hasAlternatives: false,
-        },
-      ] as FamilyAlternative[],
-      missingProviders: ['codex', 'openai'],
-      canImport: false,
-    };
-
-    render(<ProviderMappingModal {...props} />);
-
-    // The "Cannot Import" alert should include the missing provider names
-    const alertText = screen.getByText(/Install the missing providers/);
-    expect(alertText.textContent).toContain('codex');
-    expect(alertText.textContent).toContain('openai');
+    {
+      const alertText = screen.getByText(/One or more required families/);
+      expect(alertText.textContent).toContain('reviewer');
+      expect(alertText.textContent).toContain('planner');
+    }
+    {
+      const alertText = screen.getByText(/Install the missing providers/);
+      expect(alertText.textContent).toContain('codex');
+      expect(alertText.textContent).toContain('openai');
+    }
   });
 });

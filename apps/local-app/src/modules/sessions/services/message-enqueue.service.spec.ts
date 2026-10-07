@@ -62,6 +62,8 @@ describe('MessageEnqueueService', () => {
           failureDisclosure: 'project-safe',
           deferWhileHumanTyping: true,
           humanPromptSubmit: false,
+          clientMessageId: 'client-1',
+          deliveryMode: 'on_idle',
         },
         {
           agentId: 'agent-2',
@@ -81,12 +83,12 @@ describe('MessageEnqueueService', () => {
       preKeys: undefined,
       preDelayMs: undefined,
       senderAgentId: 'sender-1',
-      deliveryMode: undefined,
+      deliveryMode: 'on_idle',
       immediate: false,
       projectId: 'project-1',
       agentName: 'Agent One',
       failureDisclosure: 'project-safe',
-      clientMessageId: undefined,
+      clientMessageId: 'client-1',
       deferWhileHumanTyping: true,
       humanPromptSubmit: false,
     });
@@ -106,53 +108,12 @@ describe('MessageEnqueueService', () => {
     expect(pool.enqueue.mock.calls[0][2]?.submitKeys).not.toBe(submitKeys);
   });
 
-  it('threads clientMessageId through to the pool', async () => {
-    pool.enqueue.mockResolvedValueOnce({ status: 'delivered', logEntryId: 'log-1' });
-
-    await expect(
-      service.enqueue([
-        {
-          agentId: 'agent-1',
-          text: 'hello',
-          source: 'mobile',
-          immediate: true,
-          clientMessageId: 'client-1',
-        },
-      ]),
-    ).resolves.toEqual([{ agentId: 'agent-1', status: 'delivered', logEntryId: 'log-1' }]);
-
-    expect(pool.enqueue.mock.calls[0][2]).toMatchObject({ clientMessageId: 'client-1' });
-  });
-
-  it('threads deliveryMode through to the pool', async () => {
-    pool.enqueue.mockResolvedValueOnce({ status: 'queued', poolSize: 1 });
-
-    await service.enqueue([
-      {
-        agentId: 'agent-1',
-        text: 'hello',
-        source: 'subscriber',
-        deliveryMode: 'on_idle',
-      },
-    ]);
-
-    expect(pool.enqueue.mock.calls[0][2]).toMatchObject({ deliveryMode: 'on_idle' });
-  });
-
   it('does not swallow enqueue rejections', async () => {
     pool.enqueue.mockRejectedValue(new Error('pool failed'));
 
     await expect(
       service.enqueue([{ agentId: 'agent-1', text: 'hello', source: 'test' }]),
     ).rejects.toThrow('pool failed');
-  });
-
-  it('delegates flush and hides the pool result', async () => {
-    pool.flushNow.mockResolvedValue({ success: true, deliveredCount: 1 });
-
-    await expect(service.flush('agent-1')).resolves.toBeUndefined();
-
-    expect(pool.flushNow).toHaveBeenCalledWith('agent-1');
   });
 
   it('adapts pool stats to read-only facade status', () => {

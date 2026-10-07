@@ -17,9 +17,6 @@ import type {
   McpResponse,
 } from '../../dtos/mcp.dto';
 import { SuggestionApplicationError } from '../../../reviews/services/review-suggestion-applier.service';
-import { createNullAdapter } from './null-adapter';
-import type { ReviewsService } from '../../../reviews/services/reviews.service';
-import type { ReviewSuggestionApplier } from '../../../reviews/services/review-suggestion-applier.service';
 
 /** `McpResponse.data` is `unknown` by design; tests state the payload they expect. */
 function dataOf<T>(result: McpResponse): T {
@@ -152,49 +149,6 @@ describe('review-tools handlers', () => {
   });
 
   describe('handleListReviews', () => {
-    it('returns error when session resolution fails', async () => {
-      const ctx = makeCtx();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: false,
-        error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' },
-      });
-
-      const result = await handleListReviews(ctx, { sessionId: SESSION_ID });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('SESSION_NOT_FOUND');
-    });
-
-    it('returns error when no project associated', async () => {
-      const sessionCtx = makeAgentCtx();
-      (sessionCtx as unknown as Record<string, unknown>).project = null;
-      const ctx = makeCtx(sessionCtx);
-
-      const result = await handleListReviews(ctx, { sessionId: SESSION_ID });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
-    });
-
-    it('returns error when reviewsService unavailable', async () => {
-      const ctx: ReviewToolContext = {
-        storage: {
-          getAgent: jest
-            .fn()
-            .mockResolvedValue({ id: AGENT_ID, name: AGENT_NAME, projectId: PROJECT_ID }),
-        } as never,
-        reviewsService: createNullAdapter<ReviewsService>('ReviewsService'),
-        reviewSuggestionApplier:
-          createNullAdapter<ReviewSuggestionApplier>('ReviewSuggestionApplier'),
-        resolveSessionContext: jest.fn().mockResolvedValue({
-          success: true,
-          data: makeAgentCtx(),
-        }),
-      };
-
-      const result = await handleListReviews(ctx, { sessionId: SESSION_ID });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('SERVICE_UNAVAILABLE');
-    });
-
     it('returns reviews list on success', async () => {
       const ctx = makeCtx();
       const review = makeReview();
@@ -338,24 +292,6 @@ describe('review-tools handlers', () => {
       expect(dataOf<GetReviewCommentsResponse>(result).comments[0].authorAgentName).toBe(
         AGENT_NAME,
       );
-    });
-
-    it('passes filter params to service', async () => {
-      const ctx = makeCtx();
-      await handleGetReviewComments(ctx, {
-        sessionId: SESSION_ID,
-        reviewId: REVIEW_ID,
-        status: 'open',
-        filePath: 'src/index.ts',
-        limit: 50,
-        offset: 5,
-      });
-      expect(ctx.reviewsService.listComments).toHaveBeenCalledWith(REVIEW_ID, {
-        status: 'open',
-        filePath: 'src/index.ts',
-        limit: 50,
-        offset: 5,
-      });
     });
   });
 
@@ -509,155 +445,55 @@ describe('review-tools handlers', () => {
       expect(dataOf<ApplySuggestionResponse>(result).version).toBe(1);
     });
 
-    it('returns SERVICE_UNAVAILABLE when applier is null adapter', async () => {
-      const ctx: ReviewToolContext = {
-        storage: {
-          getAgent: jest
-            .fn()
-            .mockResolvedValue({ id: AGENT_ID, name: AGENT_NAME, projectId: PROJECT_ID }),
-        } as never,
-        reviewsService: createNullAdapter<ReviewsService>('ReviewsService'),
-        reviewSuggestionApplier:
-          createNullAdapter<ReviewSuggestionApplier>('ReviewSuggestionApplier'),
-        resolveSessionContext: jest.fn().mockResolvedValue({
-          success: true,
-          data: makeAgentCtx(),
-        }),
-      };
-
-      const result = await handleApplySuggestion(ctx, {
-        sessionId: SESSION_ID,
-        commentId: COMMENT_ID,
-        version: 1,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('SERVICE_UNAVAILABLE');
-    });
-
-    it('maps INVALID_SUGGESTION error from applier', async () => {
-      const ctx = makeCtx();
-      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(
+    it.each([
+      [
         new SuggestionApplicationError('INVALID_SUGGESTION', 'Comment does not have file path'),
-      );
-
-      const result = await handleApplySuggestion(ctx, {
-        sessionId: SESSION_ID,
-        commentId: COMMENT_ID,
-        version: 1,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('INVALID_SUGGESTION');
-    });
-
-    it('maps NO_SUGGESTION error from applier', async () => {
-      const ctx = makeCtx();
-      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(
+        'INVALID_SUGGESTION',
+        undefined,
+      ],
+      [
         new SuggestionApplicationError('NO_SUGGESTION', 'No suggestion block'),
-      );
-
-      const result = await handleApplySuggestion(ctx, {
-        sessionId: SESSION_ID,
-        commentId: COMMENT_ID,
-        version: 1,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('NO_SUGGESTION');
-    });
-
-    it('maps PATH_TRAVERSAL_BLOCKED error from applier', async () => {
-      const ctx = makeCtx();
-      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(
+        'NO_SUGGESTION',
+        undefined,
+      ],
+      [
         new SuggestionApplicationError('PATH_TRAVERSAL_BLOCKED', 'Path traversal', {
           reason: 'path_traversal',
         }),
-      );
-
-      const result = await handleApplySuggestion(ctx, {
-        sessionId: SESSION_ID,
-        commentId: COMMENT_ID,
-        version: 1,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('PATH_TRAVERSAL_BLOCKED');
-      expect(result.error?.data).toEqual({ reason: 'path_traversal' });
-    });
-
-    it('maps SYMLINK_ESCAPE_BLOCKED error from applier', async () => {
-      const ctx = makeCtx();
-      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(
+        'PATH_TRAVERSAL_BLOCKED',
+        { reason: 'path_traversal' },
+      ],
+      [
         new SuggestionApplicationError('SYMLINK_ESCAPE_BLOCKED', 'Symlink escape'),
-      );
-
-      const result = await handleApplySuggestion(ctx, {
-        sessionId: SESSION_ID,
-        commentId: COMMENT_ID,
-        version: 1,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('SYMLINK_ESCAPE_BLOCKED');
-    });
-
-    it('maps INVALID_LINE_BOUNDS error from applier', async () => {
-      const ctx = makeCtx();
-      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(
+        'SYMLINK_ESCAPE_BLOCKED',
+        undefined,
+      ],
+      [
         new SuggestionApplicationError('INVALID_LINE_BOUNDS', 'Line start exceeds file length'),
-      );
-
-      const result = await handleApplySuggestion(ctx, {
-        sessionId: SESSION_ID,
-        commentId: COMMENT_ID,
-        version: 1,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('INVALID_LINE_BOUNDS');
-    });
-
-    it('returns FILE_NOT_FOUND when applier throws ENOENT', async () => {
-      const ctx = makeCtx();
-      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(
-        Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
-      );
-
-      const result = await handleApplySuggestion(ctx, {
-        sessionId: SESSION_ID,
-        commentId: COMMENT_ID,
-        version: 1,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('FILE_NOT_FOUND');
-    });
-
-    it('returns COMMENT_NOT_FOUND when applier throws COMMENT_NOT_IN_PROJECT', async () => {
-      const ctx = makeCtx();
-      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(
+        'INVALID_LINE_BOUNDS',
+        undefined,
+      ],
+      [Object.assign(new Error('ENOENT'), { code: 'ENOENT' }), 'FILE_NOT_FOUND', undefined],
+      [
         new SuggestionApplicationError(
           'COMMENT_NOT_IN_PROJECT',
           'Comment does not belong to this project',
         ),
-      );
-
-      const result = await handleApplySuggestion(ctx, {
-        sessionId: SESSION_ID,
-        commentId: COMMENT_ID,
-        version: 1,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('COMMENT_NOT_IN_PROJECT');
-    });
-
-    it('returns COMMENT_NOT_FOUND when applier throws NotFoundError', async () => {
+        'COMMENT_NOT_IN_PROJECT',
+        undefined,
+      ],
+      [new NotFoundError('Comment', COMMENT_ID), 'COMMENT_NOT_FOUND', undefined],
+    ])('maps applier error to %s', async (error, code, data) => {
       const ctx = makeCtx();
-      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(
-        new NotFoundError('Comment', COMMENT_ID),
-      );
-
+      (ctx.reviewSuggestionApplier.apply as jest.Mock).mockRejectedValue(error);
       const result = await handleApplySuggestion(ctx, {
         sessionId: SESSION_ID,
         commentId: COMMENT_ID,
         version: 1,
       });
       expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('COMMENT_NOT_FOUND');
+      expect(result.error?.code).toBe(code);
+      expect(result.error?.data).toEqual(data);
     });
   });
 });

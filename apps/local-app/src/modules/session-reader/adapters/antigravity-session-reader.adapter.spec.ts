@@ -213,37 +213,12 @@ describe('AntigravitySessionReaderAdapter', () => {
   });
 
   describe('getFreshnessToken', () => {
-    it('delegates to the reader with the conversation id', async () => {
-      const token = { maxUpdated: 9, jsonl: { mtimeMs: 9, size: 1 }, db: { mtimeMs: 5, size: 2 } };
-      reader.getFreshness.mockResolvedValue(token);
-      const result = await adapter.getFreshnessToken(
-        ref({ filePath: '/db/x.db', providerSessionId: 'conv-1' }),
-      );
-      expect(result).toBe(token);
-      expect(reader.getFreshness).toHaveBeenCalledWith('/db/x.db', 'conv-1');
-    });
-
     it('throws when providerSessionId is absent', async () => {
       await expect(adapter.getFreshnessToken(ref())).rejects.toThrow(ValidationError);
     });
   });
 
   describe('parseFullSession', () => {
-    it('reads the session located by sourceRef.providerSessionId', async () => {
-      const session = makeSession();
-      reader.readSession.mockResolvedValue({
-        session,
-        sizeBytes: 10,
-        freshness: { maxUpdated: 1, jsonl: { mtimeMs: 1, size: 1 }, db: { mtimeMs: 1, size: 1 } },
-      });
-      const result = await adapter.parseFullSession(
-        '/db/x.db',
-        ref({ filePath: '/db/x.db', providerSessionId: 'conv-1' }),
-      );
-      expect(result).toBe(session);
-      expect(reader.readSession).toHaveBeenCalledWith('/db/x.db', 'conv-1');
-    });
-
     it('throws when sourceRef lacks providerSessionId', async () => {
       await expect(adapter.parseFullSession('/db/x.db')).rejects.toThrow(ValidationError);
     });

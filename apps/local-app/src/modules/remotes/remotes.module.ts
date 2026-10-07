@@ -14,6 +14,11 @@ import { HostSkillSettingsController } from './host/host-skill-settings.controll
 import { HostSkillSettingsService } from './host/host-skill-settings.service';
 import { GitModule } from '../git/git.module';
 import { RemoteFileSyncService } from './sync/remote-file-sync.service';
+import { GitOwnerStore } from './git-owner.store';
+import { FileSyncSuggestionsService } from './sync/file-sync-suggestions.service';
+import { FileSyncFailuresService } from './sync/file-sync-failures.service';
+import { FileSyncPatternPreviewService } from './sync/file-sync-pattern-preview.service';
+import { ProjectFileSyncController } from './sync/project-file-sync.controller';
 import { DockerArchiveJournal } from '../core/controllers/docker-archive-journal';
 import { HostDockerRecoveryService } from './host/host-docker-recovery.service';
 import { HostDockerController } from './host/host-docker.controller';
@@ -63,6 +68,8 @@ import { RemoteLiveSyncService } from './sync/remote-live-sync.service';
 import { RemoteHostClient } from './operations/remote-host.client';
 import { AttachOperation } from './operations/attach.operation';
 import { DetachOperation } from './operations/detach.operation';
+import { ForceSyncOperation } from './operations/force-sync.operation';
+import { GitOwnerOperation } from './operations/git-owner.operation';
 import { DockerImportInventoryStore } from './operations/docker-import-inventory.store';
 import { RemoteOperationRunner } from './operations/remote-operation.runner';
 import { RemoteOperationsService } from './operations/remote-operations.service';
@@ -86,6 +93,8 @@ import { HostInstallController } from './host-install/host-install.controller';
 import { ProjectSizeService } from './host-install/project-size.service';
 import { HostInstallService } from './host-install/host-install.service';
 import { SshRunner } from './host-install/ssh-runner';
+import { ConnectChoicesController } from './connect-choices.controller';
+import { ConnectChoicesStore } from './connect-choices.store';
 import { InstallHostOperation } from './operations/install-host.operation';
 import { SshKeyService } from './host-install/ssh-key.service';
 import { HostSshKeysController } from './host/host-ssh-keys.controller';
@@ -114,6 +123,8 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     VmProvidersModule,
   ],
   controllers: [
+    ConnectChoicesController,
+    ProjectFileSyncController,
     RemoteApiKeyController,
     HostProviderCliSettingsController,
     HostSkillSettingsController,
@@ -131,6 +142,7 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     HostSshKeysController,
   ],
   providers: [
+    ConnectChoicesStore,
     RemoteApiKeyManagementService,
     HostProviderCliSettingsService,
     RemoteProviderCliSettingsService,
@@ -157,6 +169,10 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     ProjectSessionsStopper,
     RemoteLiveSyncService,
     RemoteFileSyncService,
+    GitOwnerStore,
+    FileSyncSuggestionsService,
+    FileSyncFailuresService,
+    FileSyncPatternPreviewService,
     RemoteHostClient,
     FileSyncHandoff,
     DockerImportInventoryStore,
@@ -167,6 +183,8 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     DockerCopyBack,
     AttachOperation,
     DetachOperation,
+    ForceSyncOperation,
+    GitOwnerOperation,
     ClaimOperation,
     UpdateLoginsOperation,
     UpdateHostOperation,

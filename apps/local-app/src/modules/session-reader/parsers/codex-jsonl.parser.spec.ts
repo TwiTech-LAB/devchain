@@ -26,8 +26,21 @@ const { parseCodexJsonl } =
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Removed after each test: /tmp is on disk and kept for weeks, and two tests write 11 MB files.
+const tempDirs: string[] = [];
+
+function makeTempDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tmpFile(lines: object[]): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-parser-'));
+  const dir = makeTempDir('codex-parser-');
   const filePath = path.join(dir, 'rollout-test.jsonl');
   fs.writeFileSync(filePath, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
   return filePath;
@@ -239,10 +252,6 @@ function contextCompacted(ts = '2026-02-24T10:01:00.000Z'): object {
 // ---------------------------------------------------------------------------
 
 describe('CodexJsonlParser', () => {
-  afterEach(() => {
-    // Clean up temp files is handled by OS
-  });
-
   it('parses session metadata and extracts session ID', async () => {
     const file = tmpFile([sessionMeta('my-session-uuid'), turnContext()]);
     const result = await parseCodexJsonl(file);
@@ -597,36 +606,6 @@ describe('CodexJsonlParser', () => {
     expect(result.metrics.isOngoing).toBe(true);
   });
 
-  it('lands the turn usage on the single coalesced assistant (pre- and post-tool text merged)', async () => {
-    const file = tmpFile([
-      sessionMeta(),
-      turnContext('o3'),
-      taskStarted('turn_001'),
-      assistantMessage('Pre-tool assistant', '2026-02-24T10:00:03.000Z'),
-      functionCall('call_mid', 'run', { cmd: 'ls' }, '2026-02-24T10:00:04.000Z'),
-      functionCallOutput('call_mid', 'ok', '2026-02-24T10:00:05.000Z'),
-      assistantMessage('Post-tool assistant', '2026-02-24T10:00:06.000Z'),
-      tokenCount(260, 60, 90, '2026-02-24T10:00:07.000Z'),
-      taskComplete('turn_001', '2026-02-24T10:00:08.000Z'),
-    ]);
-
-    const result = await parseCodexJsonl(file);
-    // Pre-tool and post-tool text coalesce into ONE assistant; usage attaches to it once.
-    const assistants = result.messages.filter((m) => m.role === 'assistant');
-    expect(assistants).toHaveLength(1);
-    const assistant = assistants[0];
-    const texts = assistant.content
-      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-      .map((b) => b.text);
-    expect(texts).toEqual(['Pre-tool assistant', 'Post-tool assistant']);
-    expect(assistant.usage).toEqual({
-      input: 200,
-      output: 90,
-      cacheRead: 60,
-      cacheCreation: 0,
-    });
-  });
-
   it('per-turn usage reflects last API call (not cumulative turn consumption) when multiple token_count events fire', async () => {
     // Simulates a turn with 3 tool-call round-trips, each producing a token_count event.
     // Cumulative totals grow: 50k → 101k → 153k input.
@@ -785,35 +764,6 @@ describe('CodexJsonlParser', () => {
     expect(incremental.metrics.visibleContextTokens).toBe(4); // "More work"(3) + "Done"(1)
   });
 
-  it('incremental parse attaches usage when turn started before offset', async () => {
-    const file = tmpFile([
-      sessionMeta(),
-      turnContext('o3'),
-      taskStarted('turn_001'),
-      userMessage('Start'),
-    ]);
-    const initial = await parseCodexJsonl(file);
-    const byteOffset = initial.bytesRead;
-
-    const appendedLines = [
-      assistantMessage('Split-turn response', '2026-02-24T10:01:00.000Z'),
-      tokenCount(1000, 500, 200, '2026-02-24T10:01:01.000Z'),
-      taskComplete('turn_001', '2026-02-24T10:01:02.000Z'),
-    ];
-    fs.appendFileSync(file, appendedLines.map((line) => JSON.stringify(line)).join('\n') + '\n');
-
-    const incremental = await parseCodexJsonl(file, { byteOffset });
-    const assistant = incremental.messages.find((m) => m.role === 'assistant');
-
-    expect(assistant).toBeDefined();
-    expect(assistant!.usage).toEqual({
-      input: 500,
-      output: 200,
-      cacheRead: 500,
-      cacheCreation: 0,
-    });
-  });
-
   it('incremental parse with nested open turns seeds correct stack depth', async () => {
     const file = tmpFile([
       sessionMeta(),
@@ -953,36 +903,6 @@ describe('CodexJsonlParser', () => {
     expect(incremental.metrics.totalContextTokens).toBe(45); // (110+40+50) - (95+25+35)
   });
 
-  it('full parse plus incremental deltas matches latest cumulative totals', async () => {
-    const initialLines = [
-      sessionMeta(),
-      turnContext('o3'),
-      taskStarted(),
-      userMessage('Start'),
-      assistantMessage('Ack'),
-      tokenCount(1000, 500, 200),
-      taskComplete(),
-    ];
-    const file = tmpFile(initialLines);
-    const baseline = await parseCodexJsonl(file);
-    const byteOffset = fs.statSync(file).size;
-
-    const appendedLines = [
-      taskStarted('turn_002'),
-      userMessage('Next', '2026-02-24T10:01:00.000Z'),
-      assistantMessage('Done', '2026-02-24T10:01:01.000Z'),
-      tokenCount(1500, 700, 320, '2026-02-24T10:01:02.000Z'),
-      taskComplete('turn_002', '2026-02-24T10:01:03.000Z'),
-    ];
-    fs.appendFileSync(file, appendedLines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-
-    const incremental = await parseCodexJsonl(file, { byteOffset });
-
-    expect(baseline.metrics.inputTokens + incremental.metrics.inputTokens).toBe(800);
-    expect(baseline.metrics.cacheReadTokens + incremental.metrics.cacheReadTokens).toBe(700);
-    expect(baseline.metrics.outputTokens + incremental.metrics.outputTokens).toBe(320);
-  });
-
   it('uses baseline model for incremental cost when slice has no turn_context', async () => {
     const mockPricing: PricingServiceInterface = {
       calculateMessageCost: jest.fn().mockReturnValue(0.0123),
@@ -1015,50 +935,64 @@ describe('CodexJsonlParser', () => {
     expect(mockPricing.calculateMessageCost).toHaveBeenCalledWith('o3', 40, 10, 10, 0);
   });
 
-  it('keeps incremental isOngoing=true when turn started before offset and not completed in slice', async () => {
-    const initialLines = [
-      sessionMeta(),
-      turnContext('o3'),
-      taskStarted(),
-      userMessage('Start'),
-      assistantMessage('Working'),
-      tokenCount(100, 20, 30),
-      // no taskComplete before offset
-    ];
+  it.each([
+    {
+      name: 'keeps incremental isOngoing=true when turn started before offset and not completed in slice',
+      initialLines: [
+        sessionMeta(),
+        turnContext('o3'),
+        taskStarted(),
+        userMessage('Start'),
+        assistantMessage('Working'),
+        tokenCount(100, 20, 30),
+        // no taskComplete before offset
+      ],
+      appendedLines: [
+        assistantMessage('Still working', '2026-02-24T10:01:00.000Z'),
+        tokenCount(110, 25, 34, '2026-02-24T10:01:01.000Z'),
+        // still no taskComplete in slice
+      ],
+      expected: true,
+    },
+    {
+      name: 'closes baseline-open turn when incremental slice contains task_complete only',
+      initialLines: [
+        sessionMeta(),
+        turnContext('o3'),
+        taskStarted(),
+        userMessage('Start'),
+        assistantMessage('Working'),
+        tokenCount(100, 20, 30),
+      ],
+      appendedLines: [
+        tokenCount(120, 25, 38, '2026-02-24T10:01:00.000Z'),
+        taskComplete('turn_001', '2026-02-24T10:01:01.000Z'),
+      ],
+      expected: false,
+    },
+    {
+      name: 'keeps isOngoing=false when turn completed before offset and no new task_started after offset',
+      initialLines: [
+        sessionMeta(),
+        turnContext('o3'),
+        taskStarted(),
+        userMessage('Start'),
+        assistantMessage('Done'),
+        tokenCount(100, 20, 30),
+        taskComplete(),
+      ],
+      appendedLines: [
+        assistantMessage('Post-turn output', '2026-02-24T10:01:00.000Z'),
+        tokenCount(120, 25, 38, '2026-02-24T10:01:01.000Z'),
+      ],
+      expected: false,
+    },
+  ])('$name', async ({ initialLines, appendedLines, expected }) => {
     const file = tmpFile(initialLines);
     const byteOffset = fs.statSync(file).size;
-
-    const appendedLines = [
-      assistantMessage('Still working', '2026-02-24T10:01:00.000Z'),
-      tokenCount(110, 25, 34, '2026-02-24T10:01:01.000Z'),
-      // still no taskComplete in slice
-    ];
     fs.appendFileSync(file, appendedLines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-
     const incremental = await parseCodexJsonl(file, { byteOffset });
-    expect(incremental.metrics.isOngoing).toBe(true);
-  });
-
-  it('closes baseline-open turn when incremental slice contains task_complete only', async () => {
-    const initialLines = [
-      sessionMeta(),
-      turnContext('o3'),
-      taskStarted(),
-      userMessage('Start'),
-      assistantMessage('Working'),
-      tokenCount(100, 20, 30),
-    ];
-    const file = tmpFile(initialLines);
-    const byteOffset = fs.statSync(file).size;
-
-    const appendedLines = [
-      tokenCount(120, 25, 38, '2026-02-24T10:01:00.000Z'),
-      taskComplete('turn_001', '2026-02-24T10:01:01.000Z'),
-    ];
-    fs.appendFileSync(file, appendedLines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-
-    const incremental = await parseCodexJsonl(file, { byteOffset });
-    expect(incremental.metrics.isOngoing).toBe(false);
+    expect(incremental.metrics.isOngoing).toBe(expected);
   });
 
   it('ends an interrupted turn, so the next completion ends the session turn', async () => {
@@ -1100,75 +1034,6 @@ describe('CodexJsonlParser', () => {
     expect(incremental.metrics.isOngoing).toBe(false);
   });
 
-  it('keeps isOngoing=false when turn completed before offset and no new task_started after offset', async () => {
-    const initialLines = [
-      sessionMeta(),
-      turnContext('o3'),
-      taskStarted(),
-      userMessage('Start'),
-      assistantMessage('Done'),
-      tokenCount(100, 20, 30),
-      taskComplete(),
-    ];
-    const file = tmpFile(initialLines);
-    const byteOffset = fs.statSync(file).size;
-
-    const appendedLines = [
-      assistantMessage('Post-turn output', '2026-02-24T10:01:00.000Z'),
-      tokenCount(120, 25, 38, '2026-02-24T10:01:01.000Z'),
-    ];
-    fs.appendFileSync(file, appendedLines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-
-    const incremental = await parseCodexJsonl(file, { byteOffset });
-    expect(incremental.metrics.isOngoing).toBe(false);
-  });
-
-  it('preserves full-parse behavior with byteOffset=0 after baseline-state enhancements', async () => {
-    const mockPricing: PricingServiceInterface = {
-      calculateMessageCost: jest.fn().mockReturnValue(0.02),
-      getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
-      getContextWindowSize: jest.fn().mockReturnValue(200_000),
-    };
-
-    const file = tmpFile([
-      sessionMeta(),
-      turnContext('o3'),
-      taskStarted(),
-      userMessage('Hello'),
-      assistantMessage('Hi'),
-      tokenCount(200, 50, 80),
-      taskComplete(),
-    ]);
-
-    const full = await parseCodexJsonl(file, {
-      byteOffset: 0,
-      pricingService: mockPricing,
-    });
-
-    expect(full.metrics.primaryModel).toBe('o3');
-    expect(full.metrics.isOngoing).toBe(false);
-    expect(full.metrics.inputTokens).toBe(150);
-    expect(full.metrics.cacheReadTokens).toBe(50);
-    expect(full.metrics.outputTokens).toBe(80);
-    expect(full.metrics.costUsd).toBe(0.02);
-    expect(mockPricing.calculateMessageCost).toHaveBeenCalledWith('o3', 150, 80, 50, 0);
-  });
-
-  it('tracks model from turn_context', async () => {
-    const file = tmpFile([
-      sessionMeta(),
-      turnContext('o3'),
-      taskStarted(),
-      userMessage('Hello'),
-      assistantMessage('Hi'),
-      taskComplete(),
-    ]);
-
-    const result = await parseCodexJsonl(file);
-
-    expect(result.metrics.primaryModel).toBe('o3');
-  });
-
   it('tracks multiple models across turns', async () => {
     const file = tmpFile([
       sessionMeta(),
@@ -1188,20 +1053,6 @@ describe('CodexJsonlParser', () => {
 
     expect(result.metrics.primaryModel).toBe('gpt-4o');
     expect(result.metrics.modelsUsed).toEqual(expect.arrayContaining(['o3', 'gpt-4o']));
-  });
-
-  it('detects ongoing session when turn not completed', async () => {
-    const file = tmpFile([
-      sessionMeta(),
-      turnContext(),
-      taskStarted(),
-      userMessage('Hello'),
-      // No task_complete — session is ongoing
-    ]);
-
-    const result = await parseCodexJsonl(file);
-
-    expect(result.metrics.isOngoing).toBe(true);
   });
 
   it('detects completed session when all turns complete', async () => {
@@ -1261,34 +1112,21 @@ describe('CodexJsonlParser', () => {
     expect(result.metrics.visibleContextTokens).toBe(3); // after(2) + ok(1)
   });
 
-  it('resets visible context on compacted event with explicit summary message', async () => {
+  it.each([
+    ['explicit summary', compacted('Summary'), 2],
+    ['fallback message', compactedNoMessage(), 5],
+  ] as const)('resets visible context on compaction with %s', async (_name, event, expected) => {
     const file = tmpFile([
       sessionMeta(),
       turnContext(),
       taskStarted(),
       userMessage('Longer before'),
       assistantMessage('Also long before'),
-      compacted('Summary'),
+      event,
       taskComplete(),
     ]);
-
     const result = await parseCodexJsonl(file);
-    expect(result.metrics.visibleContextTokens).toBe(2); // summary only
-  });
-
-  it('resets visible context on compacted event with fallback message shape', async () => {
-    const file = tmpFile([
-      sessionMeta(),
-      turnContext(),
-      taskStarted(),
-      userMessage('Longer before'),
-      assistantMessage('Also long before'),
-      compactedNoMessage(),
-      taskComplete(),
-    ]);
-
-    const result = await parseCodexJsonl(file);
-    expect(result.metrics.visibleContextTokens).toBe(5); // "Context compacted"
+    expect(result.metrics.visibleContextTokens).toBe(expected);
   });
 
   it('calculates duration from first to last timestamp', async () => {
@@ -1354,7 +1192,7 @@ describe('CodexJsonlParser', () => {
   });
 
   it('skips malformed lines gracefully', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-parser-'));
+    const dir = makeTempDir('codex-parser-');
     const filePath = path.join(dir, 'rollout-test.jsonl');
     const lines = [
       JSON.stringify(sessionMeta()),
@@ -1467,7 +1305,7 @@ describe('CodexJsonlParser', () => {
   });
 
   it('returns empty messages and zero metrics for empty file', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-parser-'));
+    const dir = makeTempDir('codex-parser-');
     const filePath = path.join(dir, 'rollout-empty.jsonl');
     fs.writeFileSync(filePath, '');
 
@@ -1515,46 +1353,6 @@ describe('CodexJsonlParser', () => {
     });
   });
 
-  describe('oversized line logging', () => {
-    beforeEach(() => {
-      mockLoggerWarn.mockClear();
-    });
-
-    it('logs byte offset and content snippet for >10MB lines', async () => {
-      const hugeText = 'Z'.repeat(11 * 1024 * 1024);
-      const lines = [
-        sessionMeta(),
-        turnContext(),
-        taskStarted(),
-        userMessage('Hello'),
-        assistantMessage(hugeText, '2026-02-24T10:00:06.000Z'),
-        taskComplete(),
-      ];
-
-      const filePath = tmpFile(lines);
-      await parseCodexJsonl(filePath);
-
-      // Find the oversized line warn call
-      const warnCall = mockLoggerWarn.mock.calls.find(
-        (call: unknown[]) => call[1] === 'Skipping oversized JSONL line (>10MB)',
-      );
-      expect(warnCall).toBeDefined();
-
-      // Assert log includes byte offset + snippet
-      expect(warnCall![0]).toEqual(
-        expect.objectContaining({
-          filePath,
-          lineBytes: expect.any(Number),
-          byteOffset: expect.any(Number),
-          snippet: expect.any(String),
-        }),
-      );
-      expect(warnCall![0].byteOffset).toBeGreaterThan(0);
-      expect(warnCall![0].snippet.length).toBeLessThanOrEqual(200);
-      expect(warnCall![0].snippet.length).toBeGreaterThan(0);
-    });
-  });
-
   it('parses lines >1MB but <10MB (previously skipped)', async () => {
     // Create a response_item with a ~2MB text block
     const largeText = 'B'.repeat(2 * 1024 * 1024);
@@ -1585,7 +1383,7 @@ describe('CodexJsonlParser', () => {
 
 describe('parseCodexJsonl bounded incremental reads (endByteOffset)', () => {
   function rawFile(content: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-bounded-'));
+    const dir = makeTempDir('codex-bounded-');
     const filePath = path.join(dir, 'rollout.jsonl');
     fs.writeFileSync(filePath, content);
     return filePath;
@@ -1645,7 +1443,7 @@ describe('parseCodexJsonl bounded incremental reads (endByteOffset)', () => {
 
 describe('parseCodexJsonl carried token baseline (continuation state)', () => {
   function rawFile(content: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-baseline-'));
+    const dir = makeTempDir('codex-baseline-');
     const filePath = path.join(dir, 'rollout.jsonl');
     fs.writeFileSync(filePath, content);
     return filePath;

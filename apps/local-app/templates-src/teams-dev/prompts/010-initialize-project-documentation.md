@@ -129,6 +129,8 @@ The entry point agents read once at session start; everything else loads on dema
 
 - Test frameworks and locations.
 - How to run tests; typical commands.
+- The command that runs only the tests affected by current changes, if the runner has one.
+- Link to the Testing Standards in `docs/development-standards.md` for how to write tests; do not repeat those rules here.
 - Coverage or quality gates if present.
 - Test data, fixtures, and e2e notes.
 

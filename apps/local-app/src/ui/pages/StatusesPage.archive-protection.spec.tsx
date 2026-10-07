@@ -123,138 +123,44 @@ describe('StatusesPage — Archive status protection', () => {
     const deleteButton = archiveRow!.querySelector('button[disabled][aria-label*="Delete"]');
     expect(deleteButton).toBeInTheDocument();
     expect(deleteButton).toBeDisabled();
+
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Review')).toBeInTheDocument();
+      });
+      const reviewRow = screen.getByText('Review').closest('[draggable]');
+      expect(reviewRow).toBeInTheDocument();
+      const deleteButton = reviewRow!.querySelector('button[aria-label="Delete"]');
+      expect(deleteButton).toBeInTheDocument();
+      expect(deleteButton).not.toBeDisabled();
+    }
   });
 
-  it('allows delete button for non-archive statuses (Review)', async () => {
+  it.each([
+    { status: 'Archive', label: 'Done', invalid: true },
+    { status: 'Archive', label: 'Archived Items', invalid: false },
+    { status: 'Review', label: 'Code Review', invalid: false },
+  ])('validates $status renamed to $label', async ({ status, label, invalid }) => {
     render(
       <Wrapper>
         <StatusesPage />
       </Wrapper>,
     );
-
-    await waitFor(() => {
-      expect(screen.getByText('Review')).toBeInTheDocument();
-    });
-
-    // Find the Review row
-    const reviewRow = screen.getByText('Review').closest('[draggable]');
-    expect(reviewRow).toBeInTheDocument();
-
-    // The Review row should have an enabled delete button
-    const deleteButton = reviewRow!.querySelector('button[aria-label="Delete"]');
-    expect(deleteButton).toBeInTheDocument();
-    expect(deleteButton).not.toBeDisabled();
-  });
-
-  it('shows validation error when renaming Archive to remove "archiv" keyword', async () => {
-    render(
-      <Wrapper>
-        <StatusesPage />
-      </Wrapper>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('Archive')).toBeInTheDocument();
-    });
-
-    // Find and click the edit button for Archive status
-    const archiveRow = screen.getByText('Archive').closest('[draggable]');
-    const editButton = archiveRow!.querySelector('button[aria-label="Edit"]');
+    const row = (await screen.findByText(status)).closest('[draggable]');
+    const editButton = row!.querySelector('button[aria-label="Edit"]');
     expect(editButton).toBeInTheDocument();
     fireEvent.click(editButton!);
-
-    // Wait for dialog to open
+    await screen.findByRole('dialog');
+    fireEvent.change(screen.getByLabelText('Label *'), { target: { value: label } });
     await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      const error = screen.queryByText("Label must contain 'Archive' for filtering to work");
+      if (invalid) {
+        expect(error).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Update' })).toBeDisabled();
+      } else {
+        expect(error).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Update' })).not.toBeDisabled();
+      }
     });
-
-    // Find the label input and change it to "Done"
-    const labelInput = screen.getByLabelText('Label *');
-    fireEvent.change(labelInput, { target: { value: 'Done' } });
-
-    // Should show validation error
-    await waitFor(() => {
-      expect(
-        screen.getByText("Label must contain 'Archive' for filtering to work"),
-      ).toBeInTheDocument();
-    });
-
-    // Update button should be disabled
-    const updateButton = screen.getByRole('button', { name: 'Update' });
-    expect(updateButton).toBeDisabled();
-  });
-
-  it('allows renaming Archive to "Archived Items" (still contains archiv)', async () => {
-    render(
-      <Wrapper>
-        <StatusesPage />
-      </Wrapper>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('Archive')).toBeInTheDocument();
-    });
-
-    // Find and click the edit button for Archive status
-    const archiveRow = screen.getByText('Archive').closest('[draggable]');
-    const editButton = archiveRow!.querySelector('button[aria-label="Edit"]');
-    fireEvent.click(editButton!);
-
-    // Wait for dialog to open
-    await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
-    });
-
-    // Find the label input and change it to "Archived Items"
-    const labelInput = screen.getByLabelText('Label *');
-    fireEvent.change(labelInput, { target: { value: 'Archived Items' } });
-
-    // Should NOT show validation error
-    await waitFor(() => {
-      expect(
-        screen.queryByText("Label must contain 'Archive' for filtering to work"),
-      ).not.toBeInTheDocument();
-    });
-
-    // Update button should be enabled
-    const updateButton = screen.getByRole('button', { name: 'Update' });
-    expect(updateButton).not.toBeDisabled();
-  });
-
-  it('allows renaming non-archive status (Review) freely', async () => {
-    render(
-      <Wrapper>
-        <StatusesPage />
-      </Wrapper>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('Review')).toBeInTheDocument();
-    });
-
-    // Find and click the edit button for Review status
-    const reviewRow = screen.getByText('Review').closest('[draggable]');
-    const editButton = reviewRow!.querySelector('button[aria-label="Edit"]');
-    fireEvent.click(editButton!);
-
-    // Wait for dialog to open
-    await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
-    });
-
-    // Find the label input and change it to "Code Review"
-    const labelInput = screen.getByLabelText('Label *');
-    fireEvent.change(labelInput, { target: { value: 'Code Review' } });
-
-    // Should NOT show validation error
-    await waitFor(() => {
-      expect(
-        screen.queryByText("Label must contain 'Archive' for filtering to work"),
-      ).not.toBeInTheDocument();
-    });
-
-    // Update button should be enabled
-    const updateButton = screen.getByRole('button', { name: 'Update' });
-    expect(updateButton).not.toBeDisabled();
   });
 });

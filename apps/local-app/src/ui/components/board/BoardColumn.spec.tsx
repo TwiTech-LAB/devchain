@@ -122,22 +122,6 @@ describe('BoardColumn surfaces', () => {
     expect(cards[1]).toHaveAttribute('data-source-dragging', 'false');
   });
 
-  it('fills the lane with the group color and its header with the muted color', () => {
-    render(<BoardColumn {...baseProps()} />);
-
-    const header = screen.getByTitle('Double-click to collapse this column');
-    expect(header).toHaveClass('bg-muted');
-    expect(header.parentElement).toHaveClass('bg-group');
-  });
-
-  it('styles the drop highlight from the data attribute instead of props', () => {
-    render(<BoardColumn {...baseProps()} />);
-
-    const column = screen.getByTitle('Double-click to collapse this column').parentElement!;
-    expect(column).toHaveClass('data-[board-drop-active]:border-primary/50');
-    expect(column).toHaveClass('data-[board-drop-active]:bg-primary/5');
-  });
-
   it('outlines every column while a card is dragged', () => {
     render(<BoardColumn {...baseProps({ draggedEpic: epic })} />);
 

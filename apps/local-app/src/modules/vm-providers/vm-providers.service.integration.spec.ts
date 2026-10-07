@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import * as https from 'node:https';
 import { X509Certificate } from 'node:crypto';
@@ -8,7 +9,6 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { rootCertificates } from 'node:tls';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { ProxmoxClient } from '@devchain/proxmox-client';
 import { LocalStorageService } from '../storage/local/local-storage.service';
 import { IntegrationCredentialCipher } from '../storage/local/integration-credential-cipher';
@@ -27,8 +27,7 @@ describe('VM provider storage and REST boundary', () => {
   let controller: VmProvidersController;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
     secretDirectory = mkdtempSync(join(tmpdir(), 'devchain-vm-provider-secret-'));
     storage = new LocalStorageService(

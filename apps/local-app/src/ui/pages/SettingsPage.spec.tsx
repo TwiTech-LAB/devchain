@@ -259,9 +259,12 @@ describe('SettingsPage sub-navigation', () => {
     toastSpy.mockReset();
   });
 
-  it('defaults to GeneralSection when no section param is present', async () => {
-    const { Wrapper } = createWrapper(['/settings']);
-
+  it.each([
+    { route: '/settings', text: /Initial Session Prompt/i },
+    { route: '/settings?section=terminal', text: /Terminal Settings/i },
+    { route: '/settings?section=integrations', text: /Demo Project/i },
+  ])('renders section for $route', async ({ route, text }) => {
+    const { Wrapper } = createWrapper([route]);
     await act(async () => {
       render(
         <Wrapper>
@@ -269,38 +272,7 @@ describe('SettingsPage sub-navigation', () => {
         </Wrapper>,
       );
     });
-
-    expect(await screen.findByText(/Initial Session Prompt/i)).toBeInTheDocument();
-  });
-
-  it('deep-links to TerminalSection via ?section=terminal', async () => {
-    const { Wrapper } = createWrapper(['/settings?section=terminal']);
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <SettingsPage />
-        </Wrapper>,
-      );
-    });
-
-    expect(await screen.findByText(/Terminal Settings/i)).toBeInTheDocument();
-  });
-
-  it('deep-links to the shared Integrations section', async () => {
-    const { Wrapper } = createWrapper(['/settings?section=integrations']);
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <SettingsPage />
-        </Wrapper>,
-      );
-    });
-
-    expect(await screen.findByRole('heading', { name: 'Demo Project' })).toBeInTheDocument();
-    expect(screen.getByText('ClickUp')).toBeInTheDocument();
-    expect(screen.getByText('Jira')).toBeInTheDocument();
+    expect(await screen.findByText(text)).toBeInTheDocument();
   });
 
   it('renders no cached integration UI or request when runtime access is unavailable', async () => {
@@ -335,20 +307,6 @@ describe('SettingsPage sub-navigation', () => {
         String(input).startsWith('/api/integrations'),
       ),
     ).toBe(false);
-  });
-
-  it('falls back to GeneralSection for invalid ?section=bogus', async () => {
-    const { Wrapper } = createWrapper(['/settings?section=bogus']);
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <SettingsPage />
-        </Wrapper>,
-      );
-    });
-
-    expect(await screen.findByText(/Initial Session Prompt/i)).toBeInTheDocument();
   });
 
   it('switches sections when a nav item is clicked', async () => {

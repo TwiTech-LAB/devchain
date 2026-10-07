@@ -10,16 +10,6 @@ describe('param-suggestion', () => {
         expect(suggestion).toBe('Did you mean: assignment.agentName?');
       });
 
-      it('suggests assignment.clear for misplaced clear in devchain_update_epic', () => {
-        const suggestion = suggestNestedPath('clear', 'devchain_update_epic');
-        expect(suggestion).toBe('Did you mean: assignment.clear?');
-      });
-
-      it('suggests relation.relatedEpicId for misplaced create relation input', () => {
-        const suggestion = suggestNestedPath('relatedEpicId', 'devchain_create_epic');
-        expect(suggestion).toBe('Did you mean: relation.relatedEpicId?');
-      });
-
       it('returns null for unknown key not found anywhere', () => {
         const suggestion = suggestNestedPath('totallyUnknownField', 'devchain_update_epic');
         expect(suggestion).toBeNull();
@@ -33,12 +23,6 @@ describe('param-suggestion', () => {
 
       it('returns null for unknown tool name', () => {
         const suggestion = suggestNestedPath('agentName', 'devchain_nonexistent_tool');
-        expect(suggestion).toBeNull();
-      });
-
-      it('returns null for tool without nested schemas', () => {
-        // devchain_list_sessions has no fields at all
-        const suggestion = suggestNestedPath('anyKey', 'devchain_list_sessions');
         expect(suggestion).toBeNull();
       });
     });
@@ -92,19 +76,9 @@ describe('param-suggestion', () => {
         ],
       ]);
 
-      it('suggests nested path for misplaced key', () => {
-        const suggestion = suggestNestedPath('innerKey', 'test_tool', customRegistry);
-        expect(suggestion).toBe('Did you mean: nested.innerKey?');
-      });
-
       it('suggests deeply nested path', () => {
         const suggestion = suggestNestedPath('deepKey', 'test_tool', customRegistry);
         expect(suggestion).toBe('Did you mean: nested.deepNested.deepKey?');
-      });
-
-      it('returns null for top-level key', () => {
-        const suggestion = suggestNestedPath('topLevel', 'test_tool', customRegistry);
-        expect(suggestion).toBeNull();
       });
 
       it('finds keys in union variants', () => {

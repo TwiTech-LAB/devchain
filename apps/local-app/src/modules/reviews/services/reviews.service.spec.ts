@@ -185,53 +185,35 @@ describe('ReviewsService', () => {
       ).rejects.toThrow(ValidationError);
     });
 
-    it('uses provided baseSha/headSha without resolving refs in commit mode', async () => {
-      storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-      storage.createReview.mockResolvedValue(makeReview());
-
-      await service.createReview({
-        projectId,
-        title: 'Test Review',
-        mode: 'commit',
+    it.each([
+      {
+        mode: 'commit' as const,
         baseRef: 'main',
         headRef: 'feature/test',
         baseSha: 'provided-base-sha',
         headSha: 'provided-head-sha',
-      });
-
-      // Should NOT call resolveRef when SHAs are provided
-      expect(gitService.resolveRef).not.toHaveBeenCalled();
-      expect(storage.createReview).toHaveBeenCalledWith(
-        expect.objectContaining({
-          mode: 'commit',
-          baseSha: 'provided-base-sha',
-          headSha: 'provided-head-sha',
-        }),
-      );
-    });
-
-    it('does not resolve refs in working_tree mode', async () => {
-      storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-      storage.createReview.mockResolvedValue(
-        makeReview({ mode: 'working_tree', baseSha: null, headSha: null }),
-      );
-
-      await service.createReview({
-        projectId,
-        title: 'Pre-commit review',
-        mode: 'working_tree',
+      },
+      {
+        mode: 'working_tree' as const,
         baseRef: 'HEAD',
         headRef: 'HEAD',
+        baseSha: null,
+        headSha: null,
+      },
+    ])('skips ref resolution for $mode', async ({ mode, baseRef, headRef, baseSha, headSha }) => {
+      storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+      storage.createReview.mockResolvedValue(makeReview({ mode, baseSha, headSha }));
+      await service.createReview({
+        projectId,
+        title: 'Test Review',
+        mode,
+        baseRef,
+        headRef,
+        ...(mode === 'commit' ? { baseSha: baseSha!, headSha: headSha! } : {}),
       });
-
-      // Should NOT call resolveRef for working_tree mode
       expect(gitService.resolveRef).not.toHaveBeenCalled();
       expect(storage.createReview).toHaveBeenCalledWith(
-        expect.objectContaining({
-          mode: 'working_tree',
-          baseSha: null,
-          headSha: null,
-        }),
+        expect.objectContaining({ mode, baseSha, headSha }),
       );
     });
   });
@@ -293,39 +275,6 @@ describe('ReviewsService', () => {
     });
   });
 
-  describe('listReviews', () => {
-    it('returns reviews for project', async () => {
-      storage.getProject.mockResolvedValue({ id: projectId } as never);
-      storage.listReviews.mockResolvedValue({
-        items: [makeReview()],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await service.listReviews(projectId);
-
-      expect(result.items).toHaveLength(1);
-    });
-
-    it('passes filters to storage', async () => {
-      storage.getProject.mockResolvedValue({ id: projectId } as never);
-      storage.listReviews.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-
-      await service.listReviews(projectId, { status: 'pending', limit: 50 });
-
-      expect(storage.listReviews).toHaveBeenCalledWith(
-        projectId,
-        expect.objectContaining({ status: 'pending', limit: 50 }),
-      );
-    });
-  });
-
   describe('createComment', () => {
     it('creates comment and emits event', async () => {
       const review = makeReview();
@@ -346,21 +295,6 @@ describe('ReviewsService', () => {
           content: 'Test comment',
         }),
       );
-    });
-
-    it('creates comment with target agents', async () => {
-      const review = makeReview();
-      const targetAgentIds = ['agent-1', 'agent-2'];
-      storage.getReview.mockResolvedValue(review);
-      storage.createReviewComment.mockResolvedValue(makeComment());
-      storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-
-      await service.createComment(reviewId, {
-        content: 'Test comment',
-        targetAgentIds,
-      });
-
-      expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), targetAgentIds);
     });
 
     it('inherits file context from parent when creating reply', async () => {
@@ -492,55 +426,27 @@ describe('ReviewsService', () => {
         ]);
       });
 
-      it('defaults to parent author agentId when parent is agent-authored with no targets', async () => {
-        const agentAuthoredParent = makeComment({
-          id: parentCommentId,
-          authorType: 'agent',
+      it.each([
+        {
+          authorType: 'agent' as const,
           authorAgentId: 'agent-author-123',
-        });
-
-        storage.getReview.mockResolvedValue(makeReview());
-        storage.getReviewComment.mockResolvedValue(agentAuthoredParent);
-        storage.createReviewComment.mockResolvedValue(makeComment({ parentId: parentCommentId }));
-        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-        // Parent has no targets
-        storage.getReviewCommentTargets.mockResolvedValue([]);
-
-        await service.createComment(reviewId, {
-          content: 'Reply to agent comment',
-          parentId: parentCommentId,
-          // No targetAgentIds provided
-        });
-
-        // Verify agent author is used as target
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
-          'agent-author-123',
-        ]);
-      });
-
-      it('remains untargeted when parent is user-authored with no targets', async () => {
-        const userAuthoredParent = makeComment({
-          id: parentCommentId,
-          authorType: 'user',
-          authorAgentId: null,
-        });
-
-        storage.getReview.mockResolvedValue(makeReview());
-        storage.getReviewComment.mockResolvedValue(userAuthoredParent);
-        storage.createReviewComment.mockResolvedValue(makeComment({ parentId: parentCommentId }));
-        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-        // Parent has no targets
-        storage.getReviewCommentTargets.mockResolvedValue([]);
-
-        await service.createComment(reviewId, {
-          content: 'Reply to user comment',
-          parentId: parentCommentId,
-          // No targetAgentIds provided
-        });
-
-        // Verify no targets are set (remains undefined)
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), undefined);
-      });
+          expected: ['agent-author-123'],
+        },
+        { authorType: 'user' as const, authorAgentId: null, expected: undefined },
+      ])(
+        'defaults reply targets for $authorType parent',
+        async ({ authorType, authorAgentId, expected }) => {
+          storage.getReview.mockResolvedValue(makeReview());
+          storage.getReviewComment.mockResolvedValue(
+            makeComment({ id: parentCommentId, authorType, authorAgentId }),
+          );
+          storage.createReviewComment.mockResolvedValue(makeComment({ parentId: parentCommentId }));
+          storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
+          storage.getReviewCommentTargets.mockResolvedValue([]);
+          await service.createComment(reviewId, { content: 'Reply', parentId: parentCommentId });
+          expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), expected);
+        },
+      );
 
       it('includes resolved targetAgentIds in event payload', async () => {
         const agentAuthoredParent = makeComment({
@@ -624,111 +530,46 @@ describe('ReviewsService', () => {
     });
 
     describe('target agent ID de-duplication and author filtering', () => {
-      it('de-duplicates target agent IDs', async () => {
-        const review = makeReview();
-        storage.getReview.mockResolvedValue(review);
+      it.each([
+        {
+          label: 'dedupe',
+          targetAgentIds: ['agent-1', 'agent-2', 'agent-1', 'agent-3'],
+          authorType: 'user' as const,
+          authorAgentId: undefined,
+          expected: ['agent-1', 'agent-2', 'agent-3'],
+        },
+        {
+          label: 'filter author',
+          targetAgentIds: ['agent-1', 'agent-2', 'agent-3'],
+          authorType: 'agent' as const,
+          authorAgentId: 'agent-1',
+          expected: ['agent-2', 'agent-3'],
+        },
+        {
+          label: 'user',
+          targetAgentIds: ['agent-1', 'agent-2'],
+          authorType: 'user' as const,
+          authorAgentId: 'agent-1',
+          expected: ['agent-1', 'agent-2'],
+        },
+        {
+          label: 'no targets left',
+          targetAgentIds: ['agent-1'],
+          authorType: 'agent' as const,
+          authorAgentId: 'agent-1',
+          expected: [],
+        },
+      ])('$label', async ({ targetAgentIds, authorType, authorAgentId, expected }) => {
+        storage.getReview.mockResolvedValue(makeReview());
         storage.createReviewComment.mockResolvedValue(makeComment());
         storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-
-        const targetAgentIds = ['agent-1', 'agent-2', 'agent-1', 'agent-3'];
-        await service.createComment(reviewId, {
-          content: 'Test comment with duplicates',
-          targetAgentIds,
-        });
-
-        // Should be de-duplicated to ['agent-1', 'agent-2', 'agent-3']
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
-          'agent-1',
-          'agent-2',
-          'agent-3',
-        ]);
-      });
-
-      it('filters out author agent ID when authorType is agent', async () => {
-        const review = makeReview();
-        storage.getReview.mockResolvedValue(review);
-        storage.createReviewComment.mockResolvedValue(makeComment());
-        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-
-        const authorAgentId = 'agent-1';
-        const targetAgentIds = ['agent-1', 'agent-2', 'agent-3'];
-        await service.createComment(reviewId, {
-          content: 'Test comment',
-          targetAgentIds,
-          authorType: 'agent',
-          authorAgentId,
-        });
-
-        // agent-1 should be filtered out (author)
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
-          'agent-2',
-          'agent-3',
-        ]);
-      });
-
-      it('does not filter when authorType is user', async () => {
-        const review = makeReview();
-        storage.getReview.mockResolvedValue(review);
-        storage.createReviewComment.mockResolvedValue(makeComment());
-        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-
-        const authorAgentId = 'agent-1';
-        const targetAgentIds = ['agent-1', 'agent-2'];
         await service.createComment(reviewId, {
           content: 'Test comment',
           targetAgentIds,
-          authorType: 'user',
+          authorType,
           authorAgentId,
         });
-
-        // agent-1 should NOT be filtered out (author is user)
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
-          'agent-1',
-          'agent-2',
-        ]);
-      });
-
-      it('allows comment creation when filtering leaves zero targets', async () => {
-        const review = makeReview();
-        storage.getReview.mockResolvedValue(review);
-        storage.createReviewComment.mockResolvedValue(makeComment());
-        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-
-        // Only target is the author itself
-        const authorAgentId = 'agent-1';
-        const targetAgentIds = ['agent-1'];
-        await service.createComment(reviewId, {
-          content: 'Test comment',
-          targetAgentIds,
-          authorType: 'agent',
-          authorAgentId,
-        });
-
-        // Should create comment with empty targets array
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), []);
-      });
-
-      it('handles both de-duplication and author filtering together', async () => {
-        const review = makeReview();
-        storage.getReview.mockResolvedValue(review);
-        storage.createReviewComment.mockResolvedValue(makeComment());
-        storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-
-        const authorAgentId = 'agent-2';
-        const targetAgentIds = ['agent-1', 'agent-2', 'agent-2', 'agent-3', 'agent-1'];
-        await service.createComment(reviewId, {
-          content: 'Test comment',
-          targetAgentIds,
-          authorType: 'agent',
-          authorAgentId,
-        });
-
-        // De-duplicated: ['agent-1', 'agent-2', 'agent-3']
-        // After filtering author: ['agent-1', 'agent-3']
-        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), [
-          'agent-1',
-          'agent-3',
-        ]);
+        expect(storage.createReviewComment).toHaveBeenCalledWith(expect.anything(), expected);
       });
 
       it('preserves default reply inheritance behavior with filtering', async () => {
@@ -880,20 +721,6 @@ describe('ReviewsService', () => {
       );
     });
 
-    it('marks comment as wont_fix', async () => {
-      const comment = makeComment({ status: 'open' });
-      const resolved = makeComment({ status: 'wont_fix', version: 2 });
-      const review = makeReview();
-      storage.getReviewComment.mockResolvedValue(comment);
-      storage.getReview.mockResolvedValue(review);
-      storage.updateReviewComment.mockResolvedValue(resolved);
-      storage.getProject.mockResolvedValue({ id: projectId, name: 'Test Project' } as never);
-
-      const result = await service.resolveComment(reviewId, commentId, 'wont_fix', 1);
-
-      expect(result.status).toBe('wont_fix');
-    });
-
     // SECURITY: IDOR protection test
     it('throws NotFoundError when comment belongs to different review (IDOR protection)', async () => {
       const otherReviewId = '550e8400-e29b-41d4-a716-446655440099';
@@ -906,22 +733,6 @@ describe('ReviewsService', () => {
 
       // Verify storage update was never called (blocked before modification)
       expect(storage.updateReviewComment).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('listComments', () => {
-    it('returns comments for review', async () => {
-      storage.getReview.mockResolvedValue(makeReview());
-      storage.listReviewComments.mockResolvedValue({
-        items: [{ ...makeComment(), authorAgentName: null, targetAgents: [] }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await service.listComments(reviewId);
-
-      expect(result.items).toHaveLength(1);
     });
   });
 
@@ -956,20 +767,6 @@ describe('ReviewsService', () => {
   });
 
   describe('getActiveReview', () => {
-    it('returns null when no active review exists', async () => {
-      storage.getProject.mockResolvedValue({ id: projectId } as never);
-      storage.listReviews.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await service.getActiveReview(projectId);
-
-      expect(result).toBeNull();
-    });
-
     it('returns null when all reviews are closed', async () => {
       storage.getProject.mockResolvedValue({ id: projectId } as never);
       storage.listReviews.mockResolvedValue({

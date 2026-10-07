@@ -18,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/ui/tab
 import { Spinner } from '@/ui/components/ui/spinner';
 import type { ProviderAuthEntryItem } from '@/ui/hooks/useProviderAuth';
 import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
+import { vmUserWarning } from '@/modules/remotes/vm-user-identity';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { ActivityGroup } from './ActivityDialog';
 import { LOGIN_PROVIDERS, providerName } from './login-choices';
@@ -294,6 +295,11 @@ function Overview({
         </Fact>
         <Fact label="Last seen">{seenFact(remote)}</Fact>
       </dl>
+      {remote.dockerUserMismatch && (
+        <p role="note" aria-label="Docker user ids" className="text-muted-foreground">
+          {vmUserWarning(remote.dockerUserMismatch)}
+        </p>
+      )}
       {vmReachable(remote) && <RemoteMetricsStrip remoteId={remote.id} remoteName={remote.name} />}
       {danger.length > 0 && (
         <section

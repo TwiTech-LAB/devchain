@@ -42,6 +42,8 @@ describe('useProjectActivityReporter', () => {
 
     expect(result.current).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
+    act(() => document.dispatchEvent(new Event('scroll')));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('registers only capture-phase pointerdown and keydown listeners', () => {
@@ -92,16 +94,6 @@ describe('useProjectActivityReporter', () => {
     ]);
   });
 
-  it('does not report an unregistered passive event', () => {
-    renderHook(() => useProjectActivityReporter('project-1'));
-
-    act(() => {
-      document.dispatchEvent(new Event('scroll'));
-    });
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it('keeps document input gated by project selection and active document state', () => {
     const initialProps: { projectId: string | undefined } = { projectId: undefined };
     const { rerender } = renderHook(
@@ -127,29 +119,14 @@ describe('useProjectActivityReporter', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('touches a known project when the document is visible and focused', async () => {
-    const touched = await touchProjectActivity('project-1', {
-      fetchImpl: fetchMock,
-      now: () => 0,
-    });
-
-    expect(touched).toBe(true);
-    expect(fetchMock).toHaveBeenCalledWith('/api/cloud/activity/projects/project-1/touch', {
-      method: 'POST',
-    });
-  });
-
-  it('URL-encodes the project id in the touch path', async () => {
-    const touched = await touchProjectActivity('project/alpha:1', {
-      fetchImpl: fetchMock,
-      now: () => 0,
-    });
-
-    expect(touched).toBe(true);
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/cloud/activity/projects/project%2Falpha%3A1/touch',
-      { method: 'POST' },
+  it.each([
+    { projectId: 'project-1', url: '/api/cloud/activity/projects/project-1/touch' },
+    { projectId: 'project/alpha:1', url: '/api/cloud/activity/projects/project%2Falpha%3A1/touch' },
+  ] as const)('touches encoded project $projectId', async ({ projectId, url }) => {
+    expect(await touchProjectActivity(projectId, { fetchImpl: fetchMock, now: () => 0 })).toBe(
+      true,
     );
+    expect(fetchMock).toHaveBeenCalledWith(url, { method: 'POST' });
   });
 
   it('does not touch when project id is missing', async () => {

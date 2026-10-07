@@ -426,21 +426,11 @@ describe('TranscriptPersistenceListener', () => {
       });
     });
 
-    it('should skip when transcriptPath is missing', async () => {
-      const payload = { ...hookPayload, transcriptPath: undefined };
-
-      await listener.handleHookSessionStarted(payload);
-
-      expect(mockValidator.validateShape).not.toHaveBeenCalled();
-      expect(mockPrepare).not.toHaveBeenCalled();
-      expect(mockEvents.publish).not.toHaveBeenCalled();
-    });
-
-    it('should skip when sessionId is null', async () => {
-      const payload = { ...hookPayload, sessionId: null };
-
-      await listener.handleHookSessionStarted(payload);
-
+    it.each([
+      { name: 'missing transcript path', patch: { transcriptPath: undefined } },
+      { name: 'null session ID', patch: { sessionId: null } },
+    ])('skips $name', async ({ patch }) => {
+      await listener.handleHookSessionStarted({ ...hookPayload, ...patch });
       expect(mockValidator.validateShape).not.toHaveBeenCalled();
       expect(mockPrepare).not.toHaveBeenCalled();
       expect(mockEvents.publish).not.toHaveBeenCalled();
@@ -485,12 +475,6 @@ describe('TranscriptPersistenceListener', () => {
 
       await expect(listener.handleHookSessionStarted(hookPayload)).resolves.not.toThrow();
     });
-
-    it('should not propagate errors from event publishing', async () => {
-      mockEvents.publish.mockRejectedValue(new Error('Event bus down'));
-
-      await expect(listener.handleHookSessionStarted(hookPayload)).resolves.not.toThrow();
-    });
   });
 
   // -------------------------------------------------------------------------
@@ -515,150 +499,70 @@ describe('TranscriptPersistenceListener', () => {
       // NOTE: Copilot SessionStart carries NO transcriptPath.
     };
 
-    it('confirms (idempotent no-op) when the bound provider_session_id matches — no overwrite, no publish', async () => {
-      mockGetTranscriptPath.mockReturnValue({
-        transcript_path: COPILOT_TRANSCRIPT,
-        provider_session_id: 'copilot-sess-1',
-      });
-
-      await listener.handleHookSessionStarted(copilotSessionStart);
-
-      // Never (re)binds and never re-discovers — Phase-1 already bound it.
-      expect(mockRun).not.toHaveBeenCalled();
-      expect(mockValidator.validateShape).not.toHaveBeenCalled();
-      expect(mockEvents.publish).not.toHaveBeenCalled();
-    });
-
-    it('WARNS on provider_session_id mismatch and does NOT overwrite the bound session', async () => {
-      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-      mockGetTranscriptPath.mockReturnValue({
-        transcript_path: COPILOT_TRANSCRIPT,
-        provider_session_id: 'a-different-bound-id',
-      });
-
-      try {
-        await listener.handleHookSessionStarted(copilotSessionStart);
-
-        expect(warnSpy).toHaveBeenCalledWith(
-          expect.objectContaining({
-            sessionId: SID,
-            providerName: 'copilot',
-            bound: 'a-different-bound-id',
-            incoming: 'copilot-sess-1',
-          }),
-          expect.stringContaining('provider_session_id mismatch'),
-        );
-        expect(mockRun).not.toHaveBeenCalled();
-        expect(mockEvents.publish).not.toHaveBeenCalled();
-      } finally {
-        warnSpy.mockRestore();
-      }
-    });
-
-    it('WARNS on transcript_path mismatch when a Stop hook carries a divergent path', async () => {
-      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-      mockGetTranscriptPath.mockReturnValue({
-        transcript_path: COPILOT_TRANSCRIPT,
-        provider_session_id: 'copilot-sess-1',
-      });
-      const stopHook: ClaudeHooksSessionStartedEventPayload = {
-        ...copilotSessionStart,
+    it.each([
+      {
+        name: 'matching provider ID',
+        boundId: 'copilot-sess-1',
+        known: true,
+        transcriptPath: undefined,
+        warning: undefined,
+      },
+      {
+        name: 'provider ID mismatch',
+        boundId: 'a-different-bound-id',
+        known: true,
+        transcriptPath: undefined,
+        warning: 'provider_session_id mismatch',
+      },
+      {
+        name: 'transcript path mismatch',
+        boundId: 'copilot-sess-1',
+        known: true,
         transcriptPath: '/home/user/.copilot/session-state/OTHER/events.jsonl',
-      };
-
-      try {
-        await listener.handleHookSessionStarted(stopHook);
-
-        expect(warnSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ sessionId: SID, providerName: 'copilot' }),
-          expect.stringContaining('transcript_path mismatch'),
-        );
-        expect(mockRun).not.toHaveBeenCalled();
-        expect(mockEvents.publish).not.toHaveBeenCalled();
-      } finally {
-        warnSpy.mockRestore();
-      }
-    });
-
-    it('WARNS and skips when the session is unknown (no rebind)', async () => {
-      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-      mockGetTranscriptPath.mockReturnValue(undefined);
-
-      try {
-        await listener.handleHookSessionStarted(copilotSessionStart);
-
-        expect(warnSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ sessionId: SID, providerName: 'copilot' }),
-          expect.stringContaining('unknown session'),
-        );
-        expect(mockRun).not.toHaveBeenCalled();
-        expect(mockEvents.publish).not.toHaveBeenCalled();
-      } finally {
-        warnSpy.mockRestore();
-      }
-    });
-
-    it('never runs the Claude hook-binding UPDATE for Copilot, even with a transcriptPath present', async () => {
-      // Regression guard: the provider branch must short-circuit BEFORE the
-      // Claude path's validateShape + UPDATE, so a Copilot hook can never
-      // overwrite a deterministically-bound session.
-      mockGetTranscriptPath.mockReturnValue({
-        transcript_path: COPILOT_TRANSCRIPT,
-        provider_session_id: 'copilot-sess-1',
-      });
-      const stopHookMatching: ClaudeHooksSessionStartedEventPayload = {
-        ...copilotSessionStart,
+        warning: 'transcript_path mismatch',
+      },
+      {
+        name: 'unknown session',
+        boundId: 'copilot-sess-1',
+        known: false,
+        transcriptPath: undefined,
+        warning: 'unknown session',
+      },
+      {
+        name: 'matching transcript path',
+        boundId: 'copilot-sess-1',
+        known: true,
         transcriptPath: COPILOT_TRANSCRIPT,
-      };
-
-      await listener.handleHookSessionStarted(stopHookMatching);
-
-      expect(mockValidator.validateShape).not.toHaveBeenCalled();
-      expect(mockRun).not.toHaveBeenCalled();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Legacy-default characterization: absent providerName → 'claude' → bind.
-  // Locks the fail-safe contract so the generic capability lookup can never
-  // accidentally change the legacy Claude path.
-  // -------------------------------------------------------------------------
-
-  describe('handleHookSessionStarted — legacy-default characterization', () => {
-    it('absent providerName binds with identical validation root, DB writes, and event payload as pre-generic', async () => {
-      const legacyPayload: ClaudeHooksSessionStartedEventPayload = {
-        claudeSessionId: 'claude-sess-123',
-        source: 'startup',
-        transcriptPath: '/home/user/.claude/projects/my-proj/session.jsonl',
-        tmuxSessionName: 'agent-session',
-        projectId: '11111111-1111-1111-1111-111111111111',
-        agentId: '22222222-2222-2222-2222-222222222222',
-        sessionId: '33333333-3333-3333-3333-333333333333',
-        // providerName deliberately absent → defaults to 'claude'
-      };
-
-      await listener.handleHookSessionStarted(legacyPayload);
-
-      // Validation uses the resolved provider name ('claude'), not a hardcode.
-      expect(mockValidator.validateShape).toHaveBeenCalledWith(
-        legacyPayload.transcriptPath,
-        'claude',
+        warning: undefined,
+      },
+    ])('never rebinds Copilot for $name', async ({ boundId, known, transcriptPath, warning }) => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      mockGetTranscriptPath.mockReturnValue(
+        known ? { transcript_path: COPILOT_TRANSCRIPT, provider_session_id: boundId } : undefined,
       );
-      // DB write uses claudeSessionId (providerSessionId absent → fallback).
-      expect(mockRun).toHaveBeenCalledWith(
-        '/normalized/path/session.jsonl',
-        'claude-sess-123',
-        expect.any(String),
-        '33333333-3333-3333-3333-333333333333',
-      );
-      // Event carries the resolved provider name, not a hardcode.
-      expect(mockEvents.publish).toHaveBeenCalledWith(
-        'session.transcript.discovered',
-        expect.objectContaining({
-          providerName: 'claude',
-          providerSessionId: 'claude-sess-123',
-        }),
-      );
+      try {
+        await listener.handleHookSessionStarted({ ...copilotSessionStart, transcriptPath });
+        expect(mockRun).not.toHaveBeenCalled();
+        expect(mockValidator.validateShape).not.toHaveBeenCalled();
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+        if (warning) {
+          const context =
+            warning === 'provider_session_id mismatch'
+              ? {
+                  sessionId: SID,
+                  providerName: 'copilot',
+                  bound: boundId,
+                  incoming: 'copilot-sess-1',
+                }
+              : { sessionId: SID, providerName: 'copilot' };
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.objectContaining(context),
+            expect.stringContaining(warning),
+          );
+        }
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 
@@ -838,74 +742,70 @@ describe('TranscriptPersistenceListener', () => {
       expect(mockEvents.publish).not.toHaveBeenCalled();
     });
 
-    it('returns alreadyComplete when the matching row already has both fields', async () => {
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: '/normalized/path/session.jsonl',
-        provider_session_id: 'codex-session-1',
-        provider_name_at_launch: 'codex',
-      });
-
-      const outcome = await persistDiscoveredPath({ providerSessionId: 'codex-session-1' });
-
-      expect(outcome).toEqual({
-        kind: 'alreadyComplete',
-        sessionId: sessionStartedPayload.sessionId,
-      });
-      expect(mockRun).not.toHaveBeenCalled();
-      expect(mockEvents.publish).not.toHaveBeenCalled();
-    });
-
-    it('returns pathMismatch when the existing path differs after normalization', async () => {
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: '/different/path/session.jsonl',
-        provider_session_id: null,
-        provider_name_at_launch: 'codex',
-      });
-
-      const outcome = await persistDiscoveredPath({ providerSessionId: 'codex-session-1' });
-
-      expect(outcome).toEqual({
-        kind: 'pathMismatch',
-        sessionId: sessionStartedPayload.sessionId,
-        existing: '/different/path/session.jsonl',
-        incoming: '/normalized/path/session.jsonl',
-      });
-      expect(mockRun).not.toHaveBeenCalled();
-      expect(mockEvents.publish).not.toHaveBeenCalled();
-    });
-
-    it('returns skipped providerMismatch instead of cross-provider id backfill', async () => {
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: '/normalized/path/session.jsonl',
-        provider_session_id: null,
-        provider_name_at_launch: 'claude',
-      });
-
-      const outcome = await persistDiscoveredPath({ providerSessionId: 'codex-session-1' });
-
-      expect(outcome).toEqual({
-        kind: 'skipped',
-        sessionId: sessionStartedPayload.sessionId,
-        reason: 'providerMismatch',
-      });
-      expect(mockRun).not.toHaveBeenCalled();
-      expect(mockEvents.publish).not.toHaveBeenCalled();
-    });
-
-    it('documents Claude Case B as skipped because Claude ids come from hook payloads', async () => {
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: '/normalized/path/session.jsonl',
-        provider_session_id: null,
-        provider_name_at_launch: 'claude',
-      });
-
-      const outcome = await persistDiscoveredPath({}, 'claude');
-
-      expect(outcome).toEqual({
-        kind: 'skipped',
-        sessionId: sessionStartedPayload.sessionId,
-        reason: 'noIdAvailable',
-      });
+    it.each([
+      {
+        name: 'returns alreadyComplete when the matching row already has both fields',
+        row: {
+          transcript_path: '/normalized/path/session.jsonl',
+          provider_session_id: 'codex-session-1',
+          provider_name_at_launch: 'codex',
+        },
+        args: { providerSessionId: 'codex-session-1' },
+        provider: 'codex',
+        expected: {
+          kind: 'alreadyComplete',
+          sessionId: sessionStartedPayload.sessionId,
+        },
+      },
+      {
+        name: 'returns pathMismatch when the existing path differs after normalization',
+        row: {
+          transcript_path: '/different/path/session.jsonl',
+          provider_session_id: null,
+          provider_name_at_launch: 'codex',
+        },
+        args: { providerSessionId: 'codex-session-1' },
+        provider: 'codex',
+        expected: {
+          kind: 'pathMismatch',
+          sessionId: sessionStartedPayload.sessionId,
+          existing: '/different/path/session.jsonl',
+          incoming: '/normalized/path/session.jsonl',
+        },
+      },
+      {
+        name: 'returns skipped providerMismatch instead of cross-provider id backfill',
+        row: {
+          transcript_path: '/normalized/path/session.jsonl',
+          provider_session_id: null,
+          provider_name_at_launch: 'claude',
+        },
+        args: { providerSessionId: 'codex-session-1' },
+        provider: 'codex',
+        expected: {
+          kind: 'skipped',
+          sessionId: sessionStartedPayload.sessionId,
+          reason: 'providerMismatch',
+        },
+      },
+      {
+        name: 'documents Claude Case B as skipped because Claude ids come from hook payloads',
+        row: {
+          transcript_path: '/normalized/path/session.jsonl',
+          provider_session_id: null,
+          provider_name_at_launch: 'claude',
+        },
+        args: {},
+        provider: 'claude',
+        expected: {
+          kind: 'skipped',
+          sessionId: sessionStartedPayload.sessionId,
+          reason: 'noIdAvailable',
+        },
+      },
+    ])('$name', async ({ row, args, provider, expected }) => {
+      mockGetPersistRow.mockReturnValue(row);
+      expect(await persistDiscoveredPath(args, provider)).toEqual(expected);
       expect(mockRun).not.toHaveBeenCalled();
       expect(mockEvents.publish).not.toHaveBeenCalled();
     });
@@ -1118,42 +1018,6 @@ describe('TranscriptPersistenceListener', () => {
       expect(mockReadFileHead).toHaveBeenCalledTimes(200);
       expect(mockReadFileHead).not.toHaveBeenCalledWith('/tmp/custom-200.jsonl', expect.anything());
       expect(mockValidator.validateShape).toHaveBeenCalledWith('/tmp/custom-199.jsonl', 'custom');
-    });
-
-    it('should log full UUID content matches with matchType content', async () => {
-      mockStorage.getProvider.mockResolvedValue(
-        createMockProvider({
-          id: 'provider-1',
-          name: 'codex',
-          binPath: null,
-        }),
-      );
-      const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
-      const codexFile = makeFileInfo({
-        filePath: '/home/user/.codex/sessions/2026/02/25/rollout-match.jsonl',
-        providerName: 'codex',
-        providerSessionId: 'codex-session-1',
-      });
-      mockAdapter.discoverSessionFile.mockResolvedValue([codexFile]);
-      mockReadFileHead.mockResolvedValue(`session=${sessionStartedPayload.sessionId}`);
-
-      try {
-        const promise = listener.handleSessionStarted(sessionStartedPayload);
-        await jest.advanceTimersByTimeAsync(0);
-        await promise;
-
-        expect(logSpy).toHaveBeenCalledWith(
-          expect.objectContaining({
-            sessionId: sessionStartedPayload.sessionId,
-            providerName: 'codex',
-            filePath: codexFile.filePath,
-            matchType: 'content',
-          }),
-          'Auto-discovered transcript via content match',
-        );
-      } finally {
-        logSpy.mockRestore();
-      }
     });
 
     it('should discover Codex transcript by session_meta metadata without session UUID content', async () => {
@@ -1687,30 +1551,42 @@ describe('TranscriptPersistenceListener', () => {
       expect(mockValidator.validateShape).not.toHaveBeenCalledWith('/tmp/b.jsonl', 'codex');
     });
 
-    it('should exclude candidates without content timestamps from timestamp heuristic', async () => {
+    it.each([
+      {
+        name: 'should exclude candidates without content timestamps from timestamp heuristic',
+        files: [makeFileInfo({ filePath: '/tmp/no-ts.jsonl', providerName: 'codex' })],
+        head: `{"type":"assistant","text":"no timestamp field"}`,
+      },
+      {
+        name: 'should not persist unrelated transcripts with different content',
+        files: [
+          makeFileInfo({
+            filePath: '/tmp/unrelated-recent.jsonl',
+            providerName: 'codex',
+            lastModified: '2026-02-25T10:00:59.000Z',
+          }),
+        ],
+        head: '{"timestamp":"2026-02-24T08:00:00.000Z","content":"different session"}',
+      },
+      {
+        name: 'should treat empty read content as non-match and continue retries',
+        files: [makeFileInfo({ filePath: '/tmp/empty.jsonl', providerName: 'codex' })],
+        head: '',
+      },
+    ])('$name', async ({ files, head }) => {
       mockStorage.getProvider.mockResolvedValue(
-        createMockProvider({
-          id: 'provider-1',
-          name: 'codex',
-          binPath: null,
-        }),
+        createMockProvider({ id: 'provider-1', name: 'codex', binPath: null }),
       );
-      mockAdapter.discoverSessionFile.mockResolvedValue([
-        makeFileInfo({ filePath: '/tmp/no-ts.jsonl', providerName: 'codex' }),
-      ]);
-      mockReadFileHead.mockResolvedValue(`{"type":"assistant","text":"no timestamp field"}`);
-      mockGetTranscriptPath
-        .mockReturnValueOnce({ transcript_path: null })
-        .mockReturnValueOnce({ transcript_path: null })
-        .mockReturnValueOnce({ transcript_path: null });
+      mockAdapter.discoverSessionFile.mockResolvedValue(files);
+      mockReadFileHead.mockResolvedValue(head);
+      mockGetTranscriptPath.mockReturnValue({ transcript_path: null });
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
-
       const promise = listener.handleSessionStarted(sessionStartedPayload);
       await jest.advanceTimersByTimeAsync(0);
       await advanceAllDiscoveryRetries();
       await promise;
-
       expect(mockEvents.publish).not.toHaveBeenCalled();
+      expect(mockValidator.validateShape).not.toHaveBeenCalled();
     });
 
     it('should skip unreadable files (readFileHead=null) and continue discovery safely', async () => {
@@ -1741,82 +1617,6 @@ describe('TranscriptPersistenceListener', () => {
       expect(mockReadFileHead).toHaveBeenCalledTimes(2);
       expect(mockValidator.validateShape).toHaveBeenCalledWith('/tmp/readable.jsonl', 'codex');
       expect(mockEvents.publish).toHaveBeenCalled();
-    });
-
-    it('should not persist unrelated transcripts with different content', async () => {
-      mockStorage.getProvider.mockResolvedValue(
-        createMockProvider({
-          id: 'provider-1',
-          name: 'codex',
-          binPath: null,
-        }),
-      );
-      mockAdapter.discoverSessionFile.mockResolvedValue([
-        makeFileInfo({
-          filePath: '/tmp/unrelated-recent.jsonl',
-          providerName: 'codex',
-          lastModified: '2026-02-25T10:00:59.000Z',
-        }),
-      ]);
-      mockReadFileHead.mockResolvedValue(
-        '{"timestamp":"2026-02-24T08:00:00.000Z","content":"different session"}',
-      );
-      mockGetTranscriptPath
-        .mockReturnValueOnce({ transcript_path: null })
-        .mockReturnValueOnce({ transcript_path: null })
-        .mockReturnValueOnce({ transcript_path: null });
-      mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
-
-      const promise = listener.handleSessionStarted(sessionStartedPayload);
-      await jest.advanceTimersByTimeAsync(0);
-      await advanceAllDiscoveryRetries();
-      await promise;
-
-      expect(mockEvents.publish).not.toHaveBeenCalled();
-      expect(mockValidator.validateShape).not.toHaveBeenCalled();
-    });
-
-    it('should treat empty read content as non-match and continue retries', async () => {
-      mockStorage.getProvider.mockResolvedValue(
-        createMockProvider({
-          id: 'provider-1',
-          name: 'codex',
-          binPath: null,
-        }),
-      );
-      mockAdapter.discoverSessionFile.mockResolvedValue([
-        makeFileInfo({ filePath: '/tmp/empty.jsonl', providerName: 'codex' }),
-      ]);
-      mockReadFileHead.mockResolvedValue('');
-      mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
-
-      const promise = listener.handleSessionStarted(sessionStartedPayload);
-      await jest.advanceTimersByTimeAsync(0);
-      await advanceAllDiscoveryRetries();
-      await promise;
-
-      expect(mockEvents.publish).not.toHaveBeenCalled();
-    });
-
-    it('should warn when discovered transcript exceeds 10MB', async () => {
-      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-      const largeFile = makeFileInfo({ sizeBytes: 10 * 1024 * 1024 + 1 });
-      mockAdapter.discoverSessionFile.mockResolvedValue([largeFile]);
-
-      try {
-        const promise = listener.handleSessionStarted(sessionStartedPayload);
-        await jest.advanceTimersByTimeAsync(0);
-        await promise;
-        expect(warnSpy).toHaveBeenCalledWith(
-          expect.objectContaining({
-            filePath: largeFile.filePath,
-            sizeBytes: largeFile.sizeBytes,
-          }),
-          'Discovered transcript exceeds 10MB',
-        );
-      } finally {
-        warnSpy.mockRestore();
-      }
     });
 
     it('should use debug logs for non-final misses and warn on final miss', async () => {

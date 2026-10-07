@@ -20,6 +20,15 @@ describe('SshKeyService', () => {
   let encrypted: { private: string; public: string };
   const originalHost = process.env.HOST;
 
+  beforeAll(() => {
+    rsa = utils.generateKeyPairSync('rsa', { bits: 2_048 });
+    encrypted = utils.generateKeyPairSync('ed25519', {
+      passphrase: 'correct-passphrase',
+      cipher: 'aes256-ctr',
+      rounds: 16,
+    });
+  });
+
   beforeEach(async () => {
     process.env.HOST = '127.0.0.1';
     resetEnvConfig();
@@ -27,12 +36,6 @@ describe('SshKeyService', () => {
     directory = join(root, '.ssh');
     await mkdir(directory);
     service = new SshKeyService(directory);
-    rsa = utils.generateKeyPairSync('rsa', { bits: 2_048 });
-    encrypted = utils.generateKeyPairSync('ed25519', {
-      passphrase: 'correct-passphrase',
-      cipher: 'aes256-ctr',
-      rounds: 16,
-    });
   });
 
   afterEach(async () => {

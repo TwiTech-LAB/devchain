@@ -114,36 +114,22 @@ describe('ProviderAuthWritebackService', () => {
     expect(vault.writeBackFamilies).toHaveBeenCalledTimes(1);
   });
 
-  it('sends the newest reported mtime as since on the next pull', async () => {
+  it.each([
+    [1500, 1500],
+    [1790497465557.3618, 1790497465558],
+  ])('uses mtime %s as since=%s', async (mtime, since) => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => [],
     });
-    fetchMock.mockResolvedValueOnce(familiesResponse(1500));
+    fetchMock.mockResolvedValueOnce(familiesResponse(mtime));
 
     await service.pullIfChanged('remote-1', 'https://host', fixtureTls.cert);
     await service.pullIfChanged('remote-1', 'https://host', fixtureTls.cert);
 
     expect(fetchMock).toHaveBeenLastCalledWith(
-      'https://host/api/host/provider-auth/families?since=1500',
-      expect.anything(),
-    );
-  });
-
-  it('rounds a file time with a fraction up to a whole millisecond for since', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => [],
-    });
-    fetchMock.mockResolvedValueOnce(familiesResponse(1790497465557.3618));
-
-    await service.pullIfChanged('remote-1', 'https://host', fixtureTls.cert);
-    await service.pullIfChanged('remote-1', 'https://host', fixtureTls.cert);
-
-    expect(fetchMock).toHaveBeenLastCalledWith(
-      'https://host/api/host/provider-auth/families?since=1790497465558',
+      `https://host/api/host/provider-auth/families?since=${since}`,
       expect.anything(),
     );
   });

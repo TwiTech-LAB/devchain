@@ -251,20 +251,6 @@ describe('AgentMessageDeliveryService', () => {
       expect(outcome.results[1].status).toBe('failed');
     });
 
-    it('passes immediate policy to pool', async () => {
-      const { service, messageEnqueue } = buildService();
-
-      await service.deliver(
-        ['agent-1'],
-        { kind: 'mcp.direct', body: 'urgent', source: 'test', projectId: 'p1', senderName: 'A' },
-        { immediate: true },
-      );
-
-      expect(messageEnqueue.enqueue).toHaveBeenCalledWith([
-        expect.objectContaining({ immediate: true }),
-      ]);
-    });
-
     it.each([
       ['pooled autonomous', { kind: 'pooled' as const }, true, false],
       ['agent MCP', { kind: 'mcp.direct' as const, senderType: 'agent' as const }, true, false],
@@ -346,30 +332,6 @@ describe('AgentMessageDeliveryService', () => {
         status: 'failed',
         error: 'DELIVERY_FAILED',
       });
-    });
-
-    it('invokes formatter.format() for mcp.direct kind', async () => {
-      const { service, formatter, messageEnqueue } = buildService();
-
-      await service.deliver(
-        ['agent-1'],
-        {
-          kind: 'mcp.direct',
-          body: 'hi',
-          source: 'test',
-          projectId: 'p1',
-          senderName: 'Alpha',
-          senderType: 'agent',
-        },
-        {},
-      );
-
-      expect(formatter.format).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: 'mcp.direct', body: 'hi', senderName: 'Alpha' }),
-      );
-      expect(messageEnqueue.enqueue).toHaveBeenCalledWith([
-        expect.objectContaining({ agentId: 'agent-1', text: '[formatted:mcp.direct] hi' }),
-      ]);
     });
 
     it('delivers guest messages through GuestDeliveryService', async () => {

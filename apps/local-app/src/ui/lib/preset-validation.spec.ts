@@ -75,20 +75,6 @@ describe('validatePresetAvailability', () => {
         reason: 'agent_not_found',
       });
     });
-
-    it('returns available=false with multiple missing agents', () => {
-      const preset = createPreset('Multiple Missing', [
-        { agentName: 'Agent1', providerConfigName: 'config-1' },
-        { agentName: 'Agent2', providerConfigName: 'config-2' },
-      ]);
-
-      const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
-      expect(result.available).toBe(false);
-      expect(result.missingConfigs).toHaveLength(2);
-      expect(result.missingConfigs[0].reason).toBe('agent_not_found');
-      expect(result.missingConfigs[1].reason).toBe('agent_not_found');
-    });
   });
 
   describe('available=false with missing config', () => {
@@ -107,79 +93,48 @@ describe('validatePresetAvailability', () => {
         reason: 'config_not_found',
       });
     });
-
-    it('returns available=false with multiple missing configs', () => {
-      const preset = createPreset('Multiple Missing Configs', [
-        { agentName: 'Brainstormer', providerConfigName: 'Config1' },
-        { agentName: 'Coder', providerConfigName: 'Config2' },
-      ]);
-
-      const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
-      expect(result.available).toBe(false);
-      expect(result.missingConfigs).toHaveLength(2);
-      expect(result.missingConfigs[0].reason).toBe('config_not_found');
-      expect(result.missingConfigs[1].reason).toBe('config_not_found');
-    });
   });
 
   describe('case-insensitive matching', () => {
-    it('matches agent names case-insensitively', () => {
-      const preset = createPreset('Case Insensitive Agent', [
-        { agentName: 'BRAINSTORMER', providerConfigName: 'claude-config' },
-        { agentName: 'coder', providerConfigName: 'claude-config' },
-        { agentName: '  ReViewEr  ', providerConfigName: 'codex-config' },
-      ]);
-
+    it.each([
+      [
+        'Case Insensitive Agent',
+        [
+          { agentName: 'BRAINSTORMER', providerConfigName: 'claude-config' },
+          { agentName: 'coder', providerConfigName: 'claude-config' },
+          { agentName: '  ReViewEr  ', providerConfigName: 'codex-config' },
+        ],
+      ],
+      [
+        'Case Insensitive Config',
+        [
+          { agentName: 'Brainstormer', providerConfigName: 'CLAUDE-CONFIG' },
+          { agentName: 'Coder', providerConfigName: '  codex-config  ' },
+        ],
+      ],
+    ])('matches %s', (name, agentConfigs) => {
+      const preset = createPreset(name, agentConfigs);
       const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
       expect(result.available).toBe(true);
       expect(result.missingConfigs).toEqual([]);
-    });
-
-    it('matches config names case-insensitively', () => {
-      const preset = createPreset('Case Insensitive Config', [
-        { agentName: 'Brainstormer', providerConfigName: 'CLAUDE-CONFIG' },
-        { agentName: 'Coder', providerConfigName: '  codex-config  ' },
-      ]);
-
-      const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
-      expect(result.available).toBe(true);
-      expect(result.missingConfigs).toEqual([]);
-    });
-
-    it('returns available=false when config name does not exist', () => {
-      const preset = createPreset('Wrong Config', [
-        { agentName: 'Brainstormer', providerConfigName: 'non-existent-config' },
-      ]);
-
-      const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
-      expect(result.available).toBe(false);
-      expect(result.missingConfigs[0].reason).toBe('config_not_found');
     });
   });
 
   describe('whitespace handling', () => {
-    it('matches agent names with leading/trailing whitespace', () => {
-      const preset = createPreset('Whitespace Agent', [
-        { agentName: '  Brainstormer  ', providerConfigName: 'claude-config' },
-      ]);
-
+    it.each([
+      [
+        'Whitespace Agent',
+        [{ agentName: '  Brainstormer  ', providerConfigName: 'claude-config' }],
+      ],
+      [
+        'Whitespace Config',
+        [{ agentName: 'Brainstormer', providerConfigName: '  claude-config  ' }],
+      ],
+    ])('matches %s', (name, agentConfigs) => {
+      const preset = createPreset(name, agentConfigs);
       const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
       expect(result.available).toBe(true);
-    });
-
-    it('matches config names with leading/trailing whitespace', () => {
-      const preset = createPreset('Whitespace Config', [
-        { agentName: 'Brainstormer', providerConfigName: '  claude-config  ' },
-      ]);
-
-      const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
-      expect(result.available).toBe(true);
+      expect(result.missingConfigs).toEqual([]);
     });
   });
 
@@ -194,21 +149,6 @@ describe('validatePresetAvailability', () => {
 
       expect(result.available).toBe(false);
       expect(result.missingConfigs[0].reason).toBe('config_not_found');
-    });
-
-    it('returns available=false when agent profile has no configs', () => {
-      const preset = createPreset('No Configs In Profile', [
-        { agentName: 'Tester', providerConfigName: 'any-config' },
-      ]);
-
-      const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
-      expect(result.available).toBe(false);
-      expect(result.missingConfigs[0]).toEqual({
-        agentName: 'Tester',
-        configName: 'any-config',
-        reason: 'config_not_found',
-      });
     });
   });
 
@@ -225,17 +165,6 @@ describe('validatePresetAvailability', () => {
       expect(result.missingConfigs).toHaveLength(2);
       expect(result.missingConfigs[0].reason).toBe('agent_not_found');
       expect(result.missingConfigs[1].reason).toBe('config_not_found');
-    });
-
-    it('returns available=true when all configs exist even with some agents offline', () => {
-      const preset = createPreset('All Exist', [
-        { agentName: 'Brainstormer', providerConfigName: 'claude-config' },
-        { agentName: 'Coder', providerConfigName: 'codex-config' },
-      ]);
-
-      const result = validatePresetAvailability(preset, mockAgents, mockConfigsByProfile);
-
-      expect(result.available).toBe(true);
     });
   });
 

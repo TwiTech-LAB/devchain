@@ -19,9 +19,11 @@ afterEach(() => {
 // installs provider CLIs into the test's data folder. Checks off also keeps test apps
 // off the npm registry, including tests that write their own claim file. Blank TLS
 // paths are unset, so the VM's own certificate puts no TLS front on test apps.
-const HOST_ISOLATION = {
+// Startup skill sync off keeps test apps off GitHub and out of this machine's temp folder.
+const BACKEND_TEST_ENV = {
   DEVCHAIN_HOST_ETC_DIR: '/nonexistent/devchain-host',
   PROVIDER_CLI_CHECKS_ENABLED: 'false',
+  SKILLS_STARTUP_SYNC_ENABLED: 'false',
   DEVCHAIN_HOST_TLS_KEY_FILE: '',
   DEVCHAIN_HOST_TLS_CERT_FILE: '',
 };
@@ -32,12 +34,12 @@ function applyBackendTestEnvIsolation(): void {
   process.env.PORT = '3000';
   delete process.env.HOST;
   // Refill only what a test deleted: a test that sets its own folder or flag keeps it.
-  for (const [name, value] of Object.entries(HOST_ISOLATION)) process.env[name] ??= value;
+  for (const [name, value] of Object.entries(BACKEND_TEST_ENV)) process.env[name] ??= value;
   resetEnvConfig();
 }
 
 // At load, override the shell and .env: tests never inherit this machine's host identity.
-Object.assign(process.env, HOST_ISOLATION);
+Object.assign(process.env, BACKEND_TEST_ENV);
 applyBackendTestEnvIsolation();
 
 beforeEach(() => {

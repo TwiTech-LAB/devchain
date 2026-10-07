@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.24.1",
+  "version": "0.24.2",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,12 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.24.2": [
+      "Remote VMs: smoother and more reliable Connect, Disconnect and file sync, with better Docker support and a new Projects tab",
+      "Host image 1.4.0: more tools for agents, and the VM user gets the same user ids as this PC, which moving Docker containers needs",
+      "Dev Template: clearer rules for writing tests, and agents run only the affected tests before review",
+      "Stability: skill sync no longer fills the temp folder, and queued test runs no longer overload the machine"
+    ],
     "0.24.1": [
       "Mobile app 1.10.2: a more live and responsive chat experience",
       "Remote VMs: more control over Connect. You can cancel it, choose which Docker containers to move, and see progress while it runs",
@@ -543,6 +549,7 @@
     "tar": "^7.5.22",
     "undici": "5.29.0",
     "ws": "8.20.0",
+    "yaml": "2.8.4",
     "zod": "^3.22.4"
   },
   "devDependencies": {

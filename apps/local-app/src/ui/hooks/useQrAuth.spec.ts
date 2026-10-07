@@ -117,6 +117,10 @@ describe('useQrAuth', () => {
       );
       expect(result.current.status).toBe('waiting');
       expect(result.current.crossCheckCode).toBe('WXYZ');
+      expect((global.fetch as jest.Mock).mock.calls[1][0]).toBe('/api/e2ee/pairing/begin');
+      const augmented = decode(result.current.qrPayload!);
+      expect(augmented.p).toBe('abc');
+      expect(augmented.e2ee).toEqual({ pub: 'pcpub', kid: 'pckid', sec: 'sec', cid: 'ch-2' });
     });
 
     it('mints the QR and the E2EE pairing material on the selected remote backend', async () => {
@@ -179,29 +183,21 @@ describe('useQrAuth', () => {
   });
 
   describe('start() — fail-closed E2EE (never show a plaintext QR)', () => {
-    it('errors and shows NO QR when the E2EE begin endpoint fails', async () => {
-      mockFetch([initiateOk(), { ok: false, status: 500, json: async () => ({}) }]);
-
+    it.each([
+      { label: 'begin HTTP failure', response: { ok: false, status: 500, json: async () => ({}) } },
+      {
+        label: 'incomplete key material',
+        response: { json: async () => ({ pcEncPubKey: 'pcpub' }) },
+      },
+    ] as const)('fails closed on $label', async ({ response }) => {
+      mockFetch([initiateOk(), response]);
       const { result } = renderHook(() => useQrAuth(IDENTITY_URL, 'provision'));
       await act(async () => {
         await result.current.start();
       });
-
-      expect(result.current.status).toBe('error');
-      expect(result.current.qrPayload).toBeNull(); // never downgraded to a plaintext QR
-      expect(result.current.error).toContain('encrypted pairing');
-    });
-
-    it('errors when begin returns incomplete key material', async () => {
-      mockFetch([initiateOk(), { json: async () => ({ pcEncPubKey: 'pcpub' }) }]);
-
-      const { result } = renderHook(() => useQrAuth(IDENTITY_URL, 'provision'));
-      await act(async () => {
-        await result.current.start();
-      });
-
       expect(result.current.status).toBe('error');
       expect(result.current.qrPayload).toBeNull();
+      expect(result.current.error).toContain('encrypted pairing');
     });
   });
 
@@ -298,25 +294,6 @@ describe('useQrAuth', () => {
       });
 
       expect(result.current.status).toBe('denied');
-    });
-
-    it('transitions to expired on expired status', async () => {
-      const { result } = renderHook(() => useQrAuth(IDENTITY_URL, 'claim'));
-
-      mockFetch([initiateOk(), beginOk, { json: async () => ({ status: 'expired' }) }]);
-
-      await act(async () => {
-        await result.current.start();
-      });
-
-      act(() => {
-        jest.advanceTimersByTime(2500);
-      });
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      expect(result.current.status).toBe('expired');
     });
 
     it('stops polling after terminal status', async () => {
@@ -459,20 +436,6 @@ describe('useQrAuth', () => {
   });
 
   describe('E2EE QR augmentation + completion (Task:4)', () => {
-    it('folds the PC key + pairing secret into the QR via the begin endpoint', async () => {
-      mockFetch([initiateOk(), beginOk, { json: async () => ({ status: 'pending' }) }]);
-
-      const { result } = renderHook(() => useQrAuth(IDENTITY_URL, 'provision'));
-      await act(async () => {
-        await result.current.start();
-      });
-
-      expect((global.fetch as jest.Mock).mock.calls[1][0]).toBe('/api/e2ee/pairing/begin');
-      const augmented = decode(result.current.qrPayload!);
-      expect(augmented.p).toBe('abc'); // original fields preserved
-      expect(augmented.e2ee).toEqual({ pub: 'pcpub', kid: 'pckid', sec: 'sec', cid: 'ch-1' });
-    });
-
     it('completes the handshake when the relay returns the device key + MAC', async () => {
       const deviceE2ee = {
         deviceEncPubKey: 'mobpub',

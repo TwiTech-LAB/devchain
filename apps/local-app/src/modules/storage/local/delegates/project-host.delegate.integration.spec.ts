@@ -1,14 +1,11 @@
+import { createTestDatabase } from '../../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import { ProjectHostStorageDelegate } from './project-host.delegate';
 import { ProviderStorageDelegate } from './provider.delegate';
 import { createStorageDelegateContext } from './base-storage.delegate';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../../drizzle');
 
 describe('ProjectHostStorageDelegate — release keeps scoped provider env scoped (integration)', () => {
   let sqlite: Database.Database;
@@ -17,9 +14,8 @@ describe('ProjectHostStorageDelegate — release keeps scoped provider env scope
   let providers: ProviderStorageDelegate;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
 
     const context = createStorageDelegateContext(db);

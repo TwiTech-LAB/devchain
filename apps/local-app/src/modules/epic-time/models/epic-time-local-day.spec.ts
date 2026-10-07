@@ -29,49 +29,64 @@ describe('epic-time local-day helper', () => {
   });
 
   describe('resolveLocalDayInterval', () => {
-    it('returns exact instants for an ordinary UTC day', () => {
-      expect(resolveLocalDayInterval('2026-01-15', 'UTC')).toEqual({
-        activityDate: '2026-01-15',
-        startUtcMs: Date.UTC(2026, 0, 15),
-        nextStartUtcMs: Date.UTC(2026, 0, 16),
-        durationMs: 24 * 3_600_000,
-      });
-    });
-
-    it('returns a 23-hour interval on a spring-forward day', () => {
-      expect(resolveLocalDayInterval('2026-03-08', 'America/New_York')).toEqual({
-        activityDate: '2026-03-08',
-        startUtcMs: Date.UTC(2026, 2, 8, 5),
-        nextStartUtcMs: Date.UTC(2026, 2, 9, 4),
-        durationMs: 23 * 3_600_000,
-      });
-    });
-
-    it('returns a 25-hour interval on a fall-back day', () => {
-      expect(resolveLocalDayInterval('2026-11-01', 'America/New_York')).toEqual({
-        activityDate: '2026-11-01',
-        startUtcMs: Date.UTC(2026, 10, 1, 4),
-        nextStartUtcMs: Date.UTC(2026, 10, 2, 5),
-        durationMs: 25 * 3_600_000,
-      });
-    });
-
-    it('returns a 24.5-hour interval on a Lord Howe fall-back day', () => {
-      expect(resolveLocalDayInterval('2026-04-05', 'Australia/Lord_Howe')).toEqual({
-        activityDate: '2026-04-05',
-        startUtcMs: Date.UTC(2026, 3, 4, 13),
-        nextStartUtcMs: Date.UTC(2026, 3, 5, 13, 30),
-        durationMs: 24.5 * 3_600_000,
-      });
-    });
-
-    it('returns a 23.5-hour interval on a Lord Howe spring-forward day', () => {
-      expect(resolveLocalDayInterval('2026-10-04', 'Australia/Lord_Howe')).toEqual({
-        activityDate: '2026-10-04',
-        startUtcMs: Date.UTC(2026, 9, 3, 13, 30),
-        nextStartUtcMs: Date.UTC(2026, 9, 4, 13),
-        durationMs: 23.5 * 3_600_000,
-      });
+    it.each([
+      {
+        label: 'returns exact instants for an ordinary UTC day',
+        date: '2026-01-15',
+        zone: 'UTC',
+        expected: {
+          activityDate: '2026-01-15',
+          startUtcMs: Date.UTC(2026, 0, 15),
+          nextStartUtcMs: Date.UTC(2026, 0, 16),
+          durationMs: 24 * 3_600_000,
+        },
+      },
+      {
+        label: 'returns a 23-hour interval on a spring-forward day',
+        date: '2026-03-08',
+        zone: 'America/New_York',
+        expected: {
+          activityDate: '2026-03-08',
+          startUtcMs: Date.UTC(2026, 2, 8, 5),
+          nextStartUtcMs: Date.UTC(2026, 2, 9, 4),
+          durationMs: 23 * 3_600_000,
+        },
+      },
+      {
+        label: 'returns a 25-hour interval on a fall-back day',
+        date: '2026-11-01',
+        zone: 'America/New_York',
+        expected: {
+          activityDate: '2026-11-01',
+          startUtcMs: Date.UTC(2026, 10, 1, 4),
+          nextStartUtcMs: Date.UTC(2026, 10, 2, 5),
+          durationMs: 25 * 3_600_000,
+        },
+      },
+      {
+        label: 'returns a 24.5-hour interval on a Lord Howe fall-back day',
+        date: '2026-04-05',
+        zone: 'Australia/Lord_Howe',
+        expected: {
+          activityDate: '2026-04-05',
+          startUtcMs: Date.UTC(2026, 3, 4, 13),
+          nextStartUtcMs: Date.UTC(2026, 3, 5, 13, 30),
+          durationMs: 24.5 * 3_600_000,
+        },
+      },
+      {
+        label: 'returns a 23.5-hour interval on a Lord Howe spring-forward day',
+        date: '2026-10-04',
+        zone: 'Australia/Lord_Howe',
+        expected: {
+          activityDate: '2026-10-04',
+          startUtcMs: Date.UTC(2026, 9, 3, 13, 30),
+          nextStartUtcMs: Date.UTC(2026, 9, 4, 13),
+          durationMs: 23.5 * 3_600_000,
+        },
+      },
+    ])('$label', ({ date, zone, expected }) => {
+      expect(resolveLocalDayInterval(date, zone)).toEqual(expected);
     });
 
     it('starts a midnight-skipping DST day at its first existing local time', () => {

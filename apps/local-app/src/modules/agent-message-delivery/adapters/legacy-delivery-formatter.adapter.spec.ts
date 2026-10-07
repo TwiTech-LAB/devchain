@@ -28,39 +28,41 @@ describe('LegacyDeliveryFormatterAdapter', () => {
   }
 
   describe('mcp.direct framing', () => {
-    it("defaults to agent-banner for senderType 'agent' (existing behavior preserved)", () => {
-      const out = formatter.format(
-        msg({ kind: 'mcp.direct', senderName: 'Alpha', senderType: 'agent', body: 'do the thing' }),
-      );
-      expect(out).toBe(
-        '\n[This message is sent from "Alpha" agent use devchain_send_message tool for communication]\ndo the thing\n',
-      );
-    });
-
-    it("defaults to agent-banner for senderType 'guest' (existing behavior preserved)", () => {
-      const out = formatter.format(
-        msg({ kind: 'mcp.direct', senderName: 'Gamma', senderType: 'guest', body: 'hey' }),
-      );
-      expect(out).toBe(
-        '\n[This message is sent from "Gamma" guest use devchain_send_message tool for communication]\nhey\n',
-      );
-    });
-
-    it("defaults to agent-banner for senderType 'user' (default is agent-banner, NOT senderType-derived)", () => {
-      // A human user with no explicit framing still gets the banner by default;
-      // only an explicit framing:'plain' opts out. This guards the design
-      // decision that the default does NOT key off senderType.
-      const out = formatter.format(
-        msg({
-          kind: 'mcp.direct',
-          senderName: 'Mobile User',
-          senderType: 'user',
-          body: 'hi there',
-        }),
-      );
-      expect(out).toBe(
-        '\n[This message is sent from "Mobile User" user use devchain_send_message tool for communication]\nhi there\n',
-      );
+    it.each([
+      {
+        senderName: 'Alpha',
+        senderType: 'agent' as const,
+        body: 'do the thing',
+        framing: undefined,
+        expected:
+          '\n[This message is sent from "Alpha" agent use devchain_send_message tool for communication]\ndo the thing\n',
+      },
+      {
+        senderName: 'Mobile User',
+        senderType: 'user' as const,
+        body: 'hi there',
+        framing: undefined,
+        expected:
+          '\n[This message is sent from "Mobile User" user use devchain_send_message tool for communication]\nhi there\n',
+      },
+      {
+        senderName: 'Beta',
+        senderType: 'agent' as const,
+        body: 'do it',
+        framing: 'agent-banner' as const,
+        expected:
+          '\n[This message is sent from "Beta" agent use devchain_send_message tool for communication]\ndo it\n',
+      },
+      {
+        senderName: 'Anon',
+        senderType: undefined,
+        body: 'ping',
+        framing: undefined,
+        expected:
+          '\n[This message is sent from "Anon" agent use devchain_send_message tool for communication]\nping\n',
+      },
+    ])('formats the banner for $senderName with framing $framing', ({ expected, ...input }) => {
+      expect(formatter.format(msg({ kind: 'mcp.direct', ...input }))).toBe(expected);
     });
 
     it("returns EXACTLY the raw body for framing:'plain', regardless of senderType (no surrounding whitespace)", () => {
@@ -108,30 +110,6 @@ describe('LegacyDeliveryFormatterAdapter', () => {
 
         expect(out).toBe(body);
       });
-    });
-
-    it("returns the agent-banner when framing:'agent-banner' is explicit", () => {
-      const out = formatter.format(
-        msg({
-          kind: 'mcp.direct',
-          senderName: 'Beta',
-          senderType: 'agent',
-          body: 'do it',
-          framing: 'agent-banner',
-        }),
-      );
-      expect(out).toBe(
-        '\n[This message is sent from "Beta" agent use devchain_send_message tool for communication]\ndo it\n',
-      );
-    });
-
-    it("falls back to 'agent' senderType in the banner when senderType is unset", () => {
-      const out = formatter.format(
-        msg({ kind: 'mcp.direct', senderName: 'Anon', senderType: undefined, body: 'ping' }),
-      );
-      expect(out).toBe(
-        '\n[This message is sent from "Anon" agent use devchain_send_message tool for communication]\nping\n',
-      );
     });
   });
 

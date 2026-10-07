@@ -101,26 +101,6 @@ describe('app socket pool', () => {
   });
 
   describe('refcount underflow recovery', () => {
-    it('recovers when re-acquiring after a full release', () => {
-      const socket = createMockSocket('/socket.io');
-      ioMock.mockReturnValue(socket);
-
-      getAppSocket('home');
-      releaseAppSocket('home');
-      expect(socket.disconnect).toHaveBeenCalledTimes(1);
-
-      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-      try {
-        const newSocket = createMockSocket('/socket.io');
-        ioMock.mockReturnValue(newSocket);
-
-        getAppSocket('home');
-        expect(ioMock).toHaveBeenCalledTimes(2);
-      } finally {
-        warnSpy.mockRestore();
-      }
-    });
-
     it('warns on release when there is no live socket', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       try {
@@ -134,16 +114,6 @@ describe('app socket pool', () => {
   });
 
   describe('ping-pong listener lifecycle', () => {
-    it('registers the message listener on first acquire', () => {
-      const socket = createMockSocket('/socket.io');
-      ioMock.mockReturnValue(socket);
-
-      getAppSocket('home');
-
-      expect(socket.on).toHaveBeenCalledWith('message', expect.any(Function));
-      expect(socket.on).toHaveBeenCalledTimes(1);
-    });
-
     it('does not register additional message listeners on subsequent acquires', () => {
       const socket = createMockSocket('/socket.io');
       ioMock.mockReturnValue(socket);

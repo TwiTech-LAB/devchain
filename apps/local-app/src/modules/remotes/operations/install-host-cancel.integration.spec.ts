@@ -103,7 +103,7 @@ describe('host install cancellation over SSH', () => {
           provide: RemoteHostClient,
           useValue: {
             certificateOf: async () => fixtureTls.cert,
-            runtimeAt: async () => ({ state: 'unclaimed', imageVersion: '1.3.0' }),
+            runtimeAt: async () => ({ state: 'unclaimed', imageVersion: '1.4.0' }),
           },
         },
         { provide: ClaimOperation, useValue: claim },

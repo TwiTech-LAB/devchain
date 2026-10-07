@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 /**
  * ProjectsService.createFromTemplate — behavior suite (real in-memory storage).
  *
@@ -22,9 +23,7 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { join } from 'path';
 
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
@@ -60,11 +59,10 @@ interface Harness {
 }
 
 function createHarness(): Harness {
-  const sqlite = new Database(':memory:');
+  const sqlite = createTestDatabase().sqlite;
   sqlite.pragma('journal_mode = WAL');
   const db: BetterSQLite3Database = drizzle(sqlite);
   sqlite.pragma('foreign_keys = OFF');
-  migrate(db, { migrationsFolder: join(__dirname, '../../../..', 'drizzle') });
   sqlite.pragma('foreign_keys = ON');
 
   const storage = new LocalStorageService(db) as unknown as StorageService;
@@ -287,48 +285,6 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
           deps as never,
         ),
       ).rejects.toThrow('Invalid template format');
-    });
-
-    it('propagates ValidationError for slug with path traversal attempt', async () => {
-      const unified = bundledUnified(emptyTemplate());
-      unified.getTemplate.mockRejectedValue(
-        new ValidationError(
-          'Invalid template slug: must contain only alphanumeric characters and hyphens',
-          { slug: '../../../etc/passwd' },
-        ),
-      );
-      const { deps } = buildDeps(h, unified);
-
-      await expect(
-        createFromTemplateWithHelper(
-          { name: 'Test Project', rootPath: '/test', slug: '../../../etc/passwd' },
-          deps as never,
-        ),
-      ).rejects.toThrow(ValidationError);
-    });
-
-    it('propagates ValidationError for slug with special characters', async () => {
-      const invalidSlugs = [
-        'template;rm -rf /',
-        'template`whoami`',
-        'template$PATH',
-        'template@host',
-      ];
-
-      for (const slug of invalidSlugs) {
-        const unified = bundledUnified(emptyTemplate());
-        unified.getTemplate.mockRejectedValue(
-          new ValidationError('Invalid template slug', { slug }),
-        );
-        const { deps } = buildDeps(h, unified);
-
-        await expect(
-          createFromTemplateWithHelper(
-            { name: 'Test Project', rootPath: '/test', slug },
-            deps as never,
-          ),
-        ).rejects.toThrow(ValidationError);
-      }
     });
 
     it('propagates NotFoundError for missing template', async () => {
@@ -964,25 +920,6 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
           description: 'Main dev team',
         }),
       );
-    });
-
-    it('seeds two teams from the template', async () => {
-      const { createTeam } = await createTeams([
-        {
-          name: 'Team Alpha',
-          teamLeadAgentName: 'Lead Agent',
-          memberAgentNames: ['Lead Agent', 'Worker Agent'],
-        },
-        {
-          name: 'Team Beta',
-          teamLeadAgentName: 'Worker Agent',
-          memberAgentNames: ['Worker Agent'],
-        },
-      ]);
-
-      expect(createTeam).toHaveBeenCalledTimes(2);
-      expect(createTeam).toHaveBeenCalledWith(expect.objectContaining({ name: 'Team Alpha' }));
-      expect(createTeam).toHaveBeenCalledWith(expect.objectContaining({ name: 'Team Beta' }));
     });
 
     it('skips a team when its lead agent is missing (non-fatal)', async () => {

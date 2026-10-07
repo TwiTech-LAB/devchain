@@ -150,7 +150,7 @@ describeWithBinary('managed exclusions take precedence over user negations', () 
     expect(readFileSync(code(pair.home, 'uploads/blob'), 'utf8')).toBe('home-upload');
     const response = await fetch(`${pair.home.url}/api/file-sync/projects/${projectId}/ignores`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ignores: userIgnores });
+    expect(await response.json()).toEqual({ ignores: userIgnores, revision: 1 });
     expect(pair.home.app.get(FileSyncManagedExclusionsStore).get(projectId)).toEqual([
       '/state/db',
       '/uploads/**',

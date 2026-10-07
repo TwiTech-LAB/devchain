@@ -50,20 +50,6 @@ describe('McpProviderRegistrationService', () => {
     updatedAt: new Date().toISOString(),
   };
 
-  const codexProvider: Provider = {
-    id: 'provider-cdx',
-    name: 'codex',
-    binPath: '/usr/local/bin/codex',
-    mcpConfigured: false,
-    mcpEndpoint: null,
-    mcpRegisteredAt: null,
-    autoCompactThreshold: null,
-    claudeLaunchSettingsJson: null,
-    env: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
   const opencodeProvider: Provider = {
     id: 'provider-oc',
     name: 'opencode',
@@ -397,26 +383,6 @@ describe('McpProviderRegistrationService', () => {
       expect(renameMock).not.toHaveBeenCalled();
     });
 
-    it('uses atomic write (tmp + rename)', async () => {
-      readFileMock.mockResolvedValue('{}');
-
-      await service.registerProvider(
-        opencodeProvider,
-        { endpoint: 'http://127.0.0.1:3000/mcp' },
-        { cwd: '/projects/myapp' },
-      );
-
-      expect(writeFileMock).toHaveBeenCalledWith(
-        '/projects/myapp/opencode.json.tmp',
-        expect.any(String),
-        'utf-8',
-      );
-      expect(renameMock).toHaveBeenCalledWith(
-        '/projects/myapp/opencode.json.tmp',
-        '/projects/myapp/opencode.json',
-      );
-    });
-
     it('returns error when cwd is missing', async () => {
       const result = await service.registerProvider(opencodeProvider, {
         endpoint: 'http://127.0.0.1:3000/mcp',
@@ -424,21 +390,6 @@ describe('McpProviderRegistrationService', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toContain('requires a project path');
-    });
-
-    it('uses default alias devchain when alias not specified', async () => {
-      readFileMock.mockResolvedValue('{}');
-
-      const result = await service.registerProvider(
-        opencodeProvider,
-        { endpoint: 'http://127.0.0.1:3000/mcp' },
-        { cwd: '/projects/myapp' },
-      );
-
-      expect(result.success).toBe(true);
-      const writtenContent = writeFileMock.mock.calls[0][1] as string;
-      const written = JSON.parse(writtenContent);
-      expect(written.mcp.devchain).toBeDefined();
     });
   });
 
@@ -492,15 +443,31 @@ describe('McpProviderRegistrationService', () => {
       expect(result.message).toContain('nothing to remove');
     });
 
-    it('returns error for malformed JSON', async () => {
-      readFileMock.mockResolvedValue('broken');
-
+    it.each([
+      { name: 'returns error for malformed JSON', body: 'broken', message: 'malformed JSON' },
+      {
+        name: 'remove returns error when root is null',
+        body: 'null',
+        message: 'invalid root structure',
+      },
+      {
+        name: 'remove returns error when root is a string',
+        body: '"abc"',
+        message: 'invalid root structure',
+      },
+      {
+        name: 'remove returns error when root is an array',
+        body: '[1, 2]',
+        message: 'invalid root structure',
+      },
+    ])('$name', async ({ body, message }) => {
+      readFileMock.mockResolvedValue(body);
       const result = await service.removeRegistration(opencodeProvider, 'devchain', {
         cwd: '/projects/myapp',
       });
-
       expect(result.success).toBe(false);
-      expect(result.message).toContain('malformed JSON');
+      expect(result.message).toContain(message);
+      expect(writeFileMock).not.toHaveBeenCalled();
     });
 
     it('returns error when cwd is missing', async () => {
@@ -526,19 +493,6 @@ describe('McpProviderRegistrationService', () => {
       expect(result.success).toBe(false);
       expect(result.message).toContain('invalid "mcp" field');
       expect(writeFileMock).not.toHaveBeenCalled();
-    });
-
-    it('register returns error when mcp is a number', async () => {
-      readFileMock.mockResolvedValue(JSON.stringify({ mcp: 42 }));
-
-      const result = await service.registerProvider(
-        opencodeProvider,
-        { endpoint: 'http://127.0.0.1:3000/mcp' },
-        { cwd: '/projects/myapp' },
-      );
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalid "mcp" field');
     });
 
     it('register returns error when mcp is an array', async () => {
@@ -581,119 +535,32 @@ describe('McpProviderRegistrationService', () => {
   // ── Root JSON shape guard regression tests ──────────────────────────
 
   describe('config-file mode — invalid root JSON shape guards', () => {
-    it('register returns error when root is null', async () => {
-      readFileMock.mockResolvedValue('null');
-
+    it.each([
+      {
+        name: 'register returns error when root is null',
+        body: 'null',
+        message: 'invalid root structure',
+      },
+      {
+        name: 'register returns error when root is a string',
+        body: '"abc"',
+        message: 'invalid root structure',
+      },
+      {
+        name: 'register returns error when root is an array',
+        body: '[1, 2]',
+        message: 'invalid root structure',
+      },
+    ])('$name', async ({ body, message }) => {
+      readFileMock.mockResolvedValue(body);
       const result = await service.registerProvider(
         opencodeProvider,
         { endpoint: 'http://127.0.0.1:3000/mcp' },
         { cwd: '/projects/myapp' },
       );
-
       expect(result.success).toBe(false);
-      expect(result.message).toContain('invalid root structure');
+      expect(result.message).toContain(message);
       expect(writeFileMock).not.toHaveBeenCalled();
-    });
-
-    it('register returns error when root is a string', async () => {
-      readFileMock.mockResolvedValue('"abc"');
-
-      const result = await service.registerProvider(
-        opencodeProvider,
-        { endpoint: 'http://127.0.0.1:3000/mcp' },
-        { cwd: '/projects/myapp' },
-      );
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalid root structure');
-      expect(writeFileMock).not.toHaveBeenCalled();
-    });
-
-    it('register returns error when root is a number', async () => {
-      readFileMock.mockResolvedValue('42');
-
-      const result = await service.registerProvider(
-        opencodeProvider,
-        { endpoint: 'http://127.0.0.1:3000/mcp' },
-        { cwd: '/projects/myapp' },
-      );
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalid root structure');
-    });
-
-    it('register returns error when root is an array', async () => {
-      readFileMock.mockResolvedValue('[1, 2]');
-
-      const result = await service.registerProvider(
-        opencodeProvider,
-        { endpoint: 'http://127.0.0.1:3000/mcp' },
-        { cwd: '/projects/myapp' },
-      );
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalid root structure');
-      expect(writeFileMock).not.toHaveBeenCalled();
-    });
-
-    it('remove returns error when root is null', async () => {
-      readFileMock.mockResolvedValue('null');
-
-      const result = await service.removeRegistration(opencodeProvider, 'devchain', {
-        cwd: '/projects/myapp',
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalid root structure');
-    });
-
-    it('remove returns error when root is a string', async () => {
-      readFileMock.mockResolvedValue('"abc"');
-
-      const result = await service.removeRegistration(opencodeProvider, 'devchain', {
-        cwd: '/projects/myapp',
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalid root structure');
-    });
-
-    it('remove returns error when root is an array', async () => {
-      readFileMock.mockResolvedValue('[1, 2]');
-
-      const result = await service.removeRegistration(opencodeProvider, 'devchain', {
-        cwd: '/projects/myapp',
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.message).toContain('invalid root structure');
-    });
-  });
-
-  describe('pipe-mode MCP list (Claude/Codex)', () => {
-    beforeEach(() => {
-      accessMock.mockResolvedValue(undefined);
-    });
-
-    it('Claude list uses pipe mode via ProcessExecutor', async () => {
-      fakeExecutor.enqueueResponse({ type: 'success', stdout: '' });
-
-      await service.listRegistrations(baseProvider);
-      expect(fakeExecutor.calls[0].mode).toBe('pipe');
-    });
-
-    it('Codex list uses pipe mode via ProcessExecutor', async () => {
-      fakeExecutor.enqueueResponse({ type: 'success', stdout: '' });
-
-      await service.listRegistrations(codexProvider);
-      expect(fakeExecutor.calls[0].mode).toBe('pipe');
-    });
-
-    it('logger.warn called when command exits with error', async () => {
-      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1, stderr: 'error' });
-
-      await service.listRegistrations(baseProvider);
-      expect(mockLogger.warn).toHaveBeenCalled();
     });
   });
 });

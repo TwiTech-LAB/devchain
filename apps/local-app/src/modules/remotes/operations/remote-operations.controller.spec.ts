@@ -46,27 +46,6 @@ describe('RemoteOperationsController claim, update and retry routes', () => {
     ).toThrow(ZodError);
     expect(service.claim).not.toHaveBeenCalled();
   });
-
-  it('passes an explicit Docker enable to same-version Update VM and refuses unsupported options', async () => {
-    await controller.updateHost(REMOTE_ID, { installDocker: true });
-    expect(service.updateHost).toHaveBeenCalledWith(REMOTE_ID, true);
-    expect(() => controller.updateHost(REMOTE_ID, { installDocker: 'true' })).toThrow(ZodError);
-    expect(() => controller.updateHost(REMOTE_ID, { installDocker: false })).toThrow(ZodError);
-  });
-
-  it('starts a host update and passes new choices on retry', async () => {
-    await controller.updateHost(REMOTE_ID);
-    expect(service.updateHost).toHaveBeenCalledWith(REMOTE_ID, undefined);
-
-    await controller.retry(OPERATION_ID, undefined);
-    expect(service.retry).toHaveBeenCalledWith(OPERATION_ID, undefined, undefined);
-    await controller.retry(OPERATION_ID, { providerAuth: { codex: 'generate' } });
-    expect(service.retry).toHaveBeenLastCalledWith(OPERATION_ID, { codex: 'generate' }, undefined);
-
-    const ssh = { user: 'vm-admin', password: 'secret' };
-    await controller.retry(OPERATION_ID, { ssh });
-    expect(service.retry).toHaveBeenLastCalledWith(OPERATION_ID, undefined, ssh);
-  });
 });
 
 describe('RemoteOperationsController attach route', () => {

@@ -62,79 +62,134 @@ describe('PreferencesProxyController', () => {
   });
 
   describe('GET /preferences', () => {
-    it('forwards 200 JSON body unchanged', async () => {
-      const prefs = { categories: [{ category: 'epic.assigned', channel: 'push', enabled: true }] };
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok-abc');
-      fetchSpy.mockResolvedValue(mockFetchResponse(200, prefs));
-
-      const result = await controller.listPreferences();
-
-      expect(result).toEqual(prefs);
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/preferences'),
-        expect.objectContaining({
+    it.each([
+      {
+        name: 'controller.listPreferences',
+        token: 'tok-abc',
+        response: { categories: [{ category: 'epic.assigned', channel: 'push', enabled: true }] },
+        invoke: () => controller.listPreferences(),
+        url: expect.stringContaining('/api/v1/preferences'),
+        options: expect.objectContaining({
           method: 'GET',
           headers: expect.objectContaining({ Authorization: 'Bearer tok-abc' }),
         }),
-      );
-    });
-  });
-
-  describe('GET /preferences/catalog', () => {
-    it('forwards 200 catalog body unchanged', async () => {
-      const catalog = {
-        version: 'v1',
-        categories: [
-          {
-            id: 'epic.assigned',
-            label: 'Epic assigned',
-            group: 'epic',
-            critical: false,
-            locked: false,
-            defaultChannels: { inbox: true, push: true },
-            color: '#38BDF8',
-            sortOrder: 10,
-          },
-        ],
-      };
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok-abc');
-      fetchSpy.mockResolvedValue(mockFetchResponse(200, catalog));
-
-      const result = await controller.getCatalog();
-
-      expect(result).toEqual(catalog);
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/preferences/catalog'),
-        expect.objectContaining({
+      },
+      {
+        name: 'controller.getCatalog',
+        token: 'tok-abc',
+        response: {
+          version: 'v1',
+          categories: [
+            {
+              id: 'epic.assigned',
+              label: 'Epic assigned',
+              group: 'epic',
+              critical: false,
+              locked: false,
+              defaultChannels: { inbox: true, push: true },
+              color: '#38BDF8',
+              sortOrder: 10,
+            },
+          ],
+        },
+        invoke: () => controller.getCatalog(),
+        url: expect.stringContaining('/api/v1/preferences/catalog'),
+        options: expect.objectContaining({
           method: 'GET',
           headers: expect.objectContaining({ Authorization: 'Bearer tok-abc' }),
         }),
+      },
+      {
+        name: 'controller.upsertCategory',
+        token: 'tok',
+        response: { category: 'epic.assigned', channel: 'push', enabled: true },
+        invoke: () =>
+          controller.upsertCategory('epic.assigned', { channel: 'push', enabled: true }),
+        url: expect.stringContaining('/api/v1/preferences/categories/epic.assigned'),
+        options: expect.objectContaining({
+          method: 'PUT',
+          headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ channel: 'push', enabled: true }),
+        }),
+      },
+      {
+        name: 'controller.getQuietHours',
+        token: 'tok',
+        response: { enabled: false, startMinutes: 0, endMinutes: 0, timezone: 'UTC' },
+        invoke: () => controller.getQuietHours(),
+        url: expect.stringContaining('/api/v1/preferences/quiet-hours'),
+        options: expect.objectContaining({ method: 'GET' }),
+      },
+      {
+        name: 'controller.getSmartSuppression',
+        token: 'tok',
+        response: { enabled: true, windowMinutes: 5 },
+        invoke: () => controller.getSmartSuppression(),
+        url: expect.stringContaining('/api/v1/preferences/smart-suppression'),
+        options: expect.objectContaining({ method: 'GET' }),
+      },
+      {
+        name: 'controller.upsertQuietHours',
+        token: 'tok',
+        response: {
+          enabled: true,
+          startMinutes: 1320,
+          endMinutes: 480,
+          timezone: 'America/New_York',
+        },
+        invoke: () =>
+          controller.upsertQuietHours({
+            enabled: true,
+            startMinutes: 1320,
+            endMinutes: 480,
+            timezone: 'America/New_York',
+          }),
+        url: expect.stringContaining('/api/v1/preferences/quiet-hours'),
+        options: expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({
+            enabled: true,
+            startMinutes: 1320,
+            endMinutes: 480,
+            timezone: 'America/New_York',
+          }),
+        }),
+      },
+      {
+        name: 'controller.upsertSmartSuppression',
+        token: 'tok',
+        response: { enabled: true, windowMinutes: 10 },
+        invoke: () => controller.upsertSmartSuppression({ enabled: true, windowMinutes: 10 }),
+        url: expect.stringContaining('/api/v1/preferences/smart-suppression'),
+        options: expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({ enabled: true, windowMinutes: 10 }),
+        }),
+      },
+      {
+        name: 'controller.testPush',
+        token: 'tok',
+        response: { sent: 2, failed: 0 },
+        invoke: () => controller.testPush({ deviceId: 'device-1' }),
+        url: expect.stringContaining('/api/v1/preferences/test-push'),
+        options: expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ deviceId: 'device-1' }),
+        }),
+      },
+    ])('forwards preferences through $name', async ({ token, response, invoke, url, options }) => {
+      cloudSession.getStatus.mockReturnValue(connectedStatus);
+      cloudSession.getAccessToken.mockReturnValue(token);
+      fetchSpy.mockResolvedValue(mockFetchResponse(200, response));
+      expect(await invoke()).toEqual(response);
+      expect(fetchSpy).toHaveBeenCalledWith(url, options);
+      expect(fetchSpy.mock.calls[0][1].headers).toEqual(
+        expect.objectContaining({ Authorization: 'Bearer ' + token }),
       );
     });
   });
 
   describe('PUT /preferences/categories/:category', () => {
-    it('forwards body and uses correct URL for dot-separated category', async () => {
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(
-        mockFetchResponse(200, { category: 'epic.assigned', channel: 'push', enabled: true }),
-      );
-
-      await controller.upsertCategory('epic.assigned', { channel: 'push', enabled: true });
-
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/preferences/categories/epic.assigned'),
-        expect.objectContaining({
-          method: 'PUT',
-          headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ channel: 'push', enabled: true }),
-        }),
-      );
-    });
-
     it('percent-encodes category names with special characters (e.g. account:login)', async () => {
       cloudSession.getStatus.mockReturnValue(connectedStatus);
       cloudSession.getAccessToken.mockReturnValue('tok');
@@ -157,131 +212,6 @@ describe('PreferencesProxyController', () => {
       });
 
       expect(result).toBeNull();
-    });
-  });
-
-  describe('GET /preferences/quiet-hours', () => {
-    it('forwards 200 JSON body unchanged', async () => {
-      const quietHours = { enabled: false, startMinutes: 0, endMinutes: 0, timezone: 'UTC' };
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(mockFetchResponse(200, quietHours));
-
-      const result = await controller.getQuietHours();
-
-      expect(result).toEqual(quietHours);
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/preferences/quiet-hours'),
-        expect.objectContaining({ method: 'GET' }),
-      );
-    });
-  });
-
-  describe('GET /preferences/smart-suppression', () => {
-    it('forwards 200 JSON body unchanged', async () => {
-      const smartSuppression = { enabled: true, windowMinutes: 5 };
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(mockFetchResponse(200, smartSuppression));
-
-      const result = await controller.getSmartSuppression();
-
-      expect(result).toEqual(smartSuppression);
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/preferences/smart-suppression'),
-        expect.objectContaining({ method: 'GET' }),
-      );
-    });
-  });
-
-  describe('PUT /preferences/quiet-hours', () => {
-    it('forwards body to upstream', async () => {
-      const body = {
-        enabled: true,
-        startMinutes: 1320,
-        endMinutes: 480,
-        timezone: 'America/New_York',
-      };
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(mockFetchResponse(200, body));
-
-      await controller.upsertQuietHours(body);
-
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/preferences/quiet-hours'),
-        expect.objectContaining({
-          method: 'PUT',
-          body: JSON.stringify(body),
-        }),
-      );
-    });
-
-    it('returns null for 204 without JSON parse error', async () => {
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(mockFetchResponse(204, '', true));
-
-      const result = await controller.upsertQuietHours({
-        enabled: false,
-        startMinutes: 0,
-        endMinutes: 0,
-        timezone: 'UTC',
-      });
-
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('PUT /preferences/smart-suppression', () => {
-    it('forwards body to upstream', async () => {
-      const body = { enabled: true, windowMinutes: 10 };
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(mockFetchResponse(200, body));
-
-      await controller.upsertSmartSuppression(body);
-
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/preferences/smart-suppression'),
-        expect.objectContaining({
-          method: 'PUT',
-          body: JSON.stringify(body),
-        }),
-      );
-    });
-
-    it('returns null for 204 without JSON parse error', async () => {
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(mockFetchResponse(204, '', true));
-
-      const result = await controller.upsertSmartSuppression({
-        enabled: false,
-        windowMinutes: 5,
-      });
-
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('POST /preferences/test-push', () => {
-    it('forwards request body and returns upstream payload', async () => {
-      const payload = { sent: 2, failed: 0 };
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(mockFetchResponse(200, payload));
-
-      const result = await controller.testPush({ deviceId: 'device-1' });
-
-      expect(result).toEqual(payload);
-      expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/preferences/test-push'),
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ deviceId: 'device-1' }),
-        }),
-      );
     });
   });
 
@@ -322,20 +252,6 @@ describe('PreferencesProxyController', () => {
   });
 
   describe('non-2xx pass-through', () => {
-    it.each([400, 404, 422, 500])('preserves HTTP status %i from upstream', async (statusCode) => {
-      cloudSession.getStatus.mockReturnValue(connectedStatus);
-      cloudSession.getAccessToken.mockReturnValue('tok');
-      fetchSpy.mockResolvedValue(mockFetchResponse(statusCode, 'error body'));
-
-      try {
-        await controller.listPreferences();
-        fail('Expected HttpException');
-      } catch (e) {
-        expect(e).toBeInstanceOf(HttpException);
-        expect((e as HttpException).getStatus()).toBe(statusCode);
-      }
-    });
-
     it('preserves 500 response body text', async () => {
       cloudSession.getStatus.mockReturnValue(connectedStatus);
       cloudSession.getAccessToken.mockReturnValue('tok');

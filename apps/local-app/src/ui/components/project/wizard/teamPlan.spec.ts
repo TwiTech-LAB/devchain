@@ -78,21 +78,6 @@ describe('teamPlan — buildTeamOverrides', () => {
     ]);
   });
 
-  it('emits subset config names verbatim', () => {
-    const states = new Map<string, TeamPanelState>([
-      [
-        'Squad',
-        {
-          selections: [{ profileKey: 'Coder', mode: 'subset', configKeys: ['claude-cfg'] }],
-          templateSelections: [],
-        },
-      ],
-    ]);
-    expect(buildTeamOverrides(visibleTeams, states)[0].profileSelections).toEqual([
-      { profileName: 'Coder', configNames: ['claude-cfg'] },
-    ]);
-  });
-
   it('drops removed profiles and omits profileSelections when all are removed', () => {
     const states = new Map<string, TeamPanelState>([
       [

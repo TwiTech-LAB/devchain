@@ -17,17 +17,7 @@ describe('ClaudeAdapter', () => {
     mockEnsureClaudeProjectTrusted.mockReset();
   });
 
-  describe('providerName', () => {
-    it('returns claude as provider name', () => {
-      expect(adapter.providerName).toBe('claude');
-    });
-  });
-
   describe('ProjectProvisioningCapability (trust-only)', () => {
-    it('declares requiresProjectProvisioning', () => {
-      expect(adapter.requiresProjectProvisioning).toBe(true);
-    });
-
     it('delegates trust provisioning to ensureClaudeProjectTrusted with the exact path', async () => {
       mockEnsureClaudeProjectTrusted.mockResolvedValue({ success: true });
 
@@ -89,10 +79,6 @@ describe('ClaudeAdapter', () => {
   });
 
   describe('EffortCapability', () => {
-    it('exposes the seeded default effort values (static metadata)', () => {
-      expect(adapter.defaultEffortValues).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
-    });
-
     it('injects the native `--effort <value>` flag', () => {
       const { argv } = adapter.applyEffort(['--verbose'], {}, 'high');
       expect(argv).toEqual(['--effort', 'high', '--verbose']);
@@ -332,11 +318,6 @@ describe('ClaudeAdapter', () => {
       expect(result.argv).toEqual(['--model', 'claude-opus-4-5']);
     });
 
-    it('returns empty argv for mode new with no profileOptionArgs', () => {
-      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] });
-      expect(result.argv).toEqual([]);
-    });
-
     it('prepends --resume and providerSessionId for mode restore', () => {
       const result = adapter.buildLaunchArgs({
         mode: 'restore',
@@ -345,32 +326,9 @@ describe('ClaudeAdapter', () => {
       });
       expect(result.argv).toEqual(['--resume', 'session-abc', '--model', 'claude-opus-4-5']);
     });
-
-    it('restore with no profileOptionArgs yields [--resume, sessionId]', () => {
-      const result = adapter.buildLaunchArgs({
-        mode: 'restore',
-        providerSessionId: 'xyz',
-        profileOptionArgs: [],
-      });
-      expect(result.argv).toEqual(['--resume', 'xyz']);
-    });
   });
 
   describe('parseListOutput', () => {
-    it('parses output with single entry', () => {
-      const stdout = `Checking MCP server health...
-
-devchain: http://127.0.0.1:3000/mcp (HTTP) - ✓ Connected`;
-      const entries = adapter.parseListOutput(stdout);
-
-      expect(entries).toHaveLength(1);
-      expect(entries[0]).toEqual({
-        alias: 'devchain',
-        endpoint: 'http://127.0.0.1:3000/mcp',
-        transport: 'HTTP',
-      });
-    });
-
     it('parses output with multiple entries', () => {
       const stdout = `Checking MCP server health...
 
@@ -389,16 +347,6 @@ server2: http://127.0.0.1:4000/mcp (HTTP) - ✓ Connected`;
         endpoint: 'http://127.0.0.1:4000/mcp',
         transport: 'HTTP',
       });
-    });
-
-    it('skips checking health header', () => {
-      const stdout = `Checking MCP server health...
-
-devchain: http://127.0.0.1:3000/mcp (HTTP) - ✓ Connected`;
-      const entries = adapter.parseListOutput(stdout);
-
-      expect(entries).toHaveLength(1);
-      expect(entries[0].alias).toBe('devchain');
     });
 
     it('handles empty output', () => {

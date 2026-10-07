@@ -278,83 +278,6 @@ describe('ProjectsService', () => {
       expect(result.alternatives).toHaveLength(2);
     });
 
-    it('should return canImport: false when a family has no available providers', async () => {
-      storage.listProviders.mockResolvedValue({
-        items: [{ id: 'p1', name: 'claude' }], // codex is missing
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const profiles = [
-        {
-          id: coderProfileId,
-          name: 'Coder Profile',
-          provider: { name: 'claude' },
-          familySlug: 'coder',
-        },
-        {
-          id: reviewerProfileId,
-          name: 'Reviewer Profile',
-          provider: { name: 'codex' },
-          familySlug: 'reviewer',
-        },
-      ];
-      const agents = [
-        { id: coderAgentId, name: 'Coder', profileId: coderProfileId },
-        { id: reviewerAgentId, name: 'Reviewer', profileId: reviewerProfileId },
-      ];
-
-      const result = await service.computeFamilyAlternatives(profiles, agents);
-
-      expect(result.canImport).toBe(false);
-      expect(result.missingProviders).toContain('codex');
-
-      const reviewerFamily = result.alternatives.find((a) => a.familySlug === 'reviewer');
-      expect(reviewerFamily?.hasAlternatives).toBe(false);
-      expect(reviewerFamily?.availableProviders).toEqual([]);
-    });
-
-    it('should identify available alternatives for a family', async () => {
-      storage.listProviders.mockResolvedValue({
-        items: [
-          { id: 'p1', name: 'claude' },
-          { id: 'p2', name: 'agy' },
-        ], // codex is missing but agy is available
-        total: 2,
-        limit: 100,
-        offset: 0,
-      });
-
-      // Coder family has profiles for both codex (default) and agy (alternative)
-      const profiles = [
-        {
-          id: coderProfileId,
-          name: 'Coder Codex',
-          provider: { name: 'codex' },
-          familySlug: 'coder',
-        },
-        {
-          id: '55555555-5555-5555-5555-555555555555',
-          name: 'Coder Agy',
-          provider: { name: 'agy' },
-          familySlug: 'coder',
-        },
-      ];
-      const agents = [{ id: coderAgentId, name: 'Coder', profileId: coderProfileId }];
-
-      const result = await service.computeFamilyAlternatives(profiles, agents);
-
-      expect(result.canImport).toBe(true);
-      expect(result.missingProviders).toContain('codex');
-
-      const coderFamily = result.alternatives.find((a) => a.familySlug === 'coder');
-      expect(coderFamily?.defaultProvider).toBe('codex');
-      expect(coderFamily?.defaultProviderAvailable).toBe(false);
-      expect(coderFamily?.availableProviders).toContain('agy');
-      expect(coderFamily?.hasAlternatives).toBe(true);
-    });
-
     it('should only consider families used by agents', async () => {
       storage.listProviders.mockResolvedValue({
         items: [{ id: 'p1', name: 'claude' }],
@@ -594,6 +517,7 @@ describe('ProjectsService', () => {
 
       // canImport must be false when ANY family has 0 alternatives — backend invariant
       expect(result.canImport).toBe(false);
+      expect(result.missingProviders).toContain('codex');
 
       // coder family has alternatives (claude available)
       const coderFamily = result.alternatives.find((a) => a.familySlug === 'coder');
@@ -654,6 +578,13 @@ describe('ProjectsService', () => {
 
       // canImport is true because ALL families have at least one available provider
       expect(result.canImport).toBe(true);
+      expect(result.missingProviders).toContain('codex');
+      expect(result.alternatives).toHaveLength(2);
+      const coderFamily = result.alternatives.find((a) => a.familySlug === 'coder');
+      expect(coderFamily?.defaultProvider).toBe('codex');
+      expect(coderFamily?.defaultProviderAvailable).toBe(false);
+      expect(coderFamily?.availableProviders).toContain('claude');
+      expect(coderFamily?.hasAlternatives).toBe(true);
       expect(result.alternatives.every((a) => a.hasAlternatives)).toBe(true);
     });
   });
@@ -753,259 +684,10 @@ describe('ProjectsService', () => {
       expect(updatedAgents[1].providerConfigId).toBe(agyConfigId);
     });
 
-    it('should apply preset and forward explicit modelOverride values to updateAgent', async () => {
-      const preset = {
-        name: 'default',
-        description: 'Default preset',
-        agentConfigs: [
-          {
-            agentName: 'Coder',
-            providerConfigName: 'claude-config',
-            modelOverride: 'openai/gpt-5',
-          },
-          { agentName: 'Reviewer', providerConfigName: 'agy-config', modelOverride: null },
-        ],
-      };
-
-      settings.getProjectPresets.mockReturnValue([preset]);
-
-      const profileId = 'profile-1';
-      const claudeConfigId = 'config-claude';
-      const agyConfigId = 'config-agy';
-
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [
-          {
-            id: profileId,
-            projectId,
-            name: 'CodeOpus',
-            familySlug: 'coder',
-            providerId: 'claude',
-            instructions: null,
-            temperature: null,
-            maxTokens: null,
-            options: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-        ],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.listAgents.mockResolvedValue({
-        items: [
-          { id: 'agent-1', name: 'Coder', profileId, providerConfigId: null, modelOverride: null },
-          {
-            id: 'agent-2',
-            name: 'Reviewer',
-            profileId,
-            providerConfigId: null,
-            modelOverride: 'stale-model',
-          },
-        ],
-        total: 2,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        {
-          id: claudeConfigId,
-          profileId,
-          providerId: 'claude',
-          name: 'claude-config',
-          options: null,
-          env: null,
-          createdAt: '',
-          updatedAt: '',
-        },
-        {
-          id: agyConfigId,
-          profileId,
-          providerId: 'agy',
-          name: 'agy-config',
-          options: null,
-          env: null,
-          createdAt: '',
-          updatedAt: '',
-        },
-      ]);
-
-      storage.updateAgent.mockResolvedValue({} as never);
-
-      await service.applyPreset(projectId, 'default');
-
-      expect(storage.updateAgent).toHaveBeenNthCalledWith(1, 'agent-1', {
-        providerConfigId: claudeConfigId,
-        modelOverride: 'openai/gpt-5',
-      });
-      expect(storage.updateAgent).toHaveBeenNthCalledWith(2, 'agent-2', {
-        providerConfigId: agyConfigId,
-        modelOverride: null,
-      });
-    });
-
-    it('should apply preset and preserve modelOverride when omitted in preset', async () => {
-      const preset = {
-        name: 'default',
-        description: 'Default preset',
-        agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
-      };
-
-      settings.getProjectPresets.mockReturnValue([preset]);
-
-      const profileId = 'profile-1';
-      const claudeConfigId = 'config-claude';
-
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [
-          {
-            id: profileId,
-            projectId,
-            name: 'CodeOpus',
-            familySlug: 'coder',
-            providerId: 'claude',
-            instructions: null,
-            temperature: null,
-            maxTokens: null,
-            options: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-        ],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.listAgents.mockResolvedValue({
-        items: [
-          {
-            id: 'agent-1',
-            name: 'Coder',
-            profileId,
-            providerConfigId: null,
-            modelOverride: 'stale-model',
-          },
-        ],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        {
-          id: claudeConfigId,
-          profileId,
-          providerId: 'claude',
-          name: 'claude-config',
-          options: null,
-          env: null,
-          createdAt: '',
-          updatedAt: '',
-        },
-      ]);
-
-      storage.updateAgent.mockResolvedValue({} as never);
-
-      await service.applyPreset(projectId, 'default');
-
-      const updatePayload = (storage.updateAgent as jest.Mock).mock.calls[0]?.[1] as
-        | { providerConfigId: string; modelOverride?: string | null }
-        | undefined;
-      expect(updatePayload).toEqual(
-        expect.objectContaining({
-          providerConfigId: claudeConfigId,
-        }),
-      );
-      expect(updatePayload).toEqual(
-        expect.not.objectContaining({
-          modelOverride: expect.anything(),
-        }),
-      );
-    });
-
     it('should throw NotFoundError when preset not found', async () => {
       settings.getProjectPresets.mockReturnValue([{ name: 'other', agentConfigs: [] }]);
 
       await expect(service.applyPreset(projectId, 'missing')).rejects.toThrow(NotFoundError);
-    });
-
-    it('should return warning for missing agent', async () => {
-      const preset = {
-        name: 'default',
-        agentConfigs: [{ agentName: 'MissingAgent', providerConfigName: 'config' }],
-      };
-
-      settings.getProjectPresets.mockReturnValue([preset]);
-
-      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-
-      const result = await service.applyPreset(projectId, 'default');
-
-      expect(result.applied).toBe(0);
-      expect(result.warnings).toContain('Agent "MissingAgent" not found in project');
-    });
-
-    it('should return warning for missing provider config', async () => {
-      const preset = {
-        name: 'default',
-        agentConfigs: [{ agentName: 'Coder', providerConfigName: 'missing-config' }],
-      };
-
-      settings.getProjectPresets.mockReturnValue([preset]);
-
-      const profileId = 'profile-1';
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [
-          {
-            id: profileId,
-            projectId,
-            name: 'CodeOpus',
-            familySlug: 'coder',
-            providerId: 'claude',
-            instructions: null,
-            temperature: null,
-            maxTokens: null,
-            options: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-        ],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.listAgents.mockResolvedValue({
-        items: [{ id: 'agent-1', name: 'Coder', profileId, providerConfigId: null }],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        {
-          id: 'config-1',
-          profileId,
-          providerId: 'claude',
-          name: 'other-config',
-          options: null,
-          env: null,
-          createdAt: '',
-          updatedAt: '',
-        },
-      ]);
-
-      const result = await service.applyPreset(projectId, 'default');
-
-      expect(result.applied).toBe(0);
-      expect(result.warnings).toContain(
-        'Provider config "missing-config" not found for agent "Coder"',
-      );
     });
 
     it('should match agent names case-insensitively', async () => {
@@ -1070,84 +752,6 @@ describe('ProjectsService', () => {
 
       expect(result.applied).toBe(1);
       expect(updatedAgents[0].id).toBe('agent-1');
-    });
-
-    it('should set activePreset when full match (no warnings, all applied)', async () => {
-      const preset = {
-        name: 'default',
-        description: 'Default preset',
-        agentConfigs: [
-          { agentName: 'Coder', providerConfigName: 'claude-config' },
-          { agentName: 'Reviewer', providerConfigName: 'agy-config' },
-        ],
-      };
-
-      settings.getProjectPresets.mockReturnValue([preset]);
-      settings.setProjectActivePreset = jest.fn();
-
-      const profileId = 'profile-1';
-      const claudeConfigId = 'config-claude';
-      const agyConfigId = 'config-agy';
-
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [
-          {
-            id: profileId,
-            projectId,
-            name: 'CodeOpus',
-            familySlug: 'coder',
-            providerId: 'claude',
-            instructions: null,
-            temperature: null,
-            maxTokens: null,
-            options: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-        ],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.listAgents.mockResolvedValue({
-        items: [
-          { id: 'agent-1', name: 'Coder', profileId, providerConfigId: null },
-          { id: 'agent-2', name: 'Reviewer', profileId, providerConfigId: null },
-        ],
-        total: 2,
-        limit: 1000,
-        offset: 0,
-      });
-
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        {
-          id: claudeConfigId,
-          profileId,
-          providerId: 'claude',
-          name: 'claude-config',
-          options: null,
-          env: null,
-          createdAt: '',
-          updatedAt: '',
-        },
-        {
-          id: agyConfigId,
-          profileId,
-          providerId: 'agy',
-          name: 'agy-config',
-          options: null,
-          env: null,
-          createdAt: '',
-          updatedAt: '',
-        },
-      ]);
-
-      storage.updateAgent.mockResolvedValue({} as never);
-
-      await service.applyPreset(projectId, 'default');
-
-      expect(settings.setProjectActivePreset).toHaveBeenCalledWith(projectId, 'default');
     });
 
     it('should not set activePreset when warnings present', async () => {

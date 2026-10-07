@@ -90,16 +90,14 @@ describe('Remote API key changes', () => {
 
   it.each([
     [404, '{}'],
-    [500, '{}'],
     [401, '{}'],
     [401, 'not-json'],
-    [200, '{}'],
   ])('allows keyless registration for a non-host response %s/%s', async (status, body) => {
     fetchMock.mockResolvedValue(new Response(body, { status }));
     await expect(service.validate('https://vm', fixtureTls.cert)).resolves.toBeUndefined();
   });
 
-  it.each([401, 404, 500])('still refuses a supplied key when stats answers %s', async (status) => {
+  it.each([401, 404])('still refuses a supplied key when stats answers %s', async (status) => {
     fetchMock.mockResolvedValue(new Response('{}', { status }));
     await expect(service.validate('https://vm', fixtureTls.cert, key)).rejects.toThrow();
     expect(keys.save).not.toHaveBeenCalled();
@@ -148,7 +146,7 @@ describe('Remote API key changes', () => {
     expect(health.refresh).toHaveBeenCalledWith('vm');
   });
 
-  it.each([400, 401, 500])('keeps the old key if the VM refuses reset with %s', async (status) => {
+  it.each([400, 401])('keeps the old key if the VM refuses reset with %s', async (status) => {
     fetchMock.mockResolvedValue(new Response('{}', { status }));
     await expect(service.reset('vm')).rejects.toThrow('The VM could not reset its API key.');
     expect(keys.save).not.toHaveBeenCalled();

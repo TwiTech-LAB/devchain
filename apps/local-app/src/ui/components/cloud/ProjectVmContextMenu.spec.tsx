@@ -138,12 +138,11 @@ describe('ProjectVmContextMenu', () => {
     }
   });
 
-  it('offers Disconnect from the VM of a remote project', () => {
+  it('offers a settled disconnect link for the project VM', () => {
     mockBindings = [{ projectId: 'p1', remoteId: 'r1', state: 'remote' }];
-    expect(item(openMenu(), 'Disconnect from lab-vm')).toHaveAttribute(
-      'href',
-      '/cloud?section=remote-vm&projectAction=p1',
-    );
+    const settled = item(openMenu(), 'Disconnect from lab-vm');
+    expect(settled).toHaveAttribute('href', '/cloud?section=remote-vm&projectAction=p1');
+    expect(settled.querySelector('svg.animate-spin')).toBeNull();
   });
 
   it('names the VM by its id when the VM is not listed', () => {
@@ -167,11 +166,5 @@ describe('ProjectVmContextMenu', () => {
       '/cloud?section=remote-vm&projectAction=p1',
     );
     expect(within(menu).queryByRole('menuitem', { name: /Connect to VM/ })).toBeNull();
-  });
-
-  it('shows no spinner on items while nothing runs', () => {
-    mockBindings = [{ projectId: 'p1', remoteId: 'r1', state: 'remote' }];
-    const settled = item(openMenu(), 'Disconnect from lab-vm');
-    expect(settled.querySelector('svg.animate-spin')).toBeNull();
   });
 });

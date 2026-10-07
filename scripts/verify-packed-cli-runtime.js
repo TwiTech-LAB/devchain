@@ -113,6 +113,10 @@ function verifyHostInstall(packageRoot) {
     "pins.json is missing aptPackages",
   );
   assert.ok(pins.aptPackages.length > 0, "pins.json aptPackages is empty");
+  assert.ok(
+    Array.isArray(pins.toolPackages),
+    "pins.json is missing toolPackages",
+  );
   assert.equal(typeof pins.bootstrap?.package, "string");
   assert.equal(typeof pins.bootstrap?.version, "string");
 

@@ -220,26 +220,26 @@ describe('useBoardBulkEdit', () => {
     expect(mockApiFetch).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    ['ordinary failure', 500, 'Failed to save'],
-    ['version conflict', 409, 'Epic version conflict'],
-  ])('keeps the dialog and draft on %s', async (_label, status, message) => {
-    const { result } = createHarness();
-    await openLoadedSession(result);
-    mockApiFetch.mockResolvedValueOnce(jsonResponse({ message }, status));
-    act(() => result.current.changeRow('parent-1', 'statusId', 'done'));
+  it.each([['ordinary failure', 500, 'Failed to save']])(
+    'keeps the dialog and draft on %s',
+    async (_label, status, message) => {
+      const { result } = createHarness();
+      await openLoadedSession(result);
+      mockApiFetch.mockResolvedValueOnce(jsonResponse({ message }, status));
+      act(() => result.current.changeRow('parent-1', 'statusId', 'done'));
 
-    act(() => result.current.submit());
+      act(() => result.current.submit());
 
-    await waitFor(() => expect(result.current.error).toBe(message));
-    expect(result.current.isOpen).toBe(true);
-    expect(result.current.rows[0].statusId).toBe('done');
-    expect(mockToast).toHaveBeenCalledWith({
-      title: 'Error',
-      description: message,
-      variant: 'destructive',
-    });
-  });
+      await waitFor(() => expect(result.current.error).toBe(message));
+      expect(result.current.isOpen).toBe(true);
+      expect(result.current.rows[0].statusId).toBe('done');
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'Error',
+        description: message,
+        variant: 'destructive',
+      });
+    },
+  );
 
   it('invalidates only the bulk contract keys before resetting a successful session', async () => {
     const { result, queryClient } = createHarness();

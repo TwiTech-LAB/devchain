@@ -1,5 +1,13 @@
 import { spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { GitService } from '../git/services/git.service';
@@ -7,6 +15,7 @@ import { NotFoundError } from '../../common/errors/error-types';
 import { ChildProcessExecutor } from '../terminal/services/process-executor/child-process-executor';
 import { HomeGitGuardService } from './home-git-guard.service';
 import type { FileSyncService } from './file-sync.service';
+import type { VmGitGuardRequest } from './git-guard.dto';
 
 /**
  * Real-git tests: the guard's whole job is to change how the real `git`
@@ -118,6 +127,43 @@ describeWithGit('HomeGitGuardService (real git)', () => {
     expect(runGit(repo, ['rev-parse', 'HEAD']).stdout.trim()).toBe(headBefore);
   });
 
+  // Running the hook directly isolates its exact stderr and shell quoting from Git's own errors.
+  it.each<{ owner: string | VmGitGuardRequest; message: string }>([
+    {
+      owner: 'r1',
+      message: `This project runs on the remote VM "vm-01". Normal file editing is allowed: your changes sync to the VM. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. Run them on the VM. To use Git on this PC, run \`devchain git take\` in the project folder.`,
+    },
+    {
+      owner: { homeName: "pc's $(touch injected)", reason: 'pc-git' },
+      message: `Git for this project is on the PC 'pc's $(touch injected)'. You can edit files here: your changes sync to the PC. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. To move Git back to this VM, run \`devchain git return\` in the project folder on the PC 'pc's $(touch injected)'.`,
+    },
+  ])('prints the literal control hint for owner $owner', async ({ owner, message }) => {
+    await guard.install('p1', owner);
+    const bin = join(repo, 'bin');
+    mkdirSync(bin);
+    const evaluated = join(repo, 'evaluated');
+    const command = join(bin, 'devchain');
+    writeFileSync(command, '#!/bin/sh\ntouch "$GUARD_EVALUATION_MARKER"\n');
+    chmodSync(command, 0o755);
+
+    const result = spawnSync(join(repo, '.git', 'hooks', 'reference-transaction'), ['prepared'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        GUARD_EVALUATION_MARKER: evaluated,
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe(`${message}\n`);
+    expect(existsSync(evaluated)).toBe(false);
+    expect(existsSync(join(repo, 'injected'))).toBe(false);
+  });
+
   it(`refuses new branches, tags and ${STASH_COMMAND}`, () => {
     expect(runGit(repo, ['branch', 'feature']).status).not.toBe(0);
     expect(runGit(repo, ['tag', 'v1']).status).not.toBe(0);
@@ -218,29 +264,61 @@ describeWithGit('HomeGitGuardService (real git)', () => {
     expect(runGit(repo, ['commit', '--quiet', '-m', 'free again']).status).toBe(0);
   });
 
-  it('keeps the saved user hooks through a repeated install and a repeated remove', async () => {
-    rmSync(repo, { recursive: true, force: true });
-    repo = makeRepo();
-    guard = realGuard(repo);
-    writeUserHooks(repo, '#!/bin/sh\necho user-hook\n');
+  it.each<string | VmGitGuardRequest>(['r1', { homeName: 'pc-01', reason: 'disconnect' }])(
+    'restores saved hooks through repeated install/remove for owner %p',
+    async (owner) => {
+      rmSync(repo, { recursive: true, force: true });
+      repo = makeRepo();
+      guard = realGuard(repo);
+      writeUserHooks(repo, '#!/bin/sh\necho user-hook\n');
 
-    await guard.install('p1', 'r1');
-    await guard.install('p1', 'r1');
-    expect(
-      readFileSync(join(repo, '.git', 'hooks', 'reference-transaction.devchain-saved'), 'utf8'),
-    ).toContain('user-hook');
+      await guard.install('p1', owner);
+      await guard.install('p1', owner);
+      expect(
+        readFileSync(join(repo, '.git', 'hooks', 'reference-transaction.devchain-saved'), 'utf8'),
+      ).toContain('user-hook');
 
-    for (let attempt = 0; attempt < 2; attempt++) {
-      await guard.remove('p1', { refreshIndex: true });
-      for (const hook of ['reference-transaction', 'post-checkout']) {
-        expect(readFileSync(join(repo, '.git', 'hooks', hook), 'utf8')).toContain('user-hook');
-        expect(existsSync(join(repo, '.git', 'hooks', `${hook}.devchain-saved`))).toBe(false);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        expect(await guard.remove('p1', { refreshIndex: false })).toMatchObject({
+          removed: attempt === 0,
+        });
+        for (const hook of ['reference-transaction', 'post-checkout']) {
+          expect(readFileSync(join(repo, '.git', 'hooks', hook), 'utf8')).toContain('user-hook');
+          expect(existsSync(join(repo, '.git', 'hooks', `${hook}.devchain-saved`))).toBe(false);
+        }
       }
-    }
-    writeFileSync(join(repo, 'file.txt'), 'two\n');
-    runGit(repo, ['add', '.']);
-    expect(runGit(repo, ['commit', '--quiet', '-m', 'free again']).status).toBe(0);
-  });
+      writeFileSync(join(repo, 'file.txt'), 'two\n');
+      runGit(repo, ['add', '.']);
+      expect(runGit(repo, ['commit', '--quiet', '-m', 'free again']).status).toBe(0);
+    },
+  );
+
+  it.each(['disconnect', 'cancelled-connect'] as const)(
+    'blocks VM ref changes with the %s message, permits edits and preserves the staged index on removal',
+    async (reason) => {
+      await guard.remove('p1', { refreshIndex: false });
+      const homeName = "pc's $(touch injected)";
+      await guard.install('p1', { homeName, reason });
+      writeFileSync(join(repo, 'file.txt'), 'VM edit\n');
+      runGit(repo, ['add', '.']);
+      const result = runGit(repo, ['commit', '--no-verify', '-m', 'blocked']);
+      const location =
+        reason === 'disconnect'
+          ? `This project is now on the PC '${homeName}'. You can edit files here. At the next Connect, DevChain brings your edits to the PC.`
+          : `This project is on the PC '${homeName}'. A Connect was cancelled, so at the next Connect the PC's files replace the files here.`;
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        `${location} Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. Make them on the PC. To use Git on this VM, connect the project to it again from the PC.`,
+      );
+      expect(runGit(repo, ['rev-parse', 'HEAD']).stdout.trim()).toBe(headBefore);
+      expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('VM edit\n');
+      expect(existsSync(join(repo, 'injected'))).toBe(false);
+      expect(await guard.remove('p1', { refreshIndex: false })).toMatchObject({ removed: true });
+      expect(runGit(repo, ['diff', '--cached', '--name-only']).stdout.trim()).toBe('file.txt');
+      expect(runGit(repo, ['commit', '--quiet', '-m', 'allowed']).status).toBe(0);
+    },
+  );
 
   it('leaves user hooks and the staged index alone on a rollback before install', async () => {
     rmSync(repo, { recursive: true, force: true });
@@ -300,20 +378,30 @@ describe('HomeGitGuardService (skip decisions)', () => {
     runGit(repo, ['init', '--quiet']);
   }
 
-  it('warns and installs nothing when core.hooksPath is set', async () => {
-    withGitDir();
-    const git = {
-      getConfigValue: async () => '/custom/hooks',
-      getVersion: async () => ({ major: 2, minor: 43, patch: 0 }),
-      refreshIndexFromHead: async () => undefined,
-    };
-    const guard = guardWithGit(git);
-
-    const warning = await guard.install('p1', 'r1');
-
-    expect(warning).toContain('core.hooksPath');
-    expect(existsSync(join(repo, '.git', 'hooks', 'reference-transaction'))).toBe(false);
-  });
+  it.each([
+    ['/custom/hooks', { major: 2, minor: 43, patch: 0 }, false, 'core.hooksPath'],
+    [null, { major: 2, minor: 27, patch: 9 }, false, 'older than 2.28'],
+    [null, null, true, 'git could not be consulted'],
+  ] as const)(
+    'warns and installs no hooks: %s / %p / probe throws %s',
+    async (hooksPath, version, fails, message) => {
+      withGitDir();
+      const guard = guardWithGit({
+        getConfigValue: async () => hooksPath,
+        getVersion: async () => {
+          if (fails) throw new Error('spawn failed');
+          return version!;
+        },
+        refreshIndexFromHead: async () => undefined,
+      });
+      expect(await guard.install('p1', 'r1')).toContain(message);
+      const vmWarning = await guard.install('p1', { homeName: 'pc-01', reason: 'disconnect' });
+      expect(vmWarning).toContain(message);
+      expect(vmWarning).toContain('Git changes on the VM are not blocked');
+      for (const hook of ['reference-transaction', 'post-checkout'])
+        expect(existsSync(join(repo, '.git', 'hooks', hook))).toBe(false);
+    },
+  );
 
   it('leaves user hooks in place when a skipped guard is removed', async () => {
     withGitDir();
@@ -333,21 +421,6 @@ describe('HomeGitGuardService (skip decisions)', () => {
     }
   });
 
-  it('warns and installs nothing when git is older than 2.28', async () => {
-    withGitDir();
-    const git = {
-      getConfigValue: async () => null,
-      getVersion: async () => ({ major: 2, minor: 27, patch: 9 }),
-      refreshIndexFromHead: async () => undefined,
-    };
-    const guard = guardWithGit(git);
-
-    const warning = await guard.install('p1', 'r1');
-
-    expect(warning).toContain('older than 2.28');
-    expect(existsSync(join(repo, '.git', 'hooks', 'post-checkout'))).toBe(false);
-  });
-
   it('warns when the project root has no .git directory', async () => {
     const git = {
       getConfigValue: async () => null,
@@ -359,22 +432,5 @@ describe('HomeGitGuardService (skip decisions)', () => {
     const warning = await guard.install('p1', 'r1');
 
     expect(warning).toContain('no .git directory');
-  });
-
-  it('degrades to a warning when git cannot be consulted', async () => {
-    withGitDir();
-    const git = {
-      getConfigValue: async () => null,
-      getVersion: async () => {
-        throw new Error('spawn failed');
-      },
-      refreshIndexFromHead: async () => undefined,
-    };
-    const guard = guardWithGit(git);
-
-    const warning = await guard.install('p1', 'r1');
-
-    expect(warning).toContain('git could not be consulted');
-    expect(existsSync(join(repo, '.git', 'hooks', 'reference-transaction'))).toBe(false);
   });
 });

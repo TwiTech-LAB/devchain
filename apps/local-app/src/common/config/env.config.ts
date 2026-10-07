@@ -49,6 +49,7 @@ const envSchema = z.object({
   SYNCTHING_BIN: z.string().optional(),
   // Scheduled provider CLI registry checks (at start and every 6 hours).
   PROVIDER_CLI_CHECKS_ENABLED: onByDefaultFlagSchema,
+  SKILLS_STARTUP_SYNC_ENABLED: onByDefaultFlagSchema,
   // Claim record and root helpers of a host VM (apps/host-bootstrap).
   DEVCHAIN_HOST_ETC_DIR: z.string().default('/etc/devchain-host'),
   DEVCHAIN_HOST_BIN_DIR: z.string().default('/usr/local/bin'),

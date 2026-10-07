@@ -87,12 +87,15 @@ describe('GuestHealthService', () => {
 
     it('should resume monitoring for existing guests with alive sessions', async () => {
       mockStorage.listAllGuests!.mockResolvedValueOnce([mockGuest]);
-      mockTerminalIO.sessionExists!.mockResolvedValueOnce(true);
+      mockTerminalIO.sessionExists!.mockResolvedValue(true);
 
       await healthService.onModuleInit();
+      mockTerminalIO.sessionExists.mockClear();
+      await jest.advanceTimersByTimeAsync(30000);
 
-      // Verify monitoring was started (interval was set)
+      expect(mockTerminalIO.sessionExists).toHaveBeenCalledTimes(1);
       expect(mockTerminalIO.sessionExists).toHaveBeenCalledWith({ name: 'tmux-session-123' });
+      expect(mockGuestsService.updateGuestLastSeen).toHaveBeenCalledWith('guest-1');
     });
 
     it('should clean up guests with dead sessions on startup', async () => {
@@ -131,26 +134,14 @@ describe('GuestHealthService', () => {
   });
 
   describe('startMonitoring', () => {
-    it('should start periodic health checks', async () => {
-      mockTerminalIO.sessionExists!.mockResolvedValue(true);
-      mockGuestsService.updateGuestLastSeen!.mockResolvedValue(mockGuest);
-
-      healthService.startMonitoring(mockGuest);
-
-      // Advance time to trigger health check
-      jest.advanceTimersByTime(30000);
-
-      // Wait for async operations
-      await Promise.resolve();
-
-      expect(mockTerminalIO.sessionExists).toHaveBeenCalledWith({ name: 'tmux-session-123' });
-    });
-
-    it('should stop existing monitoring before starting new one', () => {
+    it('should stop existing monitoring before starting new one', async () => {
+      mockTerminalIO.sessionExists.mockResolvedValue(true);
       healthService.startMonitoring(mockGuest);
       healthService.startMonitoring(mockGuest);
 
-      // Should not have duplicate intervals
+      await jest.advanceTimersByTimeAsync(30000);
+      expect(mockTerminalIO.sessionExists).toHaveBeenCalledTimes(1);
+      expect(mockGuestsService.updateGuestLastSeen).toHaveBeenCalledTimes(1);
       healthService.onModuleDestroy();
     });
   });
@@ -163,10 +154,6 @@ describe('GuestHealthService', () => {
       // Verify interval was cleared
       jest.advanceTimersByTime(60000);
       expect(mockTerminalIO.sessionExists).not.toHaveBeenCalled();
-    });
-
-    it('should handle stopping non-existent monitoring gracefully', () => {
-      expect(() => healthService.stopMonitoring('non-existent')).not.toThrow();
     });
   });
 

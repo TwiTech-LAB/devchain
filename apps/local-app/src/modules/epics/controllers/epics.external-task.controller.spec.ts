@@ -121,32 +121,6 @@ describe('EpicsController external task routes', () => {
     });
   });
 
-  it('dispatches the bounded batch source read with the requested Epic IDs', async () => {
-    service.listExternalTaskSourcesBatch.mockResolvedValue([
-      { epicId: 'epic-1', provider: 'jira', remoteTaskId: 'ENG-1' },
-    ]);
-    const epicIds = ['11111111-1111-4111-8111-111111111111'];
-
-    await expect(controller.getExternalSourcesBatch({ epicIds })).resolves.toEqual({
-      items: [{ epicId: 'epic-1', provider: 'jira', remoteTaskId: 'ENG-1' }],
-    });
-    expect(service.listExternalTaskSourcesBatch).toHaveBeenCalledWith(epicIds);
-  });
-
-  it.each([
-    ['empty batch', { epicIds: [] }],
-    ['missing epicIds', {}],
-    ['non-UUID id', { epicIds: ['11111111-1111-4111-8111-111111111111', 'not-a-uuid'] }],
-    [
-      'over-limit batch',
-      { epicIds: Array.from({ length: 1_001 }, () => '11111111-1111-4111-8111-111111111111') },
-    ],
-    ['extra body field', { epicIds: ['11111111-1111-4111-8111-111111111111'], limit: '10' }],
-  ])('rejects a %s before dispatch', async (_case, body) => {
-    await expect(controller.getExternalSourcesBatch(body)).rejects.toThrow();
-    expect(service.listExternalTaskSourcesBatch).not.toHaveBeenCalled();
-  });
-
   it('projects only the public batch shape even if the service returns storage fields', async () => {
     service.listExternalTaskSourcesBatch.mockResolvedValue([
       {

@@ -6,18 +6,130 @@
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { Test, TestingModule } from '@nestjs/testing';
+import { Test } from '@nestjs/testing';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from '../../app.module';
 import { resetEnvConfig } from '../../common/config/env.config';
 import { DB_CONNECTION } from '../storage/db/db.provider';
-import { getRawSqliteClient } from '../storage/db/sqlite-raw';
-import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type Database from 'better-sqlite3';
+
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { applyExternalBoundaryMocks } from '../../common/test/app-bootstrap.helper';
+import { createTestDatabase } from '../../common/test/test-database.helper';
+import { SettingsService } from '../settings/services/settings.service';
+import { PROVIDER_CLI_INSTALL_ROOT } from '../providers/services/provider-cli-install-state.service';
+import { ProviderAdapterFactory } from '../providers/adapters';
+import { TerminalIOService } from '../terminal/services/terminal-io/terminal-io.service';
+import { PtyService } from '../terminal/services/pty.service';
+import { TerminalSessionRegistry } from '../terminal/services/terminal-session/terminal-session-registry';
 
 jest.mock('../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
 }));
+
+// Reuse the app while clearing fixture domain rows between cases.
+let app: NestFastifyApplication;
+let sqlite: Database.Database;
+let rootDir: string;
+const isolatedEnv = [
+  'HOME',
+  'DB_PATH',
+  'DB_FILENAME',
+  'DATABASE_URL',
+  'TEMPLATES_DIR',
+  'SKIP_PREFLIGHT',
+  'PROVIDER_CLI_CHECKS_ENABLED',
+  'DEVCHAIN_HOST_ETC_DIR',
+];
+const savedEnv = new Map(isolatedEnv.map((key) => [key, process.env[key]]));
+const mockTerminalIO = {
+  createEmptySession: jest.fn().mockResolvedValue({ name: 'tmux-session' }),
+  setAlternateScreen: jest.fn().mockResolvedValue(undefined),
+  destroySession: jest.fn().mockResolvedValue(undefined),
+  destroyExpectedSession: jest.fn().mockResolvedValue({ outcome: 'destroyed' }),
+  typeCommand: jest.fn().mockResolvedValue(undefined),
+  waitForOutput: jest.fn().mockResolvedValue(true),
+  sessionExists: jest.fn().mockResolvedValue(false),
+  listAllSessionNames: jest.fn().mockResolvedValue(new Set()),
+  startHealthCheck: jest.fn(),
+  deliver: jest.fn().mockResolvedValue({ confirmed: true, method: 'bracketed-paste' }),
+  deliverImmediate: jest.fn().mockResolvedValue({ confirmed: true, method: 'bracketed-paste' }),
+  sendControl: jest.fn().mockResolvedValue(undefined),
+};
+const mockPty = {
+  setOutputHandler: jest.fn(),
+  startStreaming: jest.fn().mockResolvedValue(undefined),
+  stopStreaming: jest.fn(),
+};
+beforeAll(async () => {
+  rootDir = await mkdtemp(join(tmpdir(), 'devchain-session-http-'));
+  Object.assign(process.env, {
+    HOME: rootDir,
+    DB_PATH: rootDir,
+    DB_FILENAME: 'test.db',
+    SKIP_PREFLIGHT: '1',
+    PROVIDER_CLI_CHECKS_ENABLED: 'false',
+    DEVCHAIN_HOST_ETC_DIR: join(rootDir, 'etc'),
+  });
+  resetEnvConfig();
+  const fixture = createTestDatabase();
+  sqlite = fixture.sqlite;
+  const settings = new SettingsService(fixture.db, new EventEmitter2());
+  await settings.updateSettings({
+    registry: { cacheDir: join(rootDir, 'registry'), checkUpdatesOnStartup: false },
+    skills: { syncOnStartup: false },
+  });
+  const moduleRef = await applyExternalBoundaryMocks(
+    Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(DB_CONNECTION)
+      .useValue(fixture.db),
+  )
+    .overrideProvider(ProviderAdapterFactory)
+    .useClass(ProviderAdapterFactory)
+    .overrideProvider(PROVIDER_CLI_INSTALL_ROOT)
+    .useValue(join(rootDir, 'provider-clis'))
+    .overrideProvider(TerminalIOService)
+    .useValue(mockTerminalIO)
+    .overrideProvider(PtyService)
+    .useValue(mockPty)
+    .compile();
+  app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
+    logger: false,
+  });
+  await app.init();
+  await app.getHttpAdapter().getInstance().ready();
+});
+beforeEach(() => {
+  jest.clearAllMocks();
+  const registry = app.get(TerminalSessionRegistry);
+  for (const sessionId of registry.list()) registry.dispose(sessionId);
+  sqlite.transaction(() => {
+    for (const table of [
+      'chat_thread_session_invites',
+      'chat_threads',
+      'sessions',
+      'agents',
+      'projects',
+      'profile_provider_configs',
+      'agent_profiles',
+      'providers',
+    ])
+      sqlite.prepare('DELETE FROM ' + table).run();
+  })();
+});
+afterAll(async () => {
+  try {
+    await app?.close();
+  } finally {
+    sqlite?.close();
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    resetEnvConfig();
+    if (rootDir) await rm(rootDir, { recursive: true, force: true });
+  }
+});
 
 const NOW = '2026-01-01T00:00:00.000Z';
 
@@ -69,60 +181,6 @@ function seedAgent(sqlite: Database.Database, opts: { projectId: string; agentId
 }
 
 describe('GET /api/sessions/agents/:agentId/history', () => {
-  const originalEnv = {
-    DATABASE_URL: process.env.DATABASE_URL,
-    DB_PATH: process.env.DB_PATH,
-    DB_FILENAME: process.env.DB_FILENAME,
-    TEMPLATES_DIR: process.env.TEMPLATES_DIR,
-  };
-
-  let app: NestFastifyApplication | null = null;
-  let moduleRef: TestingModule | null = null;
-  let dbDir: string | null = null;
-  let sqlite: Database.Database | null = null;
-
-  beforeEach(async () => {
-    dbDir = await mkdtemp(join(tmpdir(), 'devchain-sessions-history-'));
-    process.env.DATABASE_URL = 'postgres://devchain:devchain@127.0.0.1:5432/devchain_test';
-    process.env.DB_PATH = dbDir;
-    process.env.DB_FILENAME = 'test.db';
-    resetEnvConfig();
-
-    moduleRef = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
-      logger: false,
-    });
-    await app.init();
-    await app.getHttpAdapter().getInstance().ready();
-
-    const db = moduleRef.get<BetterSQLite3Database>(DB_CONNECTION);
-    sqlite = getRawSqliteClient(db);
-  });
-
-  afterEach(async () => {
-    sqlite = null;
-    if (app) {
-      await app.close();
-      app = null;
-    }
-    if (moduleRef) {
-      await moduleRef.close();
-      moduleRef = null;
-    }
-    if (dbDir) {
-      await rm(dbDir, { recursive: true, force: true });
-      dbDir = null;
-    }
-    process.env.DATABASE_URL = originalEnv.DATABASE_URL;
-    process.env.DB_PATH = originalEnv.DB_PATH;
-    process.env.DB_FILENAME = originalEnv.DB_FILENAME;
-    process.env.TEMPLATES_DIR = originalEnv.TEMPLATES_DIR;
-    resetEnvConfig();
-  });
-
   // ────────────────────────────────────────────────────────────────
   // Authorization
   // ────────────────────────────────────────────────────────────────
@@ -240,7 +298,7 @@ describe('GET /api/sessions/agents/:agentId/history', () => {
     seedAgent(sqlite!, { projectId, agentId });
 
     // Write a real file so stat() succeeds
-    const transcriptFile = join(dbDir!, 'session.jsonl');
+    const transcriptFile = join(rootDir, 'session.jsonl');
     await writeFile(transcriptFile, 'test content');
 
     const sessionId = uuid(2000);

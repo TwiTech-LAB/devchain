@@ -56,30 +56,9 @@ describe('MarkdownRenderer — contrast contract (T1)', () => {
     expect(wrapper.className).toContain('custom-class');
   });
 
-  it('renders <p> without text-muted-foreground class', () => {
-    const html = renderMarkdown('hello world');
-    expect(html).toContain('<p class="my-3 leading-relaxed">');
-    expect(html).not.toMatch(/<p[^>]*text-muted-foreground/);
-  });
-
-  it('renders <ul> without text-muted-foreground class', () => {
-    const html = renderMarkdown('- a\n- b');
-    expect(html).not.toMatch(/<ul[^>]*text-muted-foreground/);
-  });
-
-  it('renders <ol> without text-muted-foreground class', () => {
-    const html = renderMarkdown('1. a\n2. b');
-    expect(html).not.toMatch(/<ol[^>]*text-muted-foreground/);
-  });
-
-  it('renders <blockquote> without text-muted-foreground class', () => {
-    const html = renderMarkdown('> quoted text');
-    expect(html).not.toMatch(/<blockquote[^>]*text-muted-foreground/);
-  });
-
   it('renders rich markdown without muted color on any prose element', () => {
     const html = renderMarkdown(
-      '# Heading\n\nParagraph **bold** with `code` and a [link](https://example.com)\n\n- item\n\n> quote',
+      '# Heading\n\nParagraph **bold** with `code` and a [link](https://example.com)\n\n- item\n\n1. a\n2. b\n\n> quote',
     );
     expect(html).not.toMatch(/<(?:p|ul|ol|blockquote)[^>]*text-muted-foreground/);
   });

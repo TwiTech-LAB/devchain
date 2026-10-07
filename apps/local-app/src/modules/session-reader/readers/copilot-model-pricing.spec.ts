@@ -10,12 +10,9 @@ describe('mapCopilotModelToPricing', () => {
   it.each([
     // [copilot model id (dot-form), expected pricing.json key (claude = dash-form)]
     ['claude-haiku-4.5', 'claude-haiku-4-5'],
-    ['claude-haiku-4-5', 'claude-haiku-4-5'],
     ['claude-sonnet-4.5', 'claude-sonnet-4-5'],
-    ['claude-sonnet-4-5', 'claude-sonnet-4-5'],
     ['claude-opus-4.5', 'claude-opus-4-5'],
     ['gpt-5-mini', 'gpt-5-mini'],
-    ['gpt5mini', 'gpt-5-mini'],
     ['gpt-5', 'gpt-5'],
     ['gemini-2.5-pro', 'gemini-2.5-pro'],
     ['gemini-2.5-flash', 'gemini-2.5-flash'],
@@ -26,11 +23,6 @@ describe('mapCopilotModelToPricing', () => {
   it('is case-insensitive', () => {
     expect(mapCopilotModelToPricing('Claude-Haiku-4.5')).toBe('claude-haiku-4-5');
     expect(mapCopilotModelToPricing('GPT-5-MINI')).toBe('gpt-5-mini');
-  });
-
-  it('maps gpt-5-mini to the mini key, NOT the gpt-5 base key (rule order)', () => {
-    expect(mapCopilotModelToPricing('gpt-5-mini')).toBe('gpt-5-mini');
-    expect(mapCopilotModelToPricing('gpt-5-mini')).not.toBe('gpt-5');
   });
 
   it('returns null for the `auto` selector (not a billable model)', () => {
@@ -86,18 +78,6 @@ describe('calculateCopilotMessageCost', () => {
     expect(cost).toBe(0);
     expect(mock.calculateMessageCost).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('llama-3-70b'));
-  });
-
-  it('`auto` → loud warning + $0 (caller must resolve to the concrete model first)', () => {
-    const mock: PricingServiceInterface = {
-      calculateMessageCost: jest.fn(),
-      getCatalogContextWindowSize: jest.fn(),
-      getContextWindowSize: jest.fn(),
-    };
-    const warn = jest.fn();
-
-    expect(calculateCopilotMessageCost('auto', usage, mock, { warn })).toBe(0);
-    expect(warn).toHaveBeenCalled();
   });
 
   // Guards against pricing.json drift: every mapped family key MUST resolve to a

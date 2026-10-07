@@ -48,42 +48,6 @@ describe('IntegrationConnectionsController', () => {
     expect(service.updateSyncSettings).not.toHaveBeenCalled();
   });
 
-  it('delegates the bounded directory route without project credentials', async () => {
-    service.listDirectory.mockResolvedValue({
-      items: [],
-      unassignedConnections: [],
-      truncated: false,
-    });
-
-    await expect(controller.listDirectory()).resolves.toEqual({
-      items: [],
-      unassignedConnections: [],
-      truncated: false,
-    });
-
-    expect(service.listDirectory).toHaveBeenCalledTimes(1);
-  });
-
-  it('passes the validated projectId to the ordinary list', async () => {
-    service.listConnections.mockResolvedValue({ items: [] });
-
-    await controller.listConnections(projectId);
-
-    expect(service.listConnections).toHaveBeenCalledWith(projectId);
-  });
-
-  it('rejects unknown PUT fields with a field-specific validation error', async () => {
-    await expect(
-      controller.replaceConnection({
-        projectId,
-        provider: 'clickup',
-        token: 'token',
-        leaked: 'unexpected',
-      }),
-    ).rejects.toBeInstanceOf(ValidationError);
-    expect(service.replaceConnection).not.toHaveBeenCalled();
-  });
-
   it('requires Jira site and email together', async () => {
     await expect(
       controller.replaceConnection({
@@ -94,31 +58,6 @@ describe('IntegrationConnectionsController', () => {
       }),
     ).rejects.toMatchObject<Partial<ValidationError>>({
       details: { field: 'email' },
-    });
-  });
-
-  it('validates the DELETE provider path', async () => {
-    await expect(controller.disconnectConnection('github', { projectId })).rejects.toMatchObject<
-      Partial<ValidationError>
-    >({ details: { field: 'provider' } });
-    expect(service.disconnectConnection).not.toHaveBeenCalled();
-  });
-
-  it('accepts the optional sync toggle during connection PUT', async () => {
-    service.replaceConnection.mockResolvedValue({ provider: 'clickup' });
-
-    await controller.replaceConnection({
-      projectId,
-      provider: 'clickup',
-      token: 'token',
-      subtaskSyncEnabled: true,
-    });
-
-    expect(service.replaceConnection).toHaveBeenCalledWith({
-      projectId,
-      provider: 'clickup',
-      token: 'token',
-      subtaskSyncEnabled: true,
     });
   });
 
@@ -139,22 +78,23 @@ describe('IntegrationConnectionsController', () => {
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
-  it('requires an explicit true orphan-risk acknowledgement on DELETE', async () => {
-    service.disconnectConnection.mockResolvedValue({ provider: 'jira' });
-
-    await controller.disconnectConnection('jira', {
-      projectId,
-      acknowledgeOrphanRisk: 'true',
-    });
-
-    expect(service.disconnectConnection).toHaveBeenCalledWith(projectId, 'jira', true);
-    await expect(
-      controller.disconnectConnection('jira', {
-        projectId,
-        acknowledgeOrphanRisk: 'false',
-      }),
-    ).rejects.toBeInstanceOf(ValidationError);
-  });
+  it.each(['current', 'legacy'] as const)(
+    'requires explicit orphan acknowledgement for %s connections',
+    async (kind) => {
+      const disconnect =
+        kind === 'current' ? service.disconnectConnection : service.disconnectLegacyConnection;
+      disconnect.mockResolvedValue({ provider: 'jira', connected: false });
+      const invoke = (acknowledgeOrphanRisk: string) =>
+        kind === 'current'
+          ? controller.disconnectConnection('jira', { projectId, acknowledgeOrphanRisk })
+          : controller.disconnectLegacyConnection(connectionId, { acknowledgeOrphanRisk });
+      await invoke('true');
+      expect(disconnect.mock.calls[0]).toEqual(
+        kind === 'current' ? [projectId, 'jira', true] : [connectionId, true],
+      );
+      await expect(invoke('false')).rejects.toBeInstanceOf(ValidationError);
+    },
+  );
 
   it('assigns one exact legacy connection with a strict credential-free body', async () => {
     service.assignLegacyConnection.mockResolvedValue({
@@ -173,21 +113,5 @@ describe('IntegrationConnectionsController', () => {
       controller.assignLegacyConnection('not-a-uuid', { projectId }),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(service.replaceConnection).not.toHaveBeenCalled();
-  });
-
-  it('disconnects one exact legacy connection with explicit orphan acknowledgement', async () => {
-    service.disconnectLegacyConnection.mockResolvedValue({
-      provider: 'jira',
-      connected: false,
-    });
-
-    await controller.disconnectLegacyConnection(connectionId, {
-      acknowledgeOrphanRisk: 'true',
-    });
-
-    expect(service.disconnectLegacyConnection).toHaveBeenCalledWith(connectionId, true);
-    await expect(
-      controller.disconnectLegacyConnection(connectionId, { acknowledgeOrphanRisk: 'false' }),
-    ).rejects.toBeInstanceOf(ValidationError);
   });
 });

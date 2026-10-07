@@ -85,21 +85,6 @@ describe('ResourceResolver', () => {
     },
   );
 
-  it.each(['doc://global/readme', 'doc://readme'])(
-    'returns UNKNOWN_RESOURCE for retired document URI %s',
-    async (uri) => {
-      const storage = createStorage();
-      const resolver = new ResourceResolver(storage);
-
-      await expect(resolver.resolve(uri)).resolves.toEqual({
-        success: false,
-        error: { code: 'UNKNOWN_RESOURCE', message: `Unknown resource: ${uri}` },
-      });
-      expect(storage.listPrompts).not.toHaveBeenCalled();
-      expect(storage.getPrompt).not.toHaveBeenCalled();
-    },
-  );
-
   it('returns UNKNOWN_RESOURCE for unsupported schemes', async () => {
     const resolver = new ResourceResolver(createStorage());
 

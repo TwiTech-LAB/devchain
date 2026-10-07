@@ -49,15 +49,11 @@ describe('ToolGroupItem — mode-gated hotspot UI', () => {
     expect(screen.getByTestId('tool-group-pct')).toHaveTextContent('42%');
   });
 
-  it('shows border-l-2 accent in reader mode when isStepHot', () => {
-    mockMode = 'reader';
-    const group = makeGroup();
-    const { container } = render(<ToolGroupItem group={group} isStepHot />);
-    expect(container.firstChild).toHaveClass('border-l-2');
-  });
-
-  it('shows border-l-2 accent in diagnostic mode when isStepHot', () => {
-    mockMode = 'diagnostic';
+  it.each([
+    { label: 'shows border-l-2 accent in reader mode when isStepHot', mode: 'reader' },
+    { label: 'shows border-l-2 accent in diagnostic mode when isStepHot', mode: 'diagnostic' },
+  ] as const)('$label', ({ mode }) => {
+    mockMode = mode;
     const group = makeGroup();
     const { container } = render(<ToolGroupItem group={group} isStepHot />);
     expect(container.firstChild).toHaveClass('border-l-2');

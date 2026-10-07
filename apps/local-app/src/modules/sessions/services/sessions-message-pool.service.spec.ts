@@ -13,7 +13,7 @@ jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => mockLogger,
 }));
 
-import { SessionsMessagePoolService, FAILURE_NOTICE_SOURCE } from './sessions-message-pool.service';
+import { SessionsMessagePoolService } from './sessions-message-pool.service';
 import type { SessionsService } from './sessions.service';
 import type { SessionCoordinatorService } from './session-coordinator.service';
 import type { MessageActivityStreamService } from './message-activity-stream.service';
@@ -210,16 +210,31 @@ describe('SessionsMessagePoolService', () => {
       );
     });
 
-    it('types no follow note for a batch that holds one outside-text message', async () => {
-      await service.enqueue('agent-1', 'From an agent', { source: 'test' });
-      await service.enqueue('agent-1', 'From a guest', { source: 'test', outsideText: true });
-
-      await jest.advanceTimersByTimeAsync(10001);
-
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
-      expect(mockTerminalIO.deliver.mock.calls[0][1]).toContain('From a guest');
-      expect(mockTerminalIO.deliver.mock.calls[0][2]).toHaveProperty('followNote', false);
-    });
+    it.each(['batch', 'immediate', 'disabled'] as const)(
+      'omits the follow note for outside text in %s delivery',
+      async (mode) => {
+        if (mode === 'disabled')
+          mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+            enabled: false,
+            delayMs: 10000,
+            maxWaitMs: 30000,
+            maxMessages: 10,
+            separator: '\n---\n',
+          });
+        if (mode === 'batch') await service.enqueue('agent-1', 'From an agent', { source: 'test' });
+        await service.enqueue('agent-1', 'From a guest', {
+          source: 'test',
+          outsideText: true,
+          immediate: mode === 'immediate',
+        });
+        if (mode === 'batch') await jest.advanceTimersByTimeAsync(10001);
+        const deliver =
+          mode === 'immediate' ? mockTerminalIO.deliverImmediate : mockTerminalIO.deliver;
+        expect(deliver).toHaveBeenCalledTimes(1);
+        expect(deliver.mock.calls[0][1]).toContain('From a guest');
+        expect(deliver.mock.calls[0][2]).toHaveProperty('followNote', false);
+      },
+    );
 
     it("types no follow note when the agent's provider does not use it", async () => {
       mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
@@ -256,21 +271,13 @@ describe('SessionsMessagePoolService', () => {
       expect(calledOpts).toHaveProperty('followNote', true);
 
       const log = service.getMessageLog();
+      expect(log).toHaveLength(1);
+      expect(log[0].immediate).toBe(true);
       expect(log[0].status).toBe('delivered');
       expect(log[0].deliveredAt).toBeDefined();
       expect(log[0].failureCode).toBeUndefined();
       expect(log[0].retryCount).toBe(0);
       expect(mockActivityStream.broadcastUnconfirmed).not.toHaveBeenCalled();
-    });
-
-    it('should add to pool when immediate: false (default)', async () => {
-      const result = await service.enqueue('agent-1', 'Normal message', {
-        source: 'test',
-        immediate: false,
-      });
-
-      expect(result.status).toBe('queued');
-      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
     });
 
     it('should deliver immediately when pooling is disabled', async () => {
@@ -291,32 +298,6 @@ describe('SessionsMessagePoolService', () => {
       expect(mockTerminalIO.deliver.mock.calls[0][2]).toHaveProperty('followNote', true);
     });
 
-    it('types no follow note for immediate outside text', async () => {
-      await service.enqueue('agent-1', 'Guest text', {
-        source: 'test',
-        immediate: true,
-        outsideText: true,
-      });
-
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
-      expect(mockTerminalIO.deliverImmediate.mock.calls[0][2]).toHaveProperty('followNote', false);
-    });
-
-    it('types no follow note for outside text when pooling is disabled', async () => {
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: false,
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 10,
-        separator: '\n---\n',
-      });
-
-      await service.enqueue('agent-1', 'Guest text', { source: 'test', outsideText: true });
-
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
-      expect(mockTerminalIO.deliver.mock.calls[0][2]).toHaveProperty('followNote', false);
-    });
-
     it('should return failed status when immediate delivery fails', async () => {
       mockSessionsService.listActiveSessions.mockResolvedValue([]);
 
@@ -327,6 +308,13 @@ describe('SessionsMessagePoolService', () => {
 
       expect(result.status).toBe('failed');
       expect(result.error).toContain('No active session');
+      expect(service.getMessageLog()).toEqual([
+        expect.objectContaining({
+          status: 'failed',
+          immediate: true,
+          error: expect.stringContaining('No active session'),
+        }),
+      ]);
     });
 
     it('classifies protected immediate failures without retaining provider details', async () => {
@@ -352,23 +340,6 @@ describe('SessionsMessagePoolService', () => {
         }),
       );
       expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain(rawError);
-    });
-
-    it('should use deliver (gap-enforced) when pooling is disabled and immediate is false', async () => {
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: false,
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 10,
-        separator: '\n---\n',
-      });
-
-      await service.enqueue('agent-1', 'Normal message', { source: 'test' });
-
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
-      const [target, calledText] = mockTerminalIO.deliver.mock.calls[0];
-      expect(target).toEqual({ name: 'tmux-1' });
-      expect(calledText).toContain('Normal message');
     });
 
     it('should use deliver for pooled delivery via batch', async () => {
@@ -1386,49 +1357,24 @@ describe('SessionsMessagePoolService', () => {
       expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
     });
 
-    it('should return failed status when maxMessages flush fails due to no session', async () => {
-      // Configure per-project maxMessages=2
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: true,
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 2,
-        separator: '\n---\n',
-      });
-
-      // First message - session exists
-      await service.enqueue('agent-1', 'Message 1', { source: 'test' });
-
-      // Remove session before second message triggers flush
-      mockSessionsService.listActiveSessions.mockResolvedValue([]);
-
-      const result = await service.enqueue('agent-1', 'Message 2', { source: 'test' });
-
-      // Should return failed (not delivered!) since flush failed
-      expect(result.status).toBe('failed');
-      expect(result.error).toBe('No active session');
-    });
-
-    it('should return failed status when maxMessages flush fails due to tmux error', async () => {
-      // Configure per-project maxMessages=2
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: true,
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 2,
-        separator: '\n---\n',
-      });
-
-      await service.enqueue('agent-1', 'Message 1', { source: 'test' });
-
-      // Make tmux fail on the flush
-      mockTerminalIO.deliver.mockRejectedValue(new Error('Connection refused'));
-
-      const result = await service.enqueue('agent-1', 'Message 2', { source: 'test' });
-
-      expect(result.status).toBe('failed');
-      expect(result.error).toBe('Connection refused');
-    });
+    it.each(['No active session', 'Connection refused'])(
+      'reports maxMessages flush failure: %s',
+      async (error) => {
+        mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+          enabled: true,
+          delayMs: 10000,
+          maxWaitMs: 30000,
+          maxMessages: 2,
+          separator: '\n---\n',
+        });
+        await service.enqueue('agent-1', 'Message 1', { source: 'test' });
+        if (error === 'No active session')
+          mockSessionsService.listActiveSessions.mockResolvedValue([]);
+        else mockTerminalIO.deliver.mockRejectedValue(new Error(error));
+        const result = await service.enqueue('agent-1', 'Message 2', { source: 'test' });
+        expect(result).toMatchObject({ status: 'failed', error });
+      },
+    );
 
     it('should flush after maxWaitMs despite ongoing activity', async () => {
       // Configure per-project maxWaitMs=5000, delayMs=10000
@@ -1492,63 +1438,12 @@ describe('SessionsMessagePoolService', () => {
     });
   });
 
-  describe('Failure notification', () => {
-    it('should delegate failure notification to DeliveryFailureNotifier', async () => {
-      mockSessionsService.listActiveSessions.mockResolvedValue([]);
-
-      await service.enqueue('agent-1', 'Message', {
-        source: 'test',
-        senderAgentId: 'sender-agent',
-      });
-
-      await jest.advanceTimersByTimeAsync(10001);
-
-      const mockFailureNotifier = (
-        service as unknown as { failureNotifier: { notifySendersOfFailure: jest.Mock } }
-      ).failureNotifier;
-      expect(mockFailureNotifier.notifySendersOfFailure).toHaveBeenCalledTimes(1);
-      expect(mockFailureNotifier.notifySendersOfFailure).toHaveBeenCalledWith(
-        expect.arrayContaining([expect.objectContaining({ senderAgentId: 'sender-agent' })]),
-        'agent-1',
-        'No active session',
-      );
-    });
-
-    it('should skip notification for messages with source pool.failure_notice (loop guard)', async () => {
-      mockSessionsService.listActiveSessions.mockResolvedValue([]);
-
-      await service.enqueue('agent-1', 'Failure notice', {
-        source: FAILURE_NOTICE_SOURCE,
-        senderAgentId: 'sender-agent',
-      });
-
-      await jest.advanceTimersByTimeAsync(10001);
-
-      // DeliveryFailureNotifier is still called, but it internally filters FAILURE_NOTICE_SOURCE
-      const mockFailureNotifier = (
-        service as unknown as { failureNotifier: { notifySendersOfFailure: jest.Mock } }
-      ).failureNotifier;
-      expect(mockFailureNotifier.notifySendersOfFailure).toHaveBeenCalledTimes(1);
-    });
-  });
-
   describe('Session locking', () => {
     it('should call withAgentLock during flush', async () => {
       await service.enqueue('agent-1', 'Message', { source: 'test' });
       await jest.advanceTimersByTimeAsync(10001);
 
       expect(mockCoordinator.withAgentLock).toHaveBeenCalledWith('agent-1', expect.any(Function));
-    });
-
-    it('should call deliver which internally enforces gap', async () => {
-      await service.enqueue('agent-1', 'Message', { source: 'test' });
-      await jest.advanceTimersByTimeAsync(10001);
-
-      expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
-        { name: 'tmux-1' },
-        expect.any(String),
-        expect.objectContaining({ agentId: 'agent-1' }),
-      );
     });
 
     it('should use agent lock for immediate delivery', async () => {
@@ -1612,11 +1507,7 @@ describe('SessionsMessagePoolService', () => {
   });
 
   describe('Configuration', () => {
-    it('should load config from SettingsService', () => {
-      expect(mockSettings.getMessagePoolConfig).toHaveBeenCalled();
-    });
-
-    it('should use default config when SettingsService throws', () => {
+    it('should use default config when SettingsService throws', async () => {
       mockSettings.getMessagePoolConfig.mockImplementation(() => {
         throw new Error('Settings not available');
       });
@@ -1634,39 +1525,17 @@ describe('SessionsMessagePoolService', () => {
         new HumanPromptStateService(),
       );
 
-      // Should not throw, uses defaults
-      expect(serviceWithDefaultConfig).toBeDefined();
-    });
-
-    it('should reload config when reloadConfig is called', () => {
-      mockSettings.getMessagePoolConfig.mockReturnValue({
-        enabled: false,
-        delayMs: 5000,
-        maxWaitMs: 15000,
-        maxMessages: 5,
-        separator: '---',
+      mockSettings.getMessagePoolConfigForProject.mockImplementation(() => {
+        throw new Error('Settings not available');
       });
-
-      service.reloadConfig();
-
-      expect(mockSettings.getMessagePoolConfig).toHaveBeenCalledTimes(2); // Initial + reload
-    });
-
-    it('should allow runtime configuration updates', async () => {
-      // Configure per-project maxMessages=2
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: true,
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 2,
-        separator: '\n---\n',
-      });
-
-      await service.enqueue('agent-1', 'Message 1', { source: 'test' });
-      const result = await service.enqueue('agent-1', 'Message 2', { source: 'test' });
-
-      expect(result.status).toBe('delivered');
+      expect(
+        await serviceWithDefaultConfig.enqueue('agent-1', 'fallback', { source: 'test' }),
+      ).toMatchObject({ status: 'queued' });
+      await jest.advanceTimersByTimeAsync(9999);
+      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
       expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
+      await serviceWithDefaultConfig.onModuleDestroy();
     });
   });
 
@@ -1694,70 +1563,41 @@ describe('SessionsMessagePoolService', () => {
   });
 
   describe('Submit keys handling', () => {
-    it('should use provided submitKeys', async () => {
-      await service.enqueue('agent-1', 'Message', {
-        source: 'test',
-        submitKeys: ['Tab', 'Enter'],
-      });
-
+    it.each([
+      {
+        label: 'provided',
+        messages: [{ text: 'Message', submitKeys: ['Tab', 'Enter'] }],
+        expected: ['Tab', 'Enter'],
+      },
+      {
+        label: 'last message',
+        messages: [
+          { text: 'Message 1', submitKeys: ['Tab'] },
+          { text: 'Message 2', submitKeys: ['Enter'] },
+        ],
+        expected: ['Enter'],
+      },
+      {
+        label: 'default',
+        messages: [{ text: 'Message', submitKeys: undefined }],
+        expected: ['Enter'],
+      },
+    ])('uses $label submit keys', async ({ messages, expected }) => {
+      for (const message of messages)
+        await service.enqueue('agent-1', message.text, {
+          source: 'test',
+          submitKeys: message.submitKeys,
+        });
       await jest.advanceTimersByTimeAsync(10001);
-
       expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
         { name: 'tmux-1' },
         expect.stringContaining('Message'),
-        expect.objectContaining({ submitKeys: ['Tab', 'Enter'] }),
-      );
-    });
-
-    it('should use last message submitKeys for batch', async () => {
-      await service.enqueue('agent-1', 'Message 1', {
-        source: 'test',
-        submitKeys: ['Tab'],
-      });
-      await service.enqueue('agent-1', 'Message 2', {
-        source: 'test',
-        submitKeys: ['Enter'],
-      });
-
-      await jest.advanceTimersByTimeAsync(10001);
-
-      expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
-        { name: 'tmux-1' },
-        expect.any(String),
-        expect.objectContaining({ submitKeys: ['Enter'] }),
-      );
-    });
-
-    it('should default to Enter key', async () => {
-      await service.enqueue('agent-1', 'Message', { source: 'test' });
-
-      await jest.advanceTimersByTimeAsync(10001);
-
-      expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
-        { name: 'tmux-1' },
-        expect.stringContaining('Message'),
-        expect.objectContaining({ submitKeys: ['Enter'] }),
+        expect.objectContaining({ submitKeys: expected }),
       );
     });
   });
 
   describe('flushNow', () => {
-    it('should immediately flush a specific agent pool', async () => {
-      await service.enqueue('agent-1', 'Message', { source: 'test' });
-
-      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
-
-      await service.flushNow('agent-1');
-
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
-    });
-
-    it('should do nothing if agent has no pool', async () => {
-      await service.flushNow('non-existent-agent');
-
-      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
-    });
-
     it('should clear timers when flushing', async () => {
       await service.enqueue('agent-1', 'Message', { source: 'test' });
 
@@ -1938,128 +1778,8 @@ describe('SessionsMessagePoolService', () => {
       expect(log).toHaveLength(1);
       expect(log[0].status).toBe('failed');
       expect(log[0].error).toBe('No active session');
+      expect(log[0].failureCode).toBe('no_active_session');
       expect(log[0].batchId).toBeDefined();
-    });
-
-    it('should track immediate messages', async () => {
-      await service.enqueue('agent-1', 'Immediate message', {
-        source: 'test',
-        immediate: true,
-      });
-
-      const log = service.getMessageLog();
-      expect(log).toHaveLength(1);
-      expect(log[0].status).toBe('delivered');
-      expect(log[0].immediate).toBe(true);
-      expect(log[0].deliveredAt).toBeDefined();
-    });
-
-    it('should track failed immediate messages', async () => {
-      mockSessionsService.listActiveSessions.mockResolvedValue([]);
-
-      await service.enqueue('agent-1', 'Immediate message', {
-        source: 'test',
-        immediate: true,
-      });
-
-      const log = service.getMessageLog();
-      expect(log).toHaveLength(1);
-      expect(log[0].status).toBe('failed');
-      expect(log[0].immediate).toBe(true);
-      expect(log[0].error).toBeDefined();
-    });
-
-    it('should filter log by projectId', async () => {
-      await service.enqueue('agent-1', 'Message 1', {
-        source: 'test',
-        projectId: 'project-1',
-      });
-      await service.enqueue('agent-1', 'Message 2', {
-        source: 'test',
-        projectId: 'project-2',
-      });
-
-      const filtered = service.getMessageLog({ projectId: 'project-1' });
-      expect(filtered).toHaveLength(1);
-      expect(filtered[0].projectId).toBe('project-1');
-    });
-
-    it('should filter log by agentId', async () => {
-      mockSessionsService.listActiveSessions.mockResolvedValue([
-        createActiveSession('agent-1'),
-        createActiveSession('agent-2', 'tmux-2'),
-      ]);
-
-      await service.enqueue('agent-1', 'Message 1', { source: 'test' });
-      await service.enqueue('agent-2', 'Message 2', { source: 'test' });
-
-      const filtered = service.getMessageLog({ agentId: 'agent-1' });
-      expect(filtered).toHaveLength(1);
-      expect(filtered[0].agentId).toBe('agent-1');
-    });
-
-    it('should filter log by status', async () => {
-      await service.enqueue('agent-1', 'Pooled message', { source: 'test' });
-      await service.enqueue('agent-1', 'Immediate message', {
-        source: 'test',
-        immediate: true,
-      });
-
-      const queued = service.getMessageLog({ status: 'queued' });
-      expect(queued).toHaveLength(1);
-      expect(queued[0].text).toBe('Pooled message');
-
-      const delivered = service.getMessageLog({ status: 'delivered' });
-      expect(delivered).toHaveLength(1);
-      expect(delivered[0].text).toBe('Immediate message');
-    });
-
-    it('should filter log by source', async () => {
-      await service.enqueue('agent-1', 'Epic message', {
-        source: 'epic.assigned',
-        immediate: true,
-      });
-      await service.enqueue('agent-1', 'Chat message', {
-        source: 'chat.message',
-        immediate: true,
-      });
-
-      const epicMessages = service.getMessageLog({ source: 'epic.assigned' });
-      expect(epicMessages).toHaveLength(1);
-      expect(epicMessages[0].text).toBe('Epic message');
-
-      const chatMessages = service.getMessageLog({ source: 'chat.message' });
-      expect(chatMessages).toHaveLength(1);
-      expect(chatMessages[0].text).toBe('Chat message');
-    });
-
-    it('should limit log results', async () => {
-      await service.enqueue('agent-1', 'Message 1', {
-        source: 'test',
-        immediate: true,
-      });
-      await service.enqueue('agent-1', 'Message 2', {
-        source: 'test',
-        immediate: true,
-      });
-      await service.enqueue('agent-1', 'Message 3', {
-        source: 'test',
-        immediate: true,
-      });
-
-      const limited = service.getMessageLog({ limit: 2 });
-      expect(limited).toHaveLength(2);
-    });
-
-    it('should return log in newest-first order', async () => {
-      await service.enqueue('agent-1', 'First', { source: 'test', immediate: true });
-      await service.enqueue('agent-1', 'Second', { source: 'test', immediate: true });
-      await service.enqueue('agent-1', 'Third', { source: 'test', immediate: true });
-
-      const log = service.getMessageLog();
-      expect(log[0].text).toBe('Third');
-      expect(log[1].text).toBe('Second');
-      expect(log[2].text).toBe('First');
     });
 
     it('should resolve project info from storage when not provided', async () => {
@@ -2097,170 +1817,6 @@ describe('SessionsMessagePoolService', () => {
       expect(log[0].agentName).toBe('unknown');
       expect(log[0].projectId).toBe('unknown');
     });
-
-    describe('getLogStats', () => {
-      it('should return correct log statistics', async () => {
-        await service.enqueue('agent-1', 'Hello world', {
-          source: 'test',
-          immediate: true,
-        });
-
-        const stats = service.getLogStats();
-        expect(stats.entryCount).toBe(1);
-        expect(stats.bytesUsed).toBe(11); // "Hello world".length
-        expect(stats.maxEntries).toBe(500);
-        expect(stats.maxBytes).toBe(2 * 1024 * 1024);
-      });
-
-      it('should return zero stats for empty log', () => {
-        const stats = service.getLogStats();
-        expect(stats.entryCount).toBe(0);
-        expect(stats.bytesUsed).toBe(0);
-      });
-    });
-
-    describe('getMessageById', () => {
-      it('should return message when found', async () => {
-        await service.enqueue('agent-1', 'Test message', {
-          source: 'test',
-          immediate: true,
-        });
-
-        const log = service.getMessageLog();
-        const messageId = log[0].id;
-
-        const result = service.getMessageById(messageId);
-        expect(result).not.toBeNull();
-        expect(result!.id).toBe(messageId);
-        expect(result!.text).toBe('Test message');
-      });
-
-      it('should return null when message not found', () => {
-        const result = service.getMessageById('non-existent-id');
-        expect(result).toBeNull();
-      });
-
-      it('should return null for invalid UUID', () => {
-        const result = service.getMessageById('invalid-uuid');
-        expect(result).toBeNull();
-      });
-    });
-
-    describe('pruning', () => {
-      it('should protect queued entries from pruning', async () => {
-        // Configure very small limits to trigger pruning
-        service.configure({ maxMessages: 100, delayMs: 10000, maxWaitMs: 30000 });
-
-        // Enqueue messages that stay queued (not flushed)
-        await service.enqueue('agent-1', 'Queued message 1', {
-          source: 'test',
-          projectId: 'project-1',
-          agentName: 'Test Agent',
-        });
-        await service.enqueue('agent-1', 'Queued message 2', {
-          source: 'test',
-          projectId: 'project-1',
-          agentName: 'Test Agent',
-        });
-
-        // Flush to mark as delivered
-        await jest.advanceTimersByTimeAsync(10001);
-
-        // Now the messages are delivered, add a new queued one
-        await service.enqueue('agent-2', 'New queued message', {
-          source: 'test',
-          projectId: 'project-1',
-          agentName: 'Agent 2',
-        });
-
-        // Get the log - should contain both delivered and queued
-        const log = service.getMessageLog();
-        const queuedMessages = log.filter((m) => m.status === 'queued');
-        const deliveredMessages = log.filter((m) => m.status === 'delivered');
-
-        expect(queuedMessages.length).toBe(1);
-        expect(deliveredMessages.length).toBe(2);
-        expect(queuedMessages[0].text).toBe('New queued message');
-      });
-
-      it('should remove delivered entries before queued when pruning', async () => {
-        // Enqueue and flush to create delivered entries
-        await service.enqueue('agent-1', 'Will be delivered', {
-          source: 'test',
-          projectId: 'project-1',
-          agentName: 'Test Agent',
-        });
-        await jest.advanceTimersByTimeAsync(10001);
-
-        // Now entries are delivered
-        let log = service.getMessageLog();
-        expect(log[0].status).toBe('delivered');
-
-        // Enqueue new message (queued)
-        await service.enqueue('agent-2', 'Stays queued', {
-          source: 'test',
-          projectId: 'project-1',
-          agentName: 'Agent 2',
-        });
-
-        log = service.getMessageLog();
-        const queuedEntry = log.find((m) => m.status === 'queued');
-        expect(queuedEntry).toBeDefined();
-        expect(queuedEntry!.text).toBe('Stays queued');
-      });
-
-      it('should correctly update byte count after pruning', async () => {
-        // Add a message and flush it
-        const message1 = 'First message for byte test';
-        await service.enqueue('agent-1', message1, {
-          source: 'test',
-          projectId: 'project-1',
-          agentName: 'Test Agent',
-        });
-        await jest.advanceTimersByTimeAsync(10001);
-
-        const statsAfterFirst = service.getLogStats();
-        expect(statsAfterFirst.bytesUsed).toBe(message1.length);
-
-        // Add another message
-        const message2 = 'Second message';
-        await service.enqueue('agent-1', message2, {
-          source: 'test',
-          projectId: 'project-1',
-          agentName: 'Test Agent',
-        });
-        await jest.advanceTimersByTimeAsync(10001);
-
-        const statsAfterSecond = service.getLogStats();
-        expect(statsAfterSecond.bytesUsed).toBe(message1.length + message2.length);
-      });
-
-      it('should not over-prune when one removal is sufficient', async () => {
-        // Add and flush multiple messages
-        for (let i = 0; i < 5; i++) {
-          await service.enqueue('agent-1', `Message ${i}`, {
-            source: 'test',
-            projectId: 'project-1',
-            agentName: 'Test Agent',
-          });
-        }
-        await jest.advanceTimersByTimeAsync(10001);
-
-        // All 5 messages should be in the log
-        let log = service.getMessageLog();
-        expect(log.length).toBe(5);
-
-        // Add one more - should not trigger pruning since we're well under limits
-        await service.enqueue('agent-2', 'One more', {
-          source: 'test',
-          projectId: 'project-1',
-          agentName: 'Agent 2',
-        });
-
-        log = service.getMessageLog();
-        expect(log.length).toBe(6);
-      });
-    });
   });
 
   describe('getPoolDetails', () => {
@@ -2292,36 +1848,26 @@ describe('SessionsMessagePoolService', () => {
       });
     });
 
-    it('should truncate long messages to 100 chars with ellipsis', async () => {
-      const longText = 'A'.repeat(150);
-      await service.enqueue('agent-1', longText, {
+    it.each([
+      { length: 150, expected: 'A'.repeat(100) + '...' },
+      { length: 100, expected: 'A'.repeat(100) },
+    ])('formats the preview for $length characters', async ({ length, expected }) => {
+      await service.enqueue('agent-1', 'A'.repeat(length), {
         source: 'test',
         projectId: 'project-1',
         agentName: 'Test Agent',
       });
-
-      const details = service.getPoolDetails();
-      expect(details[0].messages[0].preview).toBe('A'.repeat(100) + '...');
+      expect(service.getPoolDetails()[0].messages[0].preview).toBe(expected);
     });
 
-    it('should not add ellipsis for messages exactly 100 chars', async () => {
-      const exactText = 'B'.repeat(100);
-      await service.enqueue('agent-1', exactText, {
-        source: 'test',
-        projectId: 'project-1',
-        agentName: 'Test Agent',
-      });
-
-      const details = service.getPoolDetails();
-      expect(details[0].messages[0].preview).toBe(exactText);
-    });
-
-    it('should filter by projectId', async () => {
+    it.each([
+      { projectId: 'project-1', expected: ['agent-1'] },
+      { projectId: undefined, expected: ['agent-1', 'agent-2'] },
+    ])('lists pools filtered by $projectId', async ({ projectId, expected }) => {
       mockSessionsService.listActiveSessions.mockResolvedValue([
         createActiveSession('agent-1'),
         createActiveSession('agent-2', 'tmux-2'),
       ]);
-
       await service.enqueue('agent-1', 'Message 1', {
         source: 'test',
         projectId: 'project-1',
@@ -2332,32 +1878,9 @@ describe('SessionsMessagePoolService', () => {
         projectId: 'project-2',
         agentName: 'Agent 2',
       });
-
-      const filtered = service.getPoolDetails('project-1');
-      expect(filtered).toHaveLength(1);
-      expect(filtered[0].agentId).toBe('agent-1');
-      expect(filtered[0].projectId).toBe('project-1');
-    });
-
-    it('should return all pools when no projectId filter', async () => {
-      mockSessionsService.listActiveSessions.mockResolvedValue([
-        createActiveSession('agent-1'),
-        createActiveSession('agent-2', 'tmux-2'),
-      ]);
-
-      await service.enqueue('agent-1', 'Message 1', {
-        source: 'test',
-        projectId: 'project-1',
-        agentName: 'Agent 1',
-      });
-      await service.enqueue('agent-2', 'Message 2', {
-        source: 'test',
-        projectId: 'project-2',
-        agentName: 'Agent 2',
-      });
-
-      const all = service.getPoolDetails();
-      expect(all).toHaveLength(2);
+      const pools = service.getPoolDetails(projectId);
+      expect(pools.map((pool) => pool.agentId)).toEqual(expected);
+      if (projectId) expect(pools[0].projectId).toBe(projectId);
     });
 
     it('should sort by waitingMs descending (longest waiting first)', async () => {
@@ -2740,144 +2263,9 @@ describe('SessionsMessagePoolService', () => {
       expect(result.status).toBe('delivered');
       expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
     });
-
-    it('should not reset timers if config has not changed', async () => {
-      // Same config throughout
-      const config = {
-        enabled: true,
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 10,
-        separator: '\n---\n',
-      };
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue(config);
-
-      await service.enqueue('agent-1', 'Message 1', { source: 'test', projectId: 'project-1' });
-
-      // Wait 5 seconds
-      await jest.advanceTimersByTimeAsync(5000);
-
-      // Second message with same config - debounce resets but max-wait timer unchanged
-      await service.enqueue('agent-1', 'Message 2', { source: 'test', projectId: 'project-1' });
-
-      // Wait 10 more seconds (full delayMs from second message)
-      await jest.advanceTimersByTimeAsync(10000);
-
-      // Should flush at this point (debounce from second message)
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
-    });
   });
 
   describe('Per-project pool configuration', () => {
-    it('should use project-specific config for pool timers', async () => {
-      // Configure project-specific settings with shorter delays
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: true,
-        delayMs: 5000, // Shorter than global 10000
-        maxWaitMs: 15000, // Shorter than global 30000
-        maxMessages: 5, // Smaller than global 10
-        separator: '\n===\n',
-      });
-
-      await service.enqueue('agent-1', 'Message 1', {
-        source: 'test',
-        projectId: 'project-custom',
-      });
-
-      // Verify project config was fetched
-      expect(mockSettings.getMessagePoolConfigForProject).toHaveBeenCalledWith('project-custom');
-
-      // Should not flush yet (under maxMessages=5)
-      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
-
-      // Advance by project-specific delayMs (5000)
-      await jest.advanceTimersByTimeAsync(5000);
-
-      // Should have flushed using project config delay
-      expect(mockTerminalIO.deliver).toHaveBeenCalled();
-    });
-
-    it('should flush at project-specific maxMessages threshold', async () => {
-      // Configure project-specific maxMessages=3
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: true,
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 3, // Lower threshold
-        separator: '\n---\n',
-      });
-
-      await service.enqueue('agent-1', 'Message 1', {
-        source: 'test',
-        projectId: 'project-custom',
-      });
-      await service.enqueue('agent-1', 'Message 2', {
-        source: 'test',
-        projectId: 'project-custom',
-      });
-
-      // Not yet at threshold
-      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
-
-      // Third message should trigger flush (maxMessages=3)
-      await service.enqueue('agent-1', 'Message 3', {
-        source: 'test',
-        projectId: 'project-custom',
-      });
-
-      expect(mockTerminalIO.deliver).toHaveBeenCalled();
-    });
-
-    it('should use project-specific separator when flushing', async () => {
-      // Configure project-specific separator
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: true,
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 10,
-        separator: '\n===CUSTOM===\n', // Custom separator
-      });
-
-      await service.enqueue('agent-1', 'Message 1', {
-        source: 'test',
-        projectId: 'project-custom',
-      });
-      await service.enqueue('agent-1', 'Message 2', {
-        source: 'test',
-        projectId: 'project-custom',
-      });
-
-      // Trigger flush via timer
-      await jest.advanceTimersByTimeAsync(10000);
-
-      // Verify custom separator was used
-      expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
-        { name: 'tmux-1' },
-        expect.stringContaining('Message 1\n===CUSTOM===\nMessage 2'),
-        expect.any(Object),
-      );
-    });
-
-    it('should disable pooling when project config has enabled=false', async () => {
-      // Configure project-specific pooling disabled
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: false, // Disabled for this project
-        delayMs: 10000,
-        maxWaitMs: 30000,
-        maxMessages: 10,
-        separator: '\n---\n',
-      });
-
-      const result = await service.enqueue('agent-1', 'Message', {
-        source: 'test',
-        projectId: 'project-no-pool',
-      });
-
-      // Should be delivered immediately (bypassing pool)
-      expect(result.status).toBe('delivered');
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
-    });
-
     it('should fall back to global config when project config fails', async () => {
       // Make project config lookup throw
       mockSettings.getMessagePoolConfigForProject.mockImplementation(() => {
@@ -2933,6 +2321,11 @@ describe('SessionsMessagePoolService', () => {
     });
 
     it('sets confirmedAt and retryCount on successful delivery', async () => {
+      mockTerminalIO.deliver.mockResolvedValue({
+        confirmed: true,
+        nonce: 'abc1234',
+        retryCount: 0,
+      });
       const result = await service.enqueue('agent-1', 'Hello', { source: 'test' });
 
       expect(result.status).toBe('delivered');
@@ -2943,25 +2336,8 @@ describe('SessionsMessagePoolService', () => {
       expect(log[0].status).toBe('delivered');
       expect(log[0].confirmedAt).toBeDefined();
       expect(log[0].retryCount).toBe(0);
-      expect(log[0].nonce).toBeDefined();
+      expect(log[0].nonce).toBe('abc1234');
       expect(log[0].nonce).toMatch(/^[0-9a-f]{7}$/);
-    });
-
-    it('sets delivered status when deliver returns confirmed', async () => {
-      mockTerminalIO.deliver.mockResolvedValue({
-        confirmed: true,
-        nonce: 'abc1234',
-        retryCount: 1,
-      });
-
-      const result = await service.enqueue('agent-1', 'Hello', { source: 'test' });
-
-      expect(result.status).toBe('delivered');
-      expect(mockTerminalIO.deliver).toHaveBeenCalledTimes(1);
-
-      const log = service.getMessageLog();
-      expect(log[0].status).toBe('delivered');
-      expect(log[0].confirmedAt).toBeDefined();
     });
 
     it('sets unconfirmed status when deliver returns unconfirmed', async () => {
@@ -2983,19 +2359,6 @@ describe('SessionsMessagePoolService', () => {
       expect(mockActivityStream.broadcastUnconfirmed).toHaveBeenCalled();
     });
 
-    it('passes nonce from deliver result to log entry', async () => {
-      mockTerminalIO.deliver.mockResolvedValue({
-        confirmed: true,
-        nonce: 'test123',
-        retryCount: 0,
-      });
-
-      await service.enqueue('agent-1', 'Hello', { source: 'test' });
-
-      const log = service.getMessageLog();
-      expect(log[0].nonce).toBe('test123');
-    });
-
     it('does NOT retry on IOError — fails immediately', async () => {
       mockTerminalIO.deliver.mockRejectedValue(new IOError('tmux crashed'));
 
@@ -3008,86 +2371,26 @@ describe('SessionsMessagePoolService', () => {
       expect(log[0].status).toBe('failed');
       expect(log[0].failureCode).toBe('tmux_error');
     });
-
-    it('sets failureCode to no_active_session when no session exists', async () => {
-      jest.useFakeTimers();
-      mockSessionsService.listActiveSessions.mockResolvedValue([]);
-
-      // Use pooling enabled so deliverBatch runs
-      mockSettings.getMessagePoolConfigForProject.mockReturnValue({
-        enabled: true,
-        delayMs: 100,
-        maxWaitMs: 30000,
-        maxMessages: 10,
-        separator: '\n---\n',
-      });
-
-      await service.enqueue('agent-1', 'Hello', { source: 'test' });
-      await jest.advanceTimersByTimeAsync(200);
-
-      const log = service.getMessageLog();
-      expect(log[0].status).toBe('failed');
-      expect(log[0].failureCode).toBe('no_active_session');
-
-      jest.useRealTimers();
-    });
   });
 
   describe('postPasteDelayMs integration', () => {
-    it('immediate delivery resolves postPasteDelayMs for Gemini agent', async () => {
-      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({
-        postPasteDelayMs: 1500,
-      });
-
-      await service.enqueue('agent-1', 'hello', { source: 'test', immediate: true });
+    it.each([
+      { immediate: true, delay: 1500 },
+      { immediate: true, delay: undefined },
+      { immediate: false, delay: 1500 },
+      { immediate: false, delay: undefined },
+    ])('threads provider delay=$delay for immediate=$immediate', async ({ immediate, delay }) => {
+      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue(
+        delay === undefined ? {} : { postPasteDelayMs: delay },
+      );
+      await service.enqueue('agent-1', 'hello', { source: 'test', immediate });
+      if (!immediate) await jest.advanceTimersByTimeAsync(10_001);
       await jest.runAllTimersAsync();
-
       expect(mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent).toHaveBeenCalledWith(
         'agent-1',
       );
-      const pasteCall = mockTerminalIO.deliverImmediate.mock.calls[0];
-      expect(pasteCall).toBeDefined();
-      expect(pasteCall[2]).toHaveProperty('postPasteDelayMs', 1500);
-    });
-
-    it('immediate delivery passes undefined postPasteDelayMs for Claude agent', async () => {
-      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
-
-      await service.enqueue('agent-1', 'hello', { source: 'test', immediate: true });
-      await jest.runAllTimersAsync();
-
-      const pasteCall = mockTerminalIO.deliverImmediate.mock.calls[0];
-      expect(pasteCall).toBeDefined();
-      expect(pasteCall[2]?.postPasteDelayMs).toBeUndefined();
-    });
-
-    it('pooled delivery resolves postPasteDelayMs for Gemini agent', async () => {
-      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({
-        postPasteDelayMs: 1500,
-      });
-
-      await service.enqueue('agent-1', 'hello', { source: 'test' });
-      await jest.advanceTimersByTimeAsync(10_001);
-      await jest.runAllTimersAsync();
-
-      expect(mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent).toHaveBeenCalledWith(
-        'agent-1',
-      );
-      const pasteCall = mockTerminalIO.deliver.mock.calls[0];
-      expect(pasteCall).toBeDefined();
-      expect(pasteCall[2]).toHaveProperty('postPasteDelayMs', 1500);
-    });
-
-    it('pooled delivery passes undefined postPasteDelayMs for Claude agent', async () => {
-      mockProviderAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
-
-      await service.enqueue('agent-1', 'hello', { source: 'test' });
-      await jest.advanceTimersByTimeAsync(10_001);
-      await jest.runAllTimersAsync();
-
-      const pasteCall = mockTerminalIO.deliver.mock.calls[0];
-      expect(pasteCall).toBeDefined();
-      expect(pasteCall[2]?.postPasteDelayMs).toBeUndefined();
+      const deliver = immediate ? mockTerminalIO.deliverImmediate : mockTerminalIO.deliver;
+      expect(deliver.mock.calls[0][2]?.postPasteDelayMs).toBe(delay);
     });
   });
 

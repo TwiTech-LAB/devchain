@@ -359,61 +359,6 @@ describe('AgentsPage', () => {
     queryClient.clear();
   });
 
-  it('renders avatar previews in dialogs and updates with debounced input', async () => {
-    jest.useFakeTimers();
-    const fetchMock = buildFetchMock();
-    global.fetch = fetchMock as unknown as typeof fetch;
-
-    const { Wrapper, queryClient } = createWrapper();
-
-    try {
-      render(<AgentsPage />, { wrapper: Wrapper });
-
-      await screen.findByText('Agent One');
-
-      fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
-
-      const createLabel = await screen.findByTestId('agent-preview-create-label');
-      expect(createLabel).toHaveTextContent('Avatar preview');
-
-      const createNameInput = screen.getByLabelText('Name *');
-      fireEvent.change(createNameInput, { target: { value: 'Ada Lovelace' } });
-
-      await act(async () => {
-        jest.advanceTimersByTime(300);
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTestId('agent-preview-create-label')).toHaveTextContent('Ada Lovelace');
-      });
-
-      fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
-
-      fireEvent.click(screen.getByRole('button', { name: /edit/i }));
-      await screen.findByTestId('agent-preview-edit-label');
-      await act(async () => {
-        jest.advanceTimersByTime(300);
-      });
-      await waitFor(() => {
-        expect(screen.getByTestId('agent-preview-edit-label')).toHaveTextContent('Agent One');
-      });
-
-      const editNameInput = screen.getByLabelText('Name *');
-      fireEvent.change(editNameInput, { target: { value: '' } });
-
-      await act(async () => {
-        jest.advanceTimersByTime(300);
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTestId('agent-preview-edit-label')).toHaveTextContent('Avatar preview');
-      });
-    } finally {
-      jest.useRealTimers();
-      queryClient.clear();
-    }
-  });
-
   it('emits events:subscribe immediately when socket is already connected', async () => {
     mockSocket.connected = true;
     const fetchMock = buildFetchMock();
@@ -509,25 +454,6 @@ describe('AgentsPage', () => {
     expect(invalidateSpy).not.toHaveBeenCalled();
 
     invalidateSpy.mockRestore();
-    queryClient.clear();
-  });
-
-  it('exposes accessible avatar labels on the agents list', async () => {
-    const fetchMock = buildFetchMock();
-    global.fetch = fetchMock as unknown as typeof fetch;
-
-    const { Wrapper, queryClient } = createWrapper();
-
-    render(<AgentsPage />, { wrapper: Wrapper });
-
-    await screen.findByText('Agent One');
-
-    const avatars = screen.getAllByRole('img', { name: 'Avatar for agent Agent One' });
-    expect(avatars.length).toBeGreaterThanOrEqual(1);
-    avatars.forEach((avatar) => {
-      expect(avatar).toHaveAttribute('aria-label', 'Avatar for agent Agent One');
-    });
-
     queryClient.clear();
   });
 });

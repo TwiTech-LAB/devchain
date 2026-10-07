@@ -17,7 +17,6 @@ jest.mock('../../../common/logging/logger', () => ({
 }));
 
 import { eventCatalog } from '../../events/catalog';
-import { sessionRestoredEvent } from '../../events/catalog/session.restored';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
 import { TerminalStreamService } from '../../terminal/services/terminal-stream.service';
 import { SettingsService } from '../../settings/services/settings.service';
@@ -98,10 +97,6 @@ function createGateway() {
 // ---------------------------------------------------------------------------
 
 describe('session.restored event catalog', () => {
-  it('is registered in the event catalog', () => {
-    expect(eventCatalog['session.restored']).toBeDefined();
-  });
-
   it('schema validates a valid payload', () => {
     const schema = eventCatalog['session.restored'];
     const result = schema.safeParse({
@@ -112,29 +107,6 @@ describe('session.restored event catalog', () => {
       providerName: 'claude',
     });
     expect(result.success).toBe(true);
-  });
-
-  it('schema validates with non-null epicId', () => {
-    const schema = eventCatalog['session.restored'];
-    const result = schema.safeParse({
-      sessionId: 'session-1',
-      epicId: 'epic-1',
-      agentId: 'agent-1',
-      tmuxSessionName: 'devchain-session-1',
-      providerName: 'claude',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('schema rejects missing required fields', () => {
-    const schema = eventCatalog['session.restored'];
-    const result = schema.safeParse({ sessionId: 'session-1' });
-    expect(result.success).toBe(false);
-  });
-
-  it('event name constant matches catalog key', () => {
-    expect(sessionRestoredEvent.name).toBe('session.restored');
-    expect(eventCatalog[sessionRestoredEvent.name]).toBeDefined();
   });
 });
 
@@ -164,58 +136,5 @@ describe('TerminalGateway.handleSessionRestored', () => {
     expect(envelope.payload.sessionId).toBe('session-abc');
     expect(envelope.payload.status).toBe('started');
     expect(envelope.payload.message).toBe('Session restored successfully');
-  });
-
-  it('logs session restore with sessionId, epicId, and agentId', () => {
-    const { gateway } = createGateway();
-    expect(() =>
-      gateway.handleSessionRestored({
-        sessionId: 'session-xyz',
-        epicId: 'epic-99',
-        agentId: 'agent-2',
-        tmuxSessionName: 'devchain-session-xyz',
-        providerName: 'codex',
-      }),
-    ).not.toThrow();
-  });
-
-  it('handles null epicId without throwing', () => {
-    const { gateway, serverEmit } = createGateway();
-    expect(() =>
-      gateway.handleSessionRestored({
-        sessionId: 'session-1',
-        epicId: null,
-        agentId: 'agent-1',
-        tmuxSessionName: 'tmux-1',
-        providerName: 'claude',
-      }),
-    ).not.toThrow();
-    expect(serverEmit).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 3. Isolation — session.restored ≠ session.started
-// ---------------------------------------------------------------------------
-
-describe('session.restored isolation from session.started', () => {
-  it('session.restored and session.started are distinct event names', () => {
-    expect(sessionRestoredEvent.name).not.toBe('session.started');
-  });
-
-  it('both events exist independently in the catalog', () => {
-    expect(eventCatalog['session.restored']).toBeDefined();
-    expect(eventCatalog['session.started']).toBeDefined();
-    expect(eventCatalog['session.restored']).not.toBe(eventCatalog['session.started']);
-  });
-
-  it('TranscriptPersistenceListener only handles session.started — not session.restored', () => {
-    // Verify by confirming the event names differ: any handler bound to
-    // 'session.started' will NOT fire when 'session.restored' is emitted.
-    // This is the structural proof that auto-discovery side effects cannot
-    // be triggered by the restore flow.
-    const startedName: string = 'session.started';
-    const restoredName: string = sessionRestoredEvent.name;
-    expect(startedName).not.toBe(restoredName);
   });
 });

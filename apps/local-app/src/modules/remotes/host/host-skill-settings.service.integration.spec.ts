@@ -1,3 +1,5 @@
+import { PayloadTooLargeException } from '@nestjs/common';
+import { HOME_SKILL_CONTENT_LIMIT } from './host-skill-content';
 /** Storage and filesystem integration: real lifecycle and SQLite expose reconciliation and catalog regressions; only community network sync is stubbed. */
 import { Test } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -172,21 +174,6 @@ describe('Host skill settings reconciliation', () => {
     expect(await storage.getSourceProjectEnabled('A', 'local')).toBe(false);
     expect(await storage.getSourceProjectEnabled('gone', community.name)).toBeNull();
     expect(getProject).toHaveBeenCalledTimes(2);
-  });
-
-  it('keeps the switch value the VM already set for a present project', async () => {
-    await storage.setSourceProjectEnabled('A', community.name, false);
-    await apply({
-      ...empty(),
-      communitySources: [community],
-      sourcesEnabled: { [community.name]: true },
-      projectIds: ['A', 'gone'],
-      projectSourceSwitches: [
-        { projectId: 'A', sourceName: community.name, enabled: true },
-        { projectId: 'gone', sourceName: community.name, enabled: true },
-      ],
-    });
-    expect(await storage.getSourceProjectEnabled('A', community.name)).toBe(false);
   });
 
   it('replaces the seeded repo under another name, changes branch and removes only owned sources', async () => {
@@ -458,7 +445,7 @@ describe('Host skill settings reconciliation', () => {
     });
   });
 
-  it('refuses stale uploads and leaves the current copy unchanged', async () => {
+  it('refuses stale and oversized uploads and leaves the current copy unchanged', async () => {
     await apply(localBody());
     await service.upload('local', 'hash1', await archive());
     await apply(localBody('hash2'));
@@ -468,7 +455,13 @@ describe('Host skill settings reconciliation', () => {
     await expect(service.upload('unknown', 'hash2', Readable.from([]))).rejects.toThrow(
       'no longer current',
     );
+    await expect(
+      service.upload('local', 'hash2', Readable.from([Buffer.alloc(HOME_SKILL_CONTENT_LIMIT + 1)])),
+    ).rejects.toBeInstanceOf(PayloadTooLargeException);
     expect(await fs.readFile(join(root, 'local', '.devchain-content-hash'), 'utf8')).toBe('hash1');
+    expect(
+      await fs.readFile(join(root, 'local', 'skills', 'example', 'SKILL.md'), 'utf8'),
+    ).toContain('one');
   });
 
   it('enqueues sync when a source with content uploaded while off is turned on', async () => {

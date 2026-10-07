@@ -248,7 +248,7 @@ describe('Proxmox VM lifecycle against a fake API', () => {
   });
 
   it('downloads once, reuses the tagged template, and guards cancellation', async () => {
-    const image = lifecycle.image('https://images.example/devchain-host-1.3.0.qcow2', SHA);
+    const image = lifecycle.image('https://images.example/devchain-host-1.4.0.qcow2', SHA);
     const first = await lifecycle.plan(connection.id, image);
     expect(first).toEqual({ templateVmid: 100, vmid: 101 });
     const volid = await lifecycle.ensureImage(connection.id, image);
@@ -296,7 +296,7 @@ describe('Proxmox VM lifecycle against a fake API', () => {
   });
 
   it('recovers its own clone after a lost response and refuses a competing VMID', async () => {
-    const image = lifecycle.image('https://images.example/devchain-host-1.3.0.qcow2', SHA);
+    const image = lifecycle.image('https://images.example/devchain-host-1.4.0.qcow2', SHA);
     const volid = await lifecycle.ensureImage(connection.id, image);
     await lifecycle.ensureTemplate(connection.id, image, 100, volid);
     api.cloneRace = 'owned';
@@ -313,14 +313,18 @@ describe('Proxmox VM lifecycle against a fake API', () => {
     expect(api.vms.get(102)?.name).toBe('intruder');
   });
 
-  it('refuses an image older than the minimum and accepts a LAN build of it', () => {
-    expect(() => lifecycle.image('https://images.example/devchain-host-1.2.0.qcow2', SHA)).toThrow(
-      'Configure a reachable DevChain host image URL and SHA-256.',
-    );
-    expect(
-      lifecycle.image('http://lan.example/devchain-host-1.3.0-lan.202610010000.qcow2', SHA).version,
-    ).toBe('1.3.0-lan.202610010000');
-  });
+  it.each(['1.2.0', '1.3.0'])(
+    'refuses old image %s and accepts a LAN build of the minimum',
+    (version) => {
+      expect(() =>
+        lifecycle.image(`https://images.example/devchain-host-${version}.qcow2`, SHA),
+      ).toThrow('Configure a reachable DevChain host image URL and SHA-256.');
+      expect(
+        lifecycle.image('http://lan.example/devchain-host-1.4.0-lan.202610010000.qcow2', SHA)
+          .version,
+      ).toBe('1.4.0-lan.202610010000');
+    },
+  );
 
   it('reads the VM certificate from the bootstrap path with a bounded size', async () => {
     api.agentFile = async () => `\n${fixtureTls.cert}`;

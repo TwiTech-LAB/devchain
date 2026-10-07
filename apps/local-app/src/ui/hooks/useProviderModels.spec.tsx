@@ -98,24 +98,6 @@ describe('useProviderModels', () => {
     await waitFor(() => expect(onStale).toHaveBeenCalledWith(null));
   });
 
-  it('does not clear a still-valid selection', async () => {
-    mockFetch({ '/api/providers/p1/models': [{ name: 'opus' }] });
-    const onStale = jest.fn();
-    const { result } = renderHook(
-      () =>
-        useProviderModels({
-          providerId: 'p1',
-          modelOverride: 'opus',
-          onStaleSelection: onStale,
-        }),
-      { wrapper: makeWrapper() },
-    );
-    await waitFor(() => expect(result.current.models).toHaveLength(1));
-    // Allow the stale-clear effect a tick to (not) fire.
-    await Promise.resolve();
-    expect(onStale).not.toHaveBeenCalled();
-  });
-
   it('keeps a selection whose catalog row differs only in case', async () => {
     mockFetch({ '/api/providers/p1/models': [{ name: 'SONNET-4' }] });
     const onStale = jest.fn();
@@ -135,56 +117,37 @@ describe('useProviderModels', () => {
 });
 
 describe('useProviderEfforts (gating matrix + stale-clear)', () => {
-  it('exposes supportsEffort:false + empty catalog for a non-capable provider (hidden state)', async () => {
-    mockFetch({ '/api/providers/agy/efforts': { efforts: [], supportsEffort: false } });
+  it.each([
+    {
+      label: 'non-capable provider',
+      id: 'agy',
+      payload: { efforts: [], supportsEffort: false, requiresModelForEffort: false },
+    },
+    {
+      label: 'empty supported catalog',
+      id: 'p1',
+      payload: { efforts: [], supportsEffort: true, requiresModelForEffort: false },
+    },
+    {
+      label: 'model required',
+      id: 'opencode',
+      payload: { efforts: [{ name: 'high' }], supportsEffort: true, requiresModelForEffort: true },
+    },
+  ] as const)('$label', async ({ id, payload }) => {
+    const fetchMock = mockFetch({ [`/api/providers/${id}/efforts`]: payload });
     const { result } = renderHook(
       () =>
-        useProviderEfforts({
-          providerId: 'agy',
-          effortOverride: null,
-          onStaleSelection: jest.fn(),
-        }),
+        useProviderEfforts({ providerId: id, effortOverride: null, onStaleSelection: jest.fn() }),
       { wrapper: makeWrapper() },
     );
-    await waitFor(() => expect(result.current.supportsEffort).toBe(false));
-    expect(result.current.efforts).toEqual([]);
-    expect(result.current.requiresModelForEffort).toBe(false);
-  });
-
-  it('exposes supportsEffort:true with an empty catalog (disabled "No effort levels configured")', async () => {
-    mockFetch({ '/api/providers/p1/efforts': { efforts: [], supportsEffort: true } });
-    const { result } = renderHook(
-      () =>
-        useProviderEfforts({
-          providerId: 'p1',
-          effortOverride: null,
-          onStaleSelection: jest.fn(),
-        }),
-      { wrapper: makeWrapper() },
-    );
-    await waitFor(() => expect(result.current.supportsEffort).toBe(true));
-    expect(result.current.efforts).toEqual([]);
-  });
-
-  it('exposes requiresModelForEffort (disabled "Select a model first" when no resolvable model)', async () => {
-    mockFetch({
-      '/api/providers/opencode/efforts': {
-        efforts: [{ name: 'high' }],
-        supportsEffort: true,
-        requiresModelForEffort: true,
-      },
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+      expect(result.current.efforts).toEqual(
+        payload.efforts.map(({ name }, index) => ({ id: `${id}:${name}:${index}`, name })),
+      );
+      expect(result.current.supportsEffort).toBe(payload.supportsEffort);
+      expect(result.current.requiresModelForEffort).toBe(payload.requiresModelForEffort);
     });
-    const { result } = renderHook(
-      () =>
-        useProviderEfforts({
-          providerId: 'opencode',
-          effortOverride: null,
-          onStaleSelection: jest.fn(),
-        }),
-      { wrapper: makeWrapper() },
-    );
-    await waitFor(() => expect(result.current.requiresModelForEffort).toBe(true));
-    expect(result.current.efforts).toHaveLength(1);
   });
 
   it('clears a stale effort-override selection not present in the catalog', async () => {

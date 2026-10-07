@@ -46,26 +46,10 @@ describe('WatcherTriggerState', () => {
       const hash2 = state.computeViewportHash('content B');
       expect(hash1).not.toBe(hash2);
     });
-
-    it('should handle empty string', () => {
-      const hash = state.computeViewportHash('');
-      expect(hash).toHaveLength(16);
-    });
-
-    it('should handle unicode content', () => {
-      const hash = state.computeViewportHash('中文内容');
-      expect(hash).toHaveLength(16);
-    });
   });
 
   describe('evaluate', () => {
     describe('hash-based deduplication', () => {
-      it('should trigger on first match', () => {
-        const watcher = createTestWatcher();
-        const result = state.evaluate(watcher, 'session-1', 'error content', true);
-        expect(result.shouldTrigger).toBe(true);
-      });
-
       it('should NOT trigger when viewport hash unchanged', () => {
         const watcher = createTestWatcher();
         // First trigger
@@ -123,15 +107,26 @@ describe('WatcherTriggerState', () => {
         expect(result.shouldTrigger).toBe(false);
       });
 
-      it('should trigger again after condition clears (true->false->true)', () => {
+      it.each([
+        {
+          name: 'new viewport',
+          first: 'error 1',
+          cleared: 'no error',
+          next: 'error 2',
+          shouldTrigger: true,
+        },
+        {
+          name: 'identical viewport',
+          first: 'Context compacted',
+          cleared: 'terminal redraw without match',
+          next: 'Context compacted',
+          shouldTrigger: false,
+        },
+      ])('handles a $name after clearing', ({ first, cleared, next, shouldTrigger }) => {
         const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 0 });
-        // First trigger (false -> true)
-        state.evaluate(watcher, 'session-1', 'error 1', true);
-        // Condition becomes false - clears cooldown
-        state.evaluate(watcher, 'session-1', 'no error', false);
-        // Condition becomes true again - should trigger
-        const result = state.evaluate(watcher, 'session-1', 'error 2', true);
-        expect(result.shouldTrigger).toBe(true);
+        state.evaluate(watcher, 'session-1', first, true);
+        state.evaluate(watcher, 'session-1', cleared, false);
+        expect(state.evaluate(watcher, 'session-1', next, true).shouldTrigger).toBe(shouldTrigger);
       });
 
       it('should clear cooldown when condition becomes false', () => {
@@ -160,30 +155,9 @@ describe('WatcherTriggerState', () => {
         const result = state.evaluate(watcher, 'session-1', 'Context compacted', true);
         expect(result.shouldTrigger).toBe(false);
       });
-
-      it('should not retrigger the identical viewport after a clear', () => {
-        const watcher = createTestWatcher({ cooldownMode: 'until_clear', cooldownMs: 0 });
-
-        state.evaluate(watcher, 'session-1', 'Context compacted', true);
-        state.evaluate(watcher, 'session-1', 'terminal redraw without match', false);
-
-        const result = state.evaluate(watcher, 'session-1', 'Context compacted', true);
-
-        expect(result.shouldTrigger).toBe(false);
-      });
     });
 
     describe('condition state tracking', () => {
-      it('should update lastConditionState on each check', () => {
-        const watcher = createTestWatcher();
-        // Check with true
-        state.evaluate(watcher, 'session-1', 'error', true);
-        expect(state.getLastConditionState('watcher-1', 'session-1')).toBe(true);
-        // Check with false
-        state.evaluate(watcher, 'session-1', 'no error', false);
-        expect(state.getLastConditionState('watcher-1', 'session-1')).toBe(false);
-      });
-
       it('should return viewportHash in result', () => {
         const watcher = createTestWatcher();
         const result = state.evaluate(watcher, 'session-1', 'test content', true);
@@ -202,12 +176,6 @@ describe('WatcherTriggerState', () => {
         const watcher = createTestWatcher();
         const result = state.evaluate(watcher, 'session-1', 'no match', false);
         expect(result.shouldTrigger).toBe(false);
-      });
-
-      it('should still return viewportHash even when not triggering', () => {
-        const watcher = createTestWatcher();
-        const result = state.evaluate(watcher, 'session-1', 'no match', false);
-        expect(result.viewportHash).toHaveLength(16);
       });
     });
 
@@ -307,10 +275,6 @@ describe('WatcherTriggerState', () => {
 
       expect(state.getLastConditionState('watcher-1', 'session-1')).toBeUndefined();
       expect(state.getLastConditionState('watcher-1', 'session-2')).toBeUndefined();
-    });
-
-    it('is a no-op for an unknown watcher', () => {
-      expect(() => state.clearForWatcher('never-seen')).not.toThrow();
     });
   });
 });

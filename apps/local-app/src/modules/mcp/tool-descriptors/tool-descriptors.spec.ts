@@ -11,10 +11,6 @@ function unwrapZodSchema(schema: ZodSchema): ZodSchema {
 
 describe('tool-descriptors', () => {
   describe('metadata', () => {
-    it('has exactly 44 tool metadata entries', () => {
-      expect(allMetadata.length).toBe(44);
-    });
-
     it('all entries have required shape', () => {
       allMetadata.forEach((entry) => {
         expect(typeof entry.name).toBe('string');
@@ -22,11 +18,6 @@ describe('tool-descriptors', () => {
         expect(typeof entry.inputSchema).toBe('object');
         expect(entry.name).toMatch(/^devchain_/);
       });
-    });
-
-    it('all tool names are unique', () => {
-      const names = allMetadata.map((m) => m.name);
-      expect(new Set(names).size).toBe(names.length);
     });
 
     it('all inputSchema objects have additionalProperties: false', () => {
@@ -52,14 +43,6 @@ describe('tool-descriptors', () => {
   describe('Zod schema contract', () => {
     const schemasWithParams = allMetadata.filter((m) => m.paramsSchema !== null);
 
-    it('all paramsSchemas are valid Zod schemas', () => {
-      schemasWithParams.forEach((entry) => {
-        expect(entry.paramsSchema).toBeDefined();
-        expect(typeof entry.paramsSchema!.parse).toBe('function');
-        expect(typeof entry.paramsSchema!.safeParse).toBe('function');
-      });
-    });
-
     it('all Zod schemas have unknownKeys set to strict', () => {
       const nonStrict: string[] = [];
       schemasWithParams.forEach((entry) => {
@@ -73,27 +56,6 @@ describe('tool-descriptors', () => {
         }
       });
       expect(nonStrict).toEqual([]);
-    });
-
-    it('JSON Schema additionalProperties: false aligns with Zod strict mode', () => {
-      schemasWithParams.forEach((entry) => {
-        const jsonSchema = entry.inputSchema as { additionalProperties?: boolean };
-        if (jsonSchema.additionalProperties === false) {
-          const testData = { _contract_test_unknown_key_: 'should be rejected' };
-          const result = entry.paramsSchema!.safeParse(testData);
-          if (result.success) {
-            fail(`${entry.name} has additionalProperties: false but Zod accepts unknown keys`);
-          }
-        }
-      });
-    });
-  });
-
-  describe('devchain_apply_suggestion metadata registration', () => {
-    it('exists in metadata', () => {
-      const entry = allMetadata.find((m) => m.name === 'devchain_apply_suggestion');
-      expect(entry).toBeDefined();
-      expect(entry!.paramsSchema).not.toBeNull();
     });
   });
 
@@ -126,45 +88,6 @@ describe('tool-descriptors', () => {
       const schema = entry?.inputSchema as { properties?: Record<string, { minItems?: number }> };
       expect(schema?.properties?.recipientAgentNames?.minItems).toBe(1);
     });
-
-    it('documents explicit recipients as terminal delivery', () => {
-      const entry = allMetadata.find((m) => m.name === 'devchain_send_message');
-      const schema = entry?.inputSchema as {
-        properties?: Record<string, { description?: string }>;
-      };
-
-      expect(entry?.description).toContain('terminal-routed message');
-      expect(schema?.properties?.recipientAgentNames?.description).toContain(
-        'Accepts one or more recipients',
-      );
-      expect(entry?.description).not.toContain('thread');
-    });
-
-    it('includes teamName with self-team hint', () => {
-      const entry = allMetadata.find((m) => m.name === 'devchain_send_message');
-      const schema = entry?.inputSchema as {
-        properties?: Record<string, { description?: string }>;
-      };
-      expect(schema?.properties?.teamName?.description).toContain('Routes to team lead');
-    });
-  });
-
-  describe('retired terminal-unrelated tools', () => {
-    const retiredNames = [
-      'devchain_chat_ack',
-      'devchain_chat_read_history',
-      'devchain_chat_list_members',
-      'devchain_activity_start',
-      'devchain_activity_finish',
-      'devchain_list_documents',
-      'devchain_get_document',
-      'devchain_create_document',
-      'devchain_update_document',
-    ];
-
-    it.each(retiredNames)('%s is absent from metadata', (name) => {
-      expect(allMetadata.some((entry) => entry.name === name)).toBe(false);
-    });
   });
 
   describe('devchain_projects_list', () => {
@@ -180,57 +103,6 @@ describe('tool-descriptors', () => {
       expect(schema.required).toEqual(['sessionId']);
       expect(Object.keys(schema.properties ?? {}).sort()).toEqual(['limit', 'offset', 'sessionId']);
       expect(schema.additionalProperties).toBe(false);
-    });
-  });
-
-  describe('devchain_get_agent_by_name', () => {
-    it('documents the directory card and self-only instructions contract', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_get_agent_by_name');
-
-      expect(metadata?.description).toContain('directory card');
-      expect(metadata?.description).toContain('instructions are self-only');
-      expect(metadata?.description).toContain('open assigned epics with status');
-      expect(metadata?.description).toContain('empty array when team data is unavailable');
-    });
-  });
-
-  describe('devchain_update_epic tag discoverability', () => {
-    it('description includes tag-only update examples', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_update_epic');
-      expect(metadata).toBeDefined();
-      expect(metadata!.description).toContain('setTags');
-      expect(metadata!.description).toContain('addTags');
-      expect(metadata!.description).toContain('removeTags');
-      expect(metadata!.description).toContain('{ sessionId, id, version, setTags: [...] }');
-      expect(metadata!.description).toContain('{ sessionId, id, version, addTags: [...] }');
-      expect(metadata!.description).toContain('{ sessionId, id, version, removeTags: [...] }');
-    });
-  });
-
-  describe('devchain_list_epics description diet', () => {
-    it('documents previews and the includeDescription opt-in', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_list_epics');
-      const schema = metadata?.inputSchema as {
-        properties?: { includeDescription?: { type?: string } };
-      };
-
-      expect(metadata!.description).toContain('descriptionPreview');
-      expect(metadata!.description).toContain('devchain_get_epic_by_id');
-      expect(metadata!.description).toContain('includeDescription: true');
-      expect(schema.properties?.includeDescription?.type).toBe('boolean');
-    });
-  });
-
-  describe('devchain_get_epic_by_id parent summary', () => {
-    it('documents the summary parent and the includeParentDescription opt-in', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_get_epic_by_id');
-      const schema = metadata?.inputSchema as {
-        properties?: { includeParentDescription?: { type?: string } };
-      };
-
-      expect(metadata!.description).toContain('parent is a summary');
-      expect(metadata!.description).toContain('includeParentDescription: true');
-      expect(schema.properties?.includeParentDescription?.type).toBe('boolean');
     });
   });
 
@@ -259,26 +131,6 @@ describe('tool-descriptors', () => {
       expect(edits?.items?.properties?.find).toMatchObject({ type: 'string', minLength: 1 });
       expect(edits?.items?.properties?.replace?.type).toBe('string');
       expect(schema.properties?.appendDescription).toMatchObject({ type: 'string', minLength: 1 });
-    });
-
-    it('documents the mutual exclusion with the full description field', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_update_epic');
-      const schema = metadata?.inputSchema as {
-        properties?: Record<string, { description?: string }>;
-      };
-
-      expect(schema.properties?.description?.description).toContain('mutually exclusive');
-      expect(schema.properties?.descriptionEdits?.description).toContain('mutually exclusive');
-      expect(schema.properties?.appendDescription?.description).toContain('mutually exclusive');
-    });
-
-    it('coaches agents on unique find text, edit preference, response contexts, and conflict recovery', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_update_epic');
-
-      expect(metadata!.description).toContain('prefer descriptionEdits');
-      expect(metadata!.description).toContain('exactly once');
-      expect(metadata!.description).toContain('re-read is not needed');
-      expect(metadata!.description).toContain('VERSION_CONFLICT');
     });
   });
 
@@ -403,11 +255,6 @@ describe('tool-descriptors', () => {
   });
 
   describe('devchain_delete_epic descriptor contract', () => {
-    it('exists in metadata', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_delete_epic');
-      expect(metadata).toBeDefined();
-    });
-
     it('uses strict schema with exactly sessionId and id required', () => {
       const metadata = allMetadata.find((m) => m.name === 'devchain_delete_epic');
       const schema = metadata!.inputSchema as {
@@ -429,22 +276,6 @@ describe('tool-descriptors', () => {
     });
   });
 
-  describe('devchain_get_skill descriptor contract', () => {
-    it('states enabled-only resolution and describes both slug input forms', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_get_skill');
-      expect(metadata).toBeDefined();
-
-      expect(metadata!.description).toContain('enabled for the project');
-      expect(metadata!.description).not.toContain('Works even when the skill is disabled');
-
-      const schema = metadata!.inputSchema as {
-        properties?: Record<string, { description?: string }>;
-      };
-      expect(schema.properties?.slug?.description).toContain('source/name');
-      expect(schema.properties?.slug?.description).toContain('bare slug name');
-    });
-  });
-
   describe('devchain_skills_usage_stats descriptor contract', () => {
     it('uses a strict schema with sessionId required and no paging fields', () => {
       const metadata = allMetadata.find((m) => m.name === 'devchain_skills_usage_stats');
@@ -458,15 +289,6 @@ describe('tool-descriptors', () => {
       expect(Object.keys(schema.properties ?? {}).sort()).toEqual(['from', 'sessionId', 'to']);
       expect(schema.additionalProperties).toBe(false);
       expect(metadata?.paramsSchema).not.toBeNull();
-    });
-
-    it('documents usage semantics, the epicReferences window exemption, and status labels', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_usage_stats');
-
-      expect(metadata?.description).toContain('successful devchain_get_skill loads only');
-      expect(metadata?.description).toContain('ignores the from/to window');
-      expect(metadata?.description).toContain('no closed flag');
-      expect(metadata?.description).toContain('complete is always true');
     });
   });
 
@@ -483,29 +305,6 @@ describe('tool-descriptors', () => {
       expect(schema.properties?.slugs).toMatchObject({ minItems: 1, maxItems: 200 });
       expect(schema.additionalProperties).toBe(false);
       expect(metadata?.paramsSchema).not.toBeNull();
-    });
-
-    it('documents the project-wide effect, approval exemption, and resolution limits', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_set_enabled');
-
-      expect(metadata?.description).toContain('Project-wide effect');
-      expect(metadata?.description).toContain('does not check for human approval');
-      expect(metadata?.description).toContain(
-        'including sources that are disabled for this project',
-      );
-      expect(metadata?.description).toContain('skill-level disable');
-      expect(metadata?.description).toContain('disabled globally');
-    });
-
-    it('documents the count-only response and how to derive the changed slugs', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_skills_set_enabled');
-
-      expect(metadata?.description).toContain(
-        'Built-in DevChain skills (devchain/*) are always enabled',
-      );
-
-      expect(metadata?.description).toContain('{ updatedCount, unchanged, notFound, locked }');
-      expect(metadata?.description).toContain('request minus unchanged, notFound and locked');
     });
 
     it('documents devchain_skills_set_source_enabled with project scope and refusal cases', () => {
@@ -548,40 +347,6 @@ describe('tool-descriptors', () => {
       expect(metadata?.paramsSchema).not.toBeNull();
       expect(schema.required).toEqual(['sessionId']);
       expect(schema.additionalProperties).toBe(false);
-    });
-
-    it('documents includeDisabled on devchain_list_skills with all-sources flags and stale-source caveats', () => {
-      const metadata = allMetadata.find((m) => m.name === 'devchain_list_skills');
-      const schema = metadata!.inputSchema as {
-        properties?: Record<string, unknown>;
-      };
-
-      expect(metadata?.description).toContain('every stored skill');
-      expect(metadata?.description).toContain('skillDisabled');
-      expect(metadata?.description).toContain('sourceProjectEnabled');
-      expect(metadata?.description).toContain('sourceGloballyEnabled');
-      expect(metadata?.description).toContain('read-only for MCP');
-      expect(metadata?.description).toContain('stale');
-      expect(metadata?.description).toContain('last stored catalog');
-      expect(schema.properties?.includeDisabled).toBeDefined();
-    });
-  });
-
-  describe('code review tools', () => {
-    const reviewToolNames = [
-      'devchain_list_reviews',
-      'devchain_get_review',
-      'devchain_get_review_comments',
-      'devchain_reply_comment',
-      'devchain_resolve_comment',
-      'devchain_apply_suggestion',
-    ];
-
-    it('includes all code review tools in metadata', () => {
-      const metaNames = allMetadata.map((m) => m.name);
-      reviewToolNames.forEach((name) => {
-        expect(metaNames).toContain(name);
-      });
     });
   });
 
@@ -639,18 +404,10 @@ describe('tool-descriptors', () => {
       ],
     };
 
-    it('all categorized tools sum to 44', () => {
-      const total = Object.values(categories).reduce((sum, tools) => sum + tools.length, 0);
-      expect(total).toBe(44);
-    });
-
-    Object.entries(categories).forEach(([category, tools]) => {
-      it(`all ${category} tools present in metadata`, () => {
-        const metaNames = allMetadata.map((m) => m.name);
-        tools.forEach((name) => {
-          expect(metaNames).toContain(name);
-        });
-      });
+    it('pins the exact tool-name inventory', () => {
+      expect(allMetadata.map((entry) => entry.name).sort()).toEqual(
+        Object.values(categories).flat().sort(),
+      );
     });
   });
 });

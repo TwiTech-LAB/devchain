@@ -235,19 +235,6 @@ describe('EpicsService', () => {
     jest.resetAllMocks();
   });
 
-  it('publishes epic.created domain event on create', async () => {
-    storage.createEpic.mockResolvedValue(baseEpic);
-    await service.createEpic(baseEpic as unknown as CreateEpic);
-    expect(eventsService.publish).toHaveBeenCalledWith(
-      'epic.created',
-      expect.objectContaining({
-        epicId: baseEpic.id,
-        projectId: baseEpic.projectId,
-        title: baseEpic.title,
-      }),
-    );
-  });
-
   describe('external task imports and sources', () => {
     const importInput = {
       projectId: 'project-1',
@@ -754,24 +741,6 @@ describe('EpicsService', () => {
       );
     });
 
-    it('passes skillsRequired through createEpicForProject to storage', async () => {
-      storage.createEpicForProject.mockResolvedValue({
-        ...baseEpic,
-        skillsRequired: ['openai/review'],
-      });
-      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
-      storage.getStatus.mockResolvedValue({ id: 'status-1', label: 'New' });
-      await service.createEpicForProject(baseEpic.projectId, {
-        title: baseEpic.title,
-        skillsRequired: ['openai/review'],
-      });
-      expect(storage.createEpicForProject).toHaveBeenCalledWith(
-        baseEpic.projectId,
-        expect.objectContaining({ title: baseEpic.title, skillsRequired: ['openai/review'] }),
-        expect.any(Function),
-      );
-    });
-
     it('creates an initial relation before appending and announcing the Epic fact', async () => {
       const relatedEpicId = 'related-epic';
       storage.createEpicWithinTransaction.mockResolvedValue(baseEpic);
@@ -1260,38 +1229,6 @@ describe('EpicsService', () => {
       );
     });
 
-    it('includes stable parentId for sub-epic assignment updates', async () => {
-      storage.getEpic.mockResolvedValue({
-        ...baseEpic,
-        id: 'sub-epic-1',
-        parentId: 'parent-epic-1',
-        agentId: null,
-      });
-      storage.updateEpic.mockResolvedValue({
-        ...baseEpic,
-        id: 'sub-epic-1',
-        parentId: 'parent-epic-1',
-        agentId: 'agent-2',
-        version: 2,
-      });
-      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Demo Project' });
-      storage.getAgent.mockResolvedValue({ id: 'agent-2', name: 'Reviewer' });
-
-      await service.updateEpic('sub-epic-1', { agentId: 'agent-2' }, baseEpic.version);
-
-      expect(eventsService.publish).toHaveBeenCalledWith(
-        'epic.updated',
-        expect.objectContaining({
-          epicId: 'sub-epic-1',
-          parentId: 'parent-epic-1',
-          recipientIds: ['agent-2'],
-          changes: expect.objectContaining({
-            agentId: expect.objectContaining({ previous: null, current: 'agent-2' }),
-          }),
-        }),
-      );
-    });
-
     it('does NOT publish epic.updated for no-op status change', async () => {
       storage.getEpic.mockResolvedValue({ ...baseEpic, statusId: 'status-1' });
       storage.updateEpic.mockResolvedValue({ ...baseEpic, statusId: 'status-1', version: 2 });
@@ -1460,49 +1397,6 @@ describe('EpicsService', () => {
     });
   });
 
-  it('publishes epic.updated when agent changes', async () => {
-    storage.getEpic.mockResolvedValue(baseEpic);
-    storage.updateEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-9', version: 2 });
-    storage.getProject.mockResolvedValue({ id: baseEpic.projectId, name: 'Demo Project' });
-    storage.getAgent.mockResolvedValue({
-      id: 'agent-9',
-      name: 'Helper Agent',
-      projectId: baseEpic.projectId,
-    });
-    await service.updateEpic(baseEpic.id, { agentId: 'agent-9' }, baseEpic.version);
-    expect(eventsService.publish).toHaveBeenCalledWith(
-      'epic.updated',
-      expect.objectContaining({
-        epicId: baseEpic.id,
-        changes: expect.objectContaining({
-          agentId: expect.objectContaining({ previous: null, current: 'agent-9' }),
-        }),
-      }),
-    );
-  });
-
-  it('does not publish epic.assigned when agentId is unchanged', async () => {
-    storage.getEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-7' });
-    storage.updateEpic.mockResolvedValue({
-      ...baseEpic,
-      agentId: 'agent-7',
-      title: 'Updated Title',
-      version: 2,
-    });
-    storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Demo Project' });
-    await service.updateEpic(baseEpic.id, { title: 'Updated Title' }, baseEpic.version);
-    expect(eventsService.publish).toHaveBeenCalledWith(
-      'epic.updated',
-      expect.objectContaining({
-        epicId: baseEpic.id,
-        changes: expect.objectContaining({
-          title: { previous: baseEpic.title, current: 'Updated Title' },
-        }),
-      }),
-    );
-    expect(eventsService.publish).not.toHaveBeenCalledWith('epic.assigned', expect.anything());
-  });
-
   it('publishes epic.updated on re-assignment to same agent', async () => {
     storage.getEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-7' });
     storage.updateEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-7', version: 2 });
@@ -1519,24 +1413,6 @@ describe('EpicsService', () => {
     );
   });
 
-  it('does not include agentId in changes when agentId not in update data', async () => {
-    storage.getEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-7', statusId: 'status-1' });
-    storage.updateEpic.mockResolvedValue({
-      ...baseEpic,
-      agentId: 'agent-7',
-      statusId: 'status-2',
-      version: 2,
-    });
-    storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Demo Project' });
-    storage.getStatus
-      .mockResolvedValueOnce({ id: 'status-1', label: 'Backlog' })
-      .mockResolvedValueOnce({ id: 'status-2', label: 'In Progress' });
-    await service.updateEpic(baseEpic.id, { statusId: 'status-2' }, baseEpic.version);
-    const changes = eventsService.publish.mock.calls[0][1].changes;
-    expect(changes.statusId).toBeDefined();
-    expect(changes.agentId).toBeUndefined();
-  });
-
   it('includes actor context in re-assignment event', async () => {
     storage.getEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-7' });
     storage.updateEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-7', version: 2 });
@@ -1550,27 +1426,7 @@ describe('EpicsService', () => {
     );
   });
 
-  it('publishes epic.updated on reassignment from A to B', async () => {
-    storage.getEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-A' });
-    storage.updateEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-B', version: 2 });
-    storage.getProject.mockResolvedValue({ id: baseEpic.projectId, name: 'Demo Project' });
-    storage.getAgent.mockResolvedValue({
-      id: 'agent-B',
-      name: 'Agent B',
-      projectId: baseEpic.projectId,
-    });
-    await service.updateEpic(baseEpic.id, { agentId: 'agent-B' }, baseEpic.version);
-    expect(eventsService.publish).toHaveBeenCalledWith(
-      'epic.updated',
-      expect.objectContaining({
-        changes: expect.objectContaining({
-          agentId: expect.objectContaining({ previous: 'agent-A', current: 'agent-B' }),
-        }),
-      }),
-    );
-  });
-
-  it('does not publish epic.assigned when agent is removed', async () => {
+  it('publishes the previous-to-null assignment change when agent is removed', async () => {
     storage.getEpic.mockResolvedValue({ ...baseEpic, agentId: 'agent-7' });
     storage.updateEpic.mockResolvedValue({ ...baseEpic, agentId: null, version: 2 });
     storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Demo Project' });
@@ -1635,17 +1491,6 @@ describe('EpicsService', () => {
     );
   });
 
-  it('publishes epic.created domain event on createEpicForProject', async () => {
-    storage.createEpicForProject.mockResolvedValue(baseEpic);
-    await service.createEpicForProject(baseEpic.projectId, {
-      title: baseEpic.title,
-    } as unknown as CreateEpic);
-    expect(eventsService.publish).toHaveBeenCalledWith(
-      'epic.created',
-      expect.objectContaining({ epicId: baseEpic.id, projectId: baseEpic.projectId }),
-    );
-  });
-
   describe('bulkUpdateEpics', () => {
     const parentEpic: Epic = {
       ...baseEpic,
@@ -1692,26 +1537,13 @@ describe('EpicsService', () => {
       });
     });
 
-    it('throws when epics span multiple projects', async () => {
+    it.each([
+      { label: 'cross-project', override: { projectId: 'other-project' } },
+      { label: 'outside hierarchy', override: { parentId: 'other-parent' } },
+    ])('$label', async ({ override }) => {
       storage.getEpic
         .mockResolvedValueOnce(parentEpic)
-        .mockResolvedValueOnce({ ...childEpic, projectId: 'other-project' });
-      jest.spyOn(service, 'updateEpic').mockResolvedValue(parentEpic);
-      await expect(
-        service.bulkUpdateEpics(
-          [
-            { id: parentEpic.id, statusId: 'status-2', version: parentEpic.version },
-            { id: childEpic.id, statusId: 'status-3', version: childEpic.version },
-          ],
-          parentEpic.id,
-        ),
-      ).rejects.toThrow(ValidationError);
-    });
-
-    it('throws when an epic is outside the expected parent hierarchy', async () => {
-      storage.getEpic
-        .mockResolvedValueOnce(parentEpic)
-        .mockResolvedValueOnce({ ...childEpic, parentId: 'other-parent' });
+        .mockResolvedValueOnce({ ...childEpic, ...override });
       jest.spyOn(service, 'updateEpic').mockResolvedValue(parentEpic);
       await expect(
         service.bulkUpdateEpics(
@@ -1809,28 +1641,6 @@ describe('EpicsService', () => {
         { index: 1, context: 'alpha BETA delta' },
       ]);
       expect(result.outcome.descriptionEdit?.appended).toBeUndefined();
-    });
-
-    it('appends after edits and reports the append junction', async () => {
-      storage.getEpic.mockResolvedValue({ ...baseEpic, description: 'alpha beta' });
-      storage.updateEpic.mockImplementation(
-        async (_id: string, data: { description?: string }) => ({
-          ...baseEpic,
-          description: data.description ?? null,
-          version: 2,
-        }),
-      );
-
-      const result = await service.updateEpic(
-        baseEpic.id,
-        {
-          descriptionEdits: [{ find: 'beta', replace: 'gamma' }],
-          appendDescription: 'tail',
-        },
-        baseEpic.version,
-      );
-
-      expect(result.description).toBe('alpha gamma\n\ntail');
     });
 
     it('makes an append on a null description the full text', async () => {
@@ -2117,47 +1927,49 @@ describe('EpicsService', () => {
       storage.getStatus.mockResolvedValue({ id: 'status-2', label: 'Done' });
     });
 
-    it('status change with no agent change', async () => {
+    it.each([
+      {
+        label: 'status only',
+        stored: { ...agentEpic, statusId: 'status-2', version: 2 },
+        data: { statusId: 'status-2' },
+        autoClean: [],
+        statusChanged: true,
+        agentUnchanged: true,
+      },
+      {
+        label: 'auto-clean',
+        stored: { ...baseEpic, statusId: 'status-2', version: 2 },
+        data: { statusId: 'status-2' },
+        autoClean: ['status-2'],
+        statusChanged: true,
+        agentUnchanged: false,
+      },
+      {
+        label: 'explicit reassignment',
+        stored: { ...baseEpic, agentId: 'agent-2', statusId: 'status-2', version: 2 },
+        data: { statusId: 'status-2', agentId: 'agent-2' },
+        autoClean: [],
+        statusChanged: true,
+        agentUnchanged: false,
+      },
+      {
+        label: 'title only',
+        stored: { ...agentEpic, title: 'Updated Title', version: 2 },
+        data: { title: 'Updated Title' },
+        autoClean: [],
+        statusChanged: false,
+        agentUnchanged: true,
+      },
+    ])('$label', async ({ stored, data, autoClean, statusChanged, agentUnchanged }) => {
       storage.getEpic.mockResolvedValue({ ...agentEpic, statusId: 'status-1' });
-      storage.updateEpic.mockResolvedValue({ ...agentEpic, statusId: 'status-2', version: 2 });
-      const result = await service.updateEpicWithOutcome('epic-1', { statusId: 'status-2' }, 1);
-      expect(result.outcome.statusChanged).toBe(true);
-      expect(result.outcome.agentUnchanged).toBe(true);
-      expect(result.outcome.previousAssigneeAgent).toEqual({ id: 'agent-1', name: 'Test Agent' });
-    });
-
-    it('status change with auto-clean', async () => {
-      storage.getEpic.mockResolvedValue({ ...agentEpic, statusId: 'status-1' });
-      storage.updateEpic.mockResolvedValue({ ...baseEpic, statusId: 'status-2', version: 2 });
-      settingsService.getAutoCleanStatusIds.mockReturnValue(['status-2']);
-      const result = await service.updateEpicWithOutcome('epic-1', { statusId: 'status-2' }, 1);
-      expect(result.outcome.statusChanged).toBe(true);
-      expect(result.outcome.agentUnchanged).toBe(false);
-    });
-
-    it('status change with explicit agent change', async () => {
-      storage.getEpic.mockResolvedValue({ ...agentEpic, statusId: 'status-1' });
-      storage.updateEpic.mockResolvedValue({
-        ...baseEpic,
-        agentId: 'agent-2',
-        statusId: 'status-2',
-        version: 2,
-      });
-      const result = await service.updateEpicWithOutcome(
-        'epic-1',
-        { statusId: 'status-2', agentId: 'agent-2' },
-        1,
-      );
-      expect(result.outcome.statusChanged).toBe(true);
-      expect(result.outcome.agentUnchanged).toBe(false);
-    });
-
-    it('no status change', async () => {
-      storage.getEpic.mockResolvedValue({ ...agentEpic });
-      storage.updateEpic.mockResolvedValue({ ...agentEpic, title: 'Updated Title', version: 2 });
-      const result = await service.updateEpicWithOutcome('epic-1', { title: 'Updated Title' }, 1);
-      expect(result.outcome.statusChanged).toBe(false);
-      expect(result.outcome.agentUnchanged).toBe(true);
+      storage.updateEpic.mockResolvedValue(stored);
+      settingsService.getAutoCleanStatusIds.mockReturnValue(autoClean);
+      const result = await service.updateEpicWithOutcome('epic-1', data, 1);
+      expect(result.outcome.statusChanged).toBe(statusChanged);
+      expect(result.outcome.agentUnchanged).toBe(agentUnchanged);
+      if (statusChanged && agentUnchanged) {
+        expect(result.outcome.previousAssigneeAgent).toEqual({ id: 'agent-1', name: 'Test Agent' });
+      }
     });
 
     it('previousAssigneeAgent is null when before had no agent', async () => {

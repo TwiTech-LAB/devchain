@@ -169,27 +169,16 @@ describe('Paired-device-dedup convergence matrix (Phase 1 Task:5) — real store
 
   // ── 1. Old phone (no installId) + new PC: append behavior preserved (QR + email) ──────
   describe('old phone (no installId) + new PC — append preserved (backward compat)', () => {
-    it('email-TOFU: two adopts WITHOUT installId coexist (no supersede, append as today)', async () => {
-      // Same physical legacy phone after an exceptional identity rotation, but it is a
-      // PRE-installId client build, so neither adopt carries installId. Keep append behavior.
+    it.each(['email-TOFU', 'QR'])('%s keeps legacy peers without installId', async (seam) => {
       const phone1 = await mobileEnvelopeFor(0x0101);
       const phone2 = await mobileEnvelopeFor(0x0202);
-
-      trust.adoptPeerKeyTofu({ kid: phone1.kid, publicKeyB64: phone1.publicKeyB64 });
-      trust.adoptPeerKeyTofu({ kid: phone2.kid, publicKeyB64: phone2.publicKeyB64 });
-
-      const devices = deviceStore.list();
-      expect(devices).toHaveLength(2);
-      expect(devices.every((d) => d.installId === undefined)).toBe(true);
-    });
-
-    it('QR: two completes WITHOUT installId coexist (no supersede, append as today)', async () => {
-      const phone1 = await mobileEnvelopeFor(0x0303);
-      const phone2 = await mobileEnvelopeFor(0x0404);
-
-      await qrComplete('chan-old-a', phone1.kid, phone1.publicKeyB64);
-      await qrComplete('chan-old-b', phone2.kid, phone2.publicKeyB64);
-
+      if (seam === 'email-TOFU') {
+        trust.adoptPeerKeyTofu({ kid: phone1.kid, publicKeyB64: phone1.publicKeyB64 });
+        trust.adoptPeerKeyTofu({ kid: phone2.kid, publicKeyB64: phone2.publicKeyB64 });
+      } else {
+        await qrComplete('chan-old-a', phone1.kid, phone1.publicKeyB64);
+        await qrComplete('chan-old-b', phone2.kid, phone2.publicKeyB64);
+      }
       const devices = deviceStore.list();
       expect(devices).toHaveLength(2);
       expect(devices.every((d) => d.installId === undefined)).toBe(true);

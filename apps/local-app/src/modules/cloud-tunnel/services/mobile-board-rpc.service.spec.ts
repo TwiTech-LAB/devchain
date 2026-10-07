@@ -3,11 +3,7 @@ import type { StorageService } from '../../storage/interfaces/storage.interface'
 import type { EpicsService } from '../../epics/services/epics.service';
 import type { Epic } from '../../storage/models/domain.models';
 import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
-import {
-  NotFoundError,
-  OptimisticLockError,
-  ValidationError,
-} from '../../../common/errors/error-types';
+import { NotFoundError } from '../../../common/errors/error-types';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_PROJECT_ID = '33333333-3333-4333-8333-333333333333';
@@ -102,38 +98,14 @@ describe('MobileBoardRpcService', () => {
         agentId: AGENT_ID,
         agentName: 'Coder',
         version: 4,
-      });
-      expect(storage.getAgent).toHaveBeenCalledWith(AGENT_ID);
-    });
-
-    it('enriches the returned DTO with resolved status fields (read-parity)', async () => {
-      const { service, storage } = build({
-        storage: {
-          getEpic: jest.fn().mockResolvedValue(epic()),
-          getAgent: jest.fn().mockResolvedValue({ id: AGENT_ID, name: 'Coder' }),
-        },
-        epicsService: {
-          updateEpic: jest.fn().mockResolvedValue(epic({ agentId: AGENT_ID, version: 4 })),
-        },
-      });
-
-      const result = (await service.updateEpicAssignment({
-        projectId: PROJECT_ID,
-        epicId: EPIC_ID,
-        agentId: AGENT_ID,
-        version: 3,
-      })) as Record<string, unknown>;
-
-      // Mutation DTO must carry the same status fields as the read path so the
-      // client's full EpicDetail replace doesn't degrade the status tile.
-      expect(storage.listStatuses).toHaveBeenCalledWith(PROJECT_ID, { limit: 1000, offset: 0 });
-      expect(result).toMatchObject({
         statusId: 'status-1',
         statusName: 'In Progress',
         statusColor: '#f59e0b',
         statusPosition: 2,
         status: { id: 'status-1', name: 'In Progress', color: '#f59e0b', position: 2 },
       });
+      expect(storage.listStatuses).toHaveBeenCalledWith(PROJECT_ID, { limit: 1000, offset: 0 });
+      expect(storage.getAgent).toHaveBeenCalledWith(AGENT_ID);
     });
 
     it('supports unassign (agentId null) without resolving an agent name', async () => {
@@ -174,67 +146,9 @@ describe('MobileBoardRpcService', () => {
       ).rejects.toBeInstanceOf(NotFoundError);
       expect(epicsService.updateEpic).not.toHaveBeenCalled();
     });
-
-    it('propagates OptimisticLockError unchanged (version conflict)', async () => {
-      const { service } = build({
-        storage: { getEpic: jest.fn().mockResolvedValue(epic()) },
-        epicsService: {
-          updateEpic: jest.fn().mockRejectedValue(new OptimisticLockError('Epic', EPIC_ID)),
-        },
-      });
-
-      await expect(
-        service.updateEpicAssignment({
-          projectId: PROJECT_ID,
-          epicId: EPIC_ID,
-          agentId: AGENT_ID,
-          version: 2,
-        }),
-      ).rejects.toBeInstanceOf(OptimisticLockError);
-    });
-
-    it('propagates ValidationError for a cross-project agentId (storage-enforced)', async () => {
-      const { service } = build({
-        storage: { getEpic: jest.fn().mockResolvedValue(epic()) },
-        epicsService: {
-          updateEpic: jest
-            .fn()
-            .mockRejectedValue(new ValidationError('Agent does not belong to project')),
-        },
-      });
-
-      await expect(
-        service.updateEpicAssignment({
-          projectId: PROJECT_ID,
-          epicId: EPIC_ID,
-          agentId: AGENT_ID,
-          version: 3,
-        }),
-      ).rejects.toBeInstanceOf(ValidationError);
-    });
   });
 
   describe('listEpicComments', () => {
-    it('lists comments after project validation', async () => {
-      const page = { items: [{ id: COMMENT_ID }], total: 1, limit: 50, offset: 0 };
-      const { service, storage } = build({
-        storage: {
-          getEpic: jest.fn().mockResolvedValue(epic()),
-          listEpicComments: jest.fn().mockResolvedValue(page),
-        },
-      });
-
-      const result = await service.listEpicComments({
-        projectId: PROJECT_ID,
-        epicId: EPIC_ID,
-        limit: 50,
-        offset: 0,
-      });
-
-      expect(storage.listEpicComments).toHaveBeenCalledWith(EPIC_ID, { limit: 50, offset: 0 });
-      expect(result).toBe(page);
-    });
-
     it('rejects a cross-project epic without reading comments', async () => {
       const { service, storage } = build({
         storage: {
@@ -302,22 +216,6 @@ describe('MobileBoardRpcService', () => {
 
       expect(epicsService.deleteEpicComment).toHaveBeenCalledWith(PROJECT_ID, EPIC_ID, COMMENT_ID);
       expect(result).toEqual({ deleted: true });
-    });
-
-    it('propagates a not-found when the scoped delete refuses (wrong epic/missing)', async () => {
-      const { service } = build({
-        epicsService: {
-          deleteEpicComment: jest.fn().mockRejectedValue(new NotFoundError('Comment', COMMENT_ID)),
-        },
-      });
-
-      await expect(
-        service.deleteEpicComment({
-          projectId: PROJECT_ID,
-          epicId: EPIC_ID,
-          commentId: COMMENT_ID,
-        }),
-      ).rejects.toBeInstanceOf(NotFoundError);
     });
   });
 

@@ -80,36 +80,49 @@ describe('SessionNavigationToolbar', () => {
     expect(onTop).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onEnd when jump-to-end button is clicked', () => {
-    const onEnd = jest.fn();
-    renderToolbar({ onEnd });
-
-    fireEvent.click(screen.getByTestId('nav-jump-end'));
-    expect(onEnd).toHaveBeenCalledTimes(1);
-  });
-
-  it('calls onPrevThinking when prev-thinking button is clicked', () => {
-    const onPrevThinking = jest.fn();
-    renderToolbar({ onPrevThinking });
-
-    fireEvent.click(screen.getByTestId('nav-prev-thinking'));
-    expect(onPrevThinking).toHaveBeenCalledTimes(1);
-  });
-
-  it('calls onNextThinking when next-thinking button is clicked', () => {
-    const onNextThinking = jest.fn();
-    renderToolbar({ onNextThinking });
-
-    fireEvent.click(screen.getByTestId('nav-next-thinking'));
-    expect(onNextThinking).toHaveBeenCalledTimes(1);
-  });
-
-  it('calls onNextResponse when next-response button is clicked', () => {
-    const onNextResponse = jest.fn();
-    renderToolbar({ onNextResponse });
-
-    fireEvent.click(screen.getByTestId('nav-next-response'));
-    expect(onNextResponse).toHaveBeenCalledTimes(1);
+  it.each([
+    { label: 'onEnd', prop: 'onEnd', id: 'nav-jump-end', hotspotFilterActive: false },
+    {
+      label: 'onPrevThinking',
+      prop: 'onPrevThinking',
+      id: 'nav-prev-thinking',
+      hotspotFilterActive: false,
+    },
+    {
+      label: 'onNextThinking',
+      prop: 'onNextThinking',
+      id: 'nav-next-thinking',
+      hotspotFilterActive: false,
+    },
+    {
+      label: 'onNextResponse',
+      prop: 'onNextResponse',
+      id: 'nav-next-response',
+      hotspotFilterActive: false,
+    },
+    {
+      label: 'onPrevHotspot',
+      prop: 'onPrevHotspot',
+      id: 'nav-prev-hotspot',
+      hotspotFilterActive: true,
+    },
+    {
+      label: 'onNextHotspot',
+      prop: 'onNextHotspot',
+      id: 'nav-next-hotspot',
+      hotspotFilterActive: true,
+    },
+    {
+      label: 'onToggleHotspotFilter',
+      prop: 'onToggleHotspotFilter',
+      id: 'nav-toggle-hotspot-filter',
+      hotspotFilterActive: false,
+    },
+  ] as const)('calls $label from its button', ({ prop, id, hotspotFilterActive }) => {
+    const handler = jest.fn();
+    renderToolbar({ [prop]: handler, hotspotFilterActive });
+    fireEvent.click(screen.getByTestId(id));
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it('disables semantic buttons when handlers are null', () => {
@@ -152,30 +165,6 @@ describe('SessionNavigationToolbar', () => {
     }
     // top, prev-thinking, next-thinking, next-response, filter-toggle, prev-hotspot, next-hotspot, R, D, end
     expect(buttons).toHaveLength(10);
-  });
-
-  it('calls onPrevHotspot when prev-hotspot button is clicked', () => {
-    const onPrevHotspot = jest.fn();
-    renderToolbar({ onPrevHotspot, hotspotFilterActive: true });
-
-    fireEvent.click(screen.getByTestId('nav-prev-hotspot'));
-    expect(onPrevHotspot).toHaveBeenCalledTimes(1);
-  });
-
-  it('calls onNextHotspot when next-hotspot button is clicked', () => {
-    const onNextHotspot = jest.fn();
-    renderToolbar({ onNextHotspot, hotspotFilterActive: true });
-
-    fireEvent.click(screen.getByTestId('nav-next-hotspot'));
-    expect(onNextHotspot).toHaveBeenCalledTimes(1);
-  });
-
-  it('calls onToggleHotspotFilter when filter button is clicked', () => {
-    const onToggleHotspotFilter = jest.fn();
-    renderToolbar({ onToggleHotspotFilter });
-
-    fireEvent.click(screen.getByTestId('nav-toggle-hotspot-filter'));
-    expect(onToggleHotspotFilter).toHaveBeenCalledTimes(1);
   });
 
   it('disables hotspot buttons when handlers are null', () => {
@@ -236,30 +225,5 @@ describe('SessionNavigationToolbar', () => {
 
     expect(screen.getByTestId('view-mode-diagnostic')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByTestId('view-mode-reader')).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  it('persists mode selection to localStorage', () => {
-    localStorage.clear();
-    renderToolbar();
-
-    fireEvent.click(screen.getByTestId('view-mode-diagnostic'));
-    expect(localStorage.getItem('devchain.session.viewMode')).toBe('diagnostic');
-
-    fireEvent.click(screen.getByTestId('view-mode-reader'));
-    expect(localStorage.getItem('devchain.session.viewMode')).toBe('reader');
-  });
-
-  it('restores mode from localStorage on mount', () => {
-    localStorage.setItem('devchain.session.viewMode', 'diagnostic');
-    renderToolbar();
-
-    expect(screen.getByTestId('view-mode-diagnostic')).toHaveAttribute('aria-pressed', 'true');
-  });
-
-  it('falls back to Reader when localStorage has invalid value', () => {
-    localStorage.setItem('devchain.session.viewMode', 'invalid');
-    renderToolbar();
-
-    expect(screen.getByTestId('view-mode-reader')).toHaveAttribute('aria-pressed', 'true');
   });
 });

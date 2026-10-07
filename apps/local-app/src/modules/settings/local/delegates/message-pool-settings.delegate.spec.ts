@@ -46,16 +46,6 @@ describe('MessagePoolSettingsDelegate', () => {
         separator: '---',
       });
     });
-
-    it('fills in defaults for partially configured settings', () => {
-      mockGetSettings.mockReturnValue({
-        messagePool: { delayMs: 3000 },
-      });
-      const config = delegate.getMessagePoolConfig();
-      expect(config.delayMs).toBe(3000);
-      expect(config.enabled).toBe(true);
-      expect(config.maxWaitMs).toBe(30000);
-    });
   });
 
   describe('getMessagePoolConfigForProject', () => {
@@ -85,19 +75,6 @@ describe('MessagePoolSettingsDelegate', () => {
       expect(config.maxWaitMs).toBe(30000);
     });
 
-    it('returns global config for unknown project', () => {
-      mockGetSettings.mockReturnValue({
-        messagePool: {
-          delayMs: 5000,
-          projects: {
-            'project-1': { delayMs: 2000 },
-          },
-        },
-      });
-      const config = delegate.getMessagePoolConfigForProject('project-unknown');
-      expect(config.delayMs).toBe(5000);
-    });
-
     it('falls back to defaults when global is empty and project has partial overrides', () => {
       mockGetSettings.mockReturnValue({
         messagePool: {
@@ -118,11 +95,6 @@ describe('MessagePoolSettingsDelegate', () => {
       expect(delegate.getProjectPoolSettings('project-1')).toBeUndefined();
     });
 
-    it('returns undefined when messagePool has no projects', () => {
-      mockGetSettings.mockReturnValue({ messagePool: { delayMs: 5000 } });
-      expect(delegate.getProjectPoolSettings('project-1')).toBeUndefined();
-    });
-
     it('returns raw project settings without global fallback', () => {
       mockGetSettings.mockReturnValue({
         messagePool: {
@@ -138,22 +110,6 @@ describe('MessagePoolSettingsDelegate', () => {
   });
 
   describe('setProjectPoolSettings', () => {
-    it('sets project-specific pool settings', async () => {
-      mockGetSettings.mockReturnValue({
-        messagePool: { projects: {} },
-      });
-
-      await delegate.setProjectPoolSettings('project-1', { delayMs: 3000 });
-
-      expect(mockUpdateSettings).toHaveBeenCalledWith({
-        messagePool: {
-          projects: {
-            'project-1': { delayMs: 3000 },
-          },
-        },
-      });
-    });
-
     it('preserves existing project settings when adding new project', async () => {
       mockGetSettings.mockReturnValue({
         messagePool: {

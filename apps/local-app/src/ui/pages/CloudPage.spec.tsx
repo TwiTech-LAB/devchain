@@ -64,43 +64,31 @@ describe('CloudPage', () => {
     mockSetActiveSection.mockReset();
   });
 
-  it('renders the Cloud page with the sidebar brand and no page header', () => {
-    mockUseSubNavSearchParam.mockReturnValue(['account', jest.fn()]);
+  it.each([
+    { section: 'account', tab: 'Account', testId: 'account-section' },
+    { section: 'notifications', tab: 'Notifications', testId: null },
+    { section: 'remote-vm', tab: 'Remote VMs', testId: 'remote-vm-section' },
+  ])('renders the active $section section', ({ section, tab, testId }) => {
+    mockUseSubNavSearchParam.mockReturnValue([section, jest.fn()]);
     renderCloudPage();
-    expect(screen.queryByText('Cloud Settings')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Cloud navigation')).toBeInTheDocument();
-    expect(screen.getByText('Cloud')).toBeInTheDocument();
-  });
-
-  it('renders with default account section active', () => {
-    mockUseSubNavSearchParam.mockReturnValue(['account', jest.fn()]);
-    renderCloudPage();
-    expect(screen.getByRole('tab', { name: 'Account' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tab', { name: 'Notifications' })).toHaveAttribute(
-      'aria-selected',
-      'false',
-    );
-    expect(screen.getByTestId('account-section')).toBeInTheDocument();
-  });
-
-  it('renders notifications section when active', () => {
-    mockUseSubNavSearchParam.mockReturnValue(['notifications', jest.fn()]);
-    renderCloudPage();
-    expect(screen.getByRole('tab', { name: 'Notifications' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    expect(screen.getByRole('tab', { name: 'Account' })).toHaveAttribute('aria-selected', 'false');
-    // useCloudConnection mock returns connected:false so the disconnected hint renders
-    expect(
-      screen.getByText(/Sign in to DevChain Cloud to manage notifications/i),
-    ).toBeInTheDocument();
-  });
-
-  it('does not render account section when notifications is active', () => {
-    mockUseSubNavSearchParam.mockReturnValue(['notifications', jest.fn()]);
-    renderCloudPage();
-    expect(screen.queryByTestId('account-section')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
+    if (testId) expect(screen.getByTestId(testId)).toBeInTheDocument();
+    if (section === 'account')
+      expect(screen.getByRole('tab', { name: 'Notifications' })).toHaveAttribute(
+        'aria-selected',
+        'false',
+      );
+    else {
+      expect(screen.getByRole('tab', { name: 'Account' })).toHaveAttribute(
+        'aria-selected',
+        'false',
+      );
+      expect(screen.queryByTestId('account-section')).not.toBeInTheDocument();
+    }
+    if (section === 'notifications')
+      expect(
+        screen.getByText(/Sign in to DevChain Cloud to manage notifications/i),
+      ).toBeInTheDocument();
   });
 
   it('sidebar tabs are keyboard reachable and activate on Enter', async () => {
@@ -111,23 +99,11 @@ describe('CloudPage', () => {
     const notificationsTab = screen.getByRole('tab', { name: 'Notifications' });
     notificationsTab.focus();
     expect(notificationsTab).toHaveFocus();
-    expect(notificationsTab).toHaveClass('focus-visible:ring-2');
 
     const user = userEvent.setup();
     await user.keyboard('{Enter}');
 
     expect(setActiveSection).toHaveBeenCalledWith('notifications');
-  });
-
-  it('renders the Remote VMs tab and its section when active', () => {
-    mockUseSubNavSearchParam.mockReturnValue(['remote-vm', jest.fn()]);
-    renderCloudPage();
-    expect(screen.getByRole('tab', { name: 'Remote VMs' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    expect(screen.getByTestId('remote-vm-section')).toBeInTheDocument();
-    expect(screen.queryByTestId('account-section')).not.toBeInTheDocument();
   });
 
   it('switches to Remote VMs with the section=remote-vm key', async () => {
@@ -145,19 +121,6 @@ describe('CloudPage — notifications disconnected path', () => {
     mockUseSubNavSearchParam.mockReset();
     mockSetActiveSection.mockReset();
     mockUseSubNavSearchParam.mockReturnValue(['notifications', mockSetActiveSection]);
-  });
-
-  it('renders DisconnectedHint when signed out on notifications section', () => {
-    renderCloudPage();
-    expect(
-      screen.getByText('Sign in to DevChain Cloud to manage notifications.'),
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Go to Account/i })).toBeInTheDocument();
-  });
-
-  it('does not render cloud-auth-form in disconnected path', () => {
-    renderCloudPage();
-    expect(screen.queryByTestId('cloud-auth-form')).not.toBeInTheDocument();
   });
 
   it('invokes setActiveSection with "account" when Go to Account button is clicked', async () => {

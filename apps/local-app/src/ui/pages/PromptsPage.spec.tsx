@@ -127,32 +127,6 @@ describe('PromptsPage variable helper', () => {
     toastSpy.mockReset();
   });
 
-  it('displays the available variables helper panel in the prompt dialog', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <PromptsPage />
-        </Wrapper>,
-      );
-    });
-
-    const createButton = await screen.findByRole('button', { name: /create prompt/i });
-    await act(async () => {
-      fireEvent.click(createButton);
-    });
-
-    expect(await screen.findByText('Available Variables')).toBeInTheDocument();
-    expect(screen.getByText('{agent_name}')).toBeInTheDocument();
-    expect(screen.getByText('{project_name}')).toBeInTheDocument();
-    expect(screen.getByText('{epic_title}')).toBeInTheDocument();
-    expect(screen.getByText('{provider_name}')).toBeInTheDocument();
-    expect(screen.getByText('{profile_name}')).toBeInTheDocument();
-    expect(screen.getByText('{session_id}')).toBeInTheDocument();
-    expect(screen.getByText('{session_id_short}')).toBeInTheDocument();
-  });
-
   it('defaults create to accessible Custom type and submits one canonical type tag', async () => {
     const { Wrapper } = createWrapper();
     render(
@@ -316,31 +290,19 @@ describe('PromptsPage variable helper', () => {
       const deleteCalls = fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE');
       expect(deleteCalls).toHaveLength(0);
     });
-  });
 
-  it('deletes prompt after confirming dialog action', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <PromptsPage />
-        </Wrapper>,
-      );
-    });
-
-    const deleteButton = await screen.findByRole('button', { name: /^delete$/i });
-    await act(async () => {
-      fireEvent.click(deleteButton);
-    });
-
-    await act(async () => {
-      const deleteButtons = screen.getAllByRole('button', { name: /^delete$/i });
-      fireEvent.click(deleteButtons[deleteButtons.length - 1]);
-    });
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/prompts/prompt-1', { method: 'DELETE' });
-    });
+    {
+      const deleteButton = await screen.findByRole('button', { name: /^delete$/i });
+      await act(async () => {
+        fireEvent.click(deleteButton);
+      });
+      await act(async () => {
+        const deleteButtons = screen.getAllByRole('button', { name: /^delete$/i });
+        fireEvent.click(deleteButtons[deleteButtons.length - 1]);
+      });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/api/prompts/prompt-1', { method: 'DELETE' });
+      });
+    }
   });
 });

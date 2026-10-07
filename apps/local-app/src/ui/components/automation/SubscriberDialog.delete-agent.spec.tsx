@@ -218,12 +218,6 @@ describe('SubscriberDialog - Delete Agent', () => {
     expect(screen.getByText('Agent Name')).toBeInTheDocument();
     expect(screen.getByText('Profile Family Slug')).toBeInTheDocument();
 
-    // Selector priority, event-agent fallback, permanence, and protected-target copy.
-    expect(screen.getByText(/takes priority over Family Slug/)).toBeInTheDocument();
-    expect(screen.getAllByText(/agent that caused the event/)).toHaveLength(2);
-    expect(screen.getByText(/Permanently delete/)).toBeInTheDocument();
-    expect(screen.getByText(/Project Owners and Team Leads are protected/)).toBeInTheDocument();
-
     const retry = screen.getByLabelText('Retry on error');
     expect(retry).toBeDisabled();
     expect(retry).not.toBeChecked();

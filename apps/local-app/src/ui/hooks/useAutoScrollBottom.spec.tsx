@@ -47,17 +47,6 @@ describe('useAutoScrollBottom', () => {
     delete Element.prototype.scrollIntoView;
   });
 
-  it('initializes with isAtBottom true', () => {
-    render(<TestComponent enabled={false} triggerDep={0} />);
-    expect(screen.getByTestId('at-bottom').textContent).toBe('true');
-  });
-
-  it('provides scrollContainerRef and bottomRef', () => {
-    render(<TestComponent enabled={false} triggerDep={0} />);
-    expect(screen.getByTestId('scroll-container')).toBeInTheDocument();
-    expect(screen.getByTestId('bottom-sentinel')).toBeInTheDocument();
-  });
-
   it('calls scrollIntoView on triggerDep change when enabled and at bottom', () => {
     const { rerender } = render(<TestComponent enabled={true} triggerDep={0} />);
 
@@ -88,6 +77,7 @@ describe('useAutoScrollBottom', () => {
   it('updates isAtBottom on scroll', () => {
     render(<TestComponent enabled={false} triggerDep={0} />);
 
+    expect(screen.getByTestId('at-bottom').textContent).toBe('true');
     const container = screen.getByTestId('scroll-container');
 
     // Simulate scroll up — jsdom doesn't have real scrollHeight/clientHeight,

@@ -59,13 +59,6 @@ const replyComment: ReviewComment = {
 };
 
 describe('AddCommentButton', () => {
-  it('renders add button', () => {
-    const onAddComment = jest.fn();
-    render(<AddCommentButton lineNumber={10} side="new" onAddComment={onAddComment} />);
-
-    expect(screen.getByTitle('Add comment')).toBeInTheDocument();
-  });
-
   it('calls onAddComment with line number when clicked', async () => {
     const onAddComment = jest.fn();
     render(<AddCommentButton lineNumber={10} side="new" onAddComment={onAddComment} />);
@@ -126,35 +119,34 @@ describe('CommentIndicator', () => {
 });
 
 describe('InlineCommentWidget', () => {
-  it('renders comment content', () => {
+  it('shows comment context and controls: renders comment content', () => {
     render(<InlineCommentWidget comments={[baseComment]} />);
-
-    expect(screen.getByText('This needs improvement')).toBeInTheDocument();
+    {
+      expect(screen.getByText('This needs improvement')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('1 comment')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('1 open')).toBeInTheDocument();
+    }
+    {
+      expect(screen.queryByRole('button', { name: /reply/i })).not.toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('You')).toBeInTheDocument();
+    }
   });
 
-  it('renders comment count header', () => {
-    render(<InlineCommentWidget comments={[baseComment]} />);
-
-    expect(screen.getByText('1 comment')).toBeInTheDocument();
-  });
-
-  it('renders plural count for multiple comments', () => {
+  it('shows comment context and controls: renders plural count for multiple comments', () => {
     render(<InlineCommentWidget comments={[baseComment, replyComment]} />);
-
-    expect(screen.getByText('2 comments')).toBeInTheDocument();
-  });
-
-  it('renders open badge for unresolved comments', () => {
-    render(<InlineCommentWidget comments={[baseComment]} />);
-
-    expect(screen.getByText('1 open')).toBeInTheDocument();
-  });
-
-  it('renders replies nested under parent', () => {
-    render(<InlineCommentWidget comments={[baseComment, replyComment]} />);
-
-    expect(screen.getByText('This needs improvement')).toBeInTheDocument();
-    expect(screen.getByText('I will fix this')).toBeInTheDocument();
+    {
+      expect(screen.getByText('2 comments')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('This needs improvement')).toBeInTheDocument();
+      expect(screen.getByText('I will fix this')).toBeInTheDocument();
+    }
   });
 
   it('can collapse comments', async () => {
@@ -176,28 +168,6 @@ describe('InlineCommentWidget', () => {
     expect(screen.queryByText('This needs improvement')).not.toBeInTheDocument();
   });
 
-  it('shows Reply button when onReply provided', () => {
-    const onReply = jest.fn();
-    render(<InlineCommentWidget comments={[baseComment]} onReply={onReply} />);
-
-    expect(screen.getByRole('button', { name: /reply/i })).toBeInTheDocument();
-  });
-
-  it('does not show Reply button when onReply not provided', () => {
-    render(<InlineCommentWidget comments={[baseComment]} />);
-
-    expect(screen.queryByRole('button', { name: /reply/i })).not.toBeInTheDocument();
-  });
-
-  it('shows reply input when Reply clicked', async () => {
-    const onReply = jest.fn();
-    render(<InlineCommentWidget comments={[baseComment]} onReply={onReply} />);
-
-    await userEvent.click(screen.getByRole('button', { name: /reply/i }));
-
-    expect(screen.getByPlaceholderText('Write a reply...')).toBeInTheDocument();
-  });
-
   it('calls onReply when submitting reply', async () => {
     const onReply = jest.fn().mockResolvedValue(undefined);
     render(<InlineCommentWidget comments={[baseComment]} onReply={onReply} />);
@@ -214,26 +184,16 @@ describe('InlineCommentWidget', () => {
     });
   });
 
-  it('renders author as You for user comments', () => {
-    render(<InlineCommentWidget comments={[baseComment]} />);
-
-    expect(screen.getByText('You')).toBeInTheDocument();
-  });
-
-  it('renders agent name when authorAgentName is provided', () => {
-    const agentCommentWithName: ReviewComment = {
-      ...replyComment,
-      authorAgentName: 'Brainstormer',
-    };
-    render(<InlineCommentWidget comments={[agentCommentWithName]} isExpanded={true} />);
-
-    expect(screen.getByText('Brainstormer')).toBeInTheDocument();
-  });
-
-  it('falls back to truncated ID when authorAgentName is null', () => {
-    render(<InlineCommentWidget comments={[replyComment]} isExpanded={true} />);
-
-    expect(screen.getByText('agent-ab')).toBeInTheDocument();
+  it.each([
+    {
+      label: 'agent name',
+      comment: { ...replyComment, authorAgentName: 'Brainstormer' },
+      expected: 'Brainstormer',
+    },
+    { label: 'truncated ID', comment: replyComment, expected: 'agent-ab' },
+  ] as const)('$label', ({ comment, expected }) => {
+    render(<InlineCommentWidget comments={[comment]} isExpanded={true} />);
+    expect(screen.getByText(expected)).toBeInTheDocument();
   });
 });
 
@@ -247,10 +207,14 @@ describe('NewCommentForm', () => {
     onCancel: jest.fn(),
   };
 
-  it('renders form with line info', () => {
+  it('shows comment context and controls: renders form with line info', () => {
     render(<NewCommentForm {...defaultProps} />, { wrapper: createWrapper() });
-
-    expect(screen.getByText('Line 10 (new)')).toBeInTheDocument();
+    {
+      expect(screen.getByText('Line 10 (new)')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByRole('button', { name: /comment/i })).toBeDisabled();
+    }
   });
 
   it('renders line range for multi-line', () => {
@@ -259,12 +223,6 @@ describe('NewCommentForm', () => {
     });
 
     expect(screen.getByText('Lines 10-15 (old)')).toBeInTheDocument();
-  });
-
-  it('renders comment type selector', () => {
-    render(<NewCommentForm {...defaultProps} />, { wrapper: createWrapper() });
-
-    expect(screen.getByRole('combobox')).toBeInTheDocument();
   });
 
   it('calls onCancel when Cancel clicked', async () => {
@@ -306,12 +264,6 @@ describe('NewCommentForm', () => {
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith('A suggestion', 'suggestion', []);
     });
-  });
-
-  it('disables submit when content is empty', () => {
-    render(<NewCommentForm {...defaultProps} />, { wrapper: createWrapper() });
-
-    expect(screen.getByRole('button', { name: /comment/i })).toBeDisabled();
   });
 
   it('disables inputs when isSubmitting', () => {

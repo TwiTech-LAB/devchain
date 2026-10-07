@@ -62,6 +62,9 @@ const MAX_FILE_BYTES = 256 * 1024;
  */
 const MIN_CLAIM_UID = 500;
 const MAX_CLAIM_UID = 60000;
+/** The claiming home's primary gid, kept and dropped by the same rule as the uid. */
+const MIN_CLAIM_GID = 1;
+const MAX_CLAIM_GID = 60000;
 
 function isSemver(value) {
   return typeof value === "string" && SEMVER.test(value);
@@ -178,7 +181,15 @@ function validateClaim(body) {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     throw invalid("The claim body must be a JSON object.");
   }
-  const { userName, homePath, uid, version, port, providerAuth = {} } = body;
+  const {
+    userName,
+    homePath,
+    uid,
+    gid,
+    version,
+    port,
+    providerAuth = {},
+  } = body;
   if (typeof userName !== "string" || !USER_NAME.test(userName)) {
     throw invalid(
       "userName must be a POSIX user name (lowercase, at most 32 characters).",
@@ -191,6 +202,13 @@ function validateClaim(body) {
   const claimUid =
     uid !== undefined && uid >= MIN_CLAIM_UID && uid <= MAX_CLAIM_UID
       ? uid
+      : undefined;
+  if (gid !== undefined && !Number.isInteger(gid)) {
+    throw invalid("gid must be an integer.");
+  }
+  const claimGid =
+    gid !== undefined && gid >= MIN_CLAIM_GID && gid <= MAX_CLAIM_GID
+      ? gid
       : undefined;
   if (!isSemver(version)) throw invalid("version must be a semantic version.");
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -207,6 +225,7 @@ function validateClaim(body) {
     userName,
     homePath,
     ...(claimUid !== undefined ? { uid: claimUid } : {}),
+    ...(claimGid !== undefined ? { gid: claimGid } : {}),
     version,
     port,
     env: validateEnv(providerAuth.env),

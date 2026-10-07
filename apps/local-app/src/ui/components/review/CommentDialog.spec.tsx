@@ -87,81 +87,32 @@ describe('CommentDialog', () => {
   });
 
   describe('rendering', () => {
-    it('renders dialog with title', async () => {
+    it('shows dialog context and submission controls: renders file path and line range', async () => {
       const { Wrapper } = createWrapper();
       render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      expect(screen.getByText('New Comment')).toBeInTheDocument();
+      {
+        expect(screen.getByText('src/utils.ts:10-15 (new)')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByRole('button', { name: /post comment/i })).toBeDisabled();
+      }
     });
 
-    it('renders file path and line range', async () => {
+    it.each([
+      {
+        label: 'single line',
+        overrides: { lineStart: 10, lineEnd: 10 },
+        expected: 'src/utils.ts:10 (new)',
+      },
+      {
+        label: 'review level',
+        overrides: { filePath: null, lineStart: null, lineEnd: null, side: null },
+        expected: 'Review-level comment',
+      },
+    ] as const)('$label', ({ overrides, expected }) => {
       const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      expect(screen.getByText('src/utils.ts:10-15 (new)')).toBeInTheDocument();
-    });
-
-    it('renders single line reference', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} lineStart={10} lineEnd={10} />, { wrapper: Wrapper });
-
-      expect(screen.getByText('src/utils.ts:10 (new)')).toBeInTheDocument();
-    });
-
-    it('renders review-level comment when no file', async () => {
-      const { Wrapper } = createWrapper();
-      render(
-        <CommentDialog
-          {...defaultProps}
-          filePath={null}
-          lineStart={null}
-          lineEnd={null}
-          side={null}
-        />,
-        { wrapper: Wrapper },
-      );
-
-      expect(screen.getByText('Review-level comment')).toBeInTheDocument();
-    });
-
-    it('renders comment type selector', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      expect(screen.getByText('Comment Type')).toBeInTheDocument();
-      expect(screen.getByRole('combobox')).toBeInTheDocument();
-    });
-
-    it('renders Write and Preview tabs', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      expect(screen.getByRole('tab', { name: /write/i })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /preview/i })).toBeInTheDocument();
-    });
-
-    it('renders textarea for content', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      expect(screen.getByPlaceholderText(/write your comment/i)).toBeInTheDocument();
-    });
-
-    it('renders agent assignment section', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      expect(screen.getByText(/assign to agents/i)).toBeInTheDocument();
-      expect(await screen.findByRole('button', { name: 'Assign to Coder' })).toBeInTheDocument();
-      expect(screen.queryByPlaceholderText(/search agents/i)).not.toBeInTheDocument();
-    });
-
-    it('renders Cancel and Post Comment buttons', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /post comment/i })).toBeInTheDocument();
+      render(<CommentDialog {...defaultProps} {...overrides} />, { wrapper: Wrapper });
+      expect(screen.getByText(expected)).toBeInTheDocument();
     });
   });
 
@@ -182,16 +133,6 @@ describe('CommentDialog', () => {
   });
 
   describe('markdown editor', () => {
-    it('can type content in textarea', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      const textarea = screen.getByPlaceholderText(/write your comment/i);
-      await userEvent.type(textarea, 'Test comment');
-
-      expect(textarea).toHaveValue('Test comment');
-    });
-
     it('shows preview when Preview tab clicked', async () => {
       const { Wrapper } = createWrapper();
       render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
@@ -342,13 +283,6 @@ describe('CommentDialog', () => {
   });
 
   describe('form submission', () => {
-    it('disables Post Comment when content is empty', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
-
-      expect(screen.getByRole('button', { name: /post comment/i })).toBeDisabled();
-    });
-
     it('enables Post Comment when content is entered', async () => {
       const { Wrapper } = createWrapper();
       render(<CommentDialog {...defaultProps} />, { wrapper: Wrapper });
@@ -393,18 +327,15 @@ describe('CommentDialog', () => {
       });
     });
 
-    it('shows Posting... when isSubmitting', async () => {
+    it('shows dialog context and submission controls: shows Posting... when isSubmitting', async () => {
       const { Wrapper } = createWrapper();
       render(<CommentDialog {...defaultProps} isSubmitting={true} />, { wrapper: Wrapper });
-
-      expect(screen.getByText('Posting...')).toBeInTheDocument();
-    });
-
-    it('disables inputs when isSubmitting', async () => {
-      const { Wrapper } = createWrapper();
-      render(<CommentDialog {...defaultProps} isSubmitting={true} />, { wrapper: Wrapper });
-
-      expect(screen.getByPlaceholderText(/write your comment/i)).toBeDisabled();
+      {
+        expect(screen.getByText('Posting...')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByPlaceholderText(/write your comment/i)).toBeDisabled();
+      }
     });
   });
 

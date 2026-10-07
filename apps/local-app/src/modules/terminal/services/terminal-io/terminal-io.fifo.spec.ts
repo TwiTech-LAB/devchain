@@ -322,6 +322,7 @@ describe('TerminalIOService pane FIFO', () => {
   );
 
   it('retains ownership through the send gap and defers changed input without mutation', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
     const { executor, promptState, service } = makeService();
     await service.deliver({ name: 'pane-a' }, 'prime gap', {
       agentId: 'agent-a',
@@ -345,12 +346,14 @@ describe('TerminalIOService pane FIFO', () => {
     expect(promptState.getState('pane-a').phase).toBe('awaiting_stable_idle');
     promptState.recordExecutedInput('pane-a');
 
+    await jest.advanceTimersByTimeAsync(500);
     await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
     expect(executor.calls.slice(callCountBeforeGuard).map((call) => call.argv[1])).toEqual([
       'load-buffer',
       'delete-buffer',
     ]);
     expect(promptState.getState('pane-a').phase).toBe('awaiting_stable_idle');
+    jest.useRealTimers();
   });
 
   it('rechecks the full quiet snapshot after queued navigation reaches the FIFO head', async () => {
@@ -456,11 +459,14 @@ describe('TerminalIOService pane FIFO', () => {
       };
     }
 
-    it('succeeds for awaiting_stable_idle and transitions to inactive', async () => {
+    it.each(['awaiting_stable_idle', 'inactive'])('delivers force input from %s', async (phase) => {
       const { executor, promptState, service } = makeService();
-      const draft = promptState.recordPromptText('pane-a');
-      promptState.transitionToAwaiting('pane-a', draft.generation);
+      if (phase === 'awaiting_stable_idle') {
+        const draft = promptState.recordPromptText('pane-a');
+        promptState.transitionToAwaiting('pane-a', draft.generation);
+      }
       const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+      expect(forceSnapshot.phase).toBe(phase);
       const claimState = { phase: 'preparing' };
 
       const result = await service.deliverGuarded(
@@ -476,71 +482,39 @@ describe('TerminalIOService pane FIFO', () => {
       expect(executor.calls[0].input).toContain('force-delivered');
     });
 
-    it('succeeds for inactive phase and keeps it inactive', async () => {
-      const { executor, promptState, service } = makeService();
-      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
-      expect(forceSnapshot.phase).toBe('inactive');
-      const claimState = { phase: 'preparing' };
+    it.each(['awaiting_stable_idle', 'inactive'])(
+      'defers force input when typing interrupts %s',
+      async (phase) => {
+        const { executor, promptState, service } = makeService();
+        if (phase === 'awaiting_stable_idle') {
+          const draft = promptState.recordPromptText('pane-a');
+          promptState.transitionToAwaiting('pane-a', draft.generation);
+        }
+        const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
+        expect(forceSnapshot.phase).toBe(phase);
+        const claimState = { phase: 'preparing' };
+        const load = executor.holdInput('force-held');
 
-      const result = await service.deliverGuarded(
-        { name: 'pane-a' },
-        'force-inactive',
-        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
-        undefined,
-        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
-      );
+        const guarded = service.deliverGuarded(
+          { name: 'pane-a' },
+          'force-held',
+          { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
+          undefined,
+          makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
+        );
+        await load.started;
 
-      expect(result).toEqual(expect.objectContaining({ confirmed: true }));
-      expect(promptState.getState('pane-a').phase).toBe('inactive');
-      expect(executor.calls[0].input).toContain('force-inactive');
-    });
+        promptState.recordPromptText('pane-a');
+        load.release();
 
-    it('defers when typing is injected after buffer prep for awaiting_stable_idle', async () => {
-      const { executor, promptState, service } = makeService();
-      const draft = promptState.recordPromptText('pane-a');
-      promptState.transitionToAwaiting('pane-a', draft.generation);
-      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
-      const claimState = { phase: 'preparing' };
-      const load = executor.holdInput('force-held');
-
-      const guarded = service.deliverGuarded(
-        { name: 'pane-a' },
-        'force-held',
-        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
-        undefined,
-        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
-      );
-      await load.started;
-
-      promptState.recordPromptText('pane-a');
-      load.release();
-
-      await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
-      expect(executor.calls.map((call) => call.argv[1])).toEqual(['load-buffer', 'delete-buffer']);
-      expect(promptState.getState('pane-a').phase).toBe('draft_active');
-    });
-
-    it('defers when typing is injected after buffer prep for inactive', async () => {
-      const { executor, promptState, service } = makeService();
-      const forceSnapshot = promptState.getForceSnapshot('pane-a')!;
-      const claimState = { phase: 'preparing' };
-      const load = executor.holdInput('force-inactive-held');
-
-      const guarded = service.deliverGuarded(
-        { name: 'pane-a' },
-        'force-inactive-held',
-        { agentId: 'agent-a', confirm: false, postPasteDelayMs: 0 },
-        undefined,
-        makeForceFence(promptState, 'pane-a', forceSnapshot, claimState),
-      );
-      await load.started;
-
-      promptState.recordPromptText('pane-a');
-      load.release();
-
-      await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
-      expect(executor.calls.map((call) => call.argv[1])).toEqual(['load-buffer', 'delete-buffer']);
-    });
+        await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
+        expect(executor.calls.map((call) => call.argv[1])).toEqual([
+          'load-buffer',
+          'delete-buffer',
+        ]);
+        expect(promptState.getState('pane-a').phase).toBe('draft_active');
+      },
+    );
 
     it('defers when executedInputEpoch changes after buffer prep', async () => {
       const { promptState, service } = makeService();

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { PreviousSessionsTable } from './PreviousSessionsTable';
 import type { SessionHistoryItem } from '@/ui/hooks/useAgentSessionHistory';
 
@@ -179,40 +179,23 @@ describe('PreviousSessionsTable', () => {
     expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
   });
 
-  it('calls goNext when Next button is clicked', () => {
-    const goNext = jest.fn();
-    const items = [makeItem()];
+  it.each(['next', 'prev'] as const)('calls go%s from pagination', (direction) => {
+    const callback = jest.fn();
     mockUseAgentSessionHistory.mockReturnValue(
       defaultHookReturn({
-        items,
+        items: [makeItem()],
         total: 5,
-        currentPage: 1,
+        currentPage: direction === 'next' ? 1 : 2,
         totalPages: 3,
-        hasNext: true,
-        goNext,
+        hasNext: direction === 'next',
+        hasPrev: direction === 'prev',
+        goNext: direction === 'next' ? callback : jest.fn(),
+        goPrev: direction === 'prev' ? callback : jest.fn(),
       }),
     );
     render(<PreviousSessionsTable {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /next/i }));
-    expect(goNext).toHaveBeenCalledTimes(1);
-  });
-
-  it('calls goPrev when Prev button is clicked', () => {
-    const goPrev = jest.fn();
-    const items = [makeItem()];
-    mockUseAgentSessionHistory.mockReturnValue(
-      defaultHookReturn({
-        items,
-        total: 5,
-        currentPage: 2,
-        totalPages: 3,
-        hasPrev: true,
-        goPrev,
-      }),
-    );
-    render(<PreviousSessionsTable {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /prev/i }));
-    expect(goPrev).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(direction, 'i') }));
+    expect(callback).toHaveBeenCalledTimes(1);
   });
 
   it('disables Prev on page 1 and Next on last page', () => {
@@ -247,20 +230,18 @@ describe('PreviousSessionsTable', () => {
     expect(onRestore).toHaveBeenCalledWith(sessionId);
   });
 
-  it('disables Restore button when providerSessionId is null', () => {
-    const items = [makeItem({ providerSessionId: null })];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} />);
-    const btn = screen.getByRole('button', { name: /cannot restore/i });
-    expect(btn).toBeDisabled();
-  });
-
-  it('disables Restore button when provider has changed', () => {
-    const items = [makeItem({ providerSessionId: 'prov-1', providerNameAtLaunch: 'claude' })];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} currentProviderName="codex" />);
-    const btn = screen.getByRole('button', { name: /cannot restore/i });
-    expect(btn).toBeDisabled();
+  it.each([
+    { name: 'missing provider session', providerSessionId: null, provider: 'claude' },
+    { name: 'changed provider', providerSessionId: 'prov-1', provider: 'codex' },
+  ])('blocks restore for $name', ({ providerSessionId, provider }) => {
+    mockUseAgentSessionHistory.mockReturnValue(
+      defaultHookReturn({
+        items: [makeItem({ providerSessionId, providerNameAtLaunch: 'claude' })],
+        total: 1,
+      }),
+    );
+    render(<PreviousSessionsTable {...defaultProps} currentProviderName={provider} />);
+    expect(screen.getByRole('button', { name: /cannot restore/i })).toBeDisabled();
   });
 
   it('enables Restore button when provider names match case-insensitively (Claude vs claude)', () => {
@@ -294,32 +275,24 @@ describe('PreviousSessionsTable', () => {
   // Inline rename
   // -----------------------------------------------------------------------
 
-  it('shows short ID when name is null', () => {
-    const items = [makeItem({ id: '00000000-0000-0000-0000-000000000001', name: null })];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} />);
-    expect(screen.getByText('00000000…0001')).toBeInTheDocument();
-  });
-
-  it('shows provider session ID when captured', () => {
-    const items = [
-      makeItem({
-        id: '00000000-0000-0000-0000-000000000001',
-        providerSessionId: '019e210d-408b-7c42-a48a-6854a9ce161a',
-        name: null,
+  it.each([
+    { name: null, providerSessionId: null, label: '00000000…0001' },
+    {
+      name: null,
+      providerSessionId: '019e210d-408b-7c42-a48a-6854a9ce161a',
+      label: '019e210d…161a',
+    },
+    { name: 'My Session', providerSessionId: null, label: 'My Session' },
+  ])('labels session with $label', ({ name, providerSessionId, label }) => {
+    mockUseAgentSessionHistory.mockReturnValue(
+      defaultHookReturn({
+        items: [makeItem({ id: '00000000-0000-0000-0000-000000000001', name, providerSessionId })],
+        total: 1,
       }),
-    ];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
+    );
     render(<PreviousSessionsTable {...defaultProps} />);
-    expect(screen.getByText('019e210d…161a')).toBeInTheDocument();
-    expect(screen.queryByText('00000000…0001')).not.toBeInTheDocument();
-  });
-
-  it('shows name when set', () => {
-    const items = [makeItem({ id: '00000000-0000-0000-0000-000000000001', name: 'My Session' })];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} />);
-    expect(screen.getByText('My Session')).toBeInTheDocument();
+    expect(screen.getByText(label)).toBeInTheDocument();
+    if (providerSessionId) expect(screen.queryByText('00000000…0001')).not.toBeInTheDocument();
   });
 
   it('clicking session cell opens inline input for rename', () => {
@@ -348,48 +321,26 @@ describe('PreviousSessionsTable', () => {
   // Copy session ID button
   // -----------------------------------------------------------------------
 
-  it('renders Copy button in every row', () => {
-    const items = [makeItem()];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} />);
-    expect(screen.getByRole('button', { name: /copy session id/i })).toBeInTheDocument();
-  });
-
-  it('copies full UUID to clipboard on click', async () => {
-    const writeText = jest.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
-    const items = [makeItem({ id: 'full-uuid-1234' })];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /copy session id/i }));
-    expect(writeText).toHaveBeenCalledWith('full-uuid-1234');
-  });
-
-  it('copies provider session ID when captured', async () => {
-    const writeText = jest.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
-    const items = [
-      makeItem({
-        id: 'devchain-session-id',
-        providerSessionId: 'provider-session-id',
-      }),
-    ];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /copy session id/i }));
-    expect(writeText).toHaveBeenCalledWith('provider-session-id');
-  });
+  it.each([null, 'provider-session-id'])(
+    'copies provider session=%s',
+    async (providerSessionId) => {
+      const writeText = jest.fn().mockResolvedValue(undefined);
+      Object.assign(navigator, { clipboard: { writeText } });
+      mockUseAgentSessionHistory.mockReturnValue(
+        defaultHookReturn({
+          items: [makeItem({ id: 'devchain-session-id', providerSessionId })],
+          total: 1,
+        }),
+      );
+      render(<PreviousSessionsTable {...defaultProps} />);
+      fireEvent.click(screen.getByRole('button', { name: /copy session id/i }));
+      expect(writeText).toHaveBeenCalledWith(providerSessionId ?? 'devchain-session-id');
+    },
+  );
 
   // -----------------------------------------------------------------------
   // Delete session record
   // -----------------------------------------------------------------------
-
-  it('renders Delete button in every row', () => {
-    const items = [makeItem()];
-    mockUseAgentSessionHistory.mockReturnValue(defaultHookReturn({ items, total: 1 }));
-    render(<PreviousSessionsTable {...defaultProps} />);
-    expect(screen.getByRole('button', { name: /delete session record/i })).toBeInTheDocument();
-  });
 
   it('opens confirmation dialog when Delete button is clicked', () => {
     const items = [makeItem()];
@@ -417,68 +368,31 @@ describe('PreviousSessionsTable', () => {
   // old stale-closure goToPageOnDelete().
   // -----------------------------------------------------------------------
 
-  it('calls goPrev when deleting sole row on page 2+', async () => {
-    const goPrev = jest.fn();
-    const item = makeItem({ id: 'sole-item-on-page-2' });
-    mockUseAgentSessionHistory.mockReturnValue(
-      defaultHookReturn({
-        items: [item],
-        total: 21,
-        currentPage: 2,
-        totalPages: 2,
-        hasPrev: true,
-        goPrev,
-      }),
-    );
-    render(<PreviousSessionsTable {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /delete session record/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
-
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(goPrev).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not call goPrev when deleting a row on page 1', async () => {
-    const goPrev = jest.fn();
-    const item = makeItem({ id: 'item-on-page-1' });
-    mockUseAgentSessionHistory.mockReturnValue(
-      defaultHookReturn({
-        items: [item],
-        total: 1,
-        currentPage: 1,
-        totalPages: 1,
-        goPrev,
-      }),
-    );
-    render(<PreviousSessionsTable {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /delete session record/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
-
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(goPrev).not.toHaveBeenCalled();
-  });
-
-  it('does not call goPrev when deleting a non-last row on page 2+', async () => {
-    const goPrev = jest.fn();
-    const items = [makeItem({ id: 'item-a' }), makeItem({ id: 'item-b' })];
-    mockUseAgentSessionHistory.mockReturnValue(
-      defaultHookReturn({
-        items,
-        total: 22,
-        currentPage: 2,
-        totalPages: 2,
-        hasPrev: true,
-        goPrev,
-      }),
-    );
-    render(<PreviousSessionsTable {...defaultProps} />);
-    fireEvent.click(screen.getAllByRole('button', { name: /delete session record/i })[0]);
-    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
-
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(goPrev).not.toHaveBeenCalled();
-  });
+  it.each([
+    { page: 2, count: 1, calls: 1 },
+    { page: 1, count: 1, calls: 0 },
+    { page: 2, count: 2, calls: 0 },
+  ])(
+    'moves previous page after deletion on page=$page count=$count',
+    async ({ page, count, calls }) => {
+      const goPrev = jest.fn();
+      mockUseAgentSessionHistory.mockReturnValue(
+        defaultHookReturn({
+          items: Array.from({ length: count }, (_, i) => makeItem({ id: 'item-' + i })),
+          total: page === 1 ? 1 : 20 + count,
+          currentPage: page,
+          totalPages: page,
+          hasPrev: page > 1,
+          goPrev,
+        }),
+      );
+      render(<PreviousSessionsTable {...defaultProps} />);
+      fireEvent.click(screen.getAllByRole('button', { name: /delete session record/i })[0]);
+      fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(goPrev).toHaveBeenCalledTimes(calls);
+    },
+  );
 });

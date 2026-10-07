@@ -139,26 +139,13 @@ describe('MessageFiltersPanel', () => {
     fetchMock.mockReset();
   });
 
-  it('renders all filter controls', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageFiltersPanel projectId="project-1" filters={{}} onChange={jest.fn()} />
-        </Wrapper>,
-      );
-    });
-
-    expect(screen.getByLabelText('Filter by status')).toBeInTheDocument();
-    expect(screen.getByLabelText('Filter by agent')).toBeInTheDocument();
-    expect(screen.getByLabelText('Filter by source')).toBeInTheDocument();
-  });
-
-  it('calls onChange when status filter changes', async () => {
+  it.each([
+    ['status', 'Filter by status', 'queued'],
+    ['agentId', 'Filter by agent', 'agent-1'],
+    ['source', 'Filter by source', 'epic.assigned'],
+  ])('updates %s filter', async (key, label, value) => {
     const onChange = jest.fn();
     const { Wrapper } = createWrapper();
-
     await act(async () => {
       render(
         <Wrapper>
@@ -166,51 +153,12 @@ describe('MessageFiltersPanel', () => {
         </Wrapper>,
       );
     });
-
-    const statusSelect = screen.getByLabelText('Filter by status');
-    fireEvent.change(statusSelect, { target: { value: 'delivered' } });
-
-    expect(onChange).toHaveBeenCalledWith({ status: 'delivered' });
-  });
-
-  it('calls onChange when agent filter changes', async () => {
-    const onChange = jest.fn();
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageFiltersPanel projectId="project-1" filters={{}} onChange={onChange} />
-        </Wrapper>,
+    if (key === 'agentId')
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/agents'), undefined),
       );
-    });
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/agents'), undefined);
-    });
-
-    const agentSelect = screen.getByLabelText('Filter by agent');
-    fireEvent.change(agentSelect, { target: { value: 'agent-1' } });
-
-    expect(onChange).toHaveBeenCalledWith({ agentId: 'agent-1' });
-  });
-
-  it('calls onChange when source filter changes', async () => {
-    const onChange = jest.fn();
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageFiltersPanel projectId="project-1" filters={{}} onChange={onChange} />
-        </Wrapper>,
-      );
-    });
-
-    const sourceSelect = screen.getByLabelText('Filter by source');
-    fireEvent.change(sourceSelect, { target: { value: 'epic.assigned' } });
-
-    expect(onChange).toHaveBeenCalledWith({ source: 'epic.assigned' });
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    expect(onChange).toHaveBeenCalledWith({ [key]: value });
   });
 
   it('clears status filter when "all" is selected', async () => {
@@ -235,36 +183,21 @@ describe('MessageFiltersPanel', () => {
     expect(onChange).toHaveBeenCalledWith({ status: undefined });
   });
 
-  it('shows clear button when filters are active', async () => {
+  it.each([true, false])('shows Clear with active=%s', async (active) => {
     const { Wrapper } = createWrapper();
-
     await act(async () => {
       render(
         <Wrapper>
           <MessageFiltersPanel
             projectId="project-1"
-            filters={{ status: 'queued' }}
+            filters={active ? { status: 'queued' } : {}}
             onChange={jest.fn()}
           />
         </Wrapper>,
       );
     });
-
-    expect(screen.getByRole('button', { name: /clear/i })).toBeInTheDocument();
-  });
-
-  it('hides clear button when no filters are active', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageFiltersPanel projectId="project-1" filters={{}} onChange={jest.fn()} />
-        </Wrapper>,
-      );
-    });
-
-    expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument();
+    if (active) expect(screen.getByRole('button', { name: /clear/i })).toBeInTheDocument();
+    else expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument();
   });
 
   it('clears all filters when clear button is clicked', async () => {
@@ -353,41 +286,5 @@ describe('MessageFiltersPanel', () => {
     expect(sourceSelect).toContainHTML('mcp.send_message');
     expect(sourceSelect).toContainHTML('subscriber.action');
     expect(sourceSelect).toContainHTML('pool.failure_notice');
-  });
-
-  it('calls onChange with subscriber.action source', async () => {
-    const onChange = jest.fn();
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageFiltersPanel projectId="project-1" filters={{}} onChange={onChange} />
-        </Wrapper>,
-      );
-    });
-
-    const sourceSelect = screen.getByLabelText('Filter by source');
-    fireEvent.change(sourceSelect, { target: { value: 'subscriber.action' } });
-
-    expect(onChange).toHaveBeenCalledWith({ source: 'subscriber.action' });
-  });
-
-  it('calls onChange with pool.failure_notice source', async () => {
-    const onChange = jest.fn();
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageFiltersPanel projectId="project-1" filters={{}} onChange={onChange} />
-        </Wrapper>,
-      );
-    });
-
-    const sourceSelect = screen.getByLabelText('Filter by source');
-    fireEvent.change(sourceSelect, { target: { value: 'pool.failure_notice' } });
-
-    expect(onChange).toHaveBeenCalledWith({ source: 'pool.failure_notice' });
   });
 });

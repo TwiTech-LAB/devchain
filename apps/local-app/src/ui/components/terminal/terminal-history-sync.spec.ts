@@ -4,26 +4,14 @@ const eligibleInput = { connected: true, subscribed: true };
 
 describe('createTerminalHistorySync', () => {
   describe('provider refresh capability', () => {
-    it('adopts refreshable first-non-undefined-wins and ignores later values', () => {
+    it.each([true, false])('keeps first defined refreshable=%s', (refreshable) => {
       const sync = createTerminalHistorySync();
       expect(sync.isRefreshable()).toBe(false);
-
       sync.adoptRefreshable(undefined);
       expect(sync.isRefreshable()).toBe(false);
-
-      sync.adoptRefreshable(true);
-      expect(sync.isRefreshable()).toBe(true);
-
-      // A later ack cannot flip an already-adopted capability.
-      sync.adoptRefreshable(false);
-      expect(sync.isRefreshable()).toBe(true);
-    });
-
-    it('adopts a first false and holds it', () => {
-      const sync = createTerminalHistorySync();
-      sync.adoptRefreshable(false);
-      sync.adoptRefreshable(true);
-      expect(sync.isRefreshable()).toBe(false);
+      sync.adoptRefreshable(refreshable);
+      sync.adoptRefreshable(!refreshable);
+      expect(sync.isRefreshable()).toBe(refreshable);
     });
 
     it('re-adopts after reset (disposal / sessionId change)', () => {
@@ -213,6 +201,8 @@ describe('createTerminalHistorySync', () => {
   describe('reset', () => {
     it('clears all per-session state', () => {
       const sync = createTerminalHistorySync();
+      sync.reconcileEpoch('epoch-A');
+      expect(sync.getSequenceEpoch()).toBe('epoch-A');
       sync.adoptRefreshable(true);
       sync.settle();
       sync.setSnapshotHasMore(true);
@@ -229,15 +219,6 @@ describe('createTerminalHistorySync', () => {
       expect(sync.getAcceptedSnapshotSequence()).toBeNull();
       expect(sync.hasActiveAttempt()).toBe(false);
       expect(sync.isDirty()).toBe(true);
-    });
-
-    it('clears the sequence-domain epoch', () => {
-      const sync = createTerminalHistorySync();
-      sync.reconcileEpoch('epoch-A');
-      expect(sync.getSequenceEpoch()).toBe('epoch-A');
-
-      sync.reset();
-
       expect(sync.getSequenceEpoch()).toBeNull();
     });
   });

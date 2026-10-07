@@ -22,18 +22,8 @@ export const CONDITION_TYPE_LABELS: Record<ConditionType, string> = {
   not_contains: 'Not Contains',
 };
 
-export const CONDITION_TYPE_DESCRIPTIONS: Record<ConditionType, string> = {
-  contains: 'Triggers when terminal output contains the pattern',
-  regex: 'Triggers when terminal output matches a regular expression',
-  not_contains: 'Triggers when terminal output does not contain the pattern',
-};
-
 export function getConditionTypeLabel(type: ConditionType): string {
   return CONDITION_TYPE_LABELS[type];
-}
-
-export function getConditionTypeDescription(type: ConditionType): string {
-  return CONDITION_TYPE_DESCRIPTIONS[type];
 }
 
 export interface Watcher {

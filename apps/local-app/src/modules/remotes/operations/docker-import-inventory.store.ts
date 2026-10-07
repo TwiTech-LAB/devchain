@@ -91,6 +91,24 @@ export function vmImageCandidates(
   return [...new Set([homeId, ...paired])];
 }
 
+/**
+ * The file-sync exclusions that a Connect installs: the plan's data folders, plus earlier
+ * imports' unselected data, which stays on the VM, except paths that file sync now carries.
+ */
+export function connectExclusions(
+  plan: { managedExclusions: readonly string[]; codePaths: readonly string[] },
+  inventory: DockerImportInventory | null,
+): string[] {
+  return [
+    ...new Set([
+      ...plan.managedExclusions,
+      ...(inventory?.items
+        .flatMap((item) => item.bindPaths)
+        .filter((path) => !plan.codePaths.includes(path)) ?? []),
+    ]),
+  ];
+}
+
 @Injectable()
 export class DockerImportInventoryStore {
   private readonly sqlite: Database.Database;

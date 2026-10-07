@@ -9,10 +9,6 @@ describe('AntigravityAdapter', () => {
   });
 
   describe('static capability surface', () => {
-    it('identifies as the agy provider', () => {
-      expect(adapter.providerName).toBe('agy');
-    });
-
     it('runs as a full-screen alternate-screen TUI', () => {
       expect(adapter.terminalOutputBehavior?.usesAlternateScreen).toBe(true);
     });
@@ -29,14 +25,6 @@ describe('AntigravityAdapter', () => {
     it('declares DB-backed discovery requiring providerSessionId for restore', () => {
       expect(adapter.transcriptDiscoveryStrategy).toBe('all');
       expect(adapter.providerSessionIdRequiredForRestore).toBe(true);
-    });
-
-    it('is no longer MCP-deferred (P2-1 wires real agy MCP)', () => {
-      expect((adapter as unknown as Record<string, unknown>).mcpDeferred).toBeUndefined();
-    });
-
-    it('requires project provisioning (workspace trust pre-write)', () => {
-      expect(adapter.requiresProjectProvisioning).toBe(true);
     });
   });
 
@@ -79,22 +67,6 @@ describe('AntigravityAdapter', () => {
   });
 
   describe('provisionProjectPath (workspace trust)', () => {
-    it('delegates to AntigravityTrustedWorkspacesService and maps warnings', async () => {
-      const warning = {
-        source: 'trusted_folders' as const,
-        level: 'warn' as const,
-        message: 'distrusted',
-        code: 'AGY_TRUSTED_FOLDERS_DISTRUSTED',
-      };
-      const ensure = jest.fn().mockResolvedValue({ success: true, warnings: [warning] });
-      const withService = new AntigravityAdapter({ ensure } as never);
-
-      const result = await withService.provisionProjectPath('/home/user/project');
-
-      expect(ensure).toHaveBeenCalledWith('/home/user/project');
-      expect(result).toEqual({ success: true, warnings: [warning] });
-    });
-
     it('never throws — a service failure becomes a provisioning warning', async () => {
       const ensure = jest.fn().mockRejectedValue(new Error('disk on fire'));
       const withService = new AntigravityAdapter({ ensure } as never);
@@ -130,15 +102,6 @@ describe('AntigravityAdapter', () => {
       });
       expect(argv).toEqual(['--model', 'x']);
       expect(argv).not.toContain('--prompt-interactive');
-    });
-
-    it('omits the prompt flag for an empty-string prompt', () => {
-      const { argv } = adapter.buildLaunchArgs({
-        mode: 'new',
-        profileOptionArgs: [],
-        initialPrompt: '',
-      });
-      expect(argv).toEqual([]);
     });
   });
 

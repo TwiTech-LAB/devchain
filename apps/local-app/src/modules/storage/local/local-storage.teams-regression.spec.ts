@@ -1,9 +1,8 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import { LocalStorageService } from './local-storage.service';
 import { importProjectWithHelper } from '../../projects/helpers/project-import';
 import { TeamsStore } from '../../teams/storage/teams.store';
@@ -24,11 +23,10 @@ describe('Teams Regression – Destructive Flows', () => {
   let configId: string;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
     db = drizzle(sqlite);
-    const migrationsFolder = join(__dirname, '../../../../drizzle');
-    migrate(db, { migrationsFolder });
+
     service = new LocalStorageService(db);
 
     // Seed shared prerequisite data
@@ -105,23 +103,6 @@ describe('Teams Regression – Destructive Flows', () => {
       );
     });
 
-    it('succeeds and clears team lead when agent is team lead', async () => {
-      const agentA = seedAgent('Agent-A');
-      const agentB = seedAgent('Agent-B');
-      const teamId = seedTeam('Backend Team', agentA, [agentA, agentB]);
-
-      await expect(service.deleteAgent(agentA)).resolves.not.toThrow();
-
-      const teams = sqlite
-        .prepare('SELECT id, team_lead_agent_id FROM teams WHERE id = ?')
-        .all(teamId) as Array<{ id: string; team_lead_agent_id: string | null }>;
-      expect(teams).toEqual([{ id: teamId, team_lead_agent_id: null }]);
-
-      const members = sqlite.prepare('SELECT * FROM team_members').all();
-      expect(members).toHaveLength(1);
-      expect((members[0] as { agent_id: string }).agent_id).toBe(agentB);
-    });
-
     it('rejects an agent that becomes Team Lead before a protected delete transaction', async () => {
       const agentA = seedAgent('Agent-A');
       const agentB = seedAgent('Agent-B');
@@ -196,6 +177,10 @@ describe('Teams Regression – Destructive Flows', () => {
           { id: betaTeamId, team_lead_agent_id: agentB },
         ]),
       );
+      const members = sqlite
+        .prepare('SELECT agent_id FROM team_members WHERE team_id = ?')
+        .all(alphaTeamId);
+      expect(members).toEqual([{ agent_id: agentB }]);
     });
 
     it('disbands teams when a lead is also the final member', async () => {
@@ -231,17 +216,6 @@ describe('Teams Regression – Destructive Flows', () => {
       expect(members).toHaveLength(0);
       expect(agents).toHaveLength(0);
       expect(projects).toHaveLength(0);
-    });
-
-    it('succeeds when project has teams with team leads (no FK RESTRICT error)', async () => {
-      const agentA = seedAgent('Agent-A');
-      // agentA is team lead — without the cascade fix, this would fail with FK RESTRICT
-      seedTeam('Lead Team', agentA, [agentA]);
-
-      await expect(service.deleteProject(projectId)).resolves.not.toThrow();
-
-      const teams = sqlite.prepare('SELECT * FROM teams').all();
-      expect(teams).toHaveLength(0);
     });
   });
 

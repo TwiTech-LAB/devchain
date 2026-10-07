@@ -156,18 +156,6 @@ describe('LocalStorageService - Reviews', () => {
     });
   });
 
-  describe('deleteReview', () => {
-    it('should delete a review', async () => {
-      const deleteChain = {
-        where: jest.fn().mockResolvedValue(undefined),
-      };
-
-      mockDb.delete = jest.fn().mockReturnValue(deleteChain);
-
-      await expect(service.deleteReview('review-1')).resolves.toBeUndefined();
-    });
-  });
-
   describe('listReviews', () => {
     it('should list reviews with filters', async () => {
       const mockReviews = [

@@ -8,7 +8,7 @@ import {
   MessageBody,
   WsException,
 } from '@nestjs/websockets';
-import { Injectable, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
+import { Injectable, Inject, Optional, forwardRef, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Server, Socket } from 'socket.io';
 import { createHash } from 'node:crypto';
@@ -73,6 +73,8 @@ interface ClientSession {
 }
 
 const HEARTBEAT_INTERVAL = 30000;
+export const TERMINAL_SEED_SETTLE_MS = Symbol('TERMINAL_SEED_SETTLE_MS');
+
 const HEARTBEAT_TIMEOUT = 45000;
 
 // Coalescing window for viewport-mode-restore redraws: collapses simultaneous viewers'
@@ -202,6 +204,9 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly realtimeBroadcast: RealtimeBroadcastService,
     private readonly sendScheduler: TerminalSendSchedulerService,
     private readonly metricsService: MetricsService,
+    @Optional()
+    @Inject(TERMINAL_SEED_SETTLE_MS)
+    private readonly seedSettleMs: number = 50,
   ) {
     // The stopped-session replay-retention timer is owned by TerminalStreamService (the FrameBuffer
     // owner). Register the gateway-owned expiry side effect — retiring in-flight recoveries bound to
@@ -365,7 +370,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.ptyService.resize(sessionId, cols, rows);
       if (isSeedAttach) {
         this.seedService.invalidateCache(sessionId);
-        await new Promise((r) => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, this.seedSettleMs));
       }
     }
 

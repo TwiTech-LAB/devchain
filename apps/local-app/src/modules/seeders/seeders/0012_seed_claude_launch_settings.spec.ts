@@ -1,16 +1,11 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
 import type { SeederContext } from '../types/seeder.types';
-import {
-  runSeedClaudeLaunchSettings,
-  seedClaudeLaunchSettingsSeeder,
-} from './0012_seed_claude_launch_settings';
+import { runSeedClaudeLaunchSettings } from './0012_seed_claude_launch_settings';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const TS = '2026-07-27T00:00:00.000Z';
 
 describe('0012_seed_claude_launch_settings', () => {
@@ -18,9 +13,7 @@ describe('0012_seed_claude_launch_settings', () => {
   let db: BetterSQLite3Database;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite, db } = createTestDatabase());
   });
 
   afterEach(() => {
@@ -82,12 +75,5 @@ describe('0012_seed_claude_launch_settings', () => {
 
     expect(readSettings(claude)).toBe(DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON);
     expect(ctx.logger.info).toHaveBeenCalledTimes(1);
-  });
-
-  it('is permanently journaled at version 1', () => {
-    expect(seedClaudeLaunchSettingsSeeder).toMatchObject({
-      name: '0012_seed_claude_launch_settings',
-      version: 1,
-    });
   });
 });

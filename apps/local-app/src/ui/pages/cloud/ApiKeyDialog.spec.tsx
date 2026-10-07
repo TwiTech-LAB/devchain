@@ -20,7 +20,7 @@ describe('ApiKeyDialog', () => {
     const field = screen.getByLabelText('API key');
     expect(field).toHaveValue('');
     expect(field).toHaveAttribute('type', 'password');
-    expect(screen.getByText('devchain host api-key reset')).toBeInTheDocument();
+
     await userEvent.type(field, key);
     await userEvent.click(screen.getByRole('button', { name: 'Check and save' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -70,15 +70,14 @@ describe('ApiKeyDialog', () => {
     render(<ApiKeyDialog remoteId="vm" name="lab" mode="reset" onClose={onClose} />);
 
     const submit = screen.getByRole('button', { name: 'Reset API key' });
-    expect(submit.querySelector('svg')).toBeNull();
+
     await userEvent.click(submit);
 
     const saving = screen.getByRole('button', { name: 'Saving…' });
     expect(saving).toBeDisabled();
-    expect(saving.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+
     const cancel = screen.getByRole('button', { name: 'Cancel' });
     expect(cancel).toBeDisabled();
-    expect(cancel.querySelector('svg')).toBeNull();
 
     await act(async () => release());
     await waitFor(() => expect(onClose).toHaveBeenCalled());

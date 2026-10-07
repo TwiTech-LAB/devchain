@@ -1,13 +1,22 @@
 import { randomBytes } from 'crypto';
+import { AppError } from '../../../common/errors/error-types';
 import { join } from 'path';
 import type {
   FolderSyncStatus,
+  RemoteNeed,
+  ConflictReport,
+  ConflictBaseline,
   FolderType,
   SyncDevice,
   SyncFolder,
   SyncFolderPatch,
   SyncFolderRequest,
+  ForceCopyBackupRequest,
+  ForceCopyBackup,
+  ReceiveOnlyChanges,
+  SyncStatusOptions,
 } from '../file-sync.dto';
+import { FILE_SYNC_IGNORES_CHANGED } from '../file-sync.dto';
 import {
   FileSyncService,
   projectFolderId,
@@ -19,12 +28,14 @@ import {
 } from '../file-sync.service';
 import { SyncthingRestError } from '../syncthing-rest.client';
 import { DEFAULT_FILE_SYNC_IGNORES } from '../file-sync-ignores.store';
+import { captureFileSyncConflictBaseline, scanFileSyncConflicts } from '../file-sync-conflicts';
 
 export interface FakeFolder {
   type: FolderType;
   paused: boolean;
   peerDeviceId: string;
   ignores: string[];
+  backupPath?: string;
 }
 
 /**
@@ -40,17 +51,24 @@ export class FakeFileSyncService
       | 'addPeer'
       | 'isConnected'
       | 'getIgnores'
+      | 'getIgnoresRevision'
       | 'setIgnores'
       | 'projectFolders'
       | 'initialFolders'
       | 'projectNeed'
       | 'ensureFolder'
+      | 'forceCopyBackup'
+      | 'localChanges'
+      | 'override'
       | 'updateFolder'
       | 'setFolderType'
       | 'folderConfiguration'
       | 'folderPath'
       | 'removeFolder'
       | 'status'
+      | 'remoteNeed'
+      | 'conflicts'
+      | 'conflictBaseline'
       | 'rescan'
       | 'revertLocalChanges'
       | 'waitForComplete'
@@ -69,9 +87,12 @@ export class FakeFileSyncService
   readonly folders = new Map<string, FakeFolder>();
   /** Per folder, what `status` reports this side still needs. */
   readonly need = new Map<string, { needItems: number; needBytes: number }>();
+  readonly remoteNeeds = new Map<string, RemoteNeed>();
+  readonly receiveOnlyChanges = new Map<string, ReceiveOnlyChanges>();
   /** Where `folderPath` answers; tests point it at real directories. */
   readonly codeRoots = new Map<string, string>();
   private readonly ignores = new Map<string, string[]>();
+  private readonly revisions = new Map<string, number>();
 
   async ensureAvailable(): Promise<void> {}
 
@@ -91,7 +112,15 @@ export class FakeFileSyncService
     return this.ignores.get(projectId) ?? [...DEFAULT_FILE_SYNC_IGNORES];
   }
 
-  setIgnores(projectId: string, ignores: string[] | null): string[] {
+  getIgnoresRevision(projectId: string): number {
+    return this.revisions.get(projectId) ?? 0;
+  }
+
+  setIgnores(projectId: string, ignores: string[] | null, revision?: number): string[] {
+    const current = this.getIgnoresRevision(projectId);
+    if (revision !== undefined && revision !== current)
+      throw new AppError('The file list changed. Review it again.', FILE_SYNC_IGNORES_CHANGED, 409);
+    this.revisions.set(projectId, current + 1);
     if (ignores === null) this.ignores.delete(projectId);
     else this.ignores.set(projectId, ignores);
     return this.getIgnores(projectId);
@@ -118,13 +147,35 @@ export class FakeFileSyncService
   async ensureFolder(request: SyncFolderRequest): Promise<SyncFolder> {
     const id = projectFolderId(request.projectId, request.kind);
     const paused = request.paused ?? false;
+    const backupPath = request.forceCopy
+      ? (
+          await this.forceCopyBackup({
+            projectId: request.projectId,
+            kind: request.kind,
+            forceCopy: request.forceCopy,
+          })
+        ).path
+      : undefined;
     this.folders.set(id, {
       type: request.type,
       paused,
       peerDeviceId: request.peerDeviceId,
       ignores: request.ignores,
+      ...(backupPath && { backupPath }),
     });
-    return { id, path: `/fake/${id}`, type: request.type, paused };
+    return {
+      id,
+      path: `/fake/${id}`,
+      type: request.type,
+      paused,
+      ...(backupPath && { backupPath }),
+    };
+  }
+
+  async forceCopyBackup(request: ForceCopyBackupRequest): Promise<ForceCopyBackup> {
+    return {
+      path: `/fake/sync-backups/${request.projectId}/${request.forceCopy.operationId}/${request.kind}`,
+    };
   }
 
   async updateFolder(folderId: string, patch: SyncFolderPatch): Promise<void> {
@@ -154,7 +205,11 @@ export class FakeFileSyncService
     this.folders.delete(folderId);
   }
 
-  async status(folderId: string, peerDeviceId?: string): Promise<FolderSyncStatus> {
+  async status(
+    folderId: string,
+    peerDeviceId?: string,
+    _options?: SyncStatusOptions,
+  ): Promise<FolderSyncStatus> {
     this.require(folderId);
     const need = this.need.get(folderId) ?? zeroNeed();
     return {
@@ -166,7 +221,7 @@ export class FakeFileSyncService
       globalDirectories: 1,
       needTotalItems: need.needItems,
       needBytes: need.needBytes,
-      receiveOnlyChangedFiles: 0,
+      receiveOnlyChangedFiles: this.receiveOnlyChanges.get(folderId)?.count ?? 0,
       peer: peerDeviceId
         ? {
             deviceId: peerDeviceId,
@@ -184,7 +239,53 @@ export class FakeFileSyncService
     signal?.throwIfAborted();
   }
 
+  async remoteNeed(folderId: string, _peerDeviceId: string): Promise<RemoteNeed> {
+    this.require(folderId);
+    return structuredClone(
+      this.remoteNeeds.get(folderId) ?? {
+        total: 0,
+        deleted: 0,
+        sample: [],
+        conflictPaths: [],
+        conflictsOverCap: false,
+      },
+    );
+  }
+
+  async conflicts(
+    projectId: string,
+    baseline: ConflictBaseline,
+    ignores: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ConflictReport> {
+    const root = this.codeRoots.get(projectId);
+    return root
+      ? scanFileSyncConflicts(root, baseline, ignores, signal)
+      : { total: 0, sample: [], ...(baseline.baselineOverCap && { baselineOverCap: true }) };
+  }
+
+  async conflictBaseline(
+    projectId: string,
+    ignores: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ConflictBaseline> {
+    const root = this.codeRoots.get(projectId);
+    return root
+      ? captureFileSyncConflictBaseline(root, ignores, signal)
+      : { baselineOverCap: false, paths: [] };
+  }
+
   async revertLocalChanges(folderId: string): Promise<void> {
+    this.require(folderId);
+    this.receiveOnlyChanges.delete(folderId);
+  }
+
+  async localChanges(folderId: string): Promise<ReceiveOnlyChanges> {
+    this.require(folderId);
+    return structuredClone(this.receiveOnlyChanges.get(folderId) ?? { count: 0, sample: [] });
+  }
+
+  async override(folderId: string): Promise<void> {
     this.require(folderId);
   }
 

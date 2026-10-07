@@ -77,6 +77,7 @@ describe('SafeVendorHttpClient', () => {
 
     await expect(promise).rejects.toMatchObject<Partial<SafeVendorHttpError>>({
       reason: 'timeout',
+      dispatched: true,
     });
     await expect(promise).rejects.not.toThrow('contains-sensitive-vendor-detail');
   });
@@ -299,27 +300,6 @@ describe('SafeVendorHttpClient', () => {
   });
 
   describe('dispatched outcome classification', () => {
-    it('marks a timeout during fetch as dispatched', async () => {
-      const fetchImpl = jest.fn((_url: string | URL | Request, init?: RequestInit) => {
-        return new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => {
-            reject(new DOMException('aborted', 'AbortError'));
-          });
-        });
-      }) as typeof fetch;
-      const client = new SafeVendorHttpClient({ fetchImpl, defaultTimeoutMs: 10 });
-
-      const error = await rejectionOf(
-        client.requestJson({
-          url: `${ALLOWED_ORIGIN}/api/v2/task/x`,
-          allowedOrigins: [ALLOWED_ORIGIN],
-        }),
-      );
-      expect(error).toBeInstanceOf(SafeVendorHttpError);
-      expect(error.reason).toBe('timeout');
-      expect(error.dispatched).toBe(true);
-    });
-
     it('marks a network failure during fetch as dispatched', async () => {
       const client = new SafeVendorHttpClient({
         fetchImpl: jest.fn(async () => {

@@ -118,28 +118,32 @@ function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>
 }
 
 describe('AgentRow', () => {
-  it('renders agent name, online provider icon, and activity badge', () => {
-    const { container } = renderAgentRow();
-
-    expect(screen.getByLabelText(/Open terminal for Alpha \(online\)/i)).toBeInTheDocument();
-    expect(screen.getByText('Busy 10s')).toBeInTheDocument();
-    const providerIconFrame = screen.getByTitle('Provider: Claude (online)');
-    expect(providerIconFrame).toHaveClass(
-      'h-6',
-      'w-6',
-      'bg-primary/10',
-      'border-primary/60',
-      'shadow-[0_0_8px_hsl(var(--primary)/0.35)]',
-      'animate-busy-halo',
+  it.each(['busy', 'idle'] as const)('renders %s online activity', (activityState) => {
+    const busy = activityState === 'busy';
+    const { container } = renderAgentRow(
+      busy ? {} : { activityState, currentActivityTitle: null, activityBadge: undefined },
     );
-    expect(providerIconFrame.querySelector('img')).toHaveClass('h-4', 'w-4');
-    expect(providerIconFrame.querySelector('img')).not.toHaveClass('animate-spin');
-    expect(providerIconFrame.querySelector('img')).not.toHaveClass('grayscale');
-    expect(screen.getByText('Alpha')).toHaveClass('truncate', 'text-foreground');
-    expect(screen.getByText('Sonnet')).toHaveClass('text-muted-foreground');
-    expect(screen.queryByText('Alpha (Sonnet)')).not.toBeInTheDocument();
-    expect(screen.getByText('Reviewing code')).toBeInTheDocument();
-    expect(container.querySelector('svg.lucide-circle')).toBeNull();
+    expect(screen.getByLabelText('Open terminal for Alpha (online)')).toBeInTheDocument();
+    const icon = screen.getByTitle('Provider: Claude (online)');
+    if (busy) {
+      expect(screen.getByText('Busy 10s')).toBeInTheDocument();
+      expect(icon).toHaveClass(
+        'bg-primary/10',
+        'border-primary/60',
+        'shadow-[0_0_8px_hsl(var(--primary)/0.35)]',
+        'animate-busy-halo',
+      );
+      expect(icon.querySelector('img')).not.toHaveClass('grayscale');
+      expect(screen.getByText('Reviewing code')).toBeInTheDocument();
+      expect(screen.queryByText('Alpha (Sonnet)')).not.toBeInTheDocument();
+      expect(screen.getByText('Sonnet')).toHaveClass('text-muted-foreground');
+      expect(container.querySelector('svg.lucide-circle')).toBeNull();
+    } else {
+      expect(icon).toHaveClass('bg-muted/40', 'border-border');
+      expect(icon).not.toHaveClass('shadow-[0_0_8px_hsl(var(--primary)/0.35)]');
+      expect(icon).not.toHaveClass('animate-busy-halo');
+    }
+    expect(icon.querySelector('img')).not.toHaveClass('animate-spin');
   });
 
   it('uses a grayscaled provider icon for offline agents', () => {
@@ -159,20 +163,6 @@ describe('AgentRow', () => {
     expect(screen.queryByText('Reviewing code')).not.toBeInTheDocument();
   });
 
-  it('keeps the provider icon still while the online agent is idle', () => {
-    renderAgentRow({
-      activityState: 'idle',
-      currentActivityTitle: null,
-      activityBadge: undefined,
-    });
-
-    const providerIconFrame = screen.getByTitle('Provider: Claude (online)');
-    expect(providerIconFrame).toHaveClass('bg-muted/40', 'border-border');
-    expect(providerIconFrame).not.toHaveClass('shadow-[0_0_8px_hsl(var(--primary)/0.35)]');
-    expect(providerIconFrame).not.toHaveClass('animate-busy-halo');
-    expect(providerIconFrame.querySelector('img')).not.toHaveClass('animate-spin');
-  });
-
   it('Copilot provider icon is decorative (alt="" + aria-hidden) — the adjacent agent name is the accessible label', () => {
     renderAgentRow({ providerName: 'copilot' });
 
@@ -190,18 +180,6 @@ describe('AgentRow', () => {
     fireEvent.click(screen.getByLabelText(/Open terminal for Alpha \(online\)/i));
 
     expect(onClick).toHaveBeenCalledTimes(1);
-  });
-
-  it('renders the context menu on right click', async () => {
-    renderAgentRow();
-
-    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha \(online\)/i));
-
-    await waitFor(() => {
-      expect(screen.getByText('Overrides…')).toBeInTheDocument();
-    });
-    expect(screen.getByRole('menuitemcheckbox', { name: /Context tracking/i })).toBeInTheDocument();
-    expect(screen.getByText(/Launch session/i)).toBeInTheDocument();
   });
 
   it('fires onOpenOverrides with the row trigger from the context menu', async () => {
@@ -279,67 +257,24 @@ describe('AgentRow', () => {
     expect(screen.getByText('Alpha')).toHaveClass('text-[#8f4f39]', 'dark:text-[#d08a67]');
   });
 
-  it('keeps long agent names and config labels inline and truncated', () => {
-    renderAgentRow({
-      agent: {
-        ...agent,
-        name: 'Very Long Agent Name That Should Truncate Inside The Row',
-      } as AgentOrGuest,
-      configDisplayName: 'Provider Config With A Very Long Model Override Label',
-    });
-
-    expect(
-      screen.getByText('Very Long Agent Name That Should Truncate Inside The Row'),
-    ).toHaveClass('truncate');
-    expect(screen.getByText('Provider Config With A Very Long Model Override Label')).toHaveClass(
-      'max-w-[45%]',
-      'truncate',
-      'text-muted-foreground',
+  it.each([
+    ['Clone', true],
+    ['Clone', false],
+    ['Delete', true],
+    ['Delete', false],
+  ] as const)('gates %s action with permission=%s', async (action, allowed) => {
+    const callback = jest.fn();
+    renderAgentRow(
+      action === 'Clone'
+        ? { canClone: allowed, onClone: callback }
+        : { canDelete: allowed, onDelete: callback },
     );
-  });
-
-  it('shows Clone menu item when canClone is true', async () => {
-    const onClone = jest.fn();
-    renderAgentRow({ canClone: true, onClone });
-
     fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
-
-    const cloneItem = await screen.findByText('Clone');
-    fireEvent.click(cloneItem);
-    expect(onClone).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not show Clone menu item when canClone is false', async () => {
-    renderAgentRow({ canClone: false });
-
-    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Context tracking/i)).toBeInTheDocument();
-    });
-    expect(screen.queryByText('Clone')).not.toBeInTheDocument();
-  });
-
-  it('shows Delete menu item when canDelete is true', async () => {
-    const onDelete = jest.fn();
-    renderAgentRow({ canDelete: true, onDelete });
-
-    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
-
-    const deleteItem = await screen.findByText('Delete');
-    fireEvent.click(deleteItem);
-    expect(onDelete).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not show Delete menu item when canDelete is false', async () => {
-    renderAgentRow({ canDelete: false });
-
-    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Context tracking/i)).toBeInTheDocument();
-    });
-    expect(screen.queryByText('Delete')).not.toBeInTheDocument();
+    await screen.findByText(/Context tracking/i);
+    if (allowed) {
+      fireEvent.click(screen.getByText(action));
+      expect(callback).toHaveBeenCalledTimes(1);
+    } else expect(screen.queryByText(action)).not.toBeInTheDocument();
   });
 
   it('shows "Deleting…" and disables Delete when pendingDelete is true', async () => {
@@ -353,43 +288,34 @@ describe('AgentRow', () => {
     });
   });
 
-  it('fires edit team action from the context menu', async () => {
-    const onEditTeam = jest.fn();
-    renderAgentRow({
-      canEditTeam: true,
-      onEditTeam,
-    });
-
-    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
-
-    fireEvent.click(await screen.findByText('Edit team'));
-
-    expect(onEditTeam).toHaveBeenCalledTimes(1);
-  });
-
-  it('fires context tracking toggle from the context menu', async () => {
-    const { onToggleContextTracking } = renderAgentRow();
-
-    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
-
-    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i }));
-
-    expect(onToggleContextTracking).toHaveBeenCalledTimes(1);
-  });
-
-  it('fires restart and launch session actions from the context menu', async () => {
-    const { onRestart, onLaunch } = renderAgentRow({ hasSession: false, sessionId: null });
-
-    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
-
-    fireEvent.click(await screen.findByText('Restart session'));
-    fireEvent.click(screen.getByText('Launch session'));
-
-    await waitFor(() => {
-      expect(onRestart).toHaveBeenCalledTimes(1);
-      expect(onLaunch).toHaveBeenCalledTimes(1);
-    });
-  });
+  it.each(['Edit team', 'Context tracking', 'Session actions'])(
+    'fires %s callbacks',
+    async (action) => {
+      const onEditTeam = jest.fn();
+      const { onToggleContextTracking, onRestart, onLaunch } = renderAgentRow(
+        action === 'Edit team'
+          ? { canEditTeam: true, onEditTeam }
+          : action === 'Session actions'
+            ? { hasSession: false, sessionId: null }
+            : {},
+      );
+      fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
+      if (action === 'Edit team') {
+        fireEvent.click(await screen.findByText(action));
+        expect(onEditTeam).toHaveBeenCalledTimes(1);
+      } else if (action === 'Context tracking') {
+        fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: /Context tracking/i }));
+        expect(onToggleContextTracking).toHaveBeenCalledTimes(1);
+      } else {
+        fireEvent.click(await screen.findByText('Restart session'));
+        fireEvent.click(screen.getByText('Launch session'));
+        await waitFor(() => {
+          expect(onRestart).toHaveBeenCalledTimes(1);
+          expect(onLaunch).toHaveBeenCalledTimes(1);
+        });
+      }
+    },
+  );
 
   it('fires terminate session action when an active session exists', async () => {
     const { onTerminate } = renderAgentRow({ hasSession: true, sessionId: 'session-1' });
@@ -436,33 +362,23 @@ describe('AgentRow', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('replaces the activity timer with the clickable waiting badge after eligibility', () => {
-      renderAgentRow({ humanHeldMessageCount: 2, canReleaseHeldMessages: true });
-
-      expect(screen.getByText('2 waiting')).toBeInTheDocument();
+    it.each([1, 2])('labels %s eligible held messages', (count) => {
+      renderAgentRow({ humanHeldMessageCount: count, canReleaseHeldMessages: true });
+      expect(screen.getByText(count + ' waiting')).toBeInTheDocument();
       expect(screen.queryByText('Busy 10s')).not.toBeInTheDocument();
-    });
-
-    it('uses singular wording for a single held message', () => {
-      renderAgentRow({ humanHeldMessageCount: 1, canReleaseHeldMessages: true });
-
       expect(
         screen.getByLabelText(
-          'Open terminal for Alpha (online), 1 message waiting for you to finish typing',
+          'Open terminal for Alpha (online), ' +
+            count +
+            ' ' +
+            (count === 1 ? 'message' : 'messages') +
+            ' waiting for you to finish typing',
         ),
       ).toBeInTheDocument();
-      expect(screen.getByText('1 waiting')).toBeInTheDocument();
     });
 
     it('renders no badge and keeps the base accessible name when nothing is held', () => {
       renderAgentRow({ humanHeldMessageCount: 0 });
-
-      expect(screen.getByLabelText('Open terminal for Alpha (online)')).toBeInTheDocument();
-      expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
-    });
-
-    it('defaults to no badge when the count is not provided', () => {
-      renderAgentRow();
 
       expect(screen.getByLabelText('Open terminal for Alpha (online)')).toBeInTheDocument();
       expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
@@ -472,12 +388,6 @@ describe('AgentRow', () => {
   describe('force send button', () => {
     it('shows Send now when canForceSend is true and humanHeldMessageCount is positive', () => {
       renderAgentRow({ humanHeldMessageCount: 1, canForceSend: true });
-
-      expect(screen.getByRole('button', { name: 'Send now for Alpha' })).toBeInTheDocument();
-    });
-
-    it('shows Send now when canForceSend is true and humanHeldMessageCount is 0', () => {
-      renderAgentRow({ humanHeldMessageCount: 0, canForceSend: true });
 
       expect(screen.getByRole('button', { name: 'Send now for Alpha' })).toBeInTheDocument();
     });

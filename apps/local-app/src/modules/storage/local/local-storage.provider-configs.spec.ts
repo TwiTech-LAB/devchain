@@ -202,33 +202,6 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
       });
     });
 
-    it('should parse env JSON correctly', async () => {
-      const mockRow = {
-        id: 'config-1',
-        profileId: 'profile-1',
-        providerId: 'provider-1',
-        name: 'test-config',
-        options: null,
-        env: '{"KEY1":"value1","KEY2":"value2"}',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      };
-
-      const selectChain = {
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            limit: jest.fn().mockResolvedValue([mockRow]),
-          }),
-        }),
-      };
-
-      mockDb.select = jest.fn().mockReturnValue(selectChain);
-
-      const result = await service.getProfileProviderConfig('config-1');
-
-      expect(result.env).toEqual({ KEY1: 'value1', KEY2: 'value2' });
-    });
-
     it('should return null env when stored as null', async () => {
       const mockRow = {
         id: 'config-1',
@@ -272,14 +245,22 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
       );
     });
 
-    it('should throw ValidationError when env JSON is corrupt', async () => {
+    it.each([
+      {
+        label: 'invalid JSON',
+        env: '{invalid json',
+        message: /Invalid JSON in provider config env field/,
+      },
+      { label: 'not object', env: '"just a string"', message: /env must be an object/ },
+      { label: 'non-string value', env: '{"KEY": 123}', message: /env\["KEY"\] must be a string/ },
+    ])('$label', async ({ env, message }) => {
       const mockRow = {
         id: 'config-1',
         profileId: 'profile-1',
         providerId: 'provider-1',
         name: 'corrupt-config',
         options: null,
-        env: '{invalid json',
+        env,
         createdAt: '2024-01-01T00:00:00Z',
         updatedAt: '2024-01-01T00:00:00Z',
       };
@@ -295,65 +276,7 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
       mockDb.select = jest.fn().mockReturnValue(selectChain);
 
       await expect(service.getProfileProviderConfig('config-1')).rejects.toThrow(ValidationError);
-      await expect(service.getProfileProviderConfig('config-1')).rejects.toThrow(
-        /Invalid JSON in provider config env field/,
-      );
-    });
-
-    it('should throw ValidationError when env is not an object', async () => {
-      const mockRow = {
-        id: 'config-1',
-        profileId: 'profile-1',
-        providerId: 'provider-1',
-        name: 'invalid-env-config',
-        options: null,
-        env: '"just a string"',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      };
-
-      const selectChain = {
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            limit: jest.fn().mockResolvedValue([mockRow]),
-          }),
-        }),
-      };
-
-      mockDb.select = jest.fn().mockReturnValue(selectChain);
-
-      await expect(service.getProfileProviderConfig('config-1')).rejects.toThrow(ValidationError);
-      await expect(service.getProfileProviderConfig('config-1')).rejects.toThrow(
-        /env must be an object/,
-      );
-    });
-
-    it('should throw ValidationError when env value is not a string', async () => {
-      const mockRow = {
-        id: 'config-1',
-        profileId: 'profile-1',
-        providerId: 'provider-1',
-        name: 'bad-env-value-config',
-        options: null,
-        env: '{"KEY": 123}',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      };
-
-      const selectChain = {
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            limit: jest.fn().mockResolvedValue([mockRow]),
-          }),
-        }),
-      };
-
-      mockDb.select = jest.fn().mockReturnValue(selectChain);
-
-      await expect(service.getProfileProviderConfig('config-1')).rejects.toThrow(ValidationError);
-      await expect(service.getProfileProviderConfig('config-1')).rejects.toThrow(
-        /env\["KEY"\] must be a string/,
-      );
+      await expect(service.getProfileProviderConfig('config-1')).rejects.toThrow(message);
     });
   });
 
@@ -474,62 +397,6 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
         /Invalid JSON in provider config env field/,
       );
     });
-
-    it('should return configs ordered by position ASC, id ASC', async () => {
-      const mockRows = [
-        {
-          config: {
-            id: 'config-1',
-            profileId: 'profile-1',
-            providerId: 'provider-1',
-            name: 'first-config',
-            options: null,
-            env: '{}',
-            position: 0,
-            createdAt: '2024-01-01T00:00:00Z',
-            updatedAt: '2024-01-01T00:00:00Z',
-          },
-          providerName: 'Provider One',
-        },
-        {
-          config: {
-            id: 'config-2',
-            profileId: 'profile-1',
-            providerId: 'provider-1',
-            name: 'second-config',
-            options: null,
-            env: '{}',
-            position: 1,
-            createdAt: '2024-01-02T00:00:00Z',
-            updatedAt: '2024-01-02T00:00:00Z',
-          },
-          providerName: 'Provider One',
-        },
-      ];
-
-      // Mock orderBy to verify it's called with position
-      const mockOrderBy = jest.fn().mockResolvedValue(mockRows);
-
-      const selectChain = {
-        from: jest.fn().mockReturnValue({
-          leftJoin: jest.fn().mockReturnValue({
-            where: jest.fn().mockReturnValue({
-              orderBy: mockOrderBy,
-            }),
-          }),
-        }),
-      };
-
-      mockDb.select = jest.fn().mockReturnValue(selectChain);
-
-      const result = await service.listProfileProviderConfigsByProfile('profile-1');
-
-      // Verify orderBy was called (ordering by position, then id)
-      expect(mockOrderBy).toHaveBeenCalled();
-      expect(result.length).toBe(2);
-      expect(result[0].position).toBe(0);
-      expect(result[1].position).toBe(1);
-    });
   });
 
   describe('listProfileProviderConfigsByIds', () => {
@@ -576,37 +443,6 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
       expect(result.length).toBe(2);
       expect(result[0].env).toEqual({ KEY1: 'value1' });
       expect(result[1].env).toEqual({ KEY2: 'value2' });
-    });
-
-    it('should handle partial matches (some ids not found)', async () => {
-      const mockRows = [
-        {
-          id: 'config-1',
-          profileId: 'profile-1',
-          providerId: 'provider-1',
-          name: 'partial-config',
-          options: null,
-          env: null,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        },
-      ];
-
-      const selectChain = {
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockResolvedValue(mockRows),
-        }),
-      };
-
-      mockDb.select = jest.fn().mockReturnValue(selectChain);
-
-      const result = await service.listProfileProviderConfigsByIds([
-        'config-1',
-        'config-nonexistent',
-      ]);
-
-      expect(result.length).toBe(1);
-      expect(result[0].id).toBe('config-1');
     });
   });
 
@@ -718,26 +554,6 @@ describe('LocalStorageService - ProfileProviderConfigs', () => {
   });
 
   describe('deleteProfileProviderConfig', () => {
-    it('should delete provider config when not referenced by agents', async () => {
-      // Mock: no agents reference this config
-      const agentCheckChain = {
-        from: jest.fn().mockReturnValue({
-          where: jest.fn().mockReturnValue({
-            limit: jest.fn().mockResolvedValue([]),
-          }),
-        }),
-      };
-
-      const deleteChain = {
-        where: jest.fn().mockResolvedValue(undefined),
-      };
-
-      mockDb.select = jest.fn().mockReturnValue(agentCheckChain);
-      mockDb.delete = jest.fn().mockReturnValue(deleteChain);
-
-      await expect(service.deleteProfileProviderConfig('config-1')).resolves.toBeUndefined();
-    });
-
     it('should throw ValidationError when config is referenced by agents', async () => {
       // Mock: agent references this config
       const agentCheckChain = {

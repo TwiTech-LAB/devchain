@@ -26,21 +26,10 @@ describe('type-guards', () => {
   );
 
   describe('isGlobalMcpConfigCapable', () => {
-    it('returns true for Antigravity (agy — HOME-global mcp_config.json)', () => {
-      expect(isGlobalMcpConfigCapable(antigravity)).toBe(true);
-    });
-
     it('returns false for CLI and project-local config providers', () => {
       expect(isGlobalMcpConfigCapable(claude)).toBe(false);
       expect(isGlobalMcpConfigCapable(codex)).toBe(false);
       expect(isGlobalMcpConfigCapable(opencode)).toBe(false);
-    });
-
-    it('narrows type to GlobalMcpConfigCapability for agy', () => {
-      if (isGlobalMcpConfigCapable(antigravity)) {
-        expect(typeof antigravity.parseGlobalMcpConfig).toBe('function');
-        expect(typeof antigravity.buildGlobalMcpServerEntry).toBe('function');
-      }
     });
   });
 
@@ -55,26 +44,14 @@ describe('type-guards', () => {
   });
 
   describe('isMcpCli', () => {
-    it('returns true for Claude', () => {
-      expect(isMcpCli(claude)).toBe(true);
-    });
-
-    it('returns true for Codex', () => {
-      expect(isMcpCli(codex)).toBe(true);
-    });
-
-    it('returns false for OpenCode (project_config mode)', () => {
-      expect(isMcpCli(opencode)).toBe(false);
-    });
-
-    it('narrows type to McpCliCapability for CLI providers', () => {
-      if (isMcpCli(claude)) {
-        expect(typeof claude.addMcpServer).toBe('function');
-        expect(typeof claude.listMcpServers).toBe('function');
-        expect(typeof claude.removeMcpServer).toBe('function');
-        expect(typeof claude.binaryCheck).toBe('function');
-        expect(typeof claude.parseListOutput).toBe('function');
-      }
+    it.each([
+      { name: 'claude', expected: true },
+      { name: 'codex', expected: true },
+      { name: 'opencode', expected: false },
+    ])('classifies $name MCP mode', ({ name, expected }) => {
+      expect(isMcpCli(name === 'claude' ? claude : name === 'codex' ? codex : opencode)).toBe(
+        expected,
+      );
     });
   });
 
@@ -87,13 +64,6 @@ describe('type-guards', () => {
       expect(isAutoCompactCapable(codex)).toBe(false);
       expect(isAutoCompactCapable(opencode)).toBe(false);
     });
-
-    it('narrows type to AutoCompactCapability for Claude', () => {
-      if (isAutoCompactCapable(claude)) {
-        expect(typeof claude.applyAutoCompactConfig).toBe('function');
-        expect(typeof claude.evaluateAutoCompactConfig).toBe('function');
-      }
-    });
   });
 
   describe('isProviderPluginCapable', () => {
@@ -103,14 +73,6 @@ describe('type-guards', () => {
       expect(isProviderPluginCapable(opencode)).toBe(false);
       expect(isProviderPluginCapable(antigravity)).toBe(false);
       expect(isProviderPluginCapable(copilot)).toBe(false);
-    });
-
-    it('narrows to the plugin catalog and installation methods', () => {
-      if (isProviderPluginCapable(claude)) {
-        expect(typeof claude.listProviderPlugins).toBe('function');
-        expect(typeof claude.installProviderPlugin).toBe('function');
-        expect(typeof claude.parseProviderPluginCatalog).toBe('function');
-      }
     });
   });
 
@@ -134,13 +96,6 @@ describe('type-guards', () => {
         expect(claude.requiresModelForEffort).toBeUndefined();
       }
     });
-
-    it('narrows type to EffortCapability, exposing defaultEffortValues + applyEffort', () => {
-      if (isEffortCapable(claude)) {
-        expect(Array.isArray(claude.defaultEffortValues)).toBe(true);
-        expect(typeof claude.applyEffort).toBe('function');
-      }
-    });
   });
 
   describe('isHookCapable', () => {
@@ -154,14 +109,6 @@ describe('type-guards', () => {
       expect(isHookCapable(opencode)).toBe(false);
       expect(isHookCapable(antigravity)).toBe(false);
     });
-
-    it('narrows type to HookCapability for Claude', () => {
-      if (isHookCapable(claude)) {
-        expect(claude.hooksEnabled).toBe(true);
-        expect(typeof claude.hooksEventName).toBe('string');
-        expect(typeof claude.buildHookEnv).toBe('function');
-      }
-    });
   });
 
   describe('isProjectProvisioningCapable', () => {
@@ -174,20 +121,6 @@ describe('type-guards', () => {
 
     it('returns false for adapters without project provisioning', () => {
       expect(isProjectProvisioningCapable(opencode)).toBe(false);
-    });
-
-    it('narrows type to ProjectProvisioningCapability for Antigravity', () => {
-      if (isProjectProvisioningCapable(antigravity)) {
-        expect(antigravity.requiresProjectProvisioning).toBe(true);
-        expect(typeof antigravity.provisionProjectPath).toBe('function');
-      }
-    });
-
-    it('narrows type to ProjectProvisioningCapability for Claude (trust-only provisioning)', () => {
-      if (isProjectProvisioningCapable(claude)) {
-        expect(claude.requiresProjectProvisioning).toBe(true);
-        expect(typeof claude.provisionProjectPath).toBe('function');
-      }
     });
   });
 

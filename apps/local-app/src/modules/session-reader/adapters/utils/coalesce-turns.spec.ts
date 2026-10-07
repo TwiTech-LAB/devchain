@@ -139,32 +139,40 @@ describe('coalesceAssistantTurns — merge rule', () => {
 // ---------------------------------------------------------------------------
 
 describe('coalesceAssistantTurns — boundaries', () => {
-  it('undefined stopReason on the preceding turn is a BOUNDARY (fail-safe, never merges)', () => {
-    const a1 = msg('assistant', { stopReason: undefined });
-    const a2 = msg('assistant', { stopReason: undefined });
-    const { messages } = run([msg('user'), a1, a2]);
-    expect(messages).toHaveLength(3); // no merge
-  });
-
-  it("'end_turn' on the preceding turn is a BOUNDARY", () => {
-    const { messages } = run([msg('user'), done(), done()]);
-    expect(messages).toHaveLength(3);
-  });
-
-  it('a real USER message between two assistants is a BOUNDARY', () => {
-    const { messages } = run([msg('user'), open(), msg('user'), done()]);
-    expect(messages.map((x) => x.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
-  });
-
-  it('an isCompactSummary entry neither merges nor opens a turn', () => {
-    const { messages } = run([open(), open({ isCompactSummary: true }), open()]);
-    // first opens; compact-summary is a boundary (no merge, no open); third opens but nothing follows.
-    expect(messages).toHaveLength(3);
-  });
-
-  it('an isSidechain mismatch is a BOUNDARY', () => {
-    const { messages } = run([open({ isSidechain: false }), done({ isSidechain: true })]);
-    expect(messages).toHaveLength(2); // different sidechain context → not merged
+  it.each([
+    {
+      name: 'undefined stop reason',
+      input: [
+        msg('user'),
+        msg('assistant', { stopReason: undefined }),
+        msg('assistant', { stopReason: undefined }),
+      ],
+      roles: ['user', 'assistant', 'assistant'],
+    },
+    {
+      name: 'end_turn',
+      input: [msg('user'), done(), done()],
+      roles: ['user', 'assistant', 'assistant'],
+    },
+    {
+      name: 'real user message',
+      input: [msg('user'), open(), msg('user'), done()],
+      roles: ['user', 'assistant', 'user', 'assistant'],
+    },
+    {
+      name: 'compact summary',
+      input: [open(), open({ isCompactSummary: true }), open()],
+      roles: ['assistant', 'assistant', 'assistant'],
+    },
+    {
+      name: 'sidechain mismatch',
+      input: [open({ isSidechain: false }), done({ isSidechain: true })],
+      roles: ['assistant', 'assistant'],
+    },
+  ])('does not merge across $name', ({ input, roles }) => {
+    const { messages } = run(input);
+    expect(messages).toHaveLength(input.length);
+    expect(messages.map((x) => x.role)).toEqual(roles);
   });
 
   it('merges WITHIN a sidechain (matching isSidechain) on the open signal', () => {
@@ -231,12 +239,19 @@ describe('sumTokenUsage', () => {
 // Part 2: real-parser no-op regression (Claude sets stopReason; Codex does not)
 // ---------------------------------------------------------------------------
 
+const tempDirs: string[] = [];
+
 function writeJsonl(prefix: string, lines: object[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
   const filePath = path.join(dir, 'session.jsonl');
   fs.writeFileSync(filePath, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8');
   return filePath;
 }
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 describe('coalesceAssistantTurns — Claude full-parse output UNCHANGED (no-op regression)', () => {
   it('leaves a parsed Claude tool turn reference-identical', async () => {

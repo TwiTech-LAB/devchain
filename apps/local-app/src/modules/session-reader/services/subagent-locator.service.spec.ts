@@ -196,18 +196,9 @@ describe('SubagentLocator', () => {
   // -------------------------------------------------------------------------
 
   describe('error handling', () => {
-    it('should handle ENOENT gracefully (directory does not exist)', async () => {
-      mockReaddir.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-
-      const results = await locator.locate(parentFilePath);
-      expect(results).toHaveLength(0);
-    });
-
-    it('should handle non-ENOENT errors gracefully (log + empty result)', async () => {
-      mockReaddir.mockRejectedValue(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
-
-      const results = await locator.locate(parentFilePath);
-      expect(results).toHaveLength(0);
+    it.each(['ENOENT', 'EACCES'])('handles readdir %s with an empty result', async (code) => {
+      mockReaddir.mockRejectedValue(Object.assign(new Error(code), { code }));
+      expect(await locator.locate(parentFilePath)).toHaveLength(0);
     });
 
     it('should return empty array when no subagent files found', async () => {

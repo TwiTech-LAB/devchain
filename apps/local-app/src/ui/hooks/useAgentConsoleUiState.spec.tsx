@@ -45,18 +45,11 @@ function useSubject({
 }
 
 describe('useAgentConsoleUiState', () => {
-  it('defaults a bare URL to the Project Owner after the agents query succeeds', async () => {
-    const { result } = renderHook(() => useSubject(), { wrapper: buildWrapper('/chat') });
-
-    await waitFor(() => expect(result.current.state.selectedAgentId).toBe('agent-2'));
-    expect(result.current.search).toBe('?agent=agent-2');
-  });
-
-  it('heals a stale URL selection to the Project Owner after a successful query', async () => {
-    const { result } = renderHook(() => useSubject(), {
-      wrapper: buildWrapper('/chat?agent=stale-agent'),
-    });
-
+  it.each([
+    { label: 'bare URL', url: '/chat' },
+    { label: 'stale agent URL', url: '/chat?agent=stale-agent' },
+  ] as const)('heals $label to Project Owner after query success', async ({ url }) => {
+    const { result } = renderHook(() => useSubject(), { wrapper: buildWrapper(url) });
     await waitFor(() => expect(result.current.state.selectedAgentId).toBe('agent-2'));
     expect(result.current.search).toBe('?agent=agent-2');
   });

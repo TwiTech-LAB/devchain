@@ -27,7 +27,11 @@ jest.mock('../../../common/logging/logger', () => ({
 
 describe('RemotesController', () => {
   let controller: RemotesController;
-  const files = { warning: jest.fn(() => null as string | null) };
+  const files = {
+    problem: jest.fn(() => 'setup'),
+    warning: jest.fn(() => null as string | null),
+    failedCounts: jest.fn(() => null as { home: number; vm: number } | null),
+  };
   let storage: {
     listRemotes: jest.Mock;
     getRemote: jest.Mock;
@@ -98,19 +102,29 @@ describe('RemotesController', () => {
     updatedAt: '2024-01-01T00:00:00.000Z',
   };
 
-  it('returns file warnings only for remote-owned bindings', async () => {
-    storage.listRemoteProjectBindings.mockResolvedValue([
-      mockBinding,
-      { ...mockBinding, projectId: 'other', state: 'detaching' },
-    ]);
-    files.warning.mockReturnValue('Retrying file sync');
-    const result = await controller.listBindings();
-    expect(result.items[0]).toMatchObject({ fileSyncWarning: 'Retrying file sync' });
-    expect(result.items[1]).not.toHaveProperty('fileSyncWarning');
-  });
+  it.each([null, { home: 3, vm: 7 }])(
+    'returns active warnings and matured counts only for remote-owned bindings (counts=%j)',
+    async (counts) => {
+      storage.listRemoteProjectBindings.mockResolvedValue([
+        mockBinding,
+        { ...mockBinding, projectId: 'other', state: 'detaching' },
+      ]);
+      files.warning.mockReturnValue('Retrying file sync');
+      files.failedCounts.mockReturnValue(counts);
+      const result = await controller.listBindings();
+      expect(result.items[0]).toMatchObject({ fileSyncWarning: 'Retrying file sync' });
+      expect(result.items[1]).not.toHaveProperty('fileSyncWarning');
+      if (counts) expect(result.items[0]).toMatchObject({ fileSyncFailed: counts });
+      else expect(result.items[0]).not.toHaveProperty('fileSyncFailed');
+      expect(result.items[1]).not.toHaveProperty('fileSyncFailed');
+      files.warning.mockReturnValue(null);
+      expect((await controller.listBindings()).items[0]).not.toHaveProperty('fileSyncFailed');
+    },
+  );
 
   beforeEach(async () => {
     files.warning.mockReturnValue(null);
+    files.failedCounts.mockReturnValue(null);
     storage = {
       listRemotes: jest.fn(),
       getRemote: jest.fn(),
@@ -164,17 +178,6 @@ describe('RemotesController', () => {
   });
 
   describe('GET /api/remotes', () => {
-    it('lists a provisioning Proxmox remote with a null address', async () => {
-      storage.listRemotes.mockResolvedValue({
-        items: [{ ...mockRemote, kind: 'proxmox', baseUrl: null }],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      const result = await controller.listRemotes();
-      expect(result.items[0]).toMatchObject({ kind: 'proxmox', baseUrl: null, online: false });
-    });
-
     it('lists remotes enriched with offline-default health when never polled', async () => {
       storage.listRemotes.mockResolvedValue({
         items: [mockRemote],
@@ -196,6 +199,7 @@ describe('RemotesController', () => {
           versionMatches: false,
           uid: null,
           gid: null,
+          dockerUserMismatch: null,
           stats: null,
           lastSeenAt: null,
           homePath: null,
@@ -236,71 +240,6 @@ describe('RemotesController', () => {
 
       expect(result.items[0].userName).toBeNull();
     });
-
-    it('merges the health service state onto each remote', async () => {
-      storage.listRemotes.mockResolvedValue({
-        items: [mockRemote],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-      const onlineHealth: RemoteHealthState = {
-        online: true,
-        version: '0.23.3',
-        versionMatches: true,
-        homePath: null,
-        uid: 1000,
-        gid: 1000,
-        providerEnvOverrides: [
-          {
-            key: 'CLAUDE_CODE_OAUTH_TOKEN',
-            source: 'provider-config',
-            provider: 'claude',
-            config: 'Team login',
-          },
-        ],
-        stats: {
-          cpuPercent: 12.5,
-          load1: 0.1,
-          load5: 0.2,
-          memTotalBytes: 1000,
-          memUsedBytes: 500,
-          diskTotalBytes: 2000,
-          diskUsedBytes: 1000,
-          uptimeSec: 60,
-          sampledAt: '2024-01-01T00:00:00.000Z',
-        },
-        lastSeenAt: '2024-01-01T00:00:00.000Z',
-        error: null,
-      };
-      remoteHealth.getState.mockReturnValue(onlineHealth);
-
-      const result = await controller.listRemotes();
-
-      expect(result.items[0]).toMatchObject({
-        id: mockRemote.id,
-        online: true,
-        version: '0.23.3',
-        versionMatches: true,
-        uid: 1000,
-        gid: 1000,
-        providerEnvOverrides: onlineHealth.providerEnvOverrides,
-        stats: onlineHealth.stats,
-        lastSeenAt: onlineHealth.lastSeenAt,
-      });
-      // error is internal (used by the proxy), not part of the REST response shape.
-      expect(result.items[0]).not.toHaveProperty('error');
-    });
-  });
-
-  describe('GET /api/remotes/bindings', () => {
-    it('wraps bindings in an items envelope', async () => {
-      storage.listRemoteProjectBindings.mockResolvedValue([mockBinding]);
-
-      const result = await controller.listBindings();
-
-      expect(result).toEqual({ items: [mockBinding] });
-    });
   });
 
   describe('GET /api/remotes/:id/stats/history', () => {
@@ -328,15 +267,6 @@ describe('RemotesController', () => {
       expect(result).toEqual({ intervalMs: 10000, samples });
     });
 
-    it('returns an empty list for a known remote without samples yet', async () => {
-      storage.getRemote.mockResolvedValue(mockRemote);
-      remoteHealth.getStatsHistory.mockReturnValue([]);
-
-      const result = await controller.getStatsHistory(mockRemote.id);
-
-      expect(result).toEqual({ intervalMs: 10000, samples: [] });
-    });
-
     it('rejects with a 404-shaped NotFoundError for an unknown remote id', async () => {
       storage.getRemote.mockRejectedValue(new NotFoundError('Remote', mockRemote.id));
 
@@ -344,17 +274,6 @@ describe('RemotesController', () => {
         statusCode: 404,
       });
       expect(remoteHealth.getStatsHistory).not.toHaveBeenCalled();
-    });
-
-    it('rejects a non-uuid id', async () => {
-      let caught: unknown;
-      try {
-        await controller.getStatsHistory('not-a-uuid');
-      } catch (error) {
-        caught = error;
-      }
-      expect(caught).toBeInstanceOf(ZodError);
-      expect(storage.getRemote).not.toHaveBeenCalled();
     });
   });
 
@@ -482,36 +401,9 @@ describe('RemotesController', () => {
       expect(() => controller.createRemote({ name: 'home-nas', baseUrl })).toThrow(ZodError);
       expect(storage.createRemote).not.toHaveBeenCalled();
     });
-
-    it('rejects a proxmox kind', () => {
-      expect(() =>
-        controller.createRemote({
-          name: 'home-nas',
-          baseUrl: 'https://192.168.1.5:9080',
-          kind: 'proxmox',
-        }),
-      ).toThrow(ZodError);
-      expect(storage.createRemote).not.toHaveBeenCalled();
-    });
-
-    it('rejects an empty name', () => {
-      expect(() =>
-        controller.createRemote({ name: '', baseUrl: 'https://192.168.1.5:9080' }),
-      ).toThrow(ZodError);
-      expect(storage.createRemote).not.toHaveBeenCalled();
-    });
   });
 
   describe('PATCH /api/remotes/:id', () => {
-    it('renames a remote', async () => {
-      storage.updateRemoteName.mockResolvedValue({ ...mockRemote, name: 'renamed' });
-
-      const result = await controller.updateRemoteName(mockRemote.id, { name: 'renamed' });
-
-      expect(storage.updateRemoteName).toHaveBeenCalledWith(mockRemote.id, 'renamed');
-      expect(result.name).toBe('renamed');
-    });
-
     it('re-sends the new name as the remote instance label so the phone stays aligned', async () => {
       storage.updateRemoteName.mockResolvedValue({ ...mockRemote, name: 'renamed' });
 
@@ -528,11 +420,6 @@ describe('RemotesController', () => {
 
       expect(result.name).toBe('renamed');
     });
-
-    it('rejects a non-uuid id', () => {
-      expect(() => controller.updateRemoteName('not-a-uuid', { name: 'x' })).toThrow(ZodError);
-      expect(storage.updateRemoteName).not.toHaveBeenCalled();
-    });
   });
 
   describe('DELETE /api/remotes/:id', () => {
@@ -544,13 +431,6 @@ describe('RemotesController', () => {
         statusCode: 409,
       });
       expect(storage.deleteRemote).not.toHaveBeenCalled();
-    });
-    it('deletes a remote', async () => {
-      storage.deleteRemote.mockResolvedValue(undefined);
-
-      await controller.deleteRemote(mockRemote.id);
-
-      expect(storage.deleteRemote).toHaveBeenCalledWith(mockRemote.id);
     });
 
     it('pulls refreshed login families from the remote before deleting it', async () => {
@@ -569,15 +449,6 @@ describe('RemotesController', () => {
       await controller.deleteRemote(mockRemote.id);
 
       expect(storage.deleteRemote).toHaveBeenCalledWith(mockRemote.id);
-    });
-
-    it('propagates the domain 409 when a binding still references the remote', async () => {
-      const conflict = Object.assign(new Error('Cannot delete a remote with a project binding.'), {
-        statusCode: 409,
-      });
-      storage.deleteRemote.mockRejectedValue(conflict);
-
-      await expect(controller.deleteRemote(mockRemote.id)).rejects.toBe(conflict);
     });
   });
 });

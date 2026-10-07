@@ -4,10 +4,7 @@ import type { CommunitySkillSource, LocalSkillSource } from '../../storage/model
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import type { SeederContext } from '../types/seeder.types';
-import {
-  runSeedPreseedJeffallanClaudeSkills,
-  seedPreseedJeffallanClaudeSkillsSeeder,
-} from './0003_seed_preseed_jeffallan_claude_skills';
+import { runSeedPreseedJeffallanClaudeSkills } from './0003_seed_preseed_jeffallan_claude_skills';
 
 function createCommunitySource(overrides?: Partial<CommunitySkillSource>): CommunitySkillSource {
   return {
@@ -197,13 +194,5 @@ describe('0003_seed_preseed_jeffallan_claude_skills', () => {
 
     expect(createSource).toHaveBeenCalledTimes(1);
     expect(getByName).toHaveBeenCalledTimes(2);
-  });
-
-  it('exports seeder metadata and run function', () => {
-    expect(seedPreseedJeffallanClaudeSkillsSeeder).toMatchObject({
-      name: '0003_seed_preseed_jeffallan_claude_skills',
-      version: 1,
-      run: runSeedPreseedJeffallanClaudeSkills,
-    });
   });
 });

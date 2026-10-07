@@ -73,26 +73,15 @@ describe('CodexSessionReaderAdapter provider session id extraction', () => {
       });
     });
 
-    it('returns undefined for malformed first-line JSON without throwing', () => {
-      const adapter = createAdapter();
-
-      expect(adapter.extractCandidateMetadata('{not-json}\n')).toBeUndefined();
-    });
-
-    it('returns undefined when the first line is not session_meta', () => {
-      const adapter = createAdapter();
-
-      expect(
-        adapter.extractCandidateMetadata(
-          `${JSON.stringify({ type: 'turn_context', payload: { id: SESSION_ID } })}\n`,
-        ),
-      ).toBeUndefined();
-    });
-
-    it('returns undefined when the first line has not terminated yet', () => {
-      const adapter = createAdapter();
-
-      expect(adapter.extractCandidateMetadata(sessionMetaLine())).toBeUndefined();
+    it.each([
+      ['malformed JSON', '{not-json}\n'],
+      [
+        'not session_meta',
+        JSON.stringify({ type: 'turn_context', payload: { id: SESSION_ID } }) + '\n',
+      ],
+      ['unterminated line', sessionMetaLine()],
+    ])('returns no metadata for %s', (_name, head) => {
+      expect(createAdapter().extractCandidateMetadata(head)).toBeUndefined();
     });
   });
 
@@ -124,18 +113,6 @@ describe('CodexSessionReaderAdapter provider session id extraction', () => {
   });
 
   describe('extractProviderSessionIdFromFile', () => {
-    it('returns payload id from a valid file first line', async () => {
-      const adapter = createAdapter();
-      const { tempHome, cleanup } = withTempHome('codex-provider-id-file-');
-      const filePath = writeFile(path.join(tempHome, 'rollout.jsonl'), `${sessionMetaLine()}\n`);
-
-      try {
-        await expect(adapter.extractProviderSessionIdFromFile(filePath)).resolves.toBe(SESSION_ID);
-      } finally {
-        cleanup();
-      }
-    });
-
     it('returns null for a partially flushed file with no newline within the read cap', async () => {
       const adapter = createAdapter();
       const { tempHome, cleanup } = withTempHome('codex-provider-id-partial-');

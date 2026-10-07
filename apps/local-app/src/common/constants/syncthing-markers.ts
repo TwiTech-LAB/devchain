@@ -16,6 +16,13 @@ export function isSyncthingMarker(name: string): boolean {
  */
 export const SYNCTHING_TEMP_PATTERNS: readonly string[] = ['.syncthing.*.tmp', '~syncthing~*.tmp'];
 
+/** The lines DevChain keeps in a repository's `.git/info/exclude` for Syncthing's own files. */
+export const SYNCTHING_GIT_EXCLUDES: readonly string[] = [
+  ...SYNCTHING_MARKERS.map((marker) => `/${marker}`),
+  '*.sync-conflict-*',
+  ...SYNCTHING_TEMP_PATTERNS,
+];
+
 export function isSyncthingTemp(name: string): boolean {
   return SYNCTHING_TEMP_PATTERNS.some((pattern) => {
     const [prefix, suffix] = pattern.split('*');

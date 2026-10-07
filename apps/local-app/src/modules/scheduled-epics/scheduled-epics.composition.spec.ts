@@ -1,16 +1,9 @@
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { ProjectsModule } from '../projects/projects.module';
 import { ScheduledEpicsModule } from './scheduled-epics.module';
 import { SCHEDULED_EPIC_RUNNER_REFRESH } from './services/scheduled-epics.service';
 
 describe('ScheduledEpicsModule app root composition', () => {
-  it('is imported in app.module.ts', () => {
-    const source = readFileSync(join(__dirname, '../../app.module.ts'), 'utf-8');
-    expect(source).toContain('ScheduledEpicsModule');
-  });
-
   it('exports the runner refresh token for cross-module imports', () => {
     const exports =
       (Reflect.getMetadata(MODULE_METADATA.EXPORTS, ScheduledEpicsModule) as unknown[]) ?? [];

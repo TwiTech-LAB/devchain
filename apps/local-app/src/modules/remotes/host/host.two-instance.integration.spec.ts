@@ -1,15 +1,8 @@
-/**
- * Host API routes between two real DevChain apps.
- * Test layer: two-instance integration. The contract is HTTP behavior of a
- * booted app (content-type parser and body limit, status codes, Nest DI of the
- * host providers) over real storage, which only the full app exercises.
- */
 import {
   PROJECT_REPLICA_CONTENT_TYPE,
   ProjectReplicaChangesSchema,
   type ProjectReplicaV1,
 } from '@devchain/shared';
-import { ProjectFrozenError } from '../../../common/errors/error-types';
 import { startTwoInstances, type TwoInstances } from '../../../common/test/two-instance.fixture';
 import { ProjectReplicaBuilder } from '../replica/project-replica.builder';
 import {
@@ -23,6 +16,12 @@ import { ScheduledEpicRunnerService } from '../../scheduled-epics/services/sched
 import { ProjectWriteAdmissionService } from '../admission/project-write-admission.service';
 import { ProjectReplicaApplier } from '../replica/project-replica.applier';
 import { ProjectFreezeService } from './project-freeze.service';
+import * as fs from 'node:fs/promises';
+import { join } from 'node:path';
+import * as tar from 'tar';
+import { HostHelperService } from './host-helper.service';
+import { HostSkillSettingsService } from './host-skill-settings.service';
+import { SkillSourceLifecycleService } from '../../skills/services/skill-source-lifecycle.service';
 
 const WORKSPACE = 'workspace-team';
 
@@ -184,12 +183,6 @@ describe('host API between two instances', () => {
       });
       expect(body.idSets?.epic_comments).toHaveLength(2);
     });
-
-    it('rejects a malformed since', async () => {
-      const response = await fetch(`${hostUrl}/api/host/projects/A/changes?since=yesterday`);
-
-      expect(response.status).toBe(400);
-    });
   });
 
   describe('replica export', () => {
@@ -240,34 +233,6 @@ describe('host API between two instances', () => {
   });
 
   describe('freeze and thaw', () => {
-    it('freezes writes through the service flag and persists it until thaw', async () => {
-      const freezeService = instances.host.app.get(ProjectFreezeService);
-
-      const frozen = await post('/api/host/projects/A/freeze');
-
-      expect(frozen.status).toBe(200);
-      const body = (await frozen.json()) as { projectId: string; frozenAt: string };
-      expect(body.projectId).toBe('A');
-      expect(freezeService.isFrozen('A')).toBe(true);
-      expect(() => freezeService.assertWritable('A')).toThrow(ProjectFrozenError);
-      try {
-        freezeService.assertWritable('A');
-      } catch (error) {
-        expect(error).toMatchObject({ statusCode: 423, code: 'PROJECT_FROZEN' });
-      }
-      expect(
-        instances.host.sqlite.prepare("SELECT frozen_at FROM projects WHERE id = 'A'").get(),
-      ).toEqual({ frozen_at: body.frozenAt });
-
-      const thawed = await post('/api/host/projects/A/thaw');
-
-      expect(thawed.status).toBe(204);
-      expect(freezeService.isFrozen('A')).toBe(false);
-      expect(
-        instances.host.sqlite.prepare("SELECT frozen_at FROM projects WHERE id = 'A'").get(),
-      ).toEqual({ frozen_at: null });
-    });
-
     it('answers 404 for an unknown project', async () => {
       expect((await post('/api/host/projects/nope/freeze')).status).toBe(404);
     });
@@ -275,6 +240,7 @@ describe('host API between two instances', () => {
 
   describe('release', () => {
     it('refuses an unfrozen project', async () => {
+      expect((await post('/api/host/projects/A/thaw')).status).toBe(204);
       const response = await post('/api/host/projects/A/release');
 
       expect(response.status).toBe(409);
@@ -474,15 +440,126 @@ describe('host API between two instances', () => {
         instances.host.sqlite.prepare("SELECT label FROM statuses WHERE id = 'B-status'").get(),
       ).toEqual({ label: 'New' });
     });
+  });
 
-    it('restores the import freeze after a host restart', async () => {
-      // A fresh service over the same storage is what a restarted host builds.
-      const restarted = new ProjectFreezeService(instances.host.storage);
-
-      await restarted.onModuleInit();
-
-      expect(restarted.isFrozen('B')).toBe(true);
-      expect(() => restarted.assertWritable('B')).toThrow(ProjectFrozenError);
+  const body = {
+    revision: 'one',
+    communitySources: [],
+    localSources: [],
+    sourcesEnabled: {},
+    projectIds: [],
+    projectSourceSwitches: [],
+  };
+  describe('Host skill settings HTTP', () => {
+    let homeMarker: jest.SpyInstance;
+    let hostMarker: jest.SpyInstance;
+    let managedRoot: jest.SpyInstance;
+    beforeAll(async () => {
+      homeMarker = jest
+        .spyOn(instances.home.app.get(HostHelperService), 'isClaimedHost')
+        .mockReturnValue(false);
+      hostMarker = jest
+        .spyOn(instances.host.app.get(HostHelperService), 'isClaimedHost')
+        .mockReturnValue(true);
+      managedRoot = jest
+        .spyOn(instances.host.app.get(HostSkillSettingsService), 'managedRoot')
+        .mockReturnValue(join(instances.rootDir, 'managed-skills'));
+    }, 60000);
+    afterAll(async () => {
+      if (instances) {
+        await instances.host.app
+          .get(SkillSourceLifecycleService)
+          .enqueueExclusiveJob(async () => undefined);
+      }
+      managedRoot?.mockRestore();
+      hostMarker?.mockRestore();
+      homeMarker?.mockRestore();
     });
+    const put = (url: string, value: unknown) =>
+      fetch(`${url}/api/host/skill-settings`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(value),
+      });
+    async function status() {
+      return (await fetch(`${instances.host.url}/api/host/skill-settings/status`)).json();
+    }
+    it('refuses all routes on a plain instance and validates the settings body', async () => {
+      expect((await put(instances.home.url, body)).status).toBe(409);
+      expect((await fetch(`${instances.home.url}/api/host/skill-settings/status`)).status).toBe(
+        409,
+      );
+      expect(
+        (
+          await fetch(
+            `${instances.home.url}/api/host/skill-settings/local-sources/local/content?contentHash=h`,
+            { method: 'PUT', headers: { 'content-type': 'application/x-tar' }, body: 'bad' },
+          )
+        ).status,
+      ).toBe(409);
+      expect((await put(instances.host.url, { revision: 'bad' })).status).toBe(400);
+    });
+    it('queues settings with 202 and reports the applied revision', async () => {
+      expect((await put(instances.host.url, body)).status).toBe(202);
+      for (let i = 0; i < 50 && (await status()).pendingRevision; i++)
+        await new Promise((resolve) => setImmediate(resolve));
+      expect(await status()).toEqual({
+        appliedRevision: 'one',
+        pendingRevision: null,
+        skipped: [],
+        needsContent: [],
+      });
+    });
+
+    it('streams gzip tar, replaces copies and imports each version into the catalog, including content uploaded while off', async () => {
+      const input = join(instances.rootDir, 'upload-input');
+      await fs.mkdir(join(input, 'skills', 'example'), { recursive: true });
+      const lifecycle = instances.host.app.get(SkillSourceLifecycleService);
+      for (const [index, text] of ['one', 'two', 'new'].entries()) {
+        const hash = `hash${index}`;
+        const request = {
+          ...body,
+          revision: hash,
+          localSources: [{ name: 'http-local', folderPath: '/home/local', contentHash: hash }],
+          sourcesEnabled: { 'http-local': index !== 2 },
+        };
+        expect((await put(instances.host.url, request)).status).toBe(202);
+        for (let i = 0; i < 50 && (await status()).pendingRevision; i++)
+          await new Promise((resolve) => setImmediate(resolve));
+        const file = join(input, 'skills', 'example', 'SKILL.md');
+        await fs.writeFile(file, `---\nname: example\ndescription: Example\n---\n${text}`);
+        await fs.utimes(file, 1700000000, 1700000000);
+        const chunks: Buffer[] = [];
+        for await (const chunk of tar.c({ cwd: input, gzip: true }, ['skills']))
+          chunks.push(Buffer.from(chunk));
+        const response = await fetch(
+          `${instances.host.url}/api/host/skill-settings/local-sources/http-local/content?contentHash=${hash}`,
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/x-tar' },
+            body: Buffer.concat(chunks),
+          },
+        );
+        expect(response.status).toBe(200);
+        await lifecycle.enqueueExclusiveJob(async () => undefined);
+        const content = () =>
+          instances.host.sqlite
+            .prepare("SELECT instruction_content FROM skills WHERE source = 'http-local'")
+            .get();
+        if (index === 2) {
+          expect(content()).toEqual({ instruction_content: 'two' });
+          await put(instances.host.url, {
+            ...request,
+            revision: 'enabled',
+            sourcesEnabled: { 'http-local': true },
+          });
+          for (let i = 0; i < 50 && (await status()).pendingRevision; i++)
+            await new Promise((resolve) => setImmediate(resolve));
+          await lifecycle.enqueueExclusiveJob(async () => undefined);
+        }
+        expect(content()).toEqual({ instruction_content: text });
+        expect((await status()).needsContent).toEqual([]);
+      }
+    }, 20000);
   });
 });

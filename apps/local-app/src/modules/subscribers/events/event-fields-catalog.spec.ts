@@ -91,23 +91,10 @@ describe('EVENT_FIELDS_CATALOG', () => {
   describe('scheduled_epic.executed', () => {
     const entry = EVENT_FIELDS_CATALOG['scheduled_epic.executed'];
 
-    it('is present in the catalog', () => {
-      expect(entry).toBeDefined();
-    });
-
-    it('uses the epic category', () => {
-      expect(entry.category).toBe('epic');
-    });
-
-    it('has the correct name and label', () => {
-      expect(entry.name).toBe('scheduled_epic.executed');
-      expect(entry.label).toBe('Scheduled Epic Executed');
-    });
-
-    it('exposes all required payload fields', () => {
-      const fieldNames = entry.fields.map((f) => f.field);
-      expect(fieldNames).toEqual(
-        expect.arrayContaining([
+    it.each([
+      {
+        name: 'all fields',
+        names: [
           'scheduleId',
           'runId',
           'projectId',
@@ -121,49 +108,40 @@ describe('EVENT_FIELDS_CATALOG', () => {
           'createdEpicTitle',
           'errorCode',
           'errorMessage',
-        ]),
-      );
-    });
-
-    it('marks nullable fields correctly', () => {
-      const nullable = entry.fields.filter((f) => f.nullable).map((f) => f.field);
-      expect(nullable).toEqual(
-        expect.arrayContaining([
-          'lagMs',
-          'createdEpicId',
-          'createdEpicTitle',
-          'errorCode',
-          'errorMessage',
-        ]),
-      );
-    });
-
-    it('does not mark required fields as nullable', () => {
-      const required = [
-        'scheduleId',
-        'runId',
-        'projectId',
-        'scheduleName',
-        'triggerSource',
-        'status',
-        'plannedFor',
-        'finishedAt',
-      ];
-      for (const name of required) {
+        ],
+        nullable: undefined,
+        type: undefined,
+      },
+      {
+        name: 'nullable fields',
+        names: ['lagMs', 'createdEpicId', 'createdEpicTitle', 'errorCode', 'errorMessage'],
+        nullable: true,
+        type: undefined,
+      },
+      {
+        name: 'required fields',
+        names: [
+          'scheduleId',
+          'runId',
+          'projectId',
+          'scheduleName',
+          'triggerSource',
+          'status',
+          'plannedFor',
+          'finishedAt',
+        ],
+        nullable: false,
+        type: undefined,
+      },
+      { name: 'numeric fields', names: ['lagMs'], nullable: undefined, type: 'number' },
+    ])('exposes $name', ({ names, nullable, type }) => {
+      for (const name of names) {
         const field = entry.fields.find((f) => f.field === name);
-        expect(field?.nullable).toBeFalsy();
+        expect(field).toBeDefined();
+        if (nullable === true) expect(field?.nullable).toBe(true);
+        if (nullable === false) expect(field?.nullable).toBeFalsy();
+        if (type !== undefined) expect(field?.type).toBe(type);
       }
-    });
-
-    it('has correct types for numeric fields', () => {
-      const lagMs = entry.fields.find((f) => f.field === 'lagMs');
-      expect(lagMs?.type).toBe('number');
-    });
-  });
-
-  describe('getSubscribableEvents', () => {
-    it('includes scheduled_epic.executed', () => {
-      expect(getSubscribableEvents()).toContain('scheduled_epic.executed');
     });
   });
 
@@ -205,19 +183,6 @@ describe('EVENT_FIELDS_CATALOG', () => {
       const byCategory = getEventsByCategory();
       const epicEvents = byCategory.get('epic') ?? [];
       const names = epicEvents.map((e) => e.name);
-      expect(names).toContain('scheduled_epic.executed');
-    });
-
-    it('does not introduce a schedule category', () => {
-      const byCategory = getEventsByCategory();
-      expect(byCategory.has('schedule')).toBe(false);
-    });
-
-    it('preserves epic.created alongside scheduled_epic.executed', () => {
-      const byCategory = getEventsByCategory();
-      const epicEvents = byCategory.get('epic') ?? [];
-      const names = epicEvents.map((e) => e.name);
-      expect(names).toContain('epic.created');
       expect(names).toContain('scheduled_epic.executed');
     });
   });

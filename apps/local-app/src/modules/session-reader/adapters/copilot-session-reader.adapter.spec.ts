@@ -3,7 +3,6 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { CopilotSessionReaderAdapter } from './copilot-session-reader.adapter';
-import { SessionReaderAdapterFactory } from './session-reader-adapter.factory';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 
 const homeDir = os.homedir();
@@ -221,25 +220,6 @@ describe('CopilotSessionReaderAdapter', () => {
       ];
       adapter.calculateCost(entries, 'claude-haiku-4.5');
       expect(mockPricing.calculateMessageCost).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('factory registration', () => {
-    it('resolves via SessionReaderAdapterFactory by provider name', () => {
-      const factory = new SessionReaderAdapterFactory();
-      factory.registerAdapter(adapter);
-      expect(factory.getAdapter('copilot')).toBe(adapter);
-      expect(factory.isSupported('copilot')).toBe(true);
-      expect(factory.getSupportedProviders()).toContain('copilot');
-    });
-
-    it('auto-detects via allowedRoots for a session-state path', () => {
-      const factory = new SessionReaderAdapterFactory();
-      factory.registerAdapter(adapter);
-      const detected = factory.getAdapterForPath(
-        path.join(homeDir, '.copilot/session-state/some-uuid/events.jsonl'),
-      );
-      expect(detected).toBe(adapter);
     });
   });
 });

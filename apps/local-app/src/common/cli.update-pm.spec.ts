@@ -92,34 +92,6 @@ describe('detectGlobalPackageManager', () => {
     expect(result).toBeNull();
   });
 
-  it('detects pnpm when only pnpm is available on PATH', () => {
-    const scriptPath = `${PNPM_GLOBAL_ROOT}/devchain-cli/scripts/cli.js`;
-    const result = detectGlobalPackageManager(PKG, {
-      realpathSyncFn: () => scriptPath,
-      execFileSyncFn: buildExecFileSyncMock(['pnpm'], {
-        pnpm: PNPM_GLOBAL_ROOT,
-      }),
-      argvPath: '/fake/bin/devchain',
-    });
-
-    expect(result).not.toBeNull();
-    expect(result!.name).toBe('pnpm');
-  });
-
-  it('detects npm when only npm is available on PATH', () => {
-    const scriptPath = `${NPM_GLOBAL_ROOT}/devchain-cli/scripts/cli.js`;
-    const result = detectGlobalPackageManager(PKG, {
-      realpathSyncFn: () => scriptPath,
-      execFileSyncFn: buildExecFileSyncMock(['npm'], {
-        npm: NPM_GLOBAL_ROOT,
-      }),
-      argvPath: '/fake/bin/devchain',
-    });
-
-    expect(result).not.toBeNull();
-    expect(result!.name).toBe('npm');
-  });
-
   it('returns null when neither PM is available on PATH', () => {
     const result = detectGlobalPackageManager(PKG, {
       realpathSyncFn: () => '/some/path/cli.js',

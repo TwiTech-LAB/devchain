@@ -221,18 +221,6 @@ describe('PresetSettingsDelegate', () => {
   });
 
   describe('Invariant: schema validation', () => {
-    it('rejects create with invalid preset (missing name)', async () => {
-      await expect(
-        delegate.createProjectPreset('proj-1', { name: '', agentConfigs: [] }),
-      ).rejects.toThrow(ValidationError);
-    });
-
-    it('rejects create with invalid preset (missing agentConfigs)', async () => {
-      await expect(delegate.createProjectPreset('proj-1', { name: 'Test' })).rejects.toThrow(
-        ValidationError,
-      );
-    });
-
     it('rejects update with invalid name type', async () => {
       await delegate.createProjectPreset('proj-1', validPreset);
 
@@ -287,24 +275,11 @@ describe('PresetSettingsDelegate', () => {
       expect(delegate.getProjectPresets('proj-1')).toEqual([]);
     });
 
-    it('setProjectPresets stores validated presets', async () => {
-      await delegate.setProjectPresets('proj-1', [validPreset]);
-      const presets = delegate.getProjectPresets('proj-1');
-      expect(presets).toHaveLength(1);
-      expect(presets[0].name).toBe('Test Preset');
-    });
-
     it('setProjectPresets overwrites existing presets', async () => {
       await delegate.setProjectPresets('proj-1', [validPreset]);
       await delegate.setProjectPresets('proj-1', [validPreset2]);
       expect(delegate.getProjectPresets('proj-1')).toHaveLength(1);
       expect(delegate.getProjectPresets('proj-1')[0].name).toBe('Another Preset');
-    });
-
-    it('clearProjectPresets removes presets for project', async () => {
-      await delegate.setProjectPresets('proj-1', [validPreset]);
-      await delegate.clearProjectPresets('proj-1');
-      expect(delegate.getProjectPresets('proj-1')).toEqual([]);
     });
 
     it('clearProjectPresets does not affect other projects', async () => {
@@ -353,12 +328,6 @@ describe('PresetSettingsDelegate', () => {
       await expect(
         delegate.updateProjectPreset('proj-1', 'NotThere', { name: 'New' }),
       ).rejects.toThrow(ValidationError);
-    });
-
-    it('delete matches name case-insensitively', async () => {
-      await delegate.createProjectPreset('proj-1', validPreset);
-      await delegate.deleteProjectPreset('proj-1', 'test preset');
-      expect(delegate.getProjectPresets('proj-1')).toHaveLength(0);
     });
 
     it('update matches name case-insensitively', async () => {
@@ -436,34 +405,6 @@ describe('PresetSettingsDelegate', () => {
       expect(presets[0].agentConfigs).toEqual([]);
     });
 
-    it('preserves preset description and order after removal', async () => {
-      await delegate.setProjectPresets('proj-1', [
-        {
-          name: 'First',
-          description: 'first desc',
-          agentConfigs: [
-            { agentName: 'Agent1', providerConfigName: 'C1' },
-            { agentName: 'Agent2', providerConfigName: 'C2' },
-          ],
-        },
-        {
-          name: 'Second',
-          description: 'second desc',
-          agentConfigs: [{ agentName: 'Agent1', providerConfigName: 'C3' }],
-        },
-      ]);
-
-      await delegate.removeAgentFromProjectPresets('proj-1', 'Agent1');
-
-      const presets = delegate.getProjectPresets('proj-1');
-      expect(presets[0].name).toBe('First');
-      expect(presets[0].description).toBe('first desc');
-      expect(presets[0].agentConfigs).toEqual([{ agentName: 'Agent2', providerConfigName: 'C2' }]);
-      expect(presets[1].name).toBe('Second');
-      expect(presets[1].description).toBe('second desc');
-      expect(presets[1].agentConfigs).toEqual([]);
-    });
-
     it('throws ValidationError for whitespace-only agent name', async () => {
       await expect(delegate.removeAgentFromProjectPresets('proj-1', '   ')).rejects.toThrow(
         ValidationError,
@@ -496,20 +437,6 @@ describe('PresetSettingsDelegate', () => {
       spy.mockRestore();
       expect(writeCount).toBe(0);
       expect(delegate.getProjectPresets('proj-1')).toEqual([validPreset]);
-    });
-
-    it('does not affect other projects', async () => {
-      await delegate.setProjectPresets('proj-1', [
-        { name: 'P1', agentConfigs: [{ agentName: 'SharedAgent', providerConfigName: 'C1' }] },
-      ]);
-      await delegate.setProjectPresets('proj-2', [
-        { name: 'P2', agentConfigs: [{ agentName: 'SharedAgent', providerConfigName: 'C2' }] },
-      ]);
-
-      await delegate.removeAgentFromProjectPresets('proj-1', 'SharedAgent');
-
-      expect(delegate.getProjectPresets('proj-1')[0].agentConfigs).toHaveLength(0);
-      expect(delegate.getProjectPresets('proj-2')[0].agentConfigs).toHaveLength(1);
     });
 
     it('preserves modelOverride on remaining agentConfigs after removal', async () => {

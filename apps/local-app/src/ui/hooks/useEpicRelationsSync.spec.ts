@@ -1,5 +1,4 @@
 import { QueryClient } from '@tanstack/react-query';
-import type { WsEnvelope } from '@/ui/lib/socket';
 import { dispatchRealtimeEnvelope } from '@/ui/lib/realtime-invalidation-registry';
 import { epicRelationQueryKeys } from '@/ui/lib/epic-relations';
 import { epicTimeQueryKeys } from '@/ui/lib/epic-time';
@@ -8,62 +7,30 @@ import { createEpicRelationsInvalidationRegistry } from './useEpicRelationsSync'
 describe('useEpicRelationsSync registry', () => {
   const workspaceId = '11111111-1111-4111-8111-111111111111';
 
-  it('invalidates relation and Epic-time families for its exact workspace topic', () => {
-    const queryClient = new QueryClient();
-    const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
-    const envelope: WsEnvelope = {
-      topic: `workspace/${workspaceId}/epic-relations`,
-      type: 'invalidated',
-      payload: { workspaceId },
-      ts: '2026-08-29T00:00:00.000Z',
-    };
-
-    dispatchRealtimeEnvelope(
-      envelope,
-      createEpicRelationsInvalidationRegistry(workspaceId),
-      queryClient,
-    );
-
-    expect(invalidate).toHaveBeenNthCalledWith(1, {
-      queryKey: epicRelationQueryKeys.detailRoot(),
-    });
-    expect(invalidate).toHaveBeenNthCalledWith(2, {
-      queryKey: epicRelationQueryKeys.candidateRoot(),
-    });
-    expect(invalidate).toHaveBeenNthCalledWith(3, {
-      queryKey: epicRelationQueryKeys.batchRoot(),
-    });
-    expect(invalidate).toHaveBeenNthCalledWith(4, {
-      queryKey: epicTimeQueryKeys.detailRoot(),
-    });
-    expect(invalidate).toHaveBeenNthCalledWith(5, {
-      queryKey: epicTimeQueryKeys.batchRoot(),
-    });
-  });
-
-  it('invalidates the same families when a remote replica apply lands', () => {
-    const queryClient = new QueryClient();
-    const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
-
-    dispatchRealtimeEnvelope(
-      {
-        topic: `workspace/${workspaceId}/epic-relations`,
-        type: 'remote-synced',
-        payload: { workspaceId },
-        ts: '2026-09-22T00:00:00.000Z',
-      },
-      createEpicRelationsInvalidationRegistry(workspaceId),
-      queryClient,
-    );
-
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
-      epicRelationQueryKeys.detailRoot(),
-      epicRelationQueryKeys.candidateRoot(),
-      epicRelationQueryKeys.batchRoot(),
-      epicTimeQueryKeys.detailRoot(),
-      epicTimeQueryKeys.batchRoot(),
-    ]);
-  });
+  it.each([{ type: 'invalidated' }, { type: 'remote-synced' }] as const)(
+    '$type invalidates ordered relation and time families',
+    ({ type }) => {
+      const queryClient = new QueryClient();
+      const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
+      dispatchRealtimeEnvelope(
+        {
+          topic: `workspace/${workspaceId}/epic-relations`,
+          type,
+          payload: { workspaceId },
+          ts: '2026-09-22T00:00:00.000Z',
+        },
+        createEpicRelationsInvalidationRegistry(workspaceId),
+        queryClient,
+      );
+      expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+        epicRelationQueryKeys.detailRoot(),
+        epicRelationQueryKeys.candidateRoot(),
+        epicRelationQueryKeys.batchRoot(),
+        epicTimeQueryKeys.detailRoot(),
+        epicTimeQueryKeys.batchRoot(),
+      ]);
+    },
+  );
 
   it('ignores globally broadcast envelopes for another workspace', () => {
     const queryClient = new QueryClient();

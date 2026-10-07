@@ -106,26 +106,6 @@ describe('useEpicTimeDetail', () => {
     });
   });
 
-  it('defaults the routed-scope flag to false when the payload omits it', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        isRoot: true,
-        directMinutes: 30,
-        totalMinutes: 90,
-        items: summaryPayload.items,
-        taskItems: summaryPayload.taskItems,
-      }),
-    });
-    const { result } = renderHook(() => useEpicTimeDetail('epic-1'), {
-      wrapper: wrapper(client),
-    });
-
-    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
-
-    expect(result.current.summary?.includesRelatedTime).toBe(false);
-  });
-
   it('keeps complete team rows and normalizes incomplete attribution to direct time', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
@@ -303,22 +283,7 @@ describe('useEpicTimeDetail', () => {
     expect(
       client.getQueryData(epicTimeQueryKeys.detail('epic-1', timeZone, 'active')),
     ).toBeDefined();
-  });
-
-  it('re-admits to the primed active cache immediately after a disabled stretch', async () => {
-    const { result, rerender } = renderHook(
-      ({ enabled }: { enabled: boolean }) => useEpicTimeDetail('epic-1', { enabled }),
-      { wrapper: wrapper(client), initialProps: { enabled: true } },
-    );
-
-    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
-
-    rerender({ enabled: false });
-    expect(result.current.summary).toBeUndefined();
-
     rerender({ enabled: true });
-    // The active cache entry serves the card again right away; any later
-    // refresh is a fresh active-scope request, not a disabled-scope leak.
     expect(result.current.summary?.totalMinutes).toBe(90);
   });
 

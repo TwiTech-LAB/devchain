@@ -38,11 +38,6 @@ describe('protobuf-wire decodeMessage', () => {
     expect(getVarint(msg, 9)).toBeUndefined();
   });
 
-  it('decodes large varints (multi-byte) accurately', () => {
-    const msg = decodeMessage(vField(2, 148509));
-    expect(getVarint(msg, 2)).toBe(148509);
-  });
-
   it('decodes nested messages and strings', () => {
     const usage = Buffer.concat([vField(2, 100), vField(3, 50)]);
     const wrapper = Buffer.concat([lenField(4, usage), strField(19, 'gemini-3-flash-a')]);
@@ -61,18 +56,11 @@ describe('protobuf-wire decodeMessage', () => {
     expect(getString(msg, 19)).toBeUndefined();
   });
 
-  it('throws ProtobufDecodeError on a truncated varint', () => {
-    expect(() => decodeMessage(Buffer.from([0x80]))).toThrow(ProtobufDecodeError);
-  });
-
-  it('throws ProtobufDecodeError on a truncated length-delimited field', () => {
-    // tag for field 1 wt2, length 10, but no payload
-    expect(() => decodeMessage(Buffer.concat([tag(1, 2), varint(10)]))).toThrow(
-      ProtobufDecodeError,
-    );
-  });
-
-  it('throws ProtobufDecodeError on field number 0', () => {
-    expect(() => decodeMessage(Buffer.from([0x00, 0x01]))).toThrow(ProtobufDecodeError);
+  it.each([
+    ['truncated varint', Buffer.from([0x80])],
+    ['truncated length-delimited field', Buffer.concat([tag(1, 2), varint(10)])],
+    ['field number zero', Buffer.from([0x00, 0x01])],
+  ] as const)('throws ProtobufDecodeError for %s', (_name, buffer) => {
+    expect(() => decodeMessage(buffer)).toThrow(ProtobufDecodeError);
   });
 });

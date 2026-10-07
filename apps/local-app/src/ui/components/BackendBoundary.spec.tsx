@@ -201,24 +201,22 @@ describe('BackendBoundary', () => {
     expect(mounts).toBe(1);
   });
 
-  it('shows the needs-update banner and issues no page query when versions differ', async () => {
-    remotes = [
-      { id: REMOTE_ID, name: 'lab-vm', online: true, version: '0.9.0', versionMatches: false },
-    ];
-    mockSelectedProjectId = BOUND_PROJECT;
-    renderApp(newHomeClient());
-
-    const banner = await screen.findByTestId('remote-unavailable-banner');
-    expect(banner.textContent).toContain('needs update');
-    expect(banner.textContent).toContain('0.9.0');
-    expect(screen.getByTestId('remote-backend-badge').textContent).toBe('Remote: lab-vm');
-    expect(screen.queryByTestId('providers')).toBeNull();
-    expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/api/providers'))).toBe(false);
-  });
-
-  it("shows the API key banner and issues no page query when the remote rejects this PC's key", async () => {
-    remotes = [
-      {
+  it.each([
+    {
+      label: 'version differs',
+      remote: {
+        id: REMOTE_ID,
+        name: 'lab-vm',
+        online: true,
+        version: '0.9.0',
+        versionMatches: false,
+      },
+      text: 'needs update',
+      version: '0.9.0',
+    },
+    {
+      label: 'API key rejected',
+      remote: {
         id: REMOTE_ID,
         name: 'lab-vm',
         online: true,
@@ -226,12 +224,17 @@ describe('BackendBoundary', () => {
         version: '1.0.0',
         versionMatches: true,
       },
-    ];
+      text: "rejected this PC's API key",
+      version: null,
+    },
+  ] as const)('blocks page query when $label', async ({ remote, text, version }) => {
+    remotes = [remote];
     mockSelectedProjectId = BOUND_PROJECT;
     renderApp(newHomeClient());
-
     const banner = await screen.findByTestId('remote-unavailable-banner');
-    expect(banner.textContent).toContain("rejected this PC's API key");
+    expect(banner.textContent).toContain(text);
+    if (version) expect(banner.textContent).toContain(version);
+    expect(screen.getByTestId('remote-backend-badge').textContent).toBe('Remote: lab-vm');
     expect(screen.queryByTestId('providers')).toBeNull();
     expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/api/providers'))).toBe(false);
   });

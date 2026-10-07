@@ -143,17 +143,21 @@ describe('projectExternalTaskHierarchy', () => {
     const fourLevel = projectExternalTaskHierarchy([root, middle, child, deepest]);
     expect(fourLevel.visibleTasks).toEqual([root, child, deepest]);
     expect([...fourLevel.nestedTaskIds]).toEqual(['middle']);
+    expect(fourLevel.groupedChildCountByParentId).toEqual(new Map([['root', 1]]));
   });
 
-  it('keeps self-parent and two-node cycles visible', () => {
+  it('keeps cyclic tasks visible and excluded from grouped counts', () => {
     const self = hierarchyTask('self', 'self');
     const left = hierarchyTask('left', 'right');
     const right = hierarchyTask('right', 'left');
-
     const projection = projectExternalTaskHierarchy([self, left, right]);
-
-    expect(projection.visibleTasks).toEqual([self, left, right]);
-    expect(projection.nestedTaskIds.size).toBe(0);
+    {
+      expect(projection.visibleTasks).toEqual([self, left, right]);
+      expect(projection.nestedTaskIds.size).toBe(0);
+    }
+    {
+      expect(projection.groupedChildCountByParentId.size).toBe(0);
+    }
   });
 
   it('promotes an active child when its completed parent is filtered out', () => {
@@ -175,32 +179,6 @@ describe('projectExternalTaskHierarchy', () => {
     const projection = projectExternalTaskHierarchy([parent, firstChild, secondChild, orphan]);
 
     expect(projection.groupedChildCountByParentId).toEqual(new Map([['parent', 2]]));
-  });
-
-  it('keeps self-parent and cyclic tasks out of every grouped count', () => {
-    const self = hierarchyTask('self', 'self');
-    const left = hierarchyTask('left', 'right');
-    const right = hierarchyTask('right', 'left');
-
-    const projection = projectExternalTaskHierarchy([self, left, right]);
-
-    expect(projection.groupedChildCountByParentId.size).toBe(0);
-  });
-
-  it('keeps deeper descendants visible without inflating a grouped count', () => {
-    const root = hierarchyTask('root', null);
-    const middle = hierarchyTask('middle', 'root');
-    const child = hierarchyTask('child', 'middle');
-    const deepest = hierarchyTask('deepest', 'child');
-
-    const projection = projectExternalTaskHierarchy([root, middle, child, deepest]);
-
-    expect(projection.visibleTasks.map(({ remoteId }) => remoteId)).toEqual([
-      'root',
-      'child',
-      'deepest',
-    ]);
-    expect(projection.groupedChildCountByParentId).toEqual(new Map([['root', 1]]));
   });
 
   it('drops a grouped count when the child leaves the snapshot and retains a completed child', () => {

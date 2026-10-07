@@ -15,6 +15,7 @@ export interface HostInstallPins {
     sha256: string;
   };
   aptPackages: string[];
+  toolPackages?: string[];
 }
 
 export interface HostInstallBlockOptions {
@@ -82,6 +83,7 @@ export function generateHostInstallBlock(options: HostInstallBlockOptions): stri
   }
 
   const quotedAptPackages = aptPackages.map(shellQuote).join(' ');
+  const quotedToolPackages = (pins.toolPackages ?? []).map(shellQuote).join(' ');
   const invocation = options.checkOnly ? 'devchain_host_install --check' : 'devchain_host_install';
 
   return `# DevChain host installer. Run only on a dedicated LAN or VPN VM.
@@ -105,6 +107,7 @@ DEVCHAIN_BOOTSTRAP_PORT=${HOST_INSTALL_BOOTSTRAP_PORT}
 DEVCHAIN_CERT_PATH=${shellQuote(HOST_CERTIFICATE_PATH)}
 DEVCHAIN_FINGERPRINT_COMMAND=${shellQuote(HOST_CERTIFICATE_FINGERPRINT_COMMAND)}
 DEVCHAIN_BASE_APT_PACKAGES=(${quotedAptPackages})
+DEVCHAIN_TOOL_APT_PACKAGES=(${quotedToolPackages})
 
 devchain_host_install() {
   (
@@ -381,6 +384,11 @@ devchain_host_install() {
     done
     if [[ -n "$output" ]]; then printf '%s\\n' "$output"; fi
   }
+  devchain_update_package_lists() {
+    if ! devchain_when_unlocked 'apt lists' apt-get -o DPkg::Lock::Timeout=600 update; then
+      devchain_warn 'apt-get update failed; continuing with the available package lists.'
+    fi
+  }
   devchain_when_unlocked dpkg dpkg --configure -a
 
   local guest_package=''
@@ -388,7 +396,7 @@ devchain_host_install() {
     kvm|qemu) guest_package=qemu-guest-agent ;;
     vmware) guest_package=open-vm-tools ;;
   esac
-  devchain_when_unlocked 'apt lists' apt-get -o DPkg::Lock::Timeout=600 update
+  devchain_update_package_lists
   local -a install_packages=("\${DEVCHAIN_BASE_APT_PACKAGES[@]}")
   if [[ -n "$guest_package" ]]; then install_packages+=("$guest_package"); fi
   apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "\${install_packages[@]}"
@@ -417,8 +425,75 @@ devchain_host_install() {
   curl -fsSLo "$(devchain_path /etc/apt/keyrings/syncthing-archive-keyring.gpg)" https://syncthing.net/release-key.gpg
   printf '%s\\n' 'deb [signed-by=/etc/apt/keyrings/syncthing-archive-keyring.gpg] https://apt.syncthing.net/ syncthing stable-v2' \
     > "$(devchain_path /etc/apt/sources.list.d/syncthing.list)"
-  devchain_when_unlocked 'apt lists' apt-get -o DPkg::Lock::Timeout=600 update
+  devchain_update_package_lists
   apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "syncthing=$DEVCHAIN_SYNCTHING_VERSION"
+
+  # Agent tools are best effort, so they come after every required apt step, and they only add
+  # packages: a failed upgrade of a package that installed packages depend on cannot be purged
+  # again. One budget covers every attempt; the env override keeps it testable in seconds
+  local -a tools_before=() missing_tools=()
+  local tool_package tool_changes=''
+  # usage: devchain_package_states; prints "<package> <status>" for every package that dpkg knows
+  devchain_package_states() {
+    dpkg-query -W -f='\${binary:Package} \${db:Status-Status}\\n' 2>/dev/null
+  }
+  mapfile -t tools_before < <(devchain_package_states | awk '$2 == "installed" { print $1 }')
+  for tool_package in "\${DEVCHAIN_TOOL_APT_PACKAGES[@]}"; do
+    [[ " \${tools_before[*]} " == *" $tool_package "* ]] || missing_tools+=("$tool_package")
+  done
+  if (( \${#missing_tools[@]} > 0 )); then
+    local tools_budget=600
+    if [[ "\${DEVCHAIN_TOOLS_TIMEOUT:-}" =~ ^[0-9]+$ ]]; then tools_budget="$DEVCHAIN_TOOLS_TIMEOUT"; fi
+    local tools_deadline=$((SECONDS + tools_budget))
+    # A failed or killed install can leave a package unconfigured, and apt then refuses every later
+    # install, so finish the interrupted work and purge the unconfigured packages the tools added
+    devchain_clean_tools() {
+      timeout --kill-after=5s 120s dpkg --configure -a >/dev/null 2>&1 || true
+      local -a broken=()
+      mapfile -t broken < <(devchain_package_states |
+        awk -v before=" \${tools_before[*]} " '$2 != "installed" && $2 != "not-installed" &&
+          $2 != "config-files" && index(before, " " $1 " ") == 0 { print $1 }')
+      if (( \${#broken[@]} > 0 )) &&
+        ! timeout --kill-after=5s 120s dpkg --purge --force-remove-reinstreq "\${broken[@]}"; then
+        devchain_warn "Could not remove the unconfigured packages \${broken[*]}; run dpkg --configure -a."
+      fi
+    }
+    # usage: devchain_tools_apt <seconds> <apt-get argument>...; the remaining budget caps the run
+    devchain_tools_apt() {
+      local limit="$1" remaining=$((tools_deadline - SECONDS))
+      shift
+      if (( remaining < limit )); then limit="$remaining"; fi
+      if (( limit <= 0 )); then return 124; fi
+      timeout --kill-after=5s "\${limit}s" apt-get "$@"
+    }
+    # usage: devchain_install_tools <seconds> <package>...; a dry run comes first, and an install
+    # that would change installed packages sets tool_changes
+    devchain_install_tools() {
+      local plan status=0
+      plan="$(devchain_tools_apt "$1" -s install -y --no-install-recommends --no-remove "\${@:2}" 2>&1)" ||
+        return "$?"
+      tool_changes="$(awk '$1 == "Inst" && $3 ~ /^\\[/ { printf "%s ", $2 }' <<< "$plan")"
+      if [[ -n "$tool_changes" ]]; then return 1; fi
+      devchain_tools_apt "$1" -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
+        --no-remove "\${@:2}" || status=$?
+      if (( status != 0 )); then devchain_clean_tools; fi
+      return "$status"
+    }
+    if ! devchain_install_tools 180 "\${missing_tools[@]}"; then
+      for tool_package in "\${missing_tools[@]}"; do
+        tool_changes=''
+        if (( SECONDS >= tools_deadline )); then
+          devchain_warn "Skipped agent tool $tool_package: the agent tools time budget ran out."
+        elif ! devchain_install_tools 120 "$tool_package"; then
+          if [[ -n "$tool_changes" ]]; then
+            devchain_warn "Skipped agent tool $tool_package: it would change the installed packages \${tool_changes% }."
+          else
+            devchain_warn "Skipped agent tool $tool_package: package installation failed."
+          fi
+        fi
+      done
+    fi
+  fi
 
   mkdir -p "$(devchain_path /etc/sysctl.d)"
   printf '%s' "$DEVCHAIN_SYSCTL_CONFIG" > "$(devchain_path /etc/sysctl.d/60-devchain-inotify.conf)"

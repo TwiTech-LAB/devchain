@@ -262,27 +262,42 @@ describe('ProjectTemplateUpgradeService', () => {
   });
 
   describe('upgradeProject', () => {
-    it('should create backup before upgrade', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+    it('returns non-mutating failure results for validation before backup creation', async () => {
+      const metadata = {
         templateSlug: 'test-template',
         installedVersion: '1.0.0',
         registryUrl: 'https://test.com',
         installedAt: new Date().toISOString(),
+      };
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue(metadata);
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValueOnce(null);
+      await expect(
+        service.upgradeProject({ projectId: 'project-123', targetVersion: '2.0.0' }),
+      ).resolves.toEqual({
+        success: false,
+        mutationStarted: false,
+        error: 'Project not linked to a template',
       });
-      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
-        content: { _manifest: { version: '2.0.0' }, prompts: [] },
-        metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValueOnce({
+        ...metadata,
+        source: 'file',
       });
-      mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
-
-      const result = await service.upgradeProject({
-        projectId: 'project-123',
-        targetVersion: '2.0.0',
+      await expect(
+        service.upgradeProject({ projectId: 'project-123', targetVersion: '2.0.0' }),
+      ).resolves.toEqual({
+        success: false,
+        mutationStarted: false,
+        error: 'File-based templates cannot be upgraded',
       });
-
-      expect(mockProjectsService.exportProject).toHaveBeenCalled();
-      expect(result.success).toBe(true);
+      mockCacheService.getTemplate.mockResolvedValueOnce(null);
+      await expect(
+        service.upgradeProject({ projectId: 'project-123', targetVersion: '9.0.0' }),
+      ).resolves.toEqual({
+        success: false,
+        mutationStarted: false,
+        error: 'Version 9.0.0 is not cached. Please download it first from the Registry page.',
+      });
+      expect(mockProjectsService.exportProject).not.toHaveBeenCalled();
     });
 
     it('should apply template and update metadata', async () => {
@@ -842,30 +857,6 @@ describe('ProjectTemplateUpgradeService', () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain('Bundled template version is 1.5.0, not 2.0.0');
       });
-
-      it('should not use cache service for bundled templates', async () => {
-        mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
-          templateSlug: 'bundled-template',
-          source: 'bundled',
-          installedVersion: '1.0.0',
-          registryUrl: null,
-          installedAt: new Date().toISOString(),
-        });
-        mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-        mockUnifiedTemplateService.getBundledTemplate.mockReturnValue({
-          content: { prompts: [], _manifest: { version: '2.0.0' } },
-          source: 'bundled',
-          version: null,
-        });
-        mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
-
-        await service.upgradeProject({
-          projectId: 'project-123',
-          targetVersion: '2.0.0',
-        });
-
-        expect(mockCacheService.getTemplate).not.toHaveBeenCalled();
-      });
     });
   });
 
@@ -950,55 +941,36 @@ describe('ProjectTemplateUpgradeService', () => {
       );
     });
 
-    it('should include source field when restoring registry template metadata', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'test-template',
-        source: 'registry',
-        installedVersion: '1.0.0',
-        registryUrl: 'https://test.com',
-        installedAt: new Date().toISOString(),
-      });
-      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
-
-      const backupId = await service.createBackup('project-123');
-      await service.restoreBackup(backupId);
-
-      expect(mockSettingsService.setProjectTemplateMetadata).toHaveBeenCalledWith(
-        'project-123',
-        expect.objectContaining({
-          source: 'registry',
-          templateSlug: 'test-template',
+    it.each([
+      { source: 'registry', templateSlug: 'test-template', registryUrl: 'https://test.com' },
+      { source: 'bundled', templateSlug: 'bundled-template', registryUrl: null },
+    ] as const)(
+      'restores $source template metadata',
+      async ({ source, templateSlug, registryUrl }) => {
+        mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+          templateSlug,
+          source,
           installedVersion: '1.0.0',
-          registryUrl: 'https://test.com',
-        }),
-      );
-    });
+          registryUrl,
+          installedAt: new Date().toISOString(),
+        });
+        mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
+        mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
 
-    it('should restore bundled template with correct source and null registryUrl', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'bundled-template',
-        source: 'bundled',
-        installedVersion: '1.0.0',
-        registryUrl: null,
-        installedAt: new Date().toISOString(),
-      });
-      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockProjectsService.importProject.mockResolvedValue(createMockImportResult());
+        const backupId = await service.createBackup('project-123');
+        await service.restoreBackup(backupId);
 
-      const backupId = await service.createBackup('project-123');
-      await service.restoreBackup(backupId);
-
-      expect(mockSettingsService.setProjectTemplateMetadata).toHaveBeenCalledWith(
-        'project-123',
-        expect.objectContaining({
-          source: 'bundled',
-          templateSlug: 'bundled-template',
-          installedVersion: '1.0.0',
-          registryUrl: null,
-        }),
-      );
-    });
+        expect(mockSettingsService.setProjectTemplateMetadata).toHaveBeenCalledWith(
+          'project-123',
+          expect.objectContaining({
+            source,
+            templateSlug,
+            installedVersion: '1.0.0',
+            registryUrl,
+          }),
+        );
+      },
+    );
   });
 
   describe('getBackupInfo', () => {
@@ -1096,7 +1068,23 @@ describe('ProjectTemplateUpgradeService', () => {
   });
 
   describe('restoreBackup error handling', () => {
-    it('should propagate import errors during restore', async () => {
+    it.each([
+      {
+        label: 'thrown import',
+        failure: new Error('Restore import failed'),
+        error: 'Restore import failed',
+      },
+      {
+        label: 'unsuccessful import',
+        failure: { success: false, error: 'snapshot rejected' },
+        error: 'Backup restore import failed: snapshot rejected',
+      },
+      {
+        label: 'non-boolean success',
+        failure: { success: 'yes' },
+        error: 'Backup restore import failed',
+      },
+    ])('$label', async ({ failure, error }) => {
       mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
         templateSlug: 'test-template',
         installedVersion: '1.0.0',
@@ -1107,48 +1095,12 @@ describe('ProjectTemplateUpgradeService', () => {
 
       const backupId = await service.createBackup('project-123');
 
-      mockProjectsService.importProject.mockRejectedValue(new Error('Restore import failed'));
-
-      await expect(service.restoreBackup(backupId)).rejects.toThrow('Restore import failed');
-      expect(service.getBackupInfo(backupId)).not.toBeNull();
-      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
-    });
-
-    it('retains the backup and metadata when restore resolves without success=true', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'test-template',
-        installedVersion: '1.0.0',
-        registryUrl: 'https://test.com',
-        installedAt: new Date().toISOString(),
-      });
-      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      const backupId = await service.createBackup('project-123');
-      mockProjectsService.importProject.mockResolvedValue({
-        success: false,
-        error: 'snapshot rejected',
-      } as never);
-
-      await expect(service.restoreBackup(backupId)).rejects.toThrow(
-        'Backup restore import failed: snapshot rejected',
-      );
-
-      expect(service.getBackupInfo(backupId)).not.toBeNull();
-      expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
-    });
-
-    it('rejects a truthy non-boolean restore result without cleanup', async () => {
-      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'test-template',
-        installedVersion: '1.0.0',
-        registryUrl: 'https://test.com',
-        installedAt: new Date().toISOString(),
-      });
-      mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      const backupId = await service.createBackup('project-123');
-      mockProjectsService.importProject.mockResolvedValue({ success: 'yes' } as never);
-
-      await expect(service.restoreBackup(backupId)).rejects.toThrow('Backup restore import failed');
-
+      if (failure instanceof Error) {
+        mockProjectsService.importProject.mockRejectedValue(failure);
+      } else {
+        mockProjectsService.importProject.mockResolvedValue(failure as never);
+      }
+      await expect(service.restoreBackup(backupId)).rejects.toThrow(error);
       expect(service.getBackupInfo(backupId)).not.toBeNull();
       expect(mockSettingsService.setProjectTemplateMetadata).not.toHaveBeenCalled();
     });

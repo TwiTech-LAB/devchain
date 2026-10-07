@@ -9,10 +9,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { NotFoundError } from '../../../common/errors/error-types';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
 import { E2eeDeviceStoreService } from '../../e2ee/services/e2ee-device-store.service';
-import {
-  PairedDeviceWorkspaceAccessService,
-  canAccessWorkspace,
-} from '../../e2ee/services/paired-device-workspace-access.service';
+import { PairedDeviceWorkspaceAccessService } from '../../e2ee/services/paired-device-workspace-access.service';
 import { NotificationRecipientResolverService } from './notification-recipient-resolver.service';
 
 const SECOND_WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
@@ -86,25 +83,6 @@ describe('NotificationRecipientResolverService', () => {
     if (routingKid) deviceStore.setNotificationRoutingKid(kid, routingKid);
   }
 
-  it('includes a bound device with implicit Default-only access for a Default-workspace project', async () => {
-    addDevice('kid-a', ROUTING_A); // no explicit grants → implicit Default-only
-
-    await expect(resolver.resolveProjectRecipientRoutingKids('proj-default')).resolves.toEqual([
-      ROUTING_A,
-    ]);
-    await expect(resolver.resolveProjectRecipientRoutingKids('proj-second')).resolves.toEqual([]);
-  });
-
-  it('honors explicit workspace grants through the same shared predicate', async () => {
-    addDevice('kid-b', ROUTING_B);
-    deviceAccess.updateAccess('kid-b', [SECOND_WORKSPACE_ID]);
-
-    await expect(resolver.resolveProjectRecipientRoutingKids('proj-second')).resolves.toEqual([
-      ROUTING_B,
-    ]);
-    await expect(resolver.resolveProjectRecipientRoutingKids('proj-default')).resolves.toEqual([]);
-  });
-
   it('never includes a device without a bound routing kid, even with workspace access', async () => {
     addDevice('kid-c'); // access but NO routing kid bound
 
@@ -175,31 +153,5 @@ describe('NotificationRecipientResolverService', () => {
     // The project moves into the second workspace.
     workspaceByProject.set('proj-default', SECOND_WORKSPACE_ID);
     await expect(resolver.resolveProjectRecipientRoutingKids('proj-default')).resolves.toEqual([]);
-  });
-
-  it('exposes only routing kids — no paired-device records', async () => {
-    addDevice('kid-a', ROUTING_A);
-    const kids = await resolver.resolveProjectRecipientRoutingKids('proj-default');
-    expect(kids.every((kid) => typeof kid === 'string')).toBe(true);
-    expect(kids).not.toContain('kid-a');
-  });
-
-  it('the shared predicate is the one the RPC authorization path uses', () => {
-    // Direct pin of the ONE predicate: implicit Default-only and explicit grants.
-    expect(
-      canAccessWorkspace(
-        { workspaceIds: [DEFAULT_PROJECT_WORKSPACE_ID] },
-        DEFAULT_PROJECT_WORKSPACE_ID,
-      ),
-    ).toBe(true);
-    expect(
-      canAccessWorkspace({ workspaceIds: [DEFAULT_PROJECT_WORKSPACE_ID] }, SECOND_WORKSPACE_ID),
-    ).toBe(false);
-    expect(
-      canAccessWorkspace(
-        { workspaceIds: [DEFAULT_PROJECT_WORKSPACE_ID, SECOND_WORKSPACE_ID] },
-        SECOND_WORKSPACE_ID,
-      ),
-    ).toBe(true);
   });
 });

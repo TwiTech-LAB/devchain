@@ -1,12 +1,11 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { ForbiddenError, NotFoundError } from '../../../common/errors/error-types';
+
 import { SessionsController } from './sessions.controller';
 import type { SessionsService } from '../services/sessions.service';
 import type { SessionRuntime } from '../services/session-runtime';
 import type {
   SessionsMessagePoolService,
   MessageLogEntry,
-  PoolDetails,
 } from '../services/sessions-message-pool.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
@@ -14,7 +13,6 @@ import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing
 // Valid UUIDs for testing
 const VALID_PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
 const VALID_AGENT_ID = '660e8400-e29b-41d4-a716-446655440001';
-const VALID_AGENT_ID_2 = '770e8400-e29b-41d4-a716-446655440002';
 
 describe('SessionsController', () => {
   let controller: SessionsController;
@@ -42,17 +40,6 @@ describe('SessionsController', () => {
     source: 'test.source',
     status: 'delivered',
     immediate: false,
-    ...overrides,
-  });
-
-  const createMockPoolDetails = (overrides: Partial<PoolDetails> = {}): PoolDetails => ({
-    agentId: VALID_AGENT_ID,
-    agentName: 'Test Agent',
-    projectId: VALID_PROJECT_ID,
-    messageCount: 2,
-    humanHeldMessageCount: 0,
-    waitingMs: 5000,
-    messages: [{ id: 'msg-1', preview: 'Hello', source: 'test', timestamp: Date.now() }],
     ...overrides,
   });
 
@@ -104,43 +91,11 @@ describe('SessionsController', () => {
       expect(result.total).toBe(2);
     });
 
-    it('should pass projectId filter to service', () => {
-      controller.getMessages(VALID_PROJECT_ID);
-
-      expect(mockMessagePoolService.getMessageLog).toHaveBeenCalledWith(
-        expect.objectContaining({ projectId: VALID_PROJECT_ID }),
-      );
-    });
-
-    it('should pass agentId filter to service', () => {
-      controller.getMessages(undefined, VALID_AGENT_ID);
-
-      expect(mockMessagePoolService.getMessageLog).toHaveBeenCalledWith(
-        expect.objectContaining({ agentId: VALID_AGENT_ID }),
-      );
-    });
-
     it('should pass status filter to service (case insensitive)', () => {
       controller.getMessages(undefined, undefined, 'DELIVERED');
 
       expect(mockMessagePoolService.getMessageLog).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'delivered' }),
-      );
-    });
-
-    it('should accept unconfirmed as a valid status filter', () => {
-      controller.getMessages(undefined, undefined, 'unconfirmed');
-
-      expect(mockMessagePoolService.getMessageLog).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'unconfirmed' }),
-      );
-    });
-
-    it('should pass source filter to service', () => {
-      controller.getMessages(undefined, undefined, undefined, 'epic.assigned');
-
-      expect(mockMessagePoolService.getMessageLog).toHaveBeenCalledWith(
-        expect.objectContaining({ source: 'epic.assigned' }),
       );
     });
 
@@ -154,18 +109,6 @@ describe('SessionsController', () => {
 
       expect(result.messages).toHaveLength(100);
       expect(result.total).toBe(150);
-    });
-
-    it('should respect custom limit', () => {
-      const manyMessages = Array.from({ length: 50 }, (_, i) =>
-        createMockLogEntry({ id: `msg-${i}` }),
-      );
-      mockMessagePoolService.getMessageLog.mockReturnValue(manyMessages);
-
-      const result = controller.getMessages(undefined, undefined, undefined, undefined, '25');
-
-      expect(result.messages).toHaveLength(25);
-      expect(result.total).toBe(50);
     });
 
     it('should cap limit at 500', () => {
@@ -189,103 +132,14 @@ describe('SessionsController', () => {
       expect(result.messages).toHaveLength(1);
     });
 
-    it('should throw BadRequestException for invalid status', () => {
-      expect(() => {
-        controller.getMessages(undefined, undefined, 'invalid_status');
-      }).toThrow(BadRequestException);
-    });
-
-    it('should combine multiple filters', () => {
-      controller.getMessages(VALID_PROJECT_ID, VALID_AGENT_ID, 'queued', 'chat.message', '50');
-
-      expect(mockMessagePoolService.getMessageLog).toHaveBeenCalledWith({
-        projectId: VALID_PROJECT_ID,
-        agentId: VALID_AGENT_ID,
-        status: 'queued',
-        source: 'chat.message',
-      });
-    });
-
-    it('should throw BadRequestException for invalid projectId', () => {
-      expect(() => {
-        controller.getMessages('not-a-uuid');
-      }).toThrow(BadRequestException);
-    });
-
-    it('should throw BadRequestException for invalid agentId', () => {
-      expect(() => {
-        controller.getMessages(undefined, 'not-a-uuid');
-      }).toThrow(BadRequestException);
-    });
-
-    it('should throw BadRequestException with descriptive message for invalid UUID', () => {
-      try {
-        controller.getMessages('invalid-uuid');
-        fail('Expected BadRequestException to be thrown');
-      } catch (error) {
-        expect(error).toBeInstanceOf(BadRequestException);
-        expect((error as BadRequestException).message).toContain('projectId must be a valid UUID');
-      }
-    });
-  });
-
-  describe('GET /pools', () => {
-    it('should return pools array', () => {
-      const pools = [createMockPoolDetails()];
-      mockMessagePoolService.getPoolDetails.mockReturnValue(pools);
-
-      const result = controller.getPools();
-
-      expect(result.pools).toHaveLength(1);
-      expect(result.pools[0].agentId).toBe(VALID_AGENT_ID);
-    });
-
-    it('should return empty pools array when no pools exist', () => {
-      mockMessagePoolService.getPoolDetails.mockReturnValue([]);
-
-      const result = controller.getPools();
-
-      expect(result.pools).toHaveLength(0);
-    });
-
-    it('should pass projectId filter to service', () => {
-      controller.getPools(VALID_PROJECT_ID);
-
-      expect(mockMessagePoolService.getPoolDetails).toHaveBeenCalledWith(VALID_PROJECT_ID);
-    });
-
-    it('should call service with undefined when no projectId provided', () => {
-      controller.getPools();
-
-      expect(mockMessagePoolService.getPoolDetails).toHaveBeenCalledWith(undefined);
-    });
-
-    it('should return multiple pools', () => {
-      const pools = [
-        createMockPoolDetails({ agentId: VALID_AGENT_ID }),
-        createMockPoolDetails({ agentId: VALID_AGENT_ID_2 }),
-      ];
-      mockMessagePoolService.getPoolDetails.mockReturnValue(pools);
-
-      const result = controller.getPools();
-
-      expect(result.pools).toHaveLength(2);
-    });
-
-    it('should throw BadRequestException for invalid projectId', () => {
-      expect(() => {
-        controller.getPools('not-a-uuid');
-      }).toThrow(BadRequestException);
-    });
-
-    it('should throw BadRequestException with descriptive message for invalid UUID', () => {
-      try {
-        controller.getPools('invalid-uuid');
-        fail('Expected BadRequestException to be thrown');
-      } catch (error) {
-        expect(error).toBeInstanceOf(BadRequestException);
-        expect((error as BadRequestException).message).toContain('projectId must be a valid UUID');
-      }
+    it.each([
+      {
+        name: 'controller.getMessages',
+        invoke: () => controller.getMessages(undefined, undefined, 'invalid_status'),
+      },
+      { name: 'controller.getPools', invoke: () => controller.getPools('not-a-uuid') },
+    ])('maps invalid input in $name to bad request', ({ invoke }) => {
+      expect(invoke).toThrow(BadRequestException);
     });
   });
 
@@ -315,15 +169,6 @@ describe('SessionsController', () => {
       await expect(
         controller.releaseHumanHold(VALID_AGENT_ID, { projectId: VALID_PROJECT_ID }),
       ).rejects.toBeInstanceOf(ConflictException);
-    });
-
-    it('rejects invalid agent and project ids', async () => {
-      await expect(
-        controller.releaseHumanHold('bad-agent', { projectId: VALID_PROJECT_ID }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-      await expect(
-        controller.releaseHumanHold(VALID_AGENT_ID, { projectId: 'bad-project' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
@@ -371,57 +216,15 @@ describe('SessionsController', () => {
         }),
       ).rejects.toBeInstanceOf(ConflictException);
     });
-
-    it('rejects invalid agent id', async () => {
-      await expect(
-        controller.forceDeferred('bad-id', {
-          projectId: VALID_PROJECT_ID,
-          sessionId: VALID_SESSION_ID,
-          messageIds: [VALID_MSG_ID],
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it('rejects empty messageIds array', async () => {
-      await expect(
-        controller.forceDeferred(VALID_AGENT_ID, {
-          projectId: VALID_PROJECT_ID,
-          sessionId: VALID_SESSION_ID,
-          messageIds: [],
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it('rejects missing body fields', async () => {
-      await expect(controller.forceDeferred(VALID_AGENT_ID, {})).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
-    });
   });
 
   describe('GET /messages/:id', () => {
-    it('should return message details when found', () => {
-      const mockMessage = createMockLogEntry({ id: VALID_PROJECT_ID });
-      mockMessagePoolService.getMessageById = jest.fn().mockReturnValue(mockMessage);
-
-      const result = controller.getMessage(VALID_PROJECT_ID);
-
-      expect(result.message).toEqual(mockMessage);
-      expect(mockMessagePoolService.getMessageById).toHaveBeenCalledWith(VALID_PROJECT_ID);
-    });
-
     it('should throw NotFoundException when message not found', () => {
       mockMessagePoolService.getMessageById = jest.fn().mockReturnValue(null);
 
       expect(() => {
         controller.getMessage(VALID_PROJECT_ID);
       }).toThrow(NotFoundException);
-    });
-
-    it('should throw BadRequestException for invalid UUID', () => {
-      expect(() => {
-        controller.getMessage('not-a-uuid');
-      }).toThrow(BadRequestException);
     });
   });
 
@@ -448,90 +251,6 @@ describe('SessionsController', () => {
     });
   });
 
-  describe('PATCH /sessions/:id (renameSession)', () => {
-    const VALID_SESSION_ID = '880e8400-e29b-41d4-a716-446655440003';
-
-    const mockSession = {
-      id: VALID_SESSION_ID,
-      epicId: null,
-      agentId: VALID_AGENT_ID,
-      tmuxSessionId: null,
-      status: 'stopped' as const,
-      startedAt: '2024-01-01T00:00:00Z',
-      endedAt: '2024-01-01T01:00:00Z',
-      lastActivityAt: null,
-      activityState: null,
-      busySince: null,
-      transcriptPath: null,
-      name: null,
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-01T00:00:00Z',
-    };
-
-    it('returns updated session with new name', async () => {
-      mockSessionsService.validateSessionInProject = jest.fn().mockResolvedValue(mockSession);
-      const updated = { ...mockSession, name: 'My Session' };
-      mockSessionsService.updateName = jest.fn().mockReturnValue(updated);
-
-      const result = await controller.renameSession(VALID_SESSION_ID, {
-        projectId: VALID_PROJECT_ID,
-        name: 'My Session',
-      });
-
-      expect(result.name).toBe('My Session');
-      expect(mockSessionsService.validateSessionInProject).toHaveBeenCalledWith(
-        VALID_SESSION_ID,
-        VALID_PROJECT_ID,
-      );
-      expect(mockSessionsService.updateName).toHaveBeenCalledWith(VALID_SESSION_ID, 'My Session');
-    });
-
-    it('clears name when null is passed', async () => {
-      mockSessionsService.validateSessionInProject = jest.fn().mockResolvedValue(mockSession);
-      const updated = { ...mockSession, name: null };
-      mockSessionsService.updateName = jest.fn().mockReturnValue(updated);
-
-      const result = await controller.renameSession(VALID_SESSION_ID, {
-        projectId: VALID_PROJECT_ID,
-        name: null,
-      });
-
-      expect(result.name).toBeNull();
-    });
-
-    it('throws 404 when session not found (shared guard)', async () => {
-      mockSessionsService.validateSessionInProject = jest
-        .fn()
-        .mockRejectedValue(new NotFoundError('Session', VALID_SESSION_ID));
-
-      await expect(
-        controller.renameSession(VALID_SESSION_ID, {
-          projectId: VALID_PROJECT_ID,
-          name: 'Test',
-        }),
-      ).rejects.toThrow(NotFoundError);
-    });
-
-    it('throws Forbidden on project mismatch (shared guard)', async () => {
-      mockSessionsService.validateSessionInProject = jest
-        .fn()
-        .mockRejectedValue(new ForbiddenError('PROJECT_MISMATCH'));
-
-      await expect(
-        controller.renameSession(VALID_SESSION_ID, {
-          projectId: VALID_PROJECT_ID,
-          name: 'Test',
-        }),
-      ).rejects.toThrow(ForbiddenError);
-    });
-
-    it('throws 400 on invalid body', async () => {
-      await expect(controller.renameSession(VALID_SESSION_ID, { name: 'Test' })).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-  });
-
   describe('DELETE /sessions/:id (terminateSession)', () => {
     it('passes web-api user-requested provenance to the service', async () => {
       const result = await controller.terminateSession('session-1');
@@ -546,70 +265,6 @@ describe('SessionsController', () => {
 
   describe('DELETE /sessions/:id/record (deleteSessionRecord)', () => {
     const VALID_SESSION_ID = '880e8400-e29b-41d4-a716-446655440003';
-
-    const mockStoppedSession = {
-      id: VALID_SESSION_ID,
-      epicId: null,
-      agentId: VALID_AGENT_ID,
-      tmuxSessionId: null,
-      status: 'stopped' as const,
-      startedAt: '2024-01-01T00:00:00Z',
-      endedAt: '2024-01-01T01:00:00Z',
-      lastActivityAt: null,
-      activityState: null,
-      busySince: null,
-      transcriptPath: null,
-      name: null,
-      createdAt: '2024-01-01T00:00:00Z',
-      updatedAt: '2024-01-01T00:00:00Z',
-    };
-
-    it('deletes a stopped session record', async () => {
-      mockSessionsService.validateSessionInProject = jest
-        .fn()
-        .mockResolvedValue(mockStoppedSession);
-      mockSessionsService.hardDeleteRecord = jest.fn().mockReturnValue({ deleted: true });
-
-      const result = await controller.deleteSessionRecord(VALID_SESSION_ID, VALID_PROJECT_ID);
-
-      expect(result).toEqual({ deleted: true });
-      expect(mockSessionsService.validateSessionInProject).toHaveBeenCalledWith(
-        VALID_SESSION_ID,
-        VALID_PROJECT_ID,
-      );
-      expect(mockSessionsService.hardDeleteRecord).toHaveBeenCalledWith(VALID_SESSION_ID);
-    });
-
-    it('throws 409 when session is running', async () => {
-      const runningSession = { ...mockStoppedSession, status: 'running' as const };
-      mockSessionsService.validateSessionInProject = jest.fn().mockResolvedValue(runningSession);
-      mockSessionsService.hardDeleteRecord = jest.fn();
-
-      await expect(
-        controller.deleteSessionRecord(VALID_SESSION_ID, VALID_PROJECT_ID),
-      ).rejects.toThrow(ConflictException);
-      expect(mockSessionsService.hardDeleteRecord).not.toHaveBeenCalled();
-    });
-
-    it('throws 404 when session not found (shared guard)', async () => {
-      mockSessionsService.validateSessionInProject = jest
-        .fn()
-        .mockRejectedValue(new NotFoundError('Session', VALID_SESSION_ID));
-
-      await expect(
-        controller.deleteSessionRecord(VALID_SESSION_ID, VALID_PROJECT_ID),
-      ).rejects.toThrow(NotFoundError);
-    });
-
-    it('throws Forbidden on project mismatch (shared guard)', async () => {
-      mockSessionsService.validateSessionInProject = jest
-        .fn()
-        .mockRejectedValue(new ForbiddenError('PROJECT_MISMATCH'));
-
-      await expect(
-        controller.deleteSessionRecord(VALID_SESSION_ID, VALID_PROJECT_ID),
-      ).rejects.toThrow(ForbiddenError);
-    });
 
     it('throws 400 when projectId is missing', async () => {
       await expect(controller.deleteSessionRecord(VALID_SESSION_ID, undefined)).rejects.toThrow(

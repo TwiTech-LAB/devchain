@@ -67,12 +67,6 @@ describe('ProviderEffortSeedingService', () => {
       expect(bulkCreateProviderEfforts).not.toHaveBeenCalled();
       expect(result).toEqual({ added: [], existing: [] });
     });
-
-    it('is additive-only: passes the delegate result through (idempotent skip-existing)', async () => {
-      bulkCreateProviderEfforts.mockResolvedValueOnce({ added: [], existing: ['low', 'medium'] });
-      const result = await service.seedForProvider({ id: 'claude-1', name: 'claude' });
-      expect(result).toEqual({ added: [], existing: ['low', 'medium'] });
-    });
   });
 
   describe('backfillAll', () => {

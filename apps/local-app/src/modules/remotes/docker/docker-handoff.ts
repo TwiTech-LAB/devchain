@@ -1,4 +1,11 @@
-import { dataGroupIdentity, groupDockerData, supersedeGroupRecords } from './docker-data-groups';
+import { projectCompose } from './docker-project-compose';
+import {
+  dataGroupIdentity,
+  groupDockerData,
+  supersedeGroupRecords,
+  overlapsData,
+  mountedData,
+} from './docker-data-groups';
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
@@ -9,6 +16,10 @@ import { createLogger } from '../../../common/logging/logger';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
 import { dockerArchiveLayout, readDockerArchive } from '../../core/controllers/docker-archive';
 import {
+  vmImageIdForTags,
+  type DockerImageInspectMetadata,
+} from '../../core/controllers/docker-image-metadata';
+import {
   DockerEngineClient,
   DockerEngineError,
   changeDockerContainerState,
@@ -16,13 +27,17 @@ import {
   isDockerNotFound,
 } from '../../core/controllers/docker-engine.client';
 import {
+  DEFAULT_NETWORKS,
+  ipv4Ranges,
   projectDockerCreate,
   type DockerContainerInspect,
+  type DockerSettings,
 } from '../../core/controllers/docker-settings';
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import { IGNORE_PATTERNS_MAX } from '../../file-sync/file-sync.dto';
 import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-managed-exclusions.store';
 import {
+  connectExclusions,
   DockerImportInventoryStore,
   vmImageCandidates,
   type DockerImportInventory,
@@ -34,9 +49,17 @@ import {
   stepStarted,
   type RemoteOperationStepRun,
 } from '../operations/remote-operation.types';
-import type { DockerArchiveRequest, DockerHostOptions } from '../host/host-docker.dto';
+import {
+  COMPOSE_PROJECT_LABEL,
+  DOCKER_PROJECT_LABEL,
+  type DockerOwnerOptions,
+  type DockerArchiveRequest,
+  type DockerHostOptions,
+  type DockerImageLoadResult,
+} from '../host/host-docker.dto';
 import {
   copiedDataMounts,
+  copiesImages,
   movesToVm,
   potentialDataMounts,
   uniqueCopiedMounts,
@@ -47,11 +70,13 @@ import { projectAnchoredPath, within } from './docker-plan-files';
 import {
   isVolumeMount,
   type DockerPlanItem,
+  type DockerPlanNetwork,
   type DockerSelection,
   type DockerTransferDetails,
 } from './docker-plan.dto';
 import { blocksMode } from './docker-plan-policy';
 import { DockerPlanService } from './docker-plan.service';
+import { ConnectChoicesStore } from '../connect-choices.store';
 import { DockerPlanSourceService } from './docker-plan-source.service';
 import {
   DockerHandoffStore,
@@ -65,7 +90,6 @@ import {
 const logger = createLogger('DockerHandoff');
 
 const RATE_WARMUP_MS = 5_000;
-const DEFAULT_NETWORKS = new Set(['bridge', 'host', 'none', 'default']);
 
 export function dockerSelection(details: Record<string, unknown>): DockerSelection | null {
   const selection = details.dockerSelection as DockerSelection | undefined;
@@ -116,6 +140,7 @@ export class DockerHandoff {
     private readonly journal: DockerArchiveJournal,
     private readonly exclusions: FileSyncManagedExclusionsStore,
     private readonly inventory: DockerImportInventoryStore,
+    private readonly choices: ConnectChoicesStore,
   ) {}
 
   interrupt(operationId: string): void {
@@ -141,6 +166,7 @@ export class DockerHandoff {
           plan.availability.reason?.message ?? 'Docker is unavailable.',
           { reason: plan.availability.reason?.code ?? null },
         );
+      this.choices.recordPlan(projectId, run.operation.remoteId, plan.items);
       const selected = plan.items.filter((item) => item.selectedMode);
       if (!plan.canConnect) {
         const reasons = [
@@ -164,6 +190,7 @@ export class DockerHandoff {
         selected,
         plan.apiVersion,
         await this.plans.projectRoot(projectId),
+        plan.networks,
       );
       const previousRecord = await this.store.read(run.operation.id);
       record.inventoryBefore =
@@ -174,16 +201,10 @@ export class DockerHandoff {
         const prior = record.inventoryBefore?.items.find((item) => item.name === kept.name);
         if (prior?.vmImageId && prior.imageId === kept.imageId) kept.vmImageId = prior.vmImageId;
       }
-      // Folders of earlier imports that this Connect does not re-select stay on the VM
-      // and must stay out of file sync too.
-      const managed = [
-        ...new Set([
-          ...plan.managedExclusions,
-          ...(this.inventory
-            .get(projectId, run.operation.remoteId)
-            ?.items.flatMap((item) => item.bindPaths) ?? []),
-        ]),
-      ];
+      const managed = connectExclusions(
+        plan,
+        this.inventory.get(projectId, run.operation.remoteId),
+      );
       if (managed.length > IGNORE_PATTERNS_MAX)
         throw new RemoteOperationStepRefusedError(
           'DOCKER_TOO_MANY_DATA_FOLDERS',
@@ -286,21 +307,85 @@ export class DockerHandoff {
             )
           ).ids
         : [];
+      const verify = async (image: MissingImage['image'], vmId: string) => {
+        image.vmId = vmId;
+        record.verified.images.push(image.id);
+        await this.store.write(run.operation.id, record);
+      };
+      let matchUnsupported = false;
+      const missing: MissingImage[] = [];
       for (const image of pendingImages) {
+        let vmId = candidates.get(image.id)!.find((id) => present.includes(id));
+        if (!vmId) {
+          const inspect = await client.json<
+            DockerImageInspectMetadata & {
+              RepoTags?: string[] | null;
+              RootFS?: { Layers?: string[] | null };
+            }
+          >('GET', `/images/${encodeURIComponent(image.id)}/json`, undefined, { signal });
+          const tags = inspect.RepoTags;
+          if (tags?.length && !matchUnsupported) {
+            try {
+              const { images } = await this.host.dockerMatchImages(remoteId, tags, options);
+              vmId = vmImageIdForTags(inspect, tags, images);
+            } catch (error) {
+              if (!(error instanceof RemoteHostRequestError && error.status === 404)) throw error;
+              matchUnsupported = true;
+            }
+          }
+          if (!vmId) {
+            missing.push({ image, tags: tags ?? [], layers: inspect.RootFS?.Layers ?? null });
+            continue;
+          }
+        }
         progress.item(image.id, 'image', image.sizeBytes);
-        const vmId = candidates.get(image.id)!.find((id) => present.includes(id));
-        if (vmId) image.vmId = vmId;
-        else {
+        await verify(image, vmId);
+        progress.complete();
+      }
+
+      let supportsReferences = true;
+      for (const group of groupImages(missing)) {
+        progress.item(
+          group.length === 1 ? group[0].image.id : `${group.length} images`,
+          'image',
+          group.reduce((total, entry) => total + entry.image.sizeBytes, 0),
+        );
+        if (group.length > 1 && supportsReferences) {
+          const archive = await saveImages(
+            client,
+            group.flatMap((entry) => entry.tags),
+            signal,
+          );
+          const loaded = await this.host.dockerLoadImage(
+            remoteId,
+            progress.count(archive),
+            options,
+          );
+          supportsReferences = hasReferences(loaded);
+          if (supportsReferences) {
+            const vmIds = group.map((entry) =>
+              loadedVmId(entry.image.id, entry.layers!, loaded.images, entry.tags),
+            );
+            // One checkpoint: the whole group is verified, or none of it.
+            for (const [index, entry] of group.entries()) {
+              entry.image.vmId = vmIds[index];
+              record.verified.images.push(entry.image.id);
+            }
+            await this.store.write(run.operation.id, record);
+            progress.complete();
+            continue;
+          }
+        }
+        for (const { image } of group) {
           const saved = await saveImage(client, image.id, signal);
           const loaded = await this.host.dockerLoadImage(
             remoteId,
             progress.count(saved.archive),
             options,
           );
-          image.vmId = loadedVmId(image.id, saved.layers, loaded.images);
+          supportsReferences &&= hasReferences(loaded);
+          await verify(image, loadedVmId(image.id, saved.layers, loaded.images));
         }
-        record.verified.images.push(image.id);
-        await this.store.write(run.operation.id, record);
         progress.complete();
       }
 
@@ -410,6 +495,18 @@ export class DockerHandoff {
       // One request per replaced folder, so a failure names its folder.
       for (const bind of binds.filter((b) => b.replace)) {
         try {
+          const vm = await this.host.dockerScan(remoteId, [bind.path], options, []);
+          for (const holder of vm.containers)
+            if (
+              overlapsData(mountedData(holder.mounts), { volumes: [], bindPaths: [bind.path] }) &&
+              (holder.labels[DOCKER_PROJECT_LABEL] === projectId ||
+                projectCompose(holder.labels, record.projectRoot, projectId)) &&
+              holder.metadata?.running !== false
+            )
+              await this.host.dockerStopContainer(remoteId, holder.id, projectId, {
+                ...options,
+                projectRoot: record.projectRoot,
+              });
           await this.host.dockerPrepareBinds(
             remoteId,
             {
@@ -454,28 +551,47 @@ export class DockerHandoff {
         progress.complete();
       }
 
-      for (const network of record.networks) {
+      const settings = await this.store.readSettings(run.operation.id);
+      const automaticNetworks = new Set(record.automaticRangeNetworks);
+      // Reserve explicit ranges before Docker assigns a free range to an automatic network.
+      const networks = record.networks
+        .map((network) => ({
+          ...network,
+          ipam: automaticNetworks.has(network.name) ? undefined : network.ipam,
+        }))
+        .sort((a, b) => Number(!!b.ipam) - Number(!!a.ipam));
+      for (const network of networks) {
         progress.item(network.name, 'network');
-        // An earlier import's network is reused and never counts as this attempt's.
-        const { created } = await this.host.dockerCreateNetwork(
-          remoteId,
-          {
-            projectId,
-            name: network.name,
-            labels: network.labels,
-            internal: network.internal,
-            attachable: network.attachable,
-            options: network.options,
-          },
-          options,
-        );
-        if (created && !record.created.networks.includes(network.name)) {
+        // An earlier import's network is reused and never counts as this attempt's. One
+        // Compose did not make (`docker network create`) can serve several projects, so it
+        // is shared on the VM and no Cancel deletes it.
+        const shared = !network.labels[COMPOSE_PROJECT_LABEL];
+        let created: boolean;
+        try {
+          ({ created } = await this.host.dockerCreateNetwork(
+            remoteId,
+            {
+              projectId,
+              name: network.name,
+              labels: network.labels,
+              internal: network.internal,
+              attachable: network.attachable,
+              options: network.options,
+              ...(network.ipam ? { ipam: network.ipam } : {}),
+              ...(shared ? { shared: true as const } : {}),
+            },
+            options,
+          ));
+        } catch (error) {
+          if (!(error instanceof AppError)) throw error;
+          throw new DockerHandoffError(`Network ${network.name}: ${error.message}`, error.code);
+        }
+        if (created && !shared && !record.created.networks.includes(network.name)) {
           record.created.networks.push(network.name);
           await this.store.write(run.operation.id, record);
         }
       }
 
-      const settings = await this.store.readSettings(run.operation.id);
       for (const item of record.items.filter((i) => i.createsContainer)) {
         if (record.verified.containers.includes(item.name)) continue;
         const captured = settings[item.id];
@@ -484,7 +600,10 @@ export class DockerHandoff {
         progress.item(item.name, 'container');
         // A replaced import, or this attempt's own create whose answer was lost.
         if (item.targetAction === 'replace' || record.created.containers.includes(item.name))
-          await this.deleteIfPresent(remoteId, 'containers', item.name, projectId, options);
+          await this.deleteIfPresent(remoteId, 'containers', item.name, projectId, {
+            ...options,
+            projectRoot: record.projectRoot,
+          });
         record.created.containers.push(item.name);
         await this.store.write(run.operation.id, record);
         await this.host.dockerCreateContainer(
@@ -751,7 +870,10 @@ export class DockerHandoff {
     const { holders } = await this.host.dockerVolumeHolders(remoteId, volume.name, options);
     for (const holder of holders) {
       try {
-        await this.host.dockerDelete(remoteId, 'containers', holder.id, projectId, options);
+        await this.host.dockerDelete(remoteId, 'containers', holder.id, projectId, {
+          ...options,
+          projectRoot: record.projectRoot,
+        });
       } catch (error) {
         if (notFound(error)) continue;
         if (error instanceof RemoteHostRequestError && error.status === 403)
@@ -784,7 +906,7 @@ export class DockerHandoff {
     kind: 'volumes' | 'containers' | 'networks',
     name: string,
     projectId: string,
-    options: DockerHostOptions,
+    options: DockerOwnerOptions,
   ): Promise<boolean> {
     try {
       await this.host.dockerDelete(remoteId, kind, name, projectId, options);
@@ -838,10 +960,15 @@ export function buildRecord(
   selected: DockerPlanItem[],
   apiVersion: string,
   projectRoot: string,
+  networks: DockerPlanNetwork[] = [],
 ): DockerHandoffRecord {
   const moving = selected.filter(movesToVm);
+  const copiedImages = selected
+    .filter((item) => copiesImages(item, projectRoot))
+    .flatMap((item) => item.images);
+  // Only items that copy data or create empty volumes need a helper, and they copy their images.
   const helperImage = (item: DockerPlanItem): string => {
-    const image = item.images[0]?.id ?? moving.flatMap((i) => i.images)[0]?.id;
+    const image = item.images[0]?.id ?? copiedImages[0]?.id;
     if (!image)
       throw new RemoteOperationStepRefusedError(
         'DOCKER_PLAN_REFUSED',
@@ -874,9 +1001,10 @@ export function buildRecord(
     for (const name of emptyVolumes(item))
       if (!volumes.some((v) => v.name === name))
         volumes.push({ name, helperImage: helperImage(item), sizeBytes: 0 });
-  const images = [...new Map(moving.flatMap((i) => i.images).map((i) => [i.id, i])).values()].map(
-    (image) => ({ id: image.id, sizeBytes: image.size.bytes }),
-  );
+  const images = [...new Map(copiedImages.map((i) => [i.id, i])).values()].map((image) => ({
+    id: image.id,
+    sizeBytes: image.size.bytes,
+  }));
   const containerIds = new Set(all.filter((i) => i.kind === 'container').map((i) => i.id));
   const stopIds = new Set<string>();
   for (const item of moving) {
@@ -952,6 +1080,9 @@ export function buildRecord(
     stopIds: [...stopIds],
     stopped: [],
     networks: [],
+    automaticRangeNetworks: networks
+      .filter((network) => network.kind === 'automatic-range')
+      .map((network) => network.name),
     verified: { images: [], volumes: [], binds: [], containers: [] },
     created: { volumes: [], networks: [], containers: [] },
     replaced: [],
@@ -1027,10 +1158,14 @@ export function captureSettings(
   if (mounts.length) host.Mounts = mounts;
   return { name, config };
 }
-function networkNames(config: Record<string, unknown>): string[] {
-  const endpoints = (config.NetworkingConfig as { EndpointsConfig?: Record<string, unknown> })
-    ?.EndpointsConfig;
-  return Object.keys(endpoints ?? {}).filter((name) => !DEFAULT_NETWORKS.has(name));
+function endpoints(config: DockerSettings | undefined): Record<string, DockerSettings> {
+  return (
+    (config?.NetworkingConfig as { EndpointsConfig?: Record<string, DockerSettings> } | undefined)
+      ?.EndpointsConfig ?? {}
+  );
+}
+function networkNames(config: DockerSettings): string[] {
+  return Object.keys(endpoints(config)).filter((name) => !DEFAULT_NETWORKS.has(name));
 }
 async function homeNetwork(client: DockerEngineClient, name: string, signal: AbortSignal) {
   const network = await client.json<{
@@ -1040,18 +1175,21 @@ async function homeNetwork(client: DockerEngineClient, name: string, signal: Abo
     Attachable?: boolean;
     Labels?: Record<string, string> | null;
     Options?: Record<string, string> | null;
+    IPAM?: { Config?: Array<{ Subnet?: string; Gateway?: string; IPRange?: string }> | null };
   }>('GET', `/networks/${encodeURIComponent(name)}`, undefined, { signal });
   if (network.Driver !== 'bridge')
     throw new RemoteOperationStepRefusedError(
       'DOCKER_PLAN_REFUSED',
       `Network ${name} uses the ${network.Driver} driver; only bridge networks move.`,
     );
+  const ranges = ipv4Ranges(network.IPAM?.Config);
   return {
     name,
     labels: network.Labels ?? {},
     internal: network.Internal === true,
     attachable: network.Attachable === true,
     options: network.Options ?? {},
+    ...(ranges.length ? { ipam: { Config: ranges } } : {}),
   };
 }
 async function homeVolumeLabels(
@@ -1067,6 +1205,32 @@ async function homeVolumeLabels(
   );
   return volume.Labels ?? {};
 }
+interface MissingImage {
+  image: DockerHandoffRecord['images'][number];
+  tags: string[];
+  layers: string[] | null;
+}
+/** Missing images in transfer order; tagged images with identical layer lists share a group. */
+function groupImages(images: MissingImage[]): MissingImage[][] {
+  const groups = new Map<string, MissingImage[]>();
+  for (const image of images) {
+    const key = image.tags.length && image.layers ? JSON.stringify(image.layers) : image.image.id;
+    groups.set(key, [...(groups.get(key) ?? []), image]);
+  }
+  return [...groups.values()];
+}
+/** A VM that names the aliases of each loaded image, so grouped images can pair by tag. */
+const hasReferences = (loaded: DockerImageLoadResult): boolean =>
+  loaded.images.every((image) => image.references !== undefined);
+function saveImages(
+  client: DockerEngineClient,
+  names: string[],
+  signal: AbortSignal,
+): Promise<Readable> {
+  const query = [...new Set(names)].map((name) => `names=${encodeURIComponent(name)}`).join('&');
+  return client.stream('GET', `/images/get?${query}`, { signal });
+}
+
 /** Saves under the tags that still name this ID, so Compose finds the image by name on the VM. */
 async function saveImage(
   client: DockerEngineClient,
@@ -1078,9 +1242,8 @@ async function saveImage(
     RootFS?: { Layers?: string[] | null };
   }>('GET', `/images/${encodeURIComponent(id)}/json`, undefined, { signal });
   const names = image.RepoTags?.length ? image.RepoTags : [id];
-  const query = names.map((n) => `names=${encodeURIComponent(n)}`).join('&');
   return {
-    archive: await client.stream('GET', `/images/get?${query}`, { signal }),
+    archive: await saveImages(client, names, signal),
     layers: image.RootFS?.Layers ?? [],
   };
 }
@@ -1089,14 +1252,17 @@ async function saveImage(
  * The VM ID of a loaded home image: the reported image with the same layers in
  * the same order. Both image stores keep layer digests, while the image ID of a
  * containerd-store engine is its manifest digest, not the home config digest.
+ * Grouped images also match their tags, since equal layers can have different configs.
  */
 function loadedVmId(
   homeId: string,
   homeLayers: string[],
-  reported: Array<{ id: string; layers: string[] }>,
+  reported: DockerImageLoadResult['images'],
+  tags?: string[],
 ): string {
   const matches = reported.filter(
     (image) =>
+      (tags === undefined || image.references?.some((reference) => tags.includes(reference))) &&
       image.layers.length === homeLayers.length &&
       image.layers.every((layer, index) => layer === homeLayers[index]),
   );

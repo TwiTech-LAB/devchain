@@ -1,11 +1,21 @@
-import { Body, Controller, HttpCode, Param, ParseUUIDPipe, Post, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Req,
+  Res,
+} from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { requestAbortSignal } from '../../../common/http/request-abort-signal';
 import { DockerCopyBack } from './docker-copy-back';
 import type { DockerSyncState } from './docker-copy-back.dto';
 import { DockerPlanService } from './docker-plan.service';
-import type { DockerPlan } from './docker-plan.dto';
+import type { DockerPlan, DockerPresence } from './docker-plan.dto';
 
 @ApiTags('docker-plan')
 @Controller('api/projects/:id/docker')
@@ -14,6 +24,17 @@ export class DockerPlanController {
     private readonly plans: DockerPlanService,
     private readonly copyBack: DockerCopyBack,
   ) {}
+
+  @Get('presence')
+  @ApiOperation({ summary: 'Check whether this project has Docker work on this PC' })
+  @ApiResponse({ status: 200, description: 'Docker work is present, absent, or unknown' })
+  presence(
+    @Param('id', ParseUUIDPipe) projectId: string,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<DockerPresence> {
+    return this.plans.presence(projectId, requestAbortSignal(req, reply));
+  }
 
   @Post('plan')
   @HttpCode(200)

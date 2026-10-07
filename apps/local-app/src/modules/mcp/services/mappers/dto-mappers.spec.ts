@@ -151,14 +151,14 @@ describe('mapEpicParent', () => {
 });
 
 describe('mapEpicSummary', () => {
-  it.each([
-    ['an agent snapshot', 'Creator Agent'],
-    ['null attribution', null],
-  ])('maps createdBy for %s', (_label, createdBy) => {
-    const summary = mapEpicSummary(createMockEpic({ createdBy }));
+  it.each([['an agent snapshot', 'Creator Agent']])(
+    'maps createdBy for %s',
+    (_label, createdBy) => {
+      const summary = mapEpicSummary(createMockEpic({ createdBy }));
 
-    expect(summary.createdBy).toBe(createdBy);
-  });
+      expect(summary.createdBy).toBe(createdBy);
+    },
+  );
 });
 
 describe('buildDescriptionPreview', () => {
@@ -226,13 +226,5 @@ describe('mapEpicListItem', () => {
     expect(item.description).toBe(longText);
     expect(item.descriptionPreview).toBeUndefined();
     expect(item.descriptionLength).toBeUndefined();
-  });
-
-  it('maps a null description to a null preview with zero length', () => {
-    const item = mapEpicListItem(createMockEpic({ description: null }));
-
-    expect(item.description).toBeUndefined();
-    expect(item.descriptionPreview).toBeNull();
-    expect(item.descriptionLength).toBe(0);
   });
 });

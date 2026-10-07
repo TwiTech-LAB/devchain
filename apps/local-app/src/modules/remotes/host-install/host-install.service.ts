@@ -94,32 +94,16 @@ export function parseVersionsEnv(contents: string): Record<string, string> {
     if (!match) throw new Error(`Invalid host image version pin at line ${index + 1}`);
     values[match[1]] = match[2].trim().replace(/^("|')(.*)\1$/, '$2');
   }
-  for (const name of ['NODE_VERSION', 'SYNCTHING_VERSION', 'NPM_REGISTRY']) {
+  for (const name of [
+    'NODE_VERSION',
+    'SYNCTHING_VERSION',
+    'NPM_REGISTRY',
+    'DEVCHAIN_REQUIRED_PACKAGES',
+    'DEVCHAIN_TOOL_PACKAGES',
+  ]) {
     if (!values[name]) throw new Error(`Host image version pin ${name} is missing`);
   }
   return values;
-}
-
-export function parseAptPackages(contents: string): string[] {
-  const lines = contents.split(/\r?\n/);
-  const first = lines.findIndex((line) =>
-    /^\s*apt-get\s+install\s+-y\s+--no-install-recommends(?:\s|\\|$)/.test(line),
-  );
-  if (first < 0) throw new Error('Host image apt package list is missing');
-
-  const packages: string[] = [];
-  for (let index = first; index < lines.length; index += 1) {
-    let line = lines[index].replace(/\s+#.*$/, '').trim();
-    const continued = line.endsWith('\\');
-    if (continued) line = line.slice(0, -1).trim();
-    if (index === first) {
-      line = line.replace(/^apt-get\s+install\s+-y\s+--no-install-recommends/, '').trim();
-    }
-    packages.push(...line.split(/\s+/).filter((name) => name && !name.startsWith('-')));
-    if (!continued) break;
-  }
-  if (packages.length === 0) throw new Error('Host image apt package list is empty');
-  return packages;
 }
 
 @Injectable()
@@ -231,9 +215,6 @@ export class HostInstallService {
     const versions = parseVersionsEnv(
       await readFile(join(repositoryRoot, 'apps/host-image/versions.env'), 'utf8'),
     );
-    const aptPackages = parseAptPackages(
-      await readFile(join(repositoryRoot, 'apps/host-image/customize.sh'), 'utf8'),
-    );
     const pins: HostInstallPins = {
       nodeVersion: versions.NODE_VERSION,
       syncthingVersion: versions.SYNCTHING_VERSION,
@@ -243,7 +224,8 @@ export class HostInstallService {
         version: packageJson.version,
         sha256: createHash('sha256').update(archive).digest('hex'),
       },
-      aptPackages,
+      aptPackages: versions.DEVCHAIN_REQUIRED_PACKAGES.split(/\s+/),
+      toolPackages: versions.DEVCHAIN_TOOL_PACKAGES.split(/\s+/),
     };
     return {
       pins,

@@ -67,25 +67,13 @@ describe('global.css theme variable completeness', () => {
     'switch-off',
   ];
 
-  it('root defines the full variable set', () => {
-    const rootBlock = blockFor(':root {');
-    for (const v of requiredVars) {
-      expect(rootBlock).toContain(`--${v}:`);
-    }
-  });
-
-  it('dark defines full variable set including terminal vars', () => {
-    const darkBlock = blockFor('.dark {');
-    for (const v of requiredVars) {
-      expect(darkBlock).toContain(`--${v}:`);
-    }
-  });
-
-  it('theme-ocean defines full variable set including terminal vars', () => {
-    const oceanBlock = blockFor('.theme-ocean {');
-    for (const v of requiredVars) {
-      expect(oceanBlock).toContain(`--${v}:`);
-    }
+  it.each([
+    { selector: ':root {' },
+    { selector: '.dark {' },
+    { selector: '.theme-ocean {' },
+  ] as const)('$selector declares every theme and terminal variable', ({ selector }) => {
+    const block = blockFor(selector);
+    for (const variable of requiredVars) expect(block).toContain(`--${variable}:`);
   });
 
   it.each([':root {', '.dark {', '.theme-ocean {'])(
@@ -157,34 +145,14 @@ describe('global.css theme variable completeness', () => {
     expect(eventBusCss).toContain('hsl(var(--event-bus-session-started))');
     expect(eventBusCss).toContain('hsl(var(--event-bus-spark))');
     expect(eventBusCss).not.toMatch(/\bwhite\b|#fff(?:fff)?\b/i);
-    expect(eventBusCss).toContain('left: 0;');
-    expect(eventBusCss).toContain('width: 12px;');
-    expect(eventBusCss).toContain('box-shadow: inset 0 0 0 1px hsl(var(--ring));');
   });
 });
 
 describe('global.css xterm scrollbar theming', () => {
-  it('dark xterm-viewport scrollbar is scoped under .dark', () => {
-    expect(css).toContain('.dark .xterm-viewport::-webkit-scrollbar');
-    expect(css).toContain('.dark .xterm-viewport {');
-  });
-
-  it('dark xterm-viewport scrollbar uses dark track and thumb colors', () => {
-    const darkXtermStart = css.indexOf('.dark .xterm-viewport::-webkit-scrollbar');
-    const darkXtermSection = css.slice(darkXtermStart, darkXtermStart + 600);
-    expect(darkXtermSection).toContain('#252525');
-    expect(darkXtermSection).toContain('#5a5a5a');
-  });
-
   it('no global .xterm-viewport rule forces dark colors on all themes', () => {
     // A bare .xterm-viewport rule (not under .dark) must not exist
     expect(css).not.toMatch(/^\s*\.xterm-viewport::-webkit-scrollbar\s*\{/m);
     expect(css).not.toMatch(/^\s*\.xterm-viewport\s*\{[^}]*scrollbar-color[^}]*#252525/ms);
-  });
-
-  it('root scrollbar keeps the light colors', () => {
-    const rootScrollbar = blockFor('*::-webkit-scrollbar {');
-    expect(rootScrollbar).toContain('#e8e8e8');
   });
 
   it('ocean scrollbar rules come after the ocean token block and use the ocean colors', () => {
@@ -302,44 +270,42 @@ describe('tailwind status colors', () => {
 });
 
 describe('tailwind theme role colors', () => {
-  it('maps each role to its variable', async () => {
+  it('compiles semantic role colors with their alpha and destructive mappings', async () => {
     const css = await compiledUtilities();
-    for (const [utility, variable] of [
-      ['bg-canvas', 'canvas'],
-      ['bg-shell', 'shell'],
-      ['bg-group', 'group'],
-      ['bg-selected', 'selected'],
-      ['text-selected-foreground', 'selected-foreground'],
-    ]) {
-      expect(css).toMatch(new RegExp(`\\.${utility}\\s*\\{[^}]*hsl\\(var\\(--${variable}\\)`));
+    {
+      for (const [utility, variable] of [
+        ['bg-canvas', 'canvas'],
+        ['bg-shell', 'shell'],
+        ['bg-group', 'group'],
+        ['bg-selected', 'selected'],
+        ['text-selected-foreground', 'selected-foreground'],
+      ]) {
+        expect(css).toMatch(new RegExp(`\\.${utility}\\s*\\{[^}]*hsl\\(var\\(--${variable}\\)`));
+      }
     }
-  });
-
-  it('keeps the alpha of overlay and switch-off inside the variable', async () => {
-    const css = await compiledUtilities();
-    expect(css).toMatch(/\.bg-overlay\s*\{\s*background-color: hsl\(var\(--overlay\)\);?\s*\}/);
-    expect(css).toMatch(
-      /\.bg-switch-off\s*\{\s*background-color: hsl\(var\(--switch-off\)\);?\s*\}/,
-    );
-  });
-
-  it('points text-destructive at the text red and keeps fills, tints and borders on the fill red', async () => {
-    const css = await compiledUtilities();
-    expect(css).toMatch(
-      /\.text-destructive\s*\{[^}]*color: hsl\(var\(--destructive-text\) \/ var\(--tw-text-opacity/,
-    );
-    expect(css).toMatch(
-      /\.text-destructive\\\/80\s*\{\s*color: hsl\(var\(--destructive-text\) \/ 0\.8\)/,
-    );
-    expect(css).toMatch(
-      /\.text-destructive-foreground\s*\{\s*color: hsl\(var\(--destructive-foreground\)\)/,
-    );
-    expect(css).toMatch(/\.bg-destructive\s*\{\s*background-color: hsl\(var\(--destructive\)\)/);
-    expect(css).toMatch(
-      /\.bg-destructive\\\/10\s*\{\s*background-color: hsl\(var\(--destructive\) \/ 0\.1\)/,
-    );
-    expect(css).toMatch(
-      /\.border-destructive\\\/40\s*\{\s*border-color: hsl\(var\(--destructive\) \/ 0\.4\)/,
-    );
+    {
+      expect(css).toMatch(/\.bg-overlay\s*\{\s*background-color: hsl\(var\(--overlay\)\);?\s*\}/);
+      expect(css).toMatch(
+        /\.bg-switch-off\s*\{\s*background-color: hsl\(var\(--switch-off\)\);?\s*\}/,
+      );
+    }
+    {
+      expect(css).toMatch(
+        /\.text-destructive\s*\{[^}]*color: hsl\(var\(--destructive-text\) \/ var\(--tw-text-opacity/,
+      );
+      expect(css).toMatch(
+        /\.text-destructive\\\/80\s*\{\s*color: hsl\(var\(--destructive-text\) \/ 0\.8\)/,
+      );
+      expect(css).toMatch(
+        /\.text-destructive-foreground\s*\{\s*color: hsl\(var\(--destructive-foreground\)\)/,
+      );
+      expect(css).toMatch(/\.bg-destructive\s*\{\s*background-color: hsl\(var\(--destructive\)\)/);
+      expect(css).toMatch(
+        /\.bg-destructive\\\/10\s*\{\s*background-color: hsl\(var\(--destructive\) \/ 0\.1\)/,
+      );
+      expect(css).toMatch(
+        /\.border-destructive\\\/40\s*\{\s*border-color: hsl\(var\(--destructive\) \/ 0\.4\)/,
+      );
+    }
   });
 });

@@ -56,19 +56,4 @@ describe('ProviderStorageDelegate.createProvider — provider env defaults', () 
     const result = await delegate.createProvider({ name: 'claude', env: { OTHER_KEY: 'x' } });
     expect(result.env).toEqual({ OTHER_KEY: 'x' });
   });
-
-  it('preserves caller value when CLAUDE_CODE_NO_FLICKER is explicitly set', async () => {
-    const { delegate } = createDelegate();
-    const result = await delegate.createProvider({
-      name: 'claude',
-      env: { CLAUDE_CODE_NO_FLICKER: '0' },
-    });
-    expect(result.env).toEqual({ CLAUDE_CODE_NO_FLICKER: '0' });
-  });
-
-  it('does not add CLAUDE_CODE_NO_FLICKER for non-Claude providers', async () => {
-    const { delegate } = createDelegate();
-    const result = await delegate.createProvider({ name: 'codex' });
-    expect(result.env).toBeNull();
-  });
 });

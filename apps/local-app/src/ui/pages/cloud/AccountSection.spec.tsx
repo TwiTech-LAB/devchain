@@ -132,21 +132,22 @@ describe('AccountSection', () => {
     expect(screen.getByText('Checking connection...')).toBeInTheDocument();
   });
 
-  it('shows auth form when signed out', () => {
+  it('shows auth form when signed out', async () => {
     mockUseCloudConnection.mockReturnValue(DISCONNECTED);
     renderSection();
     expect(screen.getByTestId('cloud-auth-form')).toBeInTheDocument();
-  });
 
-  it('wraps the signed-out auth form in a titled card', () => {
-    mockUseCloudConnection.mockReturnValue(DISCONNECTED);
-    renderSection();
-    expect(screen.getByText('Connect to DevChain Cloud')).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        'Sign in to enable cloud notifications, project forwarding, and mobile access.',
-      ),
-    ).toBeInTheDocument();
+    {
+      expect(screen.getByTestId('cloud-auth-form')).toBeInTheDocument();
+      expect(screen.getByTestId('app-download-card')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByTestId('app-download-card')).toBeInTheDocument();
+      expect(screen.queryByText(/Sign in your phone via QR/)).not.toBeInTheDocument();
+    }
+    {
+      expect(screen.queryByTestId('cloud-target-selector')).not.toBeInTheDocument();
+    }
   });
 
   it('shows account details when signed in', () => {
@@ -197,13 +198,6 @@ describe('AccountSection', () => {
   });
 
   describe('Download CTA visibility', () => {
-    it('signed-out: shows the download card next to the auth form', () => {
-      mockUseCloudConnection.mockReturnValue(DISCONNECTED);
-      renderSection();
-      expect(screen.getByTestId('cloud-auth-form')).toBeInTheDocument();
-      expect(screen.getByTestId('app-download-card')).toBeInTheDocument();
-    });
-
     it('signed-in: always shows the card with setup steps inside it (kept even with devices registered)', () => {
       mockUseCloudConnection.mockReturnValue(CONNECTED);
       renderSection();
@@ -213,27 +207,9 @@ describe('AccountSection', () => {
       expect(card).toHaveTextContent(/Download the app on your phone/);
       expect(card).toHaveTextContent(/Sign in your phone via QR/);
     });
-    it('signed-out: shows the card without the connected-only setup steps', () => {
-      mockUseCloudConnection.mockReturnValue(DISCONNECTED);
-      mockUseCloudTarget.mockReturnValue(HOME_TARGET);
-
-      renderSection();
-
-      expect(screen.getByTestId('app-download-card')).toBeInTheDocument();
-      expect(screen.queryByText(/Sign in your phone via QR/)).not.toBeInTheDocument();
-    });
   });
 
   describe('Target selector', () => {
-    it('is hidden when no online, version-matching remote exists', () => {
-      mockUseCloudConnection.mockReturnValue(DISCONNECTED);
-      mockUseCloudTarget.mockReturnValue(HOME_TARGET);
-
-      renderSection();
-
-      expect(screen.queryByTestId('cloud-target-selector')).not.toBeInTheDocument();
-    });
-
     it('offers This PC and each usable remote when one exists', () => {
       mockUseCloudConnection.mockReturnValue(DISCONNECTED);
       mockUseCloudTarget.mockReturnValue({
@@ -271,7 +247,6 @@ describe('AccountSection', () => {
 
       renderSection();
 
-      expect(mockUseCloudConnection).toHaveBeenCalledWith('r-1');
       expect(screen.getByTestId('cloud-auth-form')).toHaveAttribute('data-backend', 'r-1');
     });
 
@@ -288,7 +263,6 @@ describe('AccountSection', () => {
 
       renderSection();
 
-      expect(mockUseCloudConnection).toHaveBeenCalledWith('home');
       const selector = screen.getByTestId('cloud-target-selector') as HTMLSelectElement;
       expect(selector.value).toBe('home');
     });

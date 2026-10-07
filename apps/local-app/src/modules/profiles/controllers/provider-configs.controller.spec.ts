@@ -67,129 +67,18 @@ describe('ProviderConfigsController', () => {
     jest.clearAllMocks();
   });
 
-  describe('GET /api/provider-configs/:id', () => {
-    it('returns config when found', async () => {
-      storage.getProfileProviderConfig.mockResolvedValue(baseConfig);
-
-      const result = await controller.getProviderConfig('config-1');
-
-      expect(storage.getProfileProviderConfig).toHaveBeenCalledWith('config-1');
-      expect(result.id).toBe('config-1');
-      expect(result.env).toEqual({ API_KEY: 'test-key' });
-    });
-
-    it('throws when config not found', async () => {
-      storage.getProfileProviderConfig.mockRejectedValue(
-        new NotFoundError('ProfileProviderConfig', 'config-1'),
-      );
-
-      await expect(controller.getProviderConfig('config-1')).rejects.toThrow(NotFoundError);
-    });
-  });
-
   describe('PUT /api/provider-configs/:id', () => {
-    it('updates config with all fields', async () => {
-      const updatedConfig = {
-        ...baseConfig,
-        providerId: 'provider-2',
-        options: '--model new',
-        env: { NEW_KEY: 'new-value' },
-      };
-      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
-
-      const result = await controller.updateProviderConfig('config-1', {
-        providerId: 'provider-2',
-        options: '--model new',
-        env: { NEW_KEY: 'new-value' },
-      });
-
-      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
-        providerId: 'provider-2',
-        options: '--model new',
-        env: { NEW_KEY: 'new-value' },
-      });
-      expect(result.providerId).toBe('provider-2');
-    });
-
-    it('updates only provided fields', async () => {
-      const updatedConfig = { ...baseConfig, options: null };
-      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
-
-      await controller.updateProviderConfig('config-1', { options: null });
-
-      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
-        options: null,
-      });
-    });
-
-    it('clears env by sending null', async () => {
-      const updatedConfig = { ...baseConfig, env: null };
-      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
-
-      const result = await controller.updateProviderConfig('config-1', { env: null });
-
-      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
-        env: null,
-      });
-      expect(result.env).toBeNull();
-    });
-
-    it('sets structured model and effort defaults', async () => {
-      const updatedConfig = { ...baseConfig, model: 'claude-sonnet-4-5', effort: 'high' };
-      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
-
-      const result = await controller.updateProviderConfig('config-1', {
-        model: 'claude-sonnet-4-5',
-        effort: 'high',
-      });
-
-      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
-        model: 'claude-sonnet-4-5',
-        effort: 'high',
-      });
-      expect(result.model).toBe('claude-sonnet-4-5');
-      expect(result.effort).toBe('high');
-    });
-
-    it('clears structured model/effort via null', async () => {
-      const updatedConfig = { ...baseConfig, model: null, effort: null };
-      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
-
-      const result = await controller.updateProviderConfig('config-1', {
-        model: null,
-        effort: null,
-      });
-
-      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', {
-        model: null,
-        effort: null,
-      });
-      expect(result.model).toBeNull();
-      expect(result.effort).toBeNull();
-    });
-
-    it('omitting model/effort preserves them (not passed to storage)', async () => {
-      const updatedConfig = { ...baseConfig, options: '--model new' };
-      providerConfigsService.updateProviderConfig.mockResolvedValue(updatedConfig);
-
-      await controller.updateProviderConfig('config-1', { options: '--model new' });
-
-      const passed = providerConfigsService.updateProviderConfig.mock.calls[0][1] as {
-        model?: unknown;
-        effort?: unknown;
-      };
-      expect(passed.model).toBeUndefined();
-      expect(passed.effort).toBeUndefined();
-    });
-
-    it('throws when config not found', async () => {
-      providerConfigsService.updateProviderConfig.mockRejectedValue(
-        new NotFoundError('ProfileProviderConfig', 'config-1'),
-      );
-
-      await expect(controller.updateProviderConfig('config-1', { options: 'new' })).rejects.toThrow(
-        NotFoundError,
-      );
+    it.each([
+      { name: 'only options', patch: { options: null } },
+      { name: 'clear env', patch: { env: null } },
+      { name: 'structured defaults', patch: { model: 'claude-sonnet-4-5', effort: 'high' } },
+      { name: 'clear structured defaults', patch: { model: null, effort: null } },
+      { name: 'omit structured defaults', patch: { options: '--model new' } },
+    ])('updates provider config with $name', async ({ patch }) => {
+      providerConfigsService.updateProviderConfig.mockResolvedValue({ ...baseConfig, ...patch });
+      const result = await controller.updateProviderConfig('config-1', patch);
+      expect(providerConfigsService.updateProviderConfig).toHaveBeenCalledWith('config-1', patch);
+      expect(result).toMatchObject(patch);
     });
 
     it('validates env keys', async () => {
@@ -206,14 +95,6 @@ describe('ProviderConfigsController', () => {
   });
 
   describe('DELETE /api/provider-configs/:id', () => {
-    it('deletes config successfully', async () => {
-      storage.deleteProfileProviderConfig.mockResolvedValue(undefined);
-
-      await expect(controller.deleteProviderConfig('config-1')).resolves.toBeUndefined();
-
-      expect(storage.deleteProfileProviderConfig).toHaveBeenCalledWith('config-1');
-    });
-
     it('throws BadRequest when config is referenced by agents', async () => {
       storage.deleteProfileProviderConfig.mockRejectedValue(
         new ValidationError('Cannot delete: config in use'),

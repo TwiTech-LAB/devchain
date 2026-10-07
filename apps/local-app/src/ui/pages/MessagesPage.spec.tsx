@@ -122,19 +122,17 @@ describe('MessagesPage', () => {
       });
     });
 
-    it('should show empty state', () => {
+    it('should show empty state', async () => {
       render(<MessagesPage />);
 
       expect(screen.getByTestId('empty-state')).toBeInTheDocument();
       expect(screen.getByText('No project selected')).toBeInTheDocument();
       expect(screen.getByText('Select a project to view message activity')).toBeInTheDocument();
-    });
 
-    it('should not render pools or activity list', () => {
-      render(<MessagesPage />);
-
-      expect(screen.queryByTestId('current-pools-panel')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('message-activity-list')).not.toBeInTheDocument();
+      {
+        expect(screen.queryByTestId('current-pools-panel')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('message-activity-list')).not.toBeInTheDocument();
+      }
     });
   });
 
@@ -145,35 +143,30 @@ describe('MessagesPage', () => {
       });
     });
 
-    it('should render page header', () => {
+    it('should render page header', async () => {
       render(<MessagesPage />);
 
       expect(screen.getByTestId('page-header')).toBeInTheDocument();
       expect(screen.getByText('Messages')).toBeInTheDocument();
-    });
 
-    it('should render all components with project ID', () => {
-      render(<MessagesPage />);
-
-      expect(screen.getByTestId('current-pools-panel')).toHaveAttribute(
-        'data-project-id',
-        'project-1',
-      );
-      expect(screen.getByTestId('message-filters-panel')).toHaveAttribute(
-        'data-project-id',
-        'project-1',
-      );
-      expect(screen.getByTestId('message-activity-list')).toHaveAttribute(
-        'data-project-id',
-        'project-1',
-      );
-    });
-
-    it('should render message detail drawer', () => {
-      render(<MessagesPage />);
-
-      expect(screen.getByTestId('message-detail-drawer')).toBeInTheDocument();
-      expect(screen.getByTestId('message-detail-drawer')).toHaveAttribute('data-open', 'false');
+      {
+        expect(screen.getByTestId('current-pools-panel')).toHaveAttribute(
+          'data-project-id',
+          'project-1',
+        );
+        expect(screen.getByTestId('message-filters-panel')).toHaveAttribute(
+          'data-project-id',
+          'project-1',
+        );
+        expect(screen.getByTestId('message-activity-list')).toHaveAttribute(
+          'data-project-id',
+          'project-1',
+        );
+      }
+      {
+        expect(screen.getByTestId('message-detail-drawer')).toBeInTheDocument();
+        expect(screen.getByTestId('message-detail-drawer')).toHaveAttribute('data-open', 'false');
+      }
     });
   });
 
@@ -184,41 +177,21 @@ describe('MessagesPage', () => {
       });
     });
 
-    it('should set agent filter when pool card is clicked', () => {
+    it('selects, switches and clears the pool agent filter', () => {
       render(<MessagesPage />);
-
       fireEvent.click(screen.getByText('Pool Card Agent 1'));
-
       expect(screen.getByTestId('current-pools-panel')).toHaveAttribute('data-selected', 'agent-1');
       expect(screen.getByTestId('message-activity-list')).toHaveAttribute(
         'data-filters',
         JSON.stringify({ agentId: 'agent-1' }),
       );
-    });
-
-    it('should toggle agent filter when same pool card is clicked twice', () => {
-      render(<MessagesPage />);
-
-      // Click once to select
-      fireEvent.click(screen.getByText('Pool Card Agent 1'));
-      expect(screen.getByTestId('current-pools-panel')).toHaveAttribute('data-selected', 'agent-1');
-
-      // Click again to deselect
-      fireEvent.click(screen.getByText('Pool Card Agent 1'));
-      expect(screen.getByTestId('current-pools-panel')).not.toHaveAttribute(
-        'data-selected',
-        'agent-1',
-      );
-    });
-
-    it('should switch agent filter when different pool card is clicked', () => {
-      render(<MessagesPage />);
-
-      fireEvent.click(screen.getByText('Pool Card Agent 1'));
-      expect(screen.getByTestId('current-pools-panel')).toHaveAttribute('data-selected', 'agent-1');
-
       fireEvent.click(screen.getByText('Pool Card Agent 2'));
       expect(screen.getByTestId('current-pools-panel')).toHaveAttribute('data-selected', 'agent-2');
+      fireEvent.click(screen.getByText('Pool Card Agent 2'));
+      expect(screen.getByTestId('current-pools-panel')).not.toHaveAttribute(
+        'data-selected',
+        'agent-2',
+      );
     });
   });
 
@@ -229,7 +202,7 @@ describe('MessagesPage', () => {
       });
     });
 
-    it('should pass filters to activity list', () => {
+    it('should pass filters to activity list', async () => {
       render(<MessagesPage />);
 
       fireEvent.click(screen.getByText('Set Status Filter'));
@@ -238,24 +211,19 @@ describe('MessagesPage', () => {
         'data-filters',
         JSON.stringify({ status: 'delivered' }),
       );
-    });
 
-    it('should clear filters', () => {
-      render(<MessagesPage />);
-
-      // Set filter first
-      fireEvent.click(screen.getByText('Set Status Filter'));
-      expect(screen.getByTestId('message-activity-list')).toHaveAttribute(
-        'data-filters',
-        JSON.stringify({ status: 'delivered' }),
-      );
-
-      // Clear filters
-      fireEvent.click(screen.getByText('Clear Filters'));
-      expect(screen.getByTestId('message-activity-list')).toHaveAttribute(
-        'data-filters',
-        JSON.stringify({}),
-      );
+      {
+        fireEvent.click(screen.getByText('Set Status Filter'));
+        expect(screen.getByTestId('message-activity-list')).toHaveAttribute(
+          'data-filters',
+          JSON.stringify({ status: 'delivered' }),
+        );
+        fireEvent.click(screen.getByText('Clear Filters'));
+        expect(screen.getByTestId('message-activity-list')).toHaveAttribute(
+          'data-filters',
+          JSON.stringify({}),
+        );
+      }
     });
   });
 
@@ -266,25 +234,20 @@ describe('MessagesPage', () => {
       });
     });
 
-    it('should open drawer when message is clicked', () => {
+    it('should open drawer when message is clicked', async () => {
       render(<MessagesPage />);
 
       fireEvent.click(screen.getByText('Message Row'));
 
       expect(screen.getByTestId('message-detail-drawer')).toHaveAttribute('data-open', 'true');
       expect(screen.getByText('Message: msg-1')).toBeInTheDocument();
-    });
 
-    it('should close drawer when close is clicked', () => {
-      render(<MessagesPage />);
-
-      // Open drawer
-      fireEvent.click(screen.getByText('Message Row'));
-      expect(screen.getByTestId('message-detail-drawer')).toHaveAttribute('data-open', 'true');
-
-      // Close drawer
-      fireEvent.click(screen.getByText('Close Drawer'));
-      expect(screen.getByTestId('message-detail-drawer')).toHaveAttribute('data-open', 'false');
+      {
+        fireEvent.click(screen.getByText('Message Row'));
+        expect(screen.getByTestId('message-detail-drawer')).toHaveAttribute('data-open', 'true');
+        fireEvent.click(screen.getByText('Close Drawer'));
+        expect(screen.getByTestId('message-detail-drawer')).toHaveAttribute('data-open', 'false');
+      }
     });
   });
 });

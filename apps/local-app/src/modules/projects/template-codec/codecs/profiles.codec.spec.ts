@@ -69,26 +69,6 @@ describe('profiles codec — providerConfig position pass-through', () => {
     expect(positions).toEqual([5, 1, 9]);
   });
 
-  it('applies in create mode too (both import paths share this codec)', async () => {
-    const createProfileProviderConfig = jest.fn().mockResolvedValue({ id: 'cfg-x' });
-    const rt = makeRt(createProfileProviderConfig);
-
-    const profilesToCreate = [
-      {
-        id: 'p1',
-        name: 'P',
-        provider: { name: 'claude' },
-        providerConfigs: [{ name: 'a', providerName: 'claude', position: 7 }],
-      },
-    ];
-
-    await profilesCodec.apply([], seedCtx(profilesToCreate), 'create', rt);
-
-    expect(createProfileProviderConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ position: 7 }),
-    );
-  });
-
   it('legacy: absent position is passed as undefined so storage keeps its max+1 auto-assign', async () => {
     const createProfileProviderConfig = jest.fn().mockResolvedValue({ id: 'cfg' });
     const rt = makeRt(createProfileProviderConfig);

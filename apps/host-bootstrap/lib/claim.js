@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { BootstrapError, MAX_CLAIM_UID } = require("./validate");
+const { BootstrapError, MIN_CLAIM_UID, MAX_CLAIM_UID } = require("./validate");
 const { renderEnvFile, renderHostUnit, renderSudoers } = require("./render");
 const { loadTls, userTlsFiles, TLS_KEY_ENV, TLS_CERT_ENV } = require("./tls");
 const {
@@ -10,8 +10,6 @@ const {
   runClisHelper,
   NPM_INSTALL_TIMEOUT_MS,
 } = require("./refresh-helper");
-/** useradd's default UID_MIN; lower IDs are system accounts. */
-const FIRST_REGULAR_UID = 1000;
 
 function claimFile(sys) {
   return path.join(sys.paths.etcDir, "claim.json");
@@ -75,18 +73,48 @@ function writeUserFile(file, content, mode, account, sys) {
   writeFileAtomic(file, content, mode, account, sys);
 }
 
+function ensureIdsProfile(sys) {
+  const file = path.join(sys.paths.profileDir, "devchain-ids.sh");
+  const content = 'export DEVCHAIN_UID="$(id -u)" DEVCHAIN_GID="$(id -g)"\n';
+  fs.mkdirSync(sys.paths.profileDir, { recursive: true, mode: 0o755 });
+  refuseSymlink(file);
+  try {
+    const stat = fs.statSync(file);
+    if (
+      fs.readFileSync(file, "utf8") === content &&
+      (stat.mode & 0o777) === 0o644
+    )
+      return false;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  writeFileAtomic(file, content, 0o644, null, sys);
+  return true;
+}
+
 async function ensureUser(claim, sys) {
+  const requestedUid =
+    Number.isInteger(claim.uid) &&
+    claim.uid >= MIN_CLAIM_UID &&
+    claim.uid <= MAX_CLAIM_UID
+      ? claim.uid
+      : undefined;
+  const holder =
+    requestedUid === undefined ? null : await sys.lookupUid(requestedUid);
   const existing = await sys.lookupUser(claim.userName);
   if (existing) {
-    // A retry after a failed claim finds the account it created before.
-    if (existing.uid < FIRST_REGULAR_UID || existing.home !== claim.homePath) {
+    if (
+      existing.uid < MIN_CLAIM_UID ||
+      (existing.uid < 1000 && existing.uid !== requestedUid) ||
+      existing.home !== claim.homePath
+    ) {
       throw new BootstrapError(
         409,
         "USER_EXISTS",
         `User ${claim.userName} already exists with another home or as a system account.`,
       );
     }
-    return existing;
+    return accountIdentity(existing, claim, requestedUid, holder, sys);
   }
   if (fs.existsSync(claim.homePath)) {
     throw new BootstrapError(
@@ -97,24 +125,77 @@ async function ensureUser(claim, sys) {
   }
   // useradd creates the home but not its parent (/Users on a Linux VM).
   fs.mkdirSync(path.dirname(claim.homePath), { recursive: true, mode: 0o755 });
-  const useraddArgs = ["-m", "-d", claim.homePath, "-s", "/bin/bash", "-U"];
-  // A claim from a newer home names this PC's uid so containers running as
-  // that uid can write mounted project files. -U makes the user-private
-  // group take the same number as its gid when it is free; a uid another
-  // account already holds, or a uid outside the regular range, uses the
-  // next free one.
-  if (
-    claim.uid >= FIRST_REGULAR_UID &&
-    claim.uid <= MAX_CLAIM_UID &&
-    (await sys.lookupUid(claim.uid)) === null
-  ) {
-    useraddArgs.push("-u", String(claim.uid));
+  const group = await ensurePrimaryGroup(claim, requestedUid, holder, sys);
+  const useraddArgs = [
+    "-m",
+    "-d",
+    claim.homePath,
+    "-s",
+    "/bin/bash",
+    "-g",
+    String(group.gid),
+  ];
+  if (requestedUid !== undefined && holder === null) {
+    useraddArgs.push("-u", String(requestedUid));
   }
   useraddArgs.push(claim.userName);
   await sys.run("useradd", useraddArgs);
   const created = await sys.lookupUser(claim.userName);
   if (!created) throw new Error(`useradd did not create ${claim.userName}`);
-  return created;
+  return accountIdentity(created, claim, requestedUid, holder, sys);
+}
+
+async function ensurePrimaryGroup(claim, requestedUid, holder, sys) {
+  let gid = claim.gid;
+  if (gid !== undefined) {
+    const existing = await sys.lookupGroup(gid);
+    if (existing) return existing;
+  } else {
+    const existing = await sys.lookupGroup(claim.userName);
+    if (existing) return existing;
+    // Preserve uid-only claims' private-group ids when that number is free.
+    if (
+      requestedUid !== undefined &&
+      holder === null &&
+      !(await sys.lookupGroup(requestedUid))
+    ) {
+      gid = requestedUid;
+    }
+  }
+  let name = claim.userName;
+  for (let suffix = 1; await sys.lookupGroup(name); suffix += 1) {
+    const tail = `-${suffix}`;
+    name = `${claim.userName.slice(0, 32 - tail.length)}${tail}`;
+  }
+  await sys.run("groupadd", [
+    ...(gid === undefined ? [] : ["-g", String(gid)]),
+    name,
+  ]);
+  const group = await sys.lookupGroup(name);
+  if (!group) throw new Error(`groupadd did not create ${name}`);
+  return group;
+}
+
+async function accountIdentity(account, claim, requestedUid, holder, sys) {
+  const primaryGroup = (
+    await sys.run("id", ["-gn", account.name])
+  ).stdout.trim();
+  const mismatch =
+    requestedUid !== undefined &&
+    (account.uid !== requestedUid ||
+      (claim.gid !== undefined && account.gid !== claim.gid));
+  return {
+    ...account,
+    primaryGroup,
+    ...(mismatch
+      ? {
+          uidConflict: {
+            requestedUid,
+            holder: holder && holder.name !== account.name ? holder.name : null,
+          },
+        }
+      : {}),
+  };
 }
 
 async function writeSudoers(userName, sys) {
@@ -262,11 +343,17 @@ async function refreshHostUnit(sys) {
   return true;
 }
 
-function writeClaimRecord(claim, cliVersions, sys) {
+function writeClaimRecord(claim, account, cliVersions, sys) {
   fs.mkdirSync(sys.paths.etcDir, { recursive: true, mode: 0o755 });
   const record = {
     userName: claim.userName,
     homePath: claim.homePath,
+    ...(claim.uid !== undefined ? { requestedUid: claim.uid } : {}),
+    ...(claim.gid !== undefined ? { requestedGid: claim.gid } : {}),
+    uid: account.uid,
+    gid: account.gid,
+    primaryGroup: account.primaryGroup,
+    ...(account.uidConflict ? { uidConflict: account.uidConflict } : {}),
     version: claim.version,
     cliVersions,
     port: claim.port,
@@ -300,6 +387,7 @@ async function performClaim(claim, sys, log) {
   const steps = [
     ["user", () => ensureUser(claim, sys)],
     ["sudoers", () => writeSudoers(claim.userName, sys)],
+    ["profile", () => ensureIdsProfile(sys)],
     ["tls", (account) => copyTls(claim, account, sys)],
     ["provider-auth", (account) => writeProviderAuth(claim, account, sys)],
     ["install", () => installVersion(claim.version, npmRegistry, sys)],
@@ -307,7 +395,7 @@ async function performClaim(claim, sys, log) {
     ["clis", () => runClisHelper(claim.version, sys)],
     ["activate", () => activateVersion(claim.version, sys)],
     ["service", (account) => writeHostUnit(claim, account, sys, unitTemplate)],
-    ["record", () => writeClaimRecord(claim, cliVersions, sys)],
+    ["record", (account) => writeClaimRecord(claim, account, cliVersions, sys)],
   ];
   let account = null;
   let record = null;
@@ -366,6 +454,7 @@ function jobStatus(sys, fileName) {
 
 module.exports = {
   performClaim,
+  ensureIdsProfile,
   readClaim,
   requireClaim,
   refreshHostUnit,
@@ -376,5 +465,4 @@ module.exports = {
   removeOtherVersions,
   writeFileAtomic,
   claimFile,
-  FIRST_REGULAR_UID,
 };

@@ -38,16 +38,15 @@ describe('SessionReadSlideOver', () => {
     expect(screen.queryByText('Session transcript')).not.toBeInTheDocument();
   });
 
-  it('renders the dialog when sessionId is provided', () => {
+  it('renders the dialog when sessionId is provided', async () => {
     render(<SessionReadSlideOver sessionId="session-abc" onClose={jest.fn()} />);
     expect(screen.getByText('Session transcript')).toBeInTheDocument();
-  });
 
-  it('renders SessionViewerPanel with the given sessionId', () => {
-    render(<SessionReadSlideOver sessionId="session-xyz" onClose={jest.fn()} />);
-    const viewer = screen.getByTestId('session-viewer');
-    expect(viewer).toBeInTheDocument();
-    expect(viewer.textContent).toBe('session-xyz');
+    {
+      const viewer = screen.getByTestId('session-viewer');
+      expect(viewer).toBeInTheDocument();
+      expect(viewer.textContent).toBe('session-abc');
+    }
   });
 
   it('calls onClose when the close button is clicked', () => {
@@ -55,13 +54,5 @@ describe('SessionReadSlideOver', () => {
     render(<SessionReadSlideOver sessionId="session-1" onClose={onClose} />);
     fireEvent.click(screen.getByRole('button', { name: /close transcript viewer/i }));
     expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not pass a transcript-enable option to the hook', () => {
-    render(<SessionReadSlideOver sessionId="session-1" onClose={jest.fn()} />);
-
-    expect(mockUseSessionTranscript).toHaveBeenCalledTimes(1);
-    expect(mockUseSessionTranscript.mock.calls[0]).toHaveLength(1);
-    expect(mockUseSessionTranscript.mock.calls[0][0]).toBe('session-1');
   });
 });

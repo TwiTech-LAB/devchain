@@ -26,12 +26,6 @@ export function stripAlternateScreenSequences(data: string): string {
   });
 }
 
-// Extendable hook for future policy (OSC/DSR/APC/DCS/PM filtering) if needed.
-export function sanitizeAnsiForClient(data: string): string {
-  // Strip alt-screen toggles so output stays on the normal buffer.
-  return stripAlternateScreenSequences(data);
-}
-
 // Stateful sanitizer that tracks alt-screen mode and, when active,
 // normalizes scroll regions to full-screen so TUI scrolling contributes
 // to global scrollback. Outside alt mode, data is left intact.

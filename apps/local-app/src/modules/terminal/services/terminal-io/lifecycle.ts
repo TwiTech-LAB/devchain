@@ -1,3 +1,4 @@
+import { processIdsEnv } from '../../../../common/process-ids-env';
 import type { ExecutorResult, ProcessExecutor } from '../process-executor/process-executor.port';
 import type { SessionTarget, CreateSessionOptions, ExpectedSessionDestroyResult } from './types';
 
@@ -31,11 +32,28 @@ export async function createSession(
   command: string[],
   options: CreateSessionOptions,
 ): Promise<SessionTarget> {
-  const createResult = await executor.run({
-    argv: ['tmux', 'new-session', '-d', '-s', name, '-c', options.cwd, ...command],
-    mode: 'pipe',
-    env: options.env ? { ...options.env } : undefined,
-  });
+  const idsEnv = processIdsEnv();
+  // A running tmux server retains its own environment; set these on the new session too.
+  const sessionEnvArgs = Object.entries(idsEnv).flatMap(([key, value]) => [
+    '-e',
+    `${key}=${value}`,
+  ]);
+  // Without a caller env, tmux inherits this process's env unvalidated, as before the ids existed.
+  const env = options.env ? { ...options.env, ...idsEnv } : undefined;
+  const newSession = (envArgs: string[]) =>
+    executor.run({
+      argv: ['tmux', 'new-session', '-d', '-s', name, '-c', options.cwd, ...envArgs, ...command],
+      mode: 'pipe',
+      env,
+    });
+  let createResult = await newSession(sessionEnvArgs);
+  // tmux before 3.2 has no `new-session -e`; such a session gets the ids only from a caller env.
+  if (
+    !createResult.success &&
+    sessionEnvArgs.length > 0 &&
+    /usage: new-session|unknown (flag|option)/.test(createResult.stderr)
+  )
+    createResult = await newSession([]);
 
   if (!createResult.success) {
     throw new Error(`Failed to create tmux session "${name}": ${createResult.stderr}`);

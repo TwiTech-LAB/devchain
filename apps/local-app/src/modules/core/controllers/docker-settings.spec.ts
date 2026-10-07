@@ -83,6 +83,7 @@ const hostCases = {
   PortBindings: { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '8080' }] },
   RestartPolicy: { Name: 'always', MaximumRetryCount: 0 },
   NetworkMode: 'project-net',
+  Privileged: true,
   LogConfig: { Type: 'json-file', Config: { 'max-size': '10m' } },
   AutoRemove: false,
   VolumeDriver: 'local',
@@ -145,6 +146,11 @@ it('refuses volume dependencies that cannot be recreated by identity', () => {
     'unsupported setting HostConfig.VolumesFrom',
   );
 });
+it('preserves a false privileged setting without refusing the container', () => {
+  expect(projectDockerCreate(inspect({ Privileged: false })).HostConfig).toEqual({
+    Privileged: false,
+  });
+});
 
 it.each(INSPECT_ONLY_FIELDS)('strips inspect-only %s', (field) => {
   const original = inspect();
@@ -158,7 +164,6 @@ const triggers: Record<(typeof CANNOT_MOVE_FIELDS)[number], unknown> = {
   Binds: ['/run/docker.sock:/socket:ro'],
   Mounts: [{ Type: 'bind', Source: '/var/run/docker.sock', Target: '/socket' }],
   NetworkMode: 'host',
-  Privileged: true,
   DeviceRequests: [{ Count: -1 }],
   PidMode: 'host',
   IpcMode: 'host',
@@ -173,7 +178,7 @@ it.each(CANNOT_MOVE_FIELDS)('refuses cannot-move trigger %s', (field) => {
     'Container cannot move:',
   );
 });
-it.each(['container:abc', 'host'])('refuses network mode %s', (NetworkMode) => {
+it.each(['container:abc'])('refuses network mode %s', (NetworkMode) => {
   expect(() => projectDockerCreate(inspect({ NetworkMode }))).toThrow('cannot move');
 });
 it('detects a nonstandard resolved Docker socket source', () => {
@@ -216,13 +221,44 @@ it.each(['Config', 'HostConfig', 'root'] as const)(
     }
   },
 );
-it('rejects requested static IPAM instead of silently dropping it', () => {
+it('preserves requested IPv4 addresses and aliases without generated addresses', () => {
   const original = inspect();
-  original.NetworkSettings = { Networks: { net: { IPAMConfig: { IPv4Address: '10.0.0.3' } } } };
+  const ipam = { IPv4Address: '10.0.0.3' };
+  original.NetworkSettings = {
+    Networks: { net: { Aliases: ['db'], IPAMConfig: ipam, IPAddress: '10.0.0.3' } },
+  };
+  const projected = projectDockerCreate(original);
+  expect(projected.NetworkingConfig).toEqual({
+    EndpointsConfig: { net: { Aliases: ['db'], IPAMConfig: ipam } },
+  });
+  const endpoints = (
+    projected.NetworkingConfig as { EndpointsConfig: Record<string, { IPAMConfig: unknown }> }
+  ).EndpointsConfig;
+  expect(endpoints.net.IPAMConfig).not.toBe(ipam);
+});
+it.each([
+  ['IPv6Address', 'fd00::3'],
+  ['LinkLocalIPs', ['169.254.1.3']],
+  ['FutureSetting', 'secret-value'],
+])('refuses active IPAMConfig.%s by name', (field, value) => {
+  const original = inspect();
+  original.NetworkSettings = {
+    Networks: { net: { IPAMConfig: { IPv4Address: '10.0.0.3', [field]: value } } },
+  };
   expect(() => projectDockerCreate(original)).toThrow(
-    'unsupported setting NetworkSettings.Networks.net.IPAMConfig',
+    `unsupported setting NetworkSettings.Networks.net.IPAMConfig.${field}`,
   );
 });
+it.each([{}, null, { IPv4Address: '', IPv6Address: '', LinkLocalIPs: [] }])(
+  'keeps an empty IPAMConfig from requesting an address',
+  (ipam) => {
+    const original = inspect();
+    original.NetworkSettings = { Networks: { net: { IPAMConfig: ipam } } };
+    expect(projectDockerCreate(original).NetworkingConfig).toEqual({
+      EndpointsConfig: { net: {} },
+    });
+  },
+);
 it('rejects nested unreviewed mount options', () => {
   expect(() =>
     projectDockerCreate(

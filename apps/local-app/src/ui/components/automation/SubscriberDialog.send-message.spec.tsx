@@ -118,78 +118,46 @@ describe('SubscriberDialog - Send Message', () => {
     };
   });
 
-  it('converts a legacy immediate mapping before sanitization and removes it on save', async () => {
+  it.each([
+    {
+      label: 'legacy immediate mapping',
+      inputs: { immediate: { source: 'custom', customValue: 'true' } },
+      mode: 'immediate',
+      display: 'Deliver Immediately',
+    },
+    {
+      label: 'explicit mode wins over legacy mapping',
+      inputs: {
+        deliveryMode: { source: 'custom', customValue: 'on_idle' },
+        immediate: { source: 'custom', customValue: 'true' },
+      },
+      mode: 'on_idle',
+      display: 'Delivery on Idle',
+    },
+    {
+      label: 'missing mode defaults on save',
+      inputs: {},
+      mode: 'default',
+      display: 'Default (queue)',
+    },
+  ] as const)('$label', async ({ inputs, mode, display }) => {
     let updateBody: Record<string, unknown> | null = null;
     const subscriber = createSubscriber({
       text: { source: 'custom', customValue: 'Hello' },
-      immediate: { source: 'custom', customValue: 'true' },
+      ...(inputs as Parameters<typeof createSubscriber>[0]),
     });
     renderDialog(subscriber, (body) => {
       updateBody = body;
     });
-
     await screen.findByText('Delivery Mode');
-    expect(screen.getAllByText('Deliver Immediately')).not.toHaveLength(0);
+    expect(screen.getAllByText(display)).not.toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Update' }));
-
     await waitFor(() => expect(updateBody).not.toBeNull());
     expect(updateBody).toEqual(
       expect.objectContaining({
         actionInputs: {
           text: { source: 'custom', customValue: 'Hello' },
-          deliveryMode: { source: 'custom', customValue: 'immediate' },
-          submitKey: { source: 'custom', customValue: 'Enter' },
-        },
-      }),
-    );
-  });
-
-  it('lets a valid explicit mode win and materializes absent defaults only on save', async () => {
-    let updateBody: Record<string, unknown> | null = null;
-    const subscriber = createSubscriber({
-      text: { source: 'custom', customValue: 'Hello' },
-      deliveryMode: { source: 'custom', customValue: 'on_idle' },
-      immediate: { source: 'custom', customValue: 'true' },
-    });
-    renderDialog(subscriber, (body) => {
-      updateBody = body;
-    });
-
-    await screen.findByText('Delivery Mode');
-    expect(screen.getAllByText('Delivery on Idle')).not.toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
-
-    await waitFor(() => expect(updateBody).not.toBeNull());
-    expect(updateBody).toEqual(
-      expect.objectContaining({
-        actionInputs: {
-          text: { source: 'custom', customValue: 'Hello' },
-          deliveryMode: { source: 'custom', customValue: 'on_idle' },
-          submitKey: { source: 'custom', customValue: 'Enter' },
-        },
-      }),
-    );
-  });
-
-  it('normalizes a missing delivery mode to default when editing', async () => {
-    let updateBody: Record<string, unknown> | null = null;
-    const subscriber = createSubscriber({
-      text: { source: 'custom', customValue: 'Hello' },
-    });
-    renderDialog(subscriber, (body) => {
-      updateBody = body;
-    });
-
-    await screen.findByText('Delivery Mode');
-    expect(screen.getAllByText('Default (queue)')).not.toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
-
-    await waitFor(() => expect(updateBody).not.toBeNull());
-    expect(updateBody).toEqual(
-      expect.objectContaining({
-        actionInputs: {
-          text: { source: 'custom', customValue: 'Hello' },
-          deliveryMode: { source: 'custom', customValue: 'default' },
+          deliveryMode: { source: 'custom', customValue: mode },
           submitKey: { source: 'custom', customValue: 'Enter' },
         },
       }),

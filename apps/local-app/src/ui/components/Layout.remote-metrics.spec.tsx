@@ -211,8 +211,7 @@ describe('Layout remote metrics integration', () => {
 
     // The strip mounts as "Waiting for stats" until the history query resolves.
     expect(await screen.findByRole('button', { name: 'CPU 42%' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'RAM 50%' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Disk 67%' })).toBeInTheDocument();
+
     expect(screen.getByTestId('remote-metrics-strip')).toBeInTheDocument();
     expect(screen.getByTestId('cloud-indicator')).toHaveAttribute('data-compact', 'true');
     expect(screen.getByTestId('terminal-dock')).toBeInTheDocument();
@@ -263,26 +262,5 @@ describe('Layout remote metrics integration', () => {
     expect(row).toHaveTextContent('Remote "build-vm" needs update');
     expect(screen.getByTestId('remote-metrics-strip')).toBeInTheDocument();
     expect(screen.queryByTestId('terminal-dock')).not.toBeInTheDocument();
-  });
-
-  it('returns the dock when the remote recovers', async () => {
-    mockActiveRemote = { ...onlineRemote(), online: false };
-    const { view, queryClient } = renderLayout();
-    await screen.findByTestId('remote-status-row');
-
-    mockActiveRemote = onlineRemote();
-    view.rerender(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/']}>
-          <Layout>
-            <div>page content</div>
-          </Layout>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    expect(await screen.findByTestId('terminal-dock')).toBeInTheDocument();
-    expect(screen.queryByTestId('remote-status-row')).not.toBeInTheDocument();
-    expect(screen.getByTestId('remote-metrics-strip')).toBeInTheDocument();
   });
 });

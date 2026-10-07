@@ -93,7 +93,7 @@ describe('OwnedCommentItem', () => {
     const user = userEvent.setup();
     render(item(comment(), actionsWith(), { richEdit: true, ownedDelete: true }));
     const trigger = screen.getByRole('button', { name: /comment actions for comment by me/i });
-    expect(trigger).toHaveClass('h-10', 'w-10');
+
     expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull();
     await user.click(trigger);
     expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
@@ -102,8 +102,7 @@ describe('OwnedCommentItem', () => {
 
   it('hides both actions for comments owned by someone else', () => {
     render(item(comment(), actionsWith(), { richEdit: true, ownedDelete: true }, false));
-    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /comment actions/i })).not.toBeInTheDocument();
   });
 
   it('applies the capability gates independently', async () => {

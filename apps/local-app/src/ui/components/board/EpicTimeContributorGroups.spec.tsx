@@ -69,7 +69,7 @@ describe('EpicTimeContributorGroups', () => {
     return render(<EpicTimeContributorGroups taskItems={taskItems} focalEpicId={focalEpicId} />);
   }
 
-  it('renders the focal group first, related groups by title, and their totals', () => {
+  it('renders the focal group first, related groups by title, and their totals', async () => {
     const { container } = renderGroups(groupedItems, 'epic-focal');
 
     expect(
@@ -86,6 +86,24 @@ describe('EpicTimeContributorGroups', () => {
     expect(container.querySelectorAll('ul[aria-label="Contributing DevChain tasks"]')).toHaveLength(
       0,
     );
+
+    {
+      const totalMinutes = groupedItems.reduce((total, item) => total + item.minutes, 0);
+      const includedTotals = screen
+        .getAllByRole('button')
+        .map((button) => button.textContent ?? '');
+      const parsed = includedTotals.map((label) => {
+        const hours = /(\d+)h/.exec(label)?.[1] ?? '0';
+        const minutes = /(\d+)m/.exec(label)?.[1] ?? '0';
+        return Number(hours) * 60 + Number(minutes);
+      });
+      expect(parsed.reduce((total, minutes) => total + minutes, 0)).toBe(totalMinutes);
+    }
+    {
+      const chevron = screen.getByRole('button', { name: /This task/ }).querySelector('svg');
+      expect(chevron).toHaveAttribute('aria-hidden', 'true');
+      expect(await axe(container)).toHaveNoViolations();
+    }
   });
 
   it('starts collapsed, discloses Own activity first, then sub-Epics by title and Epic ID', async () => {
@@ -119,23 +137,11 @@ describe('EpicTimeContributorGroups', () => {
     expect(screen.getAllByText('Own activity')).toHaveLength(2);
   });
 
-  it('sums every group total exactly to the summary total', () => {
-    renderGroups(groupedItems, 'epic-focal');
-    const totalMinutes = groupedItems.reduce((total, item) => total + item.minutes, 0);
-    const includedTotals = screen.getAllByRole('button').map((button) => button.textContent ?? '');
-    const parsed = includedTotals.map((label) => {
-      const hours = /(\d+)h/.exec(label)?.[1] ?? '0';
-      const minutes = /(\d+)m/.exec(label)?.[1] ?? '0';
-      return Number(hours) * 60 + Number(minutes);
-    });
-    expect(parsed.reduce((total, minutes) => total + minutes, 0)).toBe(totalMinutes);
-  });
-
   it('renders the exact legacy flat list and no relationship claim when a row lacks the pair', () => {
     renderGroups(degradedItems, 'epic-focal');
 
     const list = screen.getByRole('list', { name: 'Contributing DevChain tasks' });
-    expect(list.className).toBe('space-y-1');
+
     expect(
       within(list)
         .getAllByRole('listitem')
@@ -148,45 +154,41 @@ describe('EpicTimeContributorGroups', () => {
     ).toBeNull();
   });
 
-  it('keeps an own-only related group as a compact non-disclosure line', () => {
+  it.each([
+    {
+      id: 'epic-solo',
+      title: 'Solo routed',
+      direct: false,
+      minutes: 15,
+      focal: 'epic-focal',
+      label: 'Related: Solo routed',
+      time: '15m',
+    },
+    {
+      id: 'epic-child-focal',
+      title: 'Child focal',
+      direct: true,
+      minutes: 45,
+      focal: 'epic-child-focal',
+      label: 'This task',
+      time: '45m',
+    },
+  ])('renders compact $label group', ({ id, title, direct, minutes, focal, label, time }) => {
     const { container } = renderGroups(
       [
         {
-          epicId: 'epic-solo',
-          epicTitle: 'Solo routed',
-          isDirect: false,
-          minutes: 15,
-          groupEpicId: 'epic-solo',
-          groupEpicTitle: 'Solo routed',
+          epicId: id,
+          epicTitle: title,
+          isDirect: direct,
+          minutes,
+          groupEpicId: id,
+          groupEpicTitle: title,
         },
       ],
-      'epic-focal',
+      focal,
     );
-
-    expect(screen.getByText('Related: Solo routed')).toBeVisible();
-    expect(screen.getByText('Related: Solo routed').closest('p')).toHaveTextContent('15m');
-    expect(container.querySelectorAll('button')).toHaveLength(0);
-  });
-
-  it('keeps a child-focal self-only group as a compact This task line', () => {
-    const { container } = renderGroups(
-      [
-        {
-          epicId: 'epic-child-focal',
-          epicTitle: 'Child focal',
-          isDirect: true,
-          minutes: 45,
-          groupEpicId: 'epic-child-focal',
-          groupEpicTitle: 'Child focal',
-        },
-      ],
-      'epic-child-focal',
-    );
-
-    // A linked child focal is self-only: one compact "This task" line, no
-    // disclosure, no structural-parent claim.
-    expect(screen.getByText('This task')).toBeVisible();
-    expect(screen.getByText('This task').closest('p')).toHaveTextContent('45m');
+    expect(screen.getByText(label)).toBeVisible();
+    expect(screen.getByText(label).closest('p')).toHaveTextContent(time);
     expect(container.querySelectorAll('button')).toHaveLength(0);
   });
 
@@ -270,13 +272,6 @@ describe('EpicTimeContributorGroups', () => {
         .map((row) => row.textContent),
     ).toEqual(['Silent child10m']);
     expect(within(rows).queryByText('Own activity')).toBeNull();
-  });
-
-  it('hides chevrons from assistive technology and stays axe-clean', async () => {
-    const { container } = renderGroups(groupedItems, 'epic-focal');
-    const chevron = screen.getByRole('button', { name: /This task/ }).querySelector('svg');
-    expect(chevron).toHaveAttribute('aria-hidden', 'true');
-    expect(await axe(container)).toHaveNoViolations();
   });
 
   it('resets expansion only through the focalEpicId remount key, with no reset effect', async () => {

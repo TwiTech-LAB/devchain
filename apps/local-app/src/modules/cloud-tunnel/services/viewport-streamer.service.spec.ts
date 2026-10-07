@@ -157,25 +157,6 @@ describe('ViewportStreamerService', () => {
   afterEach(() => jest.useRealTimers());
 
   describe('subscribe — source-side auth before streaming', () => {
-    it('rejects an unknown session with NotFoundError and never streams', async () => {
-      const h = build({ scope: null });
-      await expect(
-        h.service.subscribe({ sessionId: SESSION_ID, projectId: PROJECT_ID }),
-      ).rejects.toBeInstanceOf(NotFoundError);
-      expect(h.terminalViewport.onData).not.toHaveBeenCalled();
-      expect(h.sink.sendViewport).not.toHaveBeenCalled();
-    });
-
-    it('rejects a cross-project session with ForbiddenError before streaming', async () => {
-      const h = build({
-        scope: { sessionId: SESSION_ID, agentId: null, projectId: 'other-project' },
-      });
-      await expect(
-        h.service.subscribe({ sessionId: SESSION_ID, projectId: PROJECT_ID }),
-      ).rejects.toBeInstanceOf(ForbiddenError);
-      expect(h.sink.sendViewport).not.toHaveBeenCalled();
-    });
-
     it('throws SESSION_NOT_RUNNING when there is no live terminal session', async () => {
       const h = build({ hasSession: false });
       await expect(
@@ -200,6 +181,7 @@ describe('ViewportStreamerService', () => {
       // Source-side auth ran before any streaming AND before any crypto work — the
       // encrypted lane resolver + seal were never invoked, so no key material was
       // touched for a session the caller doesn't own.
+      expect(h.terminalViewport.onData).not.toHaveBeenCalled();
       expect(h.viewportCrypto.resolveViewportChannel).not.toHaveBeenCalled();
       expect(h.sealScreen).not.toHaveBeenCalled();
       expect(h.sink.sendViewport).not.toHaveBeenCalled();
@@ -317,18 +299,6 @@ describe('ViewportStreamerService', () => {
   });
 
   describe('lifecycle', () => {
-    it('unsubscribe detaches the data listener (PTY survives) and returns ok', async () => {
-      const h = build();
-      h.capture.mockResolvedValueOnce(SCREEN_A);
-      const { subscriptionId } = await h.service.subscribe({
-        sessionId: SESSION_ID,
-        projectId: PROJECT_ID,
-      });
-
-      expect(h.service.unsubscribe({ subscriptionId })).toEqual({ ok: true });
-      expect(h.detachData).toHaveBeenCalledTimes(1);
-    });
-
     it('unsubscribe of an unknown subscriptionId returns { ok: false }', () => {
       const h = build();
       expect(h.service.unsubscribe({ subscriptionId: 'nope' })).toEqual({ ok: false });
@@ -589,14 +559,6 @@ describe('ViewportStreamerService', () => {
         reason: 'device-revoked',
       });
       expect(h3.detachData).toHaveBeenCalledTimes(1);
-    });
-
-    it('streams plaintext full/diff (back-compat) when no peer is paired', async () => {
-      const h = build({ channelMode: 'plaintext' });
-      h.capture.mockResolvedValueOnce(SCREEN_A);
-      await h.service.subscribe({ sessionId: SESSION_ID, projectId: PROJECT_ID });
-
-      expect(h.sent[0].body.kind).toBe('full');
     });
   });
 

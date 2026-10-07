@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import { Test, type TestingModule } from '@nestjs/testing';
 import Database from 'better-sqlite3';
 import { execFileSync } from 'child_process';
@@ -5,7 +6,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { resetEnvConfig } from '../../common/config/env.config';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { FILE_SYNC_PATHS, createProductionFileSyncPaths } from './file-sync-paths';
@@ -44,8 +44,7 @@ describeWithBinary(
     const databases: Database.Database[] = [];
 
     function openDb(): Database.Database {
-      const sqlite = new Database(':memory:');
-      migrate(drizzle(sqlite), { migrationsFolder: join(__dirname, '../../../drizzle') });
+      const { sqlite } = createTestDatabase();
       databases.push(sqlite);
       return sqlite;
     }

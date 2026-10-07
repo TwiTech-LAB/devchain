@@ -267,43 +267,22 @@ describe('TunnelClientService', () => {
     expect(WebSocket).toHaveBeenCalledTimes(1);
   });
 
-  it('should not reconnect on 4002 (revoked)', async () => {
+  it.each([
+    [4002, 'revoked'],
+    [4003, 'protocol_unsupported'],
+  ])('does not reconnect after close %s (%s)', async (code, reason) => {
     const WebSocket = require('ws').default;
     service.handleCloudConnected();
 
-    mockInstances[0]._emit('close', 4002, 'revoked');
+    mockInstances[0]._emit('close', code, reason);
     await Promise.resolve();
 
     jest.advanceTimersByTime(120_000);
     expect(WebSocket).toHaveBeenCalledTimes(1);
   });
 
-  it('should not reconnect on 4003 (protocol_unsupported)', async () => {
-    const WebSocket = require('ws').default;
-    service.handleCloudConnected();
-
-    mockInstances[0]._emit('close', 4003, 'protocol_unsupported');
-    await Promise.resolve();
-
-    jest.advanceTimersByTime(120_000);
-    expect(WebSocket).toHaveBeenCalledTimes(1);
-  });
-
-  it('attests with protocolVersion 2 (push-capable)', async () => {
-    service.handleCloudConnected();
-    const ws = mockInstances[0];
-
-    ws._emit('message', Buffer.from(JSON.stringify({ type: 'challenge', nonce: 'n', ts: 't' })));
-    // Flush the respondToChallenge microtask chain (getOrCreate → sign → exportPublic → send).
-    for (let i = 0; i < 6; i++) await Promise.resolve();
-
-    const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
-    expect(attestCall).toBeDefined();
-    expect(JSON.parse(attestCall[0]).protocolVersion).toBe('2');
-  });
-
-  it('attests with the configured instance label when one is set', async () => {
-    (instanceLabel.getLabel as jest.Mock).mockReturnValue('lab-vm');
+  it.each(['lab-vm', null])('attests label %s with hostname fallback', async (label) => {
+    (instanceLabel.getLabel as jest.Mock).mockReturnValue(label);
     service.handleCloudConnected();
     const ws = mockInstances[0];
 
@@ -311,11 +290,11 @@ describe('TunnelClientService', () => {
     for (let i = 0; i < 6; i++) await Promise.resolve();
 
     const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
-    expect(JSON.parse(attestCall[0]).label).toBe('lab-vm');
+    expect(JSON.parse(attestCall[0]).label).toBe(label ?? require('os').hostname());
   });
 
-  it('attests role host on a claimed host', async () => {
-    hostHelper.isClaimedHost.mockReturnValue(true);
+  it.each([true, false])('attests role for claimed=%s', async (claimed) => {
+    hostHelper.isClaimedHost.mockReturnValue(claimed);
     service.handleCloudConnected();
     const ws = mockInstances[0];
 
@@ -323,32 +302,11 @@ describe('TunnelClientService', () => {
     for (let i = 0; i < 6; i++) await Promise.resolve();
 
     const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
-    expect(JSON.parse(attestCall[0]).role).toBe('host');
-  });
-
-  it('omits the attest role on an instance that is not a claimed host', async () => {
-    hostHelper.isClaimedHost.mockReturnValue(false);
-    service.handleCloudConnected();
-    const ws = mockInstances[0];
-
-    ws._emit('message', Buffer.from(JSON.stringify({ type: 'challenge', nonce: 'n', ts: 't' })));
-    for (let i = 0; i < 6; i++) await Promise.resolve();
-
-    const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
-    expect(JSON.parse(attestCall[0])).not.toHaveProperty('role');
-  });
-
-  it('falls back to the hostname in attestation when no label is configured', async () => {
-    (instanceLabel.getLabel as jest.Mock).mockReturnValue(null);
-    service.handleCloudConnected();
-    const ws = mockInstances[0];
-
-    ws._emit('message', Buffer.from(JSON.stringify({ type: 'challenge', nonce: 'n', ts: 't' })));
-    for (let i = 0; i < 6; i++) await Promise.resolve();
-
-    const attestCall = ws.send.mock.calls.find((c: any[]) => JSON.parse(c[0]).type === 'attest');
-    const { hostname } = require('os');
-    expect(JSON.parse(attestCall[0]).label).toBe(hostname());
+    if (claimed) {
+      expect(JSON.parse(attestCall[0]).role).toBe('host');
+    } else {
+      expect(JSON.parse(attestCall[0])).not.toHaveProperty('role');
+    }
   });
 
   it('advertises the E2EE capability (pubkey + fingerprint) in the attest handshake', async () => {

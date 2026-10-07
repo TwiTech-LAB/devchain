@@ -191,7 +191,21 @@ describe('SessionCacheService', () => {
     const session = makeSession();
     (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
 
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+    const meta = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+    const result = meta.session;
+    expect(meta).toMatchObject({
+      cacheHit: false,
+      sourceChangeKind: 'unknown-full-parse',
+      lastSize: 1000,
+      lastMtime: 1706000000000,
+      lastOffset: 1000,
+    });
+    expect(service.getEntry(SESSION_ID)).toMatchObject({
+      session,
+      lastSize: 1000,
+      lastMtime: 1706000000000,
+      lastOffset: 1000,
+    });
 
     expect(result).toBe(session);
     expect(adapter.parseFullSession).toHaveBeenCalledWith(FILE_PATH);
@@ -214,24 +228,6 @@ describe('SessionCacheService', () => {
   // -------------------------------------------------------------------------
   // Cache hit (file unchanged, within TTL)
   // -------------------------------------------------------------------------
-
-  it('should return cached session on cache hit (file unchanged, within TTL)', async () => {
-    const session = makeSession();
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
-
-    // First call: populates cache
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    // Advance time by 1 minute (within 10-min TTL)
-    dateSpy.mockReturnValue(1706000060000);
-
-    // Second call: should hit cache
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    expect(result).toBe(session);
-    expect(adapter.parseFullSession).toHaveBeenCalledTimes(1);
-    expect(adapter.parseIncremental).not.toHaveBeenCalled();
-  });
 
   describe('getFreshSession', () => {
     // Module-unit deferred I/O exposes ownership races without filesystem timing.
@@ -627,7 +623,14 @@ describe('SessionCacheService', () => {
     } satisfies IncrementalResult);
 
     // Second call: incremental parse
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+    const meta = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
+    const result = meta.session;
+    expect(meta).toMatchObject({
+      cacheHit: false,
+      sourceChangeKind: 'same-file-append',
+      lastOffset: 1500,
+      lastSize: 1500,
+    });
 
     expect(adapter.parseIncremental).toHaveBeenCalledWith(FILE_PATH, {
       byteOffset: 1000, // lastOffset from full parse = file size
@@ -1482,19 +1485,6 @@ describe('SessionCacheService', () => {
   // clear removes all entries
   // -------------------------------------------------------------------------
 
-  it('should remove all entries on clear', async () => {
-    const session = makeSession();
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session);
-
-    await service.getOrParse('s1', FILE_PATH, adapter);
-    mockedFsStat.mockResolvedValue(makeStat(1001, 1706000000000));
-    await service.getOrParse('s2', FILE_PATH, adapter);
-    expect(service.size).toBe(2);
-
-    service.clear();
-    expect(service.size).toBe(0);
-  });
-
   // -------------------------------------------------------------------------
   // Metrics merge correctness
   // -------------------------------------------------------------------------
@@ -1584,92 +1574,82 @@ describe('SessionCacheService', () => {
   // Metric merge: nullish coalescing (zero and empty-string preservation)
   // -------------------------------------------------------------------------
 
-  it('should recompute visibleContextTokens from merged messages (not incremental snapshot)', async () => {
-    const existingMetrics = makeMetrics({ visibleContextTokens: 5000 });
-    const session1 = makeSession({ metrics: existingMetrics });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    // File grew — incremental provides visibleContextTokens=0, but merge recomputes.
-    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
-    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
-      hasMore: false,
-      nextByteOffset: 1500,
-      messageCount: 1,
+  it.each([
+    {
+      name: 'should recompute visibleContextTokens from merged messages (not incremental snapshot)',
+      seed: { visibleContextTokens: 5000 },
+      slice: { visibleContextTokens: 0 },
       entries: [makeMessage('m3', 1706000010000)],
-      metrics: makeMetrics({ visibleContextTokens: 0 }),
-    } satisfies IncrementalResult);
-
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    // Recomputed from m1+m2+m3 text content ("Message mX" => 3 each).
-    expect(result.metrics.visibleContextTokens).toBe(9);
-  });
-
-  it('should preserve existing totalContextTokens when incremental totalContextTokens is 0', async () => {
-    const existingMetrics = makeMetrics({ totalContextTokens: 1234 });
-    const session1 = makeSession({ metrics: existingMetrics });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
-    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
-      hasMore: false,
-      nextByteOffset: 1500,
-      messageCount: 1,
+      expected: { visibleContextTokens: 9 },
+    },
+    {
+      name: 'should preserve existing totalContextTokens when incremental totalContextTokens is 0',
+      seed: { totalContextTokens: 1234 },
+      slice: { totalContextTokens: 0 },
       entries: [makeMessage('m3', 1706000010000)],
-      metrics: makeMetrics({ totalContextTokens: 0 }),
-    } satisfies IncrementalResult);
-
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-    expect(result.metrics.totalContextTokens).toBe(1234);
-  });
-
-  it('should overwrite existing totalContextTokens when incremental totalContextTokens is > 0', async () => {
-    const existingMetrics = makeMetrics({ totalContextTokens: 1234 });
-    const session1 = makeSession({ metrics: existingMetrics });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
-    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
-      hasMore: false,
-      nextByteOffset: 1500,
-      messageCount: 1,
+      expected: { totalContextTokens: 1234 },
+    },
+    {
+      name: 'should overwrite existing totalContextTokens when incremental totalContextTokens is > 0',
+      seed: { totalContextTokens: 1234 },
+      slice: { totalContextTokens: 321 },
       entries: [makeMessage('m3', 1706000010000)],
-      metrics: makeMetrics({ totalContextTokens: 321 }),
-    } satisfies IncrementalResult);
-
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-    expect(result.metrics.totalContextTokens).toBe(321);
-  });
-
-  it('should preserve totalContextTokens when incremental delta has no assistant usage snapshot', async () => {
-    const existingMetrics = makeMetrics({ totalContextTokens: 777 });
-    const session1 = makeSession({ metrics: existingMetrics });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
-    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
-      hasMore: false,
-      nextByteOffset: 1500,
-      messageCount: 1,
+      expected: { totalContextTokens: 321 },
+    },
+    {
+      name: 'should preserve totalContextTokens when incremental delta has no assistant usage snapshot',
+      seed: { totalContextTokens: 777 },
+      slice: { totalContextTokens: 0 },
       entries: [
         makeMessage('m3', 1706000010000, {
           role: 'user',
           content: [{ type: 'text', text: 'delta user only' }],
         }),
       ],
-      metrics: makeMetrics({ totalContextTokens: 0 }),
+      expected: { totalContextTokens: 777 },
+    },
+    {
+      name: 'should preserve zero-valued contextWindowTokens from incremental parse',
+      seed: { contextWindowTokens: 200_000 },
+      slice: { contextWindowTokens: 0 },
+      entries: [makeMessage('m3', 1706000010000)],
+      expected: { contextWindowTokens: 0 },
+    },
+    {
+      name: 'should keep the known model and window when the incremental slice has no model',
+      seed: {
+        primaryModel: 'claude-opus-4-6',
+        contextWindowTokens: 1_000_000,
+      },
+      slice: { primaryModel: '', contextWindowTokens: 200_000 },
+      entries: [makeMessage('m3', 1706000010000)],
+      expected: { primaryModel: 'claude-opus-4-6', contextWindowTokens: 1_000_000 },
+    },
+    {
+      name: 'should take a new non-empty model and its window from the incremental slice',
+      seed: {
+        primaryModel: 'claude-opus-4-6',
+        contextWindowTokens: 1_000_000,
+      },
+      slice: { primaryModel: 'claude-sonnet-4-6', contextWindowTokens: 200_000 },
+      entries: [makeMessage('m3', 1706000010000)],
+      expected: { primaryModel: 'claude-sonnet-4-6', contextWindowTokens: 200_000 },
+    },
+  ])('$name', async ({ seed, slice, entries, expected }) => {
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(
+      makeSession({ metrics: makeMetrics(seed) }),
+    );
+    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
+    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
+    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
+      hasMore: false,
+      nextByteOffset: 1500,
+      messageCount: 1,
+      entries,
+      metrics: makeMetrics(slice),
     } satisfies IncrementalResult);
-
     const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-    expect(result.metrics.totalContextTokens).toBe(777);
+    expect(result.metrics).toMatchObject(expected);
   });
 
   it('should recompute visibleContextTokens from merged messages with compaction awareness', async () => {
@@ -1713,79 +1693,6 @@ describe('SessionCacheService', () => {
     expect(result.metrics.visibleContextTokens).toBe(2);
   });
 
-  it('should preserve zero-valued contextWindowTokens from incremental parse', async () => {
-    const existingMetrics = makeMetrics({ contextWindowTokens: 200_000 });
-    const session1 = makeSession({ metrics: existingMetrics });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
-    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
-      hasMore: false,
-      nextByteOffset: 1500,
-      messageCount: 1,
-      entries: [makeMessage('m3', 1706000010000)],
-      metrics: makeMetrics({ contextWindowTokens: 0 }),
-    } satisfies IncrementalResult);
-
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    // Must be 0, NOT 200_000
-    expect(result.metrics.contextWindowTokens).toBe(0);
-  });
-
-  it('should keep the known model and window when the incremental slice has no model', async () => {
-    const existingMetrics = makeMetrics({
-      primaryModel: 'claude-opus-4-6',
-      contextWindowTokens: 1_000_000,
-    });
-    const session1 = makeSession({ metrics: existingMetrics });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
-    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
-      hasMore: false,
-      nextByteOffset: 1500,
-      messageCount: 1,
-      entries: [makeMessage('m3', 1706000010000)],
-      metrics: makeMetrics({ primaryModel: '', contextWindowTokens: 200_000 }),
-    } satisfies IncrementalResult);
-
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    // A slice without an assistant model must not erase the known model or window
-    expect(result.metrics.primaryModel).toBe('claude-opus-4-6');
-    expect(result.metrics.contextWindowTokens).toBe(1_000_000);
-  });
-
-  it('should take a new non-empty model and its window from the incremental slice', async () => {
-    const existingMetrics = makeMetrics({
-      primaryModel: 'claude-opus-4-6',
-      contextWindowTokens: 1_000_000,
-    });
-    const session1 = makeSession({ metrics: existingMetrics });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
-    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
-      hasMore: false,
-      nextByteOffset: 1500,
-      messageCount: 1,
-      entries: [makeMessage('m3', 1706000010000)],
-      metrics: makeMetrics({ primaryModel: 'claude-sonnet-4-6', contextWindowTokens: 200_000 }),
-    } satisfies IncrementalResult);
-
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    expect(result.metrics.primaryModel).toBe('claude-sonnet-4-6');
-    expect(result.metrics.contextWindowTokens).toBe(200_000);
-  });
-
   // -------------------------------------------------------------------------
   // Incremental without metrics falls back to existing metrics
   // -------------------------------------------------------------------------
@@ -1823,13 +1730,17 @@ describe('SessionCacheService', () => {
   // Warnings merge
   // -------------------------------------------------------------------------
 
-  it('should merge warnings from existing and incremental results with dedup', async () => {
-    const session1 = makeSession({ warnings: ['Warning A'] });
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
+  it.each([
+    {
+      name: 'deduplicates overlapping warnings',
+      seed: ['Warning A'],
+      slice: ['Warning A', 'Warning B'],
+      expected: ['Warning A', 'Warning B'],
+    },
+    { name: 'keeps warnings absent', seed: undefined, slice: undefined, expected: undefined },
+  ])('$name', async ({ seed, slice, expected }) => {
+    (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession({ warnings: seed }));
     await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    // File grew — incremental has overlapping + new warning
     mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
     (adapter.parseIncremental as jest.Mock).mockResolvedValue({
       hasMore: false,
@@ -1837,32 +1748,10 @@ describe('SessionCacheService', () => {
       messageCount: 1,
       entries: [makeMessage('m3', 1706000010000)],
       metrics: makeMetrics(),
-      warnings: ['Warning A', 'Warning B'],
+      warnings: slice,
     } satisfies IncrementalResult);
-
     const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    expect(result.warnings).toEqual(['Warning A', 'Warning B']);
-  });
-
-  it('should return undefined warnings when neither existing nor incremental have warnings', async () => {
-    const session1 = makeSession();
-    (adapter.parseFullSession as jest.Mock).mockResolvedValue(session1);
-
-    await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    mockedFsStat.mockResolvedValue(makeStat(1500, 1706000010000));
-    (adapter.parseIncremental as jest.Mock).mockResolvedValue({
-      hasMore: false,
-      nextByteOffset: 1500,
-      messageCount: 1,
-      entries: [makeMessage('m3', 1706000010000)],
-      metrics: makeMetrics(),
-    } satisfies IncrementalResult);
-
-    const result = await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-    expect(result.warnings).toBeUndefined();
+    expect(result.warnings).toEqual(expected);
   });
 
   it('should merge warnings in snapshot incremental mode', async () => {
@@ -1933,17 +1822,6 @@ describe('SessionCacheService', () => {
   // -------------------------------------------------------------------------
 
   describe('getOrParseWithMeta', () => {
-    it('should return cacheHit=false on first call', async () => {
-      const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
-
-      expect(result.cacheHit).toBe(false);
-      expect(result.sourceChangeKind).toBe('unknown-full-parse');
-      expect(result.lastSize).toBe(1000);
-      expect(result.lastMtime).toBe(1706000000000);
-      expect(result.lastOffset).toBe(1000);
-      expect(result.session).toBeDefined();
-    });
-
     it('should return cacheHit=true when file unchanged and TTL valid', async () => {
       await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
       const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
@@ -1951,27 +1829,6 @@ describe('SessionCacheService', () => {
       expect(result.cacheHit).toBe(true);
       expect(result.sourceChangeKind).toBe('cache-hit');
       expect(adapter.parseFullSession).toHaveBeenCalledTimes(1);
-    });
-
-    it('should return cacheHit=false when file grew (incremental parse)', async () => {
-      const incResult: IncrementalResult = {
-        hasMore: false,
-        messageCount: 1,
-        entries: [makeMessage('m3', 1706000010000)],
-        nextByteOffset: 1500,
-        metrics: makeMetrics({ messageCount: 3 }),
-      };
-      (adapter.parseIncremental as jest.Mock).mockResolvedValue(incResult);
-
-      await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
-
-      mockedFsStat.mockResolvedValue(makeStat(1500, 1706000005000));
-      const result = await service.getOrParseWithMeta(SESSION_ID, FILE_PATH, adapter);
-
-      expect(result.cacheHit).toBe(false);
-      expect(result.sourceChangeKind).toBe('same-file-append');
-      expect(result.lastOffset).toBe(1500);
-      expect(result.lastSize).toBe(1500);
     });
 
     it.each([
@@ -2164,20 +2021,6 @@ describe('SessionCacheService', () => {
       expect(adapter.parseFullSession).toHaveBeenCalledTimes(2);
     });
 
-    it('should thread a SessionSourceRef into parseFullSession', async () => {
-      const sourceRef = {
-        filePath: FILE_PATH,
-        providerName: 'claude',
-        providerSessionId: 'ses_123',
-        kind: 'file' as const,
-      };
-      (adapter.parseFullSession as jest.Mock).mockResolvedValue(makeSession());
-
-      await service.getOrParse(SESSION_ID, sourceRef, adapter);
-
-      expect(adapter.parseFullSession).toHaveBeenCalledWith(FILE_PATH, sourceRef);
-    });
-
     it('should thread a SessionSourceRef into parseIncremental on append', async () => {
       const sourceRef = {
         filePath: FILE_PATH,
@@ -2304,16 +2147,6 @@ describe('SessionCacheService', () => {
   describe('getEntry', () => {
     it('should return undefined for unknown session', () => {
       expect(service.getEntry('unknown')).toBeUndefined();
-    });
-
-    it('should return cache entry after getOrParse', async () => {
-      await service.getOrParse(SESSION_ID, FILE_PATH, adapter);
-
-      const entry = service.getEntry(SESSION_ID);
-      expect(entry).toBeDefined();
-      expect(entry!.lastSize).toBe(1000);
-      expect(entry!.lastMtime).toBe(1706000000000);
-      expect(entry!.lastOffset).toBe(1000);
     });
   });
 

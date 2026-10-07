@@ -1,4 +1,5 @@
 import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
+import type { FileSyncFailedCounts } from '../sync/remote-file-sync.dto';
 import { Body, Controller, Delete, Get, Inject, Param, Patch, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
@@ -22,6 +23,7 @@ import {
   type RemoteStatsHistoryDto,
 } from '../dtos/remote.dto';
 import { CLAIM_IDENTITY_KINDS, matchesHomePath } from '../home-identity';
+import { reportedVmUserMismatch } from '../vm-user-identity';
 import {
   PROVIDER_AUTH_CHOICES,
   claimEntryIds,
@@ -70,15 +72,25 @@ export class RemotesController {
 
   @Get('bindings')
   async listBindings(): Promise<{
-    items: (RemoteProjectBinding & { fileSyncWarning?: string })[];
+    items: (RemoteProjectBinding & {
+      fileSyncWarning?: string;
+      fileSyncProblem?: ReturnType<RemoteFileSyncService['problem']>;
+      fileSyncFailed?: FileSyncFailedCounts;
+    })[];
   }> {
     logger.info('GET /api/remotes/bindings');
     const items = await this.storage.listRemoteProjectBindings();
     return {
       items: items.map((binding) => {
         const warning = this.files.warning(binding.projectId);
+        const failed = this.files.failedCounts(binding.projectId);
         return warning && binding.state === 'remote'
-          ? { ...binding, fileSyncWarning: warning }
+          ? {
+              ...binding,
+              fileSyncWarning: warning,
+              fileSyncProblem: this.files.problem(binding.projectId),
+              ...(failed && { fileSyncFailed: failed }),
+            }
           : binding;
       }),
     };
@@ -145,6 +157,7 @@ export class RemotesController {
       versionMatches: health.versionMatches,
       uid: health.uid,
       gid: health.gid,
+      dockerUserMismatch: reportedVmUserMismatch(health),
       providerEnvOverrides: health.providerEnvOverrides,
       cliVersions: health.cliVersions,
       providerClis: health.providerClis,

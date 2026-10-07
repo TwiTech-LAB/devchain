@@ -3,7 +3,7 @@
     "slug": "teams-dev",
     "name": "DevChain Development Flow",
     "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy",
-    "version": "1.1.57",
+    "version": "1.1.61",
     "category": "development",
     "tags": [
       "development",
@@ -71,7 +71,7 @@
       "content": {
         "$file": "prompts/005-development-standards.md"
       },
-      "version": 2,
+      "version": 6,
       "tags": [
         "docs:create-development-standards",
         "type:system"
@@ -95,7 +95,7 @@
       "content": {
         "$file": "prompts/007-epic-master-instructions-sop.md"
       },
-      "version": 3,
+      "version": 4,
       "tags": [
         "agent:profile:epic-master",
         "type:system"
@@ -129,7 +129,7 @@
       "content": {
         "$file": "prompts/010-initialize-project-documentation.md"
       },
-      "version": 1,
+      "version": 3,
       "tags": [
         "docs:create-docs",
         "type:system"
@@ -141,7 +141,7 @@
       "content": {
         "$file": "prompts/011-reviewer-architect-plan-decomposition-sop.md"
       },
-      "version": 4,
+      "version": 6,
       "tags": [
         "agent:profile:architect",
         "type:system"
@@ -176,7 +176,7 @@
       "content": {
         "$file": "prompts/014-worker-ai-task-execution-sop.md"
       },
-      "version": 2,
+      "version": 5,
       "tags": [
         "agent:profile:coder",
         "type:system"

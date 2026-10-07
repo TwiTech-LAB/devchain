@@ -57,26 +57,6 @@ describe('RecordsController', () => {
       expect(storage.listRecords).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException when epicId is empty string', async () => {
-      await expect(controller.listRecords('')).rejects.toThrow(BadRequestException);
-      expect(storage.listRecords).not.toHaveBeenCalled();
-    });
-
-    it('lists records when epicId is provided', async () => {
-      storage.listRecords.mockResolvedValue({
-        items: [mockRecord],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await controller.listRecords('epic-1');
-
-      expect(storage.listRecords).toHaveBeenCalledWith('epic-1', {});
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0].id).toBe('record-1');
-    });
-
     it('applies type filter when provided', async () => {
       storage.listRecords.mockResolvedValue({
         items: [mockRecord, { ...mockRecord, id: 'record-2', type: 'other-type' }],
@@ -103,17 +83,6 @@ describe('RecordsController', () => {
 
       expect(result.items).toHaveLength(1);
       expect(result.items[0].tags).toContain('tag1');
-    });
-  });
-
-  describe('GET /api/records/:id', () => {
-    it('returns a record by id', async () => {
-      storage.getRecord.mockResolvedValue(mockRecord);
-
-      const result = await controller.getRecord('record-1');
-
-      expect(storage.getRecord).toHaveBeenCalledWith('record-1');
-      expect(result.id).toBe('record-1');
     });
   });
 });

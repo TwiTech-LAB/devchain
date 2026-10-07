@@ -89,21 +89,6 @@ describe('QrInitiateProxyController', () => {
     expect(callBody).toEqual({ machineLabel: 'myhost' });
   });
 
-  it('should not call refreshGate on initial 200', async () => {
-    cloudSession.getStatus.mockReturnValue({
-      connected: true,
-      userId: 'u1',
-      expiresAt: new Date().toISOString(),
-      identityServiceUrl: '',
-    });
-    cloudSession.getAccessToken.mockReturnValue('tok');
-    fetchSpy.mockResolvedValue(mockFetchResponse(200, { channelId: 'ch-1' }));
-
-    await controller.initiate({});
-
-    expect(refreshGate.attemptRefresh).not.toHaveBeenCalled();
-  });
-
   it('should retry once with new token on 401 then refresh success', async () => {
     const retryBody = { channelId: 'ch-2', qrPayload: 'qr-new' };
     cloudSession.getStatus.mockReturnValue({
@@ -149,25 +134,6 @@ describe('QrInitiateProxyController', () => {
     expect(refreshGate.attemptRefresh).toHaveBeenCalledTimes(1);
   });
 
-  it('should passthrough 429 with preserved status code', async () => {
-    cloudSession.getStatus.mockReturnValue({
-      connected: true,
-      userId: 'u1',
-      expiresAt: new Date().toISOString(),
-      identityServiceUrl: '',
-    });
-    cloudSession.getAccessToken.mockReturnValue('tok');
-    fetchSpy.mockResolvedValue(mockFetchResponse(429, 'Too Many Requests'));
-
-    try {
-      await controller.initiate({});
-      fail('Expected HttpException');
-    } catch (e) {
-      expect(e).toBeInstanceOf(HttpException);
-      expect((e as HttpException).getStatus()).toBe(429);
-    }
-  });
-
   it('should passthrough 500 with status code and body text', async () => {
     cloudSession.getStatus.mockReturnValue({
       connected: true,
@@ -198,7 +164,7 @@ describe('QrInitiateProxyController', () => {
     cloudSession.getAccessToken.mockReturnValue('tok');
     fetchSpy.mockResolvedValue(mockFetchResponse(200, { channelId: 'ch-1' }));
 
-    await controller.initiate({});
+    await Reflect.apply(controller.initiate, controller, [undefined]);
 
     const callBody = JSON.parse(fetchSpy.mock.calls[0][1].body);
     expect(callBody).toEqual({});

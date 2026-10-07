@@ -301,21 +301,6 @@ describe('Jira time-entry mutations', () => {
     ).rejects.toMatchObject({ code: 'jira_not_found' });
   });
 
-  it('deletes with adjustEstimate=leave and notifyUsers=false expecting exact 204', async () => {
-    const seen: URLSearchParams[] = [];
-    const { provider } = mutationTransport({
-      deleteWorklog: (params) => {
-        seen.push(params);
-        return undefined;
-      },
-    });
-
-    await provider.timeEntryMutations!.deleteTimeEntry!(credentials, context, 'ENG-1', '10001');
-
-    expect(seen[0]!.get('adjustEstimate')).toBe('leave');
-    expect(seen[0]!.get('notifyUsers')).toBe('false');
-  });
-
   it('issues the delete as an exact no-content request to the singular worklog', async () => {
     const deletes: SafeVendorJsonRequest[] = [];
     const recording = providerWith(

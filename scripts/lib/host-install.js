@@ -1,3 +1,12 @@
+const {
+  LocalApiHttpError: HostInstallHttpError,
+  POLL_INTERVAL_MS,
+  REQUEST_TIMEOUT_MS,
+  getOperation,
+  printOperationSteps,
+  requestJson,
+  writeLine,
+} = require("./local-api");
 const fs = require("node:fs/promises");
 const readline = require("node:readline");
 const { homedir, userInfo } = require("node:os");
@@ -9,11 +18,7 @@ const GENERATABLE_PROVIDERS = new Set(["copilot", "codex", "agy", "opencode"]);
 const REUSE_CHOICE = /^reuse:([0-9a-f-]{36})$/i;
 const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
 const HOME_ROOT = /^\/(home|Users|var\/home)\//;
-const POLL_INTERVAL_MS = 1_000;
-const REQUEST_TIMEOUT_MS = 15_000;
 const ESTIMATE_REQUEST_TIMEOUT_MS = 75_000;
-const RESTART_WAIT_BUDGET_MS = 3 * 60_000;
-const RESTART_DELAY_CAP_MS = 10_000;
 
 class HostInstallInputError extends Error {
   constructor(message) {
@@ -30,35 +35,6 @@ class HostInstallCancelledError extends Error {
     this.name = "HostInstallCancelledError";
     this.exitCode = 130;
   }
-}
-
-class HostInstallHttpError extends Error {
-  constructor(status, code, message) {
-    super(message);
-    this.name = "HostInstallHttpError";
-    this.status = status;
-    this.code = code;
-  }
-}
-
-function writeLine(stream, message, secrets = []) {
-  stream.write(`${redact(message, secrets)}\n`);
-}
-
-function redact(message, secrets) {
-  let safe = String(message);
-  const candidates = new Set();
-  for (const secret of secrets) {
-    if (typeof secret !== "string" || secret.length === 0) continue;
-    candidates.add(secret);
-    for (const line of secret.split(/\r?\n/)) {
-      if (line) candidates.add(line);
-    }
-  }
-  for (const secret of [...candidates].sort((a, b) => b.length - a.length)) {
-    safe = safe.split(secret).join("[redacted]");
-  }
-  return safe;
 }
 
 function defaultHomeDefaults() {
@@ -133,7 +109,9 @@ function promptLine(question, defaultValue, { input, output }) {
     });
     rl.once("SIGINT", () => {
       if (!answered)
-        settle(() => rejectPrompt(new HostInstallCancelledError("Prompt cancelled.")));
+        settle(() =>
+          rejectPrompt(new HostInstallCancelledError("Prompt cancelled.")),
+        );
     });
     rl.question(`${question}${suffix}: `, (answer) => {
       settle(() => resolvePrompt(answer.trim() || defaultValue || ""));
@@ -498,63 +476,6 @@ function credentialsForRequest(credentials) {
   };
 }
 
-async function requestJson(
-  fetchImpl,
-  baseUrl,
-  path,
-  { method = "GET", body, timeoutMs = REQUEST_TIMEOUT_MS } = {},
-) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
-  try {
-    response = await fetchImpl(
-      new URL(path, `${baseUrl.replace(/\/+$/, "")}/`),
-      {
-        method,
-        headers:
-          body === undefined
-            ? { Accept: "application/json" }
-            : {
-                Accept: "application/json",
-                "Content-Type": "application/json",
-              },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: controller.signal,
-      },
-    );
-  } catch {
-    clearTimeout(timeout);
-    throw new Error("Could not reach the running DevChain app.");
-  }
-
-  try {
-    let result;
-    try {
-      result = await response.json();
-    } catch {
-      if (controller.signal.aborted) {
-        throw new Error("Could not reach the running DevChain app.");
-      }
-      result = null;
-    }
-    if (!response.ok) {
-      const message =
-        typeof result?.message === "string"
-          ? result.message
-          : `DevChain returned HTTP ${response.status}.`;
-      throw new HostInstallHttpError(
-        response.status,
-        result?.code ?? null,
-        message,
-      );
-    }
-    return result;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 function validateHomeTarget(userName, homePath) {
   if (!USER_NAME.test(userName)) {
     throw new HostInstallInputError(
@@ -565,64 +486,6 @@ function validateHomeTarget(userName, homePath) {
     throw new HostInstallInputError(
       "Home path must start with /home/, /Users/ or /var/home/.",
     );
-  }
-}
-
-function printOperationSteps(operation, states, context) {
-  if (Array.isArray(operation.details?.checkWarnings)) {
-    for (const warning of operation.details.checkWarnings) {
-      if (typeof warning !== "string") continue;
-      const key = `check-warning:${warning}`;
-      if (states.has(key)) continue;
-      states.set(key, true);
-      writeLine(context.stdout, `WARNING: ${warning}`, context.secrets);
-    }
-  }
-  for (const step of operation.steps ?? []) {
-    if (step.state === "pending") continue;
-    if (states.get(step.id) === step.state) continue;
-    states.set(step.id, step.state);
-    writeLine(
-      context.stdout,
-      `${step.label || step.id}: ${step.state}`,
-      context.secrets,
-    );
-  }
-}
-
-// Include request time as well as backoff in the restart recovery deadline.
-async function getOperation(fetchImpl, baseUrl, operationId, context) {
-  const deadline = context.now() + RESTART_WAIT_BUDGET_MS;
-  let delayMs = POLL_INTERVAL_MS;
-  let announced = false;
-  for (;;) {
-    const remainingMs = deadline - context.now();
-    if (remainingMs <= 0) {
-      throw new Error(
-        `DevChain did not come back within 3 minutes. Resume operation ${operationId} from the Cloud page.`,
-      );
-    }
-    try {
-      return await requestJson(
-        fetchImpl,
-        baseUrl,
-        `/api/remotes/operations/${encodeURIComponent(operationId)}`,
-        { timeoutMs: Math.min(REQUEST_TIMEOUT_MS, remainingMs) },
-      );
-    } catch (error) {
-      if (error instanceof HostInstallHttpError) throw error;
-      if (!announced) {
-        announced = true;
-        writeLine(
-          context.stderr,
-          "DevChain is temporarily unavailable; waiting for it to come back.",
-          context.secrets,
-        );
-      }
-      const sleepMs = Math.min(delayMs, deadline - context.now());
-      if (sleepMs > 0) await context.sleep(sleepMs);
-      delayMs = Math.min(delayMs * 2, RESTART_DELAY_CAP_MS);
-    }
   }
 }
 
@@ -694,7 +557,8 @@ async function runHostInstallCommand(options, dependencies = {}) {
       baseUrl,
       "/api/remotes/host-install/identity",
     );
-    const userName = typeof identity?.user === "string" ? identity.user.trim() : "";
+    const userName =
+      typeof identity?.user === "string" ? identity.user.trim() : "";
     const homePath =
       typeof identity?.homePath === "string" ? identity.homePath.trim() : "";
     if (!userName || !homePath) {
@@ -779,7 +643,11 @@ async function runHostInstallCommand(options, dependencies = {}) {
     ) {
       throw new Error("DevChain returned an invalid host-install operation.");
     }
-    writeLine(stdout, `Host installation started (operation ${operation.id}).`, secrets);
+    writeLine(
+      stdout,
+      `Host installation started (operation ${operation.id}).`,
+      secrets,
+    );
 
     const stepStates = new Map();
     let current = operation;

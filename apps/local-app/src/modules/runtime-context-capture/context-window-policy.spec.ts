@@ -1,12 +1,8 @@
-import {
-  CONTEXT_WINDOW_ENV_KEY,
-  parseContextWindowEnv,
-  resolveContextWindow,
-} from './context-window-policy';
+import { parseContextWindowEnv, resolveContextWindow } from './context-window-policy';
 
 describe('context-window policy', () => {
   describe('parseContextWindowEnv', () => {
-    it.each([undefined, null])('returns absent for %s', (value) => {
+    it.each([undefined])('returns absent for %s', (value) => {
       expect(parseContextWindowEnv(value)).toEqual({ kind: 'absent' });
     });
 
@@ -33,10 +29,6 @@ describe('context-window policy', () => {
 
     it.each(['10000001', '9007199254740992'])('rejects overflow value %s', (value) => {
       expect(parseContextWindowEnv(value)).toMatchObject({ kind: 'invalid' });
-    });
-
-    it('uses the canonical singular token key', () => {
-      expect(CONTEXT_WINDOW_ENV_KEY).toBe('DEVCHAIN_CONTEXT_WINDOW_TOKENS');
     });
   });
 

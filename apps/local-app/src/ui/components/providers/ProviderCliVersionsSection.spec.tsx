@@ -254,23 +254,14 @@ describe('ProviderCliVersionsSection', () => {
     expect(screen.getAllByText('Your own install').length).toBeGreaterThan(0);
   });
 
-  it('offers Latest and the newest stable releases in the version dropdown', async () => {
-    renderSection();
-
-    await awaitLoaded();
-    fireEvent.click(screen.getByRole('combobox', { name: 'Claude version' }));
-
-    await waitFor(() => expect(screen.getAllByText('Latest').length).toBeGreaterThan(0));
-    expect(screen.getAllByText('2.1.285').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('2.1.284').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('2.1.283').length).toBeGreaterThan(0);
-  });
-
   it('saves a version change to home via PUT /api/provider-clis/:provider', async () => {
     renderSection();
 
     await awaitLoaded();
     fireEvent.click(screen.getByRole('combobox', { name: 'Claude version' }));
+    expect(screen.getAllByText('Latest').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('2.1.284').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('2.1.283').length).toBeGreaterThan(0);
     const option = await screen.findAllByText('2.1.285');
     fireEvent.click(option[option.length - 1]);
 

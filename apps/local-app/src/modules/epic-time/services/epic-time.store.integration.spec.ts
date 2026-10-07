@@ -1,10 +1,8 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import { EpicTimeStore } from './epic-time.store';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const PROJECT_ID = 'project-time';
 const AGENT_ID = 'agent-time';
 const SESSION_ID = 'session-time';
@@ -19,8 +17,7 @@ describe('EpicTimeStore', () => {
   let store: EpicTimeStore;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
     store = new EpicTimeStore(drizzle(sqlite) as unknown as BetterSQLite3Database);
     seedAgentAndSession();
@@ -609,95 +606,68 @@ describe('EpicTimeStore', () => {
     expect(segments()).toEqual([expect.objectContaining({ duration_ms: 95_000 })]);
   });
 
-  it('claims buffered time on the next exact-agent creation exactly once', async () => {
-    insertEpic('target-create', '2026-01-01T00:00:19.000Z', false);
-    insertBufferedSegment('buffer-create', '2026-01-01T00:00:11.000Z', '2026-01-01T00:00:15.000Z');
-    sqlite
-      .prepare(
-        `INSERT INTO events (id, name, payload_json, request_id, published_at)
-         VALUES ('event-create', 'epic.created', '{}', NULL, '2026-01-01T00:00:20.000Z')`,
-      )
-      .run();
-
-    const first = await store.recordTaskTouch({
-      committedEventId: 'event-create',
+  it.each([
+    {
       eventName: 'epic.created',
-      projectId: PROJECT_ID,
-      actorAgentId: AGENT_ID,
-      targetEpicId: 'target-create',
-      targetEpicTitle: 'Created target',
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-    const duplicate = await store.recordTaskTouch({
-      committedEventId: 'event-create',
-      eventName: 'epic.created',
-      projectId: PROJECT_ID,
-      actorAgentId: AGENT_ID,
-      targetEpicId: 'target-create',
-      targetEpicTitle: 'Created target',
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-
-    expect(first).toEqual({ receiptCreated: true, claimedSegments: 1, discardedSegments: 0 });
-    expect(duplicate).toEqual({
-      receiptCreated: false,
-      claimedSegments: 0,
-      discardedSegments: 0,
-    });
-    expect(segments()).toEqual([expect.objectContaining({ epic_id: 'target-create' })]);
-    expect(receipts()).toEqual([
-      expect.objectContaining({
-        committed_event_id: 'event-create',
-        event_name: 'epic.created',
-        source_event_row_id: expect.any(Number),
-      }),
-    ]);
-  });
-
-  it('claims buffered time through a comment touch to the exact commented Epic once', async () => {
-    insertEpic('comment-target', '2026-01-01T00:00:19.000Z', false);
-    insertBufferedSegment('buffer-comment', '2026-01-01T00:00:11.000Z', '2026-01-01T00:00:15.000Z');
-    sqlite
-      .prepare(
-        `INSERT INTO events (id, name, payload_json, request_id, published_at)
-         VALUES ('event-comment', 'epic.comment.created', '{}', NULL, '2026-01-01T00:00:20.000Z')`,
-      )
-      .run();
-
-    const first = await store.recordTaskTouch({
-      committedEventId: 'event-comment',
+      eventId: 'event-create',
+      targetId: 'target-create',
+      bufferId: 'buffer-create',
+      targetTitle: 'Created target',
+    },
+    {
       eventName: 'epic.comment.created',
-      projectId: PROJECT_ID,
-      actorAgentId: AGENT_ID,
-      targetEpicId: 'comment-target',
-      targetEpicTitle: 'Comment target',
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-    const duplicate = await store.recordTaskTouch({
-      committedEventId: 'event-comment',
-      eventName: 'epic.comment.created',
-      projectId: PROJECT_ID,
-      actorAgentId: AGENT_ID,
-      targetEpicId: 'comment-target',
-      targetEpicTitle: 'Comment target',
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
+      eventId: 'event-comment',
+      targetId: 'comment-target',
+      bufferId: 'buffer-comment',
+      targetTitle: 'Comment target',
+    },
+  ] as const)(
+    'claims buffered time through $eventName exactly once',
+    async ({ eventName, eventId, targetId, bufferId, targetTitle }) => {
+      insertEpic(targetId, '2026-01-01T00:00:19.000Z', false);
+      insertBufferedSegment(bufferId, '2026-01-01T00:00:11.000Z', '2026-01-01T00:00:15.000Z');
+      sqlite
+        .prepare(
+          `INSERT INTO events (id, name, payload_json, request_id, published_at)
+         VALUES (?, ?, '{}', NULL, '2026-01-01T00:00:20.000Z')`,
+        )
+        .run(eventId, eventName);
 
-    expect(first).toEqual({ receiptCreated: true, claimedSegments: 1, discardedSegments: 0 });
-    expect(duplicate).toEqual({
-      receiptCreated: false,
-      claimedSegments: 0,
-      discardedSegments: 0,
-    });
-    expect(segments()).toEqual([expect.objectContaining({ epic_id: 'comment-target' })]);
-    expect(receipts()).toEqual([
-      expect.objectContaining({
-        committed_event_id: 'event-comment',
-        event_name: 'epic.comment.created',
-        source_event_row_id: expect.any(Number),
-      }),
-    ]);
-  });
+      const first = await store.recordTaskTouch({
+        committedEventId: eventId,
+        eventName: eventName,
+        projectId: PROJECT_ID,
+        actorAgentId: AGENT_ID,
+        targetEpicId: targetId,
+        targetEpicTitle: targetTitle,
+        publishedAt: '2026-01-01T00:00:20.000Z',
+      });
+      const duplicate = await store.recordTaskTouch({
+        committedEventId: eventId,
+        eventName: eventName,
+        projectId: PROJECT_ID,
+        actorAgentId: AGENT_ID,
+        targetEpicId: targetId,
+        targetEpicTitle: targetTitle,
+        publishedAt: '2026-01-01T00:00:20.000Z',
+      });
+
+      expect(first).toEqual({ receiptCreated: true, claimedSegments: 1, discardedSegments: 0 });
+      expect(duplicate).toEqual({
+        receiptCreated: false,
+        claimedSegments: 0,
+        discardedSegments: 0,
+      });
+      expect(segments()).toEqual([expect.objectContaining({ epic_id: targetId })]);
+      expect(receipts()).toEqual([
+        expect.objectContaining({
+          committed_event_id: eventId,
+          event_name: eventName,
+          source_event_row_id: expect.any(Number),
+        }),
+      ]);
+    },
+  );
 
   it('rolls back the permanent receipt when claim application fails', async () => {
     insertEpic('target-rollback', '2026-01-01T00:00:19.000Z', false);
@@ -2376,8 +2346,7 @@ describe('EpicTimeStore related-time route resolution', () => {
   let store: EpicTimeStore;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
     store = new EpicTimeStore(drizzle(sqlite) as unknown as BetterSQLite3Database);
     seedProjectStatuses();

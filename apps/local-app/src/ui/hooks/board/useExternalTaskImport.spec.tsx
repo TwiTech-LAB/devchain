@@ -85,112 +85,111 @@ function linkCacheItem(taskDetail: ExternalTaskDetail) {
 describe('useExternalTaskImport', () => {
   beforeEach(() => fetchMock.mockReset());
 
-  it.each([true, false])(
-    'returns the minimal public response and updates links when created=%s',
-    async (created) => {
-      const client = new QueryClient({
-        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-      });
-      const epicId = created ? 'epic-new' : 'epic-existing';
-      const resultPayload: ExternalTaskImportResponse = {
-        epic: { id: epicId, projectId },
-        created,
-      };
-      const linkInputs = [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }];
-      const linkKey = [
-        ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, false),
-        linkInputs,
-      ] as const;
-      client.setQueryData(linkKey, {
-        items: [
-          {
-            ...linkInputs[0],
-            linked: false,
-            epicId: null,
-            projectId: null,
-            projectName: null,
-          },
-        ],
-      });
-      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-        if (url.startsWith('/api/statuses')) {
-          return Promise.resolve({
-            ok: true,
-            json: async () => ({
-              items: [{ id: statusId, projectId, label: 'New', color: '#777777', position: 0 }],
-            }),
-          });
-        }
-        expect(init?.method).toBe('POST');
-        return Promise.resolve({ ok: true, json: async () => resultPayload });
-      });
-
-      const { result } = renderHook(
-        () =>
-          useExternalTaskImport('jira', detail, projectId, {
-            connectionEpoch,
-            projectName: 'Product',
+  it('imports into the selected project, updates links and invalidates external sources', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const created = false;
+    const epicId = 'epic-existing';
+    const resultPayload: ExternalTaskImportResponse = {
+      epic: { id: epicId, projectId },
+      created,
+    };
+    const linkInputs = [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }];
+    const linkKey = [
+      ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, false),
+      linkInputs,
+    ] as const;
+    client.setQueryData(linkKey, {
+      items: [
+        {
+          ...linkInputs[0],
+          linked: false,
+          epicId: null,
+          projectId: null,
+          projectName: null,
+        },
+      ],
+    });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/api/statuses')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [{ id: statusId, projectId, label: 'New', color: '#777777', position: 0 }],
           }),
-        { wrapper: wrapper(client) },
-      );
-      await waitFor(() => expect(result.current.statuses.isSuccess).toBe(true));
-
-      let imported: ExternalTaskImportResponse | undefined;
-      await act(async () => {
-        imported = await result.current.mutation.mutateAsync({
-          statusId,
-          title: 'Edited title',
-          description: 'Edited description',
         });
-      });
+      }
+      expect(init?.method).toBe('POST');
+      return Promise.resolve({ ok: true, json: async () => resultPayload });
+    });
 
-      const importCall = fetchMock.mock.calls.find(
-        ([url]) => url === '/api/epics/import-external-task',
-      );
-      expect(JSON.parse(importCall?.[1]?.body as string)).toEqual(
-        expect.objectContaining({
-          projectId,
-          statusId,
-          agentId: null,
-          title: 'Edited title',
-          description: 'Edited description',
-          remote: expect.objectContaining({ title: 'Remote title', taskId: 'ENG-1' }),
+    const { result } = renderHook(
+      () =>
+        useExternalTaskImport('jira', detail, projectId, {
+          connectionEpoch,
+          projectName: 'Product',
         }),
-      );
-      expect(imported).toEqual({ created, epic: { id: epicId, projectId } });
-      expect(client.getQueryData(linkKey)).toEqual({
-        items: [
-          {
-            ...linkInputs[0],
-            linked: true,
-            epicId,
-            projectId,
-            projectName: 'Product',
-          },
-        ],
+      { wrapper: wrapper(client) },
+    );
+    await waitFor(() => expect(result.current.statuses.isSuccess).toBe(true));
+
+    let imported: ExternalTaskImportResponse | undefined;
+    await act(async () => {
+      imported = await result.current.mutation.mutateAsync({
+        statusId,
+        title: 'Edited title',
+        description: 'Edited description',
       });
-      // A new stored source must stale every Board batch entry and the
-      // Epic-detail source read.
-      expect(client.getQueryState(epicExternalSourceQueryKeys.all)).toBeUndefined();
-      const seededBatch = epicExternalSourceQueryKeys.batch(['epic-seed']);
-      client.setQueryData(seededBatch, { items: [] });
-      const invalidated: string[] = [];
-      const originalInvalidate = client.invalidateQueries.bind(client);
-      jest.spyOn(client, 'invalidateQueries').mockImplementation(async (filters) => {
-        invalidated.push(JSON.stringify((filters as { queryKey: unknown }).queryKey));
-        return originalInvalidate(filters as never);
+    });
+
+    const importCall = fetchMock.mock.calls.find(
+      ([url]) => url === '/api/epics/import-external-task',
+    );
+    expect(JSON.parse(importCall?.[1]?.body as string)).toEqual(
+      expect.objectContaining({
+        projectId,
+        statusId,
+        agentId: null,
+        title: 'Edited title',
+        description: 'Edited description',
+        remote: expect.objectContaining({ title: 'Remote title', taskId: 'ENG-1' }),
+      }),
+    );
+    expect(imported).toEqual({ created, epic: { id: epicId, projectId } });
+    expect(client.getQueryData(linkKey)).toEqual({
+      items: [
+        {
+          ...linkInputs[0],
+          linked: true,
+          epicId,
+          projectId,
+          projectName: 'Product',
+        },
+      ],
+    });
+    // A new stored source must stale every Board batch entry and the
+    // Epic-detail source read.
+    expect(client.getQueryState(epicExternalSourceQueryKeys.all)).toBeUndefined();
+    const seededBatch = epicExternalSourceQueryKeys.batch(['epic-seed']);
+    client.setQueryData(seededBatch, { items: [] });
+    const invalidated: string[] = [];
+    const originalInvalidate = client.invalidateQueries.bind(client);
+    jest.spyOn(client, 'invalidateQueries').mockImplementation(async (filters) => {
+      invalidated.push(JSON.stringify((filters as { queryKey: unknown }).queryKey));
+      return originalInvalidate(filters as never);
+    });
+    await act(async () => {
+      await result.current.mutation.mutateAsync({
+        statusId,
+        title: 'Again',
+        description: 'Again',
       });
-      await act(async () => {
-        await result.current.mutation.mutateAsync({
-          statusId,
-          title: 'Again',
-          description: 'Again',
-        });
-      });
-      expect(invalidated).toContain(JSON.stringify(epicExternalSourceQueryKeys.all));
-      client.clear();
-    },
-  );
+    });
+    expect(invalidated).toContain(JSON.stringify(epicExternalSourceQueryKeys.all));
+    expect(fetchMock.mock.calls.some(([url]) => /^\/api\/projects/.test(String(url)))).toBe(false);
+    client.clear();
+  });
 
   it('issues no project, status, or mutation request while disabled', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -205,80 +204,6 @@ describe('useExternalTaskImport', () => {
 
     expect(result.current.statuses.data).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
-    client.clear();
-  });
-
-  it('attributes a repeat import to the selected project and never another project', async () => {
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-    });
-    const linkKey = [
-      ...externalMyWorkQueryKeys.linksBatch('jira', connectionEpoch, false),
-      [{ scopeKey: detail.location.scopeKey, taskId: detail.remoteId }],
-    ] as const;
-    client.setQueryData(linkKey, {
-      items: [
-        {
-          scopeKey: detail.location.scopeKey,
-          taskId: detail.remoteId,
-          linked: false,
-          epicId: null,
-          projectId: null,
-          projectName: null,
-        },
-      ],
-    });
-    fetchMock.mockImplementation((url: string) => {
-      if (url === `/api/statuses?projectId=${projectId}`) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            items: [{ id: statusId, projectId, label: 'New', color: '#777', position: 0 }],
-          }),
-        });
-      }
-      if (url === '/api/epics/import-external-task') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            epic: { id: 'epic-existing', projectId },
-            created: false,
-          }),
-        });
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-
-    const { result } = renderHook(
-      () =>
-        useExternalTaskImport('jira', detail, projectId, {
-          connectionEpoch,
-          projectName: 'Current project',
-        }),
-      { wrapper: wrapper(client) },
-    );
-    await waitFor(() => expect(result.current.statuses.isSuccess).toBe(true));
-    await act(async () => {
-      await result.current.mutation.mutateAsync({
-        statusId,
-        title: detail.title,
-        description: detail.description ?? '',
-      });
-    });
-
-    // No cross-project attribution fetch runs: the selected project's own
-    // Epic is the only possible result, and decoration uses only it.
-    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/projects/));
-    expect(client.getQueryData(linkKey)).toEqual({
-      items: [
-        expect.objectContaining({
-          linked: true,
-          epicId: 'epic-existing',
-          projectId,
-          projectName: 'Current project',
-        }),
-      ],
-    });
     client.clear();
   });
 

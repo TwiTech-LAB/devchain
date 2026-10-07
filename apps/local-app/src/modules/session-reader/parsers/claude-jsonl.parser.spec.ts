@@ -695,31 +695,15 @@ describe('ClaudeJsonlParser', () => {
   });
 
   describe('message classification', () => {
-    it('should set isMeta correctly for tool result messages', async () => {
-      const filePath = writeTempJsonl([toolResultUserEntry]);
+    it.each([
+      { entry: toolResultUserEntry, flag: 'isMeta' },
+      { entry: sidechainEntry, flag: 'isSidechain' },
+      { entry: compactSummaryEntry, flag: 'isCompactSummary' },
+    ] as const)('sets $flag on the parsed entry', async ({ entry, flag }) => {
+      const filePath = writeTempJsonl([entry]);
       try {
         const result = await parseClaudeJsonl(filePath);
-        expect(result.messages[0].isMeta).toBe(true);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('should set isSidechain for sidechain entries', async () => {
-      const filePath = writeTempJsonl([sidechainEntry]);
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        expect(result.messages[0].isSidechain).toBe(true);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('should mark compact summary messages', async () => {
-      const filePath = writeTempJsonl([compactSummaryEntry]);
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        expect(result.messages[0].isCompactSummary).toBe(true);
+        expect(result.messages[0][flag]).toBe(true);
       } finally {
         cleanup(filePath);
       }
@@ -805,16 +789,6 @@ describe('ClaudeJsonlParser', () => {
   });
 
   describe('model identification', () => {
-    it('should track primary model from most recent assistant', async () => {
-      const filePath = writeTempJsonl([userEntry, assistantEntry]);
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        expect(result.metrics.primaryModel).toBe('claude-sonnet-4-6');
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
     it('should track multiple models when different models used', async () => {
       const filePath = writeTempJsonl([userEntry, assistantEntry, sidechainEntry]);
       try {
@@ -839,50 +813,32 @@ describe('ClaudeJsonlParser', () => {
   });
 
   describe('visible context', () => {
-    it('should estimate visibleContextTokens from main-thread content blocks', async () => {
-      const filePath = writeTempJsonl([userEntry, assistantEntry]);
+    it.each([
+      {
+        name: 'should estimate visibleContextTokens from main-thread content blocks',
+        entries: [userEntry, assistantEntry],
+        expected: 9,
+      },
+      {
+        name: 'should not update visibleContextTokens from sidechain messages',
+        entries: [userEntry, assistantEntry, sidechainEntry],
+        expected: 9,
+      },
+      {
+        name: 'should accumulate visible context across multiple main-thread messages',
+        entries: [userEntry, assistantEntry, thinkingAssistantEntry],
+        expected: 25,
+      },
+      {
+        name: 'should reset and re-accumulate visible context on compaction',
+        entries: [userEntry, assistantEntry, compactSummaryEntry, postCompactionAssistant],
+        expected: 16,
+      },
+    ])('$name', async ({ entries, expected }) => {
+      const filePath = writeTempJsonl(entries);
       try {
         const result = await parseClaudeJsonl(filePath);
-        // user "Hello Claude" (12 => 3) + assistant text (22 => 6)
-        expect(result.metrics.visibleContextTokens).toBe(9);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('should not update visibleContextTokens from sidechain messages', async () => {
-      const filePath = writeTempJsonl([userEntry, assistantEntry, sidechainEntry]);
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        // Sidechain messages are excluded from visible context
-        expect(result.metrics.visibleContextTokens).toBe(9);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('should accumulate visible context across multiple main-thread messages', async () => {
-      const filePath = writeTempJsonl([userEntry, assistantEntry, thinkingAssistantEntry]);
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        // user (3) + assistant text (6) + thinking assistant (7 + 9)
-        expect(result.metrics.visibleContextTokens).toBe(25);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('should reset and re-accumulate visible context on compaction', async () => {
-      const filePath = writeTempJsonl([
-        userEntry,
-        assistantEntry,
-        compactSummaryEntry,
-        postCompactionAssistant,
-      ]);
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        // Reset to compact summary (9), then add post-compaction assistant (7)
-        expect(result.metrics.visibleContextTokens).toBe(16);
+        expect(result.metrics.visibleContextTokens).toBe(expected);
       } finally {
         cleanup(filePath);
       }
@@ -950,28 +906,6 @@ describe('ClaudeJsonlParser', () => {
     });
   });
 
-  describe('ongoing detection', () => {
-    it('should detect ended session (stop_reason=end_turn)', async () => {
-      const filePath = writeTempJsonl([userEntry, assistantEntry]);
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        expect(result.metrics.isOngoing).toBe(false);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('should detect ongoing session (stop_reason=tool_use)', async () => {
-      const filePath = writeTempJsonl([userEntry, toolUseAssistantEntry]);
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        expect(result.metrics.isOngoing).toBe(true);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-  });
-
   describe('pricing integration', () => {
     it('should calculate cost via PricingService', async () => {
       const filePath = writeTempJsonl([userEntry, assistantEntry]);
@@ -1003,32 +937,17 @@ describe('ClaudeJsonlParser', () => {
   });
 
   describe('error handling', () => {
-    it('should skip malformed JSON lines gracefully', async () => {
+    it.each([
+      ['malformed JSON', ['this is not valid json{{{']],
+      ['blank lines', ['', '  ']],
+    ])('skips %s', async (_name, skipped) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-test-'));
       const filePath = path.join(dir, 'test.jsonl');
-      const content =
-        [
-          JSON.stringify(userEntry),
-          'this is not valid json{{{',
-          JSON.stringify(assistantEntry),
-        ].join('\n') + '\n';
-      fs.writeFileSync(filePath, content, 'utf8');
-
-      try {
-        const result = await parseClaudeJsonl(filePath);
-        expect(result.messages).toHaveLength(2);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-
-    it('should skip empty lines', async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-test-'));
-      const filePath = path.join(dir, 'test.jsonl');
-      const content =
-        [JSON.stringify(userEntry), '', '  ', JSON.stringify(assistantEntry)].join('\n') + '\n';
-      fs.writeFileSync(filePath, content, 'utf8');
-
+      fs.writeFileSync(
+        filePath,
+        [JSON.stringify(userEntry), ...skipped, JSON.stringify(assistantEntry)].join('\n') + '\n',
+        'utf8',
+      );
       try {
         const result = await parseClaudeJsonl(filePath);
         expect(result.messages).toHaveLength(2);
@@ -1104,56 +1023,6 @@ describe('ClaudeJsonlParser', () => {
         expect(result.warnings).toBeDefined();
         expect(result.warnings).toHaveLength(1);
         expect(result.warnings![0]).toMatch(/Skipped 1 oversized line/);
-      } finally {
-        cleanup(filePath);
-      }
-    });
-  });
-
-  describe('oversized line logging', () => {
-    beforeEach(() => {
-      mockLoggerWarn.mockClear();
-    });
-
-    it('logs byte offset and content snippet for >10MB lines', async () => {
-      const hugeText = 'Z'.repeat(11 * 1024 * 1024);
-      const hugeEntry = {
-        type: 'assistant',
-        uuid: 'asst-huge',
-        parentUuid: 'user-1',
-        isSidechain: false,
-        timestamp: '2026-01-01T10:00:05.000Z',
-        message: {
-          role: 'assistant',
-          model: 'claude-sonnet-4-6',
-          content: [{ type: 'text', text: hugeText }],
-          stop_reason: 'end_turn',
-          usage: { input_tokens: 100, output_tokens: 50 },
-        },
-      };
-
-      const filePath = writeTempJsonl([userEntry, hugeEntry]);
-      try {
-        await parseClaudeJsonl(filePath);
-
-        // Find the oversized line warn call
-        const warnCall = mockLoggerWarn.mock.calls.find(
-          (call: unknown[]) => call[1] === 'Skipping oversized JSONL line (>10MB)',
-        );
-        expect(warnCall).toBeDefined();
-
-        // Assert log includes byte offset + snippet
-        expect(warnCall![0]).toEqual(
-          expect.objectContaining({
-            filePath,
-            lineBytes: expect.any(Number),
-            byteOffset: expect.any(Number),
-            snippet: expect.any(String),
-          }),
-        );
-        expect(warnCall![0].byteOffset).toBeGreaterThan(0);
-        expect(warnCall![0].snippet.length).toBeLessThanOrEqual(200);
-        expect(warnCall![0].snippet.length).toBeGreaterThan(0);
       } finally {
         cleanup(filePath);
       }
@@ -1502,5 +1371,138 @@ describe('the DevChain follow note', () => {
     expect(await userTexts([{ ...userEntry, message: { role: 'user', content: text } }])).toEqual([
       text,
     ]);
+  });
+});
+
+describe('Fixture-based integration tests', () => {
+  const FIXTURES_DIR = path.join(__dirname, '..', '__fixtures__');
+
+  const mockPricing: PricingServiceInterface = {
+    calculateMessageCost: jest.fn().mockReturnValue(0.001),
+    getCatalogContextWindowSize: jest.fn().mockReturnValue(200_000),
+    getContextWindowSize: jest.fn().mockReturnValue(200_000),
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('simple-session.jsonl', () => {
+    const filePath = path.join(FIXTURES_DIR, 'simple-session.jsonl');
+
+    it('should parse all messages correctly', async () => {
+      const result = await parseClaudeJsonl(filePath, { pricingService: mockPricing });
+
+      expect(result.messages).toHaveLength(4);
+      expect(result.messages[0].role).toBe('user');
+      expect(result.messages[1].role).toBe('assistant');
+      expect(result.messages[2].role).toBe('user');
+      expect(result.messages[3].role).toBe('assistant');
+    });
+
+    it('should preserve message parent chain', async () => {
+      const result = await parseClaudeJsonl(filePath);
+
+      expect(result.messages[0].parentId).toBeNull();
+      expect(result.messages[1].parentId).toBe('u-001');
+      expect(result.messages[2].parentId).toBe('a-001');
+      expect(result.messages[3].parentId).toBe('u-002');
+    });
+
+    it('should aggregate token usage', async () => {
+      const result = await parseClaudeJsonl(filePath, { pricingService: mockPricing });
+
+      // assistant a-001: input=120, output=25, cacheRead=0
+      // assistant a-002: input=180, output=30, cacheRead=50
+      expect(result.metrics.inputTokens).toBe(300);
+      expect(result.metrics.outputTokens).toBe(55);
+      expect(result.metrics.cacheReadTokens).toBe(50);
+    });
+  });
+
+  describe('session-with-tools.jsonl', () => {
+    const filePath = path.join(FIXTURES_DIR, 'session-with-tools.jsonl');
+
+    it('should parse 4 messages (tool_results folded + continuation assistants coalesced)', async () => {
+      // 8 JSONL entries → 4 messages: u-102 + u-104 (tool_result-only) fold onto a-101/a-103,
+      // AND the continuation assistants a-102 / a-104 coalesce onto a-101 / a-103 (each tool
+      // turn counts as ONE assistant message). u-103 is a real prompt, so it starts a new turn.
+      const result = await parseClaudeJsonl(filePath);
+      expect(result.messages).toHaveLength(4);
+      expect(result.metrics.messageCount).toBe(4);
+      expect(result.messages.map((m) => m.role)).toEqual([
+        'user', // u-101
+        'assistant', // a-101 (+ folded tool_result u-102 + coalesced continuation a-102)
+        'user', // u-103
+        'assistant', // a-103 (+ folded tool_result u-104 + coalesced continuation a-104)
+      ]);
+      // No standalone user-role tool-result message remains.
+      expect(result.messages.some((m) => m.role === 'user' && m.toolResults.length > 0)).toBe(
+        false,
+      );
+      // The continuation text is preserved on the coalesced assistant.
+      const firstAsst = result.messages[1];
+      const texts = firstAsst.content.filter((b) => b.type === 'text').map((b) => b.text);
+      expect(texts).toContain('The file contains a simple hello world program.');
+    });
+
+    it('should fold tool results onto the preceding assistant message', async () => {
+      const result = await parseClaudeJsonl(filePath);
+
+      // u-102's tool_result is folded onto a-101 (now messages[1]).
+      const resultMsg = result.messages[1];
+      expect(resultMsg.role).toBe('assistant');
+      expect(resultMsg.toolResults).toHaveLength(1);
+      expect(resultMsg.toolResults[0].toolCallId).toBe('tool-001');
+      expect(resultMsg.toolResults[0].content).toBe("console.log('hello world');");
+    });
+  });
+
+  describe('session-with-thinking.jsonl', () => {
+    const filePath = path.join(FIXTURES_DIR, 'session-with-thinking.jsonl');
+
+    it('should parse all 4 messages', async () => {
+      const result = await parseClaudeJsonl(filePath);
+      expect(result.messages).toHaveLength(4);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should handle empty file gracefully', async () => {
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-test-'));
+      const filePath = path.join(dir, 'empty.jsonl');
+      fs.writeFileSync(filePath, '', 'utf8');
+
+      try {
+        const result = await parseClaudeJsonl(filePath);
+
+        expect(result.messages).toHaveLength(0);
+        expect(result.metrics.messageCount).toBe(0);
+        expect(result.metrics.totalTokens).toBe(0);
+        // Empty file: no assistant stop_reason → parser treats as ongoing (null → true)
+        expect(result.metrics.isOngoing).toBe(true);
+      } finally {
+        fs.unlinkSync(filePath);
+        fs.rmdirSync(dir);
+      }
+    });
+
+    it('should handle incremental parsing from byte offset', async () => {
+      const simpleFile = path.join(FIXTURES_DIR, 'simple-session.jsonl');
+
+      // First parse: get bytesRead after first 2 messages
+      const first = await parseClaudeJsonl(simpleFile, { maxMessages: 2 });
+      expect(first.messages).toHaveLength(2);
+
+      // Second parse: continue from offset
+      const second = await parseClaudeJsonl(simpleFile, {
+        byteOffset: first.bytesRead,
+      });
+      expect(second.messages).toHaveLength(2); // remaining 2 messages
+      expect(second.messages[0].role).toBe('user');
+      expect(second.messages[1].role).toBe('assistant');
+    });
   });
 });

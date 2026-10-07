@@ -51,6 +51,29 @@ afterEach(() => {
   mockPinnedTo.length = 0;
 });
 
+it.each(['ubuntu', null])('parses the runtime claim identity with holder %p', async (holder) => {
+  const body = {
+    uid: 1001,
+    gid: 20,
+    requestedUid: 501,
+    requestedGid: 20,
+    primaryGroup: 'dialout',
+    uidConflict: { requestedUid: 501, holder },
+  };
+  global.fetch = jest.fn(async () => new Response(JSON.stringify(body))) as typeof fetch;
+  await expect(makeClient().runtimeAt(REMOTE.baseUrl!, fixtureTls.cert)).resolves.toEqual(body);
+});
+
+it('accepts runtime reports without claim identity from older hosts', async () => {
+  global.fetch = jest.fn(
+    async () => new Response(JSON.stringify({ uid: 1000, gid: 1000 })),
+  ) as typeof fetch;
+  await expect(makeClient().runtimeAt(REMOTE.baseUrl!, fixtureTls.cert)).resolves.toEqual({
+    uid: 1000,
+    gid: 1000,
+  });
+});
+
 it('posts public keys to the claimed host with its VM API key', async () => {
   const fetchMock = jest.fn(async () => ({ status: 200, body: null }));
   global.fetch = fetchMock as unknown as typeof fetch;
@@ -92,6 +115,29 @@ describe('RemoteHostClient.syncScan', () => {
   });
 });
 
+it.each([200, 404])('posts owner repairs and handles a host response of %s', async (status) => {
+  const input = {
+    root: '/home/alice/project',
+    items: [{ path: 'source.ts', mode: 'automatic' as const }],
+  };
+  const body = {
+    user: { uid: 1001, name: 'alice' },
+    items: [{ path: 'source.ts', state: 'repaired', paths: ['source.ts'] }],
+  };
+  const fetchMock = jest.fn(async () => new Response(JSON.stringify(body), { status }));
+  global.fetch = fetchMock as typeof fetch;
+  const result = await makeClient().syncChown(REMOTE.id, input);
+  expect(fetchMock).toHaveBeenCalledWith(
+    `${REMOTE.baseUrl}/api/host/sync/chown`,
+    expect.objectContaining({ method: 'POST', body: JSON.stringify(input) }),
+  );
+  expect(result.items[0]).toMatchObject({
+    path: 'source.ts',
+    state: status === 200 ? 'repaired' : 'unsupported',
+  });
+  if (status === 404) expect(result.items[0].reason).toContain('copy command');
+});
+
 describe('RemoteHostClient.freeze', () => {
   it('returns the parsed { projectId, frozenAt }', async () => {
     const fetchMock = jest.fn(async () => ({
@@ -127,6 +173,84 @@ describe('RemoteHostClient.freeze', () => {
       details: { remoteId: 'remote-1', status: 200, hostCode: null },
     });
   });
+});
+
+// Client-unit coverage owns the encoded paths, request bodies and typed answers.
+describe('RemoteHostClient git guard', () => {
+  it('reads typed project sessions without using terminal titles as agent names', async () => {
+    const response = [
+      {
+        id: 'session',
+        agentId: 'agent',
+        name: 'terminal title',
+        status: 'running',
+        startedAt: '2026-10-05T12:00:00.000Z',
+      },
+    ];
+    const fetchMock = jest.fn(async () => ({ status: 200, json: async () => response }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    expect(await makeClient().listSessions('remote-1', 'project')).toEqual([
+      {
+        id: 'session',
+        agentId: 'agent',
+        status: 'running',
+        startedAt: '2026-10-05T12:00:00.000Z',
+        activityState: null,
+        busySince: null,
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${REMOTE.baseUrl}/api/sessions?projectId=project`,
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+  it.each(['install', 'remove'] as const)(
+    'sends and parses the %s guard request',
+    async (action) => {
+      const result =
+        action === 'install'
+          ? { warning: 'old git' }
+          : { removed: false, indexRefreshed: null, warning: null };
+      const fetchMock = jest.fn(async () => ({ status: 200, json: async () => result }));
+      global.fetch = fetchMock as unknown as typeof fetch;
+      const request = { homeName: 'home-pc', reason: 'disconnect' as const };
+      const client = makeClient();
+
+      await expect(
+        action === 'install'
+          ? client.installGitGuard('remote-1', 'A/B', request)
+          : client.removeGitGuard('remote-1', 'A/B'),
+      ).resolves.toEqual(result);
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${REMOTE.baseUrl}/api/host/projects/A%2FB/git-guard`,
+        {
+          method: action === 'install' ? 'POST' : 'DELETE',
+          headers: action === 'install' ? { 'content-type': 'application/json' } : {},
+          signal: expect.any(AbortSignal),
+          ...(action === 'install' ? { body: JSON.stringify(request) } : {}),
+        },
+      );
+    },
+  );
+
+  it.each(['install', 'remove'] as const)(
+    'rejects an invalid %s answer so the step can Retry',
+    async (action) => {
+      global.fetch = jest.fn(async () => ({
+        status: 200,
+        json: async () => ({}),
+      })) as unknown as typeof fetch;
+      const client = makeClient();
+      await expect(
+        action === 'install'
+          ? client.installGitGuard('remote-1', 'A', { homeName: 'home-pc', reason: 'disconnect' })
+          : client.removeGitGuard('remote-1', 'A'),
+      ).rejects.toMatchObject({
+        code: 'REMOTE_HOST_REQUEST_FAILED',
+        status: 200,
+      });
+    },
+  );
 });
 
 describe('RemoteHostClient epic methods', () => {
@@ -211,6 +335,33 @@ describe('RemoteHostClient epic methods', () => {
 describe('RemoteHostClient sync methods', () => {
   const HOME_ID = Array(8).fill('HOMEAAA').join('-');
 
+  it('encodes the remote-need folder/device and validates the returned report', async () => {
+    const report = {
+      total: 24,
+      deleted: 2,
+      sample: [{ path: 'gone.txt', deleted: true }],
+      conflictPaths: [],
+      conflictsOverCap: false,
+    };
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(report), { status: 200 }));
+    global.fetch = fetchMock;
+    await expect(makeClient().syncRemoteNeed('remote-1', 'code:A/B', HOME_ID)).resolves.toEqual(
+      report,
+    );
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${REMOTE.baseUrl}/api/host/sync/folders/code%3AA%2FB/remote-need?device=${HOME_ID}`,
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...report, total: -1 }), { status: 200 }),
+    );
+    await expect(makeClient().syncRemoteNeed('remote-1', 'code:A', HOME_ID)).rejects.toMatchObject({
+      code: 'REMOTE_HOST_REQUEST_FAILED',
+      status: 200,
+    });
+  });
+
   async function closedPort(): Promise<number> {
     const { createServer } = await import('net');
     const server = createServer();
@@ -242,6 +393,9 @@ describe('RemoteHostClient sync methods', () => {
         }),
       () => client.syncFolderType('remote-1', 'code:A', { type: 'sendonly' }),
       () => client.syncStatus('remote-1', 'code:A', HOME_ID),
+      () => client.syncFolderExists('remote-1', 'code:A'),
+      () => client.syncRemoteNeed('remote-1', 'code:A', HOME_ID),
+      () => client.syncInspect('remote-1', { path: '/home/alice/project', scan: true, paths: [] }),
     ];
     for (const call of calls) {
       const error: unknown = await call().catch((e: unknown) => e);

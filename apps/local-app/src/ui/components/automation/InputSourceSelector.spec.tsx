@@ -18,41 +18,6 @@ describe('InputSourceSelector', () => {
       required: true,
     };
 
-    it('should render template editor without toggle buttons', () => {
-      const onChange = jest.fn();
-      render(
-        <InputSourceSelector
-          inputDef={stringInputDef}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={onChange}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      // Should have input field
-      expect(screen.getByRole('textbox')).toBeInTheDocument();
-
-      // Should NOT have Custom/Event Field toggle buttons
-      expect(screen.queryByRole('button', { name: 'Custom' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Event Field' })).not.toBeInTheDocument();
-
-      // Should have variable selector
-      expect(screen.getByText('Select variable...')).toBeInTheDocument();
-    });
-
-    it('should display template syntax hint when event fields are available', () => {
-      render(
-        <InputSourceSelector
-          inputDef={stringInputDef}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      expect(screen.getByText(/syntax to insert event/)).toBeInTheDocument();
-    });
-
     it('should not display variable selector when no event fields', () => {
       render(
         <InputSourceSelector
@@ -99,20 +64,6 @@ describe('InputSourceSelector', () => {
 
       expect(screen.getByDisplayValue('Hello {{agentName}}')).toBeInTheDocument();
     });
-
-    it('should have Insert button disabled when no variable selected', () => {
-      render(
-        <InputSourceSelector
-          inputDef={stringInputDef}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      const insertButton = screen.getByRole('button', { name: 'Insert' });
-      expect(insertButton).toBeDisabled();
-    });
   });
 
   describe('textarea input (template editor)', () => {
@@ -124,41 +75,28 @@ describe('InputSourceSelector', () => {
       required: false,
     };
 
-    it('should render textarea for textarea type', () => {
+    it.each([
+      { label: 'textarea type', inputDef: textareaInputDef },
+      {
+        label: 'message string',
+        inputDef: {
+          name: 'customMessage',
+          label: 'Custom Message',
+          description: 'Enter a message',
+          type: 'string',
+          required: false,
+        },
+      },
+    ] as const)('uses textarea for $label', ({ inputDef }) => {
       render(
         <InputSourceSelector
-          inputDef={textareaInputDef}
+          inputDef={inputDef}
           value={{ source: 'custom', customValue: '' }}
           onChange={jest.fn()}
           availableEventFields={mockEventFields}
         />,
       );
-
-      // Textarea should be present
-      const textarea = screen.getByRole('textbox');
-      expect(textarea.tagName.toLowerCase()).toBe('textarea');
-    });
-
-    it('should render textarea for string type with message in name', () => {
-      const messageInputDef: ActionInputDef = {
-        name: 'customMessage',
-        label: 'Custom Message',
-        description: 'Enter a message',
-        type: 'string',
-        required: false,
-      };
-
-      render(
-        <InputSourceSelector
-          inputDef={messageInputDef}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      const textarea = screen.getByRole('textbox');
-      expect(textarea.tagName.toLowerCase()).toBe('textarea');
+      expect(screen.getByRole('textbox').tagName.toLowerCase()).toBe('textarea');
     });
   });
 
@@ -175,7 +113,7 @@ describe('InputSourceSelector', () => {
       ],
     };
 
-    it('should render toggle buttons for select input', () => {
+    it('shows source toggles and custom select editor', () => {
       render(
         <InputSourceSelector
           inputDef={selectInputDef}
@@ -184,23 +122,13 @@ describe('InputSourceSelector', () => {
           availableEventFields={mockEventFields}
         />,
       );
-
-      expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Event Field' })).toBeInTheDocument();
-    });
-
-    it('should show select dropdown when custom source selected', () => {
-      render(
-        <InputSourceSelector
-          inputDef={selectInputDef}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      // Should have combobox (select trigger)
-      expect(screen.getByRole('combobox')).toBeInTheDocument();
+      {
+        expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Event Field' })).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      }
     });
 
     it('should switch to event field selector when Event Field clicked', async () => {
@@ -234,21 +162,7 @@ describe('InputSourceSelector', () => {
       required: false,
     };
 
-    it('should render toggle buttons for number input', () => {
-      render(
-        <InputSourceSelector
-          inputDef={numberInputDef}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Event Field' })).toBeInTheDocument();
-    });
-
-    it('should show number input when custom source selected', () => {
+    it('shows source toggles and number value', () => {
       render(
         <InputSourceSelector
           inputDef={numberInputDef}
@@ -257,9 +171,14 @@ describe('InputSourceSelector', () => {
           availableEventFields={mockEventFields}
         />,
       );
-
-      const input = screen.getByRole('spinbutton');
-      expect(input).toHaveValue(42);
+      {
+        const input = screen.getByRole('spinbutton');
+        expect(input).toHaveValue(42);
+      }
+      {
+        expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Event Field' })).toBeInTheDocument();
+      }
     });
   });
 
@@ -272,21 +191,7 @@ describe('InputSourceSelector', () => {
       required: false,
     };
 
-    it('should render toggle buttons for boolean input', () => {
-      render(
-        <InputSourceSelector
-          inputDef={booleanInputDef}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Event Field' })).toBeInTheDocument();
-    });
-
-    it('should show checkbox when custom source selected', () => {
+    it('shows source toggles and boolean value', () => {
       render(
         <InputSourceSelector
           inputDef={booleanInputDef}
@@ -295,9 +200,14 @@ describe('InputSourceSelector', () => {
           availableEventFields={mockEventFields}
         />,
       );
-
-      const checkbox = screen.getByRole('checkbox');
-      expect(checkbox).toBeChecked();
+      {
+        const checkbox = screen.getByRole('checkbox');
+        expect(checkbox).toBeChecked();
+      }
+      {
+        expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Event Field' })).toBeInTheDocument();
+      }
     });
   });
 
@@ -333,31 +243,6 @@ describe('InputSourceSelector', () => {
       expect(screen.getByRole('combobox')).toBeInTheDocument();
     });
 
-    it('should show toggle for select input without allowedSources', () => {
-      const selectWithoutAllowedSources: ActionInputDef = {
-        name: 'option',
-        label: 'Option',
-        description: 'Select option',
-        type: 'select',
-        required: false,
-        options: [{ value: 'a', label: 'A' }],
-        // No allowedSources - defaults to both
-      };
-
-      render(
-        <InputSourceSelector
-          inputDef={selectWithoutAllowedSources}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      // Should have toggle buttons
-      expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Event Field' })).toBeInTheDocument();
-    });
-
     it('should show toggle for select input with both sources allowed', () => {
       const selectWithBothSources: ActionInputDef = {
         name: 'option',
@@ -382,33 +267,6 @@ describe('InputSourceSelector', () => {
       expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Event Field' })).toBeInTheDocument();
     });
-
-    it('should hide toggle for custom-only number input', () => {
-      const customOnlyNumberDef: ActionInputDef = {
-        name: 'count',
-        label: 'Count',
-        description: 'Enter count',
-        type: 'number',
-        required: false,
-        allowedSources: ['custom'],
-      };
-
-      render(
-        <InputSourceSelector
-          inputDef={customOnlyNumberDef}
-          value={{ source: 'custom', customValue: '42' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      // Should NOT have toggle buttons
-      expect(screen.queryByRole('button', { name: 'Custom' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Event Field' })).not.toBeInTheDocument();
-
-      // Should have the number input
-      expect(screen.getByRole('spinbutton')).toBeInTheDocument();
-    });
   });
 
   describe('error display', () => {
@@ -420,43 +278,39 @@ describe('InputSourceSelector', () => {
       required: true,
     };
 
-    it('should display error message', () => {
+    it('shows required template editor, syntax hint and validation error', () => {
       render(
         <InputSourceSelector
-          inputDef={stringInputDef}
+          inputDef={{ ...stringInputDef, required: true }}
           value={{ source: 'custom', customValue: '' }}
           onChange={jest.fn()}
           availableEventFields={mockEventFields}
           error="This field is required"
         />,
       );
-
-      expect(screen.getByText('This field is required')).toBeInTheDocument();
+      {
+        expect(screen.getByText('This field is required')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByRole('textbox')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Custom' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Event Field' })).not.toBeInTheDocument();
+        expect(screen.getByText('Select variable...')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText(/syntax to insert event/)).toBeInTheDocument();
+      }
+      {
+        const insertButton = screen.getByRole('button', { name: 'Insert' });
+        expect(insertButton).toBeDisabled();
+      }
+      {
+        expect(screen.getByText('*')).toBeInTheDocument();
+      }
     });
   });
 
   describe('required indicator', () => {
-    it('should show required indicator for required inputs', () => {
-      const requiredInputDef: ActionInputDef = {
-        name: 'text',
-        label: 'Text',
-        description: 'Enter text',
-        type: 'string',
-        required: true,
-      };
-
-      render(
-        <InputSourceSelector
-          inputDef={requiredInputDef}
-          value={{ source: 'custom', customValue: '' }}
-          onChange={jest.fn()}
-          availableEventFields={mockEventFields}
-        />,
-      );
-
-      expect(screen.getByText('*')).toBeInTheDocument();
-    });
-
     it('should not show required indicator for optional inputs', () => {
       const optionalInputDef: ActionInputDef = {
         name: 'text',

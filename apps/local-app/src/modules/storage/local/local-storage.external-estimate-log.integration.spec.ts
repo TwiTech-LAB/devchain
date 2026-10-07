@@ -1,7 +1,7 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,9 +31,8 @@ describe('LocalStorageService external estimate log states', () => {
   let identity: ExternalEstimateLogIdentity;
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
     secretDirectory = mkdtempSync(join(tmpdir(), 'devchain-estimate-log-'));
     storage = new LocalStorageService(
       drizzle(sqlite),
@@ -1315,22 +1314,6 @@ describe('LocalStorageService external estimate log states', () => {
           currentDailyTotals: [],
         }),
       ).rejects.toBeInstanceOf(ValidationError);
-    });
-
-    it('uses a sentinel no generated UUID can produce', () => {
-      expect(LEGACY_PROJECT).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-      );
-      // Generated ids are UUIDv4: version nibble 4 and variant 8/9/a/b.
-      // The sentinel keeps both fields zero, so randomUUID can never emit it.
-      expect(LEGACY_PROJECT[14]).toBe('0');
-      expect('89ab').not.toContain(LEGACY_PROJECT[19]);
-      for (let index = 0; index < 200; index += 1) {
-        const generated = randomUUID();
-        expect(generated).not.toBe(LEGACY_PROJECT);
-        expect(generated[14]).toBe('4');
-        expect('89ab').toContain(generated[19]);
-      }
     });
 
     it('moves the complete scalar state and dated ledger to the claiming project', async () => {

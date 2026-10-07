@@ -45,9 +45,9 @@ export class SkillsController {
     logger.info('POST /api/skills/sync');
     const parsed = SkillSyncRequestSchema.parse(body ?? {});
     if (parsed.sourceName) {
-      return this.skillSourceLifecycle.syncSource(parsed.sourceName);
+      return this.skillSourceLifecycle.syncSource(parsed.sourceName, { force: true });
     }
-    return this.skillSourceLifecycle.syncAll();
+    return this.skillSourceLifecycle.syncAll({ force: true });
   }
 
   @Get('sources')

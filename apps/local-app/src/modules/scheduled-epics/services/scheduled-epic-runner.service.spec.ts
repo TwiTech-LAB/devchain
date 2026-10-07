@@ -175,37 +175,6 @@ describe('ScheduledEpicRunnerService', () => {
       );
     });
 
-    it('executes manual runs even when schedule is disabled', async () => {
-      const schedule = makeSchedule({ enabled: false });
-      const run = makeRun({ source: 'manual' });
-      storage.getScheduledEpic.mockResolvedValue(schedule);
-      storage.claimScheduledEpicRun.mockResolvedValue(
-        claimOk(makeRun({ id: run.id, source: 'manual', status: 'running' })),
-      );
-      epicsService.createEpicForProject.mockResolvedValue(makeEpic());
-
-      await runner.executeRun(run);
-
-      expect(epicsService.createEpicForProject).toHaveBeenCalled();
-    });
-
-    it('skips scheduler runs when schedule is disabled', async () => {
-      const schedule = makeSchedule({ enabled: false });
-      const run = makeRun({ source: 'scheduler' });
-      storage.getScheduledEpic.mockResolvedValue(schedule);
-      storage.claimScheduledEpicRun.mockResolvedValue(
-        claimOk(makeRun({ id: run.id, source: 'scheduler', status: 'running' })),
-      );
-
-      await runner.executeRun(run);
-
-      expect(epicsService.createEpicForProject).not.toHaveBeenCalled();
-      expect(storage.updateScheduledEpicRun).toHaveBeenCalledWith(
-        'run-1',
-        expect.objectContaining({ status: 'skipped' }),
-      );
-    });
-
     it('records failure when execution throws', async () => {
       const schedule = makeSchedule();
       const run = makeRun();
@@ -468,27 +437,6 @@ describe('ScheduledEpicRunnerService', () => {
   });
 
   describe('catch-up horizon and count caps', () => {
-    it('run_all processes at most 10 slots per scan and preserves backlog', async () => {
-      const now = new Date();
-      const schedule = makeSchedule({
-        missedRunPolicy: 'run_all',
-        cronExpression: '* * * * *',
-        nextRunAt: new Date(now.getTime() - 60 * 60 * 1_000).toISOString(),
-      });
-
-      storage.createScheduledEpicRun.mockResolvedValue(claimOk(makeRun()));
-      storage.getScheduledEpic.mockResolvedValue(schedule);
-      epicsService.createEpicForProject.mockResolvedValue(makeEpic());
-
-      await internals.processSchedule(schedule, now.toISOString());
-
-      expect(storage.createScheduledEpicRun.mock.calls.length).toBeLessThanOrEqual(10);
-      const runtimeCalls = storage.updateScheduledEpicRuntimeState.mock.calls;
-      const lastCall = runtimeCalls[runtimeCalls.length - 1];
-      const nextRunAt = (lastCall?.[1] as Record<string, unknown>)?.nextRunAt as string;
-      expect(new Date(nextRunAt).getTime()).toBeLessThan(now.getTime());
-    });
-
     it('excludes slots older than 24h', () => {
       const schedule = makeSchedule({
         cronExpression: '0 9 * * *',

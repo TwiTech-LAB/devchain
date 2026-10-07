@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { ProviderConfigGranularSelector } from './ProviderConfigGranularSelector';
 import type { ConfigItem, ProfileSelection } from './selector-types';
 
@@ -35,66 +35,38 @@ function renderSelector(
 }
 
 describe('ProviderConfigGranularSelector', () => {
-  it('renders provider headers and per-config checkboxes', () => {
-    renderSelector([{ profileKey: 'profile-1', mode: 'allow-all' }]);
-
-    expect(screen.getByLabelText('Select all claude configs')).toBeInTheDocument();
-    expect(screen.getByLabelText('Select all codex configs')).toBeInTheDocument();
-
-    const claudeGroup = screen.getByTestId('provider-group-claude');
-    expect(within(claudeGroup).getByLabelText('Claude Opus')).toBeInTheDocument();
-    expect(within(claudeGroup).getByLabelText('Claude Sonnet')).toBeInTheDocument();
-
-    const codexGroup = screen.getByTestId('provider-group-codex');
-    expect(within(codexGroup).getByLabelText('Codex Mini')).toBeInTheDocument();
-  });
-
-  it('allow-all: all per-config and provider checkboxes are checked', () => {
-    renderSelector([{ profileKey: 'profile-1', mode: 'allow-all' }]);
-
-    expect(screen.getByLabelText('Select all claude configs')).toHaveAttribute(
-      'data-state',
-      'checked',
-    );
-    expect(screen.getByLabelText('Select all codex configs')).toHaveAttribute(
-      'data-state',
-      'checked',
-    );
-    expect(screen.getByLabelText('Claude Opus')).toHaveAttribute('data-state', 'checked');
-    expect(screen.getByLabelText('Claude Sonnet')).toHaveAttribute('data-state', 'checked');
-    expect(screen.getByLabelText('Codex Mini')).toHaveAttribute('data-state', 'checked');
-  });
-
-  it('subset: only selected configs checked, provider header shows indeterminate', () => {
-    renderSelector([{ profileKey: 'profile-1', mode: 'subset', configKeys: ['c1'] }]);
-
-    expect(screen.getByLabelText('Claude Opus')).toHaveAttribute('data-state', 'checked');
-    expect(screen.getByLabelText('Claude Sonnet')).toHaveAttribute('data-state', 'unchecked');
-    expect(screen.getByLabelText('Codex Mini')).toHaveAttribute('data-state', 'unchecked');
-
-    expect(screen.getByLabelText('Select all claude configs')).toHaveAttribute(
-      'data-state',
-      'indeterminate',
-    );
-    expect(screen.getByLabelText('Select all codex configs')).toHaveAttribute(
-      'data-state',
-      'unchecked',
-    );
-  });
-
-  it('remove: all checkboxes unchecked', () => {
-    renderSelector([{ profileKey: 'profile-1', mode: 'remove' }]);
-
-    expect(screen.getByLabelText('Claude Opus')).toHaveAttribute('data-state', 'unchecked');
-    expect(screen.getByLabelText('Claude Sonnet')).toHaveAttribute('data-state', 'unchecked');
-    expect(screen.getByLabelText('Codex Mini')).toHaveAttribute('data-state', 'unchecked');
-    expect(screen.getByLabelText('Select all claude configs')).toHaveAttribute(
-      'data-state',
-      'unchecked',
-    );
-    expect(screen.getByLabelText('Select all codex configs')).toHaveAttribute(
-      'data-state',
-      'unchecked',
+  it.each([
+    {
+      label: 'allow all',
+      selection: { profileKey: 'profile-1', mode: 'allow-all' },
+      states: ['checked', 'checked', 'checked', 'checked', 'checked'],
+    },
+    {
+      label: 'subset',
+      selection: { profileKey: 'profile-1', mode: 'subset', configKeys: ['c1'] },
+      states: ['checked', 'unchecked', 'unchecked', 'indeterminate', 'unchecked'],
+    },
+    {
+      label: 'remove',
+      selection: { profileKey: 'profile-1', mode: 'remove' },
+      states: ['unchecked', 'unchecked', 'unchecked', 'unchecked', 'unchecked'],
+    },
+  ] as const)('$label', ({ selection, states }) => {
+    renderSelector([
+      {
+        profileKey: selection.profileKey,
+        mode: selection.mode,
+        configKeys: [...(selection.configKeys ?? [])],
+      },
+    ]);
+    [
+      'Claude Opus',
+      'Claude Sonnet',
+      'Codex Mini',
+      'Select all claude configs',
+      'Select all codex configs',
+    ].forEach((label, index) =>
+      expect(screen.getByLabelText(label)).toHaveAttribute('data-state', states[index]),
     );
   });
 
@@ -164,15 +136,6 @@ describe('ProviderConfigGranularSelector', () => {
           configKeys: ['x1'],
         }),
       ]),
-    );
-  });
-
-  it('per-config toggle: provider header shows indeterminate after partial selection', () => {
-    renderSelector([{ profileKey: 'profile-1', mode: 'subset', configKeys: ['c1'] }]);
-
-    expect(screen.getByLabelText('Select all claude configs')).toHaveAttribute(
-      'data-state',
-      'indeterminate',
     );
   });
 

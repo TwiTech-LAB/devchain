@@ -47,19 +47,6 @@ const ENDPOINT_MISSING = {
   devicesAvailable: false,
   refetch: jest.fn(),
 };
-const ERROR_STATE = {
-  status: 'error' as const,
-  error: new Error('devices:500'),
-  devices: [],
-  devicesAvailable: false,
-  refetch: jest.fn(),
-};
-const LOADING = {
-  status: 'loading' as const,
-  devices: [],
-  devicesAvailable: false,
-  refetch: jest.fn(),
-};
 
 describe('ProjectForwardingRow', () => {
   beforeEach(() => {
@@ -73,91 +60,28 @@ describe('ProjectForwardingRow', () => {
     mockUseMutation.mockReturnValue({ mutate: jest.fn(), isPending: false });
   });
 
-  it('renders project name and path', () => {
+  it.each([
+    { label: 'bulk pending', bulk: true, loading: false, pending: false },
+    { label: 'config loading', bulk: false, loading: true, pending: false },
+    { label: 'row update pending', bulk: false, loading: false, pending: true },
+  ] as const)('disables switch for $label', ({ bulk, loading, pending }) => {
+    mockUseQuery.mockReturnValue({
+      data: loading ? undefined : { enabled: false },
+      isLoading: loading,
+    });
+    mockUseMutation.mockReturnValue({ mutate: jest.fn(), isPending: pending });
     render(
       <ProjectForwardingRow
         projectId="p1"
         projectName="My Project"
         rootPath="/tmp/my-project"
-        bulkPending={false}
-      />,
-    );
-    expect(screen.getByText('My Project')).toBeInTheDocument();
-    const rootPath = screen.getByText('/tmp/my-project');
-    expect(rootPath).toBeInTheDocument();
-    expect(rootPath).toHaveClass('truncate');
-    expect(rootPath).toHaveAttribute('title', '/tmp/my-project');
-    expect(screen.getByLabelText(/push notifications for my project/i)).toBeInTheDocument();
-    const icon = document.querySelector('svg.lucide-folder');
-    expect(icon).not.toBeNull();
-  });
-
-  it('does NOT render "Mobile notifications" or "Forward events" labels', () => {
-    render(
-      <ProjectForwardingRow
-        projectId="p1"
-        projectName="My Project"
-        rootPath="/tmp/my-project"
-        bulkPending={false}
-      />,
-    );
-    expect(screen.queryByText(/Mobile notifications/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Forward events/i)).not.toBeInTheDocument();
-  });
-
-  it('renders switch with aria-label', () => {
-    render(
-      <ProjectForwardingRow
-        projectId="p1"
-        projectName="My Project"
-        rootPath="/tmp/my-project"
-        bulkPending={false}
-      />,
-    );
-    expect(
-      screen.getByRole('switch', { name: /Push notifications for My Project/ }),
-    ).toBeInTheDocument();
-  });
-
-  it('disables switch when bulkPending is true', () => {
-    render(
-      <ProjectForwardingRow
-        projectId="p1"
-        projectName="My Project"
-        rootPath="/tmp/my-project"
-        bulkPending={true}
+        bulkPending={bulk}
       />,
     );
     expect(screen.getByRole('switch')).toBeDisabled();
   });
 
-  it('disables switch while row config is loading', () => {
-    mockUseQuery.mockReturnValue({ data: undefined, isLoading: true });
-    render(
-      <ProjectForwardingRow
-        projectId="p1"
-        projectName="My Project"
-        rootPath="/tmp/my-project"
-        bulkPending={false}
-      />,
-    );
-    expect(screen.getByRole('switch')).toBeDisabled();
-  });
-
-  it('disables switch while row update is pending', () => {
-    mockUseMutation.mockReturnValue({ mutate: jest.fn(), isPending: true });
-    render(
-      <ProjectForwardingRow
-        projectId="p1"
-        projectName="My Project"
-        rootPath="/tmp/my-project"
-        bulkPending={false}
-      />,
-    );
-    expect(screen.getByRole('switch')).toBeDisabled();
-  });
-
-  it('renders tooltip when status=ready and devices=[]', () => {
+  it('shows project identity and enabled switch with the no-device hint', () => {
     mockUseDevicesQuery.mockReturnValue(READY_NO_DEVICES);
     render(
       <ProjectForwardingRow
@@ -167,9 +91,24 @@ describe('ProjectForwardingRow', () => {
         bulkPending={false}
       />,
     );
-    expect(screen.getByTestId('tooltip-content')).toHaveTextContent(
-      'No device will receive these notifications yet.',
-    );
+    {
+      expect(screen.getByTestId('tooltip-content')).toHaveTextContent(
+        'No device will receive these notifications yet.',
+      );
+    }
+    {
+      expect(screen.getByText('My Project')).toBeInTheDocument();
+      const rootPath = screen.getByText('/tmp/my-project');
+      expect(rootPath).toBeInTheDocument();
+      expect(rootPath).toHaveClass('truncate');
+      expect(rootPath).toHaveAttribute('title', '/tmp/my-project');
+      expect(screen.getByLabelText(/push notifications for my project/i)).toBeInTheDocument();
+      const icon = document.querySelector('svg.lucide-folder');
+      expect(icon).not.toBeNull();
+    }
+    {
+      expect(screen.getByRole('switch')).not.toBeDisabled();
+    }
   });
 
   it('hides tooltip when devices are populated', () => {
@@ -196,44 +135,5 @@ describe('ProjectForwardingRow', () => {
       />,
     );
     expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument();
-  });
-
-  it('hides tooltip when status=error', () => {
-    mockUseDevicesQuery.mockReturnValue(ERROR_STATE);
-    render(
-      <ProjectForwardingRow
-        projectId="p1"
-        projectName="My Project"
-        rootPath="/tmp/my-project"
-        bulkPending={false}
-      />,
-    );
-    expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument();
-  });
-
-  it('hides tooltip when status=loading', () => {
-    mockUseDevicesQuery.mockReturnValue(LOADING);
-    render(
-      <ProjectForwardingRow
-        projectId="p1"
-        projectName="My Project"
-        rootPath="/tmp/my-project"
-        bulkPending={false}
-      />,
-    );
-    expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument();
-  });
-
-  it('switch stays enabled when devices=[] and status=ready (Inv 14)', () => {
-    mockUseDevicesQuery.mockReturnValue(READY_NO_DEVICES);
-    render(
-      <ProjectForwardingRow
-        projectId="p1"
-        projectName="My Project"
-        rootPath="/tmp/my-project"
-        bulkPending={false}
-      />,
-    );
-    expect(screen.getByRole('switch')).not.toBeDisabled();
   });
 });

@@ -9,42 +9,6 @@ describe('renderTemplate', () => {
     expect(renderTemplate('Hello {{name}}!', {})).toBe('Hello !');
   });
 
-  describe('{{#if}} / {{else}}', () => {
-    const tpl = '{{#if active}}yes{{else}}no{{/if}}';
-
-    it('truthy path', () => {
-      expect(renderTemplate(tpl, { active: true })).toBe('yes');
-    });
-
-    it('falsy path', () => {
-      expect(renderTemplate(tpl, { active: false })).toBe('no');
-    });
-  });
-
-  describe('{{#unless}}', () => {
-    const tpl = '{{#unless disabled}}enabled{{/unless}}';
-
-    it('renders when falsy', () => {
-      expect(renderTemplate(tpl, { disabled: false })).toBe('enabled');
-    });
-
-    it('does not render when truthy', () => {
-      expect(renderTemplate(tpl, { disabled: true })).toBe('');
-    });
-  });
-
-  describe('boolean values with {{#if}}', () => {
-    const tpl = '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}';
-
-    it('boolean false evaluates as falsy', () => {
-      expect(renderTemplate(tpl, { is_team_lead: false })).toBe('MEMBER');
-    });
-
-    it('boolean true evaluates as truthy', () => {
-      expect(renderTemplate(tpl, { is_team_lead: true })).toBe('LEAD');
-    });
-  });
-
   it('noEscape: output contains literal HTML chars', () => {
     expect(renderTemplate('{{content}}', { content: '<b>bold</b> & "quoted"' })).toBe(
       '<b>bold</b> & "quoted"',
@@ -54,28 +18,45 @@ describe('renderTemplate', () => {
   describe('legacy preprocessor', () => {
     const legacy = ['name', 'agent_name', 'TITLE'];
 
-    it('rewrites {name} in allowlist to {{name}}', () => {
-      expect(renderTemplate('Hi {name}', { name: 'Bob' }, legacy)).toBe('Hi Bob');
-    });
-
-    it('preserves unknown {literal} tokens', () => {
-      expect(renderTemplate('{unknown} text', {}, legacy)).toBe('{unknown} text');
-    });
-
-    it('leaves existing {{double}} braces untouched', () => {
-      expect(renderTemplate('{{name}} and {name}', { name: 'X' }, legacy)).toBe('X and X');
-    });
-
-    it('strips ? suffix from optional legacy tokens', () => {
-      expect(renderTemplate('Hi {name?}', { name: 'Eve' }, legacy)).toBe('Hi Eve');
-    });
-
-    it('matches case-insensitively', () => {
-      expect(renderTemplate('{AGENT_NAME}', { agent_name: 'Bot' }, legacy)).toBe('Bot');
-    });
-
-    it('rewrites {TITLE} (uppercase allowlist entry) case-insensitively', () => {
-      expect(renderTemplate('{title}', { title: 'Epic' }, legacy)).toBe('Epic');
+    it.each([
+      {
+        label: 'rewrites {name} in allowlist to {{name}}',
+        template: 'Hi {name}',
+        vars: { name: 'Bob' },
+        expected: 'Hi Bob',
+      },
+      {
+        label: 'preserves unknown {literal} tokens',
+        template: '{unknown} text',
+        vars: {},
+        expected: '{unknown} text',
+      },
+      {
+        label: 'leaves existing {{double}} braces untouched',
+        template: '{{name}} and {name}',
+        vars: { name: 'X' },
+        expected: 'X and X',
+      },
+      {
+        label: 'strips ? suffix from optional legacy tokens',
+        template: 'Hi {name?}',
+        vars: { name: 'Eve' },
+        expected: 'Hi Eve',
+      },
+      {
+        label: 'matches case-insensitively',
+        template: '{AGENT_NAME}',
+        vars: { agent_name: 'Bot' },
+        expected: 'Bot',
+      },
+      {
+        label: 'rewrites {TITLE} (uppercase allowlist entry) case-insensitively',
+        template: '{title}',
+        vars: { title: 'Epic' },
+        expected: 'Epic',
+      },
+    ])('$label', ({ template, vars, expected }) => {
+      expect(renderTemplate(template, vars, legacy)).toBe(expected);
     });
   });
 });

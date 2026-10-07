@@ -1,4 +1,5 @@
 import type { DockerImportInventory } from '../operations/docker-import-inventory.store';
+import type { DockerNetworkCreate } from '../host/host-docker.dto';
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -45,6 +46,7 @@ export interface DockerHandoffNetwork {
   internal: boolean;
   attachable: boolean;
   options: Record<string, string>;
+  ipam?: DockerNetworkCreate['ipam'];
 }
 
 /**
@@ -78,6 +80,7 @@ export interface DockerHandoffRecord {
   /** Home containers this operation stopped while they ran; `name` identifies a failed restart. */
   stopped: Array<{ id: string; temporary: boolean; name?: string }>;
   networks: DockerHandoffNetwork[];
+  automaticRangeNetworks?: string[];
   verified: { images: string[]; volumes: string[]; binds: string[]; containers: string[] };
   /**
    * VM resources this attempt may have created. Volumes and containers are recorded

@@ -16,60 +16,33 @@ describe('resolveTemplatesDirectory', () => {
     expect(result).toBe('/custom/templates');
   });
 
-  it('resolves dev runtime layout: src/modules/*/services -> templates', () => {
-    const fromDirectory = '/repo/apps/local-app/src/modules/projects/services';
-    const expected = '/repo/apps/local-app/templates';
-    const existsSyncFn = jest.fn((path: string) => path === expected);
-
-    const result = resolveTemplatesDirectory(fromDirectory, {
-      envTemplatesDir: null,
+  it.each([
+    {
+      label: 'dev',
+      fromDirectory: '/repo/apps/local-app/src/modules/projects/services',
+      expected: '/repo/apps/local-app/templates',
       cwd: '/repo',
-      existsSyncFn,
-    });
-
-    expect(result).toBe(expected);
-  });
-
-  it('resolves npm-pack runtime layout: dist/server/modules/*/services -> dist/templates', () => {
-    const fromDirectory = '/repo/apps/local-app/dist/server/modules/projects/services';
-    const expected = '/repo/apps/local-app/dist/templates';
-    const existsSyncFn = jest.fn((path: string) => path === expected);
-
-    const result = resolveTemplatesDirectory(fromDirectory, {
-      envTemplatesDir: null,
-      cwd: '/repo',
-      existsSyncFn,
-    });
-
-    expect(result).toBe(expected);
-  });
-
-  it('resolves docker runtime layout: dist/modules/*/services -> dist/templates', () => {
-    const fromDirectory = '/app/apps/local-app/dist/modules/registry/services';
-    const expected = '/app/apps/local-app/dist/templates';
-    const existsSyncFn = jest.fn((path: string) => path === expected);
-
-    const result = resolveTemplatesDirectory(fromDirectory, {
-      envTemplatesDir: null,
+    },
+    {
+      label: 'docker',
+      fromDirectory: '/app/apps/local-app/dist/modules/registry/services',
+      expected: '/app/apps/local-app/dist/templates',
       cwd: '/app',
-      existsSyncFn,
-    });
-
-    expect(result).toBe(expected);
-  });
-
-  it('falls back to known cwd candidates when relative traversal misses', () => {
-    const fromDirectory = '/tmp/unknown/layout/services';
-    const expected = '/workspace/apps/local-app/dist/templates';
-    const existsSyncFn = jest.fn((path: string) => path === expected);
-
-    const result = resolveTemplatesDirectory(fromDirectory, {
-      envTemplatesDir: null,
+    },
+    {
+      label: 'fallback',
+      fromDirectory: '/tmp/unknown/layout/services',
+      expected: '/workspace/apps/local-app/dist/templates',
       cwd: '/workspace',
-      existsSyncFn,
-    });
-
-    expect(result).toBe(expected);
+    },
+  ])('resolves $label template layout', ({ fromDirectory, expected, cwd }) => {
+    expect(
+      resolveTemplatesDirectory(fromDirectory, {
+        envTemplatesDir: null,
+        cwd,
+        existsSyncFn: (path) => path === expected,
+      }),
+    ).toBe(expected);
   });
 
   it('returns null when no candidate exists', () => {

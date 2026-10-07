@@ -20,29 +20,21 @@ describe('useSmartSuppression', () => {
     fetchSpy.mockRestore();
   });
 
-  it('returns fetched smart suppression config', async () => {
-    const config = { enabled: false, windowMinutes: 15 };
+  it.each([
+    {
+      label: 'configured suppression',
+      config: { enabled: false, windowMinutes: 15 },
+      expected: { enabled: false, windowMinutes: 15 },
+    },
+    { label: 'null defaults', config: null, expected: { enabled: true, windowMinutes: 5 } },
+  ] as const)('$label', async ({ config, expected }) => {
     fetchSpy.mockResolvedValue({
       ok: true,
       json: async () => ({ smartSuppression: config }),
     } as Response);
-
     const { result } = renderHook(() => useSmartSuppression(), { wrapper: makeWrapper() });
-
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.smartSuppression).toEqual(config);
-  });
-
-  it('returns default config when server returns null smartSuppression', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ smartSuppression: null }),
-    } as Response);
-
-    const { result } = renderHook(() => useSmartSuppression(), { wrapper: makeWrapper() });
-
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.smartSuppression).toEqual({ enabled: true, windowMinutes: 5 });
+    expect(result.current.smartSuppression).toEqual(expected);
   });
 
   it('updates cache after successful upsert', async () => {

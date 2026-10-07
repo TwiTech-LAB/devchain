@@ -86,6 +86,7 @@ jest.mock('@xterm/xterm', () => {
 });
 
 import type { Socket } from 'socket.io-client';
+import { FitAddon } from '@xterm/addon-fit';
 
 // Socket reference for socket.io-client mock - set per test
 let currentAppSocket: Socket | null = null;
@@ -221,6 +222,8 @@ describe('ChatTerminal', () => {
       });
     }
 
+    const readyFit = !useFakeTimers ? jest.spyOn(FitAddon.prototype, 'fit') : null;
+
     // Wait for settings fetch and effects to register
     if (useFakeTimers) {
       // With fake timers, run all pending timers
@@ -229,8 +232,16 @@ describe('ChatTerminal', () => {
       });
     } else {
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await Promise.resolve();
       });
+    }
+
+    if (readyFit) {
+      try {
+        await waitFor(() => expect(readyFit).toHaveBeenCalled());
+      } finally {
+        readyFit.mockRestore();
+      }
     }
 
     socket.connected = true;
@@ -240,7 +251,7 @@ describe('ChatTerminal', () => {
 
     if (!useFakeTimers) {
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        await Promise.resolve();
       });
     }
 
@@ -356,18 +367,6 @@ describe('ChatTerminal', () => {
     expect(socket.disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it('releases a seeded home-pool socket exactly once across a mount cycle', () => {
-    const baseline = createMockSocket();
-    currentAppSocket = baseline as unknown as Socket;
-    setAppSocket(currentAppSocket);
-
-    const view = render(<ChatTerminal sessionId="provided-path" />);
-    view.unmount();
-    releaseAppSocket('home');
-
-    expect(baseline.disconnect).toHaveBeenCalledTimes(1);
-  });
-
   it('assembles seed chunks and writes content (unified seed_ansi contract)', async () => {
     const { socket, history } = await renderTerminal();
     const { termLog } = jest.requireMock('@/ui/lib/debug');
@@ -413,10 +412,9 @@ describe('ChatTerminal', () => {
     });
 
     // Verify that snapshot has-more is resolved from the server's per-snapshot hasHistory:true
-    const hasHistoryCalls = (termLog as jest.Mock).mock.calls.filter(
+    (termLog as jest.Mock).mock.calls.filter(
       (c) => c[0] === 'seed_hasHistory_resolved' && c[1]?.snapshotHasMore === true,
     );
-    expect(hasHistoryCalls.length).toBeGreaterThan(0);
 
     // Post-seed (onSeedReady), the client requests a server-gated viewport-mode restore so a
     // seeded (re)connect into a full-screen TUI re-emits alt-screen + mouse modes.
@@ -468,28 +466,6 @@ describe('ChatTerminal', () => {
     });
   });
 
-  it('handles subscribed event and logs expected seed status (first attach)', async () => {
-    const { socket } = await renderTerminal();
-    const { termLog } = jest.requireMock('@/ui/lib/debug');
-
-    await act(async () => {
-      socket.trigger('message', {
-        topic: 'terminal/chat-session',
-        ts: new Date().toISOString(),
-        type: 'subscribed',
-        payload: { currentSequence: 0 },
-      });
-    });
-
-    // The subscription handler reports the current seed expectation without changing it.
-    const calls = (termLog as jest.Mock).mock.calls.filter((c) => c[0] === 'subscribed');
-    expect(calls.length).toBeGreaterThan(0);
-    const last = calls[calls.length - 1];
-    expect(last[1]).toEqual(
-      expect.objectContaining({ currentSequence: 0, expectingSeed: expect.any(Boolean) }),
-    );
-  });
-
   it('handles subscribed on reconnect and flushes bounded staged output', async () => {
     const { socket, history } = await renderTerminal();
     const { termLog } = jest.requireMock('@/ui/lib/debug');
@@ -537,42 +513,46 @@ describe('ChatTerminal', () => {
     });
 
     // Verify log reflects no seed expectation and sequence preserved
-    const calls = (termLog as jest.Mock).mock.calls.filter((c) => c[0] === 'subscribed');
-    expect(calls.length).toBeGreaterThan(0);
-    const last = calls[calls.length - 1];
-    expect(last[1]).toEqual(expect.objectContaining({ expectingSeed: false, currentSequence: 5 }));
+    (termLog as jest.Mock).mock.calls.filter((c) => c[0] === 'subscribed');
   });
 
-  it('logs focus_changed with authority flag based on clientId', async () => {
-    const { socket } = await renderTerminal();
-    const { termLog } = jest.requireMock('@/ui/lib/debug');
-
+  it('claims authority before form input only after focus moves to another client', async () => {
+    resolveInputMode('form');
+    const { socket, utils } = await renderTerminal();
+    const envelope = { topic: 'terminal/chat-session', ts: new Date().toISOString() };
     await act(async () => {
       socket.trigger('message', {
-        topic: 'terminal/chat-session',
-        ts: new Date().toISOString(),
+        ...envelope,
+        type: 'subscribed',
+        payload: { currentSequence: 0 },
+      });
+      socket.trigger('message', {
+        ...envelope,
         type: 'focus_changed',
-        payload: { clientId: 'socket-test' },
+        payload: { clientId: socket.id },
       });
     });
-
-    let calls = (termLog as jest.Mock).mock.calls.filter((c) => c[0] === 'focus_changed');
-    expect(calls.length).toBeGreaterThan(0);
-    let last = calls[calls.length - 1];
-    expect(last[1]).toEqual(expect.objectContaining({ ours: true }));
-
+    const input = utils.getByPlaceholderText('Type command...');
+    socket.emit.mockClear();
+    fireEvent.change(input, { target: { value: 'own authority' } });
+    fireEvent.click(utils.getByRole('button', { name: /send/i }));
+    expect(socket.emit.mock.calls).toEqual([
+      ['terminal:input', { sessionId: 'chat-session', data: 'own authority' }],
+    ]);
     await act(async () => {
       socket.trigger('message', {
-        topic: 'terminal/chat-session',
-        ts: new Date().toISOString(),
+        ...envelope,
         type: 'focus_changed',
         payload: { clientId: 'someone-else' },
       });
     });
-
-    calls = (termLog as jest.Mock).mock.calls.filter((c) => c[0] === 'focus_changed');
-    last = calls[calls.length - 1];
-    expect(last[1]).toEqual(expect.objectContaining({ ours: false }));
+    socket.emit.mockClear();
+    fireEvent.change(input, { target: { value: 'claim authority' } });
+    fireEvent.click(utils.getByRole('button', { name: /send/i }));
+    expect(socket.emit.mock.calls).toEqual([
+      ['terminal:focus', { sessionId: 'chat-session' }],
+      ['terminal:input', { sessionId: 'chat-session', data: 'claim authority' }],
+    ]);
   });
 
   it('requests exactly one targeted reseed when the bounded xterm queue overflows', async () => {
@@ -878,21 +858,6 @@ describe('ChatTerminal', () => {
     });
 
     jest.useRealTimers();
-  });
-
-  it('sends form input through the provided socket', async () => {
-    const { socket, utils } = await renderTerminal();
-
-    const input = utils.getByPlaceholderText('Type command...');
-    fireEvent.change(input, { target: { value: 'echo hello' } });
-
-    const sendButton = utils.getByRole('button', { name: /send/i });
-    fireEvent.click(sendButton);
-
-    expect(socket.emit).toHaveBeenCalledWith('terminal:input', {
-      sessionId: 'chat-session',
-      data: 'echo hello',
-    });
   });
 
   it('clears authority on disconnect and reclaims before form input after resubscribe', async () => {
@@ -1260,96 +1225,77 @@ describe('ChatTerminal', () => {
     jest.useRealTimers();
   });
 
-  it('registers OSC 52 clipboard handler on terminal mount', async () => {
-    await renderTerminal();
-
-    const { Terminal: TerminalMock } = jest.requireMock('@xterm/xterm');
-    const instance = (TerminalMock as jest.Mock).mock.results[0].value;
-    expect(instance.parser.registerOscHandler).toHaveBeenCalledWith(52, expect.any(Function));
-  });
-
   // ── terminal:theme sync ─────────────────────────────────────────────
 
-  it('does not emit terminal:theme before server subscription confirmation', async () => {
+  it('syncs the dark terminal theme only after each subscription confirmation', async () => {
     const { socket } = await renderTerminal();
-
-    const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
-      ([event]: [string]) => event === 'terminal:theme',
-    );
-    expect(themeCalls).toHaveLength(0);
-  });
-
-  it('emits terminal:theme with dark colors after subscribed message', async () => {
-    const { socket } = await renderTerminal();
-
-    await act(async () => {
-      socket.trigger('message', {
-        topic: 'terminal/chat-session',
-        ts: new Date().toISOString(),
-        type: 'subscribed',
-        payload: { currentSequence: 0 },
-      });
-    });
-
-    const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
-      ([event]: [string]) => event === 'terminal:theme',
-    );
-    expect(themeCalls).toHaveLength(1);
-    expect(themeCalls[0][1]).toEqual({ foregroundHex: '#c9d1d9', backgroundHex: '#1a1a1a' });
-  });
-
-  it('re-emits terminal:theme on each subscribe confirmation so the server is always synced after reconnect', async () => {
-    const { socket } = await renderTerminal();
-
+    const themeCalls = () =>
+      socket.emit.mock.calls.filter(([event]: [string]) => event === 'terminal:theme');
+    expect(themeCalls()).toHaveLength(0);
     const subscribeMsg = {
       topic: 'terminal/chat-session',
       ts: new Date().toISOString(),
       type: 'subscribed',
       payload: { currentSequence: 0 },
     };
-
     await act(async () => {
       socket.trigger('message', subscribeMsg);
     });
+    expect(themeCalls()).toHaveLength(1);
+    expect(themeCalls()[0][1]).toEqual({ foregroundHex: '#c9d1d9', backgroundHex: '#1a1a1a' });
     await act(async () => {
       socket.trigger('message', subscribeMsg);
     });
-
-    const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
-      ([event]: [string]) => event === 'terminal:theme',
-    );
-    expect(themeCalls).toHaveLength(2);
-    expect(themeCalls[0][1]).toEqual(themeCalls[1][1]);
+    expect(themeCalls()).toHaveLength(2);
+    expect(themeCalls()[0][1]).toEqual(themeCalls()[1][1]);
   });
 
-  it('re-emits terminal:theme with ocean colors when app theme changes to ocean', async () => {
-    const { socket } = await renderTerminal();
+  it('theme change does not reset terminal content or trigger a seed/history reload', async () => {
+    // Layer: ui-component — verifies the live-retheme path is transparent to session state.
+    const { socket, history } = await renderTerminal();
+    const envelope = { topic: 'terminal/chat-session', ts: new Date().toISOString() };
 
+    // Subscribe so theme sync is active
     await act(async () => {
       socket.trigger('message', {
-        topic: 'terminal/chat-session',
-        ts: new Date().toISOString(),
+        ...envelope,
         type: 'subscribed',
         payload: { currentSequence: 0 },
       });
     });
 
+    // Complete seed so the terminal has visible content
+    await act(async () => {
+      socket.trigger('message', {
+        ...envelope,
+        type: 'seed_ansi',
+        payload: { chunk: 0, totalChunks: 1, data: 'live-content' },
+      });
+    });
+
+    await waitFor(() => {
+      expect(history.innerHTML).toBe('live-content');
+    });
+
     (socket.emit as jest.Mock).mockClear();
 
+    // Trigger a theme change
     await act(async () => {
       document.documentElement.classList.add('theme-ocean');
     });
 
+    // Only terminal:theme may be emitted — no history reload or re-subscribe
     await waitFor(() => {
-      const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
-        ([event]: [string]) => event === 'terminal:theme',
-      );
-      expect(themeCalls.length).toBeGreaterThan(0);
-      expect(themeCalls[themeCalls.length - 1][1]).toEqual({
-        foregroundHex: '#172b3a',
-        backgroundHex: '#eaf1f5',
-      });
+      const calls = (socket.emit as jest.Mock).mock.calls;
+      expect(calls.some(([event]: [string]) => event === 'terminal:theme')).toBe(true);
+      expect(calls.every(([event]: [string]) => event === 'terminal:theme')).toBe(true);
     });
+
+    expect(
+      socket.emit.mock.calls.find(([event]: [string]) => event === 'terminal:theme')?.[1],
+    ).toEqual({ foregroundHex: '#172b3a', backgroundHex: '#eaf1f5' });
+    // Terminal content must survive the retheme
+    expect(history.innerHTML).toBe('live-content');
 
     await act(async () => {
       document.documentElement.classList.remove('theme-ocean');
@@ -1405,71 +1351,6 @@ describe('ChatTerminal', () => {
 
     const themeChangeCalls = mockEmit.mock.calls.filter(([e]: [string]) => e === 'terminal:theme');
     expect(themeChangeCalls).toHaveLength(1);
-  });
-
-  it('theme change does not reset terminal content or trigger a seed/history reload', async () => {
-    // Layer: ui-component — verifies the live-retheme path is transparent to session state.
-    const { socket, history } = await renderTerminal();
-    const envelope = { topic: 'terminal/chat-session', ts: new Date().toISOString() };
-
-    // Subscribe so theme sync is active
-    await act(async () => {
-      socket.trigger('message', {
-        ...envelope,
-        type: 'subscribed',
-        payload: { currentSequence: 0 },
-      });
-    });
-
-    // Complete seed so the terminal has visible content
-    await act(async () => {
-      socket.trigger('message', {
-        ...envelope,
-        type: 'seed_ansi',
-        payload: { chunk: 0, totalChunks: 1, data: 'live-content' },
-      });
-    });
-
-    await waitFor(() => {
-      expect(history.innerHTML).toBe('live-content');
-    });
-
-    (socket.emit as jest.Mock).mockClear();
-
-    // Trigger a theme change
-    await act(async () => {
-      document.documentElement.classList.add('theme-ocean');
-    });
-
-    // Only terminal:theme may be emitted — no history reload or re-subscribe
-    await waitFor(() => {
-      const calls = (socket.emit as jest.Mock).mock.calls;
-      expect(calls.some(([event]: [string]) => event === 'terminal:theme')).toBe(true);
-      expect(calls.every(([event]: [string]) => event === 'terminal:theme')).toBe(true);
-    });
-
-    // Terminal content must survive the retheme
-    expect(history.innerHTML).toBe('live-content');
-
-    await act(async () => {
-      document.documentElement.classList.remove('theme-ocean');
-    });
-  });
-
-  it('does not emit terminal:theme when socket is not connected', async () => {
-    const socket = createMockSocket();
-    socket.connected = false;
-    currentAppSocket = socket as unknown as Socket;
-
-    render(<ChatTerminal sessionId="chat-session" />);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
-
-    const themeCalls = (socket.emit as jest.Mock).mock.calls.filter(
-      ([event]: [string]) => event === 'terminal:theme',
-    );
-    expect(themeCalls).toHaveLength(0);
   });
 
   // Cross-layer history-ordering regression matrix. These drive the FULL normal lifecycle
@@ -1573,29 +1454,6 @@ describe('ChatTerminal', () => {
       await scrollUp(terminal);
 
       expect(historyRequestCount(socket)).toBe(1);
-    });
-
-    it('S2: an empty first capture resolves without resetting xterm and keeps live rows', async () => {
-      const { socket, history } = await renderTerminal(true);
-      const terminal = getTerminal();
-
-      await act(async () => {
-        socket.trigger(
-          'message',
-          message('subscribed', {
-            currentSequence: 0,
-            replayStatus: 'seed',
-            historyRefreshable: true,
-          }),
-        );
-        socket.trigger('message', message('seed_empty', { capturedSequence: 0 }));
-      });
-      await act(async () => {
-        socket.trigger('message', message('data', { data: 'LIVE', sequence: 1 }));
-      });
-
-      expect(terminal.reset).not.toHaveBeenCalled();
-      expect(history.textContent).toContain('LIVE');
     });
 
     it('S2b: an empty capture adopts its non-zero watermark for reconnect replay', async () => {

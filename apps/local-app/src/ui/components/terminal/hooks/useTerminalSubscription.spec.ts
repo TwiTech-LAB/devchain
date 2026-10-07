@@ -34,84 +34,25 @@ describe('useTerminalSubscription', () => {
     jest.clearAllMocks();
   });
 
-  it('should block subscription when socket not connected', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-
-    const { result } = renderHook(() =>
-      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
-    );
-
-    act(() => {
-      const success = result.current.attemptSubscription();
-      expect(success).toBe(false);
-    });
-
-    expect(mockSocket.emit).not.toHaveBeenCalled();
-    expect(termLog).toHaveBeenCalledWith('subscribe_blocked', {
-      reason: 'socket_not_connected',
-      sessionId,
-      socketId: mockSocket.id,
-    });
-  });
-
-  it('should block subscription when terminal not ready', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: null };
-    mockSocket.connected = true;
-
-    const { result } = renderHook(() =>
-      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
-    );
-
-    act(() => {
-      const success = result.current.attemptSubscription();
-      expect(success).toBe(false);
-    });
-
-    expect(mockSocket.emit).not.toHaveBeenCalled();
-    expect(termLog).toHaveBeenCalledWith(
-      'subscribe_blocked',
-      expect.objectContaining({
-        reason: 'terminal_not_ready',
-        sessionId,
-      }),
-    );
-  });
-
-  it('should block subscription when already subscribed', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    mockSocket.connected = true;
-
-    const { result } = renderHook(() =>
-      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
-    );
-
-    // First subscription should succeed
-    act(() => {
-      result.current.attemptSubscription();
-    });
-
-    // Manually mark as subscribed (simulating server response)
-    act(() => {
-      result.current.isSubscribedRef.current = true;
-    });
-
-    jest.clearAllMocks();
-
-    // Second subscription should be blocked
-    act(() => {
-      const success = result.current.attemptSubscription();
-      expect(success).toBe(false);
-    });
-
-    expect(mockSocket.emit).not.toHaveBeenCalled();
-    expect(termLog).toHaveBeenCalledWith('subscribe_blocked', {
-      reason: 'already_subscribed',
-      sessionId,
-    });
-  });
+  it.each(['disconnected', 'not-ready', 'already-subscribed'])(
+    'blocks subscription when %s',
+    (reason) => {
+      mockSocket.connected = reason !== 'disconnected';
+      const xtermRef = { current: reason === 'not-ready' ? null : mockTerminal };
+      const { result } = renderHook(() =>
+        useTerminalSubscription('test-session', xtermRef, mockDispatch, historySync),
+      );
+      if (reason === 'already-subscribed') {
+        act(() => {
+          expect(result.current.attemptSubscription()).toBe(true);
+          result.current.isSubscribedRef.current = true;
+        });
+        mockSocket.emit.mockClear();
+      }
+      act(() => expect(result.current.attemptSubscription()).toBe(false));
+      expect(mockSocket.emit).not.toHaveBeenCalled();
+    },
+  );
 
   it('should subscribe successfully when all preconditions met', () => {
     const sessionId = 'test-session';
@@ -122,6 +63,7 @@ describe('useTerminalSubscription', () => {
       useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
     );
 
+    expect(result.current.expectingSeedRef.current).toBe(false);
     act(() => {
       const success = result.current.attemptSubscription();
       expect(success).toBe(true);
@@ -144,6 +86,7 @@ describe('useTerminalSubscription', () => {
       sessionId,
       expectingSeed: true,
     });
+    expect(result.current.expectingSeedRef.current).toBe(true);
   });
 
   it('should use provided socket instead of singleton fallback when passed', () => {
@@ -180,25 +123,7 @@ describe('useTerminalSubscription', () => {
     expect(mockSocket.emit).not.toHaveBeenCalled();
   });
 
-  it('should mark expecting seed on first attach', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    mockSocket.connected = true;
-
-    const { result } = renderHook(() =>
-      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
-    );
-
-    expect(result.current.expectingSeedRef.current).toBe(false);
-
-    act(() => {
-      result.current.attemptSubscription();
-    });
-
-    expect(result.current.expectingSeedRef.current).toBe(true);
-  });
-
-  it('should send the {sequenceEpoch, sequence} cursor pair on reconnection once a domain is known', () => {
+  it.each([0, 123])('sends known epoch with reconnect sequence %s', (sequence) => {
     const sessionId = 'test-session';
     const xtermRef = { current: mockTerminal };
     mockSocket.connected = true;
@@ -218,7 +143,7 @@ describe('useTerminalSubscription', () => {
     act(() => {
       result.current.isSubscribedRef.current = false; // Allow re-subscription
       historySync.reconcileEpoch('epoch-A');
-      result.current.lastSequenceRef.current = 123;
+      result.current.lastSequenceRef.current = sequence;
     });
 
     // Reconnection attempt (not first attach) sends BOTH cursor fields.
@@ -229,83 +154,9 @@ describe('useTerminalSubscription', () => {
     expect(mockSocket.emit).toHaveBeenCalledWith(
       'terminal:subscribe',
       expect.objectContaining({
-        lastSequence: 123,
+        lastSequence: sequence,
         sequenceEpoch: 'epoch-A',
       }),
     );
-  });
-
-  it('sends the cursor with sequence 0 (a valid baseline) when a domain is known on reconnect', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    mockSocket.connected = true;
-
-    const { result } = renderHook(() =>
-      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
-    );
-
-    act(() => {
-      result.current.attemptSubscription();
-    });
-
-    mockSocket.emit.mockClear();
-    act(() => {
-      result.current.isSubscribedRef.current = false;
-      historySync.reconcileEpoch('epoch-A');
-      result.current.lastSequenceRef.current = 0; // sequence 0 is still a valid cursor
-    });
-
-    act(() => {
-      result.current.attemptSubscription();
-    });
-
-    expect(mockSocket.emit).toHaveBeenCalledWith(
-      'terminal:subscribe',
-      expect.objectContaining({ lastSequence: 0, sequenceEpoch: 'epoch-A' }),
-    );
-  });
-
-  it('should be idempotent - safe to call multiple times', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-    mockSocket.connected = true;
-
-    const { result } = renderHook(() =>
-      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
-    );
-
-    // Call once
-    act(() => {
-      result.current.attemptSubscription();
-    });
-
-    const firstCallCount = mockSocket.emit.mock.calls.length;
-
-    // Mark as subscribed
-    act(() => {
-      result.current.isSubscribedRef.current = true;
-    });
-
-    // Call again - should be blocked
-    act(() => {
-      result.current.attemptSubscription();
-    });
-
-    // Should not have made more calls (blocked after marking subscribed)
-    expect(mockSocket.emit).toHaveBeenCalledTimes(firstCallCount);
-  });
-
-  it('should return correct refs', () => {
-    const sessionId = 'test-session';
-    const xtermRef = { current: mockTerminal };
-
-    const { result } = renderHook(() =>
-      useTerminalSubscription(sessionId, xtermRef, mockDispatch, historySync),
-    );
-
-    expect(result.current.lastSequenceRef).toBeDefined();
-    expect(result.current.isSubscribedRef).toBeDefined();
-    expect(result.current.expectingSeedRef).toBeDefined();
-    expect(result.current.attemptSubscription).toBeInstanceOf(Function);
   });
 });

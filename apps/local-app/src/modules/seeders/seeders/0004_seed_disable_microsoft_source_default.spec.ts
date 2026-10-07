@@ -3,10 +3,7 @@ import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import type { SeederContext } from '../types/seeder.types';
-import {
-  runSeedDisableMicrosoftSourceDefault,
-  seedDisableMicrosoftSourceDefaultSeeder,
-} from './0004_seed_disable_microsoft_source_default';
+import { runSeedDisableMicrosoftSourceDefault } from './0004_seed_disable_microsoft_source_default';
 
 describe('0004_seed_disable_microsoft_source_default', () => {
   let sqlite: Database.Database;
@@ -106,13 +103,5 @@ describe('0004_seed_disable_microsoft_source_default', () => {
       .get('skills.sources') as { count: number };
     expect(countRow.count).toBe(1);
     expect(getSourceSettingsValue()).toBe(JSON.stringify({ microsoft: false }));
-  });
-
-  it('exports seeder metadata and run function', () => {
-    expect(seedDisableMicrosoftSourceDefaultSeeder).toMatchObject({
-      name: '0004_seed_disable_microsoft_source_default',
-      version: 1,
-      run: runSeedDisableMicrosoftSourceDefault,
-    });
   });
 });

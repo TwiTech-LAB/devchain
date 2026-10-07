@@ -35,46 +35,50 @@ describe('estimate-content-tokens', () => {
   });
 
   describe('estimateMessageTokens', () => {
-    it('estimates text blocks', () => {
-      expect(estimateMessageTokens([{ type: 'text', text: 'hello world' }])).toBe(3);
-    });
-
-    it('estimates thinking blocks', () => {
-      expect(
-        estimateMessageTokens([{ type: 'thinking', thinking: 'internal reasoning here' }]),
-      ).toBe(Math.ceil('internal reasoning here'.length / 4));
-    });
-
-    it('estimates tool_result blocks for string content', () => {
-      expect(
-        estimateMessageTokens([
+    it.each([
+      { name: 'text', blocks: [{ type: 'text', text: 'hello world' }], expected: 3 },
+      {
+        name: 'thinking',
+        blocks: [{ type: 'thinking', thinking: 'internal reasoning here' }],
+        expected: Math.ceil('internal reasoning here'.length / 4),
+      },
+      {
+        name: 'string tool result',
+        blocks: [
           { type: 'tool_result', toolCallId: 'tc1', content: 'tool output', isError: false },
-        ]),
-      ).toBe(Math.ceil('tool output'.length / 4));
-    });
-
-    it('estimates tool_result blocks for array/object payloads', () => {
-      const payload = [{ a: 1 }, { b: 'x' }];
-      expect(
-        estimateMessageTokens([
-          { type: 'tool_result', toolCallId: 'tc1', content: payload, isError: false },
-        ]),
-      ).toBe(Math.ceil(JSON.stringify(payload).length / 4));
-    });
-
-    it('estimates tool_call blocks from JSON input', () => {
-      const input = { file: '/tmp/a.ts', recursive: true };
-      expect(
-        estimateMessageTokens([
+        ],
+        expected: Math.ceil('tool output'.length / 4),
+      },
+      {
+        name: 'structured tool result',
+        blocks: [
+          {
+            type: 'tool_result',
+            toolCallId: 'tc1',
+            content: [{ a: 1 }, { b: 'x' }],
+            isError: false,
+          },
+        ],
+        expected: Math.ceil(JSON.stringify([{ a: 1 }, { b: 'x' }]).length / 4),
+      },
+      {
+        name: 'tool call',
+        blocks: [
           {
             type: 'tool_call',
             toolCallId: 'tc2',
             toolName: 'Read',
-            input,
+            input: { file: '/tmp/a.ts', recursive: true },
           },
-        ]),
-      ).toBe(Math.ceil(JSON.stringify(input).length / 4));
-    });
+        ],
+        expected: Math.ceil(JSON.stringify({ file: '/tmp/a.ts', recursive: true }).length / 4),
+      },
+    ] satisfies { name: string; blocks: UnifiedContentBlock[]; expected: number }[])(
+      'estimates $name blocks',
+      ({ blocks, expected }) => {
+        expect(estimateMessageTokens(blocks)).toBe(expected);
+      },
+    );
 
     it('handles mixed block content and skips image blocks', () => {
       const input = { x: 1 };
@@ -101,41 +105,35 @@ describe('estimate-content-tokens', () => {
   });
 
   describe('estimateStepTokens', () => {
-    it('estimates thinking step tokens from thinkingText', () => {
-      const thinkingText = 'reasoning trace';
-      expect(estimateStepTokens('thinking', { thinkingText })).toBe(
-        Math.ceil(thinkingText.length / 4),
-      );
-    });
-
-    it('estimates tool_call step tokens from JSON input', () => {
-      const toolInput = { file: '/tmp/x.ts', recursive: true };
-      expect(estimateStepTokens('tool_call', { toolInput })).toBe(
-        Math.ceil(JSON.stringify(toolInput).length / 4),
-      );
-    });
-
-    it('estimates tool_result step tokens for string content', () => {
-      const toolResultContent = 'result payload';
-      expect(estimateStepTokens('tool_result', { toolResultContent })).toBe(
-        Math.ceil(toolResultContent.length / 4),
-      );
-    });
-
-    it('estimates tool_result step tokens for array/object content', () => {
-      const toolResultContent = [{ ok: true }, { count: 2 }];
-      expect(estimateStepTokens('tool_result', { toolResultContent })).toBe(
-        Math.ceil(JSON.stringify(toolResultContent).length / 4),
-      );
-    });
-
-    it('estimates output step tokens from outputText', () => {
-      const outputText = 'final answer';
-      expect(estimateStepTokens('output', { outputText })).toBe(Math.ceil(outputText.length / 4));
-    });
-
-    it('returns 0 for unknown step types', () => {
-      expect(estimateStepTokens('unknown', { outputText: 'abc' })).toBe(0);
+    it.each([
+      {
+        type: 'thinking',
+        content: { thinkingText: 'reasoning trace' },
+        expected: Math.ceil('reasoning trace'.length / 4),
+      },
+      {
+        type: 'tool_call',
+        content: { toolInput: { file: '/tmp/x.ts', recursive: true } },
+        expected: Math.ceil(JSON.stringify({ file: '/tmp/x.ts', recursive: true }).length / 4),
+      },
+      {
+        type: 'tool_result',
+        content: { toolResultContent: 'result payload' },
+        expected: Math.ceil('result payload'.length / 4),
+      },
+      {
+        type: 'tool_result',
+        content: { toolResultContent: [{ ok: true }, { count: 2 }] },
+        expected: Math.ceil(JSON.stringify([{ ok: true }, { count: 2 }]).length / 4),
+      },
+      {
+        type: 'output',
+        content: { outputText: 'final answer' },
+        expected: Math.ceil('final answer'.length / 4),
+      },
+      { type: 'unknown', content: { outputText: 'abc' }, expected: 0 },
+    ])('estimates $type steps with $content', ({ type, content, expected }) => {
+      expect(estimateStepTokens(type, content)).toBe(expected);
     });
 
     it('returns 0 for empty/undefined content', () => {
@@ -148,36 +146,35 @@ describe('estimate-content-tokens', () => {
   });
 
   describe('estimateVisibleFromMessages', () => {
-    it('sums from the start when there is no compaction marker', () => {
-      const messages = [
-        makeMessage('m1', [{ type: 'text', text: '1234' }]),
-        makeMessage('m2', [{ type: 'text', text: '12345' }]),
-      ];
-
-      expect(estimateVisibleFromMessages(messages)).toBe(1 + 2);
-    });
-
-    it('uses only messages after last compaction summary marker', () => {
-      const messages = [
-        makeMessage('m1', [{ type: 'text', text: 'ignore me' }]),
-        makeMessage('m2', [{ type: 'text', text: 'compaction marker' }], {
-          isCompactSummary: true,
-        }),
-        makeMessage('m3', [{ type: 'text', text: 'abcd' }]),
-        makeMessage('m4', [{ type: 'text', text: 'abcdefgh' }]),
-      ];
-
-      expect(estimateVisibleFromMessages(messages)).toBe(1 + 2);
-    });
-
-    it('excludes sidechain messages from visible context estimation', () => {
-      const messages = [
-        makeMessage('m1', [{ type: 'text', text: 'abcd' }]),
-        makeMessage('m2', [{ type: 'text', text: 'abcdefghijkl' }], { isSidechain: true }),
-        makeMessage('m3', [{ type: 'text', text: 'abcdefgh' }]),
-      ];
-
-      expect(estimateVisibleFromMessages(messages)).toBe(1 + 2);
+    it.each([
+      {
+        name: 'sums from the start when there is no compaction marker',
+        messages: [
+          makeMessage('m1', [{ type: 'text', text: '1234' }]),
+          makeMessage('m2', [{ type: 'text', text: '12345' }]),
+        ],
+      },
+      {
+        name: 'uses only messages after last compaction summary marker',
+        messages: [
+          makeMessage('m1', [{ type: 'text', text: 'ignore me' }]),
+          makeMessage('m2', [{ type: 'text', text: 'compaction marker' }], {
+            isCompactSummary: true,
+          }),
+          makeMessage('m3', [{ type: 'text', text: 'abcd' }]),
+          makeMessage('m4', [{ type: 'text', text: 'abcdefgh' }]),
+        ],
+      },
+      {
+        name: 'excludes sidechain messages from visible context estimation',
+        messages: [
+          makeMessage('m1', [{ type: 'text', text: 'abcd' }]),
+          makeMessage('m2', [{ type: 'text', text: 'abcdefghijkl' }], { isSidechain: true }),
+          makeMessage('m3', [{ type: 'text', text: 'abcdefgh' }]),
+        ],
+      },
+    ])('$name', ({ messages }) => {
+      expect(estimateVisibleFromMessages(messages)).toBe(3);
     });
   });
 });

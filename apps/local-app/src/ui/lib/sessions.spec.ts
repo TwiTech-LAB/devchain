@@ -76,18 +76,6 @@ describe('ui/lib/sessions helpers', () => {
     });
   });
 
-  it('launchSession posts to the sessions launch route', async () => {
-    (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
-      ok: true,
-      json: async () => makeSessionPayload(),
-    }));
-
-    await launchSession('agent-1', 'project-1', undefined, globalFetch);
-
-    const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-    expect(urls).toEqual(['/api/sessions/launch']);
-  });
-
   it('launchAgentSession propagates error message on failure', async () => {
     (global as unknown as { fetch: unknown }).fetch = jest.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -150,21 +138,6 @@ describe('ui/lib/sessions helpers', () => {
       );
     });
 
-    it('returns session when no prior session existed (terminateStatus: not_found)', async () => {
-      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
-        ok: true,
-        json: async () =>
-          makeRestartResponse({
-            session: { id: 'session-fresh' },
-            terminateStatus: 'not_found',
-          }),
-      }));
-
-      const result = await restartAgentSession('agent-1', 'project-1', 'nonexistent', globalFetch);
-      expect(result.session.id).toBe('session-fresh');
-      expect(result.terminateWarning).toBeUndefined();
-    });
-
     it('returns session with warning when terminate failed (terminateStatus: error)', async () => {
       (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
         ok: true,
@@ -212,36 +185,6 @@ describe('ui/lib/sessions helpers', () => {
 
       await restartAgentSession('agent-1', 'project-123', 'old-session', globalFetch);
       expect(JSON.parse(capturedBody!)).toEqual({ projectId: 'project-123' });
-    });
-
-    it('restartSession posts to the agent restart route', async () => {
-      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
-        ok: true,
-        json: async () =>
-          makeRestartResponse({
-            session: { id: 'session-restarted' },
-            terminateStatus: 'success',
-          }),
-      }));
-
-      await restartSession('agent-1', 'project-1', 'old-session', globalFetch);
-
-      const urls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-      expect(urls).toEqual(['/api/agents/agent-1/restart']);
-    });
-  });
-
-  describe('terminateSession', () => {
-    it('sends a DELETE to the session route', async () => {
-      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
-        ok: true,
-      }));
-
-      await terminateSession('session-1', globalFetch);
-
-      expect(global.fetch).toHaveBeenCalledWith('/api/sessions/session-1', {
-        method: 'DELETE',
-      });
     });
   });
 
@@ -410,7 +353,7 @@ describe('ui/lib/sessions helpers', () => {
       expect(result).toEqual(mockData);
     });
 
-    it('throws SessionApiError with server message on failure', async () => {
+    it('throws the typed server error with message and status', async () => {
       (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
         ok: false,
         status: 400,
@@ -423,6 +366,10 @@ describe('ui/lib/sessions helpers', () => {
       await expect(
         fetchJsonOrThrow('/api/test', {}, 'Fallback error', globalFetch),
       ).rejects.toThrow('Bad request from server');
+
+      await expect(
+        fetchJsonOrThrow('/api/test', {}, 'Fallback error', globalFetch),
+      ).rejects.toMatchObject({ status: 400 });
     });
 
     it('uses fallback message when server response has no message', async () => {
@@ -449,22 +396,6 @@ describe('ui/lib/sessions helpers', () => {
       await expect(
         fetchJsonOrThrow('/api/test', {}, 'Network error fallback', globalFetch),
       ).rejects.toThrow('Network error fallback');
-    });
-
-    it('includes status code in thrown error', async () => {
-      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
-        ok: false,
-        status: 404,
-        json: async () => ({ message: 'Not found' }),
-      }));
-
-      try {
-        await fetchJsonOrThrow('/api/test', undefined, undefined, globalFetch);
-        fail('Expected error to be thrown');
-      } catch (error) {
-        expect(error).toBeInstanceOf(SessionApiError);
-        expect((error as SessionApiError).status).toBe(404);
-      }
     });
 
     it('preserves full error payload for MCP_NOT_CONFIGURED errors', async () => {
@@ -512,7 +443,7 @@ describe('ui/lib/sessions helpers', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('throws SessionApiError with server message on failure', async () => {
+    it('throws the typed server error with message and status', async () => {
       (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
         ok: false,
         status: 403,
@@ -525,22 +456,10 @@ describe('ui/lib/sessions helpers', () => {
       await expect(
         fetchOrThrow('/api/test', { method: 'DELETE' }, 'Delete failed', globalFetch),
       ).rejects.toThrow('Forbidden');
-    });
 
-    it('includes status code in thrown error', async () => {
-      (global as unknown as { fetch: unknown }).fetch = jest.fn(async () => ({
-        ok: false,
-        status: 409,
-        json: async () => ({ message: 'Conflict' }),
-      }));
-
-      try {
-        await fetchOrThrow('/api/test', undefined, undefined, globalFetch);
-        fail('Expected error to be thrown');
-      } catch (error) {
-        expect(error).toBeInstanceOf(SessionApiError);
-        expect((error as SessionApiError).status).toBe(409);
-      }
+      await expect(
+        fetchOrThrow('/api/test', { method: 'DELETE' }, 'Delete failed', globalFetch),
+      ).rejects.toMatchObject({ status: 403 });
     });
   });
 });

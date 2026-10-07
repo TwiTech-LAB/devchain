@@ -1,6 +1,5 @@
-import { Body, Controller, Get, Param, Put } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 import { z } from 'zod';
-import { IgnoresBodySchema } from './file-sync.dto';
 import { FileSyncService, type FolderNeed } from './file-sync.service';
 
 const ProjectIdSchema = z.string().trim().min(1).max(128);
@@ -18,13 +17,11 @@ export class FileSyncController {
 
   /** The ignore patterns of the project's shared code folder. */
   @Get('ignores')
-  get(@Param('projectId') projectId: string): { ignores: string[] } {
-    return { ignores: this.fileSync.getIgnores(ProjectIdSchema.parse(projectId)) };
-  }
-
-  @Put('ignores')
-  put(@Param('projectId') projectId: string, @Body() body: unknown): { ignores: string[] } {
-    const { ignores } = IgnoresBodySchema.parse(body);
-    return { ignores: this.fileSync.setIgnores(ProjectIdSchema.parse(projectId), ignores) };
+  get(@Param('projectId') projectId: string): { ignores: string[]; revision: number } {
+    const id = ProjectIdSchema.parse(projectId);
+    return {
+      ignores: this.fileSync.getIgnores(id),
+      revision: this.fileSync.getIgnoresRevision(id),
+    };
   }
 }

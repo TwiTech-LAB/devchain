@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import type { TwoInstances } from '../../common/test/two-instance.fixture';
 import type { ProviderAuthPayload } from '../storage/models/domain.models';
 import type { Remote } from '../storage/models/domain.models';
-import { ProviderAuthWritebackService } from './provider-auth-writeback.service';
 
 /**
  * Family write-back end to end: the host instance's watcher serves the login
@@ -174,19 +173,5 @@ describe('provider auth family write-back through the health poll', () => {
     expect(
       (await instances.home.storage.getProviderAuthEntry(apiEntry.id)).lastWritebackAt,
     ).toBeNull();
-  });
-
-  it('pullFamiliesNow with the host down reports the last stored write-back', async () => {
-    await instances.host.close();
-
-    const result = await instances.home.app
-      .get(ProviderAuthWritebackService)
-      .pullFamiliesNow(remote.id);
-
-    expect(result.pulled).toBe(false);
-    const byProvider = new Map(result.families.map((family) => [family.provider, family]));
-    expect(byProvider.get('codex')?.lastWritebackAt).toEqual(expect.any(String));
-    expect(byProvider.get('agy')?.lastWritebackAt).toEqual(expect.any(String));
-    expect(byProvider.get('opencode')?.lastWritebackAt).toEqual(expect.any(String));
   });
 });

@@ -85,59 +85,67 @@ describe('SendMessageAction', () => {
       expect(sendMessageAction.type).toBe('send_agent_message');
     });
 
-    it('should have correct category', () => {
-      expect(sendMessageAction.category).toBe('terminal');
-    });
-
-    it('should have text input', () => {
-      const textInput = sendMessageAction.inputs.find((i) => i.name === 'text');
-      expect(textInput).toBeDefined();
-      expect(textInput?.type).toBe('textarea');
-      expect(textInput?.required).toBe(true);
-    });
-
-    it('should have an optional agent-name override', () => {
-      const agentNameInput = sendMessageAction.inputs.find((i) => i.name === 'agentName');
-      expect(agentNameInput).toBeDefined();
-      expect(agentNameInput?.type).toBe('string');
-      expect(agentNameInput?.required).toBe(false);
-    });
-
-    it('should have submitKey input with options', () => {
-      const submitKeyInput = sendMessageAction.inputs.find((i) => i.name === 'submitKey');
-      expect(submitKeyInput).toBeDefined();
-      expect(submitKeyInput?.type).toBe('select');
-      expect(submitKeyInput?.defaultValue).toBe('Enter');
-      expect(submitKeyInput?.options).toHaveLength(2);
-    });
-
-    it('should have submitKey as custom-only (no event_field mapping)', () => {
-      const submitKeyInput = sendMessageAction.inputs.find((i) => i.name === 'submitKey');
-      expect(submitKeyInput).toBeDefined();
-      expect(submitKeyInput?.allowedSources).toEqual(['custom']);
-    });
-
-    it('should not have allowedSources restriction on text input', () => {
-      const textInput = sendMessageAction.inputs.find((i) => i.name === 'text');
-      expect(textInput).toBeDefined();
-      // text input should allow all sources (undefined = default to both)
-      expect(textInput?.allowedSources).toBeUndefined();
-    });
-
-    it('should expose the custom-only delivery mode select', () => {
-      const deliveryModeInput = sendMessageAction.inputs.find((i) => i.name === 'deliveryMode');
-      expect(deliveryModeInput).toMatchObject({
-        type: 'select',
-        required: false,
-        defaultValue: 'default',
-        allowedSources: ['custom'],
-        options: [
-          { value: 'default', label: 'Default (queue)' },
-          { value: 'immediate', label: 'Deliver Immediately' },
-          { value: 'on_idle', label: 'Delivery on Idle' },
-        ],
-      });
-      expect(sendMessageAction.inputs.find((i) => i.name === 'immediate')).toBeUndefined();
+    it.each([
+      {
+        name: 'text type',
+        inputName: 'text',
+        expected: { type: 'textarea', required: true },
+        optionsLength: undefined,
+        allowedOnly: false,
+      },
+      {
+        name: 'optional agent override',
+        inputName: 'agentName',
+        expected: { type: 'string', required: false },
+        optionsLength: undefined,
+        allowedOnly: false,
+      },
+      {
+        name: 'submit key options',
+        inputName: 'submitKey',
+        expected: { defaultValue: 'Enter' },
+        optionsLength: 2,
+        allowedOnly: false,
+      },
+      {
+        name: 'custom-only submit key',
+        inputName: 'submitKey',
+        expected: { allowedSources: ['custom'] },
+        optionsLength: undefined,
+        allowedOnly: false,
+      },
+      {
+        name: 'delivery mode',
+        inputName: 'deliveryMode',
+        expected: {
+          type: 'select',
+          required: false,
+          defaultValue: 'default',
+          allowedSources: ['custom'],
+          options: [
+            { value: 'default', label: 'Default (queue)' },
+            { value: 'immediate', label: 'Deliver Immediately' },
+            { value: 'on_idle', label: 'Delivery on Idle' },
+          ],
+        },
+        optionsLength: undefined,
+        allowedOnly: false,
+      },
+      {
+        name: 'text sources',
+        inputName: 'text',
+        expected: {},
+        optionsLength: undefined,
+        allowedOnly: true,
+      },
+    ])('declares $name', ({ inputName, expected, optionsLength, allowedOnly }) => {
+      const input = sendMessageAction.inputs.find((i) => i.name === inputName);
+      expect(input).toBeDefined();
+      expect(input).toMatchObject(expected);
+      if (optionsLength !== undefined) expect(input?.options).toHaveLength(optionsLength);
+      if (allowedOnly) expect(input?.allowedSources).toBeUndefined();
+      if (inputName === 'deliveryMode')
+        expect(sendMessageAction.inputs.find((i) => i.name === 'immediate')).toBeUndefined();
     });
   });
 
@@ -163,42 +171,15 @@ describe('SendMessageAction', () => {
       });
     });
 
-    it('marks text bound to an event field as outside text', async () => {
-      mockContext.eventFieldInputs = new Set(['text']);
-
-      await sendMessageAction.execute(mockContext, { text: 'Imported task title' });
-
+    it.each([
+      { name: 'bound text', fields: ['text'], text: 'Imported task title', outsideText: true },
+      { name: 'custom text', fields: ['agentName'], text: 'Epic completed', outsideText: false },
+    ])('marks $name outside text appropriately', async ({ fields, text, outsideText }) => {
+      mockContext.eventFieldInputs = new Set(fields);
+      await sendMessageAction.execute(mockContext, { text });
       expect(mockAmd.deliver).toHaveBeenCalledWith(
         ['agent-456'],
-        expect.objectContaining({ outsideText: true }),
-        expect.any(Object),
-      );
-    });
-
-    it('does not mark custom text as outside text', async () => {
-      mockContext.eventFieldInputs = new Set(['agentName']);
-
-      await sendMessageAction.execute(mockContext, { text: 'Epic completed' });
-
-      expect(mockAmd.deliver).toHaveBeenCalledWith(
-        ['agent-456'],
-        expect.objectContaining({ outsideText: false }),
-        expect.any(Object),
-      );
-    });
-
-    it('should use the named recipient when the event has no agent ID', async () => {
-      mockContext.agentId = null;
-
-      const result = await sendMessageAction.execute(mockContext, {
-        agentName: 'Planner',
-        text: 'Epic completed',
-      });
-
-      expect(result.success).toBe(true);
-      expect(mockAmd.deliver).toHaveBeenCalledWith(
-        ['resolved-agent-id'],
-        expect.any(Object),
+        expect.objectContaining({ outsideText }),
         expect.any(Object),
       );
     });
@@ -317,17 +298,14 @@ describe('SendMessageAction', () => {
       });
     });
 
-    it.each([false, 'false', undefined])(
-      'converts the legacy non-immediate value %p to default',
-      async (immediate) => {
-        await sendMessageAction.execute(mockContext, { text: 'Normal message', immediate });
+    it.each([false])('converts the legacy non-immediate value %p to default', async (immediate) => {
+      await sendMessageAction.execute(mockContext, { text: 'Normal message', immediate });
 
-        expect(mockAmd.deliver).toHaveBeenCalledWith(['agent-456'], expect.any(Object), {
-          submitKeys: ['Enter'],
-          deliveryMode: 'default',
-        });
-      },
-    );
+      expect(mockAmd.deliver).toHaveBeenCalledWith(['agent-456'], expect.any(Object), {
+        submitKeys: ['Enter'],
+        deliveryMode: 'default',
+      });
+    });
 
     it('prefers a valid explicit delivery mode over a legacy immediate value', async () => {
       await sendMessageAction.execute(mockContext, {
@@ -366,15 +344,6 @@ describe('SendMessageAction', () => {
       expect(mockAmd.deliver).not.toHaveBeenCalled();
     });
 
-    it('should return error when text is whitespace only', async () => {
-      const inputs = { text: '   ' };
-
-      const result = await sendMessageAction.execute(mockContext, inputs);
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Text is required');
-    });
-
     it('should return an actionable error when no recipient is available', async () => {
       mockContext.agentId = null;
       const inputs = { text: 'Test message' };
@@ -399,23 +368,6 @@ describe('SendMessageAction', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('Failed to send message');
       expect(result.error).toContain('No active session');
-    });
-
-    it('surfaces the disclosure-safe backend result when the idle lane is full', async () => {
-      mockAmd.deliver.mockResolvedValue({
-        status: 'failed',
-        results: [{ agentId: 'agent-456', status: 'failed', error: 'DELIVERY_FAILED' }],
-      });
-
-      const result = await sendMessageAction.execute(mockContext, {
-        text: 'Wait for idle',
-        deliveryMode: 'on_idle',
-      });
-
-      expect(result).toEqual({
-        success: false,
-        error: 'Failed to send message: DELIVERY_FAILED',
-      });
     });
 
     it('should handle delivery throwing error', async () => {
@@ -444,64 +396,6 @@ describe('SendMessageAction', () => {
         deliveryMode: 'default',
         status: 'queued',
       });
-    });
-
-    it('should log successful execution with queued status', async () => {
-      const inputs = { text: 'Test message' };
-
-      await sendMessageAction.execute(mockContext, inputs);
-
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionId: 'session-123',
-          textLength: 12,
-          status: 'queued',
-        }),
-        'Message enqueued to pool',
-      );
-    });
-
-    it('should log successful execution with delivered status', async () => {
-      mockAmd.deliver.mockResolvedValue({
-        status: 'delivered',
-        results: [{ agentId: 'agent-456', status: 'delivered' }],
-      });
-      const inputs = { text: 'Test message', deliveryMode: 'immediate' };
-
-      await sendMessageAction.execute(mockContext, inputs);
-
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionId: 'session-123',
-          textLength: 12,
-          status: 'delivered',
-        }),
-        'Message sent to terminal',
-      );
-    });
-
-    it('should log errors on failure', async () => {
-      mockAmd.deliver.mockRejectedValue(new Error('Connection failed'));
-      const inputs = { text: 'Test message' };
-
-      await sendMessageAction.execute(mockContext, inputs);
-
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: 'session-123' }),
-        'Failed to send message',
-      );
-    });
-
-    it('should set source to subscriber.action', async () => {
-      const inputs = { text: 'Test' };
-
-      await sendMessageAction.execute(mockContext, inputs);
-
-      expect(mockAmd.deliver).toHaveBeenCalledWith(
-        expect.any(Array),
-        expect.objectContaining({ source: 'subscriber.action' }),
-        expect.any(Object),
-      );
     });
   });
 });

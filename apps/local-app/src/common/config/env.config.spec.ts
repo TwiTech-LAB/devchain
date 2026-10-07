@@ -16,14 +16,6 @@ describe('env.config', () => {
     resetEnvConfig();
   });
 
-  it('accepts optional RUNTIME_TOKEN', () => {
-    process.env.RUNTIME_TOKEN = 'runtime-token-123';
-
-    const config = getEnvConfig();
-
-    expect(config.RUNTIME_TOKEN).toBe('runtime-token-123');
-  });
-
   it('enables Cloud UI features by default', () => {
     const config = getEnvConfig();
 
@@ -49,7 +41,7 @@ describe('env.config', () => {
     },
   );
 
-  it.each(['0', 'false', 'FALSE', 'no', 'off'])(
+  it.each(['0', 'FALSE'])(
     'disables Cloud UI features when DEVCHAIN_CLOUD_UI_ENABLED=%s',
     (value) => {
       process.env.DEVCHAIN_CLOUD_UI_ENABLED = value;

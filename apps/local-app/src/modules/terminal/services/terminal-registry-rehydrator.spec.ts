@@ -48,24 +48,6 @@ describe('TerminalRegistryRehydrator', () => {
     expect(registry.get('session-2')!.tmuxSessionName).toBe('tmux_2');
   });
 
-  it('skips sessions whose tmux process is dead', async () => {
-    const { rehydrator, registry } = createRehydrator({
-      metas: [
-        { sessionId: 'alive', tmuxSessionName: 'tmux_alive' },
-        { sessionId: 'dead', tmuxSessionName: 'tmux_dead' },
-      ],
-      sessionExistsResults: new Map([
-        ['tmux_alive', true],
-        ['tmux_dead', false],
-      ]),
-    });
-
-    await rehydrator.onApplicationBootstrap();
-
-    expect(registry.get('alive')).toBeDefined();
-    expect(registry.get('dead')).toBeUndefined();
-  });
-
   it('marks dead-tmux sessions as failed at bootstrap, preserving alive sessions', async () => {
     const { rehydrator, registry, sessionTerminalRuntime } = createRehydrator({
       metas: [

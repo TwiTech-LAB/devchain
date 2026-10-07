@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import type { ForceSyncSource } from '@/modules/remotes/operations/remote-operation.dto';
 import type { DockerSelection } from '@/modules/remotes/docker/docker-plan.dto';
 import type { DockerCopyBackRequest } from '@/modules/remotes/docker/docker-copy-back.dto';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
@@ -18,6 +19,7 @@ export interface RemoteOperationDto {
     id: string;
     label: string;
     state: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+    startedAt?: string | null;
     error: { message: string; code: string | null } | null;
   }[];
   details: Record<string, unknown>;
@@ -150,6 +152,7 @@ export type OperationAction =
       /** A Disconnect's "Copy Docker data back to this PC", with its choices. */
       dockerCopyBack?: DockerCopyBackRequest;
     }
+  | { action: 'forceSync'; remoteId: string; projectId: string; source: ForceSyncSource }
   | { action: 'updateHost'; remoteId: string; installDocker?: true }
   | {
       action: 'createVm';
@@ -249,6 +252,12 @@ export function useRemoteOperations() {
   const action = useMutation(
     {
       mutationFn: (input: OperationAction) => {
+        if (input.action === 'forceSync') {
+          return request<RemoteOperationDto>(
+            `/api/remotes/${input.remoteId}/force-sync`,
+            jsonPost({ projectId: input.projectId, source: input.source }),
+          );
+        }
         if (input.action === 'installHost') {
           const init = jsonPost(input.body);
           scrubOperationCredentials(input);

@@ -57,26 +57,6 @@ describe('ExportDialog', () => {
   });
 
   describe('rendering', () => {
-    it('renders dialog with title and description', () => {
-      render(<ExportDialog {...defaultProps} />);
-
-      expect(screen.getByText('Export Project')).toBeInTheDocument();
-      expect(screen.getByText(/Configure template metadata/)).toBeInTheDocument();
-    });
-
-    it('renders all form fields', () => {
-      render(<ExportDialog {...defaultProps} />);
-
-      expect(screen.getByLabelText('Slug')).toBeInTheDocument();
-      expect(screen.getByLabelText('Name')).toBeInTheDocument();
-      expect(screen.getByLabelText('Description')).toBeInTheDocument();
-      // Category field removed - defaults to 'development' internally
-      expect(screen.getByLabelText('Tags')).toBeInTheDocument();
-      expect(screen.getByLabelText('Version')).toBeInTheDocument();
-      expect(screen.getByLabelText('Changelog')).toBeInTheDocument();
-      expect(screen.getByLabelText('Author')).toBeInTheDocument();
-    });
-
     it('pre-fills fields with project name and slugified version', () => {
       render(<ExportDialog {...defaultProps} />);
 
@@ -119,54 +99,25 @@ describe('ExportDialog', () => {
       expect(screen.getByLabelText('Version')).toHaveValue('1.2.4');
     });
 
-    it('allows clicking Patch button to bump patch version', async () => {
+    it.each([
+      { kind: 'Minor', expected: '1.3.0' },
+      { kind: 'Major', expected: '2.0.0' },
+    ] as const)('bumps $kind version', async ({ kind, expected }) => {
       render(<ExportDialog {...defaultProps} existingManifest={{ version: '1.2.3' }} />);
-
-      const patchButton = screen.getByRole('button', { name: 'Patch' });
-      await userEvent.click(patchButton);
-
-      expect(screen.getByLabelText('Version')).toHaveValue('1.2.4');
-    });
-
-    it('allows clicking Minor button to bump minor version', async () => {
-      render(<ExportDialog {...defaultProps} existingManifest={{ version: '1.2.3' }} />);
-
-      const minorButton = screen.getByRole('button', { name: 'Minor' });
-      await userEvent.click(minorButton);
-
-      expect(screen.getByLabelText('Version')).toHaveValue('1.3.0');
-    });
-
-    it('allows clicking Major button to bump major version', async () => {
-      render(<ExportDialog {...defaultProps} existingManifest={{ version: '1.2.3' }} />);
-
-      const majorButton = screen.getByRole('button', { name: 'Major' });
-      await userEvent.click(majorButton);
-
-      expect(screen.getByLabelText('Version')).toHaveValue('2.0.0');
+      await userEvent.click(screen.getByRole('button', { name: kind }));
+      expect(screen.getByLabelText('Version')).toHaveValue(expected);
     });
   });
 
   describe('tag management', () => {
-    it('allows adding a tag', async () => {
+    it.each([
+      { label: 'Add button', suffix: '', click: true, tag: 'new-tag' },
+      { label: 'Enter key', suffix: '{enter}', click: false, tag: 'enter-tag' },
+    ] as const)('adds tag through $label', async ({ suffix, click, tag }) => {
       render(<ExportDialog {...defaultProps} />);
-
-      const tagInput = screen.getByLabelText('Tags');
-      await userEvent.type(tagInput, 'new-tag');
-
-      const addButton = screen.getByRole('button', { name: 'Add' });
-      await userEvent.click(addButton);
-
-      expect(screen.getByText('new-tag')).toBeInTheDocument();
-    });
-
-    it('allows adding tag by pressing Enter', async () => {
-      render(<ExportDialog {...defaultProps} />);
-
-      const tagInput = screen.getByLabelText('Tags');
-      await userEvent.type(tagInput, 'enter-tag{enter}');
-
-      expect(screen.getByText('enter-tag')).toBeInTheDocument();
+      await userEvent.type(screen.getByLabelText('Tags'), tag + suffix);
+      if (click) await userEvent.click(screen.getByRole('button', { name: 'Add' }));
+      expect(screen.getByText(tag)).toBeInTheDocument();
     });
 
     // Note: Tag removal is tested via unit test of the handler function
@@ -202,30 +153,10 @@ describe('ExportDialog', () => {
   });
 
   describe('minDevchainVersion field', () => {
-    it('renders Min Devchain Version input field', () => {
-      render(<ExportDialog {...defaultProps} />);
-
-      expect(screen.getByLabelText('Min Devchain Version')).toBeInTheDocument();
-      expect(
-        screen.getByText('Minimum Devchain version required to use this template'),
-      ).toBeInTheDocument();
-    });
-
     it('pre-fills minDevchainVersion from existing manifest', () => {
       render(<ExportDialog {...defaultProps} existingManifest={{ minDevchainVersion: '0.4.0' }} />);
 
       expect(screen.getByLabelText('Min Devchain Version')).toHaveValue('0.4.0');
-    });
-
-    it('accepts valid semver input', async () => {
-      render(<ExportDialog {...defaultProps} />);
-
-      const input = screen.getByLabelText('Min Devchain Version');
-      await userEvent.type(input, '1.0.0');
-
-      expect(input).toHaveValue('1.0.0');
-      // Should not show validation error
-      expect(screen.queryByText(/Invalid version format/)).not.toBeInTheDocument();
     });
 
     it('shows validation error for invalid semver', async () => {
@@ -235,16 +166,7 @@ describe('ExportDialog', () => {
       await userEvent.type(input, 'invalid-version');
 
       expect(screen.getByText(/Invalid version format/)).toBeInTheDocument();
-    });
-
-    it('disables Export button when minDevchainVersion is invalid', async () => {
-      render(<ExportDialog {...defaultProps} />);
-
-      const input = screen.getByLabelText('Min Devchain Version');
-      await userEvent.type(input, 'not-semver');
-
-      const exportButton = screen.getByRole('button', { name: /Export/i });
-      expect(exportButton).toBeDisabled();
+      expect(screen.getByRole('button', { name: /Export/i })).toBeDisabled();
     });
 
     it('enables Export button when minDevchainVersion is empty (optional field)', () => {
@@ -257,44 +179,16 @@ describe('ExportDialog', () => {
       expect(exportButton).not.toBeDisabled();
     });
 
-    it('enables Export button when minDevchainVersion is valid', async () => {
-      render(<ExportDialog {...defaultProps} />);
-
-      const input = screen.getByLabelText('Min Devchain Version');
-      await userEvent.type(input, '0.4.0');
-
-      const exportButton = screen.getByRole('button', { name: /Export/i });
-      expect(exportButton).not.toBeDisabled();
-    });
-
-    it('allows setting minDevchainVersion and keeps export button enabled', async () => {
-      // Note: Full export request verification requires integration tests
-      // due to Radix Dialog's pointer-events handling in jsdom.
-      // This test verifies the field value is set and form remains valid.
-      render(<ExportDialog {...defaultProps} />);
-
-      const input = screen.getByLabelText('Min Devchain Version');
-      fireEvent.change(input, { target: { value: '0.5.0' } });
-
-      // Verify the input has the correct value
-      expect(input).toHaveValue('0.5.0');
-
-      // Verify validation passes (button not disabled)
-      const exportButton = screen.getByRole('button', { name: /^Export$/i });
-      expect(exportButton).not.toBeDisabled();
-
-      // Verify no validation error is shown
-      expect(screen.queryByText(/Invalid version format/)).not.toBeInTheDocument();
-    });
-
-    it('accepts semver with prerelease tag', async () => {
-      render(<ExportDialog {...defaultProps} />);
-
-      const input = screen.getByLabelText('Min Devchain Version');
-      await userEvent.type(input, '1.0.0-beta.1');
-
-      expect(input).toHaveValue('1.0.0-beta.1');
-      expect(screen.queryByText(/Invalid version format/)).not.toBeInTheDocument();
-    });
+    it.each([{ version: '0.5.0' }, { version: '1.0.0-beta.1' }] as const)(
+      'accepts min Devchain version $version',
+      ({ version }) => {
+        render(<ExportDialog {...defaultProps} />);
+        const input = screen.getByLabelText('Min Devchain Version');
+        fireEvent.change(input, { target: { value: version } });
+        expect(input).toHaveValue(version);
+        expect(screen.getByRole('button', { name: /^Export$/i })).not.toBeDisabled();
+        expect(screen.queryByText(/Invalid version format/)).not.toBeInTheDocument();
+      },
+    );
   });
 });

@@ -1,4 +1,5 @@
 import { TranscriptHandoff } from './transcript-handoff';
+import { GitOwnerStore } from '../git-owner.store';
 import { DockerHandoff } from '../docker/docker-handoff';
 import { DockerCopyBack } from '../docker/docker-copy-back';
 import type { DockerCopyBackRequest } from '../docker/docker-copy-back.dto';
@@ -35,6 +36,7 @@ export interface DetachDetails {
   markedDetaching?: boolean;
   /** `file_sync_final` paused both sides' folders; a cancel unpauses them. */
   fileSyncPaused?: boolean;
+  vmGuardInstalled?: boolean;
   /** How the host settled the project's agent time before the final pull. */
   timeSettlement?: ProjectTimeSettlement;
   /** Host-side time of the final pull. */
@@ -91,6 +93,7 @@ export class DetachOperation implements RemoteOperationDefinition {
     private readonly transcripts: TranscriptHandoff,
     private readonly docker: DockerHandoff,
     private readonly dockerCopyBack: DockerCopyBack,
+    private readonly gitOwner: GitOwnerStore,
   ) {
     const skipOnForce = (details: Record<string, unknown>) =>
       (details as DetachDetails).force === true;
@@ -214,6 +217,9 @@ export class DetachOperation implements RemoteOperationDefinition {
   ): Promise<void> {
     // final() re-creates both sides paused; a failure before its unpause leaves them so.
     if (stepStarted(operation, 'file_sync_flip') || details.fileSyncPaused) {
+      if (details.vmGuardInstalled && this.gitOwner.get(projectId) === 'vm') {
+        await this.host.removeGitGuard(operation.remoteId, projectId);
+      }
       await this.fileSync.flipBackToHost(operation.remoteId, projectId, details.force === true);
     }
     if (stepStarted(operation, 'freeze_host')) {
@@ -326,6 +332,7 @@ export class DetachOperation implements RemoteOperationDefinition {
     const projectId = requireProjectId(operation);
     await this.liveSync.stop(projectId);
     await this.bindings.delete(projectId);
+    this.gitOwner.clear(projectId);
   }
 
   private async thawHome({ operation }: RemoteOperationStepRun): Promise<void> {

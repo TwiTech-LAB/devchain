@@ -118,138 +118,50 @@ describe('ReviewDetailPage realtime subscription', () => {
     }
   });
 
-  it('invalidates comments query on comment.created event', async () => {
+  it.each([
+    {
+      topic: 'review/review-1',
+      type: 'comment.created',
+      payload: { commentId: 'comment-1', reviewId: 'review-1' },
+      queryKey: ['review-comments', 'review-1'],
+    },
+    {
+      topic: 'review/review-1',
+      type: 'comment.resolved',
+      payload: { commentId: 'comment-1', reviewId: 'review-1', status: 'resolved', version: 2 },
+      queryKey: ['review-comments', 'review-1'],
+    },
+    {
+      topic: 'review/review-1',
+      type: 'review.updated',
+      payload: {
+        reviewId: 'review-1',
+        version: 2,
+        title: 'Updated Title',
+        changes: { status: { previous: 'pending', current: 'approved' } },
+      },
+      queryKey: ['review', 'review-1'],
+    },
+    {
+      topic: 'project/project-1/reviews',
+      type: 'comment.created',
+      payload: { reviewId: 'review-1', commentId: 'comment-1' },
+      queryKey: ['reviews', 'project-1'],
+    },
+  ])('invalidates $queryKey on $topic $type', async ({ topic, type, payload, queryKey }) => {
     const { Wrapper, queryClient } = createWrapper('review-1');
     const spy = jest.spyOn(queryClient, 'invalidateQueries');
-
     render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    // Wait for review to load (review title indicates data is loaded and projectId is available)
-    await waitFor(() => {
-      expect(screen.getByText('Test Review')).toBeInTheDocument();
-    });
-
-    // Wait a tick for useAppSocket to rebind with the new projectId
+    await screen.findByText('Test Review');
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
-
-    // Trigger comment.created envelope
     await act(async () => {
       handlers['message']?.forEach((fn) =>
-        fn({
-          topic: 'review/review-1',
-          type: 'comment.created',
-          payload: { commentId: 'comment-1', reviewId: 'review-1' },
-          ts: new Date().toISOString(),
-        }),
+        fn({ topic, type, payload, ts: new Date().toISOString() }),
       );
     });
-
-    await waitFor(() => {
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['review-comments', 'review-1'] });
-    });
-  });
-
-  it('invalidates comments query on comment.resolved event', async () => {
-    const { Wrapper, queryClient } = createWrapper('review-1');
-    const spy = jest.spyOn(queryClient, 'invalidateQueries');
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    // Wait for review to load
-    await waitFor(() => {
-      expect(screen.getByText('Test Review')).toBeInTheDocument();
-    });
-
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-
-    // Trigger comment.resolved envelope
-    await act(async () => {
-      handlers['message']?.forEach((fn) =>
-        fn({
-          topic: 'review/review-1',
-          type: 'comment.resolved',
-          payload: { commentId: 'comment-1', reviewId: 'review-1', status: 'resolved', version: 2 },
-          ts: new Date().toISOString(),
-        }),
-      );
-    });
-
-    await waitFor(() => {
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['review-comments', 'review-1'] });
-    });
-  });
-
-  it('invalidates review query on review.updated event', async () => {
-    const { Wrapper, queryClient } = createWrapper('review-1');
-    const spy = jest.spyOn(queryClient, 'invalidateQueries');
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    // Wait for review to load
-    await waitFor(() => {
-      expect(screen.getByText('Test Review')).toBeInTheDocument();
-    });
-
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-
-    // Trigger review.updated envelope
-    await act(async () => {
-      handlers['message']?.forEach((fn) =>
-        fn({
-          topic: 'review/review-1',
-          type: 'review.updated',
-          payload: {
-            reviewId: 'review-1',
-            version: 2,
-            title: 'Updated Title',
-            changes: { status: { previous: 'pending', current: 'approved' } },
-          },
-          ts: new Date().toISOString(),
-        }),
-      );
-    });
-
-    await waitFor(() => {
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['review', 'review-1'] });
-    });
-  });
-
-  it('invalidates project reviews on project-level events', async () => {
-    const { Wrapper, queryClient } = createWrapper('review-1');
-    const spy = jest.spyOn(queryClient, 'invalidateQueries');
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    // Wait for review to load
-    await waitFor(() => {
-      expect(screen.getByText('Test Review')).toBeInTheDocument();
-    });
-
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-
-    // Trigger project-level comment.created envelope
-    await act(async () => {
-      handlers['message']?.forEach((fn) =>
-        fn({
-          topic: 'project/project-1/reviews',
-          type: 'comment.created',
-          payload: { reviewId: 'review-1', commentId: 'comment-1' },
-          ts: new Date().toISOString(),
-        }),
-      );
-    });
-
-    await waitFor(() => {
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['reviews', 'project-1'] });
-    });
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey }));
   });
 
   it('cleans up message listener and releases socket on unmount', async () => {

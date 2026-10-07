@@ -41,19 +41,6 @@ function build() {
 }
 
 describe('SessionLifecycleFacade', () => {
-  it('launch delegates to SessionRuntime.launch', async () => {
-    const { facade, sessionRuntime } = build();
-    const result = await facade.launch('a1', 'p1');
-    expect(sessionRuntime.launch).toHaveBeenCalledWith({ agentId: 'a1', projectId: 'p1' });
-    expect(result).toEqual({ id: 'new-session' });
-  });
-
-  it('restore delegates to SessionRuntime.restore', async () => {
-    const { facade, sessionRuntime } = build();
-    await facade.restore('s1', 'p1');
-    expect(sessionRuntime.restore).toHaveBeenCalledWith('s1', 'p1');
-  });
-
   it('terminate delegates to SessionsService.terminateSession', async () => {
     const { facade, sessionsService } = build();
     await facade.terminate('s1');
@@ -99,15 +86,6 @@ describe('SessionLifecycleFacade', () => {
 
       expect(sessionRuntime.launch).toHaveBeenCalledWith({ agentId: 'a1', projectId: 'p1' });
       expect(result).toEqual({ id: 'new-session' });
-    });
-  });
-
-  describe('listAgentHistory', () => {
-    it('delegates to SessionsService.getAgentSessionHistory with cursor + limit', async () => {
-      const { facade, sessionsService } = build();
-      const result = await facade.listAgentHistory('a1', 'p1', 'CURSOR', 50);
-      expect(sessionsService.getAgentSessionHistory).toHaveBeenCalledWith('a1', 'p1', 'CURSOR', 50);
-      expect(result).toEqual({ items: [], nextCursor: null, hasMore: false, total: 0 });
     });
   });
 

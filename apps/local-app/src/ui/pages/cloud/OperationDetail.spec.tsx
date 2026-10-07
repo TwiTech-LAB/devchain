@@ -96,9 +96,6 @@ describe('OperationDetail progress', () => {
     );
     expect(screen.getByText(/^Started /)).toBeInTheDocument();
     expect(screen.queryByText(/^Ended /)).not.toBeInTheDocument();
-    expect(
-      screen.getByText('You can close this. The work goes on, and the row shows its progress.'),
-    ).toBeInTheDocument();
   });
 
   it('spins the state chip only while the operation runs', () => {
@@ -174,6 +171,111 @@ describe('OperationDetail progress', () => {
   });
 });
 
+describe('OperationDetail file merge notes', () => {
+  it('explains why an over-cap report cannot separate new conflicts and shows the total', () => {
+    renderDetail(
+      operation({
+        kind: 'attach',
+        state: 'done',
+        details: {
+          fileSyncConflicts: {
+            total: 1040,
+            sample: ['file.sync-conflict-old.txt'],
+            baselineOverCap: true,
+          },
+        },
+      }),
+    );
+    expect(screen.getByRole('note', { name: 'File conflicts' })).toHaveTextContent(
+      '1040 conflicts',
+    );
+    expect(screen.getByText(/DevChain could not separate the new conflicts/)).toHaveTextContent(
+      'more than 1,000 conflict copies before this Connect',
+    );
+  });
+  it.each(['done', 'cancelled'] as const)(
+    'keeps VM edit/deletion and conflict totals and samples for %s Connect',
+    (state) => {
+      renderDetail(
+        operation({
+          kind: 'attach',
+          state,
+          details: {
+            vmEdits: {
+              conflictPaths: [],
+              conflictsOverCap: false,
+              total: 40,
+              deleted: 3,
+              sample: [
+                { path: 'src/edit.ts', deleted: false },
+                { path: 'gone.txt', deleted: true },
+              ],
+            },
+            fileSyncConflicts: { total: 24, sample: ['src/edit.sync-conflict-date.ts'] },
+          },
+        }),
+      );
+      expect(screen.getByRole('note', { name: 'VM files' })).toHaveTextContent(
+        'Brought 40 files from the VM',
+      );
+      expect(screen.getByRole('note', { name: 'VM files' })).toHaveTextContent('3 deletions.');
+      expect(screen.getByText('gone.txt (deleted)')).toBeInTheDocument();
+      expect(screen.getByText('src/edit.ts')).toBeInTheDocument();
+      expect(screen.getByRole('note', { name: 'File conflicts' })).toHaveTextContent(
+        '24 conflicts kept as .sync-conflict copies',
+      );
+      expect(screen.getByText('src/edit.sync-conflict-date.ts')).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    {},
+    {
+      vmEdits: { total: -1, deleted: 0, sample: [] },
+      fileSyncConflicts: { total: 1, sample: [42] },
+    },
+  ])('omits absent or invalid reports (%p)', (details) => {
+    renderDetail(operation({ kind: 'attach', state: 'done', details }));
+    expect(screen.queryByRole('note', { name: 'VM files' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('note', { name: 'File conflicts' })).not.toBeInTheDocument();
+  });
+});
+
+describe('OperationDetail git guard notes', () => {
+  // Component tests prove which persisted details Activity exposes for each lifecycle outcome.
+  it.each([
+    ['attach', 'done', 'guardWarning', 'Home git guard'],
+    ['detach', 'done', 'vmGuardWarning', 'VM git guard'],
+    ['attach', 'cancelled', 'vmGuardWarning', 'VM git guard'],
+    ['detach', 'done', 'vmGuardSkipped', 'VM guard skipped'],
+  ] as const)('shows %s/%s guard detail %s as a note', (kind, state, key, label) => {
+    renderDetail(operation({ kind, state, details: { [key]: 'guard result from the operation' } }));
+    expect(screen.getByRole('note', { name: label })).toHaveTextContent(
+      'guard result from the operation',
+    );
+  });
+
+  it.each([{}, { guardWarning: null, vmGuardWarning: 1, vmGuardSkipped: '' }])(
+    'omits guard notes without a reported warning or skip (%p)',
+    (details) => {
+      renderDetail(operation({ state: 'done', details }));
+      for (const label of ['Home git guard', 'VM git guard', 'VM guard skipped']) {
+        expect(screen.queryByRole('note', { name: label })).not.toBeInTheDocument();
+      }
+    },
+  );
+});
+
+// Component layer proves a successful claim warning is visible in Activity.
+it('shows the reported Docker uid warning for a finished claim', () => {
+  const warning =
+    'uid 1000 is used by ubuntu on the VM; the VM user got 1001:1000. Automatic Docker moves are off for this VM.';
+  renderDetail(
+    operation({ kind: 'claim', state: 'done', steps: [], details: { dockerUserWarning: warning } }),
+  );
+  expect(screen.getByRole('note', { name: 'Docker user ids' })).toHaveTextContent(warning);
+});
+
 describe('OperationDetail check warnings', () => {
   const install = operation({
     id: 'install-1',
@@ -191,13 +293,10 @@ describe('OperationDetail check warnings', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it.each([undefined, [], 'invalid', [null, 1]])(
-    'omits the note without valid warnings (%p)',
-    (checkWarnings) => {
-      renderDetail({ ...install, details: { checkWarnings } });
-      expect(screen.queryByRole('note')).not.toBeInTheDocument();
-    },
-  );
+  it.each([undefined, [null, 1]])('omits the note without valid warnings (%p)', (checkWarnings) => {
+    renderDetail({ ...install, details: { checkWarnings } });
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+  });
 });
 
 describe('OperationDetail git settings copy', () => {
@@ -561,7 +660,6 @@ describe('OperationDetail actions', () => {
   it.each([
     ['pending', true],
     ['running', false],
-    ['done', false],
   ] as const)('offers Cancel on a running attach with bind_remote %s: %s', (state, cancellable) => {
     renderDetail(
       operation({ steps: [step('file_sync_initial', 'done'), step('bind_remote', state)] }),
@@ -707,3 +805,106 @@ describe('OperationDetail actions', () => {
     expect(screen.queryAllByRole('button')).toEqual([]);
   });
 });
+
+// Rendering operation details is the cheapest layer for the conditional Activity note.
+it.each([undefined, 'created'] as const)(
+  'shows Git creation in Activity when gitInit is %s',
+  (gitInit) => {
+    renderDetail(operation({ details: gitInit ? { gitInit } : {} }));
+    const note = screen.queryByText('Created a Git repository on this PC.');
+    if (gitInit === 'created') expect(note).toBeInTheDocument();
+    else expect(note).not.toBeInTheDocument();
+  },
+);
+
+// Activity rendering owns persisted backup reports and the server's no-cancel boundary.
+it.each(['home', 'vm'] as const)(
+  'preserves the %s source, per-share backups and replacement sample on failed Force sync',
+  (source) => {
+    renderDetail(
+      operation({
+        kind: 'force_sync',
+        state: 'failed',
+        details: {
+          forceSync: {
+            source,
+            gitInit: 'created',
+            backups: [
+              { side: source === 'home' ? 'vm' : 'home', kind: 'code', path: '/backup/code' },
+              { side: source === 'home' ? 'vm' : 'home', kind: 'git', path: '/backup/git' },
+            ],
+            replaced: { count: 4, sample: ['code/a.txt', 'git/HEAD'] },
+          },
+        },
+      }),
+    );
+    const report = screen.getByRole('note', { name: 'Force sync files' });
+    expect(report).toHaveTextContent(
+      source === 'home' ? 'Source: This PC.' : 'Source: The VM (lab-vm).',
+    );
+    expect(report).toHaveTextContent(
+      `${source === 'home' ? 'The VM' : 'This PC'} · code: /backup/code`,
+    );
+    expect(report).toHaveTextContent(
+      `${source === 'home' ? 'The VM' : 'This PC'} · git: /backup/git`,
+    );
+    expect(report).toHaveTextContent('4 files replaced or deleted.');
+    expect(
+      within(report)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['code/a.txt', 'git/HEAD']);
+    expect(screen.getByRole('note', { name: 'Git repository' })).toHaveTextContent(
+      'Created a Git repository on this PC.',
+    );
+  },
+);
+it.each(
+  [
+    ...(['pending', 'running', 'failed', 'done'] as const).map((copyState) => ({
+      operationState: 'failed' as const,
+      copyState,
+      startedAt: null,
+    })),
+    { operationState: 'running' as const, copyState: 'pending' as const, startedAt: null },
+    {
+      operationState: 'running' as const,
+      copyState: 'pending' as const,
+      startedAt: '2026-09-28T10:03:00.000Z',
+    },
+    {
+      operationState: 'failed' as const,
+      copyState: 'pending' as const,
+      startedAt: '2026-09-28T10:03:00.000Z',
+    },
+  ].flatMap((entry) => [
+    { ...entry, kind: 'force_sync', stepId: 'force_copy' },
+    { ...entry, kind: 'git_owner', stepId: 'git_flip' },
+  ]),
+)(
+  'keeps the persisted $kind cancellation cutoff ($operationState/$copyState, startedAt=$startedAt)',
+  async ({ operationState, copyState, startedAt, kind, stepId }) => {
+    const handlers = renderDetail(
+      operation({
+        kind,
+        state: operationState,
+        steps: [{ ...step(stepId, copyState), startedAt }],
+      }),
+    );
+    if (operationState === 'failed') {
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(handlers.retry).toHaveBeenCalled();
+    }
+    if (copyState === 'pending' && startedAt === null) {
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(handlers.cancel).toHaveBeenCalled();
+    } else {
+      expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+      expect(handlers.cancel).not.toHaveBeenCalled();
+      if (operationState === 'failed' && kind === 'force_sync')
+        expect(
+          screen.getByText('Retry, or force a disconnect from the project row.'),
+        ).toBeInTheDocument();
+    }
+  },
+);

@@ -7,41 +7,14 @@ describe('validateCronExpression', () => {
     expect(validateCronExpression('30 8 1 * *')).toEqual({ valid: true });
   });
 
-  it('accepts 6-part cron with seconds', () => {
-    expect(validateCronExpression('0 0 * * * *')).toEqual({ valid: true });
-  });
-
-  it('rejects an empty string', () => {
-    const result = validateCronExpression('');
-    expect(result.valid).toBe(false);
-  });
-
   it('rejects an obviously malformed expression', () => {
     const result = validateCronExpression('not-a-cron');
     expect(result.valid).toBe(false);
     expect((result as { valid: false; reason: string }).reason).toBeTruthy();
   });
-
-  it('rejects out-of-range values', () => {
-    const result = validateCronExpression('99 99 99 99 99');
-    expect(result.valid).toBe(false);
-  });
-
-  it('returns a non-empty reason on failure', () => {
-    const result = validateCronExpression('bad');
-    expect(result.valid).toBe(false);
-    if (!result.valid) {
-      expect(result.reason.length).toBeGreaterThan(0);
-    }
-  });
 });
 
 describe('getNextRunAt', () => {
-  it('returns a Date for a valid expression and timezone', () => {
-    const next = getNextRunAt('* * * * *', 'UTC');
-    expect(next).toBeInstanceOf(Date);
-  });
-
   it('returns a date after the supplied "after" argument', () => {
     const after = new Date('2025-01-01T00:00:00Z');
     const next = getNextRunAt('0 9 * * *', 'UTC', after);

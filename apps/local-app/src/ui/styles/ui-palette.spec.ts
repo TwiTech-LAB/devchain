@@ -24,64 +24,67 @@ function sourceFiles(root: string): string[] {
 // Source inspection is the cheapest layer that covers every utility declaration,
 // including conditional classes and files that no rendered fixture currently uses.
 describe('UI theme palette contract', () => {
-  it.each([
-    'red',
-    'rose',
-    'orange',
-    'amber',
-    'yellow',
-    'lime',
-    'green',
-    'emerald',
-    'blue',
-    'sky',
-    'gray',
-    'slate',
-    'zinc',
-    'neutral',
-    'stone',
-  ])('rejects raw %s classes with variants and opacity', (hue) => {
-    const sample = `text-${hue}-600 hover:bg-${hue}-500/10 dark:focus:border-l-${hue}-400/40`;
-    expect(sample.match(RAW_PALETTE)).toEqual(sample.split(' '));
+  it('rejects each raw hue with variants and opacity', () => {
+    for (const hue of [
+      'red',
+      'rose',
+      'orange',
+      'amber',
+      'yellow',
+      'lime',
+      'green',
+      'emerald',
+      'blue',
+      'sky',
+      'gray',
+      'slate',
+      'zinc',
+      'neutral',
+      'stone',
+    ]) {
+      const sample = `text-${hue}-600 hover:bg-${hue}-500/10 dark:focus:border-l-${hue}-400/40`;
+      expect(sample.match(RAW_PALETTE)).toEqual(sample.split(' '));
+    }
   });
 
-  it.each([
-    'text',
-    'bg',
-    'border',
-    'border-x',
-    'border-y',
-    'border-t',
-    'border-r',
-    'border-b',
-    'border-l',
-    'border-s',
-    'border-e',
-    'ring',
-    'ring-offset',
-    'outline',
-    'divide',
-    'fill',
-    'stroke',
-    'from',
-    'via',
-    'to',
-    'decoration',
-    'shadow',
-    'placeholder',
-    'accent',
-    'caret',
-  ])('rejects the raw %s utility', (utility) => {
-    expect(`${utility}-amber-600`.match(RAW_PALETTE)).toEqual([`${utility}-amber-600`]);
+  it('rejects each raw color utility', () => {
+    for (const utility of [
+      'text',
+      'bg',
+      'border',
+      'border-x',
+      'border-y',
+      'border-t',
+      'border-r',
+      'border-b',
+      'border-l',
+      'border-s',
+      'border-e',
+      'ring',
+      'ring-offset',
+      'outline',
+      'divide',
+      'fill',
+      'stroke',
+      'from',
+      'via',
+      'to',
+      'decoration',
+      'shadow',
+      'placeholder',
+      'accent',
+      'caret',
+    ]) {
+      expect(`${utility}-amber-600`.match(RAW_PALETTE)).toEqual([`${utility}-amber-600`]);
+    }
   });
 
-  it.each(['foreground', 'muted-foreground', 'primary'])(
-    'rejects faded %s text, including variant classes',
-    (role) => {
+  it('rejects faded role text with variants', () => {
+    for (const role of ['foreground', 'muted-foreground', 'primary']) {
       const sample = `text-${role}/60 dark:hover:text-${role}/70`;
       expect(sample.match(FADED_TEXT)).toEqual(sample.split(' '));
-    },
-  );
+    }
+  });
 
   it('allows role tokens, muted fills and the unrestricted category hues', () => {
     const sample = [

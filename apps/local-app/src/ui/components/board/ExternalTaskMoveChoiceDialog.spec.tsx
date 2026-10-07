@@ -89,65 +89,40 @@ describe('ExternalTaskMoveChoiceDialog', () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
-  it('cancels without a write on Cancel and restores focus to the supplied target', async () => {
-    const user = userEvent.setup();
-    const onCancel = jest.fn();
-    const onResolve = jest.fn();
-    const card = document.createElement('button');
-    document.body.appendChild(card);
-    // Mirrors the page: cancel clears the choice, which closes the dialog and
-    // runs Radix's close-time focus restoration.
-    function Harness() {
-      const [open, setOpen] = useState(true);
-      return (
-        <ExternalTaskMoveChoiceDialog
-          choice={choice}
-          open={open}
-          onResolve={onResolve}
-          onCancel={() => {
-            onCancel();
-            setOpen(false);
-          }}
-          returnFocusTo={() => card}
-        />
-      );
-    }
-    render(<Harness />);
+  it.each(['Cancel', 'Escape'])(
+    'cancels via %s without writing and restores focus',
+    async (method) => {
+      const user = userEvent.setup();
+      const onCancel = jest.fn();
+      const onResolve = jest.fn();
+      const card = document.createElement('button');
+      document.body.appendChild(card);
+      // Mirrors the page: cancel clears the choice, which closes the dialog and
+      // runs Radix's close-time focus restoration.
+      function Harness() {
+        const [open, setOpen] = useState(true);
+        return (
+          <ExternalTaskMoveChoiceDialog
+            choice={choice}
+            open={open}
+            onResolve={onResolve}
+            onCancel={() => {
+              onCancel();
+              setOpen(false);
+            }}
+            returnFocusTo={() => card}
+          />
+        );
+      }
+      render(<Harness />);
 
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      if (method === 'Cancel') await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      else await user.keyboard('{Escape}');
 
-    expect(onCancel).toHaveBeenCalledTimes(1);
-    expect(onResolve).not.toHaveBeenCalled();
-    await waitFor(() => expect(card).toHaveFocus());
-    card.remove();
-  });
-
-  it('cancels on Escape without a write and restores focus', async () => {
-    const user = userEvent.setup();
-    const onCancel = jest.fn();
-    const card = document.createElement('button');
-    document.body.appendChild(card);
-    function Harness() {
-      const [open, setOpen] = useState(true);
-      return (
-        <ExternalTaskMoveChoiceDialog
-          choice={choice}
-          open={open}
-          onResolve={jest.fn()}
-          onCancel={() => {
-            onCancel();
-            setOpen(false);
-          }}
-          returnFocusTo={() => card}
-        />
-      );
-    }
-    render(<Harness />);
-
-    await user.keyboard('{Escape}');
-
-    expect(onCancel).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(card).toHaveFocus());
-    card.remove();
-  });
+      expect(onCancel).toHaveBeenCalledTimes(1);
+      expect(onResolve).not.toHaveBeenCalled();
+      await waitFor(() => expect(card).toHaveFocus());
+      card.remove();
+    },
+  );
 });

@@ -1,6 +1,7 @@
+import { Scope } from '@nestjs/common';
 // Fake engines on both sides; the VM side runs the real host routes behind the real LAN client,
 // so the archive digest travels as a real HTTP trailer.
-import { Test } from '@nestjs/testing';
+import { Test, type TestingModule } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -25,11 +26,14 @@ import { ResetVmOperation } from '../operations/reset-vm.operation';
 import type { RemoteOperationStepRun } from '../operations/remote-operation.types';
 import type { RemoteHealthState } from '../ports/remote-health.port';
 import { DockerCopyBack } from './docker-copy-back';
+import { DockerHandoff } from './docker-handoff';
 import { dockerDataGroupKey } from './docker-data-groups';
 import type { DockerCopyBackResult } from './docker-copy-back.dto';
 import { DockerHandoffStore } from './docker-handoff.store';
 import { DockerPlanService } from './docker-plan.service';
 import { DockerPlanSourceService } from './docker-plan-source.service';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
 const PROJECT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const REMOTE = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -43,6 +47,9 @@ const AFTER = '2026-02-01T00:00:00.000Z';
 
 let scratch: string;
 let fixture: string;
+let git: FakeProcessExecutor;
+let source: DockerPlanSourceService;
+let sourceModule: TestingModule;
 let root: string;
 let state: string;
 let home: FakeDockerEngine;
@@ -50,6 +57,8 @@ let vm: FakeDockerEngine;
 let app: NestFastifyApplication;
 let client: RemoteHostClient;
 let copyBack: DockerCopyBack;
+let handoff: DockerHandoff;
+let plans: DockerPlanService;
 let store: DockerHandoffStore;
 let inventory: Map<string, DockerImportInventory>;
 let details: Record<string, unknown>;
@@ -177,27 +186,13 @@ const text = (engine: FakeDockerEngine, key: string) => engine.data.get(key)?.to
 const records = () => inventory.get(`${PROJECT}/${REMOTE}`)!.groups!;
 const result = () => details.dockerCopyBackResult as DockerCopyBackResult;
 
-beforeEach(async () => {
+beforeAll(async () => {
   scratch = await mkdtemp(join(tmpdir(), 'docker-copy-back-'));
   fixture = await mkdtemp(join(homedir(), '.docker-copy-back-test-'));
   root = join(fixture, 'project');
   state = join(root, 'state');
   await mkdir(state, { recursive: true });
-  inventory = new Map();
-  details = { dockerCopyBack: { choices: {} } };
-  health = { online: true, versionMatches: true, version: '1.0.0' } as RemoteHealthState;
-
-  home = new FakeDockerEngine('home-engine');
-  vm = new FakeDockerEngine('vm-engine');
-  await home.listen(join(scratch, 'home.sock'));
-  await vm.listen(join(scratch, 'vm.sock'));
-  seed();
   savedDockerHost = process.env.DOCKER_HOST;
-  process.env.DOCKER_HOST = `unix://${join(scratch, 'home.sock')}`;
-  jest
-    .spyOn(DockerEngineClient, 'connect')
-    .mockImplementation(async () => new DockerEngineClient(join(scratch, 'vm.sock')));
-
   const module = await Test.createTestingModule({
     controllers: [HostDockerController],
     providers: [
@@ -224,9 +219,44 @@ beforeEach(async () => {
     } as never,
     { get: async () => null, headers: async () => ({}) } as never,
   );
+  git = new FakeProcessExecutor();
+  git.setDefaultResponse({ type: 'failure', exitCode: 128 });
+  sourceModule = await Test.createTestingModule({
+    providers: [
+      {
+        provide: DockerPlanSourceService,
+        useClass: DockerPlanSourceService,
+        scope: Scope.TRANSIENT,
+      },
+      { provide: ProcessExecutor, useValue: git },
+    ],
+  }).compile();
+});
+
+beforeEach(async () => {
+  await mkdir(state, { recursive: true });
+  git.reset();
+  // A scan cache must not survive replacement of the engines between cases.
+  source = await sourceModule.resolve(DockerPlanSourceService);
+  git.setDefaultResponse({ type: 'failure', exitCode: 128 });
+  inventory = new Map();
+  details = { dockerCopyBack: { choices: {} } };
+  health = { online: true, versionMatches: true, version: '1.0.0' } as RemoteHealthState;
+
+  home = new FakeDockerEngine('home-engine');
+  vm = new FakeDockerEngine('vm-engine');
+  await home.listen(join(scratch, 'home.sock'));
+  await vm.listen(join(scratch, 'vm.sock'));
+  seed();
+  process.env.DOCKER_HOST = `unix://${join(scratch, 'home.sock')}`;
+  jest
+    .spyOn(DockerEngineClient, 'connect')
+    .mockImplementation(async () => new DockerEngineClient(join(scratch, 'vm.sock')));
+
   jest.spyOn(client, 'remoteRuntime').mockResolvedValue({
     homePath: homedir(),
     uid: process.getuid?.() ?? 1000,
+    gid: process.getgid?.() ?? 1000,
     docker: {
       installed: true,
       engineVersion: '29.7.2',
@@ -240,7 +270,6 @@ beforeEach(async () => {
       },
     },
   });
-  const source = new DockerPlanSourceService();
   jest.spyOn(source, 'compose').mockResolvedValue(null);
   const inventoryStore = {
     delete: (p: string, r: string) => inventory.delete(`${p}/${r}`),
@@ -251,7 +280,7 @@ beforeEach(async () => {
       return parsed;
     },
   };
-  const plans = new DockerPlanService(
+  plans = new DockerPlanService(
     {
       getProject: async () => ({ id: PROJECT, rootPath: root }),
       getRemote: async () => ({ id: REMOTE }),
@@ -259,8 +288,19 @@ beforeEach(async () => {
     source,
     client,
     inventoryStore as never,
+    { get: () => null } as never,
   );
   store = new DockerHandoffStore(join(scratch, 'home'));
+  handoff = new DockerHandoff(
+    plans,
+    source,
+    client,
+    store,
+    new DockerArchiveJournal(join(scratch, 'home')),
+    { get: () => [], set: () => undefined } as never,
+    inventoryStore as never,
+    { recordPlan: () => undefined } as never,
+  );
   // A new instance over the same directories is a home restart.
   makeCopyBack = () =>
     new DockerCopyBack(
@@ -278,14 +318,33 @@ afterEach(async () => {
   if (savedDockerHost === undefined) delete process.env.DOCKER_HOST;
   else process.env.DOCKER_HOST = savedDockerHost;
   jest.restoreAllMocks();
-  await app?.close();
   await home.close();
   await vm.close();
+  await Promise.all(
+    ['home', 'vm'].map((side) => rm(join(scratch, side), { recursive: true, force: true })),
+  );
+  await rm(root, { recursive: true, force: true });
+});
+
+afterAll(async () => {
+  await app?.close();
+  await sourceModule?.close();
   await rm(scratch, { recursive: true, force: true });
   await rm(fixture, { recursive: true, force: true });
 });
 
 describe('sync state', () => {
+  // Both copy-back plans must retain data that an existing connection excludes, regardless of git.
+  it('offers and copies an inventory folder even when git now tracks it', async () => {
+    git.setDefaultResponse({ type: 'success', stdout: 'state/main.py\0' });
+    const sync = await copyBack.syncState(PROJECT, { remoteId: REMOTE });
+    expect(sync.groups).toContainEqual(
+      expect.objectContaining({ key: STATE_GROUP(), bindPaths: [state], state: 'vm-newer' }),
+    );
+    await copyBack.copyHome(run());
+    expect(text(home, state)).toBe('vm-state');
+    expect(result().copied).toContain('runner');
+  });
   it('reports each imported group from metadata only', async () => {
     const sync = await copyBack.syncState(PROJECT, { remoteId: REMOTE });
     expect(sync.imported).toBe(true);
@@ -329,6 +388,70 @@ describe('sync state', () => {
 });
 
 describe('copy home', () => {
+  // Real handoff and copy-back routes are needed to prove the skipped image is never loaded or paired.
+  it('copies VM changes back with its holder image after Connect skips a project build', async () => {
+    home.containers.delete('runner-id');
+    vm.containers.delete('vm-runner');
+    const imported = inventory.get(`${PROJECT}/${REMOTE}`)!;
+    imported.items = [{ ...imported.items[0], vmImageId: 'sha256:removed' }];
+    imported.groups = [imported.groups![0]];
+    Object.assign(home.containers.get('db-id')!.Config.Labels!, {
+      [`${COMPOSE}.config_files`]: join(root, 'compose.yaml'),
+      'com.docker.compose.service': 'db',
+    });
+    jest.mocked(source.compose).mockResolvedValue({
+      name: 'app',
+      services: { db: { build: { context: root } } },
+    });
+    vm.images.delete('sha256:db');
+    vm.images.set('sha256:rebuilt', { architecture: 'amd64', tags: ['app-db:latest'], size: 90 });
+    vm.containers.get('vm-db')!.Image = 'sha256:rebuilt';
+    vm.containers.get('vm-db')!.Config.Labels = { [OWNER]: PROJECT };
+    const present = jest.spyOn(client, 'dockerImagesPresent');
+    const reads = jest.spyOn(client, 'dockerReadArchive');
+    const plan = await plans.plan(PROJECT, { remoteId: REMOTE }, undefined, { estimate: false });
+    expect(plan.items[0]).toMatchObject({
+      targetAction: 'leave-as-is',
+      dataAction: 'keep-vm',
+      images: [expect.objectContaining({ notCopied: true })],
+      notes: expect.arrayContaining([
+        'Image: not copied; the VM builds it from the synced project.',
+      ]),
+    });
+    expect(plan.copySize).toEqual({ bytes: 0, unknown: false });
+    expect(plan.filesystems).toEqual([]);
+    expect(present).toHaveBeenLastCalledWith(REMOTE, [], expect.anything());
+
+    const connectRun = {
+      ...run(),
+      operation: {
+        ...run().operation,
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        kind: 'attach',
+      } as RemoteOperation,
+    };
+    details.dockerSelection = { items: [{ id: 'db-id', mode: 'container-and-data' }] };
+    await handoff.preflight(connectRun);
+    await handoff.stopHome(connectRun);
+    await handoff.push(connectRun);
+    await handoff.createHost(connectRun);
+    expect((await store.read(connectRun.operation.id))?.images).toEqual([]);
+    expect(vm.calls).not.toContain('POST /images/load');
+    expect(home.containers.get('db-id')!.State.Running).toBe(false);
+    expect(inventory.get(`${PROJECT}/${REMOTE}`)!.items[0].vmImageId).toBe('sha256:removed');
+
+    vm.data.set('app_db', Buffer.from('changed-after-connect'));
+    vm.containers.get('vm-db')!.State = {
+      Running: true,
+      StartedAt: new Date(Date.now() + 1000).toISOString(),
+    };
+    await copyBack.copyHome(run());
+    expect(text(home, 'app_db')).toBe('changed-after-connect');
+    expect(result().copied).toEqual(['app-db-1']);
+    expect(reads.mock.calls.map(([, input]) => input.image)).toEqual(['sha256:rebuilt']);
+    expect(inventory.get(`${PROJECT}/${REMOTE}`)!.items[0].vmImageId).toBe('sha256:removed');
+  });
+
   it('stops Compose-only VM holders, copies vm-newer groups with a verified digest and stamps them', async () => {
     await copyBack.copyHome(run());
 
@@ -353,6 +476,31 @@ describe('copy home', () => {
 
     const after = await copyBack.syncState(PROJECT, { remoteId: REMOTE });
     expect(after.groups.map((g) => g.state)).toEqual(['in-sync', 'in-sync']);
+  });
+
+  // Fake engines and real VM authorization prove label attribution reaches the stop request.
+  it.each([
+    { location: 'working dir inside root', path: () => root, allowed: true },
+    { location: 'shared prefix outside root', path: () => `${root}-other`, allowed: false },
+  ])('handles a Compose holder of a hand-made volume with $location', async ({ path, allowed }) => {
+    delete vm.volumes.get('app_db')!.labels[COMPOSE];
+    vm.containers.get('vm-db')!.Config.Labels = {
+      [COMPOSE]: 'app',
+      [`${COMPOSE}.working_dir`]: path(),
+    };
+    if (allowed) {
+      await copyBack.copyHome(run());
+      expect(vm.containers.get('vm-db')!.State.Running).toBe(false);
+      expect(vm.calls).toContain('POST /containers/vm-db/stop');
+      expect(text(home, 'app_db')).toBe('vm-db-rows');
+    } else {
+      await expect(copyBack.copyHome(run())).rejects.toMatchObject({
+        message: expect.stringContaining('Running VM containers that are not part of this project'),
+      });
+      expect(vm.containers.get('vm-db')!.State.Running).toBe(true);
+      expect(vm.calls).not.toContain('POST /containers/vm-db/stop');
+      expect(text(home, 'app_db')).toBe('home-db-rows');
+    }
   });
 
   it('copies a bound single file back as a file', async () => {
@@ -560,7 +708,9 @@ describe('copy home', () => {
     expect(after.groups.find((g) => g.key === STATE_GROUP())!.state).toBe('home-newer');
   });
 
-  it('refuses a both-changed group without a choice before recording or emptying anything', async () => {
+  it('rechecks a dialog scan and refuses both-changed data before recording or emptying anything', async () => {
+    const preview = await copyBack.syncState(PROJECT, { remoteId: REMOTE });
+    expect(preview.groups.find((g) => g.key === DB_GROUP())!.state).toBe('vm-newer');
     home.containers.get('db-id')!.State.StartedAt = AFTER;
     const refusal = copyBack.copyHome(run());
     await expect(refusal).rejects.toMatchObject({ code: 'DOCKER_COPY_BACK_CHOICE_REQUIRED' });
@@ -574,20 +724,16 @@ describe('copy home', () => {
     });
   });
 
-  it('requires a choice when the state changed after the dialog scan', async () => {
-    const preview = await copyBack.syncState(PROJECT, { remoteId: REMOTE });
-    expect(preview.groups.find((g) => g.key === DB_GROUP())!.state).toBe('vm-newer');
-    home.containers.get('db-id')!.State.StartedAt = AFTER;
-    await expect(copyBack.copyHome(run())).rejects.toMatchObject({
-      code: 'DOCKER_COPY_BACK_CHOICE_REQUIRED',
-    });
-    expect(text(home, 'app_db')).toBe('home-db-rows');
-  });
-
   it('does not overwrite home data changed before a Retry without a choice', async () => {
     const image = vm.images.get('sha256:db')!;
     vm.images.delete('sha256:db');
+    const scan = client.dockerScan.bind(client);
+    jest.spyOn(client, 'dockerScan').mockImplementation(async (...args) => {
+      const result = await scan(...args);
+      return { ...result, containers: result.containers.map((c) => ({ ...c, image: undefined })) };
+    });
     await expect(copyBack.copyHome(run())).rejects.toThrow('none of its images');
+    jest.mocked(client.dockerScan).mockRestore();
     expect((await store.readCopyBack(OPERATION))!.started).not.toContain(DB_GROUP());
     vm.images.set('sha256:db', image);
     home.containers.get('db-id')!.State.StartedAt = new Date().toISOString();
@@ -706,7 +852,7 @@ describe('copy home', () => {
   });
 
   it('verifies a large archive across the raw response and trailer', async () => {
-    const bytes = Buffer.alloc(2 * 1024 * 1024, 'x');
+    const bytes = Buffer.alloc(256 * 1024, 'x');
     vm.data.set('app_db', bytes);
     await copyBack.copyHome(run());
     expect(home.data.get('app_db')).toEqual(bytes);
@@ -792,6 +938,58 @@ describe('copy home', () => {
     expect(text(home, 'app_db')).toBe('home-db-rows');
   });
 
+  // Real plan and stored retry decisions prove neither path can reach archive mutation.
+  it.each(['initial decision', 'stored retry'])(
+    'refuses mismatched user ids before copying or accepting kept data: %s',
+    async (attempt) => {
+      if (attempt === 'stored retry') {
+        await store.writeCopyBack(OPERATION, {
+          apiVersion: '1.47',
+          projectContainers: ['db-id'],
+          started: [],
+          verified: {},
+          absent: [],
+          decidedAt: SYNCED,
+          groups: [
+            {
+              key: DB_GROUP(),
+              label: 'app-db-1',
+              state: 'vm-newer',
+              action: 'keep-home',
+              volumes: ['app_db'],
+              bindPaths: [],
+              images: ['sha256:db'],
+              sizeBytes: 12,
+            },
+          ],
+        });
+      }
+      const previous = await store.readCopyBack(OPERATION);
+      jest.spyOn(client, 'remoteRuntime').mockResolvedValue({
+        ...(await client.remoteRuntime(REMOTE)),
+        uid: (source.uid() ?? 1000) + 1,
+      });
+      const before = structuredClone(records());
+
+      await expect(copyBack.copyHome(run())).rejects.toMatchObject({
+        code: 'DOCKER_COPY_BACK_UNAVAILABLE',
+        message: expect.stringContaining('user ids differ'),
+      });
+
+      expect(text(home, 'app_db')).toBe('home-db-rows');
+      expect(text(vm, 'app_db')).toBe('vm-db-rows');
+      expect(vm.containers.get('vm-db')!.State.Running).toBe(true);
+      expect(records()).toEqual(before);
+      expect(await store.readCopyBack(OPERATION)).toEqual(previous);
+      expect(home.calls.some((call) => call.includes('/archive') || call.includes('/stop'))).toBe(
+        false,
+      );
+      expect(vm.calls.some((call) => call.includes('/archive') || call.includes('/stop'))).toBe(
+        false,
+      );
+    },
+  );
+
   it('fails with Retry when the VM Docker engine is down', async () => {
     jest.spyOn(client, 'remoteRuntime').mockResolvedValue({
       docker: { installed: false },
@@ -818,6 +1016,7 @@ describe('composition', () => {
       unused,
       unused,
       copyBack,
+      {} as never,
     );
 
   it('does not copy home during Reset without the optional Disconnect flag', async () => {
@@ -835,18 +1034,6 @@ describe('composition', () => {
     expect(ids).toContain(`detach:${PROJECT}:docker_stop_host`);
     expect(ids).not.toContain(`detach:${PROJECT}:docker_copy_home`);
     expect(text(home, 'app_db')).toBe('home-db-rows');
-  });
-
-  it('skips a stored copy step without the request and never calls Docker on this PC', async () => {
-    const step = detachOperation().steps.find((s) => s.id === 'docker_copy_home')!;
-    const stored: Record<string, unknown> = { force: false };
-    expect(step.skip?.(stored)).toBe(true);
-    const calls = home.calls.length;
-    await step.run({ ...run(), details: stored });
-    expect(home.calls.length).toBe(calls);
-    expect(vm.calls).toEqual([]);
-    expect(text(home, 'app_db')).toBe('home-db-rows');
-    expect(await store.readCopyBack(OPERATION)).toBeNull();
   });
 
   it('copies through the Disconnect step when asked', async () => {

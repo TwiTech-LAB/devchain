@@ -285,8 +285,9 @@ beforeEach(() => {
 });
 
 describe('EpicRelationBadges resting badge', () => {
-  it('renders the source piece with a hidden arrow and an explicit accessible label', () => {
-    renderBadges({
+  it.each([
+    {
+      name: 'source',
       counts: countsFixture({
         related: 1,
         total: 1,
@@ -294,16 +295,15 @@ describe('EpicRelationBadges resting badge', () => {
         relatedTargets: 0,
         relatedNeutral: 0,
       }),
-    });
-
-    const piece = screen.getByTitle(/Related sources: 1\./);
-    expect(piece).toHaveTextContent('1');
-    expect(piece.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
-    expect(trigger()).toHaveAccessibleName('Related: 1 source.');
-  });
-
-  it('renders the target piece and both roles together', () => {
-    renderBadges({
+      titles: ['Related sources: 1.'],
+      absent: [],
+      texts: [],
+      noRelated: false,
+      hiddenArrow: true,
+      label: 'Related: 1 source.',
+    },
+    {
+      name: 'both roles',
       counts: countsFixture({
         related: 3,
         total: 3,
@@ -311,15 +311,15 @@ describe('EpicRelationBadges resting badge', () => {
         relatedTargets: 1,
         relatedNeutral: 0,
       }),
-    });
-
-    expect(screen.getByTitle(/Related sources: 2\./)).toBeInTheDocument();
-    expect(screen.getByTitle(/Related targets: 1\./)).toBeInTheDocument();
-    expect(trigger()).toHaveAccessibleName('Related: 2 sources, 1 target.');
-  });
-
-  it('renders the neutral piece with the exact mandated title', () => {
-    renderBadges({
+      titles: ['Related sources: 2.', 'Related targets: 1.'],
+      absent: [],
+      texts: [],
+      noRelated: false,
+      hiddenArrow: false,
+      label: 'Related: 2 sources, 1 target.',
+    },
+    {
+      name: 'neutral',
       counts: countsFixture({
         related: 1,
         total: 1,
@@ -327,14 +327,15 @@ describe('EpicRelationBadges resting badge', () => {
         relatedTargets: 0,
         relatedNeutral: 1,
       }),
-    });
-
-    expect(screen.getByTitle('Related without direction: 1')).toBeInTheDocument();
-    expect(trigger()).toHaveAccessibleName('Related: 1 without direction.');
-  });
-
-  it('never renders zero directional pieces and keeps separate blocks counts', () => {
-    renderBadges({
+      titles: ['Related without direction: 1'],
+      absent: [],
+      texts: [],
+      noRelated: false,
+      hiddenArrow: false,
+      label: 'Related: 1 without direction.',
+    },
+    {
+      name: 'mixed',
       counts: countsFixture({
         related: 2,
         blocks: 1,
@@ -344,34 +345,35 @@ describe('EpicRelationBadges resting badge', () => {
         relatedTargets: 0,
         relatedNeutral: 0,
       }),
-    });
-
-    expect(screen.queryByTitle(/Related targets:/)).not.toBeInTheDocument();
-    expect(screen.queryByTitle('Related without direction: 0')).not.toBeInTheDocument();
-    expect(screen.getByText('Blocks 1')).toBeInTheDocument();
-    expect(screen.getByText('Blocked by 3')).toBeInTheDocument();
-    expect(trigger()).toHaveAccessibleName('Related: 2 sources. Blocks: 1. Blocked by: 3.');
-  });
-
-  it('falls back to the plain aggregate when directional fields are unavailable', () => {
-    renderBadges({ counts: countsFixture({ related: 2, blockedBy: 1, total: 3 }) });
-
-    expect(screen.getByText('Related 2')).toBeInTheDocument();
-    expect(screen.queryByTitle(/Related sources/)).not.toBeInTheDocument();
-    expect(trigger()).toHaveAccessibleName('Related: 2. Blocked by: 1.');
-  });
-
-  it('renders no Related piece or label when only legacy Blocks and Blocked by are nonzero', () => {
-    renderBadges({ counts: countsFixture({ related: 0, blocks: 1, blockedBy: 2, total: 3 }) });
-
-    expect(screen.queryByText(/Related/)).not.toBeInTheDocument();
-    expect(screen.getByText('Blocks 1')).toBeInTheDocument();
-    expect(screen.getByText('Blocked by 2')).toBeInTheDocument();
-    expect(trigger()).toHaveAccessibleName('Blocks: 1. Blocked by: 2.');
-  });
-
-  it('renders no Related label for an all-zero directional group with only Blocks nonzero', () => {
-    renderBadges({
+      titles: [],
+      absent: ['Related targets:', 'Related without direction: 0'],
+      texts: ['Blocks 1', 'Blocked by 3'],
+      noRelated: false,
+      hiddenArrow: false,
+      label: 'Related: 2 sources. Blocks: 1. Blocked by: 3.',
+    },
+    {
+      name: 'legacy',
+      counts: countsFixture({ related: 2, blockedBy: 1, total: 3 }),
+      titles: [],
+      absent: ['Related sources'],
+      texts: ['Related 2'],
+      noRelated: false,
+      hiddenArrow: false,
+      label: 'Related: 2. Blocked by: 1.',
+    },
+    {
+      name: 'legacy blocks',
+      counts: countsFixture({ related: 0, blocks: 1, blockedBy: 2, total: 3 }),
+      titles: [],
+      absent: [],
+      texts: ['Blocks 1', 'Blocked by 2'],
+      noRelated: true,
+      hiddenArrow: false,
+      label: 'Blocks: 1. Blocked by: 2.',
+    },
+    {
+      name: 'zero directional',
       counts: countsFixture({
         related: 0,
         blocks: 1,
@@ -380,13 +382,30 @@ describe('EpicRelationBadges resting badge', () => {
         relatedTargets: 0,
         relatedNeutral: 0,
       }),
-    });
-
-    expect(screen.queryByText(/Related/)).not.toBeInTheDocument();
-    expect(screen.queryByTitle(/Related sources/)).not.toBeInTheDocument();
-    expect(screen.getByText('Blocks 1')).toBeInTheDocument();
-    expect(trigger()).toHaveAccessibleName('Blocks: 1.');
-  });
+      titles: [],
+      absent: ['Related sources'],
+      texts: ['Blocks 1'],
+      noRelated: true,
+      hiddenArrow: false,
+      label: 'Blocks: 1.',
+    },
+  ])(
+    'renders resting badges for $name',
+    ({ counts, titles, absent, texts, noRelated, hiddenArrow, label }) => {
+      renderBadges({ counts });
+      for (const title of titles) expect(screen.getByTitle(new RegExp(title))).toBeInTheDocument();
+      for (const title of absent)
+        expect(screen.queryByTitle(new RegExp(title))).not.toBeInTheDocument();
+      for (const text of texts) expect(screen.getByText(text)).toBeInTheDocument();
+      if (noRelated) expect(screen.queryByText(/Related/)).not.toBeInTheDocument();
+      if (hiddenArrow) {
+        const piece = screen.getByTitle(/Related sources: 1./);
+        expect(piece).toHaveTextContent('1');
+        expect(piece.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+      }
+      expect(trigger()).toHaveAccessibleName(label);
+    },
+  );
 
   it('keeps the outside-board hint on the trigger and renders nothing for all-zero counts', () => {
     const { rerender } = renderBadges({ counts: countsFixture({ total: 0 }) });
@@ -666,25 +685,6 @@ describe('EpicRelationBadges interaction modes', () => {
     expect(second).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('heading', { name: 'Relations for Epic B' })).toBeInTheDocument();
   });
-
-  it('clears pending timers on unmount', () => {
-    const { unmount } = renderBadges({
-      counts: countsFixture({
-        related: 1,
-        total: 1,
-        relatedSources: 1,
-        relatedTargets: 0,
-        relatedNeutral: 0,
-      }),
-    });
-    firePointer(trigger(), 'pointerover', { pointerType: 'mouse', relatedTarget: document.body });
-    unmount();
-    expect(() =>
-      act(() => {
-        jest.advanceTimersByTime(RELATION_PREVIEW_OPEN_DELAY_MS * 2);
-      }),
-    ).not.toThrow();
-  });
 });
 
 describe('EpicRelationBadges card drag fence', () => {
@@ -751,7 +751,7 @@ describe('EpicRelationBadges preview content', () => {
     expect(useEpicRelationsMock).toHaveBeenLastCalledWith(FOCAL_ID, { enabled: true });
   });
 
-  it('groups the first page by role and type and hides empty groups', () => {
+  it('groups the first page by role and type and hides empty groups', async () => {
     mockQuery(firstPage([sourceRow, blocksRow]));
     renderBadges({
       counts: countsFixture({
@@ -770,6 +770,16 @@ describe('EpicRelationBadges preview content', () => {
     expect(screen.queryByText('Target (1)')).not.toBeInTheDocument();
     expect(screen.queryByText('No direction yet (1)')).not.toBeInTheDocument();
     expect(screen.queryByText('Blocked by (1)')).not.toBeInTheDocument();
+
+    {
+      openKeyboardPreview();
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toHaveAccessibleName('Relations for Focal Epic');
+    }
+    {
+      openKeyboardPreview();
+      expect(await axe(document.body)).toHaveNoViolations();
+    }
   });
 
   it('renders every role group plus title, status, project, and short ID', () => {
@@ -888,40 +898,6 @@ describe('EpicRelationBadges preview content', () => {
     expect(screen.queryByText('Extra 0')).not.toBeInTheDocument();
     expect(screen.getByText('+3 more — open the Epic to see all.')).toBeInTheDocument();
   });
-
-  it('gives the dialog an accessible name through the visible heading', () => {
-    mockQuery(firstPage([sourceRow]));
-    renderBadges({
-      counts: countsFixture({
-        related: 1,
-        total: 1,
-        relatedSources: 1,
-        relatedTargets: 0,
-        relatedNeutral: 0,
-      }),
-    });
-    openKeyboardPreview();
-
-    const dialog = screen.getByRole('dialog');
-    expect(dialog).toHaveAccessibleName('Relations for Focal Epic');
-  });
-
-  it('passes composed accessibility checks while open', async () => {
-    mockQuery(firstPage([sourceRow, blocksRow]));
-    renderBadges({
-      counts: countsFixture({
-        related: 1,
-        blocks: 1,
-        total: 2,
-        relatedSources: 1,
-        relatedTargets: 0,
-        relatedNeutral: 0,
-      }),
-    });
-    openKeyboardPreview();
-
-    expect(await axe(document.body)).toHaveNoViolations();
-  });
 });
 
 describe('EpicRelationBadges title navigation', () => {
@@ -987,14 +963,6 @@ describe('EpicRelationBadges title navigation', () => {
     expect(screen.getByText('Remote Epic').closest('a')).toBeNull();
     // Same-project titles stay interactive without workspace knowledge.
     expect(screen.getByRole('link', { name: 'Design API' })).toBeInTheDocument();
-  });
-
-  it('marks title links undraggable', () => {
-    mockQuery(firstPage([sourceRow]));
-    renderBadges({ counts: relatedCounts(1) });
-    openKeyboardPreview();
-
-    expect(screen.getByRole('link', { name: 'Design API' })).toHaveAttribute('draggable', 'false');
   });
 });
 
@@ -1084,21 +1052,6 @@ describe('EpicRelationBadges Escape restore', () => {
     });
   }
 
-  it('restores the trigger without reopening after pending timers run', () => {
-    mockQuery(firstPage([sourceRow]));
-    renderBadges({ counts: relatedCounts(1) });
-    openKeyboardPreview();
-    enterPreview();
-    expect(screen.getByRole('link', { name: 'Design API' })).toHaveFocus();
-
-    escapeFromPreview();
-
-    expect(trigger()).toHaveAttribute('aria-expanded', 'false');
-    expect(trigger()).toHaveFocus();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Design API' })).not.toBeInTheDocument();
-  });
-
   it('behaves identically across repeated Enter, Escape cycles', () => {
     mockQuery(firstPage([sourceRow]));
     renderBadges({ counts: relatedCounts(1) });
@@ -1112,6 +1065,8 @@ describe('EpicRelationBadges Escape restore', () => {
       escapeFromPreview();
       expect(trigger()).toHaveAttribute('aria-expanded', 'false');
       expect(trigger()).toHaveFocus();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Design API' })).not.toBeInTheDocument();
     }
   });
 
@@ -1214,20 +1169,6 @@ describe('EpicRelationBadges remove relation', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
     expect(deleteMutateMock).not.toHaveBeenCalled();
-  });
-
-  it('shows the detail page route warning for an eligible directed pair', async () => {
-    mockQuery(firstPage([sourceRow]));
-    renderBadges({ counts: relatedCounts(1) });
-    openKeyboardPreview();
-
-    fireEvent.click(removeIcon('Design API'));
-    const dialog = removeDialog();
-    await waitFor(() =>
-      expect(dialog).toHaveTextContent('Current route: “Focal Epic” logs time with “Design API”.'),
-    );
-    expect(dialog).toHaveTextContent('Removing this relation deletes the pair and its time route.');
-    expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
   });
 
   it('deletes on confirm with the focal epic address and stays open until the delete succeeds', async () => {

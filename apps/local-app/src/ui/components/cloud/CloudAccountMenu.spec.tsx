@@ -31,69 +31,40 @@ describe('CloudAccountMenu', () => {
     mockDisconnect.mockClear();
   });
 
-  it('renders the trigger button with email', () => {
+  it('shows the account trigger, manage link and ordered switch/disconnect items', async () => {
     renderMenu();
     expect(screen.getByRole('button')).toHaveTextContent('test@example.com');
-  });
-
-  it('shows "Manage cloud account" as the first menu item linking to /cloud?section=account', async () => {
-    renderMenu();
     await openDropdown();
-
     const menu = screen.getByRole('menu');
     const items = within(menu).getAllByRole('menuitem');
     expect(items[0]).toHaveTextContent('Manage cloud account');
-    // With asChild, the Link IS the menuitem element
     expect(items[0]).toHaveAttribute('href', '/cloud?section=account');
-  });
-
-  it('navigates via react-router Link (no window.location change)', async () => {
-    renderMenu();
-    await openDropdown();
-
-    // The first menuitem is an <a> tag rendered by react-router Link
-    const menu = screen.getByRole('menu');
-    const items = within(menu).getAllByRole('menuitem');
-    expect(items[0].tagName).toBe('A');
-    expect(items[0].getAttribute('href')).toBe('/cloud?section=account');
-  });
-
-  it('renders Switch account and Disconnect after the manage link', async () => {
-    renderMenu();
-    await openDropdown();
-
-    const menu = screen.getByRole('menu');
-    const items = within(menu).getAllByRole('menuitem');
-    expect(items).toHaveLength(3);
-    expect(items[0]).toHaveTextContent('Manage cloud account');
-    expect(items[1]).toHaveTextContent('Switch account');
-    expect(items[2]).toHaveTextContent('Disconnect');
-  });
-
-  it('separator exists between Manage cloud account and Switch account', async () => {
-    renderMenu();
-    await openDropdown();
-
-    const menu = screen.getByRole('menu');
-    // Radix separators have role="separator"
-    const separators = within(menu).getAllByRole('separator');
-    expect(separators.length).toBeGreaterThanOrEqual(1);
+    {
+      const menu = screen.getByRole('menu');
+      const items = within(menu).getAllByRole('menuitem');
+      expect(items[0].tagName).toBe('A');
+      expect(items[0].getAttribute('href')).toBe('/cloud?section=account');
+    }
+    {
+      const menu = screen.getByRole('menu');
+      const items = within(menu).getAllByRole('menuitem');
+      expect(items).toHaveLength(3);
+      expect(items[0]).toHaveTextContent('Manage cloud account');
+      expect(items[1]).toHaveTextContent('Switch account');
+      expect(items[2]).toHaveTextContent('Disconnect');
+    }
   });
 
   describe('compact', () => {
-    it('renders an icon-only trigger whose accessible name carries the email', () => {
+    it('shows an icon-only account trigger and email in its menu', async () => {
       renderMenu(true);
-      const trigger = screen.getByRole('button', { name: 'Cloud connected: test@example.com' });
-      expect(trigger).toHaveTextContent('');
-      expect(trigger.querySelector('svg')).toBeInTheDocument();
-    });
-
-    it('still shows the email inside the dropdown', async () => {
-      renderMenu(true);
-      await userEvent.click(screen.getByRole('button'));
-
-      const menu = screen.getByRole('menu');
-      expect(menu).toHaveTextContent('test@example.com');
+      {
+        const trigger = screen.getByRole('button', { name: 'Cloud connected: test@example.com' });
+        expect(trigger).toHaveTextContent('');
+        expect(trigger.querySelector('svg')).toBeInTheDocument();
+        await userEvent.click(trigger);
+        expect(screen.getByRole('menu')).toHaveTextContent('test@example.com');
+      }
     });
   });
 

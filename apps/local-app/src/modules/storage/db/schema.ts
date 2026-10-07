@@ -129,6 +129,8 @@ export const remoteOperations = sqliteTable(
       enum: [
         'attach',
         'detach',
+        'force_sync',
+        'git_owner',
         'create_vm',
         'destroy_vm',
         'claim',

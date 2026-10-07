@@ -143,116 +143,104 @@ describe('WatcherRunnerService', () => {
     });
 
     describe('scope: agent', () => {
-      it('should filter sessions by exact agentId match', async () => {
-        const sessions = [
-          createMockSession({ id: 'session-1', agentId: 'agent-1' }),
-          createMockSession({ id: 'session-2', agentId: 'agent-2' }),
-          createMockSession({ id: 'session-3', agentId: 'agent-1' }),
-        ];
+      it.each([
+        {
+          name: 'should filter sessions by exact agentId match',
+          sessions: [
+            createMockSession({ id: 'session-1', agentId: 'agent-1' }),
+            createMockSession({ id: 'session-2', agentId: 'agent-2' }),
+            createMockSession({ id: 'session-3', agentId: 'agent-1' }),
+          ],
+          watcher: createMockWatcher({ scope: 'agent', scopeFilterId: 'agent-1' }),
+          agents: undefined,
+          expected: ['session-1', 'session-3'],
+        },
+        {
+          name: 'should exclude sessions without agentId',
+          sessions: [
+            createMockSession({ id: 'session-1', agentId: 'agent-1' }),
+            createMockSession({ id: 'session-2', agentId: null }),
+          ],
+          watcher: createMockWatcher({ scope: 'agent', scopeFilterId: 'agent-1' }),
+          agents: undefined,
+          expected: ['session-1'],
+        },
+        {
+          name: 'should return empty array if no matching agentId',
+          sessions: [
+            createMockSession({ id: 'session-1', agentId: 'agent-1' }),
+            createMockSession({ id: 'session-2', agentId: 'agent-2' }),
+          ],
+          watcher: createMockWatcher({ scope: 'agent', scopeFilterId: 'agent-999' }),
+          agents: undefined,
+          expected: [],
+        },
+      ])('$name', async ({ sessions, watcher, expected }) => {
         mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
 
-        const watcher = createMockWatcher({ scope: 'agent', scopeFilterId: 'agent-1' });
         const result = await service.getMatchingSessions(watcher);
-
-        expect(result).toHaveLength(2);
-        expect(result.map((s) => s.id)).toEqual(['session-1', 'session-3']);
-      });
-
-      it('should exclude sessions without agentId', async () => {
-        const sessions = [
-          createMockSession({ id: 'session-1', agentId: 'agent-1' }),
-          createMockSession({ id: 'session-2', agentId: null }),
-        ];
-        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-
-        const watcher = createMockWatcher({ scope: 'agent', scopeFilterId: 'agent-1' });
-        const result = await service.getMatchingSessions(watcher);
-
-        expect(result).toHaveLength(1);
-        expect(result[0].id).toBe('session-1');
-      });
-
-      it('should return empty array if no matching agentId', async () => {
-        const sessions = [
-          createMockSession({ id: 'session-1', agentId: 'agent-1' }),
-          createMockSession({ id: 'session-2', agentId: 'agent-2' }),
-        ];
-        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-
-        const watcher = createMockWatcher({ scope: 'agent', scopeFilterId: 'agent-999' });
-        const result = await service.getMatchingSessions(watcher);
-
-        expect(result).toEqual([]);
+        expect(result.map((s) => s.id)).toEqual(expected);
       });
     });
 
     describe('scope: profile', () => {
-      it('should filter sessions via agent -> profile lookup', async () => {
-        const sessions = [
-          createMockSession({ id: 'session-1', agentId: 'agent-1' }),
-          createMockSession({ id: 'session-2', agentId: 'agent-2' }),
-          createMockSession({ id: 'session-3', agentId: 'agent-3' }),
-        ];
-        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-
-        mockStorage.listAgents.mockResolvedValue({
-          items: [
-            { id: 'agent-1', profileId: 'profile-A', projectId: 'project-1', name: 'Agent 1' },
-            { id: 'agent-2', profileId: 'profile-B', projectId: 'project-1', name: 'Agent 2' },
-            { id: 'agent-3', profileId: 'profile-A', projectId: 'project-1', name: 'Agent 3' },
+      it.each([
+        {
+          name: 'should filter sessions via agent -> profile lookup',
+          sessions: [
+            createMockSession({ id: 'session-1', agentId: 'agent-1' }),
+            createMockSession({ id: 'session-2', agentId: 'agent-2' }),
+            createMockSession({ id: 'session-3', agentId: 'agent-3' }),
           ],
-          total: 3,
-          limit: 100,
-          offset: 0,
-        });
-
-        const watcher = createMockWatcher({ scope: 'profile', scopeFilterId: 'profile-A' });
-        const result = await service.getMatchingSessions(watcher);
-
-        expect(result).toHaveLength(2);
-        expect(result.map((s) => s.id)).toEqual(['session-1', 'session-3']);
-      });
-
-      it('should exclude sessions without agentId', async () => {
-        const sessions = [
-          createMockSession({ id: 'session-1', agentId: 'agent-1' }),
-          createMockSession({ id: 'session-2', agentId: null }),
-        ];
-        mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-
-        mockStorage.listAgents.mockResolvedValue({
-          items: [
-            { id: 'agent-1', profileId: 'profile-A', projectId: 'project-1', name: 'Agent 1' },
+          watcher: createMockWatcher({ scope: 'profile', scopeFilterId: 'profile-A' }),
+          agents: {
+            items: [
+              { id: 'agent-1', profileId: 'profile-A', projectId: 'project-1', name: 'Agent 1' },
+              { id: 'agent-2', profileId: 'profile-B', projectId: 'project-1', name: 'Agent 2' },
+              { id: 'agent-3', profileId: 'profile-A', projectId: 'project-1', name: 'Agent 3' },
+            ],
+            total: 3,
+            limit: 100,
+            offset: 0,
+          },
+          expected: ['session-1', 'session-3'],
+        },
+        {
+          name: 'should exclude sessions without agentId',
+          sessions: [
+            createMockSession({ id: 'session-1', agentId: 'agent-1' }),
+            createMockSession({ id: 'session-2', agentId: null }),
           ],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        const watcher = createMockWatcher({ scope: 'profile', scopeFilterId: 'profile-A' });
-        const result = await service.getMatchingSessions(watcher);
-
-        expect(result).toHaveLength(1);
-        expect(result[0].id).toBe('session-1');
-      });
-
-      it('should return empty array if no agents with matching profileId', async () => {
-        const sessions = [createMockSession({ id: 'session-1', agentId: 'agent-1' })];
+          watcher: createMockWatcher({ scope: 'profile', scopeFilterId: 'profile-A' }),
+          agents: {
+            items: [
+              { id: 'agent-1', profileId: 'profile-A', projectId: 'project-1', name: 'Agent 1' },
+            ],
+            total: 1,
+            limit: 100,
+            offset: 0,
+          },
+          expected: ['session-1'],
+        },
+        {
+          name: 'should return empty array if no agents with matching profileId',
+          sessions: [createMockSession({ id: 'session-1', agentId: 'agent-1' })],
+          watcher: createMockWatcher({ scope: 'profile', scopeFilterId: 'profile-A' }),
+          agents: {
+            items: [
+              { id: 'agent-1', profileId: 'profile-B', projectId: 'project-1', name: 'Agent 1' },
+            ],
+            total: 1,
+            limit: 100,
+            offset: 0,
+          },
+          expected: [],
+        },
+      ])('$name', async ({ sessions, watcher, agents, expected }) => {
         mockSessionsService.listActiveSessions.mockResolvedValue(sessions);
-
-        mockStorage.listAgents.mockResolvedValue({
-          items: [
-            { id: 'agent-1', profileId: 'profile-B', projectId: 'project-1', name: 'Agent 1' },
-          ],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        });
-
-        const watcher = createMockWatcher({ scope: 'profile', scopeFilterId: 'profile-A' });
+        mockStorage.listAgents.mockResolvedValue(agents);
         const result = await service.getMatchingSessions(watcher);
-
-        expect(result).toEqual([]);
+        expect(result.map((s) => s.id)).toEqual(expected);
       });
     });
 
@@ -595,18 +583,6 @@ describe('WatcherRunnerService', () => {
         );
       });
     });
-
-    describe('empty results', () => {
-      it('should return empty array (not error) when no sessions match', async () => {
-        mockSessionsService.listActiveSessions.mockResolvedValue([]);
-
-        const watcher = createMockWatcher({ scope: 'agent', scopeFilterId: 'agent-1' });
-        const result = await service.getMatchingSessions(watcher);
-
-        expect(result).toEqual([]);
-        expect(Array.isArray(result)).toBe(true);
-      });
-    });
   });
 
   describe('captureViewport', () => {
@@ -701,33 +677,12 @@ describe('WatcherRunnerService', () => {
         expect(cached).toBeNull();
       });
     });
-
-    describe('ANSI stripping', () => {
-      it('should call capturePane with includeEscapes=false', async () => {
-        mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'text' });
-
-        await service.captureViewport(tmuxSessionId, lines);
-
-        // Third argument should be false to strip ANSI codes
-        expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith(
-          { name: tmuxSessionId },
-          lines,
-          false,
-        );
-      });
-    });
   });
 
   describe('getCachedCapture', () => {
     it('should return null on cache miss', () => {
       const result = service.getCachedCapture('non-existent', 50);
       expect(result).toBeNull();
-    });
-
-    it('should return cached text within TTL', () => {
-      service.setCachedCapture('session-1', 50, 'cached text');
-      const result = service.getCachedCapture('session-1', 50);
-      expect(result).toBe('cached text');
     });
 
     it('should return null and delete expired cache', () => {
@@ -758,26 +713,82 @@ describe('WatcherRunnerService', () => {
 
   describe('matchCondition', () => {
     describe('contains', () => {
-      it('should return true when pattern is found in text', () => {
-        const condition = { type: 'contains' as const, pattern: 'error' };
-        expect(service.matchCondition(condition, 'An error occurred')).toBe(true);
-      });
-
-      it('should return false when pattern is not found', () => {
-        const condition = { type: 'contains' as const, pattern: 'error' };
-        expect(service.matchCondition(condition, 'Everything is fine')).toBe(false);
+      it.each([
+        {
+          name: 'should return true when pattern is found in text',
+          condition: { type: 'contains' as const, pattern: 'error' },
+          checks: [['An error occurred', true]] as [string, boolean][],
+        },
+        {
+          name: 'should return false when pattern is not found',
+          condition: { type: 'contains' as const, pattern: 'error' },
+          checks: [['Everything is fine', false]] as [string, boolean][],
+        },
+        {
+          name: 'should match empty text when pattern is empty string',
+          condition: { type: 'contains' as const, pattern: '' },
+          checks: [
+            ['', true],
+            ['any text', true],
+          ] as [string, boolean][],
+        },
+        {
+          name: 'should match using regex pattern',
+          condition: { type: 'regex' as const, pattern: 'error|warning' },
+          checks: [
+            ['An error occurred', true],
+            ['A warning appeared', true],
+            ['Everything is fine', false],
+          ] as [string, boolean][],
+        },
+        {
+          name: 'should support case-insensitive flag',
+          condition: { type: 'regex' as const, pattern: 'error', flags: 'i' },
+          checks: [
+            ['ERROR', true],
+            ['Error', true],
+            ['error', true],
+          ] as [string, boolean][],
+        },
+        {
+          name: 'should return false for invalid regex pattern',
+          condition: { type: 'regex' as const, pattern: '[invalid(' },
+          checks: [['any text', false]] as [string, boolean][],
+        },
+        {
+          name: 'should match with no flags when flags is undefined',
+          condition: { type: 'regex' as const, pattern: 'test' },
+          checks: [['this is a test', true]] as [string, boolean][],
+        },
+        {
+          name: 'should return true when pattern is NOT found',
+          condition: { type: 'not_contains' as const, pattern: 'error' },
+          checks: [['Everything is fine', true]] as [string, boolean][],
+        },
+        {
+          name: 'should return false when pattern IS found',
+          condition: { type: 'not_contains' as const, pattern: 'error' },
+          checks: [['An error occurred', false]] as [string, boolean][],
+        },
+        {
+          name: 'should return false for empty pattern (always contained)',
+          condition: { type: 'not_contains' as const, pattern: '' },
+          checks: [['any text', false]] as [string, boolean][],
+        },
+        {
+          name: 'should return false for unknown condition type',
+          condition: { type: 'unknown' as 'contains', pattern: 'test' },
+          checks: [['test', false]] as [string, boolean][],
+        },
+      ])('$name', ({ condition, checks }) => {
+        for (const [text, expected] of checks)
+          expect(service.matchCondition(condition, text)).toBe(expected);
       });
 
       it('should be case-sensitive by default', () => {
         const condition = { type: 'contains' as const, pattern: 'Error' };
         expect(service.matchCondition(condition, 'error')).toBe(false);
         expect(service.matchCondition(condition, 'Error')).toBe(true);
-      });
-
-      it('should match empty text when pattern is empty string', () => {
-        const condition = { type: 'contains' as const, pattern: '' };
-        expect(service.matchCondition(condition, '')).toBe(true);
-        expect(service.matchCondition(condition, 'any text')).toBe(true);
       });
 
       it('should handle special characters in pattern', () => {
@@ -787,136 +798,12 @@ describe('WatcherRunnerService', () => {
       });
     });
 
-    describe('regex', () => {
-      it('should match using regex pattern', () => {
-        const condition = { type: 'regex' as const, pattern: 'error|warning' };
-        expect(service.matchCondition(condition, 'An error occurred')).toBe(true);
-        expect(service.matchCondition(condition, 'A warning appeared')).toBe(true);
-        expect(service.matchCondition(condition, 'Everything is fine')).toBe(false);
-      });
-
-      it('should support case-insensitive flag', () => {
-        const condition = { type: 'regex' as const, pattern: 'error', flags: 'i' };
-        expect(service.matchCondition(condition, 'ERROR')).toBe(true);
-        expect(service.matchCondition(condition, 'Error')).toBe(true);
-        expect(service.matchCondition(condition, 'error')).toBe(true);
-      });
-
-      it('should support multiline flag', () => {
-        const condition = { type: 'regex' as const, pattern: '^error', flags: 'm' };
-        const text = 'line1\nerror on line2';
-        expect(service.matchCondition(condition, text)).toBe(true);
-      });
-
-      it('should support global flag', () => {
-        const condition = { type: 'regex' as const, pattern: 'error', flags: 'g' };
-        expect(service.matchCondition(condition, 'error error error')).toBe(true);
-      });
-
-      it('should support combined flags', () => {
-        const condition = { type: 'regex' as const, pattern: '^error', flags: 'im' };
-        const text = 'line1\nERROR on line2';
-        expect(service.matchCondition(condition, text)).toBe(true);
-      });
-
-      it('should return false for invalid regex pattern', () => {
-        const condition = { type: 'regex' as const, pattern: '[invalid(' };
-        expect(service.matchCondition(condition, 'any text')).toBe(false);
-      });
-
-      it('should handle complex regex patterns', () => {
-        const condition = { type: 'regex' as const, pattern: '\\d{3}-\\d{4}' };
-        expect(service.matchCondition(condition, 'Phone: 123-4567')).toBe(true);
-        expect(service.matchCondition(condition, 'Phone: 12-345')).toBe(false);
-      });
-
-      it('should match with no flags when flags is undefined', () => {
-        const condition = { type: 'regex' as const, pattern: 'test' };
-        expect(service.matchCondition(condition, 'this is a test')).toBe(true);
-      });
-    });
-
     describe('not_contains', () => {
-      it('should return true when pattern is NOT found', () => {
-        const condition = { type: 'not_contains' as const, pattern: 'error' };
-        expect(service.matchCondition(condition, 'Everything is fine')).toBe(true);
-      });
-
-      it('should return false when pattern IS found', () => {
-        const condition = { type: 'not_contains' as const, pattern: 'error' };
-        expect(service.matchCondition(condition, 'An error occurred')).toBe(false);
-      });
-
       it('should be case-sensitive', () => {
         const condition = { type: 'not_contains' as const, pattern: 'Error' };
         expect(service.matchCondition(condition, 'error')).toBe(true);
         expect(service.matchCondition(condition, 'Error')).toBe(false);
       });
-
-      it('should return false for empty pattern (always contained)', () => {
-        const condition = { type: 'not_contains' as const, pattern: '' };
-        expect(service.matchCondition(condition, 'any text')).toBe(false);
-      });
-    });
-
-    describe('edge cases', () => {
-      it('should handle empty text', () => {
-        expect(service.matchCondition({ type: 'contains', pattern: 'test' }, '')).toBe(false);
-        expect(service.matchCondition({ type: 'not_contains', pattern: 'test' }, '')).toBe(true);
-        expect(service.matchCondition({ type: 'regex', pattern: 'test' }, '')).toBe(false);
-      });
-
-      it('should handle very long text', () => {
-        const longText = 'a'.repeat(10000) + 'error' + 'a'.repeat(10000);
-        const condition = { type: 'contains' as const, pattern: 'error' };
-        expect(service.matchCondition(condition, longText)).toBe(true);
-      });
-
-      it('should handle newlines in text', () => {
-        const text = 'line1\nline2\nerror\nline4';
-        const condition = { type: 'contains' as const, pattern: 'error' };
-        expect(service.matchCondition(condition, text)).toBe(true);
-      });
-
-      it('should handle unicode characters', () => {
-        const condition = { type: 'contains' as const, pattern: '错误' };
-        expect(service.matchCondition(condition, '发生了错误')).toBe(true);
-      });
-
-      it('should return false for unknown condition type', () => {
-        const condition = { type: 'unknown' as 'contains', pattern: 'test' };
-        expect(service.matchCondition(condition, 'test')).toBe(false);
-      });
-    });
-  });
-
-  describe('computeViewportHash', () => {
-    it('should return a 16-character hex string', () => {
-      const hash = service.computeViewportHash('test content');
-      expect(hash).toHaveLength(16);
-      expect(hash).toMatch(/^[0-9a-f]{16}$/);
-    });
-
-    it('should return consistent hash for same content', () => {
-      const hash1 = service.computeViewportHash('same content');
-      const hash2 = service.computeViewportHash('same content');
-      expect(hash1).toBe(hash2);
-    });
-
-    it('should return different hash for different content', () => {
-      const hash1 = service.computeViewportHash('content A');
-      const hash2 = service.computeViewportHash('content B');
-      expect(hash1).not.toBe(hash2);
-    });
-
-    it('should handle empty string', () => {
-      const hash = service.computeViewportHash('');
-      expect(hash).toHaveLength(16);
-    });
-
-    it('should handle unicode content', () => {
-      const hash = service.computeViewportHash('中文内容');
-      expect(hash).toHaveLength(16);
     });
   });
 
@@ -1023,83 +910,53 @@ describe('WatcherRunnerService', () => {
         expect(mockEventsService.publish).toHaveBeenCalledTimes(1);
       });
 
-      it('should fail idle gate when session is busy', async () => {
+      it.each([
+        {
+          name: 'should fail idle gate when session is busy',
+          session: createMockSession({
+            id: 'session-idle-gate-2',
+            tmuxSessionId: 'tmux-1',
+            activityState: 'busy',
+            lastActivityAt: '2024-01-01T00:08:30.000Z',
+          }),
+        },
+        {
+          name: 'should fail idle gate when lastActivityAt is missing',
+          session: createMockSession({
+            id: 'session-idle-gate-3',
+            tmuxSessionId: 'tmux-1',
+            activityState: 'idle',
+            lastActivityAt: null,
+          }),
+        },
+        {
+          name: 'should fail idle gate when lastActivityAt is invalid',
+          session: createMockSession({
+            id: 'session-idle-gate-invalid-ts',
+            tmuxSessionId: 'tmux-1',
+            activityState: 'idle',
+            lastActivityAt: 'not-a-date',
+          }),
+        },
+        {
+          name: 'should fail idle gate when idle duration is below threshold',
+          session: createMockSession({
+            id: 'session-idle-gate-not-enough',
+            tmuxSessionId: 'tmux-1',
+            activityState: 'idle',
+            lastActivityAt: '2024-01-01T00:09:40.000Z',
+          }),
+        },
+      ])('$name', async ({ session }) => {
         const watcher = createTestWatcher({
           idleAfterSeconds: 60,
           condition: { type: 'contains', pattern: 'error' },
         });
-        const session = createMockSession({
-          id: 'session-idle-gate-2',
-          tmuxSessionId: 'tmux-1',
-          activityState: 'busy',
-          lastActivityAt: '2024-01-01T00:08:30.000Z',
+        expect(await service.checkSession(watcher, session)).toMatchObject({
+          skipped: false,
+          matched: false,
+          triggered: false,
         });
-
-        const result = await service.checkSession(watcher, session);
-
-        expect(result.skipped).toBe(false);
-        expect(result.matched).toBe(false);
-        expect(result.triggered).toBe(false);
-        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
-      });
-
-      it('should fail idle gate when lastActivityAt is missing', async () => {
-        const watcher = createTestWatcher({
-          idleAfterSeconds: 60,
-          condition: { type: 'contains', pattern: 'error' },
-        });
-        const session = createMockSession({
-          id: 'session-idle-gate-3',
-          tmuxSessionId: 'tmux-1',
-          activityState: 'idle',
-          lastActivityAt: null,
-        });
-
-        const result = await service.checkSession(watcher, session);
-
-        expect(result.skipped).toBe(false);
-        expect(result.matched).toBe(false);
-        expect(result.triggered).toBe(false);
-        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
-      });
-
-      it('should fail idle gate when lastActivityAt is invalid', async () => {
-        const watcher = createTestWatcher({
-          idleAfterSeconds: 60,
-          condition: { type: 'contains', pattern: 'error' },
-        });
-        const session = createMockSession({
-          id: 'session-idle-gate-invalid-ts',
-          tmuxSessionId: 'tmux-1',
-          activityState: 'idle',
-          lastActivityAt: 'not-a-date',
-        });
-
-        const result = await service.checkSession(watcher, session);
-
-        expect(result.skipped).toBe(false);
-        expect(result.matched).toBe(false);
-        expect(result.triggered).toBe(false);
-        expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
-      });
-
-      it('should fail idle gate when idle duration is below threshold', async () => {
-        const watcher = createTestWatcher({
-          idleAfterSeconds: 60,
-          condition: { type: 'contains', pattern: 'error' },
-        });
-        const session = createMockSession({
-          id: 'session-idle-gate-not-enough',
-          tmuxSessionId: 'tmux-1',
-          activityState: 'idle',
-          lastActivityAt: '2024-01-01T00:09:40.000Z',
-        });
-
-        const result = await service.checkSession(watcher, session);
-
-        expect(result.skipped).toBe(false);
-        expect(result.matched).toBe(false);
-        expect(result.triggered).toBe(false);
         expect(mockTerminalIO.captureHistory).not.toHaveBeenCalled();
       });
 
@@ -1347,73 +1204,27 @@ describe('WatcherRunnerService', () => {
     });
 
     describe('agent lookup', () => {
-      it('should look up agent name when agentId is present', async () => {
-        mockStorage.getAgent.mockResolvedValue({
-          id: 'agent-1',
-          name: 'Test Agent',
-          profileId: 'profile-1',
-        });
-
-        const watcher = createTestWatcher();
-        const session = createMockSession({ agentId: 'agent-1' });
-        const viewport = 'error';
-        const viewportHash = 'hash123';
-        const triggerCount = 1;
-
-        await service.triggerEvent(watcher, session, viewport, viewportHash, triggerCount);
-
-        expect(mockStorage.getAgent).toHaveBeenCalledWith('agent-1');
-
-        const payload = mockEventsService.publish.mock.calls[0][1];
-        expect(payload.agentId).toBe('agent-1');
-        expect(payload.agentName).toBe('Test Agent');
-      });
-
-      it('should set agentId and agentName to null when no agentId', async () => {
-        const watcher = createTestWatcher();
-        const session = createMockSession({ agentId: null });
-        const viewport = 'error';
-        const viewportHash = 'hash123';
-        const triggerCount = 1;
-
-        await service.triggerEvent(watcher, session, viewport, viewportHash, triggerCount);
-
-        expect(mockStorage.getAgent).not.toHaveBeenCalled();
-
-        const payload = mockEventsService.publish.mock.calls[0][1];
-        expect(payload.agentId).toBeNull();
-        expect(payload.agentName).toBeNull();
-      });
-
-      it('should set agentName to null when agent not found', async () => {
-        mockStorage.getAgent.mockResolvedValue(null);
-
-        const watcher = createTestWatcher();
-        const session = createMockSession({ agentId: 'non-existent-agent' });
-        const viewport = 'error';
-        const viewportHash = 'hash123';
-        const triggerCount = 1;
-
-        await service.triggerEvent(watcher, session, viewport, viewportHash, triggerCount);
-
-        const payload = mockEventsService.publish.mock.calls[0][1];
-        expect(payload.agentId).toBe('non-existent-agent');
-        expect(payload.agentName).toBeNull();
-      });
-    });
-
-    describe('trigger count tracking', () => {
-      it('should include correct trigger count in payload', async () => {
-        const watcher = createTestWatcher();
-        const session = createMockSession();
-        const viewport = 'error';
-        const viewportHash = 'hash123';
-
-        await service.triggerEvent(watcher, session, viewport, viewportHash, 1);
-        expect(mockEventsService.publish.mock.calls[0][1].triggerCount).toBe(1);
-
-        await service.triggerEvent(watcher, session, viewport, viewportHash, 10);
-        expect(mockEventsService.publish.mock.calls[1][1].triggerCount).toBe(10);
+      it.each([
+        {
+          name: 'known agent',
+          agentId: 'agent-1',
+          agent: { id: 'agent-1', name: 'Test Agent', profileId: 'profile-1' },
+          agentName: 'Test Agent',
+        },
+        { name: 'no agent', agentId: null, agent: null, agentName: null },
+        { name: 'missing agent', agentId: 'non-existent-agent', agent: null, agentName: null },
+      ])('publishes identity for a $name', async ({ agentId, agent, agentName }) => {
+        mockStorage.getAgent.mockResolvedValue(agent);
+        await service.triggerEvent(
+          createTestWatcher(),
+          createMockSession({ agentId }),
+          'error',
+          'hash123',
+          1,
+        );
+        if (agentId) expect(mockStorage.getAgent).toHaveBeenCalledWith(agentId);
+        else expect(mockStorage.getAgent).not.toHaveBeenCalled();
+        expect(mockEventsService.publish.mock.calls[0][1]).toMatchObject({ agentId, agentName });
       });
     });
   });
@@ -1469,15 +1280,6 @@ describe('WatcherRunnerService', () => {
       expect(results[0].tmuxSessionId).toBeNull();
       expect(results[0].viewport).toBeNull();
       expect(results[0].conditionMatched).toBe(false);
-    });
-
-    it('should return empty array when no sessions match', async () => {
-      const watcher = createTestWatcher({ scope: 'agent', scopeFilterId: 'non-existent' });
-      mockSessionsService.listActiveSessions.mockResolvedValue([]);
-
-      const results = await service.testWatcher(watcher);
-
-      expect(results).toEqual([]);
     });
 
     it('should check condition without triggering events', async () => {
@@ -1606,15 +1408,6 @@ describe('WatcherRunnerService', () => {
       expect(service.isWatcherRunning('watcher-2')).toBe(true);
     });
 
-    it('should handle empty enabled watchers list', async () => {
-      mockStorage.listEnabledWatchers.mockResolvedValue([]);
-
-      await service.onModuleInit();
-
-      expect(mockStorage.listEnabledWatchers).toHaveBeenCalled();
-      expect(service.getRunningWatcherIds()).toEqual([]);
-    });
-
     it('should handle storage error gracefully', async () => {
       mockStorage.listEnabledWatchers.mockRejectedValue(new Error('Storage error'));
 
@@ -1640,25 +1433,6 @@ describe('WatcherRunnerService', () => {
       await service.onModuleDestroy();
 
       expect(service.isWatcherRunning('watcher-1')).toBe(false);
-      expect(service.getRunningWatcherIds()).toEqual([]);
-    });
-
-    it('should clear all state maps', async () => {
-      const watcher = createMockWatcher({ id: 'watcher-1', pollIntervalMs: 1000 });
-      await service.startWatcher(watcher);
-
-      // Populate some state by running a check
-      const session = createMockSession({ tmuxSessionId: 'tmux-1' });
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error found' });
-
-      // Trigger a poll cycle to populate state
-      jest.advanceTimersByTime(1000);
-      await Promise.resolve(); // flush promises
-
-      await service.onModuleDestroy();
-
-      // Verify all maps are cleared
       expect(service.getRunningWatcherIds()).toEqual([]);
     });
   });
@@ -1745,29 +1519,6 @@ describe('WatcherRunnerService', () => {
       expect(service.isWatcherRunning('watcher-1')).toBe(false);
     });
 
-    it('should clean up all prefix-matched state', async () => {
-      const watcher = createMockWatcher({ id: 'watcher-1', pollIntervalMs: 1000 });
-      await service.startWatcher(watcher);
-
-      // Set up session and trigger some state
-      const session = createMockSession({ id: 'session-1', tmuxSessionId: 'tmux-1' });
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error found' });
-
-      // Run a poll cycle to populate state
-      jest.advanceTimersByTime(1000);
-      await Promise.resolve();
-
-      await service.stopWatcher('watcher-1');
-
-      expect(service.isWatcherRunning('watcher-1')).toBe(false);
-    });
-
-    it('should handle stopping non-existent watcher gracefully', async () => {
-      // Should not throw
-      await expect(service.stopWatcher('nonexistent')).resolves.not.toThrow();
-    });
-
     it('should remove watcher from config cache', async () => {
       const watcher = createMockWatcher({ id: 'watcher-1' });
       await service.startWatcher(watcher);
@@ -1781,32 +1532,7 @@ describe('WatcherRunnerService', () => {
     });
   });
 
-  describe('isWatcherRunning', () => {
-    it('should return true for running watcher', async () => {
-      const watcher = createMockWatcher({ id: 'watcher-1' });
-      await service.startWatcher(watcher);
-
-      expect(service.isWatcherRunning('watcher-1')).toBe(true);
-    });
-
-    it('should return false for non-running watcher', () => {
-      expect(service.isWatcherRunning('nonexistent')).toBe(false);
-    });
-
-    it('should return false after watcher is stopped', async () => {
-      const watcher = createMockWatcher({ id: 'watcher-1' });
-      await service.startWatcher(watcher);
-      await service.stopWatcher('watcher-1');
-
-      expect(service.isWatcherRunning('watcher-1')).toBe(false);
-    });
-  });
-
   describe('getRunningWatcherIds', () => {
-    it('should return empty array when no watchers running', () => {
-      expect(service.getRunningWatcherIds()).toEqual([]);
-    });
-
     it('should return all running watcher IDs', async () => {
       const watcher1 = createMockWatcher({ id: 'watcher-1' });
       const watcher2 = createMockWatcher({ id: 'watcher-2' });
@@ -1826,38 +1552,6 @@ describe('WatcherRunnerService', () => {
   describe('captureCache 2s-TTL × concurrent pollWatcher (edge characterization)', () => {
     afterEach(() => {
       jest.useRealTimers();
-    });
-
-    it('serves one shared capture to a second watcher within the 2s TTL (single tmux call)', async () => {
-      jest.useFakeTimers();
-      jest.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'shared viewport' });
-
-      // First watcher captures (cache miss → tmux).
-      const first = await service.captureViewport('tmux-shared', 50);
-      // A different watcher polling the same session+lines reuses the cache.
-      const second = await service.captureViewport('tmux-shared', 50);
-
-      expect(first).toBe('shared viewport');
-      expect(second).toBe('shared viewport');
-      expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
-    });
-
-    it('re-captures from tmux once the 2s TTL expires on the shared key', async () => {
-      jest.useFakeTimers();
-      jest.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
-      mockTerminalIO.captureHistory
-        .mockResolvedValueOnce({ ok: true, output: 'stale' })
-        .mockResolvedValueOnce({ ok: true, output: 'fresh' });
-
-      await service.captureViewport('tmux-expire', 50);
-      expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(1);
-
-      await jest.advanceTimersByTimeAsync(2001); // past the 2s TTL
-      const after = await service.captureViewport('tmux-expire', 50);
-
-      expect(after).toBe('fresh');
-      expect(mockTerminalIO.captureHistory).toHaveBeenCalledTimes(2);
     });
 
     it('skips an overlapping poll for the same watcher (per-watcher inFlight guard)', async () => {

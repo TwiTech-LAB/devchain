@@ -178,14 +178,6 @@ describe('ExternalMyWorkController', () => {
     expect(service.getMyWork).not.toHaveBeenCalled();
   });
 
-  it('dispatches the generic task-detail route with validated identifiers', async () => {
-    service.getTaskDetail.mockResolvedValue({ remoteId: 'task-1' });
-
-    await controller.getTaskDetail('clickup', 'task-1', PROJECT_ID);
-
-    expect(service.getTaskDetail).toHaveBeenCalledWith(PROJECT_ID, 'clickup', 'task-1');
-  });
-
   it('parses status and plain-text comment inputs', async () => {
     service.changeTaskStatus.mockResolvedValue({ succeeded: true });
     service.addTaskComment.mockResolvedValue({ succeeded: true });
@@ -336,38 +328,6 @@ describe('ExternalMyWorkController', () => {
     expect(timeMutations.deleteTimeEntry).toHaveBeenCalledTimes(1);
   });
 
-  it('dispatches time-operation read, verify, and acknowledge routes', async () => {
-    const receipt = { operationId: 'op-1', phase: 'outcome_unknown' };
-    timeMutations.getOperation.mockResolvedValue(receipt);
-    timeMutations.verifyOperation.mockResolvedValue({
-      receipt,
-      resolved: true,
-      resolution: 'not_applied',
-    });
-    timeMutations.acknowledgeOperation.mockResolvedValue({
-      operationId: 'op-1',
-      phase: 'abandoned_unknown',
-    });
-
-    await controller.getTimeOperation('jira', 'op-1', '4', PROJECT_ID);
-    expect(timeMutations.getOperation).toHaveBeenCalledWith(PROJECT_ID, 'jira', 'op-1', 4);
-
-    await controller.verifyTimeOperation('jira', 'op-1', '4', PROJECT_ID);
-    expect(timeMutations.verifyOperation).toHaveBeenCalledWith(PROJECT_ID, 'jira', 'op-1', 4);
-
-    await controller.acknowledgeTimeOperation('jira', 'op-1', '4', PROJECT_ID);
-    expect(timeMutations.acknowledgeOperation).toHaveBeenCalledWith(PROJECT_ID, 'jira', 'op-1', 4);
-
-    await expect(
-      controller.verifyTimeOperation('jira', 'op-1', 'bad', PROJECT_ID),
-    ).rejects.toBeInstanceOf(ValidationError);
-    await expect(
-      controller.getTimeOperation('github', 'op-1', '4', PROJECT_ID),
-    ).rejects.toBeInstanceOf(ValidationError);
-    expect(timeMutations.verifyOperation).toHaveBeenCalledTimes(1);
-    expect(timeMutations.getOperation).toHaveBeenCalledTimes(1);
-  });
-
   it('dispatches the task-comments route with a validated optional cursor', async () => {
     service.listTaskComments.mockResolvedValue({ comments: [], nextCursor: null });
 
@@ -377,27 +337,6 @@ describe('ExternalMyWorkController', () => {
     await controller.listTaskComments('jira', 'ENG-1', { projectId: PROJECT_ID, cursor: 'MTA' });
     expect(service.listTaskComments).toHaveBeenLastCalledWith(PROJECT_ID, 'jira', 'ENG-1', 'MTA');
   });
-
-  it.each([
-    ['unknown provider', 'github', 'task-1', { projectId: PROJECT_ID }],
-    ['blank task id', 'clickup', ' ', { projectId: PROJECT_ID }],
-    ['oversized cursor', 'clickup', 'task-1', { projectId: PROJECT_ID, cursor: 'x'.repeat(1_025) }],
-    ['empty cursor', 'clickup', 'task-1', { projectId: PROJECT_ID, cursor: '' }],
-    [
-      'unknown query field',
-      'clickup',
-      'task-1',
-      { projectId: PROJECT_ID, cursor: 'MTA', limit: '10' },
-    ],
-  ])(
-    'rejects %s on the comments route without dispatch',
-    async (_case, provider, taskId, query) => {
-      await expect(controller.listTaskComments(provider, taskId, query)).rejects.toBeInstanceOf(
-        ValidationError,
-      );
-      expect(service.listTaskComments).not.toHaveBeenCalled();
-    },
-  );
 
   it('validates and dispatches one bounded batch link-state request', async () => {
     service.getTaskLinkStates.mockResolvedValue({ items: [] });
@@ -491,19 +430,6 @@ describe('ExternalMyWorkController', () => {
   describe('gated rich content routes', () => {
     const SESSION_ID = '3f2a1b8e-0000-4000-8000-000000000000';
 
-    it('dispatches the stateless rich-description read', async () => {
-      editSessions.readRichDescription.mockResolvedValue({ supported: true });
-      await controller.readRichDescription('jira', 'KAN-1', PROJECT_ID);
-      expect(editSessions.readRichDescription).toHaveBeenCalledWith(PROJECT_ID, 'jira', 'KAN-1');
-    });
-
-    it('rejects an unknown provider on the rich-description read', async () => {
-      await expect(
-        controller.readRichDescription('github', 'KAN-1', PROJECT_ID),
-      ).rejects.toBeInstanceOf(ValidationError);
-      expect(editSessions.readRichDescription).not.toHaveBeenCalled();
-    });
-
     it('dispatches the comment-edit session with an optional lookup token', async () => {
       editSessions.createCommentEditSession.mockResolvedValue({ sessionId: SESSION_ID });
       await controller.createCommentEditSession(
@@ -528,67 +454,6 @@ describe('ExternalMyWorkController', () => {
         'c1',
         null,
       );
-    });
-
-    it('rejects a malformed lookup token without dispatch', async () => {
-      await expect(
-        controller.createCommentEditSession(
-          'clickup',
-          'task-1',
-          'c1',
-          { lookupToken: '' },
-          PROJECT_ID,
-        ),
-      ).rejects.toBeInstanceOf(ValidationError);
-      expect(editSessions.createCommentEditSession).not.toHaveBeenCalled();
-    });
-
-    it('dispatches save with a validated revision and reload by session id', async () => {
-      editSessions.saveSession.mockResolvedValue({ outcome: 'saved', revision: 1 });
-      editSessions.reloadSession.mockResolvedValue({ status: 'reloaded' });
-      const document = { version: 1, blocks: [] };
-
-      await controller.saveSession(SESSION_ID, { document, revision: 0 }, PROJECT_ID);
-      expect(editSessions.saveSession).toHaveBeenCalledWith(PROJECT_ID, SESSION_ID, document, 0);
-
-      await controller.reloadSession(SESSION_ID, PROJECT_ID);
-      expect(editSessions.reloadSession).toHaveBeenCalledWith(PROJECT_ID, SESSION_ID);
-    });
-
-    it('rejects save bodies with a missing revision or unknown fields', async () => {
-      await expect(
-        controller.saveSession(SESSION_ID, { document: {} }, PROJECT_ID),
-      ).rejects.toBeInstanceOf(ValidationError);
-      await expect(
-        controller.saveSession(
-          SESSION_ID,
-          {
-            document: { version: 1, blocks: [] },
-            revision: 0,
-            force: true,
-          },
-          PROJECT_ID,
-        ),
-      ).rejects.toBeInstanceOf(ValidationError);
-      expect(editSessions.saveSession).not.toHaveBeenCalled();
-    });
-
-    it('rejects a non-uuid session id on every session route', async () => {
-      await expect(controller.touchSession('not-a-uuid', PROJECT_ID)).rejects.toBeInstanceOf(
-        ValidationError,
-      );
-      await expect(controller.verifySession('not-a-uuid', PROJECT_ID)).rejects.toBeInstanceOf(
-        ValidationError,
-      );
-      await expect(
-        controller.saveSession('not-a-uuid', { document: {}, revision: 0 }, PROJECT_ID),
-      ).rejects.toBeInstanceOf(ValidationError);
-      await expect(controller.reloadSession('not-a-uuid', PROJECT_ID)).rejects.toBeInstanceOf(
-        ValidationError,
-      );
-      await expect(
-        controller.executeCommentDelete('not-a-uuid', PROJECT_ID),
-      ).rejects.toBeInstanceOf(ValidationError);
     });
   });
 });

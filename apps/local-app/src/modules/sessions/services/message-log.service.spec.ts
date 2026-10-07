@@ -48,13 +48,24 @@ describe('MessageLogService', () => {
 
   it('queries with filters', () => {
     log.addEntry(makeEntry({ id: 'e1', agentId: 'a1', status: 'queued' }));
-    log.addEntry(makeEntry({ id: 'e2', agentId: 'a2', status: 'delivered' }));
+    log.addEntry(
+      makeEntry({
+        id: 'e2',
+        agentId: 'a2',
+        status: 'delivered',
+        projectId: 'project-2',
+        source: 'mobile',
+      }),
+    );
     log.addEntry(makeEntry({ id: 'e3', agentId: 'a1', status: 'delivered' }));
 
     expect(log.query({ agentId: 'a1' })).toHaveLength(2);
     expect(log.query({ status: 'delivered' })).toHaveLength(2);
     expect(log.query({ agentId: 'a1', status: 'delivered' })).toHaveLength(1);
     expect(log.query({ limit: 1 })).toHaveLength(1);
+    expect(log.query({ projectId: 'project-2' }).map((entry) => entry.id)).toEqual(['e2']);
+    expect(log.query({ source: 'mobile' }).map((entry) => entry.id)).toEqual(['e2']);
+    expect(log.query().map((entry) => entry.id)).toEqual(['e3', 'e2', 'e1']);
   });
 
   it('returns stats', () => {

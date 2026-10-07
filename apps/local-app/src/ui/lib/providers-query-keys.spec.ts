@@ -5,10 +5,6 @@ describe('providersQueryKeys', () => {
     it('produces the canonical global provider-list key', () => {
       expect(providersQueryKeys.list()).toEqual(['providers']);
     });
-
-    it('returns the same key shape on every call (no params, no scoping)', () => {
-      expect(providersQueryKeys.list()).toEqual(providersQueryKeys.list());
-    });
   });
 
   describe('preflight', () => {

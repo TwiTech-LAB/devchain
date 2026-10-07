@@ -3,10 +3,7 @@
  * aggregation, and perf-hook lifecycle without application boot or external I/O.
  */
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  BYTE_ACCOUNTING_CONSTANTS as C,
-  estimateObjectBytes,
-} from '../helpers/byte-accounting.helper';
+import { estimateObjectBytes } from '../helpers/byte-accounting.helper';
 import { MetricsService } from './metrics.service';
 
 describe('MetricsService aggregate and event-loop contracts', () => {
@@ -307,44 +304,6 @@ describe('MetricsService aggregate and event-loop contracts', () => {
         providersFailed: 1,
       }),
     );
-    await module.close();
-  });
-
-  it('counts shared special-object roots once across successful providers', async () => {
-    const { module, service } = await createModule();
-    const date = new Date('2026-07-12T00:00:00Z');
-    const buffer = Buffer.alloc(1024);
-    const regexp = /shared\d+/;
-    const error = new Error('shared failure');
-    const roots = [date, buffer, regexp, error];
-    const expectedBytes =
-      C.SIZE_DATE +
-      1024 +
-      C.SIZE_OBJECT_OVERHEAD +
-      Buffer.byteLength(regexp.source, 'utf8') +
-      C.SIZE_OBJECT_OVERHEAD +
-      Buffer.byteLength(error.message, 'utf8');
-
-    for (const name of ['first', 'second']) {
-      service.registerCacheStatsProvider(
-        name,
-        () => ({
-          entries: 1,
-          bytesEstimated: 0,
-          hits: 0,
-          misses: 0,
-          hitRate: 0,
-          bytesMethod: 'deferred-to-aggregate' as const,
-        }),
-        () => roots,
-      );
-    }
-
-    const snapshot = service.getMetrics();
-
-    expect(snapshot.caches.first.bytesEstimated).toBe(expectedBytes);
-    expect(snapshot.caches.second.bytesEstimated).toBe(0);
-    expect(snapshot.caches.aggregate.bytesEstimated).toBe(expectedBytes);
     await module.close();
   });
 

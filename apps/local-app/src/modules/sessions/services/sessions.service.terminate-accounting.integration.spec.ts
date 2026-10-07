@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 // Backend integration: real in-memory SQLite plus the real EpicTimeStore is
 // the cheapest layer that proves the atomic stop/reset boundary — one queued
 // transaction covering the stopped-state write, final reconciliation, team
@@ -5,8 +6,6 @@
 // and retry behavior.
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { SessionsService } from './sessions.service';
 import { EpicTimeStore } from '../../epic-time/services/epic-time.store';
@@ -16,7 +15,6 @@ jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
 }));
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const WORKSPACE_ID = '0defa017-0000-4000-8000-000000000001';
 const AGENT_ID = '22222222-2222-4222-8222-222222222222';
@@ -39,8 +37,7 @@ describe('session termination unlogged-time reset', () => {
   let eventsService: { publish: jest.Mock };
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
     db = drizzle(sqlite);
     store = new EpicTimeStore(db);

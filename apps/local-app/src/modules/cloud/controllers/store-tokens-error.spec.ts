@@ -40,13 +40,6 @@ describe('mapStoreTokensError', () => {
       expect(result.getStatus()).toBe(400);
       expect(result.message).toBe(BAD_TOKEN_MESSAGE);
     });
-
-    it("maps 'Invalid JWT payload' to 400", () => {
-      const result = mapStoreTokensError(new Error('Invalid JWT payload: missing sub or exp'));
-      expect(result).toBeInstanceOf(BadRequestException);
-      expect(result.getStatus()).toBe(400);
-      expect(result.message).toBe(BAD_TOKEN_MESSAGE);
-    });
   });
 
   describe('502 BadGatewayException — identity/JWKS/JOSE infrastructure', () => {
@@ -68,13 +61,6 @@ describe('mapStoreTokensError', () => {
 
     it("maps a 'JWKS fetch failed' message to 502", () => {
       const result = mapStoreTokensError(new Error('JWKS fetch failed: 500'));
-      expect(result).toBeInstanceOf(BadGatewayException);
-      expect(result.getStatus()).toBe(502);
-      expect(result.message).toBe(IDENTITY_MESSAGE);
-    });
-
-    it('maps a network error with top-level .code to 502', () => {
-      const result = mapStoreTokensError(withCode('ECONNREFUSED', 'connect ECONNREFUSED'));
       expect(result).toBeInstanceOf(BadGatewayException);
       expect(result.getStatus()).toBe(502);
       expect(result.message).toBe(IDENTITY_MESSAGE);

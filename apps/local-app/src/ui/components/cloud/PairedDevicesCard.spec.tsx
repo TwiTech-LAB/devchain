@@ -43,13 +43,21 @@ describe('PairedDevicesCard', () => {
     jest.restoreAllMocks();
   });
 
-  it('lists paired devices with a trust badge', async () => {
-    global.fetch = mockFetch([['/api/e2ee/devices', [device()]]]) as unknown as typeof fetch;
-
+  it.each([
+    { label: 'trust on first use', overrides: {}, name: 'Pixel', badge: 'Trusted on first use' },
+    {
+      label: 'QR verified',
+      overrides: { label: 'iPhone', trust: 'verified', verifiedVia: 'qr' },
+      name: 'iPhone',
+      badge: 'Verified',
+    },
+  ] as const)('$label', async ({ overrides, name, badge }) => {
+    global.fetch = mockFetch([
+      ['/api/e2ee/devices', [device(overrides)]],
+    ]) as unknown as typeof fetch;
     render(<PairedDevicesCard />);
-
-    expect(await screen.findByText('Pixel')).toBeInTheDocument();
-    expect(screen.getByText('Trusted on first use')).toBeInTheDocument();
+    expect(await screen.findByText(name)).toBeInTheDocument();
+    expect(screen.getByText(badge)).toBeInTheDocument();
   });
 
   it('uses alias, reported label, and fallback precedence across the row and un-pair dialog', async () => {
@@ -68,7 +76,7 @@ describe('PairedDevicesCard', () => {
 
     const aliased = await screen.findByTestId('paired-device-k1');
     expect(within(aliased).getByRole('button', { name: 'Rename Personal phone' })).toBeVisible();
-    expect(within(aliased).getByText('Reported name: Pixel')).toHaveClass('text-muted-foreground');
+    expect(within(aliased).getByText('Reported name: Pixel')).toBeVisible();
     expect(
       within(screen.getByTestId('paired-device-k2')).getByRole('button', {
         name: 'Rename iPhone',
@@ -247,16 +255,6 @@ describe('PairedDevicesCard', () => {
       'Couldn’t update the local alias for this device.',
     );
     expect(screen.getByRole('textbox', { name: 'Local alias for Pixel' })).toBeEnabled();
-  });
-
-  it('labels a QR-verified device as Verified', async () => {
-    global.fetch = mockFetch([
-      ['/api/e2ee/devices', [device({ label: 'iPhone', trust: 'verified', verifiedVia: 'qr' })]],
-    ]) as unknown as typeof fetch;
-
-    render(<PairedDevicesCard />);
-    expect(await screen.findByText('iPhone')).toBeInTheDocument();
-    expect(screen.getByText('Verified')).toBeInTheDocument();
   });
 
   it('reveals the safety number on demand and hides it again', async () => {

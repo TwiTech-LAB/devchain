@@ -23,6 +23,7 @@ import {
 import { HomeGitGuardService } from '../../modules/file-sync/home-git-guard.service';
 import { FileSyncService } from '../../modules/file-sync/file-sync.service';
 import { FakeFileSyncService } from '../../modules/file-sync/testing/fake-file-sync.service';
+import { createTestDatabase } from './test-database.helper';
 
 interface InMemoryBootstrapDb {
   sqlite: Database.Database;
@@ -107,7 +108,11 @@ export function applyExternalBoundaryMocks(
         .overrideProvider(HomeGitGuardService)
         .useValue({
           install: async () => null,
-          remove: async () => undefined,
+          remove: async (_projectId: string, options: { refreshIndex: boolean }) => ({
+            removed: false,
+            indexRefreshed: options.refreshIndex ? true : null,
+            warning: null,
+          }),
           reinstall: async () => null,
         });
   const withHandler = options.realTunnelHandler
@@ -132,6 +137,8 @@ function createInMemoryBootstrapDb(): InMemoryBootstrapDb {
 
 /** Opens (or creates) a SQLite database at `path` with every migration applied. */
 export function createMigratedDatabase(path: string): InMemoryBootstrapDb {
+  if (path === ':memory:') return createTestDatabase();
+
   const sqlite = new Database(path);
   sqlite.pragma('journal_mode = WAL');
   const db = drizzle(sqlite);

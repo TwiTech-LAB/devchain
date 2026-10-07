@@ -71,40 +71,24 @@ describe('createScrollIntentBinding', () => {
   });
 
   describe('wheel observation', () => {
-    it('stamps intent on an upward wheel in the host path and never prevents default', () => {
-      const event = wheel(-120);
-      container.dispatchEvent(event);
-      expect(stampIntent).toHaveBeenCalledTimes(1);
-      expect(stampIntent).toHaveBeenCalledWith(nowValue);
-      // Passive observer: it must never prevent, stop, or move.
-      expect(event.defaultPrevented).toBe(false);
-    });
-
-    it('does not stamp on a downward wheel (returning toward the bottom)', () => {
-      container.dispatchEvent(wheel(120));
-      expect(stampIntent).not.toHaveBeenCalled();
-    });
-
-    it('does not stamp when a wheel-capable TUI owns the wheel (tty + tracking)', () => {
-      ttyMode = true;
-      mouseTrackingMode = 'any';
-      container.dispatchEvent(wheel(-120));
-      expect(stampIntent).not.toHaveBeenCalled();
-    });
-
-    it('stamps in tty mode when the tracking mode cannot report the wheel', () => {
-      ttyMode = true;
-      mouseTrackingMode = 'x10'; // press-only, no wheel buttons
-      container.dispatchEvent(wheel(-120));
-      expect(stampIntent).toHaveBeenCalledTimes(1);
-    });
-
-    it('stamps in form mode even with active tracking (form never forwards the wheel)', () => {
-      ttyMode = false;
-      mouseTrackingMode = 'any';
-      container.dispatchEvent(wheel(-120));
-      expect(stampIntent).toHaveBeenCalledTimes(1);
-    });
+    it.each([
+      { delta: -120, tty: false, tracking: 'none', stamps: 1 },
+      { delta: 120, tty: false, tracking: 'none', stamps: 0 },
+      { delta: -120, tty: true, tracking: 'any', stamps: 0 },
+      { delta: -120, tty: true, tracking: 'x10', stamps: 1 },
+      { delta: -120, tty: false, tracking: 'any', stamps: 1 },
+    ] as const)(
+      'observes wheel $delta tty=$tty tracking=$tracking',
+      ({ delta, tty, tracking, stamps }) => {
+        ttyMode = tty;
+        mouseTrackingMode = tracking;
+        const event = wheel(delta);
+        container.dispatchEvent(event);
+        expect(stampIntent).toHaveBeenCalledTimes(stamps);
+        if (stamps) expect(stampIntent).toHaveBeenCalledWith(nowValue);
+        expect(event.defaultPrevented).toBe(false);
+      },
+    );
   });
 
   describe('keyboard observation', () => {
@@ -120,16 +104,9 @@ describe('createScrollIntentBinding', () => {
   });
 
   describe('scrollbar pointerdown routing', () => {
-    it('stamps and begins a drag on the slider', () => {
-      const { slider } = buildScrollbar();
-      slider.dispatchEvent(pointer('pointerdown'));
-      expect(stampIntent).toHaveBeenCalledTimes(1);
-      expect(controller.isDragActive()).toBe(true);
-    });
-
-    it('stamps and begins a drag on the scrollbar track', () => {
-      const { scrollbar } = buildScrollbar();
-      scrollbar.dispatchEvent(pointer('pointerdown'));
+    it.each(['slider', 'scrollbar'] as const)('begins drag on %s', (target) => {
+      const node = buildScrollbar()[target];
+      node.dispatchEvent(pointer('pointerdown'));
       expect(stampIntent).toHaveBeenCalledTimes(1);
       expect(controller.isDragActive()).toBe(true);
     });
@@ -163,24 +140,17 @@ describe('createScrollIntentBinding', () => {
       expect(stampIntent).toHaveBeenCalledTimes(2);
     });
 
-    it('ends the drag on pointercancel', () => {
+    it.each([
+      ['pointercancel', 'pointercancel'],
+      ['lostpointercapture', 'capture-loss'],
+    ] as const)('ends drag on %s', (event, reason) => {
       const ends: string[] = [];
       controller.onDragEnd((reason) => ends.push(reason));
       const { slider } = buildScrollbar();
       slider.dispatchEvent(pointer('pointerdown'));
-      window.dispatchEvent(pointer('pointercancel'));
+      (event === 'pointercancel' ? window : document).dispatchEvent(pointer(event));
       expect(controller.isDragActive()).toBe(false);
-      expect(ends).toEqual(['pointercancel']);
-    });
-
-    it('ends the drag on silent pointer-capture loss (no pointerup)', () => {
-      const ends: string[] = [];
-      controller.onDragEnd((reason) => ends.push(reason));
-      const { slider } = buildScrollbar();
-      slider.dispatchEvent(pointer('pointerdown'));
-      document.dispatchEvent(pointer('lostpointercapture'));
-      expect(controller.isDragActive()).toBe(false);
-      expect(ends).toEqual(['capture-loss']);
+      expect(ends).toEqual([reason]);
     });
 
     it('does not refresh intent from an unrelated pointermove when no drag is active', () => {

@@ -80,172 +80,121 @@ describe('ui/lib/skills community source api', () => {
     jest.clearAllMocks();
   });
 
-  it('fetchCommunitySources requests community source list', async () => {
-    const payload = [
-      {
-        id: 'source-1',
-        name: 'claude-skills',
-        repoOwner: 'Jeffallan',
-        repoName: 'claude-skills',
+  it.each([
+    {
+      label: 'community',
+      url: '/api/skills/community-sources',
+      payload: [
+        {
+          id: 'source-1',
+          name: 'claude-skills',
+          repoOwner: 'Jeffallan',
+          repoName: 'claude-skills',
+          branch: 'main',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      request: () => fetchCommunitySources(globalFetch),
+    },
+    {
+      label: 'local',
+      url: '/api/skills/local-sources',
+      payload: [
+        {
+          id: 'source-1',
+          name: 'local-source',
+          folderPath: '/tmp/local-source',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      request: () => fetchLocalSources(globalFetch),
+    },
+  ])('lists $label sources', async ({ url, payload, request }) => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => payload,
+    })) as unknown as typeof fetch;
+    await expect(request()).resolves.toEqual(payload);
+    expect(global.fetch).toHaveBeenCalledWith(url, {});
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: 'community',
+      url: '/api/skills/community-sources',
+      payload: {
+        id: 'source-2',
+        name: 'repo',
+        repoOwner: 'owner',
+        repoName: 'repo',
         branch: 'main',
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       },
-    ];
-
-    (global as unknown as { fetch: unknown }).fetch = jest.fn(async (input: RequestInfo | URL) => {
-      expect(input).toBe('/api/skills/community-sources');
-      return {
-        ok: true,
-        json: async () => payload,
-      } as Response;
-    });
-
-    await expect(fetchCommunitySources(globalFetch)).resolves.toEqual(payload);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('addCommunitySource posts payload to community source endpoint', async () => {
-    const payload = {
-      id: 'source-2',
-      name: 'repo',
-      repoOwner: 'owner',
-      repoName: 'repo',
-      branch: 'main',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-    };
-
-    (global as unknown as { fetch: unknown }).fetch = jest.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        expect(input).toBe('/api/skills/community-sources');
-        expect(init?.method).toBe('POST');
-        expect(init?.headers).toEqual({ 'Content-Type': 'application/json' });
-        expect(init?.body).toBe(
-          JSON.stringify({
-            name: 'repo',
-            url: 'https://github.com/owner/repo',
-            branch: 'main',
-          }),
-        );
-        return {
-          ok: true,
-          json: async () => payload,
-        } as Response;
-      },
-    );
-
-    await expect(
-      addCommunitySource(globalFetch, {
+      input: {
         name: 'repo',
         url: 'https://github.com/owner/repo',
         branch: 'main',
-      }),
-    ).resolves.toEqual(payload);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('removeCommunitySource sends delete request by id', async () => {
-    (global as unknown as { fetch: unknown }).fetch = jest.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        expect(input).toBe('/api/skills/community-sources/source-3');
-        expect(init?.method).toBe('DELETE');
-        return {
-          ok: true,
-          json: async () => ({ success: true }),
-        } as Response;
       },
-    );
-
-    await expect(removeCommunitySource(globalFetch, 'source-3')).resolves.toBeUndefined();
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('ui/lib/skills local source api', () => {
-  const originalFetch = global.fetch;
-
-  afterEach(() => {
-    if (originalFetch) {
-      global.fetch = originalFetch;
-    } else {
-      delete (global as unknown as { fetch?: unknown }).fetch;
-    }
-    jest.clearAllMocks();
-  });
-
-  it('fetchLocalSources requests local source list', async () => {
-    const payload = [
-      {
-        id: 'source-1',
+      request: () =>
+        addCommunitySource(globalFetch, {
+          name: 'repo',
+          url: 'https://github.com/owner/repo',
+          branch: 'main',
+        }),
+    },
+    {
+      label: 'local',
+      url: '/api/skills/local-sources',
+      payload: {
+        id: 'source-2',
         name: 'local-source',
         folderPath: '/tmp/local-source',
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       },
-    ];
-
-    (global as unknown as { fetch: unknown }).fetch = jest.fn(async (input: RequestInfo | URL) => {
-      expect(input).toBe('/api/skills/local-sources');
-      return {
-        ok: true,
-        json: async () => payload,
-      } as Response;
-    });
-
-    await expect(fetchLocalSources(globalFetch)).resolves.toEqual(payload);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('addLocalSource posts payload to local source endpoint', async () => {
-    const payload = {
-      id: 'source-2',
-      name: 'local-source',
-      folderPath: '/tmp/local-source',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-    };
-
-    (global as unknown as { fetch: unknown }).fetch = jest.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        expect(input).toBe('/api/skills/local-sources');
-        expect(init?.method).toBe('POST');
-        expect(init?.headers).toEqual({ 'Content-Type': 'application/json' });
-        expect(init?.body).toBe(
-          JSON.stringify({
-            name: 'local-source',
-            folderPath: '/tmp/local-source',
-          }),
-        );
-        return {
-          ok: true,
-          json: async () => payload,
-        } as Response;
-      },
-    );
-
-    await expect(
-      addLocalSource(globalFetch, {
+      input: {
         name: 'local-source',
         folderPath: '/tmp/local-source',
-      }),
-    ).resolves.toEqual(payload);
+      },
+      request: () =>
+        addLocalSource(globalFetch, { name: 'local-source', folderPath: '/tmp/local-source' }),
+    },
+  ])('adds $label source', async ({ url, payload, input, request }) => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => payload,
+    })) as unknown as typeof fetch;
+    await expect(request()).resolves.toEqual(payload);
+    expect(global.fetch).toHaveBeenCalledWith(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('removeLocalSource sends delete request by id', async () => {
-    (global as unknown as { fetch: unknown }).fetch = jest.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        expect(input).toBe('/api/skills/local-sources/source-3');
-        expect(init?.method).toBe('DELETE');
-        return {
-          ok: true,
-          json: async () => ({ success: true }),
-        } as Response;
-      },
-    );
-
-    await expect(removeLocalSource(globalFetch, 'source-3')).resolves.toBeUndefined();
+  it.each([
+    {
+      label: 'community',
+      url: '/api/skills/community-sources/source-3',
+      request: () => removeCommunitySource(globalFetch, 'source-3'),
+    },
+    {
+      label: 'local',
+      url: '/api/skills/local-sources/source-3',
+      request: () => removeLocalSource(globalFetch, 'source-3'),
+    },
+  ])('deletes $label source', async ({ url, request }) => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ success: true }),
+    })) as unknown as typeof fetch;
+    await expect(request()).resolves.toBeUndefined();
+    expect(global.fetch).toHaveBeenCalledWith(url, { method: 'DELETE' });
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });

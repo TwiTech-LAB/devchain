@@ -325,9 +325,11 @@ describe('useExternalEstimateTimeLog', () => {
       }
       return Promise.resolve(jsonResponse(state));
     });
+    const invalidate = jest.spyOn(client, 'invalidateQueries');
     const { result } = renderEstimateLog(client);
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
 
+    invalidate.mockClear();
     act(() => result.current.setLoggedMinutes(60, 3, 'UTC'));
     await waitFor(() => expect(result.current.setLogged.isSuccess).toBe(true));
     const setCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')!;
@@ -335,6 +337,12 @@ describe('useExternalEstimateTimeLog', () => {
       JSON.stringify({ scopeKey, loggedMinutes: 60, expectedRevision: 3, timeZone: 'UTC' }),
     );
 
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
+      }),
+    );
+    invalidate.mockClear();
     client.setQueryData(
       externalMyWorkQueryKeys.taskEstimateLogState(
         'jira',
@@ -349,6 +357,11 @@ describe('useExternalEstimateTimeLog', () => {
     await waitFor(() => expect(result.current.state?.pending).not.toBeNull());
     act(() => result.current.resolveOperation('pending-1', 'logged', 4));
     await waitFor(() => expect(result.current.resolve.isSuccess).toBe(true));
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
+      }),
+    );
     const resolveCall = fetchMock.mock.calls.find(
       ([url, init]) => String(url).includes('/pending-1/resolve?') && init?.method === 'POST',
     )!;
@@ -361,109 +374,139 @@ describe('useExternalEstimateTimeLog', () => {
   });
 
   it('refetches the checkpoint exactly once at the server-owned Verify deadline', async () => {
-    const deadline = Date.now() + 300;
-    const pendingState = {
-      ...readyState,
-      revision: 4,
-      pendingDisposition: 'outcome_unknown' as const,
-      canVerify: true,
-      verifyExpiresAt: new Date(deadline).toISOString(),
-      pending: {
-        operationId: 'pending-1',
-        deltaMinutes: 30,
-        estimateTotalMinutes: 120,
-        startedAt: '2026-08-30T10:00:00.000Z',
-        phase: 'outcome_unknown' as const,
-        resolution: null,
-      },
-    };
-    const manualReviewState = {
-      ...pendingState,
-      pendingDisposition: 'manual_review' as const,
-      canVerify: false,
-      verifyExpiresAt: null,
-    };
-    let stateServed = 0;
-    const stateFetchUrls = () =>
-      fetchMock.mock.calls.filter(([url]) => String(url).includes('/estimate-log-state?'));
-    fetchMock.mockImplementation((url: string) => {
-      if (String(url).includes('/estimate-log-state?')) {
-        stateServed += 1;
-        return Promise.resolve(jsonResponse(stateServed === 1 ? pendingState : manualReviewState));
-      }
-      return Promise.resolve(jsonResponse(readyState));
-    });
+    jest.useFakeTimers();
+    try {
+      const deadline = Date.now() + 300;
+      const pendingState = {
+        ...readyState,
+        revision: 4,
+        pendingDisposition: 'outcome_unknown' as const,
+        canVerify: true,
+        verifyExpiresAt: new Date(deadline).toISOString(),
+        pending: {
+          operationId: 'pending-1',
+          deltaMinutes: 30,
+          estimateTotalMinutes: 120,
+          startedAt: '2026-08-30T10:00:00.000Z',
+          phase: 'outcome_unknown' as const,
+          resolution: null,
+        },
+      };
+      const manualReviewState = {
+        ...pendingState,
+        pendingDisposition: 'manual_review' as const,
+        canVerify: false,
+        verifyExpiresAt: null,
+      };
+      let stateServed = 0;
+      const stateFetchUrls = () =>
+        fetchMock.mock.calls.filter(([url]) => String(url).includes('/estimate-log-state?'));
+      fetchMock.mockImplementation((url: string) => {
+        if (String(url).includes('/estimate-log-state?')) {
+          stateServed += 1;
+          return Promise.resolve(
+            jsonResponse(stateServed === 1 ? pendingState : manualReviewState),
+          );
+        }
+        return Promise.resolve(jsonResponse(readyState));
+      });
 
-    const { result } = renderEstimateLog(client);
-    await waitFor(() => expect(result.current.state?.canVerify).toBe(true));
-    expect(stateFetchUrls()).toHaveLength(1);
+      const { result } = renderEstimateLog(client);
+      await waitFor(() => expect(result.current.state?.canVerify).toBe(true));
+      expect(stateFetchUrls()).toHaveLength(1);
 
-    // One deadline transition: the receipt-absolute refetch flips the
-    // snapshot to server-derived manual review.
-    await waitFor(
-      () => {
-        expect(result.current.state?.canVerify).toBe(false);
-        expect(result.current.state?.pendingDisposition).toBe('manual_review');
-        expect(result.current.state?.verifyExpiresAt).toBeNull();
-      },
-      { timeout: 2_000 },
-    );
-    expect(stateFetchUrls()).toHaveLength(2);
+      // One deadline transition: the receipt-absolute refetch flips the
+      // snapshot to server-derived manual review.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(deadline - Date.now() - 1);
+      });
+      expect(stateFetchUrls()).toHaveLength(1);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1);
+      });
+      await waitFor(
+        () => {
+          expect(result.current.state?.canVerify).toBe(false);
+          expect(result.current.state?.pendingDisposition).toBe('manual_review');
+          expect(result.current.state?.verifyExpiresAt).toBeNull();
+        },
+        { timeout: 2_000 },
+      );
+      expect(stateFetchUrls()).toHaveLength(2);
 
-    // No polling: further waiting adds no checkpoint requests.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(stateFetchUrls()).toHaveLength(2);
+      // No polling: further waiting adds no checkpoint requests.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(200);
+      });
+      expect(stateFetchUrls()).toHaveLength(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('expires Verify locally when the one deadline refetch fails', async () => {
-    const deadline = Date.now() + 300;
-    const pendingState = {
-      ...readyState,
-      revision: 4,
-      pendingDisposition: 'outcome_unknown' as const,
-      canVerify: true,
-      verifyExpiresAt: new Date(deadline).toISOString(),
-      pending: {
-        operationId: 'pending-expiry-failure',
-        deltaMinutes: 30,
-        estimateTotalMinutes: 120,
-        startedAt: '2026-08-30T10:00:00.000Z',
-        phase: 'outcome_unknown' as const,
-        resolution: null,
-      },
-    };
-    let stateFetches = 0;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).includes('/estimate-log-state?')) {
-        stateFetches += 1;
-        return stateFetches === 1
-          ? Promise.resolve(jsonResponse(pendingState))
-          : Promise.reject(new Error('checkpoint unavailable'));
-      }
-      if (init?.method) {
-        return Promise.reject(new Error('provider mutation must not run'));
-      }
-      return Promise.resolve(jsonResponse(readyState));
-    });
+    jest.useFakeTimers();
+    try {
+      const deadline = Date.now() + 300;
+      const pendingState = {
+        ...readyState,
+        revision: 4,
+        pendingDisposition: 'outcome_unknown' as const,
+        canVerify: true,
+        verifyExpiresAt: new Date(deadline).toISOString(),
+        pending: {
+          operationId: 'pending-expiry-failure',
+          deltaMinutes: 30,
+          estimateTotalMinutes: 120,
+          startedAt: '2026-08-30T10:00:00.000Z',
+          phase: 'outcome_unknown' as const,
+          resolution: null,
+        },
+      };
+      let stateFetches = 0;
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (String(url).includes('/estimate-log-state?')) {
+          stateFetches += 1;
+          return stateFetches === 1
+            ? Promise.resolve(jsonResponse(pendingState))
+            : Promise.reject(new Error('checkpoint unavailable'));
+        }
+        if (init?.method) {
+          return Promise.reject(new Error('provider mutation must not run'));
+        }
+        return Promise.resolve(jsonResponse(readyState));
+      });
 
-    const { result } = renderEstimateLog(client);
-    await waitFor(() => expect(result.current.state?.canVerify).toBe(true));
+      const { result } = renderEstimateLog(client);
+      await waitFor(() => expect(result.current.state?.canVerify).toBe(true));
 
-    await waitFor(
-      () => {
-        expect(result.current.state?.canVerify).toBe(false);
-        expect(result.current.query.data?.canVerify).toBe(false);
-        expect(result.current.query.isError).toBe(true);
-      },
-      { timeout: 2_000 },
-    );
-    expect(result.current.state?.pending?.operationId).toBe('pending-expiry-failure');
-    expect(result.current.writeBlocked).toBe(true);
-    expect(fetchMock.mock.calls.some(([, init]) => Boolean(init?.method))).toBe(false);
-    expect(stateFetches).toBe(2);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(deadline - Date.now() - 1);
+      });
+      expect(stateFetches).toBe(1);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1);
+      });
+      await waitFor(
+        () => {
+          expect(result.current.state?.canVerify).toBe(false);
+          expect(result.current.query.data?.canVerify).toBe(false);
+          expect(result.current.query.isError).toBe(true);
+        },
+        { timeout: 2_000 },
+      );
+      expect(result.current.state?.pending?.operationId).toBe('pending-expiry-failure');
+      expect(result.current.writeBlocked).toBe(true);
+      expect(fetchMock.mock.calls.some(([, init]) => Boolean(init?.method))).toBe(false);
+      expect(stateFetches).toBe(2);
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(stateFetches).toBe(2);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(200);
+      });
+      expect(stateFetches).toBe(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('blocks every estimate mutation while durable pending state exists', async () => {
@@ -520,6 +563,12 @@ describe('useExternalEstimateTimeLog', () => {
     const { result } = renderEstimateLog(client);
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
 
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
+      }),
+    );
+    invalidate.mockClear();
     act(() => {
       result.current.submitCreate({
         estimateTotalMinutes: 120,
@@ -557,6 +606,7 @@ describe('useExternalEstimateTimeLog', () => {
       queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
     });
 
+    invalidate.mockClear();
     reconciliationFails = false;
     await act(async () => {
       await result.current.query.refetch();
@@ -564,8 +614,19 @@ describe('useExternalEstimateTimeLog', () => {
     await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
     expect(result.current.state).toEqual(readyState);
     expect(result.current.writeBlocked).toBe(false);
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
+      }),
+    );
 
     // The next explicit click uses a fresh request key — never a replay.
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
+      }),
+    );
+    invalidate.mockClear();
     act(() => {
       result.current.submitCreate({
         estimateTotalMinutes: 120,
@@ -655,127 +716,6 @@ describe('useExternalEstimateTimeLog', () => {
       } finally {
         nowSpy.mockRestore();
       }
-    });
-
-    it('refreshes the links prefix after a successful Set and a resolved durable operation', async () => {
-      const pendingState = {
-        ...readyState,
-        revision: 4,
-        pendingDisposition: 'outcome_unknown' as const,
-        canVerify: true,
-        pending: {
-          operationId: 'pending-1',
-          deltaMinutes: 30,
-          estimateTotalMinutes: 120,
-          startedAt: '2026-08-30T10:00:00.000Z',
-          phase: 'outcome_unknown' as const,
-          resolution: null,
-        },
-      };
-      fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
-        if (init?.method === 'PUT') {
-          return Promise.resolve(jsonResponse({ ...readyState, revision: 4, loggedMinutes: 60 }));
-        }
-        if (String(init?.method).toUpperCase() === 'POST') {
-          return Promise.resolve(jsonResponse({ outcome: 'logged', state: readyState }));
-        }
-        return Promise.resolve(jsonResponse(readyState));
-      });
-      const invalidate = jest.spyOn(client, 'invalidateQueries');
-      const { result } = renderEstimateLog(client);
-      await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
-      invalidate.mockClear();
-
-      act(() => result.current.setLoggedMinutes(60, 3, 'UTC'));
-      await waitFor(() => expect(result.current.setLogged.isSuccess).toBe(true));
-      await waitFor(() =>
-        expect(invalidate).toHaveBeenCalledWith({
-          queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
-        }),
-      );
-
-      invalidate.mockClear();
-      client.setQueryData(
-        externalMyWorkQueryKeys.taskEstimateLogState(
-          'jira',
-          connectionEpoch,
-          PROJECT_ID,
-          'ENG-1',
-          scopeKey,
-          'active',
-        ),
-        pendingState,
-      );
-      await waitFor(() => expect(result.current.state?.pending).not.toBeNull());
-      act(() => result.current.resolveOperation('pending-1', 'logged', 4));
-      await waitFor(() => expect(result.current.resolve.isSuccess).toBe(true));
-      await waitFor(() =>
-        expect(invalidate).toHaveBeenCalledWith({
-          queryKey: externalMyWorkQueryKeys.links('jira', connectionEpoch),
-        }),
-      );
-    });
-
-    it('reconciles links again after response-loss recovery', async () => {
-      let initialCheckpointLoaded = false;
-      let reconciliationFails = true;
-      fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
-        if (init?.method === 'POST') {
-          return Promise.reject(new Error('response lost'));
-        }
-        if (!initialCheckpointLoaded) {
-          initialCheckpointLoaded = true;
-          return Promise.resolve(jsonResponse(readyState));
-        }
-        return reconciliationFails
-          ? Promise.reject(new Error('checkpoint unavailable'))
-          : Promise.resolve(jsonResponse(readyState));
-      });
-      const invalidate = jest.spyOn(client, 'invalidateQueries');
-      const linksPrefixInvalidated = () =>
-        invalidate.mock.calls.some(
-          ([filters]) =>
-            JSON.stringify((filters as { queryKey?: readonly unknown[] }).queryKey) ===
-            JSON.stringify(externalMyWorkQueryKeys.links('jira', connectionEpoch)),
-        );
-      const { result } = renderEstimateLog(client);
-      await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
-      await waitFor(() => expect(linksPrefixInvalidated()).toBe(true));
-      const callsAfterFirstRead = invalidate.mock.calls.length;
-
-      act(() => {
-        result.current.submitCreate({
-          estimateTotalMinutes: 120,
-          expectedRevision: 3,
-          timeZone: 'UTC',
-          remoteScopeKey: scopeKey,
-          dailySnapshot: [{ activityDate: '2026-08-29', minutes: 120 }],
-        });
-      });
-      await waitFor(() => expect(result.current.create.isError).toBe(true));
-      await waitFor(() => expect(result.current.query.isError).toBe(true));
-      // Response loss conservatively refreshes every provider-derived family
-      // a possibly settled or unknown prefix could touch.
-      expect(invalidate.mock.calls.length).toBeGreaterThan(callsAfterFirstRead);
-      expect(invalidate).toHaveBeenCalledWith({
-        queryKey: externalMyWorkQueryKeys.taskDetail('jira', connectionEpoch, 'ENG-1'),
-        exact: true,
-      });
-      expect(invalidate).toHaveBeenCalledWith({
-        queryKey: externalMyWorkQueryKeys.taskTimeEntries('jira', connectionEpoch, 'ENG-1'),
-        exact: true,
-      });
-      expect(linksPrefixInvalidated()).toBe(true);
-
-      reconciliationFails = false;
-      await act(async () => {
-        await result.current.query.refetch();
-      });
-      await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
-      // The recovered snapshot is new checkpoint knowledge: link decoration
-      // refreshes once more.
-      await waitFor(() => expect(linksPrefixInvalidated()).toBe(true));
-      expect(invalidate.mock.calls.length).toBeGreaterThan(callsAfterFirstRead);
     });
 
     it('settles a deferred mutation against the captured epoch prefix after the epoch switches', async () => {

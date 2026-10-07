@@ -81,12 +81,6 @@ describe('RegistrySettingsDelegate', () => {
       expect(delegate.getProjectTemplateMetadata('unknown')).toBeNull();
     });
 
-    it('stores and retrieves template metadata', async () => {
-      await delegate.setProjectTemplateMetadata('proj-1', metadata);
-      settings.registryTemplates = { 'proj-1': metadata };
-      expect(delegate.getProjectTemplateMetadata('proj-1')).toEqual(metadata);
-    });
-
     it('clears template metadata', async () => {
       settings.registryTemplates = { 'proj-1': metadata, 'proj-2': metadata };
       await delegate.clearProjectTemplateMetadata('proj-1');

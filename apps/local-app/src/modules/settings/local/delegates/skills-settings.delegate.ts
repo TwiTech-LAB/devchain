@@ -9,6 +9,11 @@ const logger = createLogger('SkillsSettingsDelegate');
 
 export const DEFAULT_SKILLS_SYNC_ON_STARTUP = true;
 
+export interface CompletedSkillSync {
+  commit: string;
+  skillCount: number;
+}
+
 export type HomePushedSkillSource =
   | { name: string; kind: 'community' }
   | { name: string; kind: 'local'; homeFolderPath: string; contentHash: string };
@@ -36,6 +41,39 @@ export class SkillsSettingsDelegate {
   setSkillsSyncOnStartup(enabled: boolean): void {
     this.writeRawSetting('skills.syncOnStartup', String(enabled));
     logger.info({ enabled }, 'Skills syncOnStartup updated');
+  }
+
+  getSkillsCompletedSyncs(): Record<string, CompletedSkillSync> {
+    const raw = this.decodeStringSetting(this.readRawSetting('skills.completedSyncs'));
+    if (!raw) return {};
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      return Object.fromEntries(
+        Object.entries(parsed).filter(
+          ([, entry]) =>
+            entry &&
+            typeof entry === 'object' &&
+            typeof entry.commit === 'string' &&
+            Number.isSafeInteger(entry.skillCount) &&
+            entry.skillCount >= 0,
+        ),
+      );
+    } catch (error) {
+      logger.warn({ error }, 'Failed to parse skills.completedSyncs setting');
+      return {};
+    }
+  }
+
+  setSkillCompletedSync(sourceName: string, entry: CompletedSkillSync): void {
+    const current = this.getSkillsCompletedSyncs();
+    this.writeRawSetting(
+      'skills.completedSyncs',
+      JSON.stringify({
+        ...current,
+        [sourceName.trim().toLowerCase()]: entry,
+      }),
+    );
   }
 
   /** Switch map every reader uses: an always-enabled source never appears, so it reads as on. */

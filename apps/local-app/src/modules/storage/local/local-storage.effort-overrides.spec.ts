@@ -1,7 +1,6 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import { LocalStorageService } from './local-storage.service';
 
 // Backend integration (real :memory: SQLite). Proves the agent effort_override
@@ -13,12 +12,10 @@ describe('LocalStorageService - effort overrides and config defaults mapper roun
   let service: LocalStorageService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
 
     const db = drizzle(sqlite);
-    const migrationsFolder = join(__dirname, '../../../../drizzle');
-    migrate(db, { migrationsFolder });
 
     service = new LocalStorageService(db);
   });

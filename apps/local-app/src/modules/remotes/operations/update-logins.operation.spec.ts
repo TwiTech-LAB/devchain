@@ -42,6 +42,7 @@ describe('UpdateLoginsOperation', () => {
     readProviderAuthPayload: jest.fn(),
   };
   const host = {
+    listSessions: jest.fn(),
     remoteRuntime: jest.fn(),
     applyProviderAuth: jest.fn(),
     verifyProviderAuth: jest.fn(),
@@ -152,7 +153,7 @@ describe('UpdateLoginsOperation', () => {
     );
     fetchMock = jest
       .spyOn(global, 'fetch')
-      .mockResolvedValue({ ok: true, json: async () => [] } as unknown as Response);
+      .mockResolvedValue({ status: 200, ok: true, json: async () => [] } as unknown as Response);
     let key = 'first';
     apiKeys = new RemoteApiKeyService({
       readRemoteApiKey: async () => key,
@@ -160,6 +161,10 @@ describe('UpdateLoginsOperation', () => {
         key = value;
       },
     } as never);
+    const sessionClient = new RemoteHostClient(storage as never, apiKeys);
+    host.listSessions.mockImplementation((...args: Parameters<RemoteHostClient['listSessions']>) =>
+      sessionClient.listSessions(...args),
+    );
     const module = await Test.createTestingModule({
       providers: [
         { provide: RemoteApiKeyService, useValue: apiKeys },
@@ -180,6 +185,10 @@ describe('UpdateLoginsOperation', () => {
 
   it('checks sessions with the current key, including after replacement', async () => {
     await run('preflight');
+    // The check stays short, as before the shared session read: an unknown count only refuses.
+    expect(host.listSessions).toHaveBeenLastCalledWith(operation.remoteId, undefined, {
+      timeoutMs: 3_000,
+    });
     expect(fetchMock).toHaveBeenLastCalledWith(
       expect.stringContaining('/api/sessions'),
       expect.objectContaining({ headers: { authorization: 'Bearer first' } }),
@@ -237,8 +246,16 @@ describe('UpdateLoginsOperation', () => {
   it.each([false, true])('gates running agents with force=%s', async (force) => {
     details.force = force;
     fetchMock.mockResolvedValue({
+      status: 200,
       ok: true,
-      json: async () => [{ status: 'running', agentId: 'agent' }],
+      json: async () => [
+        {
+          id: 'session',
+          startedAt: '2026-10-05T10:00:00.000Z',
+          status: 'running',
+          agentId: 'agent',
+        },
+      ],
     });
     if (force) await run('preflight');
     else await expect(run('preflight')).rejects.toMatchObject({ code: 'REMOTE_AGENTS_RUNNING' });
@@ -248,8 +265,11 @@ describe('UpdateLoginsOperation', () => {
     fetchMock.mockRejectedValueOnce(new Error('offline'));
     await expect(run('preflight')).rejects.toMatchObject({ code: 'REMOTE_AGENT_COUNT_UNKNOWN' });
     fetchMock.mockResolvedValueOnce({
+      status: 200,
       ok: true,
-      json: async () => [{ status: 'running', agentId: null }],
+      json: async () => [
+        { id: 'session', startedAt: '2026-10-05T10:00:00.000Z', status: 'running', agentId: null },
+      ],
     });
     await run('preflight');
   });

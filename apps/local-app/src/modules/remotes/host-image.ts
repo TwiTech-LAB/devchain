@@ -1,11 +1,11 @@
 import * as semver from 'semver';
 
-/** Image versions this DevChain can claim; older images serve no TLS certificate. */
-export const MIN_HOST_IMAGE_VERSION = '1.3.0';
+/** Older images can create a default account that occupies the home user's ids. */
+export const MIN_HOST_IMAGE_VERSION = '1.4.0';
 
 /**
  * Whether this DevChain can claim an installer that reports this image version.
- * Prereleases of the minimum count too, so LAN builds (`1.3.0-lan.<id>`) pass.
+ * Prereleases of the minimum count too, so LAN builds (`1.4.0-lan.<id>`) pass.
  */
 export function isSupportedHostImage(imageVersion: string | null | undefined): boolean {
   return (

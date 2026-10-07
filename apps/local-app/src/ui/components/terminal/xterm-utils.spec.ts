@@ -7,135 +7,50 @@ import {
 describe('xterm-utils', () => {
   describe('isTerminalInternalSequence', () => {
     describe('OSC sequences (Operating System Command)', () => {
-      it('should filter OSC 10 (foreground color query)', () => {
-        const osc10 = '\x1b]10;rgb:c9c9/d1d1/d9d9\x1b\\';
-        expect(isTerminalInternalSequence(osc10)).toBe(true);
-      });
-
-      it('should filter OSC 11 (background color query)', () => {
-        const osc11 = '\x1b]11;rgb:1a1a/1a1a/1a1a\x1b\\';
-        expect(isTerminalInternalSequence(osc11)).toBe(true);
-      });
-
-      it('should filter OSC 0 (window title)', () => {
-        const osc0 = '\x1b]0;Terminal Title\x07';
-        expect(isTerminalInternalSequence(osc0)).toBe(true);
-      });
-
-      it('should filter OSC 52 (clipboard operations)', () => {
-        const osc52 = '\x1b]52;c;aGVsbG8=\x07';
-        expect(isTerminalInternalSequence(osc52)).toBe(true);
-      });
-
-      it('should filter partial OSC sequence', () => {
-        const partialOsc = '\x1b]10;';
-        expect(isTerminalInternalSequence(partialOsc)).toBe(true);
-      });
-    });
-
-    describe('DCS sequences (Device Control String)', () => {
-      it('should filter DCS sequence', () => {
-        const dcs = '\x1bP1$r1 q\x1b\\';
-        expect(isTerminalInternalSequence(dcs)).toBe(true);
-      });
-
-      it('should filter sixel graphics DCS', () => {
-        const sixel = '\x1bPq#0;2;0;0;0#1;2;100;100;0#2;2;0;100;0\x1b\\';
-        expect(isTerminalInternalSequence(sixel)).toBe(true);
-      });
-    });
-
-    describe('PM sequences (Privacy Message)', () => {
-      it('should filter PM sequence', () => {
-        const pm = '\x1b^some privacy message\x1b\\';
-        expect(isTerminalInternalSequence(pm)).toBe(true);
-      });
-    });
-
-    describe('APC sequences (Application Program Command)', () => {
-      it('should filter APC sequence', () => {
-        const apc = '\x1b_some application command\x1b\\';
-        expect(isTerminalInternalSequence(apc)).toBe(true);
+      it.each([
+        ['\x1b]10;rgb:c9c9/d1d1/d9d9\x1b\\', true],
+        ['\x1b]11;rgb:1a1a/1a1a/1a1a\x1b\\', true],
+        ['\x1b]0;Terminal Title\x07', true],
+        ['\x1b]52;c;aGVsbG8=\x07', true],
+        ['\x1b]10;', true],
+        ['\x1bP1$r1 q\x1b\\', true],
+        ['\x1bPq#0;2;0;0;0#1;2;100;100;0#2;2;0;100;0\x1b\\', true],
+        ['\x1b^some privacy message\x1b\\', true],
+        ['\x1b_some application command\x1b\\', true],
+      ])('filters internal sequence %p as %s', (input, expected) => {
+        expect(isTerminalInternalSequence(input)).toBe(expected);
       });
     });
 
     describe('Regular user input', () => {
-      it('should NOT filter regular text', () => {
-        expect(isTerminalInternalSequence('ls -la')).toBe(false);
-        expect(isTerminalInternalSequence('hello world')).toBe(false);
-        expect(isTerminalInternalSequence('echo "test"')).toBe(false);
-      });
-
-      it('should NOT filter Enter key', () => {
-        expect(isTerminalInternalSequence('\r')).toBe(false);
-        expect(isTerminalInternalSequence('\n')).toBe(false);
-      });
-
-      it('should NOT filter Ctrl+C', () => {
-        expect(isTerminalInternalSequence('\x03')).toBe(false);
-      });
-
-      it('should NOT filter Ctrl+D', () => {
-        expect(isTerminalInternalSequence('\x04')).toBe(false);
-      });
-
-      it('should NOT filter ESC key alone', () => {
-        expect(isTerminalInternalSequence('\x1b')).toBe(false);
-      });
-
-      it('should NOT filter arrow keys', () => {
-        expect(isTerminalInternalSequence('\x1b[A')).toBe(false); // Up
-        expect(isTerminalInternalSequence('\x1b[B')).toBe(false); // Down
-        expect(isTerminalInternalSequence('\x1b[C')).toBe(false); // Right
-        expect(isTerminalInternalSequence('\x1b[D')).toBe(false); // Left
-      });
-
-      it('should NOT filter Tab key', () => {
-        expect(isTerminalInternalSequence('\t')).toBe(false);
-      });
-
-      it('should NOT filter Backspace/DEL', () => {
-        expect(isTerminalInternalSequence('\x7f')).toBe(false);
-      });
-
-      it('should NOT filter CSI sequences (cursor movement, etc.)', () => {
-        expect(isTerminalInternalSequence('\x1b[1;1H')).toBe(false); // Cursor home
-        expect(isTerminalInternalSequence('\x1b[2J')).toBe(false); // Clear screen
-      });
-
-      it('should NOT filter empty string', () => {
-        expect(isTerminalInternalSequence('')).toBe(false);
+      it.each([
+        ['text', ['ls -la', 'hello world', 'echo "test"']],
+        ['Enter', ['\r', '\n']],
+        ['Ctrl+C', ['\x03']],
+        ['Ctrl+D', ['\x04']],
+        ['Escape', ['\x1b']],
+        ['arrows', ['\x1b[A', '\x1b[B', '\x1b[C', '\x1b[D']],
+        ['Tab', ['\t']],
+        ['Delete', ['\x7f']],
+        ['CSI', ['\x1b[1;1H', '\x1b[2J']],
+        ['empty', ['']],
+      ])('passes %s input sequences', (_name, inputs) => {
+        for (const input of inputs) expect(isTerminalInternalSequence(input)).toBe(false);
       });
     });
   });
 
   describe('supportsWheelMouseTracking', () => {
-    it('returns true for "any" mode (any-event tracking)', () => {
-      expect(supportsWheelMouseTracking('any')).toBe(true);
-    });
-
-    it('returns true for "drag" mode (button-event tracking)', () => {
-      expect(supportsWheelMouseTracking('drag')).toBe(true);
-    });
-
-    it('returns false for "none" mode (tracking off)', () => {
-      expect(supportsWheelMouseTracking('none')).toBe(false);
-    });
-
-    it('returns true for "vt200" mode (normal tracking with wheel)', () => {
-      expect(supportsWheelMouseTracking('vt200')).toBe(true);
-    });
-
-    it('returns false for "vt200Highlight" mode', () => {
-      expect(supportsWheelMouseTracking('vt200Highlight')).toBe(false);
-    });
-
-    it('returns false for "x10" mode (button-press only, no wheel)', () => {
-      expect(supportsWheelMouseTracking('x10')).toBe(false);
-    });
-
-    it('returns false for empty string', () => {
-      expect(supportsWheelMouseTracking('')).toBe(false);
+    it.each([
+      ['any', true],
+      ['drag', true],
+      ['none', false],
+      ['vt200', true],
+      ['vt200Highlight', false],
+      ['x10', false],
+      ['', false],
+    ])('supports wheel tracking %s as %s', (input, expected) => {
+      expect(supportsWheelMouseTracking(input)).toBe(expected);
     });
   });
 
@@ -144,12 +59,11 @@ describe('xterm-utils', () => {
       return Buffer.from(text, 'utf-8').toString('base64');
     }
 
-    it('decodes UTF-8 punctuation as one Unicode character', () => {
-      expect(decodeOsc52ClipboardPayload(encode('—'))).toBe('—');
-    });
-
-    it('decodes Cyrillic text without mojibake', () => {
-      expect(decodeOsc52ClipboardPayload(encode('Привет'))).toBe('Привет');
+    it.each([
+      [encode('—'), '—'],
+      [encode('Привет'), 'Привет'],
+    ])('decodes clipboard %s', (input, expected) => {
+      expect(decodeOsc52ClipboardPayload(input)).toBe(expected);
     });
   });
 });

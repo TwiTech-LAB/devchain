@@ -16,6 +16,7 @@ import {
 } from '../../remotes/host/host-env-override-report';
 import { readBuildInfo } from './build-info';
 import { readHostCliVersions } from './host-cli-versions';
+import { readHostUserIdentity } from './host-user-identity';
 
 @ApiTags('runtime')
 @Controller('api/runtime')
@@ -48,12 +49,10 @@ export class RuntimeController {
       // Claimed VMs must report the same home as this PC; read from the
       // running process, never from claim.json.
       homePath: homedir(),
-      // The real account ids of the running process. On a claimed VM this is
-      // the id the claim gave the user, which home compares with this PC's
-      // uid — the claim field alone is not truth, because an older
-      // bootstrap's validator drops it.
+      // Actual ids come from the process; the record describes the claim's request.
       uid: process.getuid?.() ?? null,
       gid: process.getgid?.() ?? null,
+      ...readHostUserIdentity(),
       bootId: PROCESS_BOOT_ID,
       features: {
         cloudUi: env.DEVCHAIN_CLOUD_UI_ENABLED,

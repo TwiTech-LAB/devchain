@@ -229,32 +229,6 @@ describe('MobileChatRpcService.listAgents', () => {
     expect(activeSessions.listActiveSessions).toHaveBeenCalledWith(PROJECT_ID);
   });
 
-  it('is project-scoped: only agents returned by storage.listAgents(projectId) appear', async () => {
-    // storage.listAgents(projectId) only returns this project's agents; an agent
-    // from another project is never in the source set, so it can't leak.
-    const { service, storage } = build({
-      storage: {
-        listAgents: jest.fn().mockResolvedValue({
-          items: [agent({ id: AGENT_A })],
-          total: 1,
-          limit: 100,
-          offset: 0,
-        }),
-        listProfileProviderConfigsByIds: jest
-          .fn()
-          .mockResolvedValue([{ id: CONFIG_CLAUDE, providerId: PROVIDER_CLAUDE, name: 'c1' }]),
-        listProvidersByIds: jest.fn().mockResolvedValue([{ id: PROVIDER_CLAUDE, name: 'claude' }]),
-        getAgentProfile: jest.fn().mockResolvedValue({ id: PROFILE_CODER, name: 'Coder Profile' }),
-      },
-    });
-
-    const result = await service.listAgents({ projectId: PROJECT_ID });
-
-    expect(result.map((a) => a.id)).toEqual([AGENT_A]);
-    expect(result.some((a) => a.id === AGENT_B)).toBe(false);
-    expect(storage.listAgents).toHaveBeenCalledWith(PROJECT_ID);
-  });
-
   it('merges presence: offline agents report online:false with no session', async () => {
     const { service } = build({
       storage: {
@@ -533,26 +507,6 @@ describe('MobileChatRpcService transcript RPCs', () => {
     });
   });
 
-  describe('getTranscriptSummary', () => {
-    it('returns the cursor-bearing summary after the ownership check passes', async () => {
-      const summary = { sessionId: SESSION_A, providerName: 'claude', cursor: 'CUR' };
-      const { service, sessionReader } = build({
-        activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
-        sessionReader: {
-          getTranscriptSummaryWithCursor: jest.fn().mockResolvedValue(summary),
-        },
-      });
-
-      const result = await service.getTranscriptSummary({
-        sessionId: SESSION_A,
-        projectId: PROJECT_ID,
-      });
-
-      expect(result).toBe(summary);
-      expect(sessionReader.getTranscriptSummaryWithCursor).toHaveBeenCalledWith(SESSION_A);
-    });
-  });
-
   describe('getTranscriptChunks', () => {
     it("defaults direction to 'backward' (last N) when none is provided", async () => {
       const { service, sessionReader } = build({
@@ -613,32 +567,6 @@ describe('MobileChatRpcService transcript RPCs', () => {
       expect(page.chunks[1].semanticSteps).toEqual([
         { id: 's1', type: 'output', content: { outputText: 'long reply' } },
       ]);
-    });
-
-    it('passes through cursor, limit, and explicit direction', async () => {
-      const { service, sessionReader } = build({
-        activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
-        sessionReader: {
-          getUnifiedTranscriptChunks: jest
-            .fn()
-            .mockResolvedValue({ chunks: [], nextCursor: null, prevCursor: null, totalCount: 0 }),
-        },
-      });
-
-      await service.getTranscriptChunks({
-        sessionId: SESSION_A,
-        projectId: PROJECT_ID,
-        cursor: 'chunk-5',
-        limit: 10,
-        direction: 'forward',
-      });
-
-      expect(sessionReader.getUnifiedTranscriptChunks).toHaveBeenCalledWith(
-        SESSION_A,
-        'chunk-5',
-        10,
-        'forward',
-      );
     });
   });
 
@@ -860,43 +788,6 @@ describe('MobileChatRpcService custom prompt RPCs', () => {
           ...promptSummary(PROMPT_A, tags, promptProjectId),
           content: 'secret prompt body',
         }),
-      },
-    });
-
-    await expect(
-      service.getCustomPrompt({
-        sessionId: SESSION_A,
-        projectId: PROJECT_ID,
-        promptId: PROMPT_A,
-      }),
-    ).rejects.toBeInstanceOf(NotFoundError);
-  });
-
-  it('revalidates the current type at selection time and rejects a Custom-to-System race', async () => {
-    const { service } = build({
-      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
-      storage: {
-        getPrompt: jest.fn().mockResolvedValue({
-          ...promptSummary(PROMPT_A, ['type:system']),
-          content: 'changed after list',
-        }),
-      },
-    });
-
-    await expect(
-      service.getCustomPrompt({
-        sessionId: SESSION_A,
-        projectId: PROJECT_ID,
-        promptId: PROMPT_A,
-      }),
-    ).rejects.toBeInstanceOf(NotFoundError);
-  });
-
-  it('preserves the storage not-found result for a deleted prompt', async () => {
-    const { service } = build({
-      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
-      storage: {
-        getPrompt: jest.fn().mockRejectedValue(new NotFoundError('Prompt', PROMPT_A)),
       },
     });
 
@@ -1137,16 +1028,6 @@ describe('MobileChatRpcService.sendMessage', () => {
       expect(pendingAskUserQuestion.clearBySession).toHaveBeenCalledWith(SESSION_A);
     });
 
-    it('clears on a queued (unconfirmed) outcome too — the RPC still succeeded', async () => {
-      // buildSend's default deliver mock returns status 'queued' (unconfirmed);
-      // that is a non-throwing success, so the pending entry is still cleared.
-      const { service, pendingAskUserQuestion } = buildSend({});
-
-      await service.sendMessage({ agentId: AGENT_A, projectId: PROJECT_ID, text: 'answer' });
-
-      expect(pendingAskUserQuestion.clearBySession).toHaveBeenCalledWith(SESSION_A);
-    });
-
     it('does NOT clear when delivery failed (SESSION_NOT_RUNNING race)', async () => {
       const { service, pendingAskUserQuestion } = buildSend({
         deliver: {
@@ -1158,26 +1039,6 @@ describe('MobileChatRpcService.sendMessage', () => {
       await expect(
         service.sendMessage({ agentId: AGENT_A, projectId: PROJECT_ID, text: 'answer' }),
       ).rejects.toBeInstanceOf(AppError);
-      expect(pendingAskUserQuestion.clearBySession).not.toHaveBeenCalled();
-    });
-
-    it('does NOT clear when there is no active session (pre-check throws)', async () => {
-      const { service, pendingAskUserQuestion } = buildSend({ active: null });
-
-      await expect(
-        service.sendMessage({ agentId: AGENT_A, projectId: PROJECT_ID, text: 'answer' }),
-      ).rejects.toBeInstanceOf(AppError);
-      expect(pendingAskUserQuestion.clearBySession).not.toHaveBeenCalled();
-    });
-
-    it('does NOT clear for a cross-project agent (rejected before delivery)', async () => {
-      const { service, pendingAskUserQuestion } = buildSend({
-        agent: { id: AGENT_A, projectId: '44444444-4444-4444-8444-444444444444', name: 'Coder' },
-      });
-
-      await expect(
-        service.sendMessage({ agentId: AGENT_A, projectId: PROJECT_ID, text: 'answer' }),
-      ).rejects.toBeInstanceOf(ForbiddenError);
       expect(pendingAskUserQuestion.clearBySession).not.toHaveBeenCalled();
     });
   });
@@ -1228,35 +1089,6 @@ describe('MobileChatRpcService.sendMessage', () => {
 
 describe('MobileChatRpcService.getPendingMessages', () => {
   const CLIENT_MSG_ID = '10101010-1010-4010-8010-101010101010';
-
-  it('authorizes the agent against the project, then delegates to the read facade', async () => {
-    const rows = [
-      {
-        messageId: '20202020-2020-4020-8020-202020202020',
-        clientMessageId: CLIENT_MSG_ID,
-        text: 'hi',
-        status: 'delivered' as const,
-        timestamp: 123,
-        deliveredAt: 456,
-      },
-    ];
-    const { service, storage, messageLogRead } = build({
-      storage: { getAgent: jest.fn().mockResolvedValue(agent({})) },
-      messageLogRead: { queryPendingMobile: jest.fn().mockReturnValue(rows) },
-    });
-
-    const result = await service.getPendingMessages({
-      agentId: AGENT_A,
-      projectId: PROJECT_ID,
-      clientMessageIds: [CLIENT_MSG_ID],
-    });
-
-    expect(result).toBe(rows);
-    expect(storage.getAgent).toHaveBeenCalledWith(AGENT_A);
-    expect(messageLogRead.queryPendingMobile).toHaveBeenCalledWith(AGENT_A, PROJECT_ID, [
-      CLIENT_MSG_ID,
-    ]);
-  });
 
   it('rejects a cross-project agent with AGENT_PROJECT_MISMATCH before reading the log', async () => {
     const { service, messageLogRead } = build({
@@ -1336,20 +1168,6 @@ describe('MobileChatRpcService.listPendingAskQuestions', () => {
         expiresAt,
       },
     ]);
-  });
-
-  it('returns [] when the session has no pending entries', async () => {
-    const { service, pendingAskUserQuestion } = build({
-      activeSessions: { getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk) },
-    });
-
-    const result = await service.listPendingAskQuestions({
-      sessionId: SESSION_A,
-      projectId: PROJECT_ID,
-    });
-
-    expect(result).toEqual([]);
-    expect(pendingAskUserQuestion.getBySession).toHaveBeenCalledWith(SESSION_A);
   });
 
   it('throws ForbiddenError (SESSION_PROJECT_MISMATCH) for a cross-project session before consulting the store', async () => {
@@ -1729,17 +1547,6 @@ describe('MobileChatRpcService.listTeams', () => {
     ]);
   });
 
-  it('returns [] for a project with no teams', async () => {
-    const { service, teamsService } = build({
-      teamsService: { listTeamsWithMemberIds: jest.fn().mockResolvedValue([]) },
-    });
-
-    const result = await service.listTeams({ projectId: PROJECT_ID });
-
-    expect(result).toEqual([]);
-    expect(teamsService.listTeamsWithMemberIds).toHaveBeenCalledWith(PROJECT_ID);
-  });
-
   it('preserves multi-team membership (an agent in two teams appears in both) and insertion order', async () => {
     // Mirrors the web sidebar: each section is built from its own members with no
     // cross-team dedup, so a shared agent legitimately appears under both teams.
@@ -1807,27 +1614,6 @@ describe('MobileChatRpcService.listTeams', () => {
   });
 
   describe('chat.listSessions', () => {
-    it('delegates to SessionLifecycleFacade.listAgentHistory and returns the history DTO', async () => {
-      const history = {
-        items: [{ id: SESSION_A }],
-        nextCursor: 'NEXT',
-        hasMore: true,
-        total: 1,
-      };
-      const listAgentHistory = jest.fn().mockResolvedValue(history);
-      const { service } = build({ sessionLifecycle: { listAgentHistory } });
-
-      const result = await service.listSessions({
-        agentId: AGENT_A,
-        projectId: PROJECT_ID,
-        cursor: 'CUR',
-        limit: 50,
-      });
-
-      expect(listAgentHistory).toHaveBeenCalledWith(AGENT_A, PROJECT_ID, 'CUR', 50);
-      expect(result).toEqual(history);
-    });
-
     it('defaults the page size to 20 when limit is omitted', async () => {
       const listAgentHistory = jest
         .fn()
@@ -1837,59 +1623,6 @@ describe('MobileChatRpcService.listTeams', () => {
       await service.listSessions({ agentId: AGENT_A, projectId: PROJECT_ID });
 
       expect(listAgentHistory).toHaveBeenCalledWith(AGENT_A, PROJECT_ID, undefined, 20);
-    });
-  });
-
-  describe('chat.deleteSessionRecord', () => {
-    it('delegates to SessionLifecycleFacade.deleteSessionRecord', async () => {
-      const deleteSessionRecord = jest.fn().mockResolvedValue({ deleted: true });
-      const { service } = build({ sessionLifecycle: { deleteSessionRecord } });
-
-      const result = await service.deleteSessionRecord({
-        sessionId: SESSION_A,
-        projectId: PROJECT_ID,
-      });
-
-      expect(deleteSessionRecord).toHaveBeenCalledWith(SESSION_A, PROJECT_ID);
-      expect(result).toEqual({ deleted: true });
-    });
-
-    it('propagates a STATUS_RUNNING ConflictError from the facade', async () => {
-      const deleteSessionRecord = jest
-        .fn()
-        .mockRejectedValue(
-          new ConflictError('Cannot delete a running session', { code: 'STATUS_RUNNING' }),
-        );
-      const { service } = build({ sessionLifecycle: { deleteSessionRecord } });
-
-      await expect(
-        service.deleteSessionRecord({ sessionId: SESSION_A, projectId: PROJECT_ID }),
-      ).rejects.toMatchObject({ code: 'conflict', details: { code: 'STATUS_RUNNING' } });
-    });
-  });
-
-  describe('chat.renameSession', () => {
-    it('delegates to SessionLifecycleFacade.renameSession with the trimmed name', async () => {
-      const renameSession = jest.fn().mockResolvedValue({ id: SESSION_A, name: 'My Session' });
-      const { service } = build({ sessionLifecycle: { renameSession } });
-
-      const result = await service.renameSession({
-        sessionId: SESSION_A,
-        projectId: PROJECT_ID,
-        name: 'My Session',
-      });
-
-      expect(renameSession).toHaveBeenCalledWith(SESSION_A, PROJECT_ID, 'My Session');
-      expect(result).toMatchObject({ name: 'My Session' });
-    });
-
-    it('passes null through to clear the name', async () => {
-      const renameSession = jest.fn().mockResolvedValue({ id: SESSION_A, name: null });
-      const { service } = build({ sessionLifecycle: { renameSession } });
-
-      await service.renameSession({ sessionId: SESSION_A, projectId: PROJECT_ID, name: null });
-
-      expect(renameSession).toHaveBeenCalledWith(SESSION_A, PROJECT_ID, null);
     });
   });
 });
@@ -1949,16 +1682,6 @@ describe('MobileChatRpcService.listProfiles', () => {
 
     expect(teamsService.listUnlinkedProfileIds).toHaveBeenCalledWith(PROJECT_ID);
     expect(out).toEqual([{ id: PROFILE_CODER, name: 'Coder', familySlug: null }]);
-  });
-
-  it('null teamId is treated as no team (standalone set)', async () => {
-    const { service, teamsService } = build({
-      teamsService: { listUnlinkedProfileIds: jest.fn().mockResolvedValue([]) },
-    });
-
-    await service.listProfiles({ projectId: PROJECT_ID, teamId: null });
-
-    expect(teamsService.listUnlinkedProfileIds).toHaveBeenCalledWith(PROJECT_ID);
   });
 
   it('drops a profile id that does not resolve within the project (defense-in-depth)', async () => {

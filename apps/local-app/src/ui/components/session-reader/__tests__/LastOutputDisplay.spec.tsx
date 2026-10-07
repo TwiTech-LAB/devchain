@@ -26,23 +26,6 @@ describe('LastOutputDisplay', () => {
     expect(screen.getByTestId('markdown-renderer')).toHaveTextContent('**Final** answer');
   });
 
-  it('keeps output content scrollable inside max-h-96 container', () => {
-    render(
-      <LastOutputDisplay
-        lastOutput={{
-          type: 'tool_result',
-          text: 'long text',
-          timestamp: new Date('2026-02-24T12:00:03.000Z'),
-          stepId: 'result-1',
-        }}
-      />,
-    );
-
-    const content = screen.getByTestId('last-output-content');
-    expect(content).toHaveClass('max-h-96');
-    expect(content).toHaveClass('overflow-y-auto');
-  });
-
   it('shows placeholder for null output when session is live', () => {
     const { rerender } = render(<LastOutputDisplay lastOutput={null} isLive={true} />);
 

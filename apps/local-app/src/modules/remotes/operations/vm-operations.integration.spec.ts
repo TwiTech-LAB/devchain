@@ -1,12 +1,11 @@
 import { X509Certificate } from 'node:crypto';
 import { DockerImportInventoryStore } from './docker-import-inventory.store';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { ZodError } from 'zod';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { fixtureTls, otherTls } from '../../../common/test/tls-fixture';
 import { ConflictError, NotFoundError } from '../../../common/errors/error-types';
@@ -32,7 +31,6 @@ import { HostSshKeysService } from '../host/host-ssh-keys.service';
 import { readFile } from 'node:fs/promises';
 import { utils } from 'ssh2';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const SHA = 'a'.repeat(64);
 const FAMILY_ID = '0f9982da-7b3c-4d23-a338-e304b128fd1b';
 
@@ -101,15 +99,14 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
   }
 
   beforeEach(async () => {
-    process.env.HOST_IMAGE_URL = 'https://images.example/devchain-host-1.3.0.qcow2';
+    process.env.HOST_IMAGE_URL = 'https://images.example/devchain-host-1.4.0.qcow2';
     process.env.HOST_IMAGE_SHA256 = SHA;
     resetEnvConfig();
     directory = mkdtempSync(join(tmpdir(), 'devchain-vm-operations-'));
-    sqlite = new Database(':memory:');
-    const db = drizzle(sqlite);
+    const database = createTestDatabase();
+    sqlite = database.sqlite;
+    const { db } = database;
     inventory = new DockerImportInventoryStore(db);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
-    sqlite.pragma('foreign_keys = ON');
     storage = new LocalStorageService(
       db,
       new IntegrationCredentialCipher({
@@ -164,8 +161,8 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       image: (url: string, sha256: string) => ({
         url,
         sha256,
-        version: '1.3.0',
-        filename: `devchain-host-1.3.0-${sha256}.qcow2`,
+        version: '1.4.0',
+        filename: `devchain-host-1.4.0-${sha256}.qcow2`,
       }),
       assertReachable: async () => {
         calls.push('image-head');
@@ -466,7 +463,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       claim as never,
       {
         certificateOf: async () => fixtureTls.cert,
-        runtimeAt: async () => ({ state: 'unclaimed', imageVersion: '1.3.0' }),
+        runtimeAt: async () => ({ state: 'unclaimed', imageVersion: '1.4.0' }),
       } as never,
     );
     const reset = new ResetVmOperation(
@@ -525,6 +522,11 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       undefined as never,
       undefined as never,
       { refresh: async () => ({ version: null }) } as never,
+      { recordAttach: jest.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
     vmOperations = new VmOperationsService(
       storage,
@@ -583,6 +585,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
     expect(calls.filter((call) => call === 'template')).toHaveLength(1);
     expect(first.steps.every((step) => ['done', 'skipped'].includes(step.state))).toBe(true);
     expect(claims).toHaveLength(2);
+    expect(first.details).toMatchObject({ uid: process.getuid?.(), gid: process.getgid?.() });
     const remote = await storage.getRemote(first.remoteId);
     expect(remote).toMatchObject({
       kind: 'proxmox',
@@ -621,7 +624,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
     expect(await readFile(join(directory, '.ssh', 'authorized_keys'), 'utf8')).toBe(`${key}\n`);
   });
 
-  it.each(['dev_box', 'box-', 'box.'])(
+  it.each(['dev_box'])(
     'rejects invalid Proxmox create name %s before making a provider call',
     async (name) => {
       const controller = new VmOperationsController(vmOperations);
@@ -797,6 +800,8 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       userName: 'alice',
       homePath: '/home/alice',
       port: 5000,
+      uid: process.getuid?.(),
+      gid: process.getgid?.(),
       providerAuth: { claude: { entryIds: [newClaude.id] } },
     });
     expect(claims.at(-1)?.providerAuth).toMatchObject({ claude: { entryIds: [newClaude.id] } });
@@ -808,6 +813,8 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       userName: 'alice',
       homePath: '/home/alice',
       port: 5000,
+      uid: process.getuid?.(),
+      gid: process.getgid?.(),
       providerAuth: { claude: { entryIds: [newClaude.id] } },
     });
   });

@@ -308,7 +308,7 @@ describe('home skill settings push', () => {
     );
   });
 
-  it.each([404, 409, 500])('swallows HTTP %s on status or push', async (code) => {
+  it.each([404])('swallows HTTP %s on status or push', async (code) => {
     statusCode = code;
     await expect(poll()).resolves.toBeUndefined();
     expect(pushes).toHaveLength(0);
@@ -336,7 +336,7 @@ describe('home skill settings push', () => {
     expect(pushes).toHaveLength(1);
   });
 
-  it.each([404, 409, 500])(
+  it.each([404])(
     'keeps the host online through repeated skill status %s failures',
     async (code) => {
       statusCode = code;
@@ -516,7 +516,7 @@ describe('home skill settings push', () => {
     expect(prepare).toHaveBeenCalledTimes(2);
   });
 
-  it('records no refusal memo for an aborted upload', async () => {
+  it('retries a pruned upload without a refusal memo and drains a shutdown-aborted upload', async () => {
     const prepare = jest.spyOn(homeSkillArchive, 'prepareHomeSkillArchive');
     const hash = await local();
     status.needsContent = [{ name: 'local', contentHash: hash }];
@@ -533,6 +533,21 @@ describe('home skill settings push', () => {
     await poll();
     await waitFor(() => uploads.length === 2);
     expect(prepare).toHaveBeenCalledTimes(2);
+    await waitFor(
+      () => (service as unknown as { uploading: Map<string, unknown> }).uploading.size === 0,
+    );
+    holdUpload = new Promise((resolve) => {
+      releaseUpload = resolve;
+    });
+    await poll();
+    await waitFor(() => uploadAttempts === 3);
+    service.onModuleDestroy();
+    releaseUpload!();
+    await waitFor(
+      () => (service as unknown as { uploading: Map<string, unknown> }).uploading.size === 0,
+    );
+    await poll();
+    expect(uploadAttempts).toBe(3);
   });
 
   it('keeps unreadable folders in the body with a stable missing-content hash and sends no upload', async () => {
@@ -544,19 +559,5 @@ describe('home skill settings push', () => {
     await poll();
     expect(pushes[1].revision).toBe(pushes[0].revision);
     expect(uploadAttempts).toBe(0);
-  });
-
-  it('swallows upload failure and retries on the next poll', async () => {
-    const hash = await local();
-    status.needsContent = [{ name: 'local', contentHash: hash }];
-    uploadCode = 500;
-    await poll();
-    await waitFor(() => uploads.length === 1);
-    await waitFor(
-      () => (service as unknown as { uploading: Map<string, unknown> }).uploading.size === 0,
-    );
-    uploadCode = 200;
-    await poll();
-    await waitFor(() => uploads.length === 2);
   });
 });

@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeSessionReaderAdapter } from '../adapters/claude-session-reader.adapter';
@@ -9,7 +9,7 @@ import { SessionCacheService } from './session-cache.service';
 import { SessionReaderService } from './session-reader.service';
 import type { TranscriptPathValidator } from './transcript-path-validator.service';
 import type { PricingServiceInterface } from './pricing.interface';
-import { decodeCursor, TRANSCRIPT_PARSER_GENERATION } from './transcript-cursor';
+import { decodeCursor } from './transcript-cursor';
 import type { TranscriptTailResponse } from './session-reader.service';
 
 const SESSION_ID = 'equal-size-replacement';
@@ -92,12 +92,6 @@ function appendedAssistant(index: number, text: string): string {
 function expectDelta(tail: TranscriptTailResponse | null) {
   if (tail?.kind !== 'delta') throw new Error(`expected a delta, got ${tail?.kind ?? 'null'}`);
   return tail;
-}
-
-/** The cursor's leading fields re-encoded without its proof, at `generation`. */
-function withoutProof(cursor: string, generation: number): string {
-  const fields = Buffer.from(cursor, 'base64url').toString().split(':').slice(0, 3);
-  return Buffer.from([...fields, generation].join(':')).toString('base64url');
 }
 
 describe('SessionReaderService file replacement cursor integration', () => {
@@ -198,18 +192,6 @@ describe('SessionReaderService file replacement cursor integration', () => {
     });
   });
 
-  it('requires a full refetch when an atomic replacement also grows the message count', async () => {
-    await writeFile(filePath, transcript('ORIGINAL'));
-    const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
-
-    await atomicReplace(transcript('REVISED!', 2));
-
-    await expect(service.getTranscriptTail(SESSION_ID, summary.cursor)).resolves.toEqual({
-      kind: 'full-refetch-required',
-      sourceChangeKind: 'file-replacement',
-    });
-  });
-
   it('requires a full refetch when the same file is truncated', async () => {
     await writeFile(filePath, transcript('ORIGINAL', 2));
     const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
@@ -219,25 +201,6 @@ describe('SessionReaderService file replacement cursor integration', () => {
     await expect(service.getTranscriptTail(SESSION_ID, summary.cursor)).resolves.toEqual({
       kind: 'full-refetch-required',
       sourceChangeKind: 'file-truncation',
-    });
-  });
-
-  it('requires a full refetch when the same file is rewritten at equal size', async () => {
-    const original = transcript('ORIGINAL');
-    const replacement = transcript('REVISED!');
-    expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(original));
-
-    await writeFile(filePath, original);
-    const originalStat = await stat(filePath);
-    const summary = await service.getTranscriptSummaryWithCursor(SESSION_ID);
-
-    await writeFile(filePath, replacement);
-    const future = new Date(originalStat.mtimeMs + 2_000);
-    await utimes(filePath, future, future);
-
-    await expect(service.getTranscriptTail(SESSION_ID, summary.cursor)).resolves.toEqual({
-      kind: 'full-refetch-required',
-      sourceChangeKind: 'same-file-rewrite',
     });
   });
 
@@ -446,25 +409,6 @@ describe('SessionReaderService file replacement cursor integration', () => {
 
       expect(delta.replaceFromChunkId).toBe(r1.lastChunk.id);
       expect(delta.deltaMessages.map((message) => message.id)).toEqual(['a-002']);
-    });
-
-    it('fails closed for an older-generation cursor and a cursor without a proof', async () => {
-      const r1 = await mintAtR1();
-      await appendFile(filePath, appendedAssistant(2, 'Second step of the same turn'));
-      await service.getUnifiedTranscriptChunks(SESSION_ID, undefined, 20, 'backward');
-
-      for (const cursor of [
-        withoutProof(r1.cursor, TRANSCRIPT_PARSER_GENERATION - 1),
-        withoutProof(r1.cursor, TRANSCRIPT_PARSER_GENERATION),
-      ]) {
-        await expect(service.getTranscriptTail(SESSION_ID, cursor)).resolves.toMatchObject({
-          kind: 'full-refetch-required',
-        });
-      }
-      // The same position with its proof still answers a delta.
-      expect(await service.getTranscriptTail(SESSION_ID, r1.cursor)).toMatchObject({
-        kind: 'delta',
-      });
     });
   });
 

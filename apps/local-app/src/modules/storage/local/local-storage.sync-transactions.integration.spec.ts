@@ -1,8 +1,8 @@
+import { ValidationError } from '../../../common/errors/error-types';
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import type { Agent, Project } from '../models/domain.models';
 import { LocalStorageService } from './local-storage.service';
 
@@ -11,9 +11,8 @@ describe('LocalStorageService - synchronous transaction atomicity', () => {
   let service: LocalStorageService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: join(__dirname, '../../../../drizzle') });
     sqlite.pragma('foreign_keys = ON');
     service = new LocalStorageService(db);
   });
@@ -72,6 +71,57 @@ describe('LocalStorageService - synchronous transaction atomicity', () => {
       )
       .run(id, `${sourceName}/${id}`, id, id, sourceName, now, now);
   }
+
+  it('should rollback all create-core changes when runInTransaction fails', async () => {
+    await expect(
+      service.runInTransaction(async () => {
+        const project = await service.createProjectShell({
+          name: 'Rollback Test Project',
+          description: 'Should not persist',
+          rootPath: '/test/rollback',
+          isTemplate: false,
+        });
+        await service.createStatus({
+          projectId: project.id,
+          label: 'Backlog',
+          color: '#6c757d',
+          position: 0,
+        });
+        await service.createPrompt({
+          projectId: project.id,
+          title: 'Test Prompt',
+          content: 'Test content',
+          tags: [],
+        });
+        await service.createAgentProfile({
+          projectId: project.id,
+          name: 'Test Profile',
+          familySlug: null,
+          systemPrompt: null,
+          instructions: null,
+          temperature: null,
+          maxTokens: null,
+        });
+
+        throw new ValidationError('Profile mapping missing for agent Test Agent');
+      }),
+    ).rejects.toThrow(ValidationError);
+
+    const projects = sqlite.prepare('SELECT * FROM projects').all();
+    expect(projects).toHaveLength(0);
+
+    const statuses = sqlite.prepare('SELECT * FROM statuses').all();
+    expect(statuses).toHaveLength(0);
+
+    const prompts = sqlite.prepare('SELECT * FROM prompts').all();
+    expect(prompts).toHaveLength(0);
+
+    const profiles = sqlite.prepare('SELECT * FROM agent_profiles').all();
+    expect(profiles).toHaveLength(0);
+
+    const agents = sqlite.prepare('SELECT * FROM agents').all();
+    expect(agents).toHaveLength(0);
+  });
 
   it('rolls back a project and preceding default statuses when status creation fails', async () => {
     sqlite.exec(`

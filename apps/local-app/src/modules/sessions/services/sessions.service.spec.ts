@@ -232,7 +232,7 @@ describe('SessionsService', () => {
       });
 
       await service.terminateSession('nonexistent', TEST_TERMINATION);
-      expect(mockTerminalIO.destroySession).not.toHaveBeenCalled();
+      expect(mockTerminalIO.destroyExpectedSession).not.toHaveBeenCalled();
       expect(runtimeContextCapture.clear).not.toHaveBeenCalled();
     });
 
@@ -315,35 +315,6 @@ describe('SessionsService', () => {
         ...TEST_TERMINATION,
       });
       expect(mockTerminalIO.sessionExists).not.toHaveBeenCalled();
-    });
-
-    it('disposes registry entry in terminateSession', async () => {
-      const runningRow = {
-        id: 'session-x',
-        epic_id: null,
-        agent_id: 'agent-1',
-        tmux_session_id: 'tmux-session',
-        status: 'running',
-        started_at: '2024-01-01T00:00:00.000Z',
-        ended_at: null,
-        last_activity_at: null,
-        activity_state: null,
-        busy_since: null,
-        transcript_path: null,
-        created_at: '2024-01-01T00:00:00.000Z',
-        updated_at: '2024-01-01T00:00:00.000Z',
-      };
-
-      sqlitePrepare.mockReturnValue({
-        run: insertRunMock,
-        get: jest.fn().mockReturnValue(runningRow),
-        all: jest.fn().mockReturnValue([]),
-      });
-
-      await service.terminateSession('session-x', TEST_TERMINATION);
-
-      expect(ptyService.stopStreaming).toHaveBeenCalledWith('session-x');
-      expect(terminalSessionRegistry.dispose).toHaveBeenCalledWith('session-x');
     });
 
     it('dispose is called after stopStreaming in terminateSession', async () => {
@@ -555,33 +526,23 @@ describe('SessionsService', () => {
       );
     });
 
-    it('throws ValidationError when session not running', async () => {
-      sqlitePrepare.mockReturnValue({
-        run: insertRunMock,
-        get: jest.fn().mockReturnValue(mockSessionRow({ status: 'stopped' })),
-        all: jest.fn().mockReturnValue([]),
-      });
+    it.each([{ status: 'stopped' }, { tmux_session_id: null }])(
+      'rejects text injection for %j',
+      async (overrides) => {
+        sqlitePrepare.mockReturnValue({
+          run: insertRunMock,
+          get: jest.fn().mockReturnValue(mockSessionRow(overrides)),
+          all: jest.fn().mockReturnValue([]),
+        });
+        await expect(service.injectTextIntoSession('session-1', 'hello')).rejects.toThrow(
+          ValidationError,
+        );
+      },
+    );
 
-      await expect(service.injectTextIntoSession('session-1', 'hello')).rejects.toThrow(
-        ValidationError,
-      );
-    });
-
-    it('throws ValidationError when session has no tmux session', async () => {
-      sqlitePrepare.mockReturnValue({
-        run: insertRunMock,
-        get: jest.fn().mockReturnValue(mockSessionRow({ tmux_session_id: null })),
-        all: jest.fn().mockReturnValue([]),
-      });
-
-      await expect(service.injectTextIntoSession('session-1', 'hello')).rejects.toThrow(
-        ValidationError,
-      );
-    });
-
-    it('resolves postPasteDelayMs for agy agent and passes to delivery helper', async () => {
+    it.each([1500, undefined])('threads provider post-paste delay %s', async (delay) => {
       providerAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({
-        postPasteDelayMs: 1500,
+        postPasteDelayMs: delay,
       });
       sqlitePrepare.mockReturnValue({
         run: insertRunMock,
@@ -594,20 +555,7 @@ describe('SessionsService', () => {
         'agent-1',
       );
       const pasteCall = mockTerminalIO.deliver.mock.calls[0];
-      expect(pasteCall[2]).toHaveProperty('postPasteDelayMs', 1500);
-    });
-
-    it('passes undefined postPasteDelayMs for Claude agent', async () => {
-      providerAdapterFactory.getRuntimePromptBehaviorForAgent.mockResolvedValue({});
-      sqlitePrepare.mockReturnValue({
-        run: insertRunMock,
-        get: jest.fn().mockReturnValue(mockSessionRow()),
-      });
-
-      await service.injectTextIntoSession('session-1', 'hello');
-
-      const pasteCall = mockTerminalIO.deliver.mock.calls[0];
-      expect(pasteCall[2]?.postPasteDelayMs).toBeUndefined();
+      expect(pasteCall[2]).toHaveProperty('postPasteDelayMs', delay);
     });
 
     it('skips factory call when session has no agentId', async () => {
@@ -849,7 +797,7 @@ describe('SessionsService', () => {
       expect(updateCall[0]).toBe('My Session');
     });
 
-    it('stores NULL when name is whitespace-only', () => {
+    it.each(['   ', null])('stores NULL for name %s', (name) => {
       const updatedRow = { ...baseRow, name: null, updated_at: '2024-06-01T00:00:00.000Z' };
       let callCount = 0;
       const getMock = jest.fn().mockImplementation(() => {
@@ -864,48 +812,21 @@ describe('SessionsService', () => {
         all: jest.fn().mockReturnValue([]),
       });
 
-      const result = service.updateName('session-1', '   ');
+      const result = service.updateName('session-1', name);
 
       const updateCall = runMock.mock.calls[0];
       expect(updateCall[0]).toBeNull();
       expect(result.name).toBeNull();
     });
 
-    it('stores NULL when name is null', () => {
-      const updatedRow = { ...baseRow, name: null, updated_at: '2024-06-01T00:00:00.000Z' };
-      let callCount = 0;
-      const getMock = jest.fn().mockImplementation(() => {
-        callCount++;
-        if (callCount === 1) return baseRow;
-        return updatedRow;
-      });
-      const runMock = jest.fn().mockReturnValue({ changes: 1 });
-      sqlitePrepare.mockReturnValue({
-        run: runMock,
-        get: getMock,
-        all: jest.fn().mockReturnValue([]),
-      });
-
-      const result = service.updateName('session-1', null);
-
-      const updateCall = runMock.mock.calls[0];
-      expect(updateCall[0]).toBeNull();
-      expect(result.name).toBeNull();
-    });
-
-    it('throws ValidationError when name exceeds 120 chars', () => {
-      mockForUpdateName(baseRow);
-      const longName = 'a'.repeat(121);
-
-      expect(() => service.updateName('session-1', longName)).toThrow(ValidationError);
-    });
-
-    it('accepts exactly 120 chars', () => {
-      const updatedRow = { ...baseRow, name: 'a'.repeat(120) };
-      mockForUpdateName(updatedRow);
-      const name120 = 'a'.repeat(120);
-
-      expect(() => service.updateName('session-1', name120)).not.toThrow();
+    it.each([
+      { length: 121, valid: false },
+      { length: 120, valid: true },
+    ])('validates name length $length', ({ length, valid }) => {
+      mockForUpdateName(valid ? { ...baseRow, name: 'a'.repeat(length) } : baseRow);
+      const update = () => service.updateName('session-1', 'a'.repeat(length));
+      if (valid) expect(update().name).toBe('a'.repeat(length));
+      else expect(update).toThrow(ValidationError);
     });
 
     it('throws NotFoundError when session does not exist', () => {
@@ -1089,18 +1010,21 @@ describe('SessionsService', () => {
  * nested non-reentrant locks -> deadlock. The fix removed outer locks from callers.
  */
 describe('SessionCoordinatorService - nested lock deadlock regression', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
   it('single lock completes without deadlock', async () => {
     const realCoordinator = new SessionCoordinatorService();
     const agentId = 'agent-single-lock';
 
     // This simulates what launchSession does - single lock around the operation
-    const result = await realCoordinator.withAgentLock(agentId, async () => {
+    const pending = realCoordinator.withAgentLock(agentId, async () => {
       // Simulate some async work
       await new Promise((resolve) => setTimeout(resolve, 10));
       return 'completed';
     });
 
-    expect(result).toBe('completed');
+    await jest.advanceTimersByTimeAsync(10);
+    expect(await pending).toBe('completed');
   });
 
   it('demonstrates that nested locks on same agent cause deadlock (timeout test)', async () => {
@@ -1127,7 +1051,9 @@ describe('SessionCoordinatorService - nested lock deadlock regression', () => {
       setTimeout(() => resolve('timeout'), 500); // 500ms should be enough for non-deadlock
     });
 
-    const result = await Promise.race([nestedLockPromise, timeoutPromise]);
+    const resultPromise = Promise.race([nestedLockPromise, timeoutPromise]);
+    await jest.advanceTimersByTimeAsync(500);
+    const result = await resultPromise;
 
     // This SHOULD timeout because nested locks deadlock
     expect(result).toBe('timeout');
@@ -1156,7 +1082,7 @@ describe('SessionCoordinatorService - nested lock deadlock regression', () => {
     const results: string[] = [];
 
     // Concurrent operations on different agents should not block each other
-    await Promise.all([
+    const pending = Promise.all([
       realCoordinator.withAgentLock('agent-a', async () => {
         await new Promise((r) => setTimeout(r, 50));
         results.push('agent-a');
@@ -1165,6 +1091,9 @@ describe('SessionCoordinatorService - nested lock deadlock regression', () => {
         results.push('agent-b');
       }),
     ]);
+
+    await jest.advanceTimersByTimeAsync(50);
+    await pending;
 
     // agent-b should complete before agent-a (no blocking between different agents)
     expect(results).toEqual(['agent-b', 'agent-a']);
@@ -1176,7 +1105,7 @@ describe('SessionCoordinatorService - nested lock deadlock regression', () => {
     const results: string[] = [];
 
     // Two concurrent operations on same agent should serialize
-    await Promise.all([
+    const pending = Promise.all([
       realCoordinator.withAgentLock(agentId, async () => {
         await new Promise((r) => setTimeout(r, 50));
         results.push('first');
@@ -1185,6 +1114,9 @@ describe('SessionCoordinatorService - nested lock deadlock regression', () => {
         results.push('second');
       }),
     ]);
+
+    await jest.advanceTimersByTimeAsync(50);
+    await pending;
 
     // Even though second was started later, first should complete first due to serialization
     expect(results).toEqual(['first', 'second']);

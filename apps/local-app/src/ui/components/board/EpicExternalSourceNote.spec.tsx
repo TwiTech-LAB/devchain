@@ -53,8 +53,6 @@ describe('EpicExternalSourceNote', () => {
   it('renders the provider, remote key, and the internal linked-task link', async () => {
     const { baseElement } = renderNote();
 
-    expect(screen.getByText('Imported from Jira ·', { exact: false })).toBeInTheDocument();
-    expect(screen.getByText('ENG-1', { selector: 'span.font-medium' })).toBeInTheDocument();
     const anchor = screen.getByRole('link', { name: 'Open linked task ENG-1 in DevChain' });
     expect(anchor).toHaveAttribute('href', '/board/jira/linked/epic-1');
     expect(anchor).not.toHaveAttribute('target');

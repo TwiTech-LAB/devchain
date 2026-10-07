@@ -37,18 +37,11 @@ describe('accountHomeCheckCommand', () => {
     });
   }
 
-  it('exits 0 with no output when the home folder matches', () => {
-    const result = run({ user: userName, home: homePath });
-    expect(result).toMatchObject({ status: 0, stdout: '' });
-  });
-
-  it('exits 10 with the current home folder on stdout when it differs', () => {
-    const result = run({ user: userName, home: '/srv/other home' });
-    expect(result).toMatchObject({ status: 10, stdout: '/srv/other home' });
-  });
-
-  it("keeps getent's exit 2 when the account does not exist", () => {
-    const result = run({ user: 'someone-else', home: homePath });
-    expect(result).toMatchObject({ status: 2, stdout: '' });
+  it.each([
+    ['matching home', { user: userName, home: homePath }, 0, ''],
+    ['different home', { user: userName, home: '/srv/other home' }, 10, '/srv/other home'],
+    ['missing account', { user: 'someone-else', home: homePath }, 2, ''],
+  ] as const)('reports shell exit and output for %s', (_case, account, status, stdout) => {
+    expect(run(account)).toMatchObject({ status, stdout });
   });
 });

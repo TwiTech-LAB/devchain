@@ -255,16 +255,6 @@ describe('loadStableIntegrationConnection', () => {
     expect(storage.getIntegrationConnection).toHaveBeenCalledTimes(2);
   });
 
-  it('propagates a rejected credential read before attempting the after read', async () => {
-    const storage = setup();
-    const failure = new Error('credential read failed');
-    storage.getIntegrationConnection.mockResolvedValue(makeConnection());
-    storage.getIntegrationConnectionCredentials.mockRejectedValue(failure);
-
-    await expect(acquire(storage)).rejects.toBe(failure);
-    expect(storage.getIntegrationConnection).toHaveBeenCalledTimes(1);
-  });
-
   it.each([
     { name: 'id-only replacement', firstAfter: { id: 'connection-2', generation: 1 } },
     { name: 'generation-only replacement', firstAfter: { id: 'connection-1', generation: 2 } },

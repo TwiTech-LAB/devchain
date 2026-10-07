@@ -1,20 +1,17 @@
 import { quoteShellArg } from '../quote-shell-arg';
 
 describe('quoteShellArg', () => {
-  it('wraps simple arg in single quotes', () => {
-    expect(quoteShellArg('hello')).toBe("'hello'");
-  });
-
-  it('wraps arg with space in single quotes', () => {
-    expect(quoteShellArg('hello world')).toBe("'hello world'");
-  });
-
-  it('escapes single quotes with POSIX close-escape-open pattern', () => {
-    expect(quoteShellArg("it's")).toBe("'it'\\''s'");
-  });
-
-  it('handles multiple single quotes', () => {
-    expect(quoteShellArg("it's a 'test'")).toBe("'it'\\''s a '\\''test'\\'''");
+  it.each([
+    { input: 'hello', expected: "'hello'" },
+    { input: 'hello world', expected: "'hello world'" },
+    { input: "it's", expected: "'it'\\''s'" },
+    { input: "it's a 'test'", expected: "'it'\\''s a '\\''test'\\'''" },
+    { input: '', expected: "''" },
+    { input: 'say "hi"', expected: '\'say "hi"\'' },
+    { input: 'path\\to\\file', expected: "'path\\to\\file'" },
+    { input: 'line1\nline2', expected: "'line1\nline2'" },
+  ])('quotes shell argument $input', ({ input, expected }) => {
+    expect(quoteShellArg(input)).toBe(expected);
   });
 
   it('wraps shell metachars safely', () => {
@@ -24,22 +21,6 @@ describe('quoteShellArg', () => {
     expect(quoteShellArg('a;b')).toBe("'a;b'");
     expect(quoteShellArg('a|b')).toBe("'a|b'");
     expect(quoteShellArg('a&b')).toBe("'a&b'");
-  });
-
-  it('returns empty single-quoted pair for empty string', () => {
-    expect(quoteShellArg('')).toBe("''");
-  });
-
-  it('handles double quotes inside single quotes', () => {
-    expect(quoteShellArg('say "hi"')).toBe('\'say "hi"\'');
-  });
-
-  it('handles backslashes', () => {
-    expect(quoteShellArg('path\\to\\file')).toBe("'path\\to\\file'");
-  });
-
-  it('handles newlines', () => {
-    expect(quoteShellArg('line1\nline2')).toBe("'line1\nline2'");
   });
 
   it('produces correct output for realistic agent CLI invocation', () => {

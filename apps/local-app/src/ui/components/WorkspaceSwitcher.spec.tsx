@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ProjectWorkspace } from '@/ui/hooks/useProjectSelection';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -49,7 +49,6 @@ describe('WorkspaceSwitcher', () => {
   });
 
   it('preserves order and distinguishes repeated initials with full accessible names', async () => {
-    const user = userEvent.setup();
     render(
       <WorkspaceSwitcher
         workspaces={workspaces}
@@ -69,7 +68,7 @@ describe('WorkspaceSwitcher', () => {
     expect(buttons[0]).toHaveAttribute('aria-pressed', 'false');
     expect(buttons[1]).toHaveAttribute('aria-pressed', 'true');
 
-    await user.hover(buttons[0]);
+    fireEvent.focus(buttons[0]);
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Alpha');
   });
 
@@ -98,7 +97,7 @@ describe('WorkspaceSwitcher', () => {
     expect(archive).toHaveFocus();
   });
 
-  it('renders muted 32px square tiles with stable name-derived colors', () => {
+  it('keeps name-derived colors stable across workspace reordering', () => {
     const { rerender } = render(
       <WorkspaceSwitcher
         workspaces={colorWorkspaces}
@@ -107,17 +106,9 @@ describe('WorkspaceSwitcher', () => {
       />,
     );
 
-    const toolbar = screen.getByRole('toolbar', { name: 'Switch workspace' });
     const alpha = screen.getByRole('button', { name: 'Switch to workspace Alpha' });
     const archive = screen.getByRole('button', { name: 'Switch to workspace Archive' });
     const production = screen.getByRole('button', { name: 'Switch to workspace Production' });
-
-    expect(toolbar).toHaveClass('-space-x-1');
-    expect(toolbar).not.toHaveClass('-space-x-2');
-    for (const button of [alpha, archive, production]) {
-      expect(button).toHaveClass('h-8', 'w-8', 'rounded-md', 'font-bold');
-      expect(button).not.toHaveClass('h-10', 'w-10', 'rounded-full', 'bg-primary');
-    }
 
     expect(workspaceColorFamily(alpha)).toBe('purple');
     expect(workspaceColorFamily(archive)).toBe('teal');

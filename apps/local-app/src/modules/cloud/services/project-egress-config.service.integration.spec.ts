@@ -1,14 +1,12 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 // Backend integration: real SQLite is the cheapest reliable proof of this persisted contract.
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { GUEST_SANDBOX_ROOT_PATH } from '../../guests/constants';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { ProjectEgressConfigService } from './project-egress-config.service';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const ENABLED_PROJECTS_KEY = 'cloud.egress.enabledProjects';
 const DEFAULT_ENABLED_KEY = 'cloud.egress.newProjectsDefaultEnabled';
 const TS = '2026-07-31T00:00:00.000Z';
@@ -20,9 +18,7 @@ describe('ProjectEgressConfigService', () => {
   let service: ProjectEgressConfigService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite, db } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
     storage = new LocalStorageService(db);
     service = new ProjectEgressConfigService(db);

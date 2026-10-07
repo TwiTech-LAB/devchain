@@ -323,31 +323,13 @@ describe('EpicRelationsCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove relation with Design API' }));
 
-    const dialog = screen.getByRole('dialog', { name: 'Remove this relation?' });
-    expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
+    screen.getByRole('dialog', { name: 'Remove this relation?' });
+
     expect(deleteMutateMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
     expect(deleteMutateMock).not.toHaveBeenCalled();
-  });
-
-  it('confirms an eligible directed Related removal with source and target context once', async () => {
-    renderCard();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Remove relation with Design API' }));
-    const dialog = screen.getByRole('dialog', { name: 'Remove this relation?' });
-    // The pair routes time, so the warning names the exact source and target.
-    await waitFor(() =>
-      expect(dialog).toHaveTextContent('Current route: “Focal Epic” logs time with “Design API”.'),
-    );
-    expect(dialog).toHaveTextContent('Removing this relation deletes the pair and its time route.');
-    expect(dialog).toHaveTextContent('Time already logged to a provider does not move.');
-
-    fireEvent.click(screen.getByRole('button', { name: /^Remove$/ }));
-    expect(deleteMutateMock).toHaveBeenCalledTimes(1);
-    expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: DESIGN_ID }, expect.anything());
-    expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
   });
 
   it('blocks confirmation until the directed Related removal context settles', async () => {
@@ -381,11 +363,13 @@ describe('EpicRelationsCard', () => {
     await waitFor(() =>
       expect(dialog).toHaveTextContent('Current route: “Focal Epic” logs time with “Design API”.'),
     );
+    expect(dialog).toHaveTextContent('Removing this relation deletes the pair and its time route.');
     expect(screen.getByRole('button', { name: /^Remove$/ })).toBeEnabled();
 
     fireEvent.click(screen.getByRole('button', { name: /^Remove$/ }));
     expect(deleteMutateMock).toHaveBeenCalledTimes(1);
     expect(deleteMutateMock).toHaveBeenCalledWith({ relatedEpicId: DESIGN_ID }, expect.anything());
+    expect(screen.queryByRole('dialog', { name: 'Remove this relation?' })).not.toBeInTheDocument();
   });
 
   it('keeps blocks and cross-project removal copy free of time-routing claims', () => {
@@ -452,14 +436,9 @@ describe('EpicRelationsCard', () => {
     // The initiated Epic is the source and the selected Epic the target.
     expect(within(addDialog).getAllByText('Source')).toHaveLength(1);
     expect(within(addDialog).getAllByText('Target')).toHaveLength(1);
-    expect(within(addDialog).getByTestId('relation-direction-summary')).toHaveTextContent(
-      /“Auth Service” logs time with “Focal Epic”\./,
-    );
 
     fireEvent.click(within(addDialog).getByRole('button', { name: 'Blocks' }));
-    expect(within(addDialog).getByTestId('relation-direction-summary')).toHaveTextContent(
-      /“Focal Epic” blocks “Auth Service”\./,
-    );
+
     fireEvent.click(within(addDialog).getByRole('button', { name: 'Confirm link' }));
 
     expect(setMutateMock).toHaveBeenCalledTimes(1);

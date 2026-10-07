@@ -1,7 +1,5 @@
-import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { Inject, Injectable } from '@nestjs/common';
 import { posix as path } from 'node:path';
-import { z } from 'zod';
 import { ConflictError, NotFoundError } from '../../../common/errors/error-types';
 import {
   OPENCODE_AUTH_FILE_PATH,
@@ -17,7 +15,6 @@ import {
   type RemoteStorage,
 } from '../../storage/interfaces/storage.interface';
 import type { RemoteOperation } from '../../storage/models/domain.models';
-import { remoteFetch, requireRemoteTls } from '../transport/remote-tls';
 import {
   ClaimOperation,
   claimEntryIds as entryIds,
@@ -52,10 +49,6 @@ export interface UpdateLoginsDetails extends ClaimDetails {
   replacedManifest?: Record<string, AppliedProviderManifest>;
 }
 
-const SessionsSchema = z.array(
-  z.object({ status: z.string(), agentId: z.string().nullable().optional() }),
-);
-
 @Injectable()
 export class UpdateLoginsOperation implements RemoteOperationDefinition {
   readonly kind = 'update_logins' as const;
@@ -68,7 +61,6 @@ export class UpdateLoginsOperation implements RemoteOperationDefinition {
     private readonly writeback: ProviderAuthWritebackService,
     private readonly claim: ClaimOperation,
     private readonly generator: ProviderAuthGeneratorService,
-    private readonly apiKeys: RemoteApiKeyService,
   ) {
     const reuse = (id: string): RemoteOperationStepDefinition => {
       const step = claim.steps.find((candidate) => candidate.id === id);
@@ -210,20 +202,10 @@ export class UpdateLoginsOperation implements RemoteOperationDefinition {
     ) {
       let count: number;
       try {
-        const remote = await this.storage.getRemote(operation.remoteId);
-        const { baseUrl, certificate } = requireRemoteTls(remote);
-        const response = await remoteFetch(
-          `${baseUrl.replace(/\/+$/, '')}/api/sessions`,
-          {
-            signal: AbortSignal.timeout(3000),
-            headers: await this.apiKeys.headers(operation.remoteId),
-          },
-          certificate,
-        );
-        if (!response.ok) throw new Error('Sessions unavailable');
-        count = SessionsSchema.parse(await response.json()).filter(
-          (session) => session.status === 'running' && session.agentId,
-        ).length;
+        // A short read: an unknown count refuses the change, and the user can force it.
+        count = (
+          await this.host.listSessions(operation.remoteId, undefined, { timeoutMs: 3_000 })
+        ).filter((session) => session.status === 'running' && session.agentId).length;
       } catch {
         throw refused(
           'REMOTE_AGENT_COUNT_UNKNOWN',

@@ -1,10 +1,10 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { ConflictError } from '../../../common/errors/error-types';
 import type {
   CreateExternalManagedSubtaskLink,
@@ -17,8 +17,6 @@ import { CommittedEventStore } from '../../events/services/committed-event.store
 import { DurableEventRegistryService } from '../../events/services/durable-event-registry.service';
 import { IntegrationCredentialCipher } from './integration-credential-cipher';
 import { LocalStorageService } from './local-storage.service';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 // Layer: backend integration. The ownership snapshots, cascade behavior,
 // recognition join, and atomic multi-table transitions require real SQLite.
@@ -33,9 +31,8 @@ describe('LocalStorageService managed subtasks', () => {
   let parentSource: ExternalTaskLink;
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
     const registry = new DurableEventRegistryService();
     registry.register({

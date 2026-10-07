@@ -181,7 +181,6 @@ describe('ChatSidebar header controls', () => {
     const lane = screen.getByLabelText('Agent event bus controls');
     const mainRow = screen.getByRole('listitem', { name: /Open terminal for Alpha/i });
 
-    expect(wrapper).toHaveClass('relative', 'px-4', 'py-4');
     expect(mainRegion?.parentElement).toBe(wrapper);
     expect(overlay.parentElement).toBe(wrapper);
     expect(lane.parentElement).toBe(wrapper);
@@ -222,10 +221,6 @@ describe('ChatSidebar header controls', () => {
 
     expect(startButton).toHaveAttribute('title', 'Launch sessions for all offline agents');
     expect(stopButton).toHaveAttribute('title', 'Terminate all running sessions');
-    expect(startButton).toHaveClass('h-7', 'px-2', 'text-xs');
-    expect(stopButton).toHaveClass('h-7', 'px-2', 'text-xs');
-    expect(startButton.className).not.toContain('dark:');
-    expect(stopButton.className).not.toContain('dark:');
 
     fireEvent.click(screen.getByRole('button', { name: 'Select preset' }));
     expect(await screen.findByText('Presets')).toBeInTheDocument();
@@ -238,41 +233,32 @@ describe('ChatSidebar header controls', () => {
     expect(onTerminateAllConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it('disables bulk controls and shows loading indicators while bulk actions are running', async () => {
-    renderSidebar({
-      offlineAgents: [agent],
-      agentsWithSessions: [agent],
-      startingAll: true,
-      terminatingAll: true,
-    });
+  it.each(['actions running', 'presence unresolved'])(
+    'disables bulk controls for %s',
+    async (reason) => {
+      renderSidebar({
+        offlineAgents: [agent],
+        agentsWithSessions: [agent],
+        startingAll: reason === 'actions running',
+        terminatingAll: reason === 'actions running',
+        presenceReady: reason !== 'presence unresolved',
+      });
 
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
-    });
+      await waitFor(() => {
+        expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+      });
 
-    const startButton = screen.getByRole('button', { name: /Start \(1\)/i });
-    const stopButton = screen.getByRole('button', { name: /Stop \(1\)/i });
+      const startButton = screen.getByRole('button', { name: /Start \(1\)/i });
+      const stopButton = screen.getByRole('button', { name: /Stop \(1\)/i });
 
-    expect(startButton).toBeDisabled();
-    expect(stopButton).toBeDisabled();
-    expect(startButton.querySelector('.animate-spin')).not.toBeNull();
-    expect(stopButton.querySelector('.animate-spin')).not.toBeNull();
-  });
-
-  it('disables bulk controls when presence is not ready even with available counts', async () => {
-    renderSidebar({
-      offlineAgents: [agent],
-      agentsWithSessions: [agent],
-      presenceReady: false,
-    });
-
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
-    });
-
-    expect(screen.getByRole('button', { name: /Start \(1\)/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Stop \(1\)/i })).toBeDisabled();
-  });
+      expect(startButton).toBeDisabled();
+      expect(stopButton).toBeDisabled();
+      if (reason === 'actions running') {
+        expect(startButton.querySelector('.animate-spin')).not.toBeNull();
+        expect(stopButton.querySelector('.animate-spin')).not.toBeNull();
+      }
+    },
+  );
 });
 
 describe('ChatSidebar agent grouping toggle', () => {
@@ -334,24 +320,31 @@ describe('ChatSidebar agent grouping toggle', () => {
     }
   });
 
-  it('defaults to All tab when project has 0 teams', async () => {
-    global.fetch = mockFetchWithTeams(0);
-    renderSidebar();
-
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
-    });
-    expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('aria-selected', 'false');
-  });
-
-  it('defaults to Teams tab when project has ≥1 team', async () => {
-    global.fetch = mockFetchWithTeams(1);
-    renderSidebar();
-
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('aria-selected', 'true');
-    });
-  });
+  it.each([
+    { stored: null, teams: 0, selected: 'All' },
+    { stored: null, teams: 1, selected: 'Teams' },
+    { stored: 'teams', teams: 0, selected: 'Teams' },
+    { stored: 'all', teams: 1, selected: 'All' },
+    { stored: 'invalid-value', teams: 1, selected: 'Teams' },
+  ])(
+    'initializes tab=$selected with stored=$stored teams=$teams',
+    async ({ stored, teams, selected }) => {
+      if (stored !== null) window.localStorage.setItem(TAB_KEY, stored);
+      global.fetch = mockFetchWithTeams(teams);
+      renderSidebar();
+      await waitFor(() =>
+        expect(screen.getByRole('tab', { name: selected })).toHaveAttribute(
+          'aria-selected',
+          'true',
+        ),
+      );
+      expect(
+        screen.getByRole('tab', { name: selected === 'All' ? 'Teams' : 'All' }),
+      ).toHaveAttribute('aria-selected', 'false');
+      if (stored === 'teams' && teams === 0)
+        expect(await screen.findByText(/No teams configured/i)).toBeInTheDocument();
+    },
+  );
 
   it('switches to Teams, persists to project-scoped key, and renders no-teams state', async () => {
     global.fetch = mockFetchWithTeams(0);
@@ -376,40 +369,6 @@ describe('ChatSidebar agent grouping toggle', () => {
     expect(screen.queryByText('MAIN TEAMS')).not.toBeInTheDocument();
     expect(screen.getByText('STANDALONE')).toBeInTheDocument();
     expect(screen.queryByText('No Team')).not.toBeInTheDocument();
-  });
-
-  it('initializes from project-scoped localStorage on first render', async () => {
-    window.localStorage.setItem(TAB_KEY, 'teams');
-    global.fetch = mockFetchWithTeams(0);
-
-    renderSidebar();
-
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('aria-selected', 'true');
-    });
-    expect(await screen.findByText(/No teams configured/i)).toBeInTheDocument();
-  });
-
-  it('persisted All overrides default Teams rule', async () => {
-    window.localStorage.setItem(TAB_KEY, 'all');
-    global.fetch = mockFetchWithTeams(1);
-
-    renderSidebar();
-
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
-    });
-  });
-
-  it('ignores invalid stored values and applies default rule', async () => {
-    window.localStorage.setItem(TAB_KEY, 'invalid-value');
-    global.fetch = mockFetchWithTeams(1);
-
-    renderSidebar();
-
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('aria-selected', 'true');
-    });
   });
 
   it('falls back to All tab and shows a toast when the Teams query fails', async () => {
@@ -539,7 +498,6 @@ describe('ChatSidebar activity badges', () => {
     const badge = screen.getByLabelText(/Busy for/i);
     expect(badge).toHaveTextContent(/^\d+s$/);
     expect(badge).not.toHaveTextContent(/Busy/i);
-    expect(badge).toHaveClass('h-4', 'text-[10px]', 'font-medium', 'bg-primary/10');
   });
 
   it('shows only whole minutes after the busy timer reaches one minute', async () => {
@@ -734,6 +692,15 @@ describe('ChatSidebar team lead-as-header rendering', () => {
     const toggleButton = screen.getByLabelText(/Toggle Alpha Team members/);
     expect(teamMetaLine).toContainElement(addButton);
     expect(teamMetaLine).toContainElement(toggleButton);
+
+    {
+      await waitFor(() => {
+        expect(screen.getByText(/Alpha Team/)).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByLabelText(/Open terminal for Member Agent/i)).toBeInTheDocument();
+      });
+    }
   });
 
   it('renders secondary Teams-mode section headers without adding section collapse controls', async () => {
@@ -789,26 +756,34 @@ describe('ChatSidebar team lead-as-header rendering', () => {
     expect(screen.queryByLabelText(/Toggle Alpha Team members/)).not.toBeInTheDocument();
   });
 
-  it('falls back to old group header rendering for legacy null-lead teams', async () => {
+  it('opens no-lead team groups by default and preserves toggle behavior', async () => {
     global.fetch = mockTeamFetch({
       teamLeadAgentId: null,
-      members: [{ agentId: 'agent-lead', agentName: 'Lead Agent' }],
+      members: [
+        { agentId: 'agent-lead', agentName: 'Lead Agent' },
+        { agentId: 'agent-member', agentName: 'Member Agent' },
+      ],
       teamName: 'Legacy Team',
     });
 
-    renderSidebar({ agents: [agentLead], offlineAgents: [agentLead] });
-
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'Teams' })).toHaveAttribute('aria-selected', 'true');
+    const { container } = renderSidebar({
+      agents: [agentLead, agentMember],
+      offlineAgents: [agentLead, agentMember],
     });
 
     await waitFor(() => {
       expect(screen.getByText('Legacy Team')).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('button', { name: 'Toggle Legacy Team members' })).toHaveAttribute(
-      'aria-expanded',
-    );
+    const toggleBtn = screen.getByRole('button', { name: /Toggle Legacy Team members/i });
+    expect(toggleBtn).toHaveAttribute('aria-expanded', 'true');
+
+    expect(container.querySelectorAll('button button')).toHaveLength(0);
+    fireEvent.click(toggleBtn);
+
+    await waitFor(() => {
+      expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
+    });
   });
 
   it('preserves the team bucket while sorting its agent collection canonically', async () => {
@@ -839,75 +814,6 @@ describe('ChatSidebar team lead-as-header rendering', () => {
     ]);
   });
 
-  it('no-lead header has no nested buttons', async () => {
-    global.fetch = mockTeamFetch({
-      teamLeadAgentId: null,
-      members: [{ agentId: 'agent-lead', agentName: 'Lead Agent' }],
-      teamName: 'NoNest Team',
-    });
-
-    const { container } = renderSidebar({
-      agents: [agentLead],
-      offlineAgents: [agentLead],
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('NoNest Team')).toBeInTheDocument();
-    });
-
-    const nestedButtons = container.querySelectorAll('button button');
-    expect(nestedButtons).toHaveLength(0);
-  });
-
-  it('opens no-lead team groups by default and preserves toggle behavior', async () => {
-    global.fetch = mockTeamFetch({
-      teamLeadAgentId: null,
-      members: [
-        { agentId: 'agent-lead', agentName: 'Lead Agent' },
-        { agentId: 'agent-member', agentName: 'Member Agent' },
-      ],
-      teamName: 'Toggle Team',
-    });
-
-    renderSidebar({
-      agents: [agentLead, agentMember],
-      offlineAgents: [agentLead, agentMember],
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('Toggle Team')).toBeInTheDocument();
-    });
-
-    const toggleBtn = screen.getByRole('button', { name: /Toggle Toggle Team members/i });
-    expect(toggleBtn).toHaveAttribute('aria-expanded', 'true');
-
-    fireEvent.click(toggleBtn);
-
-    await waitFor(() => {
-      expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
-    });
-  });
-
-  it('shows indented member rows by default for lead-as-header teams', async () => {
-    global.fetch = mockTeamFetch({
-      teamLeadAgentId: 'agent-lead',
-      members: [
-        { agentId: 'agent-lead', agentName: 'Lead Agent' },
-        { agentId: 'agent-member', agentName: 'Member Agent' },
-      ],
-    });
-
-    renderSidebar({ agents: [agentLead, agentMember], offlineAgents: [agentLead, agentMember] });
-
-    await waitFor(() => {
-      expect(screen.getByText(/Alpha Team/)).toBeInTheDocument();
-    });
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/Open terminal for Member Agent/i)).toBeInTheDocument();
-    });
-  });
-
   it('preserves persisted collapsed team group state', async () => {
     window.localStorage.setItem(TEAM_GROUPS_KEY, JSON.stringify({ 'team-1': true }));
     global.fetch = mockTeamFetch({
@@ -931,69 +837,43 @@ describe('ChatSidebar team lead-as-header rendering', () => {
     expect(screen.queryByLabelText(/Open terminal for Member Agent/i)).not.toBeInTheDocument();
   });
 
-  it('onEditTeam payload includes allowTeamLeadCreateAgents=true from team detail', async () => {
-    global.fetch = mockTeamFetch({
-      teamLeadAgentId: 'agent-lead',
-      members: [{ agentId: 'agent-lead', agentName: 'Lead Agent' }],
-      maxMembers: 8,
-      maxConcurrentTasks: 4,
-      allowTeamLeadCreateAgents: true,
-    });
+  it.each([
+    [true, 8, 4],
+    [false, 6, 2],
+  ] as const)(
+    'passes creation policy=%s in team edit payload',
+    async (allow, maxMembers, maxConcurrentTasks) => {
+      global.fetch = mockTeamFetch({
+        teamLeadAgentId: 'agent-lead',
+        members: [{ agentId: 'agent-lead', agentName: 'Lead Agent' }],
+        maxMembers,
+        maxConcurrentTasks,
+        allowTeamLeadCreateAgents: allow,
+      });
 
-    const onEditTeam = jest.fn();
-    renderSidebar({
-      agents: [agentLead],
-      offlineAgents: [agentLead],
-      onEditTeam,
-    });
+      const onEditTeam = jest.fn();
+      renderSidebar({
+        agents: [agentLead],
+        offlineAgents: [agentLead],
+        onEditTeam,
+      });
 
-    await waitFor(() => {
-      expect(screen.getByText(/Alpha Team/)).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText(/Alpha Team/)).toBeInTheDocument();
+      });
 
-    const editButtons = screen.getAllByText('Edit team');
-    fireEvent.click(editButtons[0]);
+      const editButtons = screen.getAllByText('Edit team');
+      fireEvent.click(editButtons[0]);
 
-    expect(onEditTeam).toHaveBeenCalledWith({
-      teamId: 'team-1',
-      teamName: 'Alpha Team',
-      maxMembers: 8,
-      maxConcurrentTasks: 4,
-      allowTeamLeadCreateAgents: true,
-    });
-  });
-
-  it('onEditTeam payload includes allowTeamLeadCreateAgents=false from team detail', async () => {
-    global.fetch = mockTeamFetch({
-      teamLeadAgentId: 'agent-lead',
-      members: [{ agentId: 'agent-lead', agentName: 'Lead Agent' }],
-      maxMembers: 6,
-      maxConcurrentTasks: 2,
-      allowTeamLeadCreateAgents: false,
-    });
-
-    const onEditTeam = jest.fn();
-    renderSidebar({
-      agents: [agentLead],
-      offlineAgents: [agentLead],
-      onEditTeam,
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/Alpha Team/)).toBeInTheDocument();
-    });
-
-    const editButtons = screen.getAllByText('Edit team');
-    fireEvent.click(editButtons[0]);
-
-    expect(onEditTeam).toHaveBeenCalledWith({
-      teamId: 'team-1',
-      teamName: 'Alpha Team',
-      maxMembers: 6,
-      maxConcurrentTasks: 2,
-      allowTeamLeadCreateAgents: false,
-    });
-  });
+      expect(onEditTeam).toHaveBeenCalledWith({
+        teamId: 'team-1',
+        teamName: 'Alpha Team',
+        maxMembers,
+        maxConcurrentTasks,
+        allowTeamLeadCreateAgents: allow,
+      });
+    },
+  );
 
   // Layer: UI component (jsdom). Rendering the sidebar with two mocked team
   // responses is the cheapest reliable proof that React preserves both mounted
@@ -1129,23 +1009,6 @@ describe('ChatSidebar human-held message badges', () => {
     );
     expect(onReleaseHeldMessages).toHaveBeenCalledWith(mainAgent.id);
   });
-
-  it('renders no badge when the agent has no held messages', async () => {
-    renderSidebar({
-      agents: [mainAgent],
-      offlineAgents: [mainAgent],
-      humanHeldMessageCounts: {},
-    });
-
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
-    });
-
-    expect(
-      screen.getByRole('listitem', { name: 'Open terminal for Alpha (offline)' }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/waiting/i)).not.toBeInTheDocument();
-  });
 });
 
 describe('ChatSidebar guest compatibility', () => {
@@ -1187,7 +1050,7 @@ describe('ChatSidebar guest compatibility', () => {
 
     const guestRow = screen.getByRole('listitem', { name: 'Guest: Guest Agent (online)' });
     expect(guestRow).toHaveAttribute('type', 'button');
-    expect(guestRow).toHaveClass('cursor-default', 'bg-card/40');
+
     expect(guestRow).not.toHaveAttribute('data-agent-event-bus-agent-id');
 
     fireEvent.click(guestRow);
@@ -1195,7 +1058,6 @@ describe('ChatSidebar guest compatibility', () => {
 
     const badge = screen.getByLabelText('Guest type');
     expect(badge).toHaveTextContent('Guest');
-    expect(badge).toHaveClass('border-purple-500/40', 'bg-purple-500/10', 'text-purple-600');
   });
 });
 

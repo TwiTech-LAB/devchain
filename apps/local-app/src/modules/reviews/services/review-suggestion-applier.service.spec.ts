@@ -151,55 +151,31 @@ describe('ReviewSuggestionApplier', () => {
       expect(lines[3]).toBe('ddd');
     });
 
-    it('performs 1-indexed line splice replacing multi-line range', async () => {
-      const comment = makeComment({
-        lineStart: 2,
+    it.each([
+      {
+        label: 'multi-line range',
         lineEnd: 3,
         content: '```suggestion\nreplaced\n```',
-      });
-      storage.getReviewComment.mockResolvedValue(comment);
-      storage.getReview.mockResolvedValue(makeReview());
-      mockedFs.readFile.mockResolvedValue('aaa\nbbb\nccc\nddd\n');
-      mockedFs.writeFile.mockResolvedValue();
-      reviewsService.resolveComment.mockResolvedValue(
-        makeComment({ status: 'resolved', version: 2 }),
-      );
-
-      await applier.apply({
-        commentId,
-        projectId,
-        projectRootPath,
-        version: 1,
-      });
-
-      const writtenContent = mockedFs.writeFile.mock.calls[0][1] as string;
-      const lines = writtenContent.split('\n');
-      expect(lines).toEqual(['aaa', 'replaced', 'ddd', '']);
-    });
-
-    it('uses lineStart as lineEnd when lineEnd is null', async () => {
-      const comment = makeComment({
-        lineStart: 2,
+        file: 'aaa\nbbb\nccc\nddd\n',
+        expected: ['aaa', 'replaced', 'ddd', ''],
+      },
+      {
+        label: 'null end',
         lineEnd: null,
         content: '```suggestion\nnew line\n```',
-      });
-      storage.getReviewComment.mockResolvedValue(comment);
+        file: 'aaa\nbbb\nccc\n',
+        expected: ['aaa', 'new line', 'ccc', ''],
+      },
+    ])('$label', async ({ lineEnd, content, file, expected }) => {
+      storage.getReviewComment.mockResolvedValue(makeComment({ lineStart: 2, lineEnd, content }));
       storage.getReview.mockResolvedValue(makeReview());
-      mockedFs.readFile.mockResolvedValue('aaa\nbbb\nccc\n');
+      mockedFs.readFile.mockResolvedValue(file);
       mockedFs.writeFile.mockResolvedValue();
       reviewsService.resolveComment.mockResolvedValue(
         makeComment({ status: 'resolved', version: 2 }),
       );
-
-      await applier.apply({
-        commentId,
-        projectId,
-        projectRootPath,
-        version: 1,
-      });
-
-      const writtenContent = mockedFs.writeFile.mock.calls[0][1] as string;
-      expect(writtenContent.split('\n')).toEqual(['aaa', 'new line', 'ccc', '']);
+      await applier.apply({ commentId, projectId, projectRootPath, version: 1 });
+      expect((mockedFs.writeFile.mock.calls[0][1] as string).split('\n')).toEqual(expected);
     });
   });
 
@@ -229,52 +205,34 @@ describe('ReviewSuggestionApplier', () => {
   });
 
   describe('suggestion extraction', () => {
-    it('rejects comment without filePath', async () => {
-      storage.getReviewComment.mockResolvedValue(makeComment({ filePath: null }));
+    it.each([
+      { label: 'no path', override: { filePath: null }, code: 'INVALID_SUGGESTION' },
+      { label: 'no start', override: { lineStart: null }, code: 'INVALID_SUGGESTION' },
+      {
+        label: 'no suggestion',
+        override: { content: 'No suggestion here' },
+        code: 'NO_SUGGESTION',
+      },
+    ])('$label', async ({ override, code }) => {
+      storage.getReviewComment.mockResolvedValue(makeComment(override));
       storage.getReview.mockResolvedValue(makeReview());
-
       await expect(
         applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
-      ).rejects.toMatchObject({ code: 'INVALID_SUGGESTION' });
-    });
-
-    it('rejects comment without lineStart', async () => {
-      storage.getReviewComment.mockResolvedValue(makeComment({ lineStart: null }));
-      storage.getReview.mockResolvedValue(makeReview());
-
-      await expect(
-        applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
-      ).rejects.toMatchObject({ code: 'INVALID_SUGGESTION' });
-    });
-
-    it('rejects comment without suggestion block', async () => {
-      storage.getReviewComment.mockResolvedValue(makeComment({ content: 'No suggestion here' }));
-      storage.getReview.mockResolvedValue(makeReview());
-
-      await expect(
-        applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
-      ).rejects.toMatchObject({ code: 'NO_SUGGESTION' });
+      ).rejects.toMatchObject({ code });
     });
   });
 
   describe('path traversal rejection', () => {
-    it('rejects paths with .. segments', async () => {
-      storage.getReviewComment.mockResolvedValue(makeComment({ filePath: '../../../etc/passwd' }));
-      storage.getReview.mockResolvedValue(makeReview());
-
-      await expect(
-        applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
-      ).rejects.toMatchObject({ code: 'PATH_TRAVERSAL_BLOCKED' });
-    });
-
-    it('rejects absolute paths', async () => {
-      storage.getReviewComment.mockResolvedValue(makeComment({ filePath: '/etc/passwd' }));
-      storage.getReview.mockResolvedValue(makeReview());
-
-      await expect(
-        applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
-      ).rejects.toMatchObject({ code: 'PATH_TRAVERSAL_BLOCKED' });
-    });
+    it.each(['../../../etc/passwd', '/etc/passwd'])(
+      'rejects traversal path %s',
+      async (filePath) => {
+        storage.getReviewComment.mockResolvedValue(makeComment({ filePath }));
+        storage.getReview.mockResolvedValue(makeReview());
+        await expect(
+          applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
+        ).rejects.toMatchObject({ code: 'PATH_TRAVERSAL_BLOCKED' });
+      },
+    );
   });
 
   describe('symlink escape rejection', () => {
@@ -294,34 +252,15 @@ describe('ReviewSuggestionApplier', () => {
   });
 
   describe('line bounds validation', () => {
-    it('rejects lineStart exceeding file length', async () => {
-      storage.getReviewComment.mockResolvedValue(makeComment({ lineStart: 100, lineEnd: 100 }));
+    it.each([
+      { label: 'start beyond file', lineStart: 100, lineEnd: 100, file: 'line 1\nline 2\n' },
+      { label: 'end beyond file', lineStart: 1, lineEnd: 100, file: 'line 1\nline 2\n' },
+      { label: 'reversed range', lineStart: 3, lineEnd: 1, file: 'line 1\nline 2\nline 3\n' },
+    ])('$label', async ({ lineStart, lineEnd, file }) => {
+      storage.getReviewComment.mockResolvedValue(makeComment({ lineStart, lineEnd }));
       storage.getReview.mockResolvedValue(makeReview());
-      mockedFs.readFile.mockResolvedValue('line 1\nline 2\n');
+      mockedFs.readFile.mockResolvedValue(file);
       mockedFs.writeFile.mockResolvedValue();
-
-      await expect(
-        applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
-      ).rejects.toMatchObject({ code: 'INVALID_LINE_BOUNDS' });
-    });
-
-    it('rejects lineEnd exceeding file length', async () => {
-      storage.getReviewComment.mockResolvedValue(makeComment({ lineStart: 1, lineEnd: 100 }));
-      storage.getReview.mockResolvedValue(makeReview());
-      mockedFs.readFile.mockResolvedValue('line 1\nline 2\n');
-      mockedFs.writeFile.mockResolvedValue();
-
-      await expect(
-        applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
-      ).rejects.toMatchObject({ code: 'INVALID_LINE_BOUNDS' });
-    });
-
-    it('rejects lineEnd less than lineStart', async () => {
-      storage.getReviewComment.mockResolvedValue(makeComment({ lineStart: 3, lineEnd: 1 }));
-      storage.getReview.mockResolvedValue(makeReview());
-      mockedFs.readFile.mockResolvedValue('line 1\nline 2\nline 3\n');
-      mockedFs.writeFile.mockResolvedValue();
-
       await expect(
         applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
       ).rejects.toMatchObject({ code: 'INVALID_LINE_BOUNDS' });
@@ -345,15 +284,6 @@ describe('ReviewSuggestionApplier', () => {
 
       expect(mockedFs.writeFile).not.toHaveBeenCalled();
       expect(reviewsService.resolveComment).not.toHaveBeenCalled();
-    });
-
-    it('allows matching version and proceeds to write', async () => {
-      setupHappyPath();
-
-      await applier.apply({ commentId, projectId, projectRootPath, version: 1 });
-
-      expect(mockedFs.writeFile).toHaveBeenCalled();
-      expect(reviewsService.resolveComment).toHaveBeenCalled();
     });
   });
 
@@ -401,18 +331,13 @@ describe('ReviewSuggestionApplier', () => {
   });
 
   describe('not found propagation', () => {
-    it('propagates NotFoundError when comment does not exist', async () => {
-      storage.getReviewComment.mockRejectedValue(new NotFoundError('ReviewComment', commentId));
-
-      await expect(
-        applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
-      ).rejects.toThrow(NotFoundError);
-    });
-
-    it('propagates NotFoundError when review does not exist', async () => {
+    it.each(['comment', 'review'])('propagates missing %s', async (missing) => {
       storage.getReviewComment.mockResolvedValue(makeComment());
-      storage.getReview.mockRejectedValue(new NotFoundError('Review', reviewId));
-
+      if (missing === 'comment') {
+        storage.getReviewComment.mockRejectedValue(new NotFoundError('ReviewComment', commentId));
+      } else {
+        storage.getReview.mockRejectedValue(new NotFoundError('Review', reviewId));
+      }
       await expect(
         applier.apply({ commentId, projectId, projectRootPath, version: 1 }),
       ).rejects.toThrow(NotFoundError);

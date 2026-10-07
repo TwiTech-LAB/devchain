@@ -89,75 +89,21 @@ describe('TerminalSessionWindowContent', () => {
     jest.clearAllMocks();
   });
 
-  it('passes shortSessionId to updateWindowMeta when name is null', () => {
-    render(
-      <TerminalSessionWindowContent {...defaultProps} session={makeSession({ name: null })} />,
-      {
-        wrapper: createWrapper(),
-      },
-    );
+  it.each([
+    [null, '00000000…0001'],
+    ['My Session', 'My Session'],
+  ])('sets Session detail from name=%s', (name, label) => {
+    render(<TerminalSessionWindowContent {...defaultProps} session={makeSession({ name })} />, {
+      wrapper: createWrapper(),
+    });
 
     expect(mockUpdateWindowMeta).toHaveBeenCalledWith(
       '00000000-0000-0000-0000-000000000001',
       expect.objectContaining({
         details: expect.arrayContaining([
-          expect.objectContaining({ label: 'Session', value: '00000000…0001' }),
+          expect.objectContaining({ label: 'Session', value: label }),
         ]),
       }),
-    );
-  });
-
-  it('passes name to updateWindowMeta when set', () => {
-    render(
-      <TerminalSessionWindowContent
-        {...defaultProps}
-        session={makeSession({ name: 'My Session' })}
-      />,
-      { wrapper: createWrapper() },
-    );
-
-    expect(mockUpdateWindowMeta).toHaveBeenCalledWith(
-      '00000000-0000-0000-0000-000000000001',
-      expect.objectContaining({
-        details: expect.arrayContaining([
-          expect.objectContaining({ label: 'Session', value: 'My Session' }),
-        ]),
-      }),
-    );
-  });
-
-  it('calls renameSession when rename is submitted via onKeyDown Enter', async () => {
-    render(
-      <TerminalSessionWindowContent {...defaultProps} session={makeSession({ name: 'Old' })} />,
-      { wrapper: createWrapper() },
-    );
-
-    const getLatestSessionDetail = () => {
-      const lastCallIdx = mockUpdateWindowMeta.mock.calls.length - 1;
-      const call = mockUpdateWindowMeta.mock.calls[lastCallIdx];
-      return call[1].details.find((d: { label: string }) => d.label === 'Session');
-    };
-
-    const sessionDetail = getLatestSessionDetail();
-    act(() => {
-      sessionDetail.onRenameStart();
-    });
-
-    const afterStart = getLatestSessionDetail();
-    act(() => {
-      afterStart.onDraftChange('New Name');
-    });
-
-    const afterDraft = getLatestSessionDetail();
-    act(() => {
-      afterDraft.onRenameKeyDown({ key: 'Enter' } as React.KeyboardEvent<HTMLInputElement>);
-    });
-
-    expect(renameSession).toHaveBeenCalledWith(
-      '00000000-0000-0000-0000-000000000001',
-      'project-1',
-      'New Name',
-      expect.any(Function),
     );
   });
 

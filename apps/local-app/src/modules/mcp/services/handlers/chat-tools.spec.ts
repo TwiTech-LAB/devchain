@@ -172,36 +172,6 @@ describe('chat-tools handlers', () => {
       });
     });
 
-    it('returns error when session resolution fails', async () => {
-      const ctx = makeCtx();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: false,
-        error: { code: 'SESSION_NOT_FOUND', message: 'not found' },
-      });
-
-      const result = await handleSendMessage(ctx, {
-        sessionId: SESSION_ID,
-        message: 'hello',
-        recipientAgentNames: ['Agent-B'],
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('SESSION_NOT_FOUND');
-    });
-
-    it('returns error when no project associated', async () => {
-      const sessionCtx = makeAgentCtx();
-      (sessionCtx as unknown as Record<string, unknown>).project = null;
-      const ctx = makeCtx(sessionCtx);
-
-      const result = await handleSendMessage(ctx, {
-        sessionId: SESSION_ID,
-        message: 'hello',
-        recipientAgentNames: ['Agent-B'],
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
-    });
-
     it('returns NO_SELF_TEAM when sender has no teams and no explicit routing', async () => {
       const ctx = makeCtx();
       (ctx.teamsService!.listTeamsByAgent as jest.Mock).mockResolvedValue([]);

@@ -96,32 +96,15 @@ function renderButton(overrides: Partial<React.ComponentProps<typeof TeamQuickAd
 // ── Pure function tests ──
 
 describe('computeAutoName', () => {
-  it('returns (1) when no agents exist', () => {
-    expect(computeAutoName('Coder', [])).toBe('Coder (1)');
-  });
-
-  it('returns (1) when no matching agents exist', () => {
-    expect(computeAutoName('Coder', ['Reviewer', 'Bot'])).toBe('Coder (1)');
-  });
-
-  it('returns (2) when (1) exists', () => {
-    expect(computeAutoName('Coder', ['Coder (1)'])).toBe('Coder (2)');
-  });
-
-  it('fills gaps: (1) and (3) exist → returns (2)', () => {
-    expect(computeAutoName('Coder', ['Coder (1)', 'Coder (3)'])).toBe('Coder (2)');
-  });
-
-  it('is case-insensitive', () => {
-    expect(computeAutoName('Coder', ['coder (1)', 'CODER (2)'])).toBe('Coder (3)');
-  });
-
-  it('different profile names do not interfere', () => {
-    expect(computeAutoName('Coder', ['Reviewer (1)', 'Reviewer (2)'])).toBe('Coder (1)');
-  });
-
-  it('handles special regex characters in profile name', () => {
-    expect(computeAutoName('C++ Bot', ['C++ Bot (1)'])).toBe('C++ Bot (2)');
+  it.each([
+    ['Coder', [], 'Coder (1)'],
+    ['Coder', ['Coder (1)'], 'Coder (2)'],
+    ['Coder', ['Coder (1)', 'Coder (3)'], 'Coder (2)'],
+    ['Coder', ['coder (1)', 'CODER (2)'], 'Coder (3)'],
+    ['Coder', ['Reviewer (1)', 'Reviewer (2)'], 'Coder (1)'],
+    ['C++ Bot', ['C++ Bot (1)'], 'C++ Bot (2)'],
+  ] as const)('allocates %s after %p', (profile, names, expected) => {
+    expect(computeAutoName(profile, [...names])).toBe(expected);
   });
 });
 
@@ -134,22 +117,13 @@ describe('TeamQuickAddButton', () => {
     global.fetch = originalFetch;
   });
 
-  it('is disabled with tooltip when profileIds is empty', () => {
-    renderButton({ profileIds: [] });
-
-    const button = screen.getByRole('button', { name: /Add agent to Alpha/i });
-    expect(button).toBeDisabled();
-    expect(screen.getByTestId('tooltip-content')).toHaveTextContent(
-      'Link profiles to this team first',
-    );
-  });
-
-  it('is disabled with tooltip when teamLeadAgentId is null', () => {
-    renderButton({ teamLeadAgentId: null });
-
-    const button = screen.getByRole('button', { name: /Add agent to Alpha/i });
-    expect(button).toBeDisabled();
-    expect(screen.getByTestId('tooltip-content')).toHaveTextContent('Assign a team lead first');
+  it.each([
+    { name: 'no profiles', props: { profileIds: [] }, text: 'Link profiles to this team first' },
+    { name: 'no lead', props: { teamLeadAgentId: null }, text: 'Assign a team lead first' },
+  ])('disables quick add for $name', ({ props, text }) => {
+    renderButton(props);
+    expect(screen.getByRole('button', { name: /Add agent to Alpha/i })).toBeDisabled();
+    expect(screen.getByTestId('tooltip-content')).toHaveTextContent(text);
   });
 
   it('is not disabled when allowTeamLeadCreateAgents is false (flag is MCP-only)', () => {
@@ -160,32 +134,17 @@ describe('TeamQuickAddButton', () => {
     expect(screen.getByTestId('tooltip-content')).toHaveTextContent('Add agent');
   });
 
-  it('disabled button wrapper is focusable for tooltip hover/focus', () => {
-    renderButton({ profileIds: [] });
-
-    const button = screen.getByRole('button', { name: /Add agent to Alpha/i });
-    const wrapper = button.closest('span');
+  it.each([
+    { name: 'no profiles', props: { profileIds: [] }, text: 'Link profiles to this team first' },
+    { name: 'no lead', props: { teamLeadAgentId: null }, text: 'Assign a team lead first' },
+  ])('makes disabled wrapper focusable for $name', ({ props, text }) => {
+    renderButton(props);
+    const wrapper = screen.getByRole('button', { name: /Add agent to Alpha/i }).closest('span');
     expect(wrapper).not.toBeNull();
     expect(wrapper).toHaveAttribute('tabindex', '0');
-
     fireEvent.mouseEnter(wrapper!);
     fireEvent.focus(wrapper!);
-    expect(screen.getByTestId('tooltip-content')).toHaveTextContent(
-      'Link profiles to this team first',
-    );
-  });
-
-  it('disabled button wrapper is focusable for leadless tooltip', () => {
-    renderButton({ teamLeadAgentId: null });
-
-    const button = screen.getByRole('button', { name: /Add agent to Alpha/i });
-    const wrapper = button.closest('span');
-    expect(wrapper).not.toBeNull();
-    expect(wrapper).toHaveAttribute('tabindex', '0');
-
-    fireEvent.mouseEnter(wrapper!);
-    fireEvent.focus(wrapper!);
-    expect(screen.getByTestId('tooltip-content')).toHaveTextContent('Assign a team lead first');
+    expect(screen.getByTestId('tooltip-content')).toHaveTextContent(text);
   });
 
   it('clicking disabled button does not open the menu or fire callback', () => {

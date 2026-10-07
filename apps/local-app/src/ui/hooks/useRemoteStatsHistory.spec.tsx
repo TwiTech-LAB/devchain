@@ -81,7 +81,7 @@ describe('useRemoteStatsHistory', () => {
     await waitFor(() => expect(first.result.current.data).toBeDefined());
 
     const second = renderHook(() => useRemoteStatsHistory('remote-2'), {
-      wrapper: createWrapper().wrapper,
+      wrapper,
     });
     await waitFor(() => expect(second.result.current.data).toBeDefined());
 

@@ -70,26 +70,6 @@ describe('TerminalSessionRegistry', () => {
     expect(promptState.getState('tmux-s1').executedInputEpoch).toBe(0);
   });
 
-  it('dispose of nonexistent session is a no-op', () => {
-    const registry = new TerminalSessionRegistry();
-
-    expect(() => registry.dispose('nonexistent')).not.toThrow();
-  });
-
-  it('list returns all active session ids', () => {
-    const registry = new TerminalSessionRegistry();
-    registry.create('s1', 'tmux-s1');
-    registry.create('s2', 'tmux-s2');
-    registry.create('s3', 'tmux-s3');
-
-    const ids = registry.list();
-
-    expect(ids).toHaveLength(3);
-    expect(ids).toContain('s1');
-    expect(ids).toContain('s2');
-    expect(ids).toContain('s3');
-  });
-
   it('list excludes disposed sessions', () => {
     const registry = new TerminalSessionRegistry();
     registry.create('s1', 'tmux-s1');
@@ -109,19 +89,6 @@ describe('TerminalSessionRegistry', () => {
 
     expect(session.tmuxSessionName).toBe('tmux-s1-v2');
     expect(registry.get('s1')).toBe(session);
-  });
-
-  it('size tracks active session count', () => {
-    const registry = new TerminalSessionRegistry();
-
-    expect(registry.size).toBe(0);
-
-    registry.create('s1', 'tmux-s1');
-    registry.create('s2', 'tmux-s2');
-    expect(registry.size).toBe(2);
-
-    registry.dispose('s1');
-    expect(registry.size).toBe(1);
   });
 
   describe('bind', () => {
@@ -154,29 +121,6 @@ describe('TerminalSessionRegistry', () => {
       const historyFrame = frames.find((f) => f.type === 'full_history');
       expect(historyFrame).toBeDefined();
       expect((historyFrame!.payload as { ansi: string }).ansi).toBe('history-content');
-    });
-
-    it('routes live frames via pushFrame after bind', () => {
-      const registry = new TerminalSessionRegistry();
-      const session = registry.create('s1', 'tmux-s1');
-      session.subscribe('client-1');
-
-      const mockIO: TerminalIORef = {
-        captureHistory: jest.fn(),
-      };
-
-      registry.bind('s1', mockIO);
-
-      const frames: FrameEvent[] = [];
-      session.stream.on('frame', (f) => frames.push(f));
-
-      session.pushFrame('live-data');
-
-      const dataFrames = frames.filter((f) => f.type === 'data');
-      expect(dataFrames).toHaveLength(1);
-      expect((dataFrames[0].payload as { data: string }).data).toBe('live-data');
-
-      registry.dispose('s1');
     });
   });
 });

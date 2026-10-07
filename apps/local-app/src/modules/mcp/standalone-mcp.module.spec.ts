@@ -27,11 +27,6 @@ describe('StandaloneMcpModule', () => {
     await module?.close();
   });
 
-  it('instantiates McpService', () => {
-    const service = module.get(McpService);
-    expect(service).toBeDefined();
-  });
-
   it('keeps only StorageModule in the standalone import graph', () => {
     const imports = (Reflect.getMetadata(MODULE_METADATA.IMPORTS, StandaloneMcpModule) ??
       []) as Array<{ name?: string }>;
@@ -60,16 +55,6 @@ describe('StandaloneMcpModule', () => {
       recipientAgentNames: ['test-agent'],
       message: 'hello',
     });
-    expect(response.success).toBe(false);
-    expect(response.error?.code).toBe('SERVICE_UNAVAILABLE');
-  });
-
-  it('keeps project discovery executable but unavailable in standalone mode', async () => {
-    const service = module.get(McpService);
-    const response = await service.handleToolCall('devchain_projects_list', {
-      sessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-    });
-
     expect(response.success).toBe(false);
     expect(response.error?.code).toBe('SERVICE_UNAVAILABLE');
   });

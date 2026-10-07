@@ -133,151 +133,141 @@ describe('AgentTimeAccountingService', () => {
     }
   });
 
-  it('records agent task touches without inspecting update changes', async () => {
-    await service.onModuleInit();
-
-    await service.handleCommittedTaskTouch({
-      id: 'event-update',
-      name: 'epic.updated',
-      payload: {
-        epicId: 'epic-target',
-        projectId: 'project-1',
-        parentId: null,
-        version: 2,
-        epicTitle: 'Target',
-        actor: { type: 'agent', id: 'agent-1' },
-        changes: {},
+  it.each([
+    {
+      label: 'records agent task touches without inspecting update changes',
+      event: {
+        id: 'event-update',
+        name: 'epic.updated' as const,
+        payload: {
+          epicId: 'epic-target',
+          projectId: 'project-1',
+          parentId: null,
+          version: 2,
+          epicTitle: 'Target',
+          actor: { type: 'agent' as const, id: 'agent-1' },
+          changes: {},
+        },
+        requestId: null,
+        publishedAt: '2026-01-01T00:00:20.000Z',
       },
-      requestId: null,
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-
-    expect(store.recordTaskTouch).toHaveBeenCalledWith({
-      committedEventId: 'event-update',
-      eventName: 'epic.updated',
-      projectId: 'project-1',
-      actorAgentId: 'agent-1',
-      targetEpicId: 'epic-target',
-      targetEpicTitle: 'Target',
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-  });
-
-  it('claims a root creation against the created Epic', async () => {
-    await service.onModuleInit();
-
-    await service.handleCommittedTaskTouch({
-      id: 'event-root-create',
-      name: 'epic.created',
-      payload: {
-        epicId: 'epic-created',
+      expected: {
+        committedEventId: 'event-update',
+        eventName: 'epic.updated',
         projectId: 'project-1',
-        title: 'Created Epic',
-        statusId: null,
-        parentId: null,
-        actor: { type: 'agent', id: 'agent-1' },
+        actorAgentId: 'agent-1',
+        targetEpicId: 'epic-target',
+        targetEpicTitle: 'Target',
+        publishedAt: '2026-01-01T00:00:20.000Z',
       },
-      requestId: null,
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-
-    expect(store.recordTaskTouch).toHaveBeenCalledWith({
-      committedEventId: 'event-root-create',
-      eventName: 'epic.created',
-      projectId: 'project-1',
-      actorAgentId: 'agent-1',
-      targetEpicId: 'epic-created',
-      targetEpicTitle: 'Created Epic',
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-  });
-
-  it('claims a sub-epic creation against its parent Epic', async () => {
-    await service.onModuleInit();
-
-    await service.handleCommittedTaskTouch({
-      id: 'event-child-create',
-      name: 'epic.created',
-      payload: {
-        epicId: 'epic-child',
+    },
+    {
+      label: 'claims a root creation against the created Epic',
+      event: {
+        id: 'event-root-create',
+        name: 'epic.created' as const,
+        payload: {
+          epicId: 'epic-created',
+          projectId: 'project-1',
+          title: 'Created Epic',
+          statusId: null,
+          parentId: null,
+          actor: { type: 'agent' as const, id: 'agent-1' },
+        },
+        requestId: null,
+        publishedAt: '2026-01-01T00:00:20.000Z',
+      },
+      expected: {
+        committedEventId: 'event-root-create',
+        eventName: 'epic.created',
         projectId: 'project-1',
-        title: 'Created Sub-epic',
-        statusId: null,
-        parentId: 'epic-parent',
-        parentTitle: 'Parent Epic',
-        actor: { type: 'agent', id: 'agent-1' },
+        actorAgentId: 'agent-1',
+        targetEpicId: 'epic-created',
+        targetEpicTitle: 'Created Epic',
+        publishedAt: '2026-01-01T00:00:20.000Z',
       },
-      requestId: null,
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-
-    expect(store.recordTaskTouch).toHaveBeenCalledWith({
-      committedEventId: 'event-child-create',
-      eventName: 'epic.created',
-      projectId: 'project-1',
-      actorAgentId: 'agent-1',
-      targetEpicId: 'epic-parent',
-      targetEpicTitle: 'Parent Epic',
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-  });
-
-  it('uses the created title when a sub-epic parent title snapshot is unavailable', async () => {
-    await service.onModuleInit();
-
-    await service.handleCommittedTaskTouch({
-      id: 'event-child-create-without-parent-title',
-      name: 'epic.created',
-      payload: {
-        epicId: 'epic-child',
+    },
+    {
+      label: 'claims a sub-epic creation against its parent Epic',
+      event: {
+        id: 'event-child-create',
+        name: 'epic.created' as const,
+        payload: {
+          epicId: 'epic-child',
+          projectId: 'project-1',
+          title: 'Created Sub-epic',
+          statusId: null,
+          parentId: 'epic-parent',
+          parentTitle: 'Parent Epic',
+          actor: { type: 'agent' as const, id: 'agent-1' },
+        },
+        requestId: null,
+        publishedAt: '2026-01-01T00:00:20.000Z',
+      },
+      expected: {
+        committedEventId: 'event-child-create',
+        eventName: 'epic.created',
         projectId: 'project-1',
-        title: 'Created Sub-epic',
-        statusId: null,
-        parentId: 'epic-parent',
-        actor: { type: 'agent', id: 'agent-1' },
+        actorAgentId: 'agent-1',
+        targetEpicId: 'epic-parent',
+        targetEpicTitle: 'Parent Epic',
+        publishedAt: '2026-01-01T00:00:20.000Z',
       },
-      requestId: null,
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-
-    expect(store.recordTaskTouch).toHaveBeenCalledWith(
-      expect.objectContaining({
+    },
+    {
+      label: 'uses the created title when a sub-epic parent title snapshot is unavailable',
+      event: {
+        id: 'event-child-create-without-parent-title',
+        name: 'epic.created' as const,
+        payload: {
+          epicId: 'epic-child',
+          projectId: 'project-1',
+          title: 'Created Sub-epic',
+          statusId: null,
+          parentId: 'epic-parent',
+          actor: { type: 'agent' as const, id: 'agent-1' },
+        },
+        requestId: null,
+        publishedAt: '2026-01-01T00:00:20.000Z',
+      },
+      expected: expect.objectContaining({
         targetEpicId: 'epic-parent',
         targetEpicTitle: 'Created Sub-epic',
       }),
-    );
-  });
-
-  it('claims an agent comment against its exact Epic regardless of parent context', async () => {
-    await service.onModuleInit();
-
-    await service.handleCommittedTaskTouch({
-      id: 'event-comment-exact',
-      name: 'epic.comment.created',
-      payload: {
-        commentId: 'comment-1',
-        epicId: 'epic-sub',
-        projectId: 'project-1',
-        parentId: 'epic-parent',
-        authorName: 'Coder',
-        content: 'worked here',
-        actor: { type: 'agent', id: 'agent-1' },
-        epicTitle: 'Sub task',
-        recipientIds: [],
+    },
+    {
+      label: 'claims an agent comment against its exact Epic regardless of parent context',
+      event: {
+        id: 'event-comment-exact',
+        name: 'epic.comment.created' as const,
+        payload: {
+          commentId: 'comment-1',
+          epicId: 'epic-sub',
+          projectId: 'project-1',
+          parentId: 'epic-parent',
+          authorName: 'Coder',
+          content: 'worked here',
+          actor: { type: 'agent' as const, id: 'agent-1' },
+          epicTitle: 'Sub task',
+          recipientIds: [],
+        },
+        requestId: null,
+        publishedAt: '2026-01-01T00:00:20.000Z',
       },
-      requestId: null,
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-
-    expect(store.recordTaskTouch).toHaveBeenCalledWith({
-      committedEventId: 'event-comment-exact',
-      eventName: 'epic.comment.created',
-      projectId: 'project-1',
-      actorAgentId: 'agent-1',
-      targetEpicId: 'epic-sub',
-      targetEpicTitle: 'Sub task',
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
+      expected: {
+        committedEventId: 'event-comment-exact',
+        eventName: 'epic.comment.created',
+        projectId: 'project-1',
+        actorAgentId: 'agent-1',
+        targetEpicId: 'epic-sub',
+        targetEpicTitle: 'Sub task',
+        publishedAt: '2026-01-01T00:00:20.000Z',
+      },
+    },
+  ])('$label', async ({ event, expected }) => {
+    await service.onModuleInit();
+    await service.handleCommittedTaskTouch(event);
+    expect(store.recordTaskTouch).toHaveBeenCalledWith(expected);
   });
 
   it('skips a malformed title-less comment touch without failing the ordered delivery', async () => {
@@ -344,28 +334,6 @@ describe('AgentTimeAccountingService', () => {
         actor,
         epicTitle: 'Target',
         recipientIds: [],
-      },
-      requestId: null,
-      publishedAt: '2026-01-01T00:00:20.000Z',
-    });
-
-    expect(store.recordTaskTouch).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['browser/system', null],
-    ['guest', { type: 'guest' as const, id: 'guest-1' }],
-  ])('treats %s task touches as successful no-ops', async (_label, actor) => {
-    await service.onModuleInit();
-    await service.handleCommittedTaskTouch({
-      id: `event-${_label}`,
-      name: 'epic.created',
-      payload: {
-        epicId: 'epic-target',
-        projectId: 'project-1',
-        title: 'Target',
-        statusId: null,
-        actor,
       },
       requestId: null,
       publishedAt: '2026-01-01T00:00:20.000Z',

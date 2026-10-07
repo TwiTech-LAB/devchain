@@ -129,6 +129,115 @@ describe('RemoteVmSection Proxmox tab', () => {
     await pickAddVmMenu('Create on Proxmox lab');
     const dialog = screen.getByRole('dialog', { name: 'Add a VM on Proxmox lab' });
     await userEvent.type(within(dialog).getByLabelText('Name'), 'box');
-    expect(within(dialog).getByText('Proxmox name: devchain-box')).toBeInTheDocument();
+  });
+});
+
+describe('Proxmox connection setup', () => {
+  it('copies the setup block, confirms the fingerprint and lists missing Proxmox rights', async () => {
+    fx.permissionMissing = ['Sys.AccessNetwork on /nodes/pve1'];
+    const clipboardWrite = jest.fn().mockResolvedValue(undefined);
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+
+    try {
+      renderSection('/?tab=proxmox');
+      await userEvent.click(await screen.findByRole('button', { name: 'Connect a server' }));
+      const dialog = screen.getByRole('dialog');
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Advanced (optional)' }));
+      await userEvent.type(within(dialog).getByLabelText('Node'), 'pve1');
+      await userEvent.type(within(dialog).getByLabelText('Proxmox address'), '192.168.1.128');
+      expect(
+        within(dialog).getByText('Use the address you open the Proxmox web UI with.'),
+      ).toBeInTheDocument();
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Generate setup block' }));
+      expect(fx.mockFetch).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^\/api\/vm-providers\/proxmox\/setup-block\?.*address=192\.168\.1\.128/,
+        ),
+        expect.anything(),
+      );
+      expect(await within(dialog).findByLabelText('Generated setup block')).toHaveValue(
+        'pveum pool add devchain',
+      );
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Copy setup block' }));
+      expect(clipboardWrite).toHaveBeenCalledWith('pveum pool add devchain');
+
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }));
+      const connectionString =
+        'devchain-proxmox://pve.test:8006/pve1?pool=devchain&storage=local-lvm&imageStorage=local&bridge=vmbr0&fp=AA&token=devchain%40pve!agent:secret';
+      await userEvent.type(within(dialog).getByLabelText('Connection string'), connectionString);
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Review fingerprint' }));
+      expect(await within(dialog).findByTestId('proxmox-fingerprint')).toHaveTextContent(
+        PROXMOX_CONNECTION.sslFingerprint,
+      );
+      const placement = within(dialog).getByTestId('proxmox-placement');
+      expect(placement).toHaveTextContent('pve1');
+      expect(placement).toHaveTextContent('local-lvm');
+      expect(placement).toHaveTextContent('local');
+      expect(placement).toHaveTextContent('vmbr0');
+      expect(placement).toHaveTextContent('devchain');
+      expect(placement).toHaveTextContent('https://pve.test:8006');
+      const confirmButton = within(dialog).getByRole('button', { name: 'Connect' });
+      expect(confirmButton).toBeDisabled();
+      await userEvent.click(
+        within(dialog).getByRole('checkbox', { name: 'Confirm Proxmox fingerprint' }),
+      );
+      await userEvent.click(confirmButton);
+
+      expect(await within(dialog).findByText('Missing Proxmox rights:')).toBeInTheDocument();
+      expect(
+        within(dialog).getByRole('list', { name: 'Missing Proxmox rights' }),
+      ).toHaveTextContent('Sys.AccessNetwork on /nodes/pve1');
+      expect(within(dialog).getByText(/re-run the setup block/i)).toBeInTheDocument();
+      expect(fx.mockFetch).toHaveBeenCalledWith(
+        '/api/vm-providers/proxmox/connect',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ connectionString, confirmFingerprint: true }),
+        }),
+      );
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add VM' }));
+      // The connect dialog's Add VM lands on the VMs tab, where Create VM lives now.
+      expect(fx.search).toContain('tab=vms');
+      expect(
+        await screen.findByRole('dialog', { name: 'Add a VM on Proxmox lab' }),
+      ).toBeInTheDocument();
+    } finally {
+      if (clipboardDescriptor) {
+        Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      }
+    }
+  });
+  it('generates a discovering setup block with empty inputs and collapses the advanced fields by default', async () => {
+    renderSection('/?tab=proxmox');
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect a server' }));
+    const dialog = screen.getByRole('dialog');
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Generate setup block' }));
+    expect(fx.mockFetch).toHaveBeenCalledWith(
+      '/api/vm-providers/proxmox/setup-block?node=&pool=devchain&storage=&imageStorage=&bridge=',
+      expect.anything(),
+    );
+    expect(await within(dialog).findByLabelText('Generated setup block')).toHaveValue(
+      'pveum pool add devchain',
+    );
+  });
+  it('leaves an empty pool out of the setup block query', async () => {
+    renderSection('/?tab=proxmox');
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect a server' }));
+    const dialog = screen.getByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Advanced (optional)' }));
+    await userEvent.clear(within(dialog).getByRole('textbox', { name: 'Pool' }));
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Generate setup block' }));
+    expect(fx.mockFetch).toHaveBeenCalledWith(
+      '/api/vm-providers/proxmox/setup-block?node=&storage=&imageStorage=&bridge=',
+      expect.anything(),
+    );
   });
 });

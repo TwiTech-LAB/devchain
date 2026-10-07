@@ -8,49 +8,27 @@ describe('useAppTheme', () => {
     root.classList.remove('dark', 'theme-ocean');
   });
 
-  it('returns dark when the dark class is present', () => {
-    root.classList.add('dark');
+  it.each([
+    ['dark', 'dark'],
+    ['theme-ocean', 'ocean'],
+    ['', 'dark'],
+  ] as const)('resolves class %s to %s', (className, theme) => {
+    if (className) root.classList.add(className);
     const { result } = renderHook(() => useAppTheme());
-    expect(result.current).toBe('dark');
+    expect(result.current).toBe(theme);
   });
 
-  it('returns ocean when the theme-ocean class is present', () => {
-    root.classList.add('theme-ocean');
+  it.each([
+    ['dark', 'theme-ocean', 'dark', 'ocean'],
+    ['theme-ocean', 'dark', 'ocean', 'dark'],
+  ] as const)('reacts to %s becoming %s', async (fromClass, toClass, fromTheme, toTheme) => {
+    root.classList.add(fromClass);
     const { result } = renderHook(() => useAppTheme());
-    expect(result.current).toBe('ocean');
-  });
-
-  it('defaults to dark when no theme class is present', () => {
-    const { result } = renderHook(() => useAppTheme());
-    expect(result.current).toBe('dark');
-  });
-
-  it('updates reactively when the document class changes to ocean', async () => {
-    root.classList.add('dark');
-    const { result } = renderHook(() => useAppTheme());
-    expect(result.current).toBe('dark');
-
+    expect(result.current).toBe(fromTheme);
     act(() => {
-      root.className = 'theme-ocean';
+      root.className = toClass;
     });
-
-    await waitFor(() => {
-      expect(result.current).toBe('ocean');
-    });
-  });
-
-  it('updates reactively when the document class changes to dark', async () => {
-    root.classList.add('theme-ocean');
-    const { result } = renderHook(() => useAppTheme());
-    expect(result.current).toBe('ocean');
-
-    act(() => {
-      root.className = 'dark';
-    });
-
-    await waitFor(() => {
-      expect(result.current).toBe('dark');
-    });
+    await waitFor(() => expect(result.current).toBe(toTheme));
   });
 
   it('disconnects observer on unmount', () => {

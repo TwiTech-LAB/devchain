@@ -67,6 +67,35 @@ describe('useRemotes remotes/state patch', () => {
     }));
   });
 
+  // Hook layer proves live VM details receive a mismatch and clear it after ids match.
+  it('patches the VM ids and Docker mismatch from a health event, then clears the note', async () => {
+    const { result } = renderHook(() => useRemotes(), { wrapper });
+    await waitFor(() => expect(result.current.remotes).toHaveLength(1));
+    const mismatch = {
+      homeUid: 1000,
+      homeGid: 1000,
+      vmUid: 1001,
+      vmGid: 1000,
+      uidConflict: { requestedUid: 1000, holder: 'ubuntu' },
+    };
+    emit({ remoteId: 'r1', uid: 1001, gid: 1000, dockerUserMismatch: mismatch });
+    await waitFor(() =>
+      expect(result.current.remotes[0]).toMatchObject({
+        uid: 1001,
+        gid: 1000,
+        dockerUserMismatch: mismatch,
+      }),
+    );
+    emit({ remoteId: 'r1', uid: 1000, gid: 1000, dockerUserMismatch: null });
+    await waitFor(() =>
+      expect(result.current.remotes[0]).toMatchObject({
+        uid: 1000,
+        gid: 1000,
+        dockerUserMismatch: null,
+      }),
+    );
+  });
+
   it('patches rejection and clears it on an accepted poll', async () => {
     const { result } = renderHook(() => useRemotes(), { wrapper });
     await waitFor(() => expect(result.current.remotes).toHaveLength(1));
@@ -118,36 +147,7 @@ describe('useRemotes remotes/state patch', () => {
     expect(JSON.stringify(result.current.createRemote.data)).not.toContain(key);
   });
 
-  it('carries the home folder and whether it matches', async () => {
-    const { result } = renderHook(() => useRemotes(), { wrapper });
-    await waitFor(() => expect(result.current.remotes).toHaveLength(1));
-
-    emit({ remoteId: 'r1', online: true, homePath: '/home/bob', homePathMatches: false });
-
-    await waitFor(() =>
-      expect(result.current.remotes[0]).toMatchObject({
-        homePath: '/home/bob',
-        homePathMatches: false,
-      }),
-    );
-  });
-
-  it('clears both when the VM stops reporting a home folder', async () => {
-    const { result } = renderHook(() => useRemotes(), { wrapper });
-    await waitFor(() => expect(result.current.remotes).toHaveLength(1));
-
-    emit({ remoteId: 'r1', online: false, homePath: null, homePathMatches: null });
-
-    await waitFor(() =>
-      expect(result.current.remotes[0]).toMatchObject({
-        online: false,
-        homePath: null,
-        homePathMatches: null,
-      }),
-    );
-  });
-
-  it('keeps both when the event does not carry them', async () => {
+  it('preserves omitted home fields, updates present fields and clears explicit nulls', async () => {
     const { result } = renderHook(() => useRemotes(), { wrapper });
     await waitFor(() => expect(result.current.remotes).toHaveLength(1));
 
@@ -158,6 +158,24 @@ describe('useRemotes remotes/state patch', () => {
       homePath: '/home/alice',
       homePathMatches: true,
     });
+
+    await waitFor(() => expect(result.current.remotes).toHaveLength(1));
+    emit({ remoteId: 'r1', online: true, homePath: '/home/bob', homePathMatches: false });
+    await waitFor(() =>
+      expect(result.current.remotes[0]).toMatchObject({
+        homePath: '/home/bob',
+        homePathMatches: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.remotes).toHaveLength(1));
+    emit({ remoteId: 'r1', online: false, homePath: null, homePathMatches: null });
+    await waitFor(() =>
+      expect(result.current.remotes[0]).toMatchObject({
+        online: false,
+        homePath: null,
+        homePathMatches: null,
+      }),
+    );
   });
   it('patches CLI reports, retains them while offline, and respects an explicit null', async () => {
     const { result } = renderHook(() => useRemotes(), { wrapper });

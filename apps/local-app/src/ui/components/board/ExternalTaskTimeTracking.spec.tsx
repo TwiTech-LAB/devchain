@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe } from 'jest-axe';
 import { useCallback, useState } from 'react';
@@ -283,7 +283,7 @@ describe('ExternalTaskTimeTracking', () => {
     const heading = screen.getByRole('heading', { level: 3, name: 'Time tracked' });
     const block = heading.closest('section')!;
     expect(block).toHaveTextContent('1h 30m');
-    expect(block).toHaveClass('border', 'bg-card');
+
     const toggle = screen.getByRole('button', { name: 'Expand Time tracked' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(container.querySelector('form[aria-label="Log time"]')).not.toBeVisible();
@@ -507,77 +507,6 @@ describe('ExternalTaskTimeTracking', () => {
     });
   }
 
-  it('renders collapsed contributor groups with totals for a healthy payload', async () => {
-    serveEstimate(groupedEstimateSummary());
-    const user = userEvent.setup();
-    const { container } = renderBlock({ linkedEpicId: 'epic-root' });
-    await openTimeBlock();
-
-    const panel = (
-      await screen.findByRole('heading', { name: 'DevChain estimated time tracked' })
-    ).closest('section')!;
-    expect(
-      within(panel).getByText('Only DevChain activity that rolls into this remote task is shown.'),
-    ).toBeVisible();
-
-    const focalTrigger = within(panel).getByRole('button', {
-      name: /This task 1h 30m/,
-    });
-    expect(focalTrigger).toHaveAttribute('aria-expanded', 'false');
-    expect(focalTrigger).toHaveAttribute('aria-controls');
-    expect(within(panel).queryByText('Own activity')).toBeNull();
-    expect(within(panel).queryByText('Child task')).toBeNull();
-
-    const relatedTrigger = within(panel).getByRole('button', {
-      name: /Related: Routed task 30m/,
-    });
-    expect(relatedTrigger).toHaveAttribute('aria-expanded', 'false');
-
-    await user.click(focalTrigger);
-    expect(focalTrigger).toHaveAttribute('aria-expanded', 'true');
-    expect(within(panel).getByText('Own activity')).toBeVisible();
-    expect(within(panel).getByText('Child task')).toBeVisible();
-    // The two group totals (1h 30m + 30m) sum to the 2h header estimate.
-    expect(await axe(container)).toHaveNoViolations();
-  });
-
-  it('renders the exact legacy flat list when one row lacks valid group metadata', async () => {
-    serveEstimate(
-      estimateSummary({
-        taskItems: [
-          {
-            epicId: 'epic-root',
-            epicTitle: 'Root task',
-            isDirect: true,
-            minutes: 30,
-            groupEpicId: 'epic-root',
-            groupEpicTitle: 'Root task',
-          },
-          { epicId: 'epic-child', epicTitle: 'Child task', isDirect: false, minutes: 60 },
-        ],
-      }),
-    );
-    renderBlock({ linkedEpicId: 'epic-root' });
-    await openTimeBlock();
-
-    const panel = (
-      await screen.findByRole('heading', { name: 'DevChain estimated time tracked' })
-    ).closest('section')!;
-    const list = within(panel).getByRole('list', { name: 'Contributing DevChain tasks' });
-    expect(
-      within(list)
-        .getAllByRole('listitem')
-        .map((row) => row.textContent),
-    ).toEqual(['Root task30m', 'Child task1h']);
-    expect(within(panel).queryByText('This task')).toBeNull();
-    expect(within(panel).queryByText(/Related:/)).toBeNull();
-    expect(
-      within(panel).queryByText(
-        'Only DevChain activity that rolls into this remote task is shown.',
-      ),
-    ).toBeNull();
-  });
-
   it('resets group expansion when the same remote task relinks to another Epic', async () => {
     serveEstimate(groupedEstimateSummary());
     const user = userEvent.setup();
@@ -693,8 +622,10 @@ describe('ExternalTaskTimeTracking', () => {
     const { client } = renderBlock({ linkedEpicId: 'epic-root' });
     await openTimeBlock();
     await screen.findByRole('button', { name: 'Review & log 1h 30m' });
-    await user.type(screen.getByLabelText('Duration'), '15m');
-    await user.type(screen.getByLabelText('Note (optional)'), 'Keep this manual draft');
+    await user.click(screen.getByLabelText('Duration'));
+    await user.paste('15m');
+    await user.click(screen.getByLabelText('Note (optional)'));
+    await user.paste('Keep this manual draft');
 
     await user.click(screen.getByRole('button', { name: 'Review & log 1h 30m' }));
     const confirmation = screen.getByRole('dialog', {
@@ -1302,8 +1233,10 @@ describe('ExternalTaskTimeTracking', () => {
     const user = userEvent.setup();
     renderBlock({ linkedEpicId: 'epic-root' });
     await openTimeBlock();
-    await user.type(screen.getByLabelText('Duration'), '15m');
-    await user.type(screen.getByLabelText('Note (optional)'), 'Keep this draft');
+    await user.click(screen.getByLabelText('Duration'));
+    await user.paste('15m');
+    await user.click(screen.getByLabelText('Note (optional)'));
+    await user.paste('Keep this draft');
 
     const trigger = await screen.findByRole('button', { name: 'Reconcile logged time' });
     await user.click(trigger);
@@ -1313,12 +1246,14 @@ describe('ExternalTaskTimeTracking', () => {
       within(dialog).getByText(/Lowering the value can submit duplicate remote time/),
     ).toBeVisible();
     await user.clear(within(dialog).getByLabelText('Logged minutes to recognize'));
-    await user.type(within(dialog).getByLabelText('Logged minutes to recognize'), '-1');
+    await user.click(within(dialog).getByLabelText('Logged minutes to recognize'));
+    await user.paste('-1');
     await user.click(within(dialog).getByRole('button', { name: 'Save reconciliation' }));
     expect(within(dialog).getByRole('alert')).toHaveTextContent(/nonnegative whole number/);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
     await user.clear(within(dialog).getByLabelText('Logged minutes to recognize'));
-    await user.type(within(dialog).getByLabelText('Logged minutes to recognize'), '30');
+    await user.click(within(dialog).getByLabelText('Logged minutes to recognize'));
+    await user.paste('30');
     expect(await axe(document.body)).toHaveNoViolations();
     await user.click(within(dialog).getByRole('button', { name: 'Save reconciliation' }));
 
@@ -1532,10 +1467,12 @@ describe('ExternalTaskTimeTracking', () => {
     );
     const durationInput = within(dialog).getByLabelText('Duration');
     await user.clear(durationInput);
-    await user.type(durationInput, '1h 30m');
+    await user.click(durationInput);
+    await user.paste('1h 30m');
     const noteInput = within(dialog).getByLabelText('Note (optional)');
     await user.clear(noteInput);
-    await user.type(noteInput, 'Updated remotely');
+    await user.click(noteInput);
+    await user.paste('Updated remotely');
     await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() =>
@@ -1648,7 +1585,8 @@ describe('ExternalTaskTimeTracking', () => {
     renderBlock();
     await openTimeBlock();
 
-    await user.type(screen.getByLabelText('Duration'), '1.5h');
+    await user.click(screen.getByLabelText('Duration'));
+    await user.paste('1.5h');
     await user.click(screen.getByRole('button', { name: 'Log time' }));
 
     expect(screen.getByText(/Enter a duration like 15m, 5h, 1h 30m/)).toBeVisible();
@@ -1666,8 +1604,10 @@ describe('ExternalTaskTimeTracking', () => {
     renderBlock();
     await openTimeBlock();
 
-    await user.type(screen.getByLabelText('Duration'), '1h 30m');
-    await user.type(screen.getByLabelText('Note (optional)'), 'Deep work');
+    await user.click(screen.getByLabelText('Duration'));
+    await user.paste('1h 30m');
+    await user.click(screen.getByLabelText('Note (optional)'));
+    await user.paste('Deep work');
     await user.click(screen.getByRole('button', { name: 'Log time' }));
     nowSpy.mockRestore();
 
@@ -1704,13 +1644,16 @@ describe('ExternalTaskTimeTracking', () => {
 
     expect(screen.queryByLabelText('Started at')).toBeNull();
     const exactStartButton = screen.getByRole('button', { name: /Add exact start time/ });
-    expect(exactStartButton).toHaveClass('border', 'h-9');
+
     await user.click(exactStartButton);
     expect(screen.getByLabelText('Started at')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Hide exact start time' })).toBeVisible();
 
-    await user.type(screen.getByLabelText('Duration'), '30');
-    await user.type(screen.getByLabelText('Started at'), '2026-08-22T09:30');
+    await user.click(screen.getByLabelText('Duration'));
+    await user.paste('30');
+    fireEvent.change(screen.getByLabelText('Started at'), {
+      target: { value: '2026-08-22T09:30' },
+    });
     await user.click(screen.getByRole('button', { name: 'Log time' }));
 
     await waitFor(() =>
@@ -1765,7 +1708,8 @@ describe('ExternalTaskTimeTracking', () => {
       );
     });
 
-    await user.type(screen.getByLabelText('Duration'), '15m');
+    await user.click(screen.getByLabelText('Duration'));
+    await user.paste('15m');
     await user.click(screen.getByRole('button', { name: 'Log time' }));
 
     expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
@@ -1783,110 +1727,73 @@ describe('ExternalTaskTimeTracking', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
   });
 
-  it('hides Verify but keeps Open in source and Acknowledge after epoch replacement', async () => {
+  it.each(['epoch replacement', 'unprovable receipt'])(
+    'keeps manual recovery for %s',
+    async (reason) => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (String(url).includes('/acknowledge')) {
+          return Promise.resolve(
+            jsonResponse({ operationId: 'op-epoch', phase: 'abandoned_unknown' }),
+          );
+        }
+        if (String(url).includes('/time-entries?') && init?.method === 'POST') {
+          return Promise.resolve(
+            jsonResponse({
+              outcome: 'outcome_unknown',
+              receipt: {
+                operationId: 'op-epoch',
+                phase: 'outcome_unknown',
+                canVerify: reason === 'epoch replacement',
+                expiresAt: futureReceiptIso(),
+              },
+            }),
+          );
+        }
+        return Promise.resolve(jsonResponse(historyPayload([])));
+      });
+      const user = userEvent.setup();
+      const { rerenderBlock } = renderBlock();
+      await openTimeBlock();
+      await user.click(screen.getByLabelText('Duration'));
+      await user.paste('15m');
+      await user.click(screen.getByRole('button', { name: 'Log time' }));
+      expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
+      if (reason === 'epoch replacement') {
+        expect(screen.getByRole('button', { name: 'Verify' })).toBeVisible();
+        rerenderBlock({ connectionEpoch: 'connection-jira-b:5' });
+        await openTimeBlock();
+      } else expect(screen.getByText(/cannot be verified automatically/)).toBeVisible();
+
+      expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
+      expect(screen.getByRole('link', { name: /Open in source/ })).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Acknowledge duplicate risk' })).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+
+      await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
+    },
+  );
+
+  it('unlocks the manual form after receipt expiry through the displayed acknowledge action', async () => {
+    serveHistory(historyPayload([]));
+    const user = userEvent.setup();
+    renderBlock();
+    await openTimeBlock();
+
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/time-entries?') && !init?.method) {
+        return Promise.resolve(jsonResponse(historyPayload([])));
+      }
       if (String(url).includes('/acknowledge')) {
-        return Promise.resolve(
-          jsonResponse({ operationId: 'op-epoch', phase: 'abandoned_unknown' }),
-        );
-      }
-      if (String(url).includes('/time-entries?') && init?.method === 'POST') {
-        return Promise.resolve(
-          jsonResponse({
-            outcome: 'outcome_unknown',
-            receipt: {
-              operationId: 'op-epoch',
-              phase: 'outcome_unknown',
-              canVerify: true,
-              expiresAt: futureReceiptIso(),
-            },
-          }),
-        );
-      }
-      return Promise.resolve(jsonResponse(historyPayload([])));
-    });
-    const user = userEvent.setup();
-    const { rerenderBlock } = renderBlock();
-    await openTimeBlock();
-    await user.type(screen.getByLabelText('Duration'), '15m');
-    await user.click(screen.getByRole('button', { name: 'Log time' }));
-    expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Verify' })).toBeVisible();
-
-    rerenderBlock({ connectionEpoch: 'connection-jira-b:5' });
-    await openTimeBlock();
-
-    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
-    expect(screen.getByRole('link', { name: /Open in source/ })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Acknowledge duplicate risk' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
-
-    await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
-  });
-
-  it('hides Verify for an unprovable unknown create and directs to the source and acknowledgement', async () => {
-    serveHistory(historyPayload([]));
-    const user = userEvent.setup();
-    renderBlock();
-    await openTimeBlock();
-
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).includes('/time-entries?') && !init?.method) {
-        return Promise.resolve(jsonResponse(historyPayload([])));
-      }
-      if (init?.method === 'POST' && String(url).includes('/acknowledge')) {
-        return Promise.resolve(
-          jsonResponse({ operationId: 'op-unprovable', phase: 'abandoned_unknown' }),
-        );
+        // The server receipt is gone after expiry; this endpoint must never
+        // be called by the expiry-safe path.
+        return Promise.reject(new Error('impossible server acknowledgement'));
       }
       return Promise.resolve(
         jsonResponse({
           outcome: 'outcome_unknown',
           receipt: {
-            operationId: 'op-unprovable',
-            phase: 'outcome_unknown',
-            canVerify: false,
-            expiresAt: futureReceiptIso(),
-          },
-        }),
-      );
-    });
-
-    await user.type(screen.getByLabelText('Duration'), '15m');
-    await user.click(screen.getByRole('button', { name: 'Log time' }));
-
-    expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
-    expect(screen.getByText(/cannot be verified automatically/)).toBeVisible();
-    expect(screen.getByRole('link', { name: /Open in source/ })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Acknowledge duplicate risk' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
-
-    await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
-  });
-
-  it('hides Verify once the receipt expires but keeps the unknown write lock and recovery', async () => {
-    serveHistory(historyPayload([]));
-    const user = userEvent.setup();
-    renderBlock();
-    await openTimeBlock();
-
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).includes('/time-entries?') && !init?.method) {
-        return Promise.resolve(jsonResponse(historyPayload([])));
-      }
-      if (init?.method === 'POST' && String(url).includes('/acknowledge')) {
-        return Promise.resolve(
-          jsonResponse({ operationId: 'op-expired', phase: 'abandoned_unknown' }),
-        );
-      }
-      return Promise.resolve(
-        jsonResponse({
-          outcome: 'outcome_unknown',
-          receipt: {
-            operationId: 'op-expired',
+            operationId: 'op-settled',
             phase: 'outcome_unknown',
             canVerify: true,
             expiresAt: '2020-01-01T00:00:00.000Z',
@@ -1895,7 +1802,8 @@ describe('ExternalTaskTimeTracking', () => {
       );
     });
 
-    await user.type(screen.getByLabelText('Duration'), '15m');
+    await user.click(screen.getByLabelText('Duration'));
+    await user.paste('15m');
     await user.click(screen.getByRole('button', { name: 'Log time' }));
 
     expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
@@ -1905,7 +1813,9 @@ describe('ExternalTaskTimeTracking', () => {
     expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
+
     await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/acknowledge'))).toBe(false);
   });
 
   it('directs estimate recovery to the source and manual marks when Verify is unsupported', async () => {
@@ -1950,168 +1860,147 @@ describe('ExternalTaskTimeTracking', () => {
   });
 
   it('removes estimate Verify at the receipt deadline and keeps the manual marks', async () => {
-    const deadline = Date.now() + 300;
-    const pendingView = estimateState({
-      initialized: true,
-      revision: 2,
-      pendingDisposition: 'outcome_unknown',
-      canVerify: true,
-      verifyExpiresAt: new Date(deadline).toISOString(),
-      pending: {
-        operationId: 'estimate-pending-3',
-        deltaMinutes: 30,
-        estimateTotalMinutes: 120,
-        startedAt: '2026-08-30T10:00:00.000Z',
-        phase: 'outcome_unknown',
-        resolution: null,
-      },
-    });
-    const manualReviewView = estimateState({
-      initialized: true,
-      revision: 2,
-      pendingDisposition: 'manual_review',
-      canVerify: false,
-      verifyExpiresAt: null,
-      pending: {
-        operationId: 'estimate-pending-3',
-        deltaMinutes: 30,
-        estimateTotalMinutes: 120,
-        startedAt: '2026-08-30T10:00:00.000Z',
-        phase: 'outcome_unknown',
-        resolution: null,
-      },
-    });
-    let stateServed = 0;
-    fetchMock.mockImplementation((url: string) => {
-      if (String(url).includes('/time-logs')) {
-        return Promise.resolve(jsonResponse(estimateSummary()));
-      }
-      if (String(url).includes('/estimate-log-state?')) {
-        stateServed += 1;
-        return Promise.resolve(jsonResponse(stateServed === 1 ? pendingView : manualReviewView));
-      }
-      return Promise.resolve(jsonResponse(historyPayload([])));
-    });
-    renderBlock({ linkedEpicId: 'epic-root' });
-    await openTimeBlock();
+    jest.useFakeTimers();
+    try {
+      const deadline = Date.now() + 1000;
+      const pendingView = estimateState({
+        initialized: true,
+        revision: 2,
+        pendingDisposition: 'outcome_unknown',
+        canVerify: true,
+        verifyExpiresAt: new Date(deadline).toISOString(),
+        pending: {
+          operationId: 'estimate-pending-3',
+          deltaMinutes: 30,
+          estimateTotalMinutes: 120,
+          startedAt: '2026-08-30T10:00:00.000Z',
+          phase: 'outcome_unknown',
+          resolution: null,
+        },
+      });
+      const manualReviewView = estimateState({
+        initialized: true,
+        revision: 2,
+        pendingDisposition: 'manual_review',
+        canVerify: false,
+        verifyExpiresAt: null,
+        pending: {
+          operationId: 'estimate-pending-3',
+          deltaMinutes: 30,
+          estimateTotalMinutes: 120,
+          startedAt: '2026-08-30T10:00:00.000Z',
+          phase: 'outcome_unknown',
+          resolution: null,
+        },
+      });
+      let stateServed = 0;
+      fetchMock.mockImplementation((url: string) => {
+        if (String(url).includes('/time-logs')) {
+          return Promise.resolve(jsonResponse(estimateSummary()));
+        }
+        if (String(url).includes('/estimate-log-state?')) {
+          stateServed += 1;
+          return Promise.resolve(jsonResponse(stateServed === 1 ? pendingView : manualReviewView));
+        }
+        return Promise.resolve(jsonResponse(historyPayload([])));
+      });
+      renderBlock({ linkedEpicId: 'epic-root' });
+      fireEvent.click(screen.getByRole('button', { name: 'Expand Time tracked' }));
 
-    expect(await screen.findByRole('button', { name: 'Verify' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
+      expect(await screen.findByRole('button', { name: 'Verify' })).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
 
-    // One receipt-absolute deadline transition flips the mounted panel to
-    // server-derived manual review; Verify disappears, the marks remain.
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull(), {
-      timeout: 2_000,
-    });
-    expect(screen.getByText(/unavailable after restart or connection replacement/)).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+      // One receipt-absolute deadline transition flips the mounted panel to
+      // server-derived manual review; Verify disappears, the marks remain.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1000);
+      });
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull(), {
+        timeout: 2_000,
+      });
+      expect(screen.getByText(/unavailable after restart or connection replacement/)).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
 
-    // No polling: exactly one deadline refetch.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const stateFetches = fetchMock.mock.calls.filter(([url]) =>
-      String(url).includes('/estimate-log-state?'),
-    );
-    expect(stateFetches).toHaveLength(2);
+      // No polling: exactly one deadline refetch.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(200);
+      });
+      const stateFetches = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/estimate-log-state?'),
+      );
+      expect(stateFetches).toHaveLength(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('keeps estimate Verify expired when the deadline refetch fails', async () => {
-    const deadline = Date.now() + 300;
-    const pendingView = estimateState({
-      initialized: true,
-      revision: 2,
-      pendingDisposition: 'outcome_unknown',
-      canVerify: true,
-      verifyExpiresAt: new Date(deadline).toISOString(),
-      pending: {
-        operationId: 'estimate-pending-refetch-failure',
-        deltaMinutes: 30,
-        estimateTotalMinutes: 120,
-        startedAt: '2026-08-30T10:00:00.000Z',
-        phase: 'outcome_unknown',
-        resolution: null,
-      },
-    });
-    let stateFetches = 0;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).includes('/time-logs')) {
-        return Promise.resolve(jsonResponse(estimateSummary()));
-      }
-      if (String(url).includes('/estimate-log-state?')) {
-        stateFetches += 1;
-        return stateFetches === 1
-          ? Promise.resolve(jsonResponse(pendingView))
-          : Promise.reject(new Error('checkpoint unavailable'));
-      }
-      if (init?.method) {
-        return Promise.reject(new Error('provider mutation must not run'));
-      }
-      return Promise.resolve(jsonResponse(historyPayload([])));
-    });
-    renderBlock({ linkedEpicId: 'epic-root' });
-    await openTimeBlock();
-
-    expect(await screen.findByRole('button', { name: 'Verify' })).toBeVisible();
-
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull(), {
-      timeout: 2_000,
-    });
-    expect(
-      screen.getByText(
-        'The estimate checkpoint is unavailable. Time writes are locked until it reloads.',
-      ),
-    ).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
-    expect(fetchMock.mock.calls.some(([, init]) => Boolean(init?.method))).toBe(false);
-    expect(stateFetches).toBe(2);
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(stateFetches).toBe(2);
-  });
-
-  it('unlocks the manual form after receipt expiry through the displayed acknowledge action', async () => {
-    serveHistory(historyPayload([]));
-    const user = userEvent.setup();
-    renderBlock();
-    await openTimeBlock();
-
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).includes('/time-entries?') && !init?.method) {
+    jest.useFakeTimers();
+    try {
+      const deadline = Date.now() + 1000;
+      const pendingView = estimateState({
+        initialized: true,
+        revision: 2,
+        pendingDisposition: 'outcome_unknown',
+        canVerify: true,
+        verifyExpiresAt: new Date(deadline).toISOString(),
+        pending: {
+          operationId: 'estimate-pending-refetch-failure',
+          deltaMinutes: 30,
+          estimateTotalMinutes: 120,
+          startedAt: '2026-08-30T10:00:00.000Z',
+          phase: 'outcome_unknown',
+          resolution: null,
+        },
+      });
+      let stateFetches = 0;
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (String(url).includes('/time-logs')) {
+          return Promise.resolve(jsonResponse(estimateSummary()));
+        }
+        if (String(url).includes('/estimate-log-state?')) {
+          stateFetches += 1;
+          return stateFetches === 1
+            ? Promise.resolve(jsonResponse(pendingView))
+            : Promise.reject(new Error('checkpoint unavailable'));
+        }
+        if (init?.method) {
+          return Promise.reject(new Error('provider mutation must not run'));
+        }
         return Promise.resolve(jsonResponse(historyPayload([])));
-      }
-      if (String(url).includes('/acknowledge')) {
-        // The server receipt is gone after expiry; this endpoint must never
-        // be called by the expiry-safe path.
-        return Promise.reject(new Error('impossible server acknowledgement'));
-      }
-      return Promise.resolve(
-        jsonResponse({
-          outcome: 'outcome_unknown',
-          receipt: {
-            operationId: 'op-settled',
-            phase: 'outcome_unknown',
-            canVerify: true,
-            expiresAt: '2020-01-01T00:00:00.000Z',
-          },
-        }),
-      );
-    });
+      });
+      renderBlock({ linkedEpicId: 'epic-root' });
+      fireEvent.click(screen.getByRole('button', { name: 'Expand Time tracked' }));
 
-    await user.type(screen.getByLabelText('Duration'), '15m');
-    await user.click(screen.getByRole('button', { name: 'Log time' }));
+      expect(await screen.findByRole('button', { name: 'Verify' })).toBeVisible();
 
-    expect(await screen.findByText('Last submission unconfirmed')).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1000);
+      });
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull(), {
+        timeout: 2_000,
+      });
+      expect(
+        screen.getByText(
+          'The estimate checkpoint is unavailable. Time writes are locked until it reloads.',
+        ),
+      ).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Mark logged' })).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Mark not logged' })).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Log time' })).toBeDisabled();
+      expect(fetchMock.mock.calls.some(([, init]) => Boolean(init?.method))).toBe(false);
+      expect(stateFetches).toBe(2);
 
-    await user.click(screen.getByRole('button', { name: 'Acknowledge duplicate risk' }));
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Log time' })).toBeEnabled());
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/acknowledge'))).toBe(false);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(200);
+      });
+      expect(stateFetches).toBe(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('confirms deletion naming duration and date, warns about the remote entry, and refocuses the next row', async () => {

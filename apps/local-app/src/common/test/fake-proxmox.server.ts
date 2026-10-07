@@ -125,12 +125,12 @@ export class FakeProxmoxServer {
     this.origin = `https://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
     this.imageServer = createHttpServer((request, response) => {
       const path = new URL(request.url ?? '/', 'http://image').pathname;
-      if (path === '/devchain-host-1.3.0.qcow2.sha256') {
+      if (path === '/devchain-host-1.4.0.qcow2.sha256') {
         response.writeHead(200, { 'content-type': 'text/plain' });
-        response.end(`${this.imageSha256}  devchain-host-1.3.0.qcow2\n`);
+        response.end(`${this.imageSha256}  devchain-host-1.4.0.qcow2\n`);
         return;
       }
-      if (path !== '/devchain-host-1.3.0.qcow2') {
+      if (path !== '/devchain-host-1.4.0.qcow2') {
         response.writeHead(404).end();
         return;
       }
@@ -138,7 +138,7 @@ export class FakeProxmoxServer {
       response.end(request.method === 'HEAD' ? undefined : 'fake-image');
     });
     await new Promise<void>((resolve) => this.imageServer.listen(0, '127.0.0.1', resolve));
-    this.imageUrl = `http://127.0.0.1:${(this.imageServer.address() as AddressInfo).port}/devchain-host-1.3.0.qcow2`;
+    this.imageUrl = `http://127.0.0.1:${(this.imageServer.address() as AddressInfo).port}/devchain-host-1.4.0.qcow2`;
     this.vms.set(199, {
       vmid: 199,
       name: 'unrelated',

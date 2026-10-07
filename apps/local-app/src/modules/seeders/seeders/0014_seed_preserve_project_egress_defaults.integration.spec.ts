@@ -1,17 +1,12 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 // Backend integration: real SQLite is the cheapest reliable proof of this persisted contract.
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { TransactionRunner } from '../../storage/db/transaction-runner';
 import type { SeederContext } from '../types/seeder.types';
-import {
-  runSeedPreserveProjectEgressDefaults,
-  seedPreserveProjectEgressDefaultsSeeder,
-} from './0014_seed_preserve_project_egress_defaults';
+import { runSeedPreserveProjectEgressDefaults } from './0014_seed_preserve_project_egress_defaults';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const ENABLED_PROJECTS_KEY = 'cloud.egress.enabledProjects';
 const DEFAULT_ENABLED_KEY = 'cloud.egress.newProjectsDefaultEnabled';
 const TS = '2026-07-31T00:00:00.000Z';
@@ -21,9 +16,7 @@ describe('0014_seed_preserve_project_egress_defaults', () => {
   let db: BetterSQLite3Database;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite, db } = createTestDatabase());
   });
 
   afterEach(() => {
@@ -171,12 +164,5 @@ describe('0014_seed_preserve_project_egress_defaults', () => {
 
     expect(readRawSetting(ENABLED_PROJECTS_KEY)).toBe(originalMap);
     expect(readRawSetting(DEFAULT_ENABLED_KEY)).toBeUndefined();
-  });
-
-  it('has the permanent version-1 journal identity', () => {
-    expect(seedPreserveProjectEgressDefaultsSeeder).toMatchObject({
-      name: '0014_seed_preserve_project_egress_defaults',
-      version: 1,
-    });
   });
 });

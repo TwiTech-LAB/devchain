@@ -87,40 +87,6 @@ describe('useExternalMyWork', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('carries includeCompleted=true into the request and a distinct cache entry', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => snapshot });
-
-    const { result, rerender } = renderHook(
-      ({ includeCompleted }: { includeCompleted: boolean }) =>
-        useExternalMyWork('jira', {
-          includeCompleted,
-          enabled: true,
-          connectionEpoch,
-          projectId: PROJECT_ID,
-        }),
-      {
-        wrapper: wrapper(queryClient),
-        initialProps: { includeCompleted: false },
-      },
-    );
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    await act(async () => {
-      rerender({ includeCompleted: true });
-    });
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenLastCalledWith(
-        `/api/integrations/my-work/jira?includeCompleted=true&projectId=${PROJECT_ID}`,
-        { signal: expect.any(AbortSignal) },
-      ),
-    );
-    expect(
-      queryClient.getQueryData(
-        externalMyWorkQueryKeys.landingSnapshot('jira', connectionEpoch, true),
-      ),
-    ).toEqual(snapshot);
-  });
-
   it('projects the server message into the query error', async () => {
     fetchMock.mockResolvedValue({
       ok: false,
@@ -175,6 +141,10 @@ describe('useExternalMyWork', () => {
       rerender({ includeCompleted: true });
     });
 
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      `/api/integrations/my-work/clickup?includeCompleted=true&projectId=${PROJECT_ID}`,
+      { signal: expect.any(AbortSignal) },
+    );
     expect(result.current.isPending).toBe(false);
     expect(result.current.data).toEqual(snapshot);
 
@@ -182,5 +152,12 @@ describe('useExternalMyWork', () => {
       releaseCompletedFetch?.({ ok: true, json: async () => snapshot });
       await Promise.resolve();
     });
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryData(
+          externalMyWorkQueryKeys.landingSnapshot('clickup', connectionEpoch, true),
+        ),
+      ).toEqual(snapshot),
+    );
   });
 });

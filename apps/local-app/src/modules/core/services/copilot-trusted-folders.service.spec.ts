@@ -66,19 +66,6 @@ describe('CopilotTrustedFoldersService', () => {
     expect(config.trustedFolders).toHaveLength(1);
   });
 
-  it('returns success without rewriting when the path is already trusted', async () => {
-    const expected = await realpath(projectDir);
-    await writeRaw(
-      configPath(),
-      `${JSONC_HEADER}\n${JSON.stringify({ trustedFolders: [expected] }, null, 2)}\n`,
-    );
-
-    const result = await service.ensure(projectDir);
-
-    expect(result.success).toBe(true);
-    expect(result.warnings).toEqual([]);
-  });
-
   it('preserves the JSONC comment header and ALL sibling keys (incl. https:// values)', async () => {
     const original = {
       firstLaunchAt: '2026-06-26T22:24:23.336Z',

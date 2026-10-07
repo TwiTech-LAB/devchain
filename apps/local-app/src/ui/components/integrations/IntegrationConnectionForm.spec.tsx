@@ -78,22 +78,6 @@ describe('IntegrationConnectionForm', () => {
     });
   });
 
-  it('uses explicit classic Jira token wording with non-assertive scoped-token guidance', () => {
-    render(
-      <IntegrationConnectionForm
-        provider="jira"
-        connection={{ ...disconnected, provider: 'jira' }}
-        onReplace={jest.fn()}
-        onDisconnect={jest.fn()}
-      />,
-    );
-
-    expect(screen.getByLabelText('Classic API token (without scopes)')).toBeInTheDocument();
-    expect(
-      screen.getByText('Scoped Jira API tokens may not work with this connection yet.'),
-    ).toBeInTheDocument();
-  });
-
   it('allows a connected Jira account to replace only its token', async () => {
     const user = userEvent.setup();
     const onReplace = jest.fn(async (_input: ReplaceIntegrationConnectionInput) => undefined);

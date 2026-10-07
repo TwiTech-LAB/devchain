@@ -60,12 +60,6 @@ describe('CopilotHooksConfigService', () => {
   const relayPath = () => join(hooksDir(), 'devchain-relay.sh');
   const configPath = () => join(hooksDir(), 'devchain.json');
 
-  describe('static identity', () => {
-    it('exposes the copilot provider name (used for installer dispatch)', () => {
-      expect(service.providerName).toBe('copilot');
-    });
-  });
-
   describe('ensureHooksConfig — file materialization', () => {
     it('writes an executable relay script at ~/.copilot/hooks/devchain-relay.sh', async () => {
       await service.ensureHooksConfig('/some/project');

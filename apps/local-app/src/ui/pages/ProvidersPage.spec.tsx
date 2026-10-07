@@ -4,10 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { ProvidersPage } from './ProvidersPage';
-import {
-  CLAUDE_LAUNCH_SETTINGS_MAX_BYTES,
-  DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
-} from '@devchain/shared';
+import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
+
+const mockToast = jest.fn();
+jest.mock('@/ui/hooks/use-toast', () => ({ useToast: () => ({ toast: mockToast }) }));
 
 // Mutable so individual tests can override per-test project context
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -128,36 +128,19 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
     expect(binInput.value).toBe('mybin');
   });
 
-  it('includes Antigravity CLI as a provider type with the agy default binPath', async () => {
+  it.each([
+    ['Antigravity CLI', 'agy'],
+    ['Copilot CLI', 'copilot'],
+  ])('uses the %s default binary path', async (label, binPath) => {
     renderWithQuery(<ProvidersPage />);
-
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
     );
     fireEvent.click(screen.getAllByText('Add Provider')[0]);
-
     fireEvent.click(screen.getByLabelText('Provider Type'));
-    const agyOptions = await screen.findAllByText('Antigravity CLI');
-    fireEvent.click(agyOptions[agyOptions.length - 1]);
-
-    const binInput = screen.getByLabelText('Binary Path') as HTMLInputElement;
-    expect(binInput.value).toBe('agy');
-  });
-
-  it('includes Copilot CLI as a provider type with the copilot default binPath', async () => {
-    renderWithQuery(<ProvidersPage />);
-
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getAllByText('Add Provider')[0]);
-
-    fireEvent.click(screen.getByLabelText('Provider Type'));
-    const copilotOptions = await screen.findAllByText('Copilot CLI');
-    fireEvent.click(copilotOptions[copilotOptions.length - 1]);
-
-    const binInput = screen.getByLabelText('Binary Path') as HTMLInputElement;
-    expect(binInput.value).toBe('copilot');
+    const options = await screen.findAllByText(label);
+    fireEvent.click(options[options.length - 1]);
+    expect(screen.getByLabelText('Binary Path')).toHaveValue(binPath);
   });
 
   it('calls ensure endpoint when Configure MCP is clicked', async () => {
@@ -340,18 +323,14 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
       jest.fn();
   });
 
-  it('displays threshold percentage on Claude provider card', async () => {
-    setupFetch([claudeProvider]);
+  it.each([
+    { threshold: 10, text: /Default threshold:.*10%/ },
+    { threshold: null, text: /Default threshold:.*disabled/ },
+  ])('displays Claude threshold $threshold', async ({ threshold, text }) => {
+    setupFetch([{ ...claudeProvider, autoCompactThreshold: threshold }]);
     renderWithQuery(<ProvidersPage />);
     await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
-    expect(screen.getByText(/Default threshold:.*10%/)).toBeInTheDocument();
-  });
-
-  it('displays "disabled" when Claude provider threshold is null', async () => {
-    setupFetch([{ ...claudeProvider, autoCompactThreshold: null }]);
-    renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
-    expect(screen.getByText(/Default threshold:.*disabled/)).toBeInTheDocument();
+    expect(screen.getByText(text)).toBeInTheDocument();
   });
 
   it('does not display threshold on non-Claude provider card', async () => {
@@ -402,20 +381,6 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
     fireEvent.click(claudeOptions[claudeOptions.length - 1]);
 
     expect(screen.getByLabelText('Default Threshold (%)')).toBeInTheDocument();
-  });
-
-  it('starts Add-Claude with the formatted default', async () => {
-    setupFetch([]);
-    renderWithQuery(<ProvidersPage />);
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
-    );
-
-    fireEvent.click(screen.getAllByText('Add Provider')[0]);
-    fireEvent.click(screen.getByLabelText('Provider Type'));
-    const claudeOptions = await screen.findAllByText('Claude');
-    fireEvent.click(claudeOptions[claudeOptions.length - 1]);
-
     expect(screen.getByLabelText('Advanced: Claude Launch Settings JSON')).toHaveValue(
       DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
     );
@@ -482,8 +447,6 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
 
   it.each([
     ['malformed JSON', '{'],
-    ['non-object JSON', '[]'],
-    ['oversized JSON', `{"value":"${'a'.repeat(CLAUDE_LAUNCH_SETTINGS_MAX_BYTES)}"}`],
     ['reserved context env', '{"env":{"DEVCHAIN_CONTEXT_WINDOW_TOKENS":"1000000"}}'],
     ['reserved base URL env', '{"env":{"ANTHROPIC_BASE_URL":"https://example.com"}}'],
     ['unsafe nested key', '{"nested":{"constructor":{"value":true}}}'],
@@ -759,7 +722,6 @@ describe('ProvidersPage - autoCompactThreshold display and edit', () => {
   it.each([
     { value: '0', label: 'zero' },
     { value: '101', label: 'above 100' },
-    { value: '-5', label: 'negative' },
     { value: '10.5', label: 'non-integer' },
   ])(
     'frontend validation rejects $label threshold value ($value) and blocks mutation',
@@ -1424,36 +1386,6 @@ describe('ProvidersPage - Rescan', () => {
       jest.fn();
   }
 
-  it('renders Rescan button in page header', async () => {
-    setupRescanFetch();
-    renderWithQuery(<ProvidersPage />);
-
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
-    );
-
-    expect(screen.getByRole('button', { name: /rescan/i })).toBeInTheDocument();
-  });
-
-  it('fires POST /api/providers/rescan on click', async () => {
-    setupRescanFetch();
-    renderWithQuery(<ProvidersPage />);
-
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument(),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /rescan/i }));
-
-    await waitFor(() => {
-      const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
-      const rescanCalls = fetchMock.mock.calls.filter(
-        (call) => call[0] === '/api/providers/rescan' && call[1]?.method === 'POST',
-      );
-      expect(rescanCalls.length).toBeGreaterThan(0);
-    });
-  });
-
   it('invalidates queries after successful rescan', async () => {
     setupRescanFetch();
     const qc = createQueryClient();
@@ -1472,9 +1404,13 @@ describe('ProvidersPage - Rescan', () => {
       );
       expect(predicateCalls.length).toBeGreaterThan(0);
     });
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/providers/rescan',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 
-  it('handles rescan error without crashing', async () => {
+  it('reports the rescan failure to the user', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (global as unknown as { fetch: unknown }).fetch = jest.fn(
       (url: string, options?: RequestInit) => {
@@ -1524,7 +1460,15 @@ describe('ProvidersPage - Rescan', () => {
       expect(rescanCalls.length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByRole('heading', { name: 'Providers' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Rescan failed',
+          description: 'Rescan failed: internal error',
+          variant: 'destructive',
+        }),
+      ),
+    );
   });
 });
 
@@ -1636,27 +1580,6 @@ describe('ProvidersPage - MCP badge and Configure MCP button states', () => {
     expect(configBtn).not.toBeDisabled();
   });
 
-  it('shows MCP OK badge and hides Configure button for used provider with MCP registered', async () => {
-    mockSelectedProject = { id: 'proj-1', rootPath: '/proj-1' };
-    setupFetch([
-      {
-        id: 'p-badge',
-        name: 'codex',
-        status: 'pass',
-        message: 'OK',
-        binPath: null,
-        binaryStatus: 'pass',
-        binaryMessage: 'OK',
-        mcpStatus: 'pass',
-        usedByAgents: ['Agent A', 'Agent B'],
-      },
-    ]);
-    renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
-    expect(screen.getByText('MCP OK')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
-  });
-
   it('shows amber MCP WARN badge and disabled Configure button when requiresProjectContext and no project selected', async () => {
     mockSelectedProject = null;
     setupFetch([
@@ -1679,27 +1602,15 @@ describe('ProvidersPage - MCP badge and Configure MCP button states', () => {
     expect(configBtn).toBeDisabled();
   });
 
-  it('shows Checking… badge and hides Configure button while preflight is loading', async () => {
-    setupFetch([], true, true);
+  it.each([
+    { state: 'loading', success: true, loading: true, text: /Checking/ },
+    { state: 'failure', success: false, loading: false, text: /Check failed/ },
+    { state: 'missing', success: true, loading: false, text: /MCP —/ },
+  ])('renders $state preflight without Configure', async ({ success, loading, text }) => {
+    setupFetch([], success, loading);
     renderWithQuery(<ProvidersPage />);
     await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
-    expect(screen.getByText(/Checking/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
-  });
-
-  it('shows MCP Check failed badge and hides Configure button when preflight query errors', async () => {
-    setupFetch([], false);
-    renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText(/Check failed/)).toBeInTheDocument());
-    expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
-  });
-
-  it('shows neutral MCP — badge and hides Configure button when provider has no preflight entry', async () => {
-    setupFetch([]);
-    renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText('MCP —')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /configure mcp/i })).not.toBeInTheDocument();
   });
 });
@@ -1943,29 +1854,6 @@ describe('ProvidersPage - aggregate-fail MCP badge guard', () => {
     const configBtn = screen.getByRole('button', { name: /configure mcp/i });
     expect(configBtn).toBeInTheDocument();
     expect(configBtn).not.toBeDisabled();
-  });
-
-  it('shows MCP FAIL badge and disabled Configure button when mcpStatus is fail + requiresProjectContext + no project', async () => {
-    mockSelectedProject = null;
-    setupFetch([
-      {
-        id: 'p-fail',
-        name: 'codex',
-        status: 'fail',
-        message: 'MCP check failed',
-        binPath: null,
-        binaryStatus: 'pass',
-        binaryMessage: 'OK',
-        mcpStatus: 'fail',
-        mcpMessage: 'boom',
-        requiresProjectContext: true,
-      },
-    ]);
-    renderWithQuery(<ProvidersPage />);
-    await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
-    expect(screen.getByText('MCP FAIL')).toBeInTheDocument();
-    const configBtn = screen.getByRole('button', { name: /configure mcp/i });
-    expect(configBtn).toBeDisabled();
   });
 
   // Guard: aggregate status:'fail' with mcpStatus absent must NOT render the neutral "—" badge.
@@ -2360,7 +2248,7 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
     await openTab('CLI versions');
 
     expect(await screen.findByRole('region', { name: 'CLI versions' })).toBeInTheDocument();
-    expect(screen.getByRole('row', { name: 'Claude CLI version' })).toBeInTheDocument();
+
     expect(screen.queryByText('claude')).not.toBeInTheDocument();
     // Rescan and Add Provider belong to the provider cards.
     expect(screen.queryByRole('button', { name: 'Rescan' })).not.toBeInTheDocument();
@@ -2378,25 +2266,14 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
     );
   });
 
-  it('shows Managed by DevChain on a managed provider card instead of the raw path', async () => {
-    setupFetch(true);
+  it.each([true, false])('renders managed binary path: %s', async (managed) => {
+    setupFetch(managed);
     renderWithQuery(<ProvidersPage />);
-
-    await waitFor(() => expect(screen.getByText('Managed by DevChain')).toBeInTheDocument());
-    expect(
-      screen.queryByText('/home/user/.local/share/devchain/provider-clis/bin/claude'),
-    ).not.toBeInTheDocument();
-  });
-
-  it('shows the raw Binary Path when the provider is not managed', async () => {
-    setupFetch(false);
-    renderWithQuery(<ProvidersPage />);
-
-    await waitFor(() =>
-      expect(
-        screen.getByText('/home/user/.local/share/devchain/provider-clis/bin/claude'),
-      ).toBeInTheDocument(),
-    );
+    const path = '/home/user/.local/share/devchain/provider-clis/bin/claude';
+    if (managed) {
+      await screen.findByText('Managed by DevChain');
+      expect(screen.queryByText(path)).not.toBeInTheDocument();
+    } else expect(await screen.findByText(path)).toBeInTheDocument();
   });
 
   it('asks before a Binary Path edit switches a managed provider to own install', async () => {

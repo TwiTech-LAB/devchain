@@ -1,7 +1,6 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import { ConflictError, OptimisticLockError } from '../../../common/errors/error-types';
 import type {
   Epic,
@@ -13,8 +12,6 @@ import type {
   ScheduledEpic,
 } from '../models/domain.models';
 import { LocalStorageService } from './local-storage.service';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 type VersionedEntity = Epic | Prompt | EpicRecord | Review | ReviewComment | ScheduledEpic;
 
@@ -50,7 +47,7 @@ describe('LocalStorageService versioned mutations (integration)', () => {
   let capturedSql: string[];
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     capturedSql = [];
     db = drizzle(sqlite, {
       logger: {
@@ -59,7 +56,6 @@ describe('LocalStorageService versioned mutations (integration)', () => {
         },
       },
     });
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
     service = new LocalStorageService(db);
     project = await service.createProject({

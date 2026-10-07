@@ -159,6 +159,7 @@ function createMockSocket(
 
 const createGateway = (options?: {
   seedMaxBytes?: number;
+  seedSettleMs?: number;
   snapshot?: string;
   bufferedFrames?: ReturnType<typeof createEnvelope>[];
   replayResult?: FrameReplayResult;
@@ -356,6 +357,7 @@ const createGateway = (options?: {
     mockRealtimeBroadcast as never,
     options?.sendScheduler ?? (sendScheduler as never),
     mockMetricsService,
+    options?.seedSettleMs ?? 0,
   );
 
   (gateway as unknown as { ensurePtyStreaming: jest.Mock }).ensurePtyStreaming = jest
@@ -408,248 +410,53 @@ describe('TerminalGateway lifecycle', () => {
 });
 
 describe('TerminalGateway.handleRequestFullHistory', () => {
-  it('accepts maxLines larger than scrollback (clamping happens internally)', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-clamp');
+  it.each([
+    { requested: 50000, scrollback: 5000, expected: 5000 },
+    { requested: 3.7, scrollback: 10000, expected: 3 },
+    { requested: undefined, scrollback: 10000, expected: 10000 },
+    { requested: null, scrollback: 10000, expected: 10000 },
+    { requested: '100.7', scrollback: 10000, expected: 100 },
+  ])(
+    'captures requested=$requested within scrollback=$scrollback',
+    async ({ requested, scrollback, expected }) => {
+      const { gateway, settingsService, terminalIO } = createGateway();
+      const client = createMockSocket('history-client');
+      (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(scrollback);
+      gateway.handleConnection(client);
+      await gateway.handleSubscribe(client, { sessionId: 'history-session', rows: 24, cols: 80 });
+      await gateway.handleRequestFullHistory(client, {
+        sessionId: 'history-session',
+        maxLines: requested as number,
+      });
+      expect(terminalIO.captureHistory).toHaveBeenCalledWith(
+        { name: 'tmux_history-session' },
+        expected,
+        true,
+      );
+      expect(client.emit).toHaveBeenCalledWith(
+        'message',
+        expect.objectContaining({ type: 'full_history' }),
+      );
+    },
+  );
 
-    // Set scrollback to 5000
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(5000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    // Subscribe first to pass the subscription check
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-clamp',
-      rows: 24,
-      cols: 80,
-    });
-
-    // Request 50000 lines (more than scrollback allows) - should not throw
+  it.each([
+    { maxLines: 0, correlationId: undefined },
+    { maxLines: 'abc', correlationId: undefined },
+    { maxLines: 1000, correlationId: 123 },
+  ])('rejects history payload %j', async ({ maxLines, correlationId }) => {
+    const { gateway, terminalIO } = createGateway();
+    const client = createMockSocket('bad-history-client');
+    gateway.handleConnection(client);
+    await gateway.handleSubscribe(client, { sessionId: 'history-session', rows: 24, cols: 80 });
     await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-clamp',
-        maxLines: 50000,
-      }),
-    ).resolves.not.toThrow();
-
-    // Verify client received a full_history response (empty or not)
-    const historyCall = (client.emit as jest.Mock).mock.calls.find(
-      ([event, envelope]) =>
-        event === 'message' && (envelope as { type?: string }).type === 'full_history',
-    );
-    expect(historyCall).toBeTruthy();
-  });
-
-  it('accepts maxLines within scrollback limit', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-no-clamp');
-
-    // Set scrollback to 10000
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-no-clamp',
-      rows: 24,
-      cols: 80,
-    });
-
-    // Request 5000 lines (less than scrollback) - should not throw
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-no-clamp',
-        maxLines: 5000,
-      }),
-    ).resolves.not.toThrow();
-
-    // Verify client received a full_history response
-    const historyCall = (client.emit as jest.Mock).mock.calls.find(
-      ([event, envelope]) =>
-        event === 'message' && (envelope as { type?: string }).type === 'full_history',
-    );
-    expect(historyCall).toBeTruthy();
-  });
-
-  it('throws WsException for maxLines: 0', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-zero');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-zero',
-      rows: 24,
-      cols: 80,
-    });
-
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-zero',
-        maxLines: 0,
+      gateway.handleRequestFullHistory(client, {
+        sessionId: 'history-session',
+        maxLines: maxLines as number,
+        correlationId: correlationId as unknown as string,
       }),
     ).rejects.toThrow(WsException);
-  });
-
-  it('throws WsException for maxLines: -1', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-negative');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-negative',
-      rows: 24,
-      cols: 80,
-    });
-
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-negative',
-        maxLines: -1,
-      }),
-    ).rejects.toThrow(WsException);
-  });
-
-  it('throws WsException for non-numeric maxLines string', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-string');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-string',
-      rows: 24,
-      cols: 80,
-    });
-
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-string',
-        maxLines: 'abc' as unknown as number,
-      }),
-    ).rejects.toThrow(WsException);
-  });
-
-  it('coerces float maxLines to integer', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-float');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-float',
-      rows: 24,
-      cols: 80,
-    });
-
-    // 3.7 should be coerced to 3 - should not throw
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-float',
-        maxLines: 3.7,
-      }),
-    ).resolves.not.toThrow();
-
-    // Verify client received a full_history response
-    const historyCall = (client.emit as jest.Mock).mock.calls.find(
-      ([event, envelope]) =>
-        event === 'message' && (envelope as { type?: string }).type === 'full_history',
-    );
-    expect(historyCall).toBeTruthy();
-  });
-
-  it('uses default when maxLines is undefined', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-undefined');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-undefined',
-      rows: 24,
-      cols: 80,
-    });
-
-    // No maxLines provided - should use default, not throw
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-undefined',
-      }),
-    ).resolves.not.toThrow();
-
-    // Verify client received a full_history response
-    const historyCall = (client.emit as jest.Mock).mock.calls.find(
-      ([event, envelope]) =>
-        event === 'message' && (envelope as { type?: string }).type === 'full_history',
-    );
-    expect(historyCall).toBeTruthy();
-  });
-
-  it('uses default when maxLines is null', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-null');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-null',
-      rows: 24,
-      cols: 80,
-    });
-
-    // Null maxLines - should use default, not throw
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-null',
-        maxLines: null as unknown as number,
-      }),
-    ).resolves.not.toThrow();
-
-    // Verify client received a full_history response
-    const historyCall = (client.emit as jest.Mock).mock.calls.find(
-      ([event, envelope]) =>
-        event === 'message' && (envelope as { type?: string }).type === 'full_history',
-    );
-    expect(historyCall).toBeTruthy();
-  });
-
-  it('accepts valid positive integer', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-valid');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-valid',
-      rows: 24,
-      cols: 80,
-    });
-
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-valid',
-        maxLines: 100,
-      }),
-    ).resolves.not.toThrow();
-
-    // Verify client received a full_history response
-    const historyCall = (client.emit as jest.Mock).mock.calls.find(
-      ([event, envelope]) =>
-        event === 'message' && (envelope as { type?: string }).type === 'full_history',
-    );
-    expect(historyCall).toBeTruthy();
+    expect(terminalIO.captureHistory).not.toHaveBeenCalled();
   });
 
   it('preserves real trailing blank rows in full history', async () => {
@@ -683,66 +490,6 @@ describe('TerminalGateway.handleRequestFullHistory', () => {
     );
   });
 
-  it('coerces numeric string maxLines to integer', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-string-num');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-string-num',
-      rows: 24,
-      cols: 80,
-    });
-
-    // "100" (string) should be coerced to 100 (number) - should not throw
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-string-num',
-        maxLines: '100' as unknown as number,
-      }),
-    ).resolves.not.toThrow();
-
-    // Verify client received a full_history response
-    const historyCall = (client.emit as jest.Mock).mock.calls.find(
-      ([event, envelope]) =>
-        event === 'message' && (envelope as { type?: string }).type === 'full_history',
-    );
-    expect(historyCall).toBeTruthy();
-  });
-
-  it('coerces float string maxLines to floored integer', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-float-string');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-float-string',
-      rows: 24,
-      cols: 80,
-    });
-
-    // "100.7" (string) should be coerced to 100 (floored) - should not throw
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-float-string',
-        maxLines: '100.7' as unknown as number,
-      }),
-    ).resolves.not.toThrow();
-
-    // Verify client received a full_history response
-    const historyCall = (client.emit as jest.Mock).mock.calls.find(
-      ([event, envelope]) =>
-        event === 'message' && (envelope as { type?: string }).type === 'full_history',
-    );
-    expect(historyCall).toBeTruthy();
-  });
-
   it('includes captured cursor coordinates in full_history payload', async () => {
     const { gateway, terminalIO } = createGateway();
     const client = createMockSocket('client-cursor');
@@ -769,33 +516,6 @@ describe('TerminalGateway.handleRequestFullHistory', () => {
     expect(
       (historyCall![1] as { payload: { cursorX?: number; cursorY?: number } }).payload,
     ).toEqual(expect.objectContaining({ cursorX: 7, cursorY: 8 }));
-  });
-
-  it('uses shared maxBytes setting from resolveSeedingConfig (same as seeding)', async () => {
-    // P1: Verify full-history uses the same maxBytes config as terminal seeding
-    const customMaxBytes = 512 * 1024; // 512KB
-    const { gateway, seedService, settingsService } = createGateway({
-      seedMaxBytes: customMaxBytes,
-    });
-    const client = createMockSocket('client-shared-maxbytes');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-
-    gateway.handleConnection(client as unknown as Socket);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-shared-maxbytes',
-      rows: 24,
-      cols: 80,
-    });
-
-    await gateway.handleRequestFullHistory(client as unknown as Socket, {
-      sessionId: 'session-shared-maxbytes',
-      maxLines: 1000,
-    });
-
-    // Verify resolveSeedingConfig was called to get the shared maxBytes
-    expect(seedService.resolveSeedingConfig).toHaveBeenCalled();
   });
 
   it('echoes the correlation token on the full_history response', async () => {
@@ -849,27 +569,6 @@ describe('TerminalGateway.handleRequestFullHistory', () => {
     expect((historyCall![1] as { payload: Record<string, unknown> }).payload).not.toHaveProperty(
       'correlationId',
     );
-  });
-
-  it('throws WsException for a non-string correlationId', async () => {
-    const { gateway, settingsService } = createGateway();
-    const client = createMockSocket('client-bad-correlate');
-
-    (settingsService.getScrollbackLines as jest.Mock).mockReturnValue(10000);
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-bad-correlate',
-      rows: 24,
-      cols: 80,
-    });
-
-    await expect(
-      gateway.handleRequestFullHistory(client as unknown as Socket, {
-        sessionId: 'session-bad-correlate',
-        maxLines: 1000,
-        correlationId: 123 as unknown as string,
-      }),
-    ).rejects.toThrow(WsException);
   });
 
   it('captures freshly on every accepted history request', async () => {
@@ -1032,54 +731,20 @@ describe('TerminalGateway.handleSubscribe', () => {
       | { payload: Record<string, unknown> }
       | undefined;
 
-  it('publishes historyRefreshable=true for a line-oriented provider on the subscribed ack', async () => {
-    const { gateway, sessionTerminalRuntime } = createGateway();
-    setUsesAlternateScreen(sessionTerminalRuntime, false);
-    const client = createMockSocket('client-refreshable');
-
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-refreshable',
-      rows: 24,
-      cols: 80,
-    });
-
-    expect(findSubscribed(client)?.payload).toMatchObject({
-      replayStatus: 'seed',
-      historyRefreshable: true,
-    });
-  });
-
-  it('publishes historyRefreshable=false for an alternate-screen provider on the subscribed ack', async () => {
-    const { gateway, sessionTerminalRuntime } = createGateway();
-    setUsesAlternateScreen(sessionTerminalRuntime, true);
-    const client = createMockSocket('client-altscreen');
-
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-altscreen',
-      rows: 24,
-      cols: 80,
-    });
-
-    expect(findSubscribed(client)?.payload).toMatchObject({ historyRefreshable: false });
-  });
-
-  it('publishes historyRefreshable on the fallback (no-registry) subscribed ack', async () => {
-    const { gateway, sessionTerminalRuntime, registry } = createGateway();
-    setUsesAlternateScreen(sessionTerminalRuntime, true);
-    registry.get = () => undefined;
-    const client = createMockSocket('client-fallback-cap');
-
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'session-fallback-cap',
-      rows: 24,
-      cols: 80,
-    });
-
-    expect(findSubscribed(client)?.payload).toMatchObject({ historyRefreshable: false });
-  });
+  it.each([false, true])(
+    'publishes history refresh capability for alternate-screen=%s',
+    async (usesAlternateScreen) => {
+      const { gateway, sessionTerminalRuntime } = createGateway();
+      setUsesAlternateScreen(sessionTerminalRuntime, usesAlternateScreen);
+      const client = createMockSocket('cap-client');
+      gateway.handleConnection(client);
+      await gateway.handleSubscribe(client, { sessionId: 'cap-session', rows: 24, cols: 80 });
+      expect(findSubscribed(client)?.payload).toMatchObject({
+        replayStatus: 'seed',
+        historyRefreshable: !usesAlternateScreen,
+      });
+    },
+  );
 
   it('routes a successful empty first capture through the scheduler-admission guard', async () => {
     const { gateway, seedService, sendScheduler } = createGateway();
@@ -1397,7 +1062,8 @@ describe('TerminalGateway.handleSubscribe', () => {
   });
 
   it('falls back to seedService.emitSeedToClient when session not in registry', async () => {
-    const { gateway, seedService, registry } = createGateway();
+    const { gateway, seedService, registry, sessionTerminalRuntime } = createGateway();
+    setUsesAlternateScreen(sessionTerminalRuntime, true);
     const client = createMockSocket('client-fallback');
 
     // Remove the auto-create override so registry returns undefined
@@ -1416,7 +1082,7 @@ describe('TerminalGateway.handleSubscribe', () => {
       'message',
       expect.objectContaining({
         type: 'subscribed',
-        payload: expect.objectContaining({ replayStatus: 'seed' }),
+        payload: expect.objectContaining({ replayStatus: 'seed', historyRefreshable: false }),
       }),
     );
   });
@@ -2474,7 +2140,7 @@ describe('TerminalGateway initial-geometry authority latch', () => {
   });
 
   it('bails without subscribing when the client disconnects inside the 50ms seed window', async () => {
-    const { gateway, registry } = createGateway();
+    const { gateway, registry } = createGateway({ seedSettleMs: 50 });
     const client = createMockSocket('client-midwindow');
 
     gateway.handleConnection(client as unknown as Socket);
@@ -2731,21 +2397,25 @@ describe('TerminalGateway activity routing', () => {
 
   it('broadcastTerminalData schedules each subscribed socket without a room emit', () => {
     const { gateway, registry, roomEmit, sendScheduler } = createGateway();
-    const client = createMockSocket('web-viewer');
-    gateway.handleConnection(client);
-    const tracked = (
-      gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
-    ).clientSessions.get(client.id)!;
-    tracked.subscriptions.add('terminal/session-emit');
-    registry.get('session-emit')!.subscribe(client.id);
+    try {
+      const client = createMockSocket('web-viewer');
+      gateway.handleConnection(client);
+      const tracked = (
+        gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
+      ).clientSessions.get(client.id)!;
+      tracked.subscriptions.add('terminal/session-emit');
+      registry.get('session-emit')!.subscribe(client.id);
 
-    gateway.broadcastTerminalData('session-emit', 'data chunk');
+      gateway.broadcastTerminalData('session-emit', 'data chunk');
 
-    expect(sendScheduler.enqueueLive).toHaveBeenCalledWith(
-      client,
-      expect.objectContaining({ type: 'data' }),
-    );
-    expect(roomEmit).not.toHaveBeenCalled();
+      expect(sendScheduler.enqueueLive).toHaveBeenCalledWith(
+        client,
+        expect.objectContaining({ type: 'data' }),
+      );
+      expect(roomEmit).not.toHaveBeenCalled();
+    } finally {
+      registry.dispose('session-emit');
+    }
   });
 
   it('gates fallback replay and room delivery when no web socket tracks the session', () => {
@@ -2798,52 +2468,39 @@ describe('TerminalGateway activity routing', () => {
     expect(state.busySince).not.toBeNull();
   });
 
-  it('passes one ordered data envelope per broadcast call to the socket scheduler', () => {
-    const { gateway, registry, sendScheduler } = createGateway();
-    const client = createMockSocket('web-viewer');
-    gateway.handleConnection(client);
-    const tracked = (
-      gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
-    ).clientSessions.get(client.id)!;
-    tracked.subscriptions.add('terminal/session-wire');
-    registry.get('session-wire')!.subscribe(client.id);
-
-    gateway.broadcastTerminalData('session-wire', 'chunk-1');
-    gateway.broadcastTerminalData('session-wire', 'chunk-2');
-
-    const dataCalls = (sendScheduler.enqueueLive as jest.Mock).mock.calls;
-    expect(dataCalls).toHaveLength(2);
-  });
-
   it('broadcasts every ordered chunk returned by the replay stream', () => {
     const { gateway, streamService, registry, sendScheduler } = createGateway();
-    const session = registry.get('session-chunked-broadcast')!;
-    const client = createMockSocket('web-viewer');
-    gateway.handleConnection(client);
-    const tracked = (
-      gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
-    ).clientSessions.get(client.id)!;
-    tracked.subscriptions.add('terminal/session-chunked-broadcast');
-    session.subscribe(client.id);
-    const pushSpy = jest.spyOn(session, 'pushFrame');
-    const chunks = ['first🙂', '\u001b[31msecond\u001b[0m'];
-    (streamService.addFrame as jest.Mock).mockReturnValue(
-      chunks.map((data, index) =>
-        createEnvelope('terminal/session-chunked-broadcast', 'data', {
-          data,
-          sequence: index + 1,
-        }),
-      ),
-    );
+    try {
+      const session = registry.get('session-chunked-broadcast')!;
+      const client = createMockSocket('web-viewer');
+      gateway.handleConnection(client);
+      const tracked = (
+        gateway as unknown as { clientSessions: Map<string, { subscriptions: Set<string> }> }
+      ).clientSessions.get(client.id)!;
+      tracked.subscriptions.add('terminal/session-chunked-broadcast');
+      session.subscribe(client.id);
+      const pushSpy = jest.spyOn(session, 'pushFrame');
+      const chunks = ['first🙂', '\u001b[31msecond\u001b[0m'];
+      (streamService.addFrame as jest.Mock).mockReturnValue(
+        chunks.map((data, index) =>
+          createEnvelope('terminal/session-chunked-broadcast', 'data', {
+            data,
+            sequence: index + 1,
+          }),
+        ),
+      );
 
-    gateway.broadcastTerminalData('session-chunked-broadcast', chunks.join(''));
+      gateway.broadcastTerminalData('session-chunked-broadcast', chunks.join(''));
 
-    expect(pushSpy.mock.calls.map(([data]) => data)).toEqual(chunks);
-    expect(
-      (sendScheduler.enqueueLive as jest.Mock).mock.calls.map(
-        ([, envelope]) => (envelope as { payload: { data: string } }).payload.data,
-      ),
-    ).toEqual(chunks);
+      expect(pushSpy.mock.calls.map(([data]) => data)).toEqual(chunks);
+      expect(
+        (sendScheduler.enqueueLive as jest.Mock).mock.calls.map(
+          ([, envelope]) => (envelope as { payload: { data: string } }).payload.data,
+        ),
+      ).toEqual(chunks);
+    } finally {
+      registry.dispose('session-chunked-broadcast');
+    }
   });
 
   it('forces one targeted seed on the first reconnect after gated output', async () => {
@@ -2854,22 +2511,26 @@ describe('TerminalGateway activity routing', () => {
         discontinuitySequence: 8,
       },
     });
-    registry.get('session-gated')!;
-    gateway.broadcastTerminalData('session-gated', 'unwatched output');
-    const client = createMockSocket('returning-viewer');
-    gateway.handleConnection(client);
+    try {
+      registry.get('session-gated')!;
+      gateway.broadcastTerminalData('session-gated', 'unwatched output');
+      const client = createMockSocket('returning-viewer');
+      gateway.handleConnection(client);
 
-    await gateway.handleSubscribe(client, {
-      sessionId: 'session-gated',
-      lastSequence: 7,
-    });
+      await gateway.handleSubscribe(client, {
+        sessionId: 'session-gated',
+        lastSequence: 7,
+      });
 
-    expect(streamService.markDiscontinuous).toHaveBeenCalledTimes(1);
-    expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
-    expect(client.emit).toHaveBeenCalledWith(
-      'message',
-      expect.objectContaining({ type: 'resync_required' }),
-    );
+      expect(streamService.markDiscontinuous).toHaveBeenCalledTimes(1);
+      expect(seedService.emitSeedToClient).toHaveBeenCalledTimes(1);
+      expect(client.emit).toHaveBeenCalledWith(
+        'message',
+        expect.objectContaining({ type: 'resync_required' }),
+      );
+    } finally {
+      registry.dispose('session-gated');
+    }
   });
 
   it('does not reseed covered reconnects during rapid subscriber cycling without output', async () => {
@@ -2894,31 +2555,37 @@ describe('TerminalGateway activity routing', () => {
 });
 
 describe('TerminalGateway dead-tmux detection', () => {
-  it('subscribe: emits state_change(crashed) and marks session failed when tmux is dead', async () => {
-    const { gateway, terminalIO, sessionTerminalRuntime, ptyService } = createGateway();
-    (terminalIO.sessionExists as jest.Mock).mockResolvedValue(false);
-
-    const client = createMockSocket('client-dead-subscribe');
-    gateway.handleConnection(client);
-
-    await gateway.handleSubscribe(client, { sessionId: 'dead-session' });
-
-    expect(sessionTerminalRuntime.retireConfirmedLoss).toHaveBeenCalledWith(
-      'dead-session',
-      expect.any(String),
-    );
-    expect(ptyService.stopStreaming).toHaveBeenCalledWith('dead-session');
-
-    const emitted = (client.emit as jest.Mock).mock.calls
-      .filter(([event]: [string]) => event === 'message')
-      .map(([, envelope]: [string, { type?: string; payload?: unknown }]) => envelope);
-    const stateChange = emitted.find((e) => e.type === 'state_change');
-    expect(stateChange).toBeDefined();
-    expect((stateChange!.payload as { status: string; sessionId: string }).status).toBe('crashed');
-    expect((stateChange!.payload as { status: string; sessionId: string }).sessionId).toBe(
-      'dead-session',
-    );
-  });
+  it.each(['subscribe', 'resize', 'input'] as const)(
+    '%s reports a crashed session when tmux is dead',
+    async (entry) => {
+      const { gateway, terminalIO, sessionTerminalRuntime, ptyService } = createGateway();
+      const client = createMockSocket('dead-client');
+      gateway.handleConnection(client);
+      if (entry === 'input') {
+        await gateway.handleSubscribe(client, { sessionId: 'dead-session', rows: 24, cols: 80 });
+        gateway.handleFocus(client, { sessionId: 'dead-session' });
+      }
+      (terminalIO.sessionExists as jest.Mock).mockResolvedValue(false);
+      if (entry === 'subscribe')
+        await gateway.handleSubscribe(client, { sessionId: 'dead-session' });
+      else if (entry === 'resize')
+        await gateway.handleResize(client, { sessionId: 'dead-session', rows: 24, cols: 80 });
+      else await gateway.handleInput(client, { sessionId: 'dead-session', data: 'x' });
+      expect(sessionTerminalRuntime.retireConfirmedLoss).toHaveBeenCalledWith(
+        'dead-session',
+        expect.any(String),
+      );
+      if (entry === 'subscribe')
+        expect(ptyService.stopStreaming).toHaveBeenCalledWith('dead-session');
+      expect(client.emit).toHaveBeenCalledWith(
+        'message',
+        expect.objectContaining({
+          type: 'state_change',
+          payload: expect.objectContaining({ status: 'crashed', sessionId: 'dead-session' }),
+        }),
+      );
+    },
+  );
 
   it('subscribe: does not mark failed when tmux is alive', async () => {
     const { gateway, terminalIO, sessionTerminalRuntime } = createGateway();
@@ -2930,56 +2597,6 @@ describe('TerminalGateway dead-tmux detection', () => {
     await gateway.handleSubscribe(client, { sessionId: 'alive-session' });
 
     expect(sessionTerminalRuntime.retireConfirmedLoss).not.toHaveBeenCalled();
-  });
-
-  it('resize: emits state_change(crashed) when tmux is dead', async () => {
-    const { gateway, terminalIO, sessionTerminalRuntime } = createGateway();
-    (terminalIO.sessionExists as jest.Mock).mockResolvedValue(false);
-
-    const client = createMockSocket('client-dead-resize');
-    gateway.handleConnection(client);
-
-    await gateway.handleResize(client, { sessionId: 'dead-resize', rows: 24, cols: 80 });
-
-    expect(sessionTerminalRuntime.retireConfirmedLoss).toHaveBeenCalledWith(
-      'dead-resize',
-      expect.any(String),
-    );
-    const emitted = (client.emit as jest.Mock).mock.calls
-      .filter(([event]: [string]) => event === 'message')
-      .map(([, envelope]: [string, { type?: string; payload?: unknown }]) => envelope);
-    const stateChange = emitted.find((e) => e.type === 'state_change');
-    expect(stateChange).toBeDefined();
-    expect((stateChange!.payload as { status: string }).status).toBe('crashed');
-  });
-
-  it('input: emits state_change(crashed) when tmux is dead', async () => {
-    const { gateway, terminalIO, sessionTerminalRuntime } = createGateway();
-
-    const client = createMockSocket('client-dead-input');
-    gateway.handleConnection(client);
-
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'dead-input',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'dead-input' });
-
-    (terminalIO.sessionExists as jest.Mock).mockResolvedValue(false);
-
-    await gateway.handleInput(client, { sessionId: 'dead-input', data: 'x' });
-
-    expect(sessionTerminalRuntime.retireConfirmedLoss).toHaveBeenCalledWith(
-      'dead-input',
-      expect.any(String),
-    );
-    const emitted = (client.emit as jest.Mock).mock.calls
-      .filter(([event]: [string]) => event === 'message')
-      .map(([, envelope]: [string, { type?: string; payload?: unknown }]) => envelope);
-    const stateChange = emitted.find((e) => e.type === 'state_change');
-    expect(stateChange).toBeDefined();
-    expect((stateChange!.payload as { status: string }).status).toBe('crashed');
   });
 });
 
@@ -3698,7 +3315,7 @@ describe('TerminalGateway.handleInput authority guard', () => {
     expect(humanPromptState.getState('tmux_form-failure').phase).toBe('draft_active');
   });
 
-  it('rejects control key input from subscriber without authority', async () => {
+  it.each(['\r', 'x'])('rejects unauthorized subscriber input %j', async (data) => {
     const { gateway, terminalIO } = createGateway();
     const authorityClient = createMockSocket('client-a');
     const secondClient = createMockSocket('client-b');
@@ -3721,38 +3338,10 @@ describe('TerminalGateway.handleInput authority guard', () => {
 
     await gateway.handleInput(secondClient as unknown as Socket, {
       sessionId: 'shared-session',
-      data: '\r',
+      data,
     });
 
     expect(terminalIO.sendControl).not.toHaveBeenCalled();
-  });
-
-  it('rejects non-control input from subscriber without authority', async () => {
-    const { gateway, terminalIO } = createGateway();
-    const authorityClient = createMockSocket('client-a2');
-    const secondClient = createMockSocket('client-b2');
-
-    gateway.handleConnection(authorityClient as unknown as Socket);
-    gateway.handleConnection(secondClient as unknown as Socket);
-
-    await gateway.handleSubscribe(authorityClient as unknown as Socket, {
-      sessionId: 'shared-session-2',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(authorityClient as unknown as Socket, { sessionId: 'shared-session-2' });
-
-    await gateway.handleSubscribe(secondClient as unknown as Socket, {
-      sessionId: 'shared-session-2',
-      rows: 24,
-      cols: 80,
-    });
-
-    await gateway.handleInput(secondClient as unknown as Socket, {
-      sessionId: 'shared-session-2',
-      data: 'x',
-    });
-
     expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
   });
 
@@ -4152,44 +3741,23 @@ describe('TerminalGateway.handleTheme', () => {
     expect(terminalIO.applyWindowTheme).not.toHaveBeenCalled();
   });
 
-  it('throws WsException for invalid foregroundHex', async () => {
-    const { gateway } = createGateway();
-    const client = createMockSocket('client-theme-invalid-fg');
-    gateway.handleConnection(client as unknown as Socket);
-
-    await expect(
-      gateway.handleTheme(client as unknown as Socket, { foregroundHex: 'red', backgroundHex: bg }),
-    ).rejects.toThrow(WsException);
-  });
-
-  it('throws WsException for invalid backgroundHex', async () => {
-    const { gateway } = createGateway();
-    const client = createMockSocket('client-theme-invalid-bg');
-    gateway.handleConnection(client as unknown as Socket);
-
-    await expect(
-      gateway.handleTheme(client as unknown as Socket, {
-        foregroundHex: fg,
-        backgroundHex: 'rgb(0,0,0)',
-      }),
-    ).rejects.toThrow(WsException);
-  });
-
-  it('throws WsException for 3-digit shorthand hex', async () => {
-    const { gateway } = createGateway();
-    const client = createMockSocket('client-theme-shorthand');
-    gateway.handleConnection(client as unknown as Socket);
-
-    await expect(
-      gateway.handleTheme(client as unknown as Socket, {
-        foregroundHex: '#fff',
-        backgroundHex: bg,
-      }),
-    ).rejects.toThrow(WsException);
+  it.each([
+    { foregroundHex: 'red', backgroundHex: bg },
+    { foregroundHex: fg, backgroundHex: 'rgb(0,0,0)' },
+    { foregroundHex: '#fff', backgroundHex: bg },
+  ])('rejects invalid theme %j', async (theme) => {
+    const { gateway, terminalIO } = createGateway();
+    const client = createMockSocket('invalid-theme-client');
+    gateway.handleConnection(client);
+    await expect(gateway.handleTheme(client, theme)).rejects.toThrow(WsException);
+    expect(terminalIO.applyWindowTheme).not.toHaveBeenCalled();
   });
 
   it('skips apply and does not call terminalIO when style is unchanged (deduplication)', async () => {
-    const { gateway, terminalIO, registry } = createGateway({ autoCreateRegistrySessions: false });
+    const { gateway, terminalIO, registry, ptyService, sessionTerminalRuntime } = createGateway({
+      autoCreateRegistrySessions: false,
+    });
+    setUsesAlternateScreen(sessionTerminalRuntime, true);
     registry.create('dedupe-sess', 'tmux_dedupe-sess');
     const client = createMockSocket('client-theme-dedupe');
 
@@ -4200,6 +3768,8 @@ describe('TerminalGateway.handleTheme', () => {
       foregroundHex: fg,
       backgroundHex: bg,
     });
+    expect(ptyService.triggerRedraw).toHaveBeenCalledWith('dedupe-sess');
+    (ptyService.triggerRedraw as jest.Mock).mockClear();
     (terminalIO.applyWindowTheme as jest.Mock).mockClear();
 
     await gateway.handleTheme(client as unknown as Socket, {
@@ -4208,6 +3778,7 @@ describe('TerminalGateway.handleTheme', () => {
     });
 
     expect(terminalIO.applyWindowTheme).not.toHaveBeenCalled();
+    expect(ptyService.triggerRedraw).not.toHaveBeenCalled();
   });
 
   it('re-applies after a different style is set (cache update)', async () => {
@@ -4290,7 +3861,10 @@ describe('TerminalGateway.handleTheme', () => {
   });
 
   it('does not throw and does not disconnect client when tmux apply fails', async () => {
-    const { gateway, terminalIO, registry } = createGateway({ autoCreateRegistrySessions: false });
+    const { gateway, terminalIO, registry, ptyService, sessionTerminalRuntime } = createGateway({
+      autoCreateRegistrySessions: false,
+    });
+    setUsesAlternateScreen(sessionTerminalRuntime, true);
     registry.create('fail-sess', 'tmux_fail-sess');
     (terminalIO.applyWindowTheme as jest.Mock).mockRejectedValueOnce(new Error('tmux gone'));
     const client = createMockSocket('client-theme-fail');
@@ -4302,6 +3876,7 @@ describe('TerminalGateway.handleTheme', () => {
       gateway.handleTheme(client as unknown as Socket, { foregroundHex: fg, backgroundHex: bg }),
     ).resolves.toBeUndefined();
     expect(client.disconnect).not.toHaveBeenCalled();
+    expect(ptyService.triggerRedraw).not.toHaveBeenCalled();
   });
 
   it('triggers redraw after successful theme application', async () => {
@@ -4322,56 +3897,6 @@ describe('TerminalGateway.handleTheme', () => {
     });
 
     expect(ptyService.triggerRedraw).toHaveBeenCalledWith('redraw-sess');
-  });
-
-  it('does not trigger redraw when theme is unchanged (skipped by dedup cache)', async () => {
-    const { gateway, ptyService, sessionTerminalRuntime, registry } = createGateway({
-      autoCreateRegistrySessions: false,
-    });
-    registry.create('nodedup-sess', 'tmux_nodedup-sess');
-    // Alt-screen true: the FIRST apply provably redraws, so the SECOND call's no-redraw is
-    // genuinely the dedup cache — not the non-alt-screen gate passing vacuously.
-    setUsesAlternateScreen(sessionTerminalRuntime, true);
-    const client = createMockSocket('client-nodedup');
-
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, { sessionId: 'nodedup-sess' });
-    await gateway.handleTheme(client as unknown as Socket, {
-      foregroundHex: fg,
-      backgroundHex: bg,
-    });
-    expect(ptyService.triggerRedraw).toHaveBeenCalledWith('nodedup-sess');
-
-    (ptyService.triggerRedraw as jest.Mock).mockClear();
-
-    // Second call with same colors — skipped by cache, no redraw
-    await gateway.handleTheme(client as unknown as Socket, {
-      foregroundHex: fg,
-      backgroundHex: bg,
-    });
-
-    expect(ptyService.triggerRedraw).not.toHaveBeenCalled();
-  });
-
-  it('does not trigger redraw when applyWindowTheme fails', async () => {
-    const { gateway, terminalIO, ptyService, sessionTerminalRuntime, registry } = createGateway({
-      autoCreateRegistrySessions: false,
-    });
-    registry.create('failredraw-sess', 'tmux_failredraw-sess');
-    // Alt-screen true so the apply FAILURE (not the non-alt-screen gate) is what suppresses
-    // the redraw — without this the assertion passes vacuously.
-    setUsesAlternateScreen(sessionTerminalRuntime, true);
-    (terminalIO.applyWindowTheme as jest.Mock).mockRejectedValueOnce(new Error('gone'));
-    const client = createMockSocket('client-failredraw');
-
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, { sessionId: 'failredraw-sess' });
-    await gateway.handleTheme(client as unknown as Socket, {
-      foregroundHex: fg,
-      backgroundHex: bg,
-    });
-
-    expect(ptyService.triggerRedraw).not.toHaveBeenCalled();
   });
 
   it('non-alt-screen session: applies tmux window theme but never triggers the redraw jiggle', async () => {

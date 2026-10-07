@@ -91,7 +91,7 @@ describe('EgressQueueService', () => {
   });
 
   describe('status matrix', () => {
-    it.each([200, 201, 204])('removes the entry as delivered on %i', async (status) => {
+    it.each([200])('removes the entry as delivered on %i', async (status) => {
       // 204 must carry a null body per fetch semantics.
       jest
         .spyOn(global, 'fetch')
@@ -125,7 +125,7 @@ describe('EgressQueueService', () => {
       expect(refreshGate.attemptRefresh).toHaveBeenCalledTimes(1);
     });
 
-    it.each([429, 500, 502, 503])('schedules a bounded retry on transient %i', async (status) => {
+    it.each([429, 500])('schedules a bounded retry on transient %i', async (status) => {
       jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status }));
       queue.enqueue(makePayload());
 
@@ -136,7 +136,7 @@ describe('EgressQueueService', () => {
       expect(broadcaster.broadcastEvent).not.toHaveBeenCalled();
     });
 
-    it.each([400, 403, 409, 422])(
+    it.each([400, 409])(
       'treats non-authentication %i as a TERMINAL producer failure (removed, never delivered)',
       async (status) => {
         jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status }));

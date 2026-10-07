@@ -58,41 +58,27 @@ describe('SessionLaunchPipeline.setupHooksConfig — installer dispatch', () => 
     h = createLaunchPipelineHarness();
   });
 
-  it('routes a hook-capable Copilot adapter to CopilotHooksConfigService', async () => {
-    h.mocks.providerAdapterFactory.getAdapter.mockReturnValue({
-      providerName: 'copilot',
-      hooksEnabled: true,
-    });
-
-    await setupHooksConfig(h, 'copilot', '/proj/root');
-
-    expect(h.mocks.copilotHooksConfigService.ensureHooksConfig).toHaveBeenCalledWith('/proj/root');
-    expect(h.mocks.hooksConfigService.ensureHooksConfig).not.toHaveBeenCalled();
-  });
-
-  it('routes a hook-capable Claude adapter to the (unchanged) HooksConfigService', async () => {
-    h.mocks.providerAdapterFactory.getAdapter.mockReturnValue({
-      providerName: 'claude',
-      hooksEnabled: true,
-    });
-
-    await setupHooksConfig(h, 'claude', '/proj/root');
-
-    expect(h.mocks.hooksConfigService.ensureHooksConfig).toHaveBeenCalledWith('/proj/root');
-    expect(h.mocks.copilotHooksConfigService.ensureHooksConfig).not.toHaveBeenCalled();
-  });
-
-  it('no-ops for a non-hook-capable adapter (neither installer runs)', async () => {
-    h.mocks.providerAdapterFactory.getAdapter.mockReturnValue({
-      providerName: 'copilot',
-      hooksEnabled: false,
-    });
-
-    await setupHooksConfig(h, 'copilot', '/proj/root');
-
-    expect(h.mocks.hooksConfigService.ensureHooksConfig).not.toHaveBeenCalled();
-    expect(h.mocks.copilotHooksConfigService.ensureHooksConfig).not.toHaveBeenCalled();
-  });
+  it.each([
+    { providerName: 'copilot', hooksEnabled: true, copilotCalls: 1, claudeCalls: 0 },
+    { providerName: 'claude', hooksEnabled: true, copilotCalls: 0, claudeCalls: 1 },
+    { providerName: 'copilot', hooksEnabled: false, copilotCalls: 0, claudeCalls: 0 },
+  ])(
+    'dispatches $providerName hooks when enabled=$hooksEnabled',
+    async ({ providerName, hooksEnabled, copilotCalls, claudeCalls }) => {
+      h.mocks.providerAdapterFactory.getAdapter.mockReturnValue({ providerName, hooksEnabled });
+      await setupHooksConfig(h, providerName, '/proj/root');
+      expect(h.mocks.copilotHooksConfigService.ensureHooksConfig).toHaveBeenCalledTimes(
+        copilotCalls,
+      );
+      expect(h.mocks.hooksConfigService.ensureHooksConfig).toHaveBeenCalledTimes(claudeCalls);
+      if (copilotCalls)
+        expect(h.mocks.copilotHooksConfigService.ensureHooksConfig).toHaveBeenCalledWith(
+          '/proj/root',
+        );
+      if (claudeCalls)
+        expect(h.mocks.hooksConfigService.ensureHooksConfig).toHaveBeenCalledWith('/proj/root');
+    },
+  );
 
   it('swallows installer errors (non-fatal launch path)', async () => {
     h.mocks.providerAdapterFactory.getAdapter.mockReturnValue({

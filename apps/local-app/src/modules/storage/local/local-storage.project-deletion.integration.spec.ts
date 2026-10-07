@@ -1,16 +1,14 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { ConflictError } from '../../../common/errors/error-types';
 import { TransactionRunner } from '../db/transaction-runner';
 import { IntegrationCredentialCipher } from './integration-credential-cipher';
 import { LocalStorageService } from './local-storage.service';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -36,8 +34,7 @@ describe('LocalStorageService project deletion transactions', () => {
   let secretDirectory: string;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
     secretDirectory = mkdtempSync(join(tmpdir(), 'devchain-project-deletion-'));
     service = new LocalStorageService(

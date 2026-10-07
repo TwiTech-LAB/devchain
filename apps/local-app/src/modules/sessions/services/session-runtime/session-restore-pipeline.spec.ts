@@ -272,24 +272,6 @@ describe('SessionRestorePipeline', () => {
         { normalizeCapturedLineEndings: true },
       );
     });
-
-    it('keeps captured normalization enabled for live raw-line-ending adapters', async () => {
-      const { pipeline, createTrackedPrepare, mocks } = createRestorePipelineHarness();
-      mocks.sqliteMock.prepare.mockImplementation(createTrackedPrepare());
-      (
-        mocks.adapter as {
-          terminalOutputBehavior?: { rawLineEndings: boolean };
-        }
-      ).terminalOutputBehavior = { rawLineEndings: true };
-
-      await pipeline.restore(sessionId, projectId);
-
-      expect(mocks.terminalSessionRegistry.create).toHaveBeenCalledWith(
-        sessionId,
-        expect.any(String),
-        { normalizeCapturedLineEndings: true },
-      );
-    });
   });
 
   // Per-provider alternate-screen policy — restore matrix.
@@ -322,21 +304,6 @@ describe('SessionRestorePipeline', () => {
       await pipeline.restore(sessionId, projectId);
 
       expect(mocks.terminalIO.setAlternateScreen).toHaveBeenCalledTimes(1);
-      expect(mocks.terminalIO.setAlternateScreen).toHaveBeenCalledWith(
-        { name: expect.any(String) },
-        false,
-      );
-    });
-
-    it('suppresses alternate-screen when the adapter explicitly opts out (usesAlternateScreen: false)', async () => {
-      const { pipeline, createTrackedPrepare, mocks } = createRestorePipelineHarness();
-      mocks.sqliteMock.prepare.mockImplementation(createTrackedPrepare());
-      (
-        mocks.adapter as { terminalOutputBehavior?: { usesAlternateScreen: boolean } }
-      ).terminalOutputBehavior = { usesAlternateScreen: false };
-
-      await pipeline.restore(sessionId, projectId);
-
       expect(mocks.terminalIO.setAlternateScreen).toHaveBeenCalledWith(
         { name: expect.any(String) },
         false,

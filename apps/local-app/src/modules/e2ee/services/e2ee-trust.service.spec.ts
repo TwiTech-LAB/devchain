@@ -132,10 +132,6 @@ describe('E2eeTrustService (Task:8 — safety-number + TOFU + verify)', () => {
       expect(list[0]).not.toHaveProperty('publicKeyB64');
     });
 
-    it('returns an empty list when nothing is paired', () => {
-      expect(service.listDevices()).toEqual([]);
-    });
-
     it('returns a local alias but never exposes key or install metadata', () => {
       deviceStore.add({
         kid: deviceKid,

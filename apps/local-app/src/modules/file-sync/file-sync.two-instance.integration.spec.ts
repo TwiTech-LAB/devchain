@@ -6,8 +6,17 @@
  * real Syncthing processes. Runs when SYNCTHING_BIN or PATH provides Syncthing
  * v2 and is skipped, with the reason in its title, otherwise.
  */
-import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { execFileSync, spawnSync } from 'child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
+import { hostname } from 'os';
 import { dirname, join, relative } from 'path';
 import { resetEnvConfig } from '../../common/config/env.config';
 import {
@@ -22,7 +31,11 @@ import {
 } from '../../common/test/two-instance.fixture';
 import { ensureProvider } from '../remotes/replica/__fixtures__/replica-seed';
 import { FileSyncHandoff } from '../remotes/operations/file-sync-handoff';
+import { RemoteFileSyncService } from '../remotes/sync/remote-file-sync.service';
 import { RemoteBindingsService } from '../remotes/services/remote-bindings.service';
+import { GitOwnerStore } from '../remotes/git-owner.store';
+import { RemoteLiveSyncService } from '../remotes/sync/remote-live-sync.service';
+import { HomeGitGuardService } from './home-git-guard.service';
 import type { Remote, RemoteOperation } from '../storage/models/domain.models';
 import {
   FILE_SYNC_PATHS,
@@ -30,6 +43,7 @@ import {
   type FileSyncPaths,
 } from './file-sync-paths';
 import { FileSyncService } from './file-sync.service';
+import { RemoteNeedSchema } from './file-sync.dto';
 import { SyncthingManager } from './syncthing-manager.service';
 
 function findBinary(): string | null {
@@ -354,17 +368,162 @@ describeWithBinary(
       }
     });
 
-    it('forces disconnect for a project without a Git directory', async () => {
+    // Only real Syncthing can prove retained indexes merge deletes and create conflict copies.
+    it('brings disconnected VM edits home on reconnect and releases the VM Git guard', async () => {
+      const { home, host } = instances;
+      home.sqlite
+        .prepare("UPDATE project_workspaces SET name = 'Connected handoff' WHERE id = ?")
+        .run(seed.workspaceId);
+      seed = seedRemoteProject(home.sqlite);
+
+      for (const name of ['vm-edit.txt', 'vm-delete.txt', 'home-edit.txt', 'shared.txt']) {
+        write(code(home, name), `initial ${name}\n`);
+      }
+      const initialTime = new Date(Date.now() - 120_000);
+      utimesSync(code(home, 'shared.txt'), initialTime, initialTime);
+      git(home, 'init', '-b', 'main');
+      git(home, 'add', '.');
+      git(home, 'commit', '-m', 'initial reconnect tree');
+      await run('attach');
+      const detached = await run('detach');
+      expect(detached.details.vmGuardInstalled).toBe(true);
+      const head = git(host, 'rev-parse', 'HEAD');
+      const refused = spawnSync(
+        'git',
+        [
+          '-C',
+          code(host),
+          '-c',
+          'user.name=Sync Test',
+          '-c',
+          'user.email=sync@example.test',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'refused while disconnected',
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(refused.error).toBeUndefined();
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr).toContain(`This project is now on the PC '${hostname()}'.`);
+      expect(refused.stderr).toContain(
+        'At the next Connect, DevChain brings your edits to the PC.',
+      );
+      expect(refused.stderr).toContain(
+        'are blocked here. Make them on the PC. To use Git on this VM, connect the project to it again from the PC.',
+      );
+      expect(git(host, 'rev-parse', 'HEAD')).toBe(head);
+
+      write(code(host, 'vm-edit.txt'), 'edited on VM while disconnected\n');
+      write(code(host, 'vm-added.txt'), 'added on VM while disconnected\n');
+      unlinkSync(code(host, 'vm-delete.txt'));
+      write(code(home, 'home-edit.txt'), 'edited at home while disconnected\n');
+      write(code(host, 'shared.txt'), 'older VM version\n');
+      write(code(home, 'shared.txt'), 'newer home version\n');
+      // Distinct mtimes make Syncthing's winner independent of filesystem timestamp precision.
+      const older = new Date(Date.now() - 60_000);
+      const newer = new Date();
+      utimesSync(code(host, 'shared.txt'), older, older);
+      utimesSync(code(home, 'shared.txt'), newer, newer);
+
+      const attached = await run('attach');
+
+      for (const instance of [home, host]) {
+        expect(read(code(instance, 'vm-edit.txt'))).toBe('edited on VM while disconnected\n');
+        expect(read(code(instance, 'vm-added.txt'))).toBe('added on VM while disconnected\n');
+        expect(read(code(instance, 'vm-delete.txt'))).toBeNull();
+        expect(read(code(instance, 'home-edit.txt'))).toBe('edited at home while disconnected\n');
+        expect(read(code(instance, 'shared.txt'))).toBe('newer home version\n');
+      }
+      const conflicts = readdirSync(code(home)).filter((name) =>
+        /^shared\.sync-conflict-.*\.txt$/.test(name),
+      );
+      expect(conflicts).toHaveLength(1);
+      expect(read(code(home, conflicts[0]))).toBe('older VM version\n');
+      expect(attached.details).toMatchObject({
+        fileSyncMode: 'merge',
+        vmGuardRemoved: true,
+        vmEdits: { total: 4, deleted: 1 },
+        fileSyncConflicts: { total: 1, sample: conflicts },
+        fileSync: {
+          folders: { [codeId()]: { completion: 100, needItems: 0, needBytes: 0 } },
+        },
+      });
+      const vmEdits = RemoteNeedSchema.parse(attached.details.vmEdits);
+      expect(vmEdits.sample).toHaveLength(4);
+      expect(vmEdits.sample).toEqual(
+        expect.arrayContaining([
+          { path: 'vm-edit.txt', deleted: false },
+          { path: 'vm-added.txt', deleted: false },
+          { path: 'vm-delete.txt', deleted: true },
+          { path: 'shared.txt', deleted: false },
+        ]),
+      );
+      for (const hook of ['reference-transaction', 'post-checkout']) {
+        expect(existsSync(code(host, `.git/hooks/${hook}`))).toBe(false);
+      }
+      git(host, 'commit', '--allow-empty', '-m', 'VM owns Git after reconnect');
+      expect(git(host, 'rev-parse', 'HEAD')).not.toBe(head);
+      await run('detach');
+    });
+
+    // Real peers plus Git are needed to prove final transfer keeps both the owner's refs and index.
+    it('disconnects PC-owned Git without losing its pending commit or staged changes', async () => {
+      const { home, host } = instances;
+      home.sqlite
+        .prepare("UPDATE project_workspaces SET name = 'Previous PC ownership' WHERE id = ?")
+        .run(seed.workspaceId);
+      seed = seedRemoteProject(home.sqlite);
+      ensureProvider(host.sqlite, 'host-claude', seed.providerName, null);
+      write(code(home, 'file.txt'), 'baseline\n');
+      git(home, 'init', '-b', 'main');
+      git(home, 'add', '.');
+      git(home, 'commit', '-m', 'baseline');
+      await run('attach');
+      await home.app.get(RemoteLiveSyncService).runExclusive(seed.projectId, async () => {
+        await home.app.get(HomeGitGuardService).remove(seed.projectId, { refreshIndex: true });
+        home.app.get(GitOwnerStore).set(seed.projectId, 'home');
+        await home.app.get(FileSyncHandoff).flipBackToHost(remote.id, seed.projectId, false);
+      });
+      write(code(home, 'file.txt'), 'PC commit\n');
+      git(home, 'add', 'file.txt');
+      git(home, 'commit', '-m', 'pending PC commit');
+      write(code(home, 'staged.txt'), 'PC staged change\n');
+      git(home, 'add', 'staged.txt');
+      const staged = git(home, 'diff', '--cached');
+      const head = git(home, 'rev-parse', 'HEAD');
+      expect(staged).toContain('PC staged change');
+      await run('detach');
+      expect(git(home, 'rev-parse', 'HEAD')).toBe(head);
+      expect(git(host, 'rev-parse', 'HEAD')).toBe(head);
+      expect(git(home, 'diff', '--cached')).toBe(staged);
+      expect(git(home, 'show', 'HEAD:file.txt')).toBe('PC commit');
+      expect(read(code(host, 'staged.txt'))).toBe('PC staged change\n');
+    });
+
+    it('creates Git at home, copies unborn HEAD, syncs without warnings and disconnects', async () => {
       instances.home.sqlite
         .prepare("UPDATE project_workspaces SET name = 'Previous handoff' WHERE id = ?")
         .run(seed.workspaceId);
       seed = seedRemoteProject(instances.home.sqlite);
       write(code(instances.home, 'plain.txt'), 'one folder');
-      await run('attach');
+      expect(existsSync(code(instances.home, '.git'))).toBe(false);
+      const connected = await run('attach');
+      expect(connected.details.gitInit).toBe('created');
+      expect(existsSync(code(instances.host, '.git/HEAD'))).toBe(true);
+      expect(read(code(instances.host, '.git/HEAD'))).toBe(read(code(instances.home, '.git/HEAD')));
+      expect(
+        spawnSync('git', ['-C', code(instances.host), 'rev-parse', '--verify', 'HEAD']).status,
+      ).toBe(128);
       expect(await instances.home.app.get(FileSyncService).projectFolders(seed.projectId)).toEqual([
         { id: codeId(), kind: 'code' },
+        { id: gitId(), kind: 'git' },
       ]);
-      await run('detach', true);
+      const live = instances.home.app.get(RemoteFileSyncService);
+      for (let tick = 0; tick < 4; tick++) await live.tick(seed.projectId, remote.id, () => true);
+      expect(live.warning(seed.projectId)).toBeNull();
+      await run('detach');
       await expect(folderConfig(instances.home, codeId())).resolves.toEqual({
         type: 'sendonly',
         paused: true,

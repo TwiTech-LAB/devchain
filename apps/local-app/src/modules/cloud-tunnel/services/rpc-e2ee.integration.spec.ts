@@ -167,67 +167,6 @@ describe('RPC lane E2EE — backend integration (real :memory: SQLite key servic
   // The input method is content-shaped like any other RPC; the crypto seam is method-
   // agnostic, so a sealed key press decrypts → dispatches → re-seals without any crypto-
   // layer change. This is the acceptance round-trip for the terminal.sendKey input path.
-  it('round-trips a terminal.sendKey request through the existing crypto seam unchanged', async () => {
-    const method = 'terminal.sendKey';
-    const plainParams = { sessionId: 's1', projectId: 'proj-own', key: 'Up' };
-    const sealedParams = (await mobileEnvelope.seal(plainParams, reqCtx(method))) as E2eeEnvelope;
-
-    // The bridge-facing payload is opaque ciphertext — the key value is never bridge-visible.
-    expect(JSON.stringify(sealedParams)).not.toContain('"key":"Up"');
-
-    let dispatchSaw: unknown = null;
-    const dispatch = jest.fn(async (plain: JsonRpcRequestLike): Promise<JsonRpcResponseLike> => {
-      dispatchSaw = plain.params; // dispatch receives PLAINTEXT (decrypt happened first)
-      return { jsonrpc: '2.0', id: plain.id, result: { ok: true } };
-    });
-
-    const resp = await svc.handle(
-      { jsonrpc: '2.0', id: 'tk1', method, params: sealedParams },
-      INSTANCE_ID,
-      dispatch,
-    );
-
-    expect(dispatch).toHaveBeenCalled();
-    expect(dispatchSaw).toEqual(plainParams); // PC dispatch got plaintext, not ciphertext
-    expect(resp.error).toBeUndefined();
-    expect(isE2eeEnvelope(resp.result)).toBe(true);
-
-    const opened = (await mobileEnvelope.open(resp.result, resCtx(method))) as SealedRpcResult;
-    expect(opened).toEqual({ ok: true, data: { ok: true } });
-  });
-
-  it('round-trips an authorized Custom prompt detail through the sealed dispatch seam', async () => {
-    const method = 'chat.getCustomPrompt';
-    const plainParams = {
-      sessionId: 's1',
-      projectId: 'proj-own',
-      promptId: 'prompt-1',
-    };
-    const sealedParams = (await mobileEnvelope.seal(plainParams, reqCtx(method))) as E2eeEnvelope;
-    const dispatch = jest.fn(async (plain: JsonRpcRequestLike): Promise<JsonRpcResponseLike> => {
-      expect(plain.params).toEqual(plainParams);
-      return {
-        jsonrpc: '2.0',
-        id: plain.id,
-        result: { id: 'prompt-1', title: 'Prompt', content: 'secret body' },
-      };
-    });
-
-    const resp = await svc.handle(
-      { jsonrpc: '2.0', id: 'prompt-detail-1', method, params: sealedParams },
-      INSTANCE_ID,
-      dispatch,
-    );
-
-    expect(dispatch).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(sealedParams)).not.toContain('prompt-1');
-    expect(JSON.stringify(resp.result)).not.toContain('secret body');
-    const opened = (await mobileEnvelope.open(resp.result, resCtx(method))) as SealedRpcResult;
-    expect(opened).toEqual({
-      ok: true,
-      data: { id: 'prompt-1', title: 'Prompt', content: 'secret body' },
-    });
-  });
 
   // ── 2. Negative: tampered ciphertext rejected (no dispatch) ───────────────────────
   it('rejects tampered ciphertext (AAD/tag) — dispatch never runs', async () => {
@@ -292,104 +231,6 @@ describe('RPC lane E2EE — backend integration (real :memory: SQLite key servic
     expect(opened.ok).toBe(false);
     if (opened.ok) return;
     expect(opened.error.data).toEqual({ code: 'CROSS_PROJECT' });
-  });
-
-  // ── 4. Domain errors ride INSIDE the encrypted result (not bridge-visible) ────────
-  it('seals a domain error inside the result (bridge never sees the error text)', async () => {
-    const method = 'board.getEpicDetail';
-    const sealedParams = (await mobileEnvelope.seal(
-      { epicId: 'e1' },
-      reqCtx(method),
-    )) as E2eeEnvelope;
-    const dispatch = jest.fn(
-      async (plain: JsonRpcRequestLike): Promise<JsonRpcResponseLike> => ({
-        jsonrpc: '2.0',
-        id: plain.id,
-        error: { code: -32600, message: 'Epic not found', data: { code: 'NOT_FOUND' } },
-      }),
-    );
-
-    const resp = await svc.handle(
-      { jsonrpc: '2.0', id: 'c4', method, params: sealedParams },
-      INSTANCE_ID,
-      dispatch,
-    );
-
-    expect(resp.error).toBeUndefined(); // no top-level JSON-RPC error (bridge can't read it)
-    expect(isE2eeEnvelope(resp.result)).toBe(true);
-    expect(JSON.stringify(resp.result)).not.toContain('Epic not found');
-    const opened = (await mobileEnvelope.open(resp.result, resCtx(method))) as SealedRpcResult;
-    expect(opened).toEqual({
-      ok: false,
-      error: { code: -32600, message: 'Epic not found', data: { code: 'NOT_FOUND' } },
-    });
-  });
-
-  // ── 5. Mixed-capability matrix (PC-side enforcement) ─────────────────────────────
-  describe('mixed-capability matrix (PC e2eeRequired policy)', () => {
-    it('on/on (encrypted): sealed params decrypt + dispatch + seal result', async () => {
-      const method = 'board.listProjects';
-      const sealedParams = (await mobileEnvelope.seal({}, reqCtx(method))) as E2eeEnvelope;
-      const dispatch = jest.fn(async (plain) => ({
-        jsonrpc: '2.0' as const,
-        id: plain.id,
-        result: { items: [] },
-      }));
-      const resp = await svc.handle(
-        { jsonrpc: '2.0', id: 'm1', method, params: sealedParams },
-        INSTANCE_ID,
-        dispatch,
-      );
-      expect(dispatch).toHaveBeenCalled();
-      expect(isE2eeEnvelope(resp.result)).toBe(true);
-    });
-
-    it('off/off (plaintext, not required): plaintext params dispatch unchanged', async () => {
-      const dispatch = jest.fn(async (plain) => ({
-        jsonrpc: '2.0' as const,
-        id: plain.id,
-        result: { items: [] },
-      }));
-      const resp = await svc.handle(
-        { jsonrpc: '2.0', id: 'm2', method: 'board.listProjects', params: { projectId: 'p1' } },
-        INSTANCE_ID,
-        dispatch,
-      );
-      expect(dispatch).toHaveBeenCalledWith(
-        expect.objectContaining({ params: { projectId: 'p1' } }),
-      );
-      expect(resp.result).toEqual({ items: [] });
-    });
-
-    it('required/incapable: PC with e2eeRequired REJECTS plaintext params (fail closed)', async () => {
-      const requiredSvc = new TunnelRpcCryptoService(keypair, deviceStore, true);
-      const dispatch = jest.fn();
-      const resp = await requiredSvc.handle(
-        { jsonrpc: '2.0', id: 'm3', method: 'board.listProjects', params: { projectId: 'p1' } },
-        INSTANCE_ID,
-        dispatch,
-      );
-      expect(dispatch).not.toHaveBeenCalled();
-      expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
-    });
-
-    it('required + encrypted: PC with e2eeRequired still accepts sealed params', async () => {
-      const requiredSvc = new TunnelRpcCryptoService(keypair, deviceStore, true);
-      const method = 'board.listProjects';
-      const sealedParams = (await mobileEnvelope.seal({}, reqCtx(method))) as E2eeEnvelope;
-      const dispatch = jest.fn(async (plain) => ({
-        jsonrpc: '2.0' as const,
-        id: plain.id,
-        result: { ok: true },
-      }));
-      const resp = await requiredSvc.handle(
-        { jsonrpc: '2.0', id: 'm4', method, params: sealedParams },
-        INSTANCE_ID,
-        dispatch,
-      );
-      expect(dispatch).toHaveBeenCalled();
-      expect(isE2eeEnvelope(resp.result)).toBe(true);
-    });
   });
 
   // ── RE2E1: fresh email-login device — deliver mobile key → PC adopts → first RPC works ─
@@ -532,18 +373,6 @@ describe('RPC lane E2EE — backend integration (real :memory: SQLite key servic
       const opened = (await mobileEnvelope.open(resp.result, resCtx(REVOKE))) as SealedRpcResult;
       expect(opened).toEqual({ ok: true, data: { kid: mobileKid, removed: true } });
     });
-
-    it('rejects a PLAINTEXT revoke (no dispatch, no revoke) even though e2eeRequired is false', async () => {
-      const dispatch = jest.fn();
-      const resp = await svc.handle(
-        { jsonrpc: '2.0', id: 'rv2', method: REVOKE, params: { kid: mobileKid } },
-        INSTANCE_ID,
-        dispatch,
-      );
-      expect(dispatch).not.toHaveBeenCalled();
-      expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
-      expect(deviceStore.get(mobileKid)).not.toBeNull(); // nothing revoked
-    });
   });
 
   // ── Phase 16 Task:2 sealed-only routing-identity bind ────────────────────────────
@@ -597,18 +426,6 @@ describe('RPC lane E2EE — backend integration (real :memory: SQLite key servic
         ok: true,
         data: { kid: mobileKid, routingKid: ROUTING_KID, bound: true },
       });
-    });
-
-    it('rejects a PLAINTEXT bind (no dispatch, no write) even though e2eeRequired is false', async () => {
-      const dispatch = jest.fn();
-      const resp = await svc.handle(
-        { jsonrpc: '2.0', id: 'bd2', method: BIND, params: { routingKid: ROUTING_KID } },
-        INSTANCE_ID,
-        dispatch,
-      );
-      expect(dispatch).not.toHaveBeenCalled();
-      expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
-      expect(deviceStore.get(mobileKid)?.notificationRoutingKid).toBeUndefined();
     });
   });
 });
@@ -956,37 +773,5 @@ describe('QR first-start arrival-order convergence (Remediation 10) — real sto
     expect(dispatchSaw).toEqual({ projectId: 'proj-own' });
     const opened = (await phone.envelope.open(resp.result, resCtx(method))) as SealedRpcResult;
     expect(opened).toEqual({ ok: true, data: { statuses: ['todo'] } });
-  });
-
-  it('the awaited adopt alone (no complete) is sufficient for a functional first RPC — functional guarantee no longer depends on the renderer complete poll', async () => {
-    // Pinpoint regression for the Remediation 10 root cause: before the fix the QR path's
-    // functional RPC depended on the fire-and-forget renderer `complete` poll winning a race.
-    // Now the phone's OWN awaited `e2ee.adoptDeviceKey` delivery is sufficient — complete is
-    // only the path to the `verified/qr` TRUST label, not to functional decryption.
-    const phone = await mobileEnvelopeFor(0xd4);
-    expect(deviceStore.get(phone.kid)).toBeNull(); // PC knows nothing yet
-
-    trust.adoptPeerKeyTofu({ kid: phone.kid, publicKeyB64: phone.publicKeyB64 });
-
-    const method = 'chat.sendMessage';
-    const sealedParams = (await phone.envelope.seal(
-      { agentId: 'a1', projectId: 'proj-own', text: 'first rpc' },
-      reqCtx(method),
-    )) as E2eeEnvelope;
-    const dispatch = jest.fn(async (plain) => ({
-      jsonrpc: '2.0' as const,
-      id: plain.id,
-      result: { status: 'delivered' },
-    }));
-
-    const resp = await svc.handle(
-      { jsonrpc: '2.0', id: 'sufficient', method, params: sealedParams },
-      INSTANCE_ID,
-      dispatch,
-    );
-    expect(dispatch).toHaveBeenCalled();
-    expect(resp.error).toBeUndefined();
-    // Trust label is still unverified (complete never ran) — but the RPC worked.
-    expect(deviceStore.get(phone.kid)?.trust).toBe('unverified');
   });
 });

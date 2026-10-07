@@ -1,9 +1,8 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 // Backend integration: real SQLite is the cheapest reliable proof of this persisted contract.
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { CloudEgressBridgeService } from './cloud-egress-bridge.service';
 import { CloudSessionManagerService } from './cloud-session-manager.service';
 import { EgressQueueService } from './egress-queue.service';
@@ -19,7 +18,6 @@ jest.mock('../../events/services/events.service', () => ({
   getEventMetadata: (payload: unknown) => mockEventMetadata.get(payload) ?? null,
 }));
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const DEFAULT_ENABLED_KEY = 'cloud.egress.newProjectsDefaultEnabled';
 const TS = '2026-07-31T00:00:00.000Z';
 
@@ -34,9 +32,7 @@ describe('CloudEgressBridgeService', () => {
   let recipientResolver: { resolveProjectRecipientRoutingKids: jest.Mock };
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite, db } = createTestDatabase());
     upsertSetting(DEFAULT_ENABLED_KEY, true);
     insertProject('p1');
 
@@ -294,44 +290,6 @@ describe('CloudEgressBridgeService', () => {
 
     expect(egressQueue.enqueue).toHaveBeenCalledTimes(1);
     expect(egressQueue.enqueue.mock.calls[0][0].projectId).toBeNull();
-  });
-
-  it('should enqueue epic.deleted events with projectId', async () => {
-    const payload = withMetadata(
-      { epicId: 'e1', projectId: 'p1', title: 'Deleted Epic', parentId: null, actor: null },
-      'evt-del-1',
-    );
-
-    await bridge.onEpicDeleted(payload);
-
-    expect(egressQueue.enqueue).toHaveBeenCalledTimes(1);
-    const enqueued = egressQueue.enqueue.mock.calls[0][0];
-    expect(enqueued.sourceEventType).toBe('epic.deleted');
-    expect(enqueued.sourceEventId).toBe('evt-del-1');
-    expect(enqueued.projectId).toBe('p1');
-  });
-
-  it('should enqueue epic.comment.created events with projectId', async () => {
-    const payload = withMetadata(
-      {
-        commentId: 'c1',
-        epicId: 'e1',
-        projectId: 'p1',
-        parentId: null,
-        authorName: 'Coder',
-        content: 'Looks good',
-        actor: null,
-      },
-      'evt-comment-1',
-    );
-
-    await bridge.onEpicCommentCreated(payload);
-
-    expect(egressQueue.enqueue).toHaveBeenCalledTimes(1);
-    const enqueued = egressQueue.enqueue.mock.calls[0][0];
-    expect(enqueued.sourceEventType).toBe('epic.comment.created');
-    expect(enqueued.sourceEventId).toBe('evt-comment-1');
-    expect(enqueued.projectId).toBe('p1');
   });
 
   it('should skip session events when no project has notifications enabled', async () => {

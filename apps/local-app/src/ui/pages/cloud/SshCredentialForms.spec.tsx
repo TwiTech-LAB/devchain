@@ -17,7 +17,7 @@ function response(body: unknown, status = 200): Response {
 
 // Component coverage verifies endpoint values and the submitted credential payload together.
 describe('HostInstallRetryForm locked identity', () => {
-  it.each(['/Users/actual-user', '/var/home/custom-location'])(
+  it.each(['/Users/actual-user'])(
     'shows the endpoint identity verbatim and submits only SSH credentials (%s)',
     async (homePath) => {
       mockApiFetch.mockImplementation(async (path) =>

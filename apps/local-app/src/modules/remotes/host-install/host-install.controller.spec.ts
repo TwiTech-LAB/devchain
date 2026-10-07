@@ -132,7 +132,7 @@ describe('HostInstallController', () => {
         expect.objectContaining({
           minDiskGib: 17,
           homePort: 3000,
-          imageVersion: '1.3.0',
+          imageVersion: '1.4.0',
           pins: expect.objectContaining({ npmRegistry: 'https://registry.example.test/' }),
         }),
       );
@@ -188,35 +188,32 @@ describe('HostInstallController', () => {
     expect(sshKeys.listPublic).not.toHaveBeenCalled();
   });
 
-  it('returns public key contents only on loopback', async () => {
-    const keys = [
-      {
-        name: 'id_ed25519.pub',
-        type: 'ssh-ed25519',
-        fingerprint: 'SHA256:abc',
-        comment: 'PC',
-        content: 'public key',
-      },
-    ];
-    sshKeys.listPublic.mockResolvedValue(keys);
-    await expect(controller.listSshPublicKeys()).resolves.toEqual({ available: true, keys });
-  });
-
-  it('returns only SSH key metadata on loopback', async () => {
-    sshKeys.list.mockResolvedValue([
-      { name: 'id_rsa', type: 'ssh-rsa', encrypted: false },
-      { name: 'id_ed25519', type: null, encrypted: true },
-    ]);
-
-    const result = await controller.listSshKeys();
-
-    expect(result).toEqual({
-      available: true,
+  it.each([
+    {
+      name: 'public contents',
+      publicOnly: true,
+      keys: [
+        {
+          name: 'id_ed25519.pub',
+          type: 'ssh-ed25519',
+          fingerprint: 'SHA256:abc',
+          comment: 'PC',
+          content: 'public key',
+        },
+      ],
+    },
+    {
+      name: 'key metadata',
+      publicOnly: false,
       keys: [
         { name: 'id_rsa', type: 'ssh-rsa', encrypted: false },
         { name: 'id_ed25519', type: null, encrypted: true },
       ],
-    });
-    expect(JSON.stringify(result)).not.toContain('PRIVATE KEY');
+    },
+  ])('returns $name on loopback', async ({ publicOnly, keys }) => {
+    const list = publicOnly ? sshKeys.listPublic : sshKeys.list;
+    list.mockResolvedValue(keys);
+    const result = await (publicOnly ? controller.listSshPublicKeys() : controller.listSshKeys());
+    expect(result).toEqual({ available: true, keys });
   });
 });

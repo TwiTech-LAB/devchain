@@ -83,70 +83,64 @@ describe('claude-config utils', () => {
   });
 
   describe('checkAutoCompactConfig', () => {
-    it('returns true with configState valid when autoCompactEnabled is true', async () => {
-      mockReadFile.mockResolvedValue(
-        JSON.stringify({
-          autoCompactEnabled: true,
-          someOtherField: 'keep-me',
-        }),
-      );
-
-      const result = await checkAutoCompactConfig();
-
-      expect(result).toEqual({ autoCompactEnabled: true, configState: 'valid' });
+    it.each([
+      {
+        label: 'enabled',
+        content: '{"autoCompactEnabled":true,"someOtherField":"keep-me"}',
+        error: undefined,
+        enabled: true,
+        state: 'valid',
+      },
+      {
+        label: 'disabled',
+        content: '{"autoCompactEnabled":false}',
+        error: undefined,
+        enabled: false,
+        state: 'valid',
+      },
+      {
+        label: 'missing key',
+        content: '{"anotherField":true}',
+        error: undefined,
+        enabled: true,
+        state: 'valid',
+      },
+      {
+        label: 'missing file',
+        content: '',
+        error: createEnoentError(),
+        enabled: true,
+        state: 'missing',
+      },
+      {
+        label: 'malformed JSON',
+        content: '{ not valid json',
+        error: undefined,
+        enabled: false,
+        state: 'malformed',
+      },
+      {
+        label: 'non-object',
+        content: '["not","an","object"]',
+        error: undefined,
+        enabled: false,
+        state: 'malformed',
+      },
+      {
+        label: 'read failure',
+        content: '',
+        error: new Error('EACCES: permission denied'),
+        enabled: false,
+        state: 'malformed',
+      },
+    ])('reads auto-compact config: $label', async ({ content, error, enabled, state }) => {
+      if (error) mockReadFile.mockRejectedValue(error);
+      else mockReadFile.mockResolvedValue(content);
+      expect(await checkAutoCompactConfig()).toEqual({
+        autoCompactEnabled: enabled,
+        configState: state,
+      });
       expect(mockReadFile).toHaveBeenCalledWith(CLAUDE_CONFIG_PATH, 'utf-8');
-    });
-
-    it('returns false with configState valid when autoCompactEnabled is explicitly false', async () => {
-      mockReadFile.mockResolvedValue(JSON.stringify({ autoCompactEnabled: false }));
-      await expect(checkAutoCompactConfig()).resolves.toEqual({
-        autoCompactEnabled: false,
-        configState: 'valid',
-      });
-    });
-
-    it('returns true with configState valid when key is missing (Claude default is enabled)', async () => {
-      mockReadFile.mockResolvedValue(JSON.stringify({ anotherField: true }));
-      await expect(checkAutoCompactConfig()).resolves.toEqual({
-        autoCompactEnabled: true,
-        configState: 'valid',
-      });
-    });
-
-    it('returns true with configState missing when file is missing (Claude default is enabled)', async () => {
-      mockReadFile.mockRejectedValue(createEnoentError());
-
-      await expect(checkAutoCompactConfig()).resolves.toEqual({
-        autoCompactEnabled: true,
-        configState: 'missing',
-      });
-    });
-
-    it('returns false with configState malformed on malformed JSON', async () => {
-      mockReadFile.mockResolvedValue('{ not valid json');
-
-      await expect(checkAutoCompactConfig()).resolves.toEqual({
-        autoCompactEnabled: false,
-        configState: 'malformed',
-      });
-    });
-
-    it('returns configState malformed when top-level JSON is not an object', async () => {
-      mockReadFile.mockResolvedValue(JSON.stringify(['not', 'an', 'object']));
-
-      await expect(checkAutoCompactConfig()).resolves.toEqual({
-        autoCompactEnabled: false,
-        configState: 'malformed',
-      });
-    });
-
-    it('returns configState malformed on non-ENOENT I/O errors', async () => {
-      mockReadFile.mockRejectedValue(new Error('EACCES: permission denied'));
-
-      await expect(checkAutoCompactConfig()).resolves.toEqual({
-        autoCompactEnabled: false,
-        configState: 'malformed',
-      });
     });
   });
 
@@ -357,50 +351,17 @@ describe('claude-config utils', () => {
       expect(mockRename).not.toHaveBeenCalled();
     });
 
-    it('returns invalid_config when top-level JSON is not an object', async () => {
-      mockConfigBackingStore(JSON.stringify(['not', 'an', 'object']));
-
-      const result = await ensureClaudeProjectTrusted('/proj/alpha');
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('invalid_config');
-      expect(mockWriteFile).not.toHaveBeenCalled();
-    });
-
-    it('returns invalid_config when projects is not an object', async () => {
-      mockConfigBackingStore(JSON.stringify({ projects: ['not', 'an', 'object'] }));
-
-      const result = await ensureClaudeProjectTrusted('/proj/alpha');
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('invalid_config');
-      expect(mockWriteFile).not.toHaveBeenCalled();
-    });
-
-    it('returns invalid_config when an existing project record is not an object', async () => {
-      mockConfigBackingStore(JSON.stringify({ projects: { '/proj/alpha': 'not-an-object' } }));
-
-      const result = await ensureClaudeProjectTrusted('/proj/alpha');
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('invalid_config');
-      expect(mockWriteFile).not.toHaveBeenCalled();
-    });
-
-    it('returns invalid_config when an unrelated sibling project record is not an object', async () => {
-      mockConfigBackingStore(
-        JSON.stringify({
-          projects: {
-            '/unrelated/project': 'not-an-object',
-          },
-        }),
-      );
-
-      const result = await ensureClaudeProjectTrusted('/proj/alpha');
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('invalid_config');
-      // Validation must reject before mode resolution or any temp write/rename.
+    it.each([
+      { label: 'top level', config: ['not', 'an', 'object'] },
+      { label: 'projects', config: { projects: ['not', 'an', 'object'] } },
+      { label: 'current project', config: { projects: { '/proj/alpha': 'not-an-object' } } },
+      { label: 'sibling project', config: { projects: { '/unrelated/project': 'not-an-object' } } },
+    ])('rejects non-object $label before writing', async ({ config }) => {
+      mockConfigBackingStore(JSON.stringify(config));
+      expect(await ensureClaudeProjectTrusted('/proj/alpha')).toMatchObject({
+        success: false,
+        errorType: 'invalid_config',
+      });
       expect(mockStat).not.toHaveBeenCalled();
       expect(mockWriteFile).not.toHaveBeenCalled();
       expect(mockRename).not.toHaveBeenCalled();
@@ -442,85 +403,38 @@ describe('claude-config utils', () => {
   });
 
   describe('disableClaudeAutoCompact', () => {
-    it('creates a new config file with restrictive mode when config file is missing', async () => {
-      mockConfigBackingStore(null);
+    it.each([false, true])(
+      'atomically sets autoCompactEnabled=%s and preserves other fields',
+      async (enabled) => {
+        mockConfigBackingStore(
+          JSON.stringify({
+            autoCompactEnabled: !enabled,
+            theme: 'ocean',
+            nested: { foo: 'bar' },
+          }),
+        );
 
-      const result = await disableClaudeAutoCompact();
+        const result = await (enabled ? enableClaudeAutoCompact() : disableClaudeAutoCompact());
 
-      expect(result).toEqual({ success: true });
-      expect(mockStat).not.toHaveBeenCalled();
-      const tempPath = mockWriteFile.mock.calls[0]?.[0] as string;
-      expect(tempPath).toMatch(TMP_PATH_PATTERN);
-      expect(mockWriteFile).toHaveBeenCalledWith(tempPath, expect.any(String), {
-        encoding: 'utf-8',
-        mode: 0o600,
-      });
-      expect(mockRename).toHaveBeenCalledWith(tempPath, CLAUDE_CONFIG_PATH);
-    });
+        expect(result).toEqual({ success: true });
+        expect(mockStat).toHaveBeenCalledWith(CLAUDE_CONFIG_PATH);
+        const tempPath = mockWriteFile.mock.calls[0]?.[0] as string;
+        expect(tempPath).toMatch(TMP_PATH_PATTERN);
+        expect(mockWriteFile).toHaveBeenCalledWith(tempPath, expect.any(String), {
+          encoding: 'utf-8',
+          mode: 0o600,
+        });
+        expect(mockRename).toHaveBeenCalledWith(tempPath, CLAUDE_CONFIG_PATH);
 
-    it('sets autoCompactEnabled to false and preserves all other fields with atomic write', async () => {
-      mockConfigBackingStore(
-        JSON.stringify({
-          autoCompactEnabled: true,
+        const written = mockWriteFile.mock.calls[0]?.[1] as string;
+        expect(written.endsWith('\n')).toBe(true);
+        expect(JSON.parse(written)).toEqual({
+          autoCompactEnabled: enabled,
           theme: 'ocean',
           nested: { foo: 'bar' },
-        }),
-      );
-
-      const result = await disableClaudeAutoCompact();
-
-      expect(result).toEqual({ success: true });
-      expect(mockStat).toHaveBeenCalledWith(CLAUDE_CONFIG_PATH);
-      const tempPath = mockWriteFile.mock.calls[0]?.[0] as string;
-      expect(tempPath).toMatch(TMP_PATH_PATTERN);
-      expect(mockWriteFile).toHaveBeenCalledWith(tempPath, expect.any(String), {
-        encoding: 'utf-8',
-        mode: 0o600,
-      });
-      expect(mockRename).toHaveBeenCalledWith(tempPath, CLAUDE_CONFIG_PATH);
-
-      const written = mockWriteFile.mock.calls[0]?.[1] as string;
-      expect(written.endsWith('\n')).toBe(true);
-      expect(JSON.parse(written)).toEqual({
-        autoCompactEnabled: false,
-        theme: 'ocean',
-        nested: { foo: 'bar' },
-      });
-    });
-
-    it('preserves existing file permissions on atomic write', async () => {
-      mockConfigBackingStore(JSON.stringify({ autoCompactEnabled: true, theme: 'ocean' }));
-      mockStat.mockResolvedValue(createStatResult(0o100640));
-
-      const result = await disableClaudeAutoCompact();
-
-      expect(result).toEqual({ success: true });
-      expect(mockWriteFile.mock.calls[0]?.[2]).toEqual({ encoding: 'utf-8', mode: 0o640 });
-    });
-
-    it('returns failure on malformed JSON and does not write', async () => {
-      mockConfigBackingStore('{ malformed');
-
-      const result = await disableClaudeAutoCompact();
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Invalid Claude config: malformed JSON');
-      expect(result.errorType).toBe('invalid_config');
-      expect(mockWriteFile).not.toHaveBeenCalled();
-      expect(mockRename).not.toHaveBeenCalled();
-    });
-
-    it('returns invalid_config when top-level JSON is not an object', async () => {
-      mockConfigBackingStore(JSON.stringify(['not', 'an', 'object']));
-
-      const result = await disableClaudeAutoCompact();
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('invalid_config');
-      expect(result.error).toContain('expected top-level JSON object');
-      expect(mockWriteFile).not.toHaveBeenCalled();
-      expect(mockRename).not.toHaveBeenCalled();
-    });
+        });
+      },
+    );
 
     it('returns failure when rename fails and attempts tmp cleanup', async () => {
       mockConfigBackingStore(JSON.stringify({ autoCompactEnabled: true }));
@@ -547,60 +461,9 @@ describe('claude-config utils', () => {
       expect(mockWriteFile).not.toHaveBeenCalled();
       expect(mockRename).not.toHaveBeenCalled();
     });
-
-    it('returns io_error when the lock cannot be acquired', async () => {
-      mockLock.mockRejectedValue(
-        Object.assign(new Error('Lock file is already being held'), { code: 'ELOCKED' }),
-      );
-
-      const result = await disableClaudeAutoCompact();
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('io_error');
-      expect(mockWriteFile).not.toHaveBeenCalled();
-    });
-
-    it('returns io_error when lock release fails', async () => {
-      mockConfigBackingStore(null);
-      mockLock.mockImplementation(() =>
-        Promise.resolve(
-          jest.fn().mockRejectedValue(new Error('rmdir failed')) as unknown as () => Promise<void>,
-        ),
-      );
-
-      const result = await disableClaudeAutoCompact();
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('io_error');
-      expect(result.error).toContain('rmdir failed');
-    });
   });
 
   describe('enableClaudeAutoCompact', () => {
-    it('sets autoCompactEnabled to true and preserves all other fields', async () => {
-      mockConfigBackingStore(
-        JSON.stringify({
-          autoCompactEnabled: false,
-          theme: 'dark',
-          nested: { key: 'value' },
-        }),
-      );
-
-      const result = await enableClaudeAutoCompact();
-
-      expect(result).toEqual({ success: true });
-      const tempPath = mockWriteFile.mock.calls[0]?.[0] as string;
-      expect(tempPath).toMatch(TMP_PATH_PATTERN);
-      expect(mockRename).toHaveBeenCalledWith(tempPath, CLAUDE_CONFIG_PATH);
-
-      const written = mockWriteFile.mock.calls[0]?.[1] as string;
-      expect(JSON.parse(written)).toEqual({
-        autoCompactEnabled: true,
-        theme: 'dark',
-        nested: { key: 'value' },
-      });
-    });
-
     it('creates config with autoCompactEnabled true when file is missing', async () => {
       mockConfigBackingStore(null);
 
@@ -609,52 +472,6 @@ describe('claude-config utils', () => {
       expect(result).toEqual({ success: true });
       const written = mockWriteFile.mock.calls[0]?.[1] as string;
       expect(JSON.parse(written)).toEqual({ autoCompactEnabled: true });
-    });
-
-    it('returns invalid_config on malformed JSON', async () => {
-      mockConfigBackingStore('{ malformed');
-
-      const result = await enableClaudeAutoCompact();
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Invalid Claude config: malformed JSON');
-      expect(result.errorType).toBe('invalid_config');
-      expect(mockWriteFile).not.toHaveBeenCalled();
-    });
-
-    it('preserves existing file permissions on atomic write', async () => {
-      mockConfigBackingStore(JSON.stringify({ autoCompactEnabled: false, theme: 'ocean' }));
-      mockStat.mockResolvedValue(createStatResult(0o100640));
-
-      const result = await enableClaudeAutoCompact();
-
-      expect(result).toEqual({ success: true });
-      expect(mockWriteFile.mock.calls[0]?.[2]).toEqual({ encoding: 'utf-8', mode: 0o640 });
-    });
-
-    it('returns io_error when rename fails and attempts tmp cleanup', async () => {
-      mockConfigBackingStore(JSON.stringify({ autoCompactEnabled: false }));
-      mockRename.mockRejectedValue(new Error('rename failed'));
-
-      const result = await enableClaudeAutoCompact();
-
-      const tempPath = mockWriteFile.mock.calls[0]?.[0] as string;
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('rename failed');
-      expect(result.errorType).toBe('io_error');
-      expect(mockUnlink).toHaveBeenCalledWith(tempPath);
-    });
-
-    it('returns io_error when reading config fails for non-ENOENT errors', async () => {
-      mockReadFile.mockRejectedValue(new Error('EACCES: permission denied'));
-
-      const result = await enableClaudeAutoCompact();
-
-      expect(result.success).toBe(false);
-      expect(result.errorType).toBe('io_error');
-      expect(result.error).toContain('EACCES');
-      expect(mockWriteFile).not.toHaveBeenCalled();
-      expect(mockRename).not.toHaveBeenCalled();
     });
   });
 

@@ -55,146 +55,56 @@ describe('GitController', () => {
       });
     });
 
-    it('passes ref and limit parameters', async () => {
-      gitService.listCommits.mockResolvedValue([]);
-
-      await controller.listCommits(projectId, 'main', '100');
-
-      expect(gitService.listCommits).toHaveBeenCalledWith(projectId, {
-        ref: 'main',
-        limit: 100,
-      });
-    });
-
     it('throws BadRequestException for invalid projectId', async () => {
       await expect(controller.listCommits('not-a-uuid')).rejects.toThrow(BadRequestException);
     });
 
-    it('throws NotFoundException for non-existent project', async () => {
-      gitService.listCommits.mockRejectedValue(new NotFoundError('Project', projectId));
-
-      await expect(controller.listCommits(projectId)).rejects.toThrow(NotFoundException);
-    });
-
-    it('throws BadRequestException for non-git project', async () => {
-      gitService.listCommits.mockRejectedValue(
-        new ValidationError('Project is not a git repository'),
-      );
-
-      await expect(controller.listCommits(projectId)).rejects.toThrow(BadRequestException);
-    });
-  });
-
-  describe('GET /api/git/branches', () => {
-    it('returns branches for a valid project', async () => {
-      const branches = [
-        { name: 'main', sha: 'abc123', isCurrent: true },
-        { name: 'develop', sha: 'def456', isCurrent: false },
-      ];
-      gitService.listBranches.mockResolvedValue(branches);
-
-      const result = await controller.listBranches(projectId);
-
-      expect(result).toEqual(branches);
-    });
-
-    it('throws BadRequestException for invalid projectId', async () => {
-      await expect(controller.listBranches('not-a-uuid')).rejects.toThrow(BadRequestException);
-    });
-
-    it('throws NotFoundException for non-existent project', async () => {
-      gitService.listBranches.mockRejectedValue(new NotFoundError('Project', projectId));
-
-      await expect(controller.listBranches(projectId)).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('GET /api/git/tags', () => {
-    it('returns tags for a valid project', async () => {
-      const tags = [
-        { name: 'v1.0.0', sha: 'abc123' },
-        { name: 'v1.1.0', sha: 'def456' },
-      ];
-      gitService.listTags.mockResolvedValue(tags);
-
-      const result = await controller.listTags(projectId);
-
-      expect(result).toEqual(tags);
-    });
-
-    it('throws BadRequestException for invalid projectId', async () => {
-      await expect(controller.listTags('not-a-uuid')).rejects.toThrow(BadRequestException);
-    });
-
-    it('throws NotFoundException for non-existent project', async () => {
-      gitService.listTags.mockRejectedValue(new NotFoundError('Project', projectId));
-
-      await expect(controller.listTags(projectId)).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('GET /api/git/diff', () => {
-    it('returns diff between two refs', async () => {
-      const diffContent = 'diff --git a/file.txt b/file.txt\n...';
-      gitService.getDiff.mockResolvedValue(diffContent);
-
-      const result = await controller.getDiff(projectId, 'main', 'feature/test');
-
-      expect(result).toEqual({ diff: diffContent });
-      expect(gitService.getDiff).toHaveBeenCalledWith(projectId, 'main', 'feature/test');
-    });
-
-    it('throws BadRequestException for missing base ref', async () => {
-      await expect(controller.getDiff(projectId, '', 'feature/test')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('throws BadRequestException for missing head ref', async () => {
-      await expect(controller.getDiff(projectId, 'main', '')).rejects.toThrow(BadRequestException);
-    });
-
-    it('throws NotFoundException for non-existent project', async () => {
-      gitService.getDiff.mockRejectedValue(new NotFoundError('Project', projectId));
-
-      await expect(controller.getDiff(projectId, 'main', 'feature/test')).rejects.toThrow(
-        NotFoundException,
-      );
-    });
-  });
-
-  describe('GET /api/git/changed-files', () => {
-    it('returns changed files between two refs', async () => {
-      const changedFiles = [
-        { path: 'src/index.ts', status: 'modified', additions: 10, deletions: 5 },
-        { path: 'src/new.ts', status: 'added', additions: 20, deletions: 0 },
-      ];
-      gitService.getChangedFiles.mockResolvedValue(changedFiles as never);
-
-      const result = await controller.getChangedFiles(projectId, 'main', 'feature/test');
-
-      expect(result).toEqual(changedFiles);
-      expect(gitService.getChangedFiles).toHaveBeenCalledWith(projectId, 'main', 'feature/test');
-    });
-
-    it('throws BadRequestException for missing base ref', async () => {
-      await expect(controller.getChangedFiles(projectId, '', 'feature/test')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('throws BadRequestException for missing head ref', async () => {
-      await expect(controller.getChangedFiles(projectId, 'main', '')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('throws NotFoundException for non-existent project', async () => {
-      gitService.getChangedFiles.mockRejectedValue(new NotFoundError('Project', projectId));
-
-      await expect(controller.getChangedFiles(projectId, 'main', 'feature/test')).rejects.toThrow(
-        NotFoundException,
-      );
+    it.each([
+      {
+        name: 'controller.listCommits NotFoundException',
+        mock: () => gitService.listCommits,
+        error: new NotFoundError('Project', projectId),
+        invoke: () => controller.listCommits(projectId),
+        exception: NotFoundException,
+      },
+      {
+        name: 'controller.listCommits BadRequestException',
+        mock: () => gitService.listCommits,
+        error: new ValidationError('Project is not a git repository'),
+        invoke: () => controller.listCommits(projectId),
+        exception: BadRequestException,
+      },
+      {
+        name: 'controller.listBranches NotFoundException',
+        mock: () => gitService.listBranches,
+        error: new NotFoundError('Project', projectId),
+        invoke: () => controller.listBranches(projectId),
+        exception: NotFoundException,
+      },
+      {
+        name: 'controller.listTags NotFoundException',
+        mock: () => gitService.listTags,
+        error: new NotFoundError('Project', projectId),
+        invoke: () => controller.listTags(projectId),
+        exception: NotFoundException,
+      },
+      {
+        name: 'controller.getDiff NotFoundException',
+        mock: () => gitService.getDiff,
+        error: new NotFoundError('Project', projectId),
+        invoke: () => controller.getDiff(projectId, 'main', 'feature/test'),
+        exception: NotFoundException,
+      },
+      {
+        name: 'controller.getChangedFiles NotFoundException',
+        mock: () => gitService.getChangedFiles,
+        error: new NotFoundError('Project', projectId),
+        invoke: () => controller.getChangedFiles(projectId, 'main', 'feature/test'),
+        exception: NotFoundException,
+      },
+    ])('maps $name', async ({ mock, error, invoke, exception }) => {
+      mock().mockRejectedValue(error);
+      await expect(invoke()).rejects.toThrow(exception);
     });
   });
 });

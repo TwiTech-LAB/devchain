@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { once } from 'node:events';
+import { FakeDockerEngine } from '../../../common/test/fake-docker-engine.server';
 import {
   DockerEngineClient,
   DockerEngineError,
@@ -82,7 +83,7 @@ it('negotiates both version endpoints, pins the smaller maximum and versions lat
   const target = new DockerEngineClient(client.socketPath);
   expect(await negotiateDockerApi(client, target)).toBe('1.55');
   await target.diskUsage();
-  expect(paths).toEqual(['/version', '/version', '/v1.55/system/df']);
+  expect(paths).toEqual(['/version', '/version', '/v1.55/system/df?type=image&type=volume']);
 });
 it('refuses an empty API interval', async () => {
   let calls = 0;
@@ -100,11 +101,13 @@ it('refuses an empty API interval', async () => {
   expect(client.apiVersion).toBeUndefined();
 });
 it.each([404, 409, 500])(
-  'keeps the engine reason of an HTTP %s answer and masks the request Env values',
+  'keeps the engine reason of an HTTP %s answer and masks environment values',
   async (status) => {
     handler = (_req, res) => {
       res.statusCode = status;
-      res.end('{"message":"invalid environment variable: SECRET=hunter22\\nPORT=80"}');
+      res.end(
+        '{"message":"invalid environment variable: SECRET=hunter22\\nPORT=80 (lower=hunter22)"}',
+      );
     };
     const failure = client.json('POST', '/containers/create', {
       Env: ['SECRET=hunter22', 'PORT=80'],
@@ -112,7 +115,7 @@ it.each([404, 409, 500])(
     await expect(failure).rejects.toBeInstanceOf(DockerEngineError);
     await expect(failure).rejects.toMatchObject({
       status,
-      message: `Docker engine request failed (HTTP ${status}): invalid environment variable: SECRET=*** PORT=80`,
+      message: `Docker engine request failed (HTTP ${status}): invalid environment variable: SECRET=*** PORT=*** (lower=***)`,
     });
   },
 );
@@ -213,7 +216,7 @@ it('streams archive upload with backpressure and preserves GET/PUT archive paths
       res.end('tar-with-directory-header');
       return;
     }
-    expect(req.url).toBe('/containers/writer/archive?copyUIDGID=true&path=/');
+    expect(req.url).toBe('/containers/writer/archive?copyUIDGID=false&path=/');
     expect(req.headers['content-type']).toBe('application/x-tar');
     request = req;
     req.pause();
@@ -290,10 +293,9 @@ it('reports df sizes and resolves containerd root separately from DockerRootDir'
   const usage = {
     Volumes: [{ Name: 'db', UsageData: { Size: 12, RefCount: 1 } }],
     Images: [{ Id: 'image', Size: 100, SharedSize: 20 }],
-    Containers: [{ Id: 'c', SizeRw: 30 }],
   };
   handler = (req, res) => {
-    expect(req.url).toBe('/system/df');
+    expect(req.url).toBe('/system/df?type=image&type=volume');
     res.end(JSON.stringify(usage));
   };
   expect(await client.diskUsage()).toEqual(usage);
@@ -515,4 +517,39 @@ it('forces NoCopy on every helper volume mount while leaving bind mount options 
     mounts[2],
   ]);
   expect(mounts.every((mount) => !('VolumeOptions' in mount))).toBe(true);
+});
+
+// The real client is the cheapest layer that checks the shared fake engine's query semantics.
+it('projects requested disk categories and sized inspect metadata in the fake engine', async () => {
+  const engine = new FakeDockerEngine('sizes');
+  engine.images.set('image', { architecture: 'amd64', tags: [], size: 100 });
+  engine.volumes.set('db', { labels: {}, driver: 'local' });
+  engine.data.set('db', Buffer.from('abc'));
+  engine.addContainer({
+    Id: 'c',
+    Name: '/c',
+    Image: 'image',
+    Config: {},
+    HostConfig: {},
+    Mounts: [],
+    SizeRw: 30,
+    SizeRootFs: 130,
+  });
+  await engine.listen(join(root, 'sizes.sock'));
+  const sizedClient = new DockerEngineClient(join(root, 'sizes.sock'));
+  try {
+    expect(await sizedClient.diskUsage()).toEqual({
+      Images: [{ Id: 'image', Size: 100 }],
+      Volumes: [{ Name: 'db', UsageData: { Size: 3, RefCount: 0 } }],
+    });
+    const ordinary = await sizedClient.json<Record<string, unknown>>('GET', '/containers/c/json');
+    expect(ordinary).not.toHaveProperty('SizeRw');
+    expect(ordinary).not.toHaveProperty('SizeRootFs');
+    expect(await sizedClient.json('GET', '/containers/c/json?size=true')).toMatchObject({
+      SizeRw: 30,
+      SizeRootFs: 130,
+    });
+  } finally {
+    await engine.close();
+  }
 });

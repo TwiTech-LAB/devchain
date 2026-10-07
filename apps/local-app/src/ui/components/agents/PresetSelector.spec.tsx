@@ -192,61 +192,6 @@ describe('PresetSelector', () => {
         expect(container.firstChild).toBeNull();
       });
     });
-
-    // TODO(test-strategy-overhaul): SKIPPED — loading state not captured due to immediate query resolution in test.
-    // Needs delayed query mock or Playwright for loading state verification.
-    it.skip('shows loading state while fetching presets', async () => {});
-  });
-
-  describe('callback handling', () => {
-    it('calls onEditPreset callback when triggered', () => {
-      const onEditPreset = jest.fn();
-      const onDeletePreset = jest.fn();
-
-      renderWithQueryClient(
-        <PresetSelector
-          {...defaultProps}
-          onEditPreset={onEditPreset}
-          onDeletePreset={onDeletePreset}
-        />,
-      );
-
-      // Manually test the callback by calling it
-      const testPreset = mockPresets[0];
-      onEditPreset(testPreset);
-
-      expect(onEditPreset).toHaveBeenCalledWith(testPreset);
-      expect(onEditPreset).toHaveBeenCalledTimes(1);
-    });
-
-    it('calls onDeletePreset callback when triggered', () => {
-      const onEditPreset = jest.fn();
-      const onDeletePreset = jest.fn();
-
-      renderWithQueryClient(
-        <PresetSelector
-          {...defaultProps}
-          onEditPreset={onEditPreset}
-          onDeletePreset={onDeletePreset}
-        />,
-      );
-
-      // Manually test the callback by calling it
-      const testPreset = mockPresets[0];
-      onDeletePreset(testPreset);
-
-      expect(onDeletePreset).toHaveBeenCalledWith(testPreset);
-      expect(onDeletePreset).toHaveBeenCalledTimes(1);
-    });
-
-    it('calls onAgentsRefresh when provided', () => {
-      const onAgentsRefresh = jest.fn();
-
-      renderWithQueryClient(<PresetSelector {...defaultProps} onAgentsRefresh={onAgentsRefresh} />);
-
-      // The callback exists and can be called
-      expect(typeof onAgentsRefresh).toBe('function');
-    });
   });
 
   describe('active session confirmation', () => {

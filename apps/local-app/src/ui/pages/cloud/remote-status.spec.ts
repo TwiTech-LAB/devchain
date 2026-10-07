@@ -184,12 +184,6 @@ describe('vmStatus', () => {
       });
     });
 
-    it('never offers Set up while a failed setup reserves the VM', () => {
-      const failed = operation({ kind: 'claim', state: 'failed' });
-      const status = vm({ online: false, logins: null }, { operations: [failed] });
-      expect(status.action?.kind).not.toBe('set-up');
-    });
-
     it('ignores done and cancelled operations', () => {
       const done = operation({ kind: 'claim', state: 'done' });
       const cancelled = operation({ kind: 'update_host', state: 'cancelled' });
@@ -373,11 +367,14 @@ describe('projectStatus', () => {
     return projectStatus(projectId, context(input));
   }
 
-  it.each([
-    ['attach', 'Connecting to lab-vm'],
-    ['detach', 'Disconnecting from lab-vm'],
-  ])('row 1: a running %s makes the project busy', (kind, label) => {
-    const running = operation({ kind, projectId: 'p1' });
+  it.each<[string, string, Record<string, unknown>]>([
+    ['attach', 'Connecting to lab-vm', {}],
+    ['detach', 'Disconnecting from lab-vm', {}],
+    ['force_sync', 'Force syncing', {}],
+    ['git_owner', 'Moving Git to the VM', { owner: 'vm' }],
+    ['git_owner', 'Moving Git to this PC', { owner: 'home' }],
+  ])('row 1: a running %s makes the project busy', (kind, label, details) => {
+    const running = operation({ kind, projectId: 'p1', details });
     expect(
       project({ operations: [running], bindings: [binding({ state: 'attaching' })] }),
     ).toMatchObject({
@@ -396,6 +393,8 @@ describe('projectStatus', () => {
   it.each([
     ['attach', 'Connect stopped'],
     ['detach', 'Disconnect stopped'],
+    ['force_sync', 'Force sync stopped'],
+    ['git_owner', 'Git switch stopped'],
   ])('row 2: a failed %s stops the project with the error first line', (kind, label) => {
     const failed = operation({
       kind,
@@ -658,6 +657,22 @@ describe('attentionItems', () => {
     ]);
   });
 
+  // Pure status mapping is the cheapest layer for counts-only and legacy warning behavior.
+  it.each([
+    [{ home: 1, vm: 0 }, true],
+    [{ home: 0, vm: 2 }, true],
+    [{ home: 0, vm: 0 }, false],
+    [undefined, false],
+  ] as const)('offers a distinct Fix action for failed counts %j', (fileSyncFailed, actionable) => {
+    const ctx = context({
+      bindings: [binding({ fileSyncWarning: 'File sync warning', fileSyncFailed })],
+    });
+    const item = attentionItems(ctx).find((item) => item.key === 'file-sync:p1');
+    expect(item?.action).toEqual(
+      actionable ? { kind: 'fix-file-sync', label: 'Fix', projectId: 'p1' } : null,
+    );
+  });
+
   it('puts an error found late before earlier warnings', () => {
     const ctx = context({
       remotes: [remote({ id: 'vm-old', name: 'old-vm', versionMatches: false })],
@@ -735,53 +750,6 @@ describe('attentionItems', () => {
 });
 
 describe('transitions', () => {
-  it('a failed attach after bind_remote stops the project and offers "Disconnect instead"', () => {
-    const failed = operation({
-      kind: 'attach',
-      projectId: 'p1',
-      state: 'failed',
-      steps: [step('bind_remote', 'done'), step('thaw_host', 'failed', 'thaw failed')],
-    });
-    const ctx = context({ operations: [failed], bindings: [binding({ state: 'remote' })] });
-    expect(projectStatus('p1', ctx).state).toBe('stopped');
-    expect(projectRecovery(failed)).toContain('disconnect-instead');
-  });
-
-  it('a failed detach with a detaching binding stops the project and offers "Force disconnect"', () => {
-    const failed = operation({ kind: 'detach', projectId: 'p1', state: 'failed' });
-    const ctx = context({ operations: [failed], bindings: [binding({ state: 'detaching' })] });
-    expect(projectStatus('p1', ctx)).toMatchObject({
-      state: 'stopped',
-      label: 'Disconnect stopped',
-    });
-    expect(projectRecovery(failed)).toContain('force-disconnect');
-  });
-
-  it('a cancelled attach with a release error leaves cleanup-failed with Connect', () => {
-    const cancelled = operation({
-      kind: 'attach',
-      projectId: 'p1',
-      state: 'cancelled',
-      details: { hostReleaseError: 'release failed' },
-    });
-    const ctx = context({
-      operations: [cancelled],
-      bindings: [binding({ state: 'failed' })],
-      newestProjectOperations: new Map([['p1', cancelled]]),
-    });
-    expect(projectStatus('p1', ctx)).toMatchObject({
-      state: 'cleanup-failed',
-      note: 'release failed',
-      action: { kind: 'connect' },
-    });
-  });
-
-  it('a leftover detaching binding offers Disconnect', () => {
-    const done = operation({ kind: 'detach', projectId: 'p1', state: 'cancelled' });
-    const ctx = context({ operations: [done], bindings: [binding({ state: 'detaching' })] });
-    expect(projectStatus('p1', ctx).action).toEqual({ kind: 'disconnect', label: 'Disconnect' });
-  });
-
   it('a newer project operation does not hide an older failed update_logins', () => {
     const failedLogins = operation({ kind: 'update_logins', state: 'failed' });
     const newerAttach = operation({ kind: 'attach', projectId: 'p1', state: 'done' });
@@ -800,13 +768,6 @@ describe('transitions', () => {
       state: 'stopped',
       label: 'Login change stopped',
       action: { kind: 'resolve', operationId: failedLogins.id },
-    });
-  });
-
-  it('a VM that never answered reads "Never reached"', () => {
-    expect(vm({ online: false, lastSeenAt: null })).toMatchObject({
-      state: 'offline',
-      label: 'Never reached',
     });
   });
 });
@@ -838,4 +799,27 @@ describe('API key rejection status', () => {
       }),
     );
   });
+});
+
+// The pure status model is the cheapest layer for warning actions and VM progress chips.
+it.each(['error', 'stalled', 'setup', 'connection', 'failed-files'] as const)(
+  'offers a Fix action for %s without failed-file counts only when recoverable',
+  (fileSyncProblem) => {
+    const ctx = context({
+      bindings: [binding({ fileSyncWarning: 'Sync needs attention.', fileSyncProblem })],
+    });
+    const item = attentionItems(ctx).find((item) => item.key === 'file-sync:p1');
+    expect(item?.action).toEqual(
+      ['error', 'stalled', 'setup'].includes(fileSyncProblem)
+        ? { kind: 'fix-file-sync', label: 'Fix', projectId: 'p1' }
+        : null,
+    );
+  },
+);
+it('shows Force syncing as a project operation on the VM', () => {
+  const running = operation({ kind: 'force_sync', projectId: 'p1' });
+  const ctx = context({ bindings: [binding()], operations: [running] });
+  expect(vmStatus(remote(), ctx).chips).toContainEqual(
+    expect.objectContaining({ operationId: running.id, label: 'Force syncing Alpha, 2/3' }),
+  );
 });

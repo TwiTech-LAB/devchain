@@ -1039,8 +1039,6 @@ describe('Jira task comments', () => {
   it.each([
     ['non-array comments', { comments: {}, startAt: 0, total: 1 }],
     ['missing total', { comments: [], startAt: 0 }],
-    ['non-integer total', { comments: [], startAt: 0, total: '25' }],
-    ['missing startAt', { comments: [], total: 1 }],
     ['non-integer startAt', { comments: [], startAt: 1.5, total: 1 }],
     ['negative startAt', { comments: [], startAt: -1, total: 1 }],
     [

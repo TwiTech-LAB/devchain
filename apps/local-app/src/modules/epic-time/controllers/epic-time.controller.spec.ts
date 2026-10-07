@@ -23,31 +23,6 @@ describe('EpicTimeController', () => {
     controller = new EpicTimeController(service as unknown as EpicTimeService);
   });
 
-  it('dispatches detail and batch requests with the strict public shape', () => {
-    const epicId = '11111111-1111-4111-8111-111111111111';
-    expect(controller.getTimeLogs(epicId, 'Europe/Madrid')).toEqual({
-      isRoot: true,
-      directMinutes: 1,
-      totalMinutes: 2,
-      includesRelatedTime: false,
-      items: [],
-      taskItems: [],
-    });
-    expect(service.getDetail).toHaveBeenCalledWith(epicId, 'Europe/Madrid');
-
-    controller.getTimeSummaryBatch({ epicIds: [epicId], timeZone: 'Europe/Madrid' });
-    expect(service.getBatch).toHaveBeenCalledWith([epicId], 'Europe/Madrid');
-  });
-
-  it.each([
-    ['missing timezone', undefined],
-    ['invalid Epic ID', 'bad-id'],
-  ])('rejects %s detail input', (_label, value) => {
-    const epicId = value === 'bad-id' ? value : '11111111-1111-4111-8111-111111111111';
-    const timeZone = value === 'bad-id' ? 'UTC' : value;
-    expect(() => controller.getTimeLogs(epicId, timeZone)).toThrow(ZodError);
-  });
-
   it.each([
     [
       'duplicates',

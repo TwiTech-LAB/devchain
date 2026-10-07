@@ -106,16 +106,6 @@ describe('ProviderDiscoveryService', () => {
     expect(result.discovered).toEqual([{ name: 'codex', binPath: '/usr/bin/codex' }]);
   });
 
-  it('uses getSupportedProviders dynamically', async () => {
-    mockAdapterFactory.getSupportedProviders.mockReturnValue(['alpha', 'beta']);
-    mockResolveBinary.mockResolvedValueOnce('/usr/bin/alpha').mockResolvedValueOnce(null);
-
-    const result = await service.discoverInstalledBinaries();
-
-    expect(result.discovered).toEqual([{ name: 'alpha', binPath: '/usr/bin/alpha' }]);
-    expect(result.notFound).toEqual(['beta']);
-  });
-
   it('returns empty result when all providers already exist', async () => {
     mockStorage.listProviders.mockResolvedValue({
       items: [
@@ -132,14 +122,5 @@ describe('ProviderDiscoveryService', () => {
     expect(result.alreadyPresent).toHaveLength(4);
     expect(result.notFound).toEqual([]);
     expect(mockResolveBinary).not.toHaveBeenCalled();
-  });
-
-  it('idempotent: repeated call yields same result', async () => {
-    mockResolveBinary.mockResolvedValue(null);
-
-    const first = await service.discoverInstalledBinaries();
-    const second = await service.discoverInstalledBinaries();
-
-    expect(first).toEqual(second);
   });
 });

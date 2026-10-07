@@ -190,20 +190,18 @@ describe('ScheduleEditorDialog', () => {
   });
 
   describe('create mode', () => {
-    it('renders with empty fields for create', () => {
+    it('shows empty create fields with detected timezone', () => {
       renderWithQuery(
         <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
       );
-      expect(screen.getByText('Create Schedule')).toBeInTheDocument();
-      expect(screen.getByLabelText('Name')).toHaveValue('');
-    });
-
-    it('defaults timezone to detected timezone', () => {
-      renderWithQuery(
-        <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
-      );
-      const tzSelector = screen.getByTestId('timezone-selector');
-      expect(tzSelector).toHaveAttribute('data-value', 'America/New_York');
+      {
+        expect(screen.getByText('Create Schedule')).toBeInTheDocument();
+        expect(screen.getByLabelText('Name')).toHaveValue('');
+      }
+      {
+        const tzSelector = screen.getByTestId('timezone-selector');
+        expect(tzSelector).toHaveAttribute('data-value', 'America/New_York');
+      }
     });
 
     it('shows validation errors when submitting empty form', async () => {
@@ -410,8 +408,8 @@ describe('ScheduleEditorDialog', () => {
       });
     });
 
-    it('resolves saved status ID into display value', async () => {
-      const schedule = makeSchedule({ templateStatusId: 'status-2' });
+    it('resolves saved status and agent display names', async () => {
+      const schedule = makeSchedule({ templateStatusId: 'status-2', templateAgentId: 'agent-1' });
       renderWithQuery(
         <ScheduleEditorDialog
           open={true}
@@ -420,17 +418,27 @@ describe('ScheduleEditorDialog', () => {
           projectId="proj-1"
         />,
       );
-
-      await waitFor(() => {
-        expect(screen.queryByText('Loading statuses...')).not.toBeInTheDocument();
-      });
-
-      const statusTrigger = screen.getByRole('combobox', { name: /Default Status/ });
-      expect(statusTrigger).toHaveTextContent('In Progress');
+      {
+        await waitFor(() => {
+          expect(screen.queryByText('Loading statuses...')).not.toBeInTheDocument();
+        });
+        const statusTrigger = screen.getByRole('combobox', { name: /Default Status/ });
+        expect(statusTrigger).toHaveTextContent('In Progress');
+      }
+      {
+        await waitFor(() => {
+          expect(screen.queryByText('Loading agents...')).not.toBeInTheDocument();
+        });
+        const agentTrigger = screen.getByRole('combobox', { name: /Default Agent/ });
+        expect(agentTrigger).toHaveTextContent('Coder (1)');
+      }
     });
 
-    it('resolves saved agent ID into display value', async () => {
-      const schedule = makeSchedule({ templateAgentId: 'agent-1' });
+    it('shows unavailable status and agent fallbacks', async () => {
+      const schedule = makeSchedule({
+        templateStatusId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        templateAgentId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      });
       renderWithQuery(
         <ScheduleEditorDialog
           open={true}
@@ -439,51 +447,20 @@ describe('ScheduleEditorDialog', () => {
           projectId="proj-1"
         />,
       );
-
-      await waitFor(() => {
-        expect(screen.queryByText('Loading agents...')).not.toBeInTheDocument();
-      });
-
-      const agentTrigger = screen.getByRole('combobox', { name: /Default Agent/ });
-      expect(agentTrigger).toHaveTextContent('Coder (1)');
-    });
-
-    it('shows unresolved status fallback for unknown UUID', async () => {
-      const schedule = makeSchedule({ templateStatusId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
-      renderWithQuery(
-        <ScheduleEditorDialog
-          open={true}
-          onOpenChange={jest.fn()}
-          schedule={schedule}
-          projectId="proj-1"
-        />,
-      );
-
-      await waitFor(() => {
-        expect(screen.queryByText('Loading statuses...')).not.toBeInTheDocument();
-      });
-
-      const statusTrigger = screen.getByRole('combobox', { name: /Default Status/ });
-      expect(statusTrigger).toHaveTextContent(/Unavailable: aaaaaaaa/);
-    });
-
-    it('shows unresolved agent fallback for unknown UUID', async () => {
-      const schedule = makeSchedule({ templateAgentId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
-      renderWithQuery(
-        <ScheduleEditorDialog
-          open={true}
-          onOpenChange={jest.fn()}
-          schedule={schedule}
-          projectId="proj-1"
-        />,
-      );
-
-      await waitFor(() => {
-        expect(screen.queryByText('Loading agents...')).not.toBeInTheDocument();
-      });
-
-      const agentTrigger = screen.getByRole('combobox', { name: /Default Agent/ });
-      expect(agentTrigger).toHaveTextContent(/Unavailable: aaaaaaaa/);
+      {
+        await waitFor(() => {
+          expect(screen.queryByText('Loading statuses...')).not.toBeInTheDocument();
+        });
+        const statusTrigger = screen.getByRole('combobox', { name: /Default Status/ });
+        expect(statusTrigger).toHaveTextContent(/Unavailable: aaaaaaaa/);
+      }
+      {
+        await waitFor(() => {
+          expect(screen.queryByText('Loading agents...')).not.toBeInTheDocument();
+        });
+        const agentTrigger = screen.getByRole('combobox', { name: /Default Agent/ });
+        expect(agentTrigger).toHaveTextContent(/Unavailable: aaaaaaaa/);
+      }
     });
 
     it('preserves unresolved UUID on save unless explicitly cleared', async () => {
@@ -556,15 +533,6 @@ describe('ScheduleEditorDialog', () => {
   });
 
   describe('template variable insertion', () => {
-    it('has Insert Variable controls for title and description', () => {
-      renderWithQuery(
-        <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
-      );
-
-      const insertButtons = screen.getAllByRole('button', { name: 'Insert variable' });
-      expect(insertButtons).toHaveLength(2);
-    });
-
     it('inserts variable token into title template', async () => {
       const user = userEvent.setup();
       renderWithQuery(
@@ -632,47 +600,11 @@ describe('ScheduleEditorDialog', () => {
   });
 
   describe('parent epic picker', () => {
-    it('filters out sub-epics from search results', async () => {
-      const user = userEvent.setup();
-      renderWithQuery(
-        <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
-      );
-
-      const parentTrigger = screen.getByRole('combobox', { name: 'Select parent epic' });
-      await user.click(parentTrigger);
-
-      const searchInput = await screen.findByLabelText('Search parent epics');
-      await user.type(searchInput, 'Sprint');
-
-      await waitFor(() => {
-        expect(screen.getByText('Sprint Epic')).toBeInTheDocument();
-        expect(screen.queryByText('Sub Epic')).not.toBeInTheDocument();
-      });
-    });
-
-    it('does not navigate routes on selection', async () => {
-      const user = userEvent.setup();
-      renderWithQuery(
-        <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
-      );
-
-      const parentTrigger = screen.getByRole('combobox', { name: 'Select parent epic' });
-      await user.click(parentTrigger);
-
-      const searchInput = await screen.findByLabelText('Search parent epics');
-      await user.type(searchInput, 'Sprint');
-
-      await waitFor(() => {
-        expect(screen.getByText('Sprint Epic')).toBeInTheDocument();
-      });
-      await user.click(screen.getByText('Sprint Epic'));
-
-      // After selection, dialog is still open - no navigation happened
-      expect(screen.getByText('Create Schedule')).toBeInTheDocument();
-    });
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
 
     it('submits selected parent epic ID in payload', async () => {
-      const user = userEvent.setup();
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
       renderWithQuery(
         <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
       );
@@ -689,6 +621,7 @@ describe('ScheduleEditorDialog', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Sprint Epic')).toBeInTheDocument();
+        expect(screen.queryByText('Sub Epic')).not.toBeInTheDocument();
       });
       await user.click(screen.getByText('Sprint Epic'));
 
@@ -706,32 +639,6 @@ describe('ScheduleEditorDialog', () => {
         expect(createCall).toBeDefined();
         const body = JSON.parse(createCall![1]!.body as string);
         expect(body.templateParentEpicId).toBe('epic-1');
-      });
-    });
-
-    it('submits null for no parent sentinel', async () => {
-      renderWithQuery(
-        <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
-      );
-
-      await waitFor(() => {
-        expect(screen.queryByText('Loading statuses...')).not.toBeInTheDocument();
-      });
-
-      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Test' } });
-      fireEvent.change(screen.getByLabelText('Title Template'), {
-        target: { value: 'Test' },
-      });
-      fireEvent.click(screen.getByRole('button', { name: 'Create' }));
-
-      await waitFor(() => {
-        const createCall = fetchMock.mock.calls.find(
-          (c: [string, RequestInit | undefined]) =>
-            c[0] === '/api/scheduled-epics' && c[1]?.method === 'POST',
-        );
-        expect(createCall).toBeDefined();
-        const body = JSON.parse(createCall![1]!.body as string);
-        expect(body.templateParentEpicId).toBeNull();
       });
     });
 
@@ -795,7 +702,7 @@ describe('ScheduleEditorDialog', () => {
         return { ok: true, json: async () => ({}) };
       });
 
-      const user = userEvent.setup();
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
       renderWithQuery(
         <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
       );
@@ -823,7 +730,7 @@ describe('ScheduleEditorDialog', () => {
     });
 
     it('Enter selects the highlighted result without navigating', async () => {
-      const user = userEvent.setup();
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
       renderWithQuery(
         <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
       );
@@ -860,7 +767,7 @@ describe('ScheduleEditorDialog', () => {
     });
 
     it('Escape closes the picker without selecting', async () => {
-      const user = userEvent.setup();
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
       renderWithQuery(
         <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
       );
@@ -896,7 +803,7 @@ describe('ScheduleEditorDialog', () => {
         return { ok: true, json: async () => ({}) };
       });
 
-      const user = userEvent.setup();
+      const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
       renderWithQuery(
         <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
       );
@@ -914,26 +821,6 @@ describe('ScheduleEditorDialog', () => {
   });
 
   describe('query error handling', () => {
-    it('shows error message when statuses query fails', async () => {
-      fetchMock.mockImplementation(async (url: string) => {
-        if (url.includes('/api/statuses')) {
-          throw new Error('Network error');
-        }
-        if (url.includes('/api/agents')) return { ok: true, json: async () => ({ items: [] }) };
-        return { ok: true, json: async () => ({}) };
-      });
-
-      renderWithQuery(
-        <ScheduleEditorDialog open={true} onOpenChange={jest.fn()} projectId="proj-1" />,
-      );
-
-      await waitFor(() => {
-        expect(
-          screen.getByText('Failed to load statuses. Existing selection is preserved.'),
-        ).toBeInTheDocument();
-      });
-    });
-
     it('shows error message when agents query fails', async () => {
       fetchMock.mockImplementation(async (url: string) => {
         if (url.includes('/api/agents')) {

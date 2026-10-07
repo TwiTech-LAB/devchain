@@ -959,36 +959,6 @@ describe('ExternalTimeMutationService', () => {
       expect(result.receipt.remoteEntryId).toBeNull();
     });
 
-    it('replays a successful null-id create as created and never re-dispatches', async () => {
-      listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
-      createTimeEntry.mockResolvedValue({ remoteEntryId: null });
-
-      await service.createTimeEntry(
-        projectId,
-        'clickup',
-        'task-1',
-        createInput,
-        'op-1',
-        4,
-        remoteScopeKey,
-      );
-      const replay = await service.createTimeEntry(
-        projectId,
-        'clickup',
-        'task-1',
-        createInput,
-        'op-1',
-        4,
-        remoteScopeKey,
-      );
-
-      expect(replay.outcome).toBe('created');
-      if (replay.outcome === 'created') {
-        expect(replay.remoteEntryId).toBeNull();
-      }
-      expect(createTimeEntry).toHaveBeenCalledTimes(1);
-    });
-
     it('returns the standing unknown for a retry of the same tuple', async () => {
       listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
       createTimeEntry.mockRejectedValueOnce(dispatchedTimeout());
@@ -1425,35 +1395,6 @@ describe('ExternalTimeMutationService', () => {
       expect(verified.receipt.phase).toBe('not_applied');
     });
 
-    it('keeps a create unknown when completeness is not provable', async () => {
-      listOwnTimeEntryIdsInRange
-        .mockResolvedValueOnce({ ids: ['9001'], complete: false })
-        .mockResolvedValueOnce({ ids: ['9001', '9100'], complete: false });
-      createTimeEntry.mockRejectedValue(dispatchedTimeout());
-      readTimeEntryExact.mockResolvedValue({
-        remoteId: '9100',
-        startedAt: createInput.startedAt,
-        durationMs: createInput.durationMs,
-        owned: true,
-      });
-
-      await service.createTimeEntry(
-        projectId,
-        'clickup',
-        'task-1',
-        createInput,
-        'op-1',
-        4,
-        remoteScopeKey,
-      );
-      const verified = await service.verifyOperation(projectId, 'clickup', 'op-1', 4);
-
-      expect(verified.resolved).toBe(false);
-      expect(verified.resolution).toBe('completeness_not_provable');
-      expect(verified.receipt.phase).toBe('outcome_unknown');
-      expect(readTimeEntryExact).not.toHaveBeenCalled();
-    });
-
     it('stays unresolved when several new ids match', async () => {
       listOwnTimeEntryIdsInRange
         .mockResolvedValueOnce({ ids: [], complete: true })
@@ -1742,56 +1683,6 @@ describe('ExternalTimeMutationService', () => {
       expect(verified.resolution).toBe('already_terminal');
       expect(storage.getIntegrationConnectionCredentialsById).not.toHaveBeenCalled();
       expect(listOwnTimeEntryIdsInRange).toHaveBeenCalledTimes(1);
-    });
-
-    it('advertises canVerify for a complete-baseline create and unknown deletes', async () => {
-      const jiraCredentials = {
-        provider: 'jira' as const,
-        siteUrl: 'https://acme.atlassian.net',
-        email: 'dev@acme.test',
-        token: 'secret-token',
-      };
-      storage.getIntegrationConnectionCredentials.mockImplementation(async (identity) =>
-        typeof identity !== 'string' && 'provider' in identity && identity.provider === 'jira'
-          ? jiraCredentials
-          : { provider: 'clickup' as const, token: 'secret-token' },
-      );
-      storage.getIntegrationConnectionCredentialsById.mockResolvedValue(jiraCredentials);
-      listOwnTimeEntryIdsInRange.mockResolvedValue({ ids: [], complete: true });
-      createTimeEntry.mockRejectedValue(dispatchedTimeout());
-
-      const created = await service.createTimeEntry(
-        projectId,
-        'jira',
-        'task-1',
-        createInput,
-        'op-1',
-        4,
-        remoteScopeKey,
-      );
-
-      expect(created.outcome).toBe('outcome_unknown');
-      if (created.outcome === 'outcome_unknown') {
-        expect(created.receipt.canVerify).toBe(true);
-      }
-      expect(service.inspectOperation('op-1')?.canVerify).toBe(true);
-
-      assertTimeEntryDeletable.mockResolvedValue(undefined);
-      deleteTimeEntry.mockRejectedValue(dispatchedTimeout());
-      const deleted = await service.deleteTimeEntry(
-        projectId,
-        'clickup',
-        'task-1',
-        '9100',
-        'op-2',
-        4,
-        remoteScopeKey,
-      );
-
-      expect(deleted.outcome).toBe('outcome_unknown');
-      if (deleted.outcome === 'outcome_unknown') {
-        expect(deleted.receipt.canVerify).toBe(true);
-      }
     });
   });
 

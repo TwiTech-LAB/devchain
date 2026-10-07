@@ -21,12 +21,6 @@ function makeStep(overrides: Partial<SerializedSemanticStep> = {}): SerializedSe
 }
 
 describe('ThinkingBlock', () => {
-  it('renders collapsed trigger with Thinking label', () => {
-    render(<ThinkingBlock step={makeStep()} />);
-    expect(screen.getByTestId('thinking-block-trigger')).toBeInTheDocument();
-    expect(screen.getByText('Thinking')).toBeInTheDocument();
-  });
-
   it('shows token count badge when estimatedTokens is available', () => {
     render(<ThinkingBlock step={makeStep({ estimatedTokens: 1300 })} />);
     const badge = screen.getByTestId('thinking-token-badge');
@@ -80,7 +74,9 @@ describe('ThinkingBlock', () => {
     expect(screen.queryByTestId('thinking-block-content')).not.toBeInTheDocument();
 
     // Click to expand
+    expect(screen.getByTestId('thinking-block-trigger')).toHaveAttribute('data-state', 'closed');
     fireEvent.click(screen.getByTestId('thinking-block-trigger'));
+    expect(screen.getByTestId('thinking-block-trigger')).toHaveAttribute('data-state', 'open');
     expect(screen.getByTestId('thinking-block-content')).toBeInTheDocument();
     expect(screen.getByText('Let me analyze this problem step by step.')).toBeInTheDocument();
   });
@@ -109,16 +105,6 @@ describe('ThinkingBlock', () => {
   it('does not show show-more for short text', () => {
     render(<ThinkingBlock step={makeStep()} />);
     fireEvent.click(screen.getByTestId('thinking-block-trigger'));
-    expect(screen.queryByTestId('thinking-show-more')).not.toBeInTheDocument();
-  });
-
-  it('does not truncate text at old 3000-char threshold', () => {
-    const text3k = 'B'.repeat(3000);
-    render(<ThinkingBlock step={makeStep({ content: { thinkingText: text3k } })} />);
-    fireEvent.click(screen.getByTestId('thinking-block-trigger'));
-
-    const content = screen.getByTestId('thinking-block-content');
-    expect(content.textContent).toBe(text3k);
     expect(screen.queryByTestId('thinking-show-more')).not.toBeInTheDocument();
   });
 

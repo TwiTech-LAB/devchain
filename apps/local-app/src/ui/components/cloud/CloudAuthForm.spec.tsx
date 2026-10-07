@@ -60,16 +60,16 @@ describe('CloudAuthForm', () => {
   }
 
   describe('idle mode', () => {
-    it('renders three auth options: GitHub, magic link, QR code', () => {
+    it('shows all authentication entry points', () => {
       renderForm();
-      expect(screen.getByRole('button', { name: /sign in with github/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /send magic link/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /sign in with qr code/i })).toBeInTheDocument();
-    });
-
-    it('renders the QR sign-in button with correct testid', () => {
-      renderForm();
-      expect(screen.getByTestId('qr-sign-in-button')).toBeInTheDocument();
+      {
+        expect(screen.getByRole('button', { name: /sign in with github/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /send magic link/i })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /sign in with qr code/i })).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByTestId('qr-sign-in-button')).toBeInTheDocument();
+      }
     });
   });
 
@@ -92,28 +92,6 @@ describe('CloudAuthForm', () => {
   });
 
   describe('QR mode', () => {
-    it('transitions to QR mode when QR button is clicked', () => {
-      renderForm();
-      fireEvent.click(screen.getByRole('button', { name: /sign in with qr code/i }));
-      expect(screen.getByTestId('qr-display-panel')).toBeInTheDocument();
-      expect(screen.getByText('Sign in with QR code')).toBeInTheDocument();
-    });
-
-    it('does not render GitHub/magic link when in QR mode', () => {
-      renderForm();
-      fireEvent.click(screen.getByRole('button', { name: /sign in with qr code/i }));
-      expect(
-        screen.queryByRole('button', { name: /sign in with github/i }),
-      ).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /send magic link/i })).not.toBeInTheDocument();
-    });
-
-    it('calls useQrAuth with claim mode for This PC by default', () => {
-      renderForm();
-      fireEvent.click(screen.getByRole('button', { name: /sign in with qr code/i }));
-      expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'claim', HOME_BACKEND);
-    });
-
     it('pairs the QR sign-in with the selected remote backend', () => {
       renderForm('r1', 'lab-vm');
       fireEvent.click(screen.getByRole('button', { name: /sign in with qr code/i }));
@@ -121,7 +99,7 @@ describe('CloudAuthForm', () => {
       expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'claim', 'r1');
     });
 
-    it('calls start on mount', () => {
+    it('starts QR sign-in on the home backend and replaces other auth controls', () => {
       const start = jest.fn();
       mockUseQrAuth.mockReturnValue({
         status: 'idle',
@@ -138,8 +116,23 @@ describe('CloudAuthForm', () => {
         retry: jest.fn(),
       });
       renderForm();
-      fireEvent.click(screen.getByRole('button', { name: /sign in with qr code/i }));
-      expect(start).toHaveBeenCalledTimes(1);
+      {
+        fireEvent.click(screen.getByRole('button', { name: /sign in with qr code/i }));
+        expect(start).toHaveBeenCalledTimes(1);
+      }
+      {
+        expect(screen.getByTestId('qr-display-panel')).toBeInTheDocument();
+        expect(screen.getByText('Sign in with QR code')).toBeInTheDocument();
+      }
+      {
+        expect(
+          screen.queryByRole('button', { name: /sign in with github/i }),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /send magic link/i })).not.toBeInTheDocument();
+      }
+      {
+        expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'claim', HOME_BACKEND);
+      }
     });
 
     it('returns to idle mode when Cancel is clicked', () => {

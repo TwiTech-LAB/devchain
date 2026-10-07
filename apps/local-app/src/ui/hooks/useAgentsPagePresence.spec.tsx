@@ -79,23 +79,7 @@ describe('useAgentsPagePresence', () => {
   // ---- Project scoping ----
 
   describe('project scoping', () => {
-    it('returns the fetched presence map for the project', async () => {
-      const presence: AgentPresenceMap = {
-        'agent-1': { online: true, sessionId: 'sess-1' },
-      };
-      mockFetchPresence.mockResolvedValue(presence);
-      const { wrapper } = createWrapper();
-      const { result } = renderHook(() => useAgentsPagePresence({ projectId: 'proj-1' }), {
-        wrapper,
-      });
-
-      await waitFor(() => {
-        expect(result.current).toEqual(presence);
-      });
-      expect(mockFetchPresence).toHaveBeenCalledWith('proj-1', expect.any(Function));
-    });
-
-    it('caches presence under the exact agent-presence query key for the project', async () => {
+    it('returns project presence with its exact cache key and 2000 ms polling interval', async () => {
       const presence: AgentPresenceMap = {
         'agent-1': { online: true, sessionId: 'sess-1' },
       };
@@ -108,8 +92,18 @@ describe('useAgentsPagePresence', () => {
       await waitFor(() => {
         expect(result.current).toEqual(presence);
       });
-
+      expect(mockFetchPresence).toHaveBeenCalledWith('proj-1', expect.any(Function));
       expect(queryClient.getQueryData(['agent-presence', 'proj-1'])).toEqual(presence);
+      const cachedOptions: unknown = queryClient
+        .getQueryCache()
+        .find({ queryKey: ['agent-presence', 'proj-1'], exact: true })?.options;
+      expect(
+        cachedOptions !== null &&
+          typeof cachedOptions === 'object' &&
+          'refetchInterval' in cachedOptions
+          ? cachedOptions.refetchInterval
+          : undefined,
+      ).toBe(2000);
     });
   });
 
@@ -133,81 +127,30 @@ describe('useAgentsPagePresence', () => {
     });
   });
 
-  // ---- Polling ----
-
-  describe('polling', () => {
-    it('keeps the 2000 ms refresh interval on the presence query', async () => {
-      mockFetchPresence.mockResolvedValue({});
-      const { wrapper, queryClient } = createWrapper();
-      const { result } = renderHook(() => useAgentsPagePresence({ projectId: 'proj-1' }), {
-        wrapper,
-      });
-
-      await waitFor(() => {
-        expect(result.current).toEqual({});
-      });
-
-      const cachedOptions: unknown = queryClient.getQueryCache().find({
-        queryKey: ['agent-presence', 'proj-1'],
-        exact: true,
-      })?.options;
-      expect(
-        cachedOptions !== null &&
-          typeof cachedOptions === 'object' &&
-          'refetchInterval' in cachedOptions
-          ? cachedOptions.refetchInterval
-          : undefined,
-      ).toBe(2000);
-    });
-  });
-
   // ---- Realtime refresh ----
 
   describe('realtime refresh', () => {
-    it('refetches presence when an agent-presence envelope arrives', async () => {
-      const first: AgentPresenceMap = { 'agent-1': { online: false } };
-      const second: AgentPresenceMap = { 'agent-1': { online: true, sessionId: 'sess-1' } };
+    it.each([
+      ['agent/abc', 'presence', false, true],
+      ['session/abc', 'activity', true, false],
+    ] as const)('refetches for %s / %s', async (topic, type, initialOnline, nextOnline) => {
+      const first: AgentPresenceMap = {
+        'agent-1': { online: initialOnline, ...(initialOnline ? { sessionId: 'sess-1' } : {}) },
+      };
+      const second: AgentPresenceMap = {
+        'agent-1': { online: nextOnline, ...(nextOnline ? { sessionId: 'sess-1' } : {}) },
+      };
       mockFetchPresence.mockResolvedValue(first);
       const { wrapper } = createWrapper();
       const { result } = renderHook(() => useAgentsPagePresence({ projectId: 'proj-1' }), {
         wrapper,
       });
-
-      await waitFor(() => {
-        expect(result.current).toEqual(first);
-      });
-
+      await waitFor(() => expect(result.current).toEqual(first));
       mockFetchPresence.mockResolvedValue(second);
       await act(async () => {
-        captureMessageHandler()(makeEnvelope({ topic: 'agent/abc', type: 'presence' }));
+        captureMessageHandler()(makeEnvelope({ topic, type }));
       });
-
-      await waitFor(() => {
-        expect(result.current).toEqual(second);
-      });
-    });
-
-    it('refetches presence when a session-activity envelope arrives', async () => {
-      const first: AgentPresenceMap = { 'agent-1': { online: true, sessionId: 'sess-1' } };
-      const second: AgentPresenceMap = { 'agent-1': { online: false } };
-      mockFetchPresence.mockResolvedValue(first);
-      const { wrapper } = createWrapper();
-      const { result } = renderHook(() => useAgentsPagePresence({ projectId: 'proj-1' }), {
-        wrapper,
-      });
-
-      await waitFor(() => {
-        expect(result.current).toEqual(first);
-      });
-
-      mockFetchPresence.mockResolvedValue(second);
-      await act(async () => {
-        captureMessageHandler()(makeEnvelope({ topic: 'session/abc', type: 'activity' }));
-      });
-
-      await waitFor(() => {
-        expect(result.current).toEqual(second);
-      });
+      await waitFor(() => expect(result.current).toEqual(second));
     });
 
     it('ignores envelopes whose topic and type do not pair with a registry namespace', async () => {
@@ -221,14 +164,18 @@ describe('useAgentsPagePresence', () => {
         expect(result.current).toEqual({ 'agent-1': { online: true } });
       });
 
-      await act(async () => {
-        captureMessageHandler()(
-          makeEnvelope({ topic: 'agent/abc', type: 'activity', payload: {} }),
-        );
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      });
-
-      expect(mockFetchPresence).toHaveBeenCalledTimes(1);
+      jest.useFakeTimers();
+      try {
+        await act(async () => {
+          captureMessageHandler()(
+            makeEnvelope({ topic: 'agent/abc', type: 'activity', payload: {} }),
+          );
+          await jest.advanceTimersByTimeAsync(100);
+        });
+        expect(mockFetchPresence).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 });

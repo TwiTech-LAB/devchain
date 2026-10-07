@@ -107,16 +107,6 @@ describe('ExternalEditSessionStore', () => {
       expect(store.touch(created.sessionId).ok).toBe(false);
       expect(store.size()).toBe(0);
     });
-
-    it('expires by absolute age even when constantly touched', () => {
-      const store = smallStore({ idleLimitMs: 10_000, absoluteLimitMs: 5_000 }, clock);
-      const created = (store.create(baseInput()) as { value: { sessionId: string } }).value;
-      nowMs += 4_000;
-      expect(store.touch(created.sessionId).ok).toBe(true);
-      // Idle has not elapsed, but the absolute limit has.
-      nowMs += 1_100;
-      expect(store.get(created.sessionId).ok).toBe(false);
-    });
   });
 
   describe('state machine', () => {

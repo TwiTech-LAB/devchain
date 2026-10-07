@@ -1,20 +1,10 @@
 import { PricingService } from './pricing.service';
-import type { ModelPricing } from './pricing.service';
 
 describe('PricingService', () => {
   let service: PricingService;
 
   beforeAll(() => {
     service = new PricingService();
-  });
-
-  describe('constructor', () => {
-    it('should load pricing data from bundled JSON', () => {
-      // The service loads pricing.json at construction — should have entries
-      expect(service).toBeDefined();
-      // At minimum, some Claude models should be present in the bundled data
-      expect(service.getPricing('nonexistent-model-xyz')).toBeNull();
-    });
   });
 
   describe('getPricing', () => {
@@ -29,28 +19,30 @@ describe('PricingService', () => {
       expect(service.getPricing('CLAUDE-SONNET-4-5')).toEqual(sonnet);
     });
 
-    it('should return pricing entry with required fields for known model', () => {
-      // Try a few common model names that should exist in LiteLLM data
-      const candidates = [
-        'claude-3-5-sonnet-20241022',
-        'claude-3-5-haiku-20241022',
-        'claude-3-opus-20240229',
-        'claude-sonnet-4-20250514',
-        'claude-sonnet-4-5',
-      ];
-
-      let found: ModelPricing | null = null;
-      for (const name of candidates) {
-        found = service.getPricing(name);
-        if (found) break;
-      }
-
-      // At least one common model should exist in the bundled data
-      expect(found).not.toBeNull();
-      if (found) {
-        expect(typeof found.input_cost_per_token).toBe('number');
-        expect(typeof found.output_cost_per_token).toBe('number');
-      }
+    it.each([
+      {
+        family: 'Claude',
+        candidates: [
+          'claude-3-5-sonnet-20241022',
+          'claude-3-5-haiku-20241022',
+          'claude-3-opus-20240229',
+          'claude-sonnet-4-20250514',
+          'claude-sonnet-4-5',
+        ],
+      },
+      { family: 'OpenAI', candidates: ['gpt-4o', 'o3', 'o4-mini', 'gpt-4.1', 'codex-mini-latest'] },
+      {
+        family: 'Gemini',
+        candidates: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+      },
+    ])('finds pricing fields for the $family family', ({ candidates }) => {
+      const found = candidates.map((name) => service.getPricing(name)).find(Boolean);
+      expect(found).toEqual(
+        expect.objectContaining({
+          input_cost_per_token: expect.any(Number),
+          output_cost_per_token: expect.any(Number),
+        }),
+      );
     });
 
     // LiteLLM drops retired direct-API models; pricing:update keeps them so old
@@ -69,12 +61,8 @@ describe('PricingService', () => {
       expect(cost).toBe(0);
     });
 
-    it('should return 0 when all tokens are 0', () => {
-      const cost = service.calculateMessageCost('claude-3-5-sonnet-20241022', 0, 0, 0, 0);
-      expect(cost).toBe(0);
-    });
-
     it('should calculate cost for a known model with tokens', () => {
+      expect.hasAssertions();
       // Find a model with known pricing
       const candidates = [
         'claude-3-5-sonnet-20241022',
@@ -96,12 +84,11 @@ describe('PricingService', () => {
         expect(cost).toBeCloseTo(expectedInput + expectedOutput, 10);
         return; // Test passed with this model
       }
-
-      // If no model found, skip gracefully
-      console.warn('No known model found in pricing data for cost calculation test');
+      throw new Error('No candidate model has pricing for cost calculation');
     });
 
     it('should include cache read and creation costs', () => {
+      expect.hasAssertions();
       const candidates = ['claude-3-5-sonnet-20241022', 'claude-sonnet-4-20250514'];
 
       for (const name of candidates) {
@@ -119,6 +106,7 @@ describe('PricingService', () => {
 
   describe('tiered pricing', () => {
     it('should apply tiered rate above 200k tokens', () => {
+      expect.hasAssertions();
       // Find a model with tiered pricing
       const candidates = [
         'claude-3-5-sonnet-20241022',
@@ -143,6 +131,7 @@ describe('PricingService', () => {
     });
 
     it('should use base rate for tokens at exactly 200k', () => {
+      expect.hasAssertions();
       const candidates = ['claude-3-5-sonnet-20241022', 'claude-sonnet-4-20250514'];
 
       for (const name of candidates) {
@@ -161,40 +150,8 @@ describe('PricingService', () => {
   });
 
   describe('OpenAI model pricing', () => {
-    it('should find pricing for common OpenAI models', () => {
-      const candidates = ['gpt-4o', 'o3', 'o4-mini', 'gpt-4.1', 'codex-mini-latest'];
-
-      let found: ModelPricing | null = null;
-      for (const name of candidates) {
-        found = service.getPricing(name);
-        if (found) break;
-      }
-
-      expect(found).not.toBeNull();
-      if (found) {
-        expect(typeof found.input_cost_per_token).toBe('number');
-        expect(typeof found.output_cost_per_token).toBe('number');
-      }
-    });
-
-    it('should calculate cost for OpenAI model with cached tokens', () => {
-      const candidates = ['gpt-4o', 'o3', 'gpt-4.1'];
-
-      for (const name of candidates) {
-        const pricing = service.getPricing(name);
-        if (!pricing || !pricing.cache_read_input_token_cost) continue;
-
-        const cost = service.calculateMessageCost(name, 1000, 500, 200, 0);
-
-        const expectedInput = 1000 * pricing.input_cost_per_token;
-        const expectedOutput = 500 * pricing.output_cost_per_token;
-        const expectedCacheRead = 200 * (pricing.cache_read_input_token_cost ?? 0);
-        expect(cost).toBeCloseTo(expectedInput + expectedOutput + expectedCacheRead, 10);
-        return;
-      }
-    });
-
     it('should handle OpenAI models without cache_creation_input_token_cost', () => {
+      expect.hasAssertions();
       const candidates = ['gpt-4o', 'o3', 'gpt-4.1'];
 
       for (const name of candidates) {
@@ -206,72 +163,6 @@ describe('PricingService', () => {
         const cost = service.calculateMessageCost(name, 0, 0, 0, 1000);
         const expectedCacheCreation = 1000 * (pricing.cache_creation_input_token_cost ?? 0);
         expect(cost).toBeCloseTo(expectedCacheCreation, 10);
-        return;
-      }
-    });
-  });
-
-  describe('Gemini model pricing', () => {
-    it('should find pricing for common Gemini models', () => {
-      const candidates = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
-
-      let found: ModelPricing | null = null;
-      for (const name of candidates) {
-        found = service.getPricing(name);
-        if (found) break;
-      }
-
-      expect(found).not.toBeNull();
-      if (found) {
-        expect(typeof found.input_cost_per_token).toBe('number');
-        expect(typeof found.output_cost_per_token).toBe('number');
-      }
-    });
-
-    it('should calculate cost for Gemini model with tokens', () => {
-      const candidates = ['gemini-2.5-pro', 'gemini-2.5-flash'];
-
-      for (const name of candidates) {
-        const pricing = service.getPricing(name);
-        if (!pricing) continue;
-
-        const cost = service.calculateMessageCost(name, 1000, 500, 0, 0);
-
-        const expectedInput = 1000 * pricing.input_cost_per_token;
-        const expectedOutput = 500 * pricing.output_cost_per_token;
-        expect(cost).toBeCloseTo(expectedInput + expectedOutput, 10);
-        return;
-      }
-    });
-
-    it('should handle Gemini free-tier models gracefully (cost = $0)', () => {
-      const candidates = [
-        'gemini-2.0-flash-thinking-exp',
-        'gemini-2.0-flash-thinking-exp-01-21',
-        'gemini-flash-experimental',
-      ];
-
-      for (const name of candidates) {
-        const pricing = service.getPricing(name);
-        if (!pricing || pricing.input_cost_per_token !== 0) continue;
-
-        // Free-tier model: cost should be 0 with no warnings
-        const cost = service.calculateMessageCost(name, 10000, 5000, 0, 0);
-        expect(cost).toBe(0);
-        return;
-      }
-    });
-
-    it('should calculate Gemini cached token cost', () => {
-      const candidates = ['gemini-2.5-pro', 'gemini-2.5-flash'];
-
-      for (const name of candidates) {
-        const pricing = service.getPricing(name);
-        if (!pricing || !pricing.cache_read_input_token_cost) continue;
-
-        const cost = service.calculateMessageCost(name, 0, 0, 1000, 0);
-        const expectedCacheRead = 1000 * (pricing.cache_read_input_token_cost ?? 0);
-        expect(cost).toBeCloseTo(expectedCacheRead, 10);
         return;
       }
     });

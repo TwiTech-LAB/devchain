@@ -116,6 +116,13 @@ describe('CurrentPoolsPanel', () => {
     expect(screen.getByText('1 msg')).toBeInTheDocument();
     expect(screen.getByText('~5s wait')).toBeInTheDocument();
     expect(screen.getByText('~2s wait')).toBeInTheDocument();
+
+    {
+      const card = await screen.findByRole('button', {
+        name: /Test Agent: 3 messages, waiting 5 seconds/,
+      });
+      expect(card).toBeInTheDocument();
+    }
   });
 
   it('shows empty state when no pools', async () => {
@@ -301,8 +308,25 @@ describe('CurrentPoolsPanel', () => {
       });
     }
 
-    it('shows Send now for eligible awaiting_quiet lane', async () => {
-      setupWithPools([forcePool]);
+    it.each([
+      { name: 'eligible quiet', pool: forcePool, agent: 'Force Agent', send: true, label: null },
+      { name: 'idle', pool: onIdlePool, agent: 'Idle Agent', send: true, label: null },
+      {
+        name: 'draft',
+        pool: draftPool,
+        agent: 'Draft Agent',
+        send: false,
+        label: 'Waiting for you to finish typing',
+      },
+      {
+        name: 'before threshold',
+        pool: beforeThresholdPool,
+        agent: 'Before Agent',
+        send: false,
+        label: 'Waiting for terminal quiet',
+      },
+    ])('gates Send now for $name', async ({ pool, agent, send, label }) => {
+      setupWithPools([pool]);
       const { Wrapper } = createWrapper();
       await act(async () => {
         render(
@@ -311,54 +335,13 @@ describe('CurrentPoolsPanel', () => {
           </Wrapper>,
         );
       });
-      expect(
-        await screen.findByRole('button', { name: 'Send now for Force Agent' }),
-      ).toBeInTheDocument();
-    });
-
-    it('shows Send now for on_idle lane with humanHeldMessageCount=0', async () => {
-      setupWithPools([onIdlePool]);
-      const { Wrapper } = createWrapper();
-      await act(async () => {
-        render(
-          <Wrapper>
-            <CurrentPoolsPanel projectId="project-1" />
-          </Wrapper>,
-        );
-      });
-      expect(
-        await screen.findByRole('button', { name: 'Send now for Idle Agent' }),
-      ).toBeInTheDocument();
-    });
-
-    it('never shows Send now for human_draft', async () => {
-      setupWithPools([draftPool]);
-      const { Wrapper } = createWrapper();
-      await act(async () => {
-        render(
-          <Wrapper>
-            <CurrentPoolsPanel projectId="project-1" />
-          </Wrapper>,
-        );
-      });
-      await screen.findByText('Draft Agent');
-      expect(screen.queryByRole('button', { name: /Send now/i })).not.toBeInTheDocument();
-      expect(screen.getByText('Waiting for you to finish typing')).toBeInTheDocument();
-    });
-
-    it('shows hold label without Send now before forceEligibleAt', async () => {
-      setupWithPools([beforeThresholdPool]);
-      const { Wrapper } = createWrapper();
-      await act(async () => {
-        render(
-          <Wrapper>
-            <CurrentPoolsPanel projectId="project-1" />
-          </Wrapper>,
-        );
-      });
-      await screen.findByText('Before Agent');
-      expect(screen.queryByRole('button', { name: /Send now/i })).not.toBeInTheDocument();
-      expect(screen.getByText('Waiting for terminal quiet')).toBeInTheDocument();
+      await screen.findByText(agent);
+      if (send)
+        expect(screen.getByRole('button', { name: 'Send now for ' + agent })).toBeInTheDocument();
+      else {
+        expect(screen.queryByRole('button', { name: /Send now/i })).not.toBeInTheDocument();
+        expect(screen.getByText(label!)).toBeInTheDocument();
+      }
     });
 
     it('opens a confirmation dialog on Send now click; Cancel sends nothing', async () => {
@@ -479,22 +462,5 @@ describe('CurrentPoolsPanel', () => {
       const sendBtn = screen.getByRole('button', { name: 'Send now for Force Agent' });
       expect(sendBtn.closest('button[aria-pressed]')).toBeNull();
     });
-  });
-
-  it('has accessible pool card labels', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <CurrentPoolsPanel projectId="project-1" />
-        </Wrapper>,
-      );
-    });
-
-    const card = await screen.findByRole('button', {
-      name: /Test Agent: 3 messages, waiting 5 seconds/,
-    });
-    expect(card).toBeInTheDocument();
   });
 });

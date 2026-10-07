@@ -1,15 +1,13 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { ConflictError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import type { Epic } from '../models/domain.models';
 import { IntegrationCredentialCipher } from './integration-credential-cipher';
 import { LocalStorageService } from './local-storage.service';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 describe('LocalStorageService integrations', () => {
   let sqlite: Database.Database;
@@ -17,8 +15,7 @@ describe('LocalStorageService integrations', () => {
   let secretDirectory: string;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
     secretDirectory = mkdtempSync(join(tmpdir(), 'devchain-integration-storage-'));
     service = new LocalStorageService(

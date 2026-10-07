@@ -1,7 +1,6 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import { EventLogService } from '../events/services/event-log.service';
 import type { EventsService } from '../events/services/events.service';
 import type { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
@@ -15,7 +14,6 @@ import {
 } from './services/agent-time-accounting.service';
 import { EpicTimeStore } from './services/epic-time.store';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../drizzle');
 const NOW = new Date('2026-08-30T08:00:00.000Z');
 const PROJECT_ID = 'project-convergence';
 const TEAM_ID = 'team-convergence';
@@ -36,8 +34,7 @@ describe('Epic-time team batch convergence', () => {
 
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(NOW);
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
     db = drizzle(sqlite) as unknown as BetterSQLite3Database;
     seedIdentity();

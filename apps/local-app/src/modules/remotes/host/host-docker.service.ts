@@ -1,12 +1,15 @@
+import { projectCompose } from '../docker/docker-project-compose';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve, sep, dirname, isAbsolute, normalize } from 'node:path';
+import { isIPv4 } from 'node:net';
+import { basename, join, resolve, dirname, isAbsolute, normalize } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { AppError } from '../../../common/errors/error-types';
+import { assertVmHomePath, inside, nearestExisting } from '../../../common/filesystem/vm-home-path';
 import {
   DockerEngineClient,
   DockerEngineError,
@@ -22,7 +25,16 @@ import {
   writeDockerArchive,
 } from '../../core/controllers/docker-archive';
 import { dockerFilesystem } from '../../core/controllers/docker-runtime';
-import { projectDockerCreate, DockerSettings } from '../../core/controllers/docker-settings';
+import {
+  dockerImageMetadata,
+  type DockerImageInspectMetadata,
+} from '../../core/controllers/docker-image-metadata';
+import {
+  ipv4Ranges,
+  overlappingIPv4Range,
+  projectDockerCreate,
+  DockerSettings,
+} from '../../core/controllers/docker-settings';
 import {
   COMPOSE_PROJECT_LABEL,
   DOCKER_PROJECT_LABEL,
@@ -39,9 +51,11 @@ import {
   DockerBindPrepare,
   DockerImageLoadResult,
 } from './host-docker.dto';
+import { HOST_IPV4_ROUTES, readHostIPv4Routes, type HostIPv4RouteReader } from './host-ipv4-routes';
 
 type Labels = Record<string, string>;
 type Volume = { Name: string; Labels?: Labels };
+type MatchedImage = { ref: string; id: string; metadata: Record<string, unknown> };
 type Container = {
   Id: string;
   Config: { Labels?: Labels };
@@ -50,7 +64,12 @@ type Container = {
 
 @Injectable()
 export class HostDockerService {
-  constructor(private readonly archives: DockerArchiveJournal) {}
+  constructor(
+    private readonly archives: DockerArchiveJournal,
+    @Optional()
+    @Inject(HOST_IPV4_ROUTES)
+    private readonly routes: HostIPv4RouteReader = readHostIPv4Routes,
+  ) {}
   async version(signal?: AbortSignal): Promise<DockerVersion> {
     return (await DockerEngineClient.connect(signal)).version(signal);
   }
@@ -69,6 +88,7 @@ export class HostDockerService {
     signal?: AbortSignal,
     apiVersion?: string,
     holderVolumes?: string[],
+    networkNames?: string[],
   ): Promise<DockerScanResult> {
     const client = await this.engine(signal, apiVersion);
     const info = client.connectedInfo ?? (await client.info(signal));
@@ -77,6 +97,7 @@ export class HostDockerService {
     const containers = await client.json<
       Array<{
         Id: string;
+        ImageID?: string;
         Names: string[];
         Labels?: Labels;
         Mounts?: Array<{ Type: string; Name?: string; Source?: string; Destination: string }>;
@@ -85,6 +106,32 @@ export class HostDockerService {
     const volumes = await client.json<{
       Volumes: Array<{ Name: string; Driver: string; Labels?: Labels }> | null;
     }>('GET', '/volumes', undefined, { signal });
+    let networks: DockerScanResult['networks'];
+    let routes: DockerScanResult['routes'];
+    if (networkNames) {
+      const listed = await client.json<
+        Array<{ Name: string; IPAM?: { Config?: Array<{ Subnet?: string }> } }>
+      >('GET', '/networks', undefined, { signal });
+      networks = await Promise.all(
+        listed.map(async (network) => {
+          const subnets = ipv4Ranges(network.IPAM?.Config).map((range) => range.Subnet);
+          if (!networkNames.includes(network.Name)) return { name: network.Name, subnets };
+          const inspect = await client.json<{
+            Containers?: Record<string, { Name: string; IPv4Address?: string }>;
+          }>('GET', `/networks/${encodeURIComponent(network.Name)}`, undefined, { signal });
+          const addresses = Object.entries(inspect.Containers ?? {}).flatMap(
+            ([containerId, endpoint]) => {
+              const address = endpoint.IPv4Address?.split('/')[0];
+              return address && isIPv4(address)
+                ? [{ address, containerId, containerName: endpoint.Name.replace(/^\//, '') }]
+                : [];
+            },
+          );
+          return { name: network.Name, subnets, addresses };
+        }),
+      );
+      routes = await this.routes(signal);
+    }
     const existence: DockerScanResult['paths'] = [];
     for (const path of paths) {
       signal?.throwIfAborted();
@@ -138,6 +185,7 @@ export class HostDockerService {
       architecture: info.Architecture,
       containers: containers.map((container) => ({
         id: container.Id,
+        ...(container.ImageID ? { image: container.ImageID } : {}),
         ...(metadata.has(container.Id) && { metadata: metadata.get(container.Id) }),
         name: container.Names[0]?.replace(/^\//, '') ?? container.Id,
         labels: container.Labels ?? {},
@@ -154,6 +202,7 @@ export class HostDockerService {
         labels: volume.Labels ?? {},
       })),
       paths: existence,
+      ...(networks ? { networks, routes } : {}),
     };
   }
 
@@ -212,14 +261,61 @@ export class HostDockerService {
     return { ids: present };
   }
 
+  async matchImages(
+    refs: string[],
+    signal?: AbortSignal,
+    apiVersion?: string,
+  ): Promise<{ images: MatchedImage[] }> {
+    const client = await this.engine(signal, apiVersion);
+    const images: MatchedImage[] = [];
+    for (const ref of new Set(refs)) {
+      const image = await optionalDockerJson<DockerImageInspectMetadata & { Id: string }>(
+        client,
+        `/images/${encodeURIComponent(ref)}/json`,
+        signal,
+      );
+      if (image) images.push({ ref, id: image.Id, metadata: dockerImageMetadata(image) });
+    }
+    return { images };
+  }
+
   async loadImage(
     body: Readable,
     signal?: AbortSignal,
     apiVersion?: string,
   ): Promise<DockerImageLoadResult> {
     const client = await this.engine(signal, apiVersion);
+    const references = await uploadToEngine(body, (toEngine) =>
+      this.loadReferences(client, toEngine, signal),
+    );
+    const images = new Map<string, { id: string; layers: string[]; references: string[] }>();
+    for (const reference of references) {
+      const inspect = await optionalDockerJson<{
+        Id: string;
+        RootFS?: { Layers?: string[] };
+      }>(client, `/images/${encodeURIComponent(reference)}/json`, signal);
+      // A reference the engine no longer resolves is skipped; the caller decides
+      // what an empty list means.
+      if (!inspect?.Id) continue;
+      const image = images.get(inspect.Id) ?? {
+        id: inspect.Id,
+        layers: inspect.RootFS?.Layers ?? [],
+        references: [],
+      };
+      if (!image.references.includes(reference)) image.references.push(reference);
+      images.set(inspect.Id, image);
+    }
+    return { images: [...images.values()] };
+  }
+
+  /** The tags and IDs the engine names as it loads the archive. */
+  private async loadReferences(
+    client: DockerEngineClient,
+    archive: Readable,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
     const response = await client.stream('POST', '/images/load?quiet=1', {
-      body,
+      body: archive,
       headers: { 'Content-Type': 'application/x-tar' },
       signal,
     });
@@ -263,20 +359,7 @@ export class HostDockerService {
     } finally {
       response.destroy();
     }
-    const images: DockerImageLoadResult['images'] = [];
-    const seen = new Set<string>();
-    for (const reference of references) {
-      const inspect = await optionalDockerJson<{
-        Id: string;
-        RootFS?: { Layers?: string[] };
-      }>(client, `/images/${encodeURIComponent(reference)}/json`, signal);
-      // A reference the engine no longer resolves is skipped; the caller decides
-      // what an empty list means.
-      if (!inspect?.Id || seen.has(inspect.Id)) continue;
-      seen.add(inspect.Id);
-      images.push({ id: inspect.Id, layers: inspect.RootFS?.Layers ?? [] });
-    }
-    return { images };
+    return references;
   }
 
   async saveImage(id: string, signal?: AbortSignal, apiVersion?: string): Promise<Readable> {
@@ -321,8 +404,21 @@ export class HostDockerService {
       signal,
     );
     if (old) {
-      this.requireOwner(old.Labels, input.projectId, true);
+      // A shared network serves every project that names it, whichever import made it.
+      if (!input.shared) this.requireOwner(old.Labels, input.projectId, true);
       return { Id: old.Id, created: false };
+    }
+    if (input.ipam) {
+      const overlap = overlappingIPv4Range(
+        input.ipam.Config.map((range) => range.Subnet),
+        await this.routes(signal),
+      );
+      if (overlap)
+        throw new AppError(
+          `Network ${input.name} home range overlaps VM on-link route ${overlap}. Change the network range on the PC, then connect again.`,
+          'DOCKER_NETWORK_ROUTE_OVERLAP',
+          409,
+        );
     }
     const created = await client.json<{ Id: string }>(
       'POST',
@@ -333,7 +429,11 @@ export class HostDockerService {
         Internal: input.internal,
         Attachable: input.attachable,
         Options: input.options,
-        Labels: { ...input.labels, [DOCKER_PROJECT_LABEL]: input.projectId },
+        ...(input.ipam ? { IPAM: input.ipam } : {}),
+        // No project owns a shared network, so no project can delete it.
+        Labels: input.shared
+          ? input.labels
+          : { ...input.labels, [DOCKER_PROJECT_LABEL]: input.projectId },
       },
       { signal },
     );
@@ -399,7 +499,9 @@ export class HostDockerService {
     projectId: string,
     signal?: AbortSignal,
     apiVersion?: string,
+    projectRoot?: string,
   ): Promise<void> {
+    await this.validateProjectRoot(projectRoot);
     const client = await this.engine(signal, apiVersion);
     const resource = await client.json<Container & { Labels?: Labels }>(
       'GET',
@@ -411,8 +513,8 @@ export class HostDockerService {
     if (labels?.[DOCKER_PROJECT_LABEL] !== projectId) {
       if (
         kind !== 'containers' ||
-        labels?.[DOCKER_PROJECT_LABEL] ||
-        !(await this.composeHolder(client, resource, projectId, signal))
+        labels?.[DOCKER_PROJECT_LABEL] !== undefined ||
+        !(await this.composeHolder(client, resource, projectId, signal, projectRoot))
       )
         this.requireOwner(labels, projectId);
     }
@@ -437,39 +539,16 @@ export class HostDockerService {
     const helper = await this.archives.create(client, input.image, [layout.mount], signal);
     const hash = createHash('sha256');
     let bytes = 0;
-    const toEngine = new PassThrough();
-    // The digest covers the whole upload: the engine may answer after the tar's end
-    // marker and stop reading, while the remaining bytes still arrive and count.
-    const received = (async () => {
-      for await (const chunk of body as AsyncIterable<Buffer>) {
-        hash.update(chunk);
-        bytes += chunk.length;
-        if (toEngine.destroyed || toEngine.writableEnded) continue;
-        if (!toEngine.write(chunk))
-          await new Promise<void>((done) => {
-            const settle = () => {
-              toEngine.off('drain', settle).off('close', settle);
-              done();
-            };
-            toEngine.on('drain', settle).on('close', settle);
-          });
-      }
-      if (!toEngine.destroyed) toEngine.end();
-    })();
     try {
-      await Promise.all([
-        received,
-        writeDockerArchive(client, helper.id, toEngine, signal, layout.writePath).catch(
-          (error: unknown) => {
-            body.destroy();
-            throw error;
-          },
-        ),
-      ]);
-    } catch (error) {
-      toEngine.destroy();
-      await received.catch(() => undefined);
-      throw error;
+      // The digest covers the whole upload, also the bytes after the engine stopped reading.
+      await uploadToEngine(
+        body,
+        (toEngine) => writeDockerArchive(client, helper.id, toEngine, signal, layout.writePath),
+        (chunk) => {
+          hash.update(chunk);
+          bytes += chunk.length;
+        },
+      );
     } finally {
       await this.archives.cleanup(client, helper);
     }
@@ -480,7 +559,7 @@ export class HostDockerService {
    * Creates bind destinations as this (the VM) user. `replace` empties a data
    * subtree first, so a reconnect leaves no VM-only files; the caller chooses
    * only subtrees it owns, and the home folder itself is never replaced.
-   * Restored data keeps numeric owners, so emptying runs as root in the clear helper.
+   * `copyUIDGID=false` preserves archive owners, so emptying runs as root in the clear helper.
    * A single `file` gets only its folder: the restore writes the file and replaces
    * whatever is at its path.
    */
@@ -489,19 +568,13 @@ export class HostDockerService {
     signal?: AbortSignal,
     apiVersion?: string,
   ): Promise<void> {
-    const home = homedir();
-    const canonicalHome = await realpath(home);
     for (const { path, replace, image, file } of input.paths) {
       signal?.throwIfAborted();
-      // The home folder itself is never a bind destination.
-      if (path === home || !inside(path, home))
-        throw new AppError('Bind paths must be under the VM home', 'DOCKER_BIND_OUTSIDE_HOME', 403);
-      const existing = await nearestExisting(path);
-      const resolved = await realpath(existing);
-      if (!inside(resolved, canonicalHome))
-        throw new AppError('Bind paths must be under the VM home', 'DOCKER_BIND_OUTSIDE_HOME', 403);
-      if (existing === path && (await lstat(path)).isSymbolicLink())
-        throw new AppError('Bind paths must not be links', 'DOCKER_BIND_OUTSIDE_HOME', 403);
+      const { existing, resolved } = await assertVmHomePath(path, {
+        code: 'DOCKER_BIND_OUTSIDE_HOME',
+        message: 'Bind paths must be under the VM home',
+        linkMessage: 'Bind paths must not be links',
+      });
       if (file) {
         await mkdir(dirname(path), { recursive: true });
         continue;
@@ -567,15 +640,17 @@ export class HostDockerService {
   }
 
   /**
-   * Stops one container that belongs to the project: its DevChain label, or a
-   * Compose project that owns one of the project's volumes on this engine.
+   * Stops a container with the project's DevChain label, project-root Compose
+   * labels, or a Compose project that owns an imported volume.
    */
   async stopContainer(
     id: string,
     projectId: string,
     signal?: AbortSignal,
     apiVersion?: string,
+    projectRoot?: string,
   ): Promise<void> {
+    await this.validateProjectRoot(projectRoot);
     const client = await this.engine(signal, apiVersion);
     const container = await client.json<Container>(
       'GET',
@@ -585,11 +660,9 @@ export class HostDockerService {
     );
     const labels = container.Config.Labels ?? {};
     if (labels[DOCKER_PROJECT_LABEL] !== projectId) {
-      const compose = labels[COMPOSE_PROJECT_LABEL];
       const owned =
-        !labels[DOCKER_PROJECT_LABEL] &&
-        compose !== undefined &&
-        (await this.composeOwnsProjectVolume(client, compose, projectId, signal));
+        labels[DOCKER_PROJECT_LABEL] === undefined &&
+        (await this.composeOwnsProjectVolume(client, labels, projectId, signal, projectRoot));
       if (!owned) this.requireOwner(labels, projectId);
     }
     await changeDockerContainerState(client, container.Id, 'stop', signal);
@@ -630,6 +703,23 @@ export class HostDockerService {
     return output;
   }
 
+  private async validateProjectRoot(root: string | undefined): Promise<void> {
+    if (root === undefined) return;
+    const code = 'DOCKER_PROJECT_ROOT_INVALID';
+    if (!isAbsolute(root) || normalize(root) !== root || root.includes('\0'))
+      throw new AppError('Project root must be an absolute, normalized path', code, 400);
+    try {
+      await assertVmHomePath(root, {
+        code,
+        message: 'Project root must be below the VM home and cannot be the home itself',
+        linkMessage: 'Project root must not be a link',
+      });
+    } catch (error) {
+      if (error instanceof AppError) throw new AppError(error.message, code, 400);
+      throw error;
+    }
+  }
+
   private requireOwner(labels: Labels | undefined, projectId: string, conflict = false): void {
     if (labels?.[DOCKER_PROJECT_LABEL] !== projectId)
       throw new AppError(
@@ -638,13 +728,17 @@ export class HostDockerService {
         conflict ? 409 : 403,
       );
   }
-  /** A volume of the project carries this Compose project's label. */
+  /** Compose labels link to this project, or its Compose project owns an imported volume. */
   private async composeOwnsProjectVolume(
     client: DockerEngineClient,
-    compose: string,
+    labels: Labels,
     projectId: string,
     signal?: AbortSignal,
+    projectRoot?: string,
   ): Promise<boolean> {
+    if (projectRoot && projectCompose(labels, projectRoot, projectId)) return true;
+    const compose = labels[COMPOSE_PROJECT_LABEL];
+    if (!compose) return false;
     const { Volumes } = await client.json<{ Volumes: Volume[] | null }>(
       'GET',
       `/volumes?filters=${encodeURIComponent(JSON.stringify({ label: [`${DOCKER_PROJECT_LABEL}=${projectId}`] }))}`,
@@ -665,7 +759,10 @@ export class HostDockerService {
     container: Container,
     projectId: string,
     signal?: AbortSignal,
+    projectRoot?: string,
   ): Promise<boolean> {
+    if (projectRoot && projectCompose(container.Config.Labels ?? {}, projectRoot, projectId))
+      return true;
     const compose = container.Config.Labels?.[COMPOSE_PROJECT_LABEL];
     if (!compose) return false;
     for (const mount of container.Mounts ?? []) {
@@ -719,19 +816,46 @@ export class HostDockerService {
   }
 }
 
-/** The root itself, or a path below it. */
-function inside(path: string, root: string): boolean {
-  return path === root || path.startsWith(root + sep);
-}
-/** The path or its nearest existing ancestor, never climbing past `stop`. */
-async function nearestExisting(path: string, stop?: string): Promise<string> {
-  for (let candidate = path; ; candidate = dirname(candidate)) {
-    try {
-      // lstat distinguishes a dangling symlink from a destination not created yet.
-      await lstat(candidate);
-      return candidate;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || candidate === stop) throw error;
+/**
+ * Sends an upload to the engine through a buffer, never the request itself. The
+ * engine may answer at the tar's end marker and stop reading: the rest of the
+ * upload is still read, so the request ends normally and the engine's answer is
+ * the outcome. Piping the request straight in would end it early, which aborts
+ * the request and turns the engine's answer into "cancelled".
+ */
+async function uploadToEngine<T>(
+  body: Readable,
+  send: (toEngine: Readable) => Promise<T>,
+  onChunk?: (chunk: Buffer) => void,
+): Promise<T> {
+  const toEngine = new PassThrough();
+  const received = (async () => {
+    for await (const chunk of body as AsyncIterable<Buffer>) {
+      onChunk?.(chunk);
+      if (toEngine.destroyed || toEngine.writableEnded) continue;
+      if (!toEngine.write(chunk))
+        await new Promise<void>((done) => {
+          const settle = () => {
+            toEngine.off('drain', settle).off('close', settle);
+            done();
+          };
+          toEngine.on('drain', settle).on('close', settle);
+        });
     }
+    if (!toEngine.destroyed) toEngine.end();
+  })();
+  try {
+    const [answer] = await Promise.all([
+      send(toEngine).catch((error: unknown) => {
+        body.destroy();
+        throw error;
+      }),
+      received,
+    ]);
+    return answer;
+  } catch (error) {
+    toEngine.destroy();
+    await received.catch(() => undefined);
+    throw error;
   }
 }

@@ -132,27 +132,6 @@ describe('TeamConfigUpdatedNotifierSubscriber', () => {
       }),
     );
   });
-
-  it('delivers flag-only and combined message variants', async () => {
-    await subscriber.handleTeamConfigUpdated({
-      ...basePayload,
-      previous: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: true },
-      current: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: false },
-    });
-    expect(deliverMock.mock.calls[0][1].body).toBe(
-      "Team 'Alpha Team' setting updated \u2014 lead can no longer create team agents.",
-    );
-
-    deliverMock.mockClear();
-    await subscriber.handleTeamConfigUpdated({
-      ...basePayload,
-      previous: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: false },
-      current: { maxMembers: 8, maxConcurrentTasks: 6, allowTeamLeadCreateAgents: true },
-    });
-    expect(deliverMock.mock.calls[0][1].body).toBe(
-      "Team 'Alpha Team' updated \u2014 max members: 8, max concurrent tasks: 6; lead can now create team agents.",
-    );
-  });
 });
 
 describe('buildMessage', () => {
@@ -165,52 +144,39 @@ describe('buildMessage', () => {
     current: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: true },
   };
 
-  it('capacity-only change produces existing message format', () => {
-    const msg = buildMessage({
-      ...base,
+  it.each([
+    {
+      label: 'capacity-only change produces existing message format',
       previous: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: true },
       current: { maxMembers: 8, maxConcurrentTasks: 6, allowTeamLeadCreateAgents: true },
-    });
-    expect(msg).toBe(
-      "Team 'Alpha Team' config updated \u2014 max members: 8, max concurrent tasks: 6.",
-    );
-  });
-
-  it('flag-only true\u2192false produces no-longer text', () => {
-    const msg = buildMessage({
-      ...base,
+      expected: "Team 'Alpha Team' config updated \u2014 max members: 8, max concurrent tasks: 6.",
+    },
+    {
+      label: 'flag-only true\u2192false produces no-longer text',
       previous: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: true },
       current: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: false },
-    });
-    expect(msg).toBe(
-      "Team 'Alpha Team' setting updated \u2014 lead can no longer create team agents.",
-    );
-  });
-
-  it('flag-only false\u2192true produces now text', () => {
-    const msg = buildMessage({
-      ...base,
+      expected: "Team 'Alpha Team' setting updated \u2014 lead can no longer create team agents.",
+    },
+    {
+      label: 'flag-only false\u2192true produces now text',
       previous: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: false },
       current: { maxMembers: 5, maxConcurrentTasks: 5, allowTeamLeadCreateAgents: true },
-    });
-    expect(msg).toBe("Team 'Alpha Team' setting updated \u2014 lead can now create team agents.");
-  });
-
-  it('both changed produces combined text', () => {
-    const msg = buildMessage({
-      ...base,
+      expected: "Team 'Alpha Team' setting updated \u2014 lead can now create team agents.",
+    },
+    {
+      label: 'both changed produces combined text',
       previous: { maxMembers: 5, maxConcurrentTasks: 3, allowTeamLeadCreateAgents: true },
       current: { maxMembers: 8, maxConcurrentTasks: 4, allowTeamLeadCreateAgents: false },
-    });
-    expect(msg).toBe(
-      "Team 'Alpha Team' updated \u2014 max members: 8, max concurrent tasks: 4; lead can no longer create team agents.",
-    );
-  });
-
-  it('no change still produces capacity message (fallback)', () => {
-    const msg = buildMessage(base);
-    expect(msg).toBe(
-      "Team 'Alpha Team' config updated \u2014 max members: 5, max concurrent tasks: 5.",
-    );
+      expected:
+        "Team 'Alpha Team' updated \u2014 max members: 8, max concurrent tasks: 4; lead can no longer create team agents.",
+    },
+    {
+      label: 'no change still produces capacity message (fallback)',
+      previous: base.previous,
+      current: base.current,
+      expected: "Team 'Alpha Team' config updated \u2014 max members: 5, max concurrent tasks: 5.",
+    },
+  ])('$label', ({ previous, current, expected }) => {
+    expect(buildMessage({ ...base, previous, current })).toBe(expected);
   });
 });

@@ -81,36 +81,22 @@ describe('useProjectSetupWizard', () => {
     expect(result.current.currentStep?.id).toBe('agents');
   });
 
-  it('skips steps by predicate and treats the last visible step as last', () => {
+  it.each([
+    { skip: 'teams', visible: ['providers', 'agents'], next: 'agents' },
+    { skip: 'agents', visible: ['providers', 'teams'], next: 'teams' },
+  ] as const)('skips $skip and reaches last visible step', ({ skip, visible, next }) => {
     const { result } = renderHook(() =>
       useProjectSetupWizard({
-        steps: makeSteps({ teams: { skipped: true } }),
+        steps: makeSteps({ [skip]: { skipped: true } }),
         onSubmit: jest.fn(),
         onCancel: jest.fn(),
       }),
     );
-
-    expect(result.current.visibleSteps.map((s) => s.id)).toEqual(['providers', 'agents']);
+    expect(result.current.visibleSteps.map((s) => s.id)).toEqual(visible);
     expect(result.current.totalSteps).toBe(2);
-
     act(() => result.current.goNext());
-    expect(result.current.currentStep?.id).toBe('agents');
-    // Agents is now the last visible step (teams skipped).
+    expect(result.current.currentStep?.id).toBe(next);
     expect(result.current.isLastStep).toBe(true);
-  });
-
-  it('advances past a skipped middle step', () => {
-    const { result } = renderHook(() =>
-      useProjectSetupWizard({
-        steps: makeSteps({ agents: { skipped: true } }),
-        onSubmit: jest.fn(),
-        onCancel: jest.fn(),
-      }),
-    );
-
-    expect(result.current.visibleSteps.map((s) => s.id)).toEqual(['providers', 'teams']);
-    act(() => result.current.goNext());
-    expect(result.current.currentStep?.id).toBe('teams');
   });
 
   it('submit only fires onSubmit on the last step (nothing created mid-flow)', () => {

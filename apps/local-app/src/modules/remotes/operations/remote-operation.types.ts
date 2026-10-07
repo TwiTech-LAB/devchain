@@ -12,9 +12,10 @@ export interface RemoteOperationStepRun {
    * Merges `patch` into `details`, persists it and publishes the operation
    * without changing any step state. Calls are throttled to one publish per
    * second per operation; the latest patch always lands, at the latest with
-   * the step's outcome.
+   * the step's outcome. With durable, bypasses throttling and rejects if the
+   * details cannot be saved before an effect.
    */
-  progress(patch: Record<string, unknown>): Promise<void>;
+  progress(patch: Record<string, unknown>, options?: { durable?: boolean }): Promise<void>;
 }
 
 export interface RemoteOperationStepDefinition {
@@ -55,6 +56,11 @@ export interface RemoteOperationDefinition {
    * that step and every later one run again. Null or absent: the failed step.
    */
   retryFrom?(operation: RemoteOperation): string | null;
+  /**
+   * The step a startup resume of a `running` operation restarts from; that step
+   * and every later one run again. Null or absent: the next unfinished step.
+   */
+  resumeFrom?(operation: RemoteOperation): string | null;
 }
 
 export function requireProjectId(operation: RemoteOperation): string {

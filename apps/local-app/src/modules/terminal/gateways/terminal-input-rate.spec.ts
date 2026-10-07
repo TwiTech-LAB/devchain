@@ -144,6 +144,7 @@ function createGateway() {
     mockRealtimeBroadcast as never,
     sendScheduler as never,
     mockMetricsService,
+    0,
   );
 
   (gateway as unknown as { ensurePtyStreaming: jest.Mock }).ensurePtyStreaming = jest

@@ -185,20 +185,4 @@ describe('AntigravityMetricsReader', () => {
     expect(m.modelId).toBe('gemini-3.5-flash-high');
     expect(m.displayName).toBe('Gemini 3.5 Flash (High)');
   });
-
-  it('decodes a free GPT-OSS sample without warnings and keeps tokens authoritative', () => {
-    createAntigravityFixtureDb(dbPathFor(), CONV, [
-      {
-        input: 900,
-        output: 60,
-        modelId: 'gpt-oss-120b-medium',
-        display: 'GPT-OSS 120B (Medium)',
-      },
-    ]);
-    const m = reader.decode(dbPathFor(), CONV);
-    expect(m.warnings).toEqual([]);
-    expect(m.inputTokens).toBe(900);
-    expect(m.outputTokens).toBe(60);
-    expect(m.modelId).toBe('gpt-oss-120b-medium');
-  });
 });

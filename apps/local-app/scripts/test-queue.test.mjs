@@ -6,6 +6,7 @@ import { buildArgv } from "jest";
 import {
   FULL_TEST_QUEUE,
   classifyJestArgs,
+  limitJestWorkers,
   runQueuedJest,
 } from "./test-queue.mjs";
 
@@ -22,8 +23,8 @@ const defaultScriptArgs = [
   "backend-integration",
   "ui",
   "cli-helpers",
-  "--maxWorkers=50%",
-  "--workerIdleMemoryLimit=512MB",
+  "--maxWorkers=75%",
+  "--workerIdleMemoryLimit=2GB",
 ];
 
 const classificationCases = [
@@ -60,6 +61,42 @@ test("classifies --watch with a path as utility because watch never terminates",
   );
 });
 
+const GIB = 1024 ** 3;
+const roomy = { cpus: 16, freeBytes: 64 * GIB };
+
+const workerCases = [
+  [["--maxWorkers=75%"], roomy, ["--maxWorkers=75%"]],
+  [["--maxWorkers=50%"], { cpus: 4, freeBytes: 7 * GIB }, ["--maxWorkers=50%"]],
+  [["--maxWorkers=4"], { cpus: 16, freeBytes: 1 * GIB }, ["--maxWorkers=4"]],
+  [["--runInBand"], { cpus: 16, freeBytes: 1 * GIB }, ["--runInBand"]],
+  [
+    ["--ci", "--maxWorkers=75%"],
+    { cpus: 16, freeBytes: 9.9 * GIB },
+    ["--maxWorkers=3", "--ci"],
+  ],
+  [["--maxWorkers=75%"], { cpus: 16, freeBytes: 1 * GIB }, ["--maxWorkers=1"]],
+  [["--maxWorkers=32"], { cpus: 4, freeBytes: 64 * GIB }, ["--maxWorkers=4"]],
+  [
+    ["--maxWorkers=75%", "--workerIdleMemoryLimit=2GB", "--maxWorkers=2"],
+    roomy,
+    ["--maxWorkers=2", "--workerIdleMemoryLimit=2GB"],
+  ],
+  [
+    ["--maxWorkers=75%", "-w", "3", "--max-workers=5", "--", "src/a.spec.ts"],
+    roomy,
+    ["--maxWorkers=5", "--", "src/a.spec.ts"],
+  ],
+];
+
+for (const [args, system, expected] of workerCases) {
+  test(`limits ${JSON.stringify(args)} to ${JSON.stringify(expected)} with ${system.freeBytes / GIB} GB free on ${system.cpus} CPUs`, async () => {
+    assert.deepEqual(
+      limitJestWorkers(args, await buildArgv(args), system),
+      expected,
+    );
+  });
+}
+
 function fakeRunners() {
   const calls = { exclusive: [], command: [] };
   return {
@@ -79,7 +116,7 @@ function fakeRunners() {
 
 test("a full run locks the shared full-tests queue and spawns the repo jest with --expose-gc", async () => {
   const { calls, runners } = fakeRunners();
-  const code = await runQueuedJest(defaultScriptArgs, runners);
+  const code = await runQueuedJest(defaultScriptArgs, runners, roomy);
   assert.equal(code, 3);
   assert.equal(calls.command.length, 0);
   assert.deepEqual(calls.exclusive, [
@@ -96,7 +133,7 @@ test("a full run locks the shared full-tests queue and spawns the repo jest with
 test("a targeted run spawns immediately without a lock and passes a literal -- unchanged", async () => {
   const { calls, runners } = fakeRunners();
   const rawArgs = ["--", "--runTestsByPath", "src/a.spec.ts"];
-  const code = await runQueuedJest(rawArgs, runners);
+  const code = await runQueuedJest(rawArgs, runners, roomy);
   assert.equal(code, 5);
   assert.equal(calls.exclusive.length, 0);
   assert.deepEqual(calls.command, [
@@ -120,7 +157,7 @@ const packageJson = JSON.parse(
 );
 
 const queuedScripts = {
-  test: "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=50% --workerIdleMemoryLimit=512MB",
+  test: "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=2GB",
   "test:cov":
     "node scripts/test-queue.mjs --coverage --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=512MB",
   "test:cov:full": "node scripts/test-queue.mjs --coverage --runInBand",

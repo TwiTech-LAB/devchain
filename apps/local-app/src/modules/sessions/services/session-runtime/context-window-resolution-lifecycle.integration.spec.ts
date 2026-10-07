@@ -1,3 +1,4 @@
+import { processIdsEnv } from '../../../../common/process-ids-env';
 import { spawn } from 'child_process';
 import { createServer, type Server } from 'http';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
@@ -144,6 +145,7 @@ describe('context-window resolution lifecycle', () => {
       ...profileOptionArgs,
     ]);
     expect(freshLaunch.env).toEqual({
+      ...processIdsEnv(),
       PRESERVED_CONFIG_ENV: 'yes',
       DISABLE_AUTOUPDATER: '1',
       CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',

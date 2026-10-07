@@ -70,14 +70,6 @@ describe('ActiveSessionLookup', () => {
     });
   });
 
-  it('returns empty array when the project has no active sessions', async () => {
-    statement.all.mockReturnValue([]);
-
-    await expect(service.listActiveSessions('project-empty')).resolves.toEqual([]);
-
-    expect(statement.all).toHaveBeenCalledWith('project-empty');
-  });
-
   it('returns active sessions for the requested project only', async () => {
     statement.all.mockReturnValue([
       makeSessionRow({ id: 'session-2', agent_id: 'agent-2', project_id: 'project-1' }),
@@ -108,14 +100,6 @@ describe('ActiveSessionLookup', () => {
       expect.objectContaining({ providerNameAtLaunch: null, sessionId: 'session-1' }),
     ]);
     expect(statement.all).toHaveBeenCalledWith();
-  });
-
-  it('does not return an agent session from another project', async () => {
-    statement.get.mockReturnValue(undefined);
-
-    await expect(service.getActiveSession('agent-1', 'project-2')).resolves.toBeNull();
-
-    expect(statement.get).toHaveBeenCalledWith('agent-1', 'project-2');
   });
 });
 

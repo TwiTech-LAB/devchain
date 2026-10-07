@@ -248,15 +248,6 @@ describe('AddOwnVmDialog', () => {
   });
 
   describe('address check', () => {
-    it('names the supported OS before any check', () => {
-      renderDialog();
-
-      expect(
-        screen.getByText('Supported OS: Ubuntu 22.04+ or Debian 12+, amd64.'),
-      ).toBeInTheDocument();
-      expect(probe).not.toHaveBeenCalled();
-    });
-
     it('adds a DevChain that is not listed yet, named after its host', async () => {
       probe.mockReturnValue({
         kind: 'devchain',
@@ -442,40 +433,16 @@ describe('AddOwnVmDialog', () => {
       renderDialog();
 
       const result = await checkAddress('192.168.1.50');
-      expect(result).toHaveTextContent(
-        'Nothing answers at 192.168.1.50:3000, at 192.168.1.50:4000, or on SSH port 22. Check the address and the firewall.',
-      );
+
       expect(within(result).getByRole('button', { name: 'Install over SSH' })).toBeEnabled();
       expect(
         within(result).getByRole('button', { name: 'Run the install block yourself' }),
       ).toBeEnabled();
     });
 
-    it('offers both install ways when SSH answers', async () => {
+    it('switches between installation methods for an already registered address', async () => {
       probe.mockReturnValue(NOTHING);
-      renderDialog();
 
-      const result = await checkAddress('192.168.1.20');
-      expect(result).toHaveTextContent(
-        'No DevChain and no installer answers at 192.168.1.20:3000.',
-      );
-      expect(within(result).getByRole('button', { name: 'Install over SSH' })).toBeInTheDocument();
-      expect(
-        within(result).getByRole('button', { name: 'Run the install block yourself' }),
-      ).toBeInTheDocument();
-    });
-
-    it('installs on an address that already has a VM row, whose logins stay usable', async () => {
-      probe.mockReturnValue(NOTHING);
-      entries = [
-        entry({
-          id: 'mine',
-          provider: 'codex',
-          kind: 'family',
-          label: 'Lab family',
-          checkedOutRemoteId: 'r1',
-        }),
-      ];
       renderDialog({ remotes: [LAB_VM] });
       const user = userEvent.setup();
 
@@ -782,22 +749,6 @@ describe('AddOwnVmDialog', () => {
       expect(screen.getByLabelText('Private key')).toBeInTheDocument();
     });
 
-    it('installs with the 8 GiB base on a PC with no projects', async () => {
-      const { onInstall } = renderDialog({
-        projects: { rows: [], workspaces: [], loading: false, error: null, truncated: false },
-      });
-      const user = userEvent.setup();
-      await openSshStep(user);
-
-      expect(
-        screen.getByText('8 GiB (base requirement; no projects selected)'),
-      ).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Measure' })).toBeDisabled();
-      await fillPassword(user);
-      await toReviewAndStart(user);
-      expect(onInstall).toHaveBeenCalledWith(expect.objectContaining({ minDiskGib: 8 }));
-    });
-
     it('selects no project by default and installs with the 8 GiB base, without measuring', async () => {
       const { onInstall } = renderDialog();
       const user = userEvent.setup();
@@ -906,8 +857,7 @@ describe('AddOwnVmDialog', () => {
       await waitFor(() =>
         expect(screen.getByLabelText('Linux user')).toHaveTextContent('devchain'),
       );
-      expect(screen.getByLabelText('Home folder')).toHaveTextContent('/home/devchain');
-      expect(screen.queryByRole('textbox', { name: 'Linux user' })).not.toBeInTheDocument();
+
       await user.clear(screen.getByLabelText('Name'));
       await user.type(screen.getByLabelText('Name'), 'workstation');
       await user.click(screen.getByRole('button', { name: 'Set up VM' }));

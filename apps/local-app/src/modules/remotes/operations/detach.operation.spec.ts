@@ -1,14 +1,18 @@
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import { DetachOperation } from './detach.operation';
+import type { GitOwner } from '../git-owner.store';
 
-function setup() {
+function setup(owner: GitOwner = 'vm') {
   const fileSync = { flipBackToHost: jest.fn().mockResolvedValue(undefined) };
   const bindings = {
     get: jest.fn().mockResolvedValue({ remoteId: 'remote-1', state: 'detaching' }),
     update: jest.fn().mockResolvedValue(undefined),
   };
   const liveSync = { start: jest.fn() };
-  const host = { thaw: jest.fn().mockResolvedValue(undefined) };
+  const host = {
+    thaw: jest.fn().mockResolvedValue(undefined),
+    removeGitGuard: jest.fn().mockResolvedValue({ removed: true }),
+  };
   const copyBack = {
     partialGroups: jest.fn().mockResolvedValue([]),
     finish: jest.fn().mockResolvedValue(undefined),
@@ -26,8 +30,9 @@ function setup() {
     unused,
     unused,
     copyBack as never,
+    { clear: jest.fn(), get: () => owner } as never,
   );
-  return { detach, fileSync, bindings, liveSync, copyBack };
+  return { detach, fileSync, bindings, liveSync, copyBack, host };
 }
 const operation = (
   steps: Array<{ id: string; state: string }>,
@@ -44,6 +49,45 @@ const operation = (
   }) as unknown as RemoteOperation;
 
 describe('DetachOperation rollback', () => {
+  // The removal request must precede the ownership flip; no transport app is needed.
+  it.each(
+    (['vm', 'home'] as const).flatMap((owner) =>
+      [true, false].map((installed) => ({ owner, installed })),
+    ),
+  )(
+    "removes this attempt's VM guard only when restoring VM ownership ($owner, installed=$installed)",
+    async ({ owner, installed }) => {
+      const { detach, host, fileSync } = setup(owner);
+      await detach.rollback(
+        operation([{ id: 'file_sync_flip', state: 'failed' }], {
+          markedDetaching: true,
+          vmGuardInstalled: installed,
+        }),
+      );
+      if (installed && owner === 'vm') {
+        expect(host.removeGitGuard).toHaveBeenCalledWith('remote-1', 'A');
+        expect(host.removeGitGuard.mock.invocationCallOrder[0]).toBeLessThan(
+          fileSync.flipBackToHost.mock.invocationCallOrder[0],
+        );
+      } else {
+        expect(host.removeGitGuard).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('keeps the Disconnect cancel retryable when VM guard removal fails', async () => {
+    const { detach, host, fileSync, bindings } = setup();
+    host.removeGitGuard.mockRejectedValueOnce(new Error('hooks read-only'));
+    const target = operation([{ id: 'file_sync_flip', state: 'failed' }], {
+      markedDetaching: true,
+      vmGuardInstalled: true,
+    });
+    await expect(detach.rollback(target)).rejects.toThrow('hooks read-only');
+    expect(fileSync.flipBackToHost).not.toHaveBeenCalled();
+    expect(bindings.update).not.toHaveBeenCalled();
+    await detach.rollback(target);
+    expect(bindings.update).toHaveBeenCalledWith('A', { state: 'remote' });
+  });
   it('unpauses the folders the final sync paused when it failed before its flip', async () => {
     const { detach, fileSync, bindings, liveSync } = setup();
 
@@ -157,6 +201,7 @@ describe('DetachOperation preflight', () => {
       unused,
       unused,
       unused,
+      { clear: jest.fn() } as never,
     );
     const step = detach.steps.find((definition) => definition.id === 'preflight')!;
     return (details: Record<string, unknown>) =>

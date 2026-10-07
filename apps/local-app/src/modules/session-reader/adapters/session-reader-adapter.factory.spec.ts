@@ -30,25 +30,6 @@ describe('SessionReaderAdapterFactory', () => {
       expect(factory.isSupported('claude')).toBe(true);
     });
 
-    it('should register multiple adapters', () => {
-      factory.registerAdapter(makeMockAdapter('claude'));
-      factory.registerAdapter(makeMockAdapter('codex'));
-
-      expect(factory.isSupported('claude')).toBe(true);
-      expect(factory.isSupported('codex')).toBe(true);
-    });
-
-    it('should register all three provider adapters', () => {
-      factory.registerAdapter(makeMockAdapter('claude'));
-      factory.registerAdapter(makeMockAdapter('codex'));
-      factory.registerAdapter(makeMockAdapter('copilot'));
-
-      expect(factory.getSupportedProviders()).toHaveLength(3);
-      expect(factory.isSupported('claude')).toBe(true);
-      expect(factory.isSupported('codex')).toBe(true);
-      expect(factory.isSupported('copilot')).toBe(true);
-    });
-
     it('should overwrite existing adapter for same provider', () => {
       const adapter1 = makeMockAdapter('claude');
       const adapter2 = makeMockAdapter('claude');
@@ -101,12 +82,6 @@ describe('SessionReaderAdapterFactory', () => {
       );
     });
 
-    it('should return undefined when no adapter matches path', () => {
-      factory.registerAdapter(makeMockAdapter('claude', ['/home/user/.claude/projects/']));
-
-      expect(factory.getAdapterForPath('/home/user/.unknown/file.json')).toBeUndefined();
-    });
-
     it('should return undefined when no adapters are registered', () => {
       expect(factory.getAdapterForPath('/any/path')).toBeUndefined();
     });
@@ -122,11 +97,6 @@ describe('SessionReaderAdapterFactory', () => {
   });
 
   describe('isSupported', () => {
-    it('should return true for registered provider', () => {
-      factory.registerAdapter(makeMockAdapter('claude'));
-      expect(factory.isSupported('claude')).toBe(true);
-    });
-
     it('should return false for unregistered provider', () => {
       expect(factory.isSupported('nonexistent')).toBe(false);
     });

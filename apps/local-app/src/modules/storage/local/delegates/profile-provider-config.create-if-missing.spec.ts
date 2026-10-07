@@ -124,7 +124,16 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
       expect(insertedValues!.position).toBe(0);
     });
 
-    it('persists null options as null', async () => {
+    it.each([
+      { label: 'omitted options', input: baseInput, field: 'options', expected: null },
+      {
+        label: 'description provided',
+        input: { ...baseInput, description: 'High-effort opus config' },
+        field: 'description',
+        expected: 'High-effort opus config',
+      },
+      { label: 'description omitted', input: baseInput, field: 'description', expected: null },
+    ])('$label', async ({ input, field, expected }) => {
       let selectCallCount = 0;
       const selectImpl = jest.fn().mockImplementation(() => {
         selectCallCount++;
@@ -154,121 +163,10 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
 
       const { delegate } = createDelegate({ selectImpl, insertImpl });
 
-      await delegate.createIfMissing({ ...baseInput, options: null });
+      await delegate.createIfMissing(input);
 
       expect(insertedValues).not.toBeNull();
-      expect(insertedValues!.options).toBeNull();
-    });
-
-    it('persists null options when options field is omitted', async () => {
-      let selectCallCount = 0;
-      const selectImpl = jest.fn().mockImplementation(() => {
-        selectCallCount++;
-        if (selectCallCount === 1) {
-          return {
-            from: jest.fn().mockReturnValue({
-              where: jest.fn().mockReturnValue({
-                limit: jest.fn().mockResolvedValue([]),
-              }),
-            }),
-          };
-        }
-        return {
-          from: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([{ maxPos: -1 }]),
-          }),
-        };
-      });
-
-      let insertedValues: Record<string, unknown> | null = null;
-      const insertImpl = jest.fn().mockReturnValue({
-        values: jest.fn().mockImplementation((data: Record<string, unknown>) => {
-          insertedValues = data;
-          return Promise.resolve(undefined);
-        }),
-      });
-
-      const { delegate } = createDelegate({ selectImpl, insertImpl });
-
-      await delegate.createIfMissing(baseInput);
-
-      expect(insertedValues).not.toBeNull();
-      expect(insertedValues!.options).toBeNull();
-    });
-
-    it('persists description when provided', async () => {
-      let selectCallCount = 0;
-      const selectImpl = jest.fn().mockImplementation(() => {
-        selectCallCount++;
-        if (selectCallCount === 1) {
-          return {
-            from: jest.fn().mockReturnValue({
-              where: jest.fn().mockReturnValue({
-                limit: jest.fn().mockResolvedValue([]),
-              }),
-            }),
-          };
-        }
-        return {
-          from: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([{ maxPos: -1 }]),
-          }),
-        };
-      });
-
-      let insertedValues: Record<string, unknown> | null = null;
-      const insertImpl = jest.fn().mockReturnValue({
-        values: jest.fn().mockImplementation((data: Record<string, unknown>) => {
-          insertedValues = data;
-          return Promise.resolve(undefined);
-        }),
-      });
-
-      const { delegate } = createDelegate({ selectImpl, insertImpl });
-
-      await delegate.createIfMissing({
-        ...baseInput,
-        description: 'High-effort opus config',
-      });
-
-      expect(insertedValues).not.toBeNull();
-      expect(insertedValues!.description).toBe('High-effort opus config');
-    });
-
-    it('persists null description when omitted', async () => {
-      let selectCallCount = 0;
-      const selectImpl = jest.fn().mockImplementation(() => {
-        selectCallCount++;
-        if (selectCallCount === 1) {
-          return {
-            from: jest.fn().mockReturnValue({
-              where: jest.fn().mockReturnValue({
-                limit: jest.fn().mockResolvedValue([]),
-              }),
-            }),
-          };
-        }
-        return {
-          from: jest.fn().mockReturnValue({
-            where: jest.fn().mockResolvedValue([{ maxPos: -1 }]),
-          }),
-        };
-      });
-
-      let insertedValues: Record<string, unknown> | null = null;
-      const insertImpl = jest.fn().mockReturnValue({
-        values: jest.fn().mockImplementation((data: Record<string, unknown>) => {
-          insertedValues = data;
-          return Promise.resolve(undefined);
-        }),
-      });
-
-      const { delegate } = createDelegate({ selectImpl, insertImpl });
-
-      await delegate.createIfMissing(baseInput);
-
-      expect(insertedValues).not.toBeNull();
-      expect(insertedValues!.description).toBeNull();
+      expect(insertedValues![field]).toBe(expected);
     });
   });
 
@@ -613,19 +511,14 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
   });
 
   describe('rawClient validation', () => {
-    it('throws when rawClient is null', async () => {
-      const { delegate } = createDelegate({ rawClient: null });
+    it.each([null, {} as unknown as Database.Database])(
+      'rejects raw client %j without exec',
+      async (rawClient) => {
+        const { delegate } = createDelegate({ rawClient });
 
-      await expect(delegate.createIfMissing(baseInput)).rejects.toThrow(TypeError);
-    });
-
-    it('throws when rawClient has no exec method', async () => {
-      const { delegate } = createDelegate({
-        rawClient: {} as unknown as Database.Database,
-      });
-
-      await expect(delegate.createIfMissing(baseInput)).rejects.toThrow(TypeError);
-    });
+        await expect(delegate.createIfMissing(baseInput)).rejects.toThrow(TypeError);
+      },
+    );
   });
 
   describe('transaction lifecycle', () => {
@@ -718,64 +611,6 @@ describe('ProfileProviderConfigStorageDelegate.createIfMissing', () => {
         ['BEGIN IMMEDIATE'],
         ['COMMIT'],
       ]);
-    });
-  });
-
-  describe('idempotent sequential calls', () => {
-    it('first call inserts, second call returns name_exists_same_provider', async () => {
-      const insertedRow = {
-        id: 'inserted-id',
-        profileId: 'profile-1',
-        providerId: 'provider-1',
-        name: 'claude',
-        options: null,
-        env: null,
-        position: 0,
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      };
-
-      let callSequence = 0;
-      const selectImpl = jest.fn().mockImplementation(() => {
-        callSequence++;
-        if (callSequence === 1) {
-          return {
-            from: jest.fn().mockReturnValue({
-              where: jest.fn().mockReturnValue({
-                limit: jest.fn().mockResolvedValue([]),
-              }),
-            }),
-          };
-        }
-        if (callSequence === 2) {
-          return {
-            from: jest.fn().mockReturnValue({
-              where: jest.fn().mockResolvedValue([{ maxPos: -1 }]),
-            }),
-          };
-        }
-        return {
-          from: jest.fn().mockReturnValue({
-            where: jest.fn().mockReturnValue({
-              limit: jest.fn().mockResolvedValue([insertedRow]),
-            }),
-          }),
-        };
-      });
-
-      const insertImpl = jest.fn().mockReturnValue({
-        values: jest.fn().mockResolvedValue(undefined),
-      });
-
-      const { delegate } = createDelegate({ selectImpl, insertImpl });
-
-      const first = await delegate.createIfMissing(baseInput);
-      expect(first.inserted).toBe(true);
-
-      const second = await delegate.createIfMissing(baseInput);
-      expect(second.inserted).toBe(false);
-      expect(second.reason).toBe('name_exists_same_provider');
-      expect(second.existingRow?.id).toBe('inserted-id');
     });
   });
 });

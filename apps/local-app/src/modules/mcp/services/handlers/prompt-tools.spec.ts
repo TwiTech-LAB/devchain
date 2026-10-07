@@ -241,7 +241,10 @@ describe('prompt-tools', () => {
       expect(result.error).toMatchObject({ code: 'SESSION_NOT_FOUND' });
     });
 
-    it('renders {{#if is_team_lead}} LEAD when agent is team lead', async () => {
+    it.each([
+      ['agent-1', 'LEAD'],
+      ['other-agent', 'MEMBER'],
+    ])('renders team-lead branch %s', async (teamLeadAgentId, expected) => {
       const leadPrompt = {
         ...testPrompt,
         content: '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}',
@@ -256,7 +259,7 @@ describe('prompt-tools', () => {
             {
               id: 't1',
               name: 'Backend',
-              teamLeadAgentId: 'agent-1',
+              teamLeadAgentId,
               projectId: 'proj-1',
               description: null,
               maxMembers: 10,
@@ -277,46 +280,7 @@ describe('prompt-tools', () => {
 
       expect(result.success).toBe(true);
       const prompt = (result.data as { prompt: { content: string } }).prompt;
-      expect(prompt.content).toBe('LEAD');
-    });
-
-    it('renders {{#if is_team_lead}} MEMBER when agent is not team lead', async () => {
-      const leadPrompt = {
-        ...testPrompt,
-        content: '{{#if is_team_lead}}LEAD{{else}}MEMBER{{/if}}',
-      };
-      const ctx = makeCtx({
-        resolveSessionContext: jest.fn().mockResolvedValue({
-          success: true,
-          data: agentSession,
-        }),
-        teamsService: {
-          listTeamsByAgent: jest.fn().mockResolvedValue([
-            {
-              id: 't1',
-              name: 'Backend',
-              teamLeadAgentId: 'other-agent',
-              projectId: 'proj-1',
-              description: null,
-              maxMembers: 10,
-              maxConcurrentTasks: 3,
-              allowTeamLeadCreateAgents: false,
-              createdAt: '',
-              updatedAt: '',
-            },
-          ]),
-        } as unknown as PromptToolContext['teamsService'],
-      });
-      (ctx.storage.getPrompt as jest.Mock).mockResolvedValue(leadPrompt);
-
-      const result = await handleGetPrompt(ctx, {
-        id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-        sessionId: 'session-1',
-      });
-
-      expect(result.success).toBe(true);
-      const prompt = (result.data as { prompt: { content: string } }).prompt;
-      expect(prompt.content).toBe('MEMBER');
+      expect(prompt.content).toBe(expected);
     });
   });
 
@@ -352,23 +316,6 @@ describe('prompt-tools', () => {
       expect(data.prompts).toHaveLength(1);
       expect(data.prompts[0].title).toBe('Hello Prompt');
       expect(data.prompts[0]).toHaveProperty('contentPreview');
-    });
-
-    it('returns session resolution failures before listing prompts', async () => {
-      const ctx = makeCtx({
-        resolveSessionContext: jest.fn().mockResolvedValue({
-          success: false,
-          error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' },
-        }),
-      });
-
-      await expect(handleListPrompts(ctx, { sessionId: 'missing-session' })).resolves.toMatchObject(
-        {
-          success: false,
-          error: { code: 'SESSION_NOT_FOUND' },
-        },
-      );
-      expect(ctx.storage.listPrompts).not.toHaveBeenCalled();
     });
   });
 });

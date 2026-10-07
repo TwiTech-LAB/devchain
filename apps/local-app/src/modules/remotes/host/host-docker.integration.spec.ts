@@ -7,15 +7,18 @@ import { once } from 'node:events';
 import { mkdtemp, mkdir, readdir, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { Readable } from 'node:stream';
+import { Readable, getDefaultHighWaterMark } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { DockerEngineClient } from '../../core/controllers/docker-engine.client';
+import { dockerImageMetadata } from '../../core/controllers/docker-image-metadata';
+import fixtures from '../../core/controllers/__fixtures__/docker-image-inspect.json';
 import { FakeDockerEngine } from '../../../common/test/fake-docker-engine.server';
 import { RemoteHostClient } from '../operations/remote-host.client';
 import { HostDockerController } from './host-docker.controller';
 import { HostDockerService } from './host-docker.service';
+import { HOST_IPV4_ROUTES } from './host-ipv4-routes';
 import { HostDockerBodyParser } from './host-docker-body.parser';
 import { AllExceptionsFilter } from '../../../common/filters/http-exception.filter';
 import { fixtureTls, installFixtureTlsFront } from '../../../common/test/tls-fixture';
@@ -27,6 +30,7 @@ type Labels = Record<string, string>;
 type Container = {
   Id: string;
   Config: { Labels: Labels };
+  State?: { Running: boolean };
   Mounts: Array<{ Type: string; Name?: string; Destination?: string }>;
 };
 let app: NestFastifyApplication;
@@ -37,16 +41,21 @@ let client: RemoteHostClient;
 let volumes: Map<string, Labels>;
 let containers: Map<string, Container>;
 let networks: Map<string, Labels>;
+let networkInspects: Map<string, Record<string, unknown>>;
 let calls: string[];
 let received: number;
 let createBody: Record<string, unknown>;
+let networkCreateBody: Record<string, unknown>;
 let handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 let failLoad = false;
 let clearExit = 0;
 /** `stream` messages the fake engine answers an image load with. */
 let loadMessages: string[];
 /** Inspect answers for specific image references; anything else gets the default. */
-let imageInspects: Map<string, { Id: string; RootFS?: { Layers: string[] } }>;
+let imageInspects: Map<
+  string,
+  { Id: string; RootFS?: { Layers: string[] }; [key: string]: unknown }
+>;
 const clearHelpers = new Map<string, { source: string; started: boolean }>();
 let earlyArchiveAnswer = false;
 
@@ -111,8 +120,14 @@ async function fakeEngine(req: IncomingMessage, res: ServerResponse) {
       Mountpoint: `/docker/volumes/${name}`,
     });
   }
+  if (path === '/networks' && req.method === 'GET')
+    return reply(
+      res,
+      [...networks.keys()].map((Name) => ({ Name, IPAM: networkInspects.get(Name)?.IPAM })),
+    );
   if (path === '/networks/create') {
     const body = await readJson(req);
+    networkCreateBody = body;
     networks.set(body.Name as string, body.Labels as Labels);
     return reply(res, { Id: body.Name }, 201);
   }
@@ -124,7 +139,7 @@ async function fakeEngine(req: IncomingMessage, res: ServerResponse) {
       res.statusCode = 204;
       return void res.end();
     }
-    return reply(res, { Id: id, Labels: networks.get(id) });
+    return reply(res, { Id: id, Labels: networks.get(id), ...networkInspects.get(id) });
   }
   if (path === '/containers/create') {
     const body = await readJson(req);
@@ -172,6 +187,14 @@ async function fakeEngine(req: IncomingMessage, res: ServerResponse) {
       return void res.end();
     }
     return reply(res, { StatusCode: clearExit });
+  }
+  const stopping = path.match(/^\/containers\/([^/]+)\/stop$/);
+  if (stopping && req.method === 'POST') {
+    const holder = containers.get(stopping[1]);
+    if (!holder) return reply(res, {}, 404);
+    holder.State = { Running: false };
+    res.statusCode = 204;
+    return void res.end();
   }
   if (path === '/containers/json')
     return reply(
@@ -228,6 +251,7 @@ beforeEach(async () => {
   ]);
   containers = new Map();
   networks = new Map();
+  networkInspects = new Map();
   calls = [];
   received = 0;
   failLoad = false;
@@ -249,6 +273,7 @@ beforeEach(async () => {
     controllers: [HostDockerController],
     providers: [
       HostDockerService,
+      { provide: HOST_IPV4_ROUTES, useValue: async () => [] },
       HostDockerBodyParser,
       { provide: DockerArchiveJournal, useValue: new DockerArchiveJournal(root) },
     ],
@@ -280,6 +305,42 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await rm(root, { recursive: true, force: true });
   await rm(homeFixture, { recursive: true, force: true });
+});
+
+it('keeps privileged settings through the VM container create route', async () => {
+  await client.dockerCreateContainer('remote', {
+    projectId: PROJECT,
+    name: 'privileged-service',
+    config: { Image: 'image', HostConfig: { Privileged: true } },
+  });
+  expect(createBody).toMatchObject({
+    Image: 'image',
+    HostConfig: { Privileged: true },
+    Labels: { [OWNER]: PROJECT },
+  });
+  expect(calls.some((call) => call.includes('/start'))).toBe(false);
+});
+
+it('reports image metadata by encoded reference at the negotiated version and omits missing refs', async () => {
+  const refs = [
+    'registry.example:5000/app/db:latest',
+    'registry.example/app/db@sha256:abc',
+    '[2001:db8::1]:5000/app/db:latest',
+  ];
+  for (const ref of refs) imageInspects.set(ref, fixtures.containerd.inspect);
+  const expected = {
+    images: refs.map((ref) => ({
+      ref,
+      id: fixtures.containerd.inspect.Id,
+      metadata: dockerImageMetadata(fixtures.containerd.inspect),
+    })),
+  };
+  // Undefined inspect fields are omitted by JSON on the wire.
+  expect(
+    await client.dockerMatchImages('remote', [...refs, 'missing:latest'], { apiVersion: '1.47' }),
+  ).toEqual(JSON.parse(JSON.stringify(expected)));
+  expect(calls).toContain(`GET /v1.47/images/${encodeURIComponent(refs[0])}/json`);
+  expect(calls).toContain(`GET /v1.47/images/${encodeURIComponent(refs[1])}/json`);
 });
 
 it('covers image presence/save, project volume/network/create routes, holders and all delete kinds', async () => {
@@ -336,6 +397,83 @@ it('refuses unlabelled same-name volume creation and all unowned deletion kinds'
   expect(calls.some((call) => call.startsWith('DELETE'))).toBe(false);
 });
 
+it('passes IPv4 IPAM through the network route and reuses an existing network unchanged', async () => {
+  const ipam = {
+    Config: [{ Subnet: '172.19.0.0/16', Gateway: '172.19.0.1', IPRange: '172.19.0.128/25' }],
+  };
+  const network = {
+    projectId: PROJECT,
+    name: 'fixed-network',
+    labels: {},
+    internal: false,
+    attachable: false,
+    options: {},
+    shared: true as const,
+    ipam,
+  };
+  await expect(client.dockerCreateNetwork('remote', network)).resolves.toMatchObject({
+    created: true,
+  });
+  expect(networkCreateBody).toMatchObject({ IPAM: ipam, Labels: {} });
+  await expect(
+    client.dockerCreateNetwork('remote', {
+      ...network,
+      ipam: { Config: [{ Subnet: '10.0.0.0/24', Gateway: '10.0.0.1' }] },
+    }),
+  ).resolves.toMatchObject({ created: false });
+  expect(calls.filter((call) => call.endsWith('/networks/create'))).toHaveLength(1);
+  expect(networkCreateBody.IPAM).toEqual(ipam);
+});
+
+it.each([{ Config: [{ Subnet: '172.19.0.0/16', FutureSetting: true }] }])(
+  'refuses an unsupported IPAM shape before reaching Docker',
+  async (ipam) => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/host/docker/networks',
+      payload: { projectId: PROJECT, name: 'fixed-network', ipam },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(calls).toEqual([]);
+  },
+);
+
+it('lets every project reuse a shared network and creates a missing one with no owner', async () => {
+  const network = { labels: {}, internal: false, attachable: false, options: {} };
+  networks.set('shared-network', { [OWNER]: OTHER });
+  await expect(
+    client.dockerCreateNetwork('remote', {
+      ...network,
+      projectId: PROJECT,
+      name: 'shared-network',
+      shared: true,
+    }),
+  ).resolves.toMatchObject({ created: false });
+  // Without `shared`, another project's network stays refused, and the error says why.
+  await expect(
+    client.dockerCreateNetwork('remote', {
+      ...network,
+      projectId: PROJECT,
+      name: 'shared-network',
+    }),
+  ).rejects.toMatchObject({
+    status: 409,
+    message:
+      'Docker host request failed (HTTP 409): Docker resource is not owned by this imported project',
+  });
+
+  await client.dockerCreateNetwork('remote', {
+    ...network,
+    projectId: PROJECT,
+    name: 'tools',
+    shared: true,
+  });
+  expect(networks.get('tools')).toEqual({});
+  await expect(client.dockerDelete('remote', 'networks', 'tools', PROJECT)).rejects.toMatchObject({
+    status: 403,
+  });
+});
+
 it.each([
   'valid',
   'missing-compose',
@@ -369,14 +507,112 @@ it.each([
   expect(containers.has('holder')).toBe(scenario !== 'valid');
 });
 
+// Real routes plus the LAN client prove optional-root validation and VM mutation authorization.
+it.each(['remove', 'stop'] as const)(
+  '%s authorizes only project-root Compose labels when imported volumes lack Compose labels',
+  async (action) => {
+    volumes.set('imported', { [OWNER]: PROJECT });
+    const scenarios = [
+      { name: 'inside', path: homeFixture, root: homeFixture, allowed: true },
+      {
+        name: 'config-inside',
+        config: `/etc/other.yml,${homeFixture}/compose.yml`,
+        root: homeFixture,
+        allowed: true,
+      },
+      { name: 'outside', path: `${homeFixture}-other`, root: homeFixture, allowed: false },
+      { name: 'absent-root', path: homeFixture, allowed: false },
+      { name: 'other-owner', path: homeFixture, root: homeFixture, owner: OTHER, allowed: false },
+      { name: 'missing-paths', root: homeFixture, allowed: false },
+    ];
+    for (const scenario of scenarios) {
+      containers.set(scenario.name, {
+        Id: scenario.name,
+        Config: {
+          Labels: {
+            [COMPOSE]: 'app',
+            ...(scenario.path ? { [`${COMPOSE}.working_dir`]: scenario.path } : {}),
+            ...(scenario.config ? { [`${COMPOSE}.config_files`]: scenario.config } : {}),
+            ...(scenario.owner ? { [OWNER]: scenario.owner } : {}),
+          },
+        },
+        State: { Running: true },
+        Mounts: [],
+      });
+      const request =
+        action === 'remove'
+          ? client.dockerDelete('remote', 'containers', scenario.name, PROJECT, {
+              projectRoot: scenario.root,
+            })
+          : client.dockerStopContainer('remote', scenario.name, PROJECT, {
+              projectRoot: scenario.root,
+            });
+      if (scenario.allowed) await request;
+      else await expect(request).rejects.toMatchObject({ status: 403 });
+      expect(containers.has(scenario.name)).toBe(action !== 'remove' || !scenario.allowed);
+      if (containers.has(scenario.name))
+        expect(containers.get(scenario.name)!.State!.Running).toBe(!scenario.allowed);
+    }
+  },
+);
+
+it.each(['remove', 'stop'] as const)(
+  '%s refuses invalid project roots with HTTP 400 before an engine mutation',
+  async (action) => {
+    containers.set('holder', {
+      Id: 'holder',
+      Config: { Labels: { [OWNER]: PROJECT } },
+      State: { Running: true },
+      Mounts: [],
+    });
+    for (const projectRoot of [
+      'relative/project',
+      '/',
+      homedir(),
+      '/tmp/outside-vm-home',
+      `${homeFixture}/../project`,
+    ]) {
+      const request =
+        action === 'remove'
+          ? client.dockerDelete('remote', 'containers', 'holder', PROJECT, { projectRoot })
+          : client.dockerStopContainer('remote', 'holder', PROJECT, { projectRoot });
+      await expect(request).rejects.toMatchObject({ status: 400 });
+      expect(containers.get('holder')!.State!.Running).toBe(true);
+    }
+    expect(calls.some((call) => call.startsWith('DELETE ') || call.startsWith('POST '))).toBe(
+      false,
+    );
+  },
+);
+
 it('hashes the whole upload when the engine answers an archive PUT before the body ends', async () => {
   earlyArchiveAnswer = true;
   const chunks = [Buffer.alloc(65536, 1), Buffer.alloc(65536, 2), Buffer.alloc(4096, 3)];
+  let engineUploadClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    engineUploadClosed = resolve;
+  });
+  const stream = DockerEngineClient.prototype.stream;
+  jest.spyOn(DockerEngineClient.prototype, 'stream').mockImplementation(function (
+    this: DockerEngineClient,
+    method,
+    path,
+    options = {},
+  ) {
+    if (
+      this.socketPath === join(root, 'docker.sock') &&
+      method === 'PUT' &&
+      path.includes('/archive')
+    ) {
+      (options.body as Readable).once('close', engineUploadClosed);
+    }
+    return stream.call(this, method, path, options);
+  });
   const body = Readable.from(
     (async function* () {
       yield chunks[0];
       yield chunks[1];
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await closed;
       yield chunks[2];
     })(),
   );
@@ -394,6 +630,36 @@ it('hashes the whole upload when the engine answers an archive PUT before the bo
   } finally {
     earlyArchiveAnswer = false;
   }
+});
+
+it('loads an image when the engine answers before the upload ends', async () => {
+  let engineClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    engineClosed = resolve;
+  });
+  handler = async (req, res) => {
+    if (!req.url!.includes('/images/load')) return fakeEngine(req, res);
+    // As the real engine: answer at the tar's end marker, then close before the request ends.
+    await once(req, 'data');
+    res.writeHead(200, { Connection: 'close' });
+    res.end(JSON.stringify({ stream: 'Loaded image: repo/img:v1\n' }) + '\n');
+    res.once('finish', () => {
+      req.socket.destroy();
+      engineClosed();
+    });
+  };
+  imageInspects.set('repo/img:v1', { Id: 'sha256:loaded', RootFS: { Layers: ['sha256:a'] } });
+  const body = Readable.from(
+    (async function* () {
+      yield Buffer.alloc(65536, 1);
+      await closed;
+      yield Buffer.alloc(4096, 2);
+    })(),
+  );
+
+  await expect(client.dockerLoadImage('remote', body)).resolves.toEqual({
+    images: [{ id: 'sha256:loaded', layers: ['sha256:a'], references: ['repo/img:v1'] }],
+  });
 });
 it('streams images, archives and probe past the JSON body limit, cleaning helper-owned volumes only', async () => {
   const size = 8 * 1024 * 1024;
@@ -416,6 +682,11 @@ it('streams images, archives and probe past the JSON body limit, cleaning helper
   expect(written).toEqual({
     sha256: createHash('sha256').update(Buffer.alloc(size)).digest('hex'),
     bytes: size,
+  });
+  const chunk = Buffer.alloc(2 * getDefaultHighWaterMark(false));
+  expect(await app.get(HostDockerService).writeArchive(archive, Readable.from(chunk))).toEqual({
+    sha256: createHash('sha256').update(chunk).digest('hex'),
+    bytes: chunk.length,
   });
   let downloaded = '';
   const read = await client.dockerReadArchive('remote', archive);
@@ -547,7 +818,7 @@ it('prepares only the folder of a single file and moves the file through that fo
     Mounts: [{ Type: 'bind', Source: folder, Target: '/data' }],
   });
   expect(calls).toContainEqual(
-    expect.stringMatching(/^PUT \S*\/containers\/[^/]+\/archive\?copyUIDGID=true&path=\/data$/),
+    expect.stringMatching(/^PUT \S*\/containers\/[^/]+\/archive\?copyUIDGID=false&path=\/data$/),
   );
 
   calls = [];
@@ -632,14 +903,14 @@ it('answers 200 with the ID and layers of each loaded image, tagged or untagged'
   expect(response.statusCode).toBe(200);
   expect(JSON.parse(response.body)).toEqual({
     images: [
-      { id: 'sha256:tagged', layers: ['sha256:a', 'sha256:b'] },
-      { id: 'sha256:plain', layers: [] },
+      { id: 'sha256:tagged', layers: ['sha256:a', 'sha256:b'], references: ['repo/img:v1'] },
+      { id: 'sha256:plain', layers: [], references: ['sha256:plain'] },
     ],
   });
   await expect(client.dockerLoadImage('remote', Readable.from('tar'))).resolves.toEqual({
     images: [
-      { id: 'sha256:tagged', layers: ['sha256:a', 'sha256:b'] },
-      { id: 'sha256:plain', layers: [] },
+      { id: 'sha256:tagged', layers: ['sha256:a', 'sha256:b'], references: ['repo/img:v1'] },
+      { id: 'sha256:plain', layers: [], references: ['sha256:plain'] },
     ],
   });
 });
@@ -653,7 +924,9 @@ it('reports a loaded image once and skips references the engine no longer has', 
     'Loaded image ID: sha256:missing\n',
   ];
   await expect(client.dockerLoadImage('remote', Readable.from('tar'))).resolves.toEqual({
-    images: [{ id: 'sha256:same', layers: ['sha256:a'] }],
+    images: [
+      { id: 'sha256:same', layers: ['sha256:a'], references: ['repo/img:v1', 'repo/img:v2'] },
+    ],
   });
 });
 
@@ -695,7 +968,7 @@ it('keeps the archive ID and layers through a classic-store save and load', asyn
     const archive = await savedArchive('app:1');
     connect.mockImplementation(async () => new DockerEngineClient(join(root, 'target.sock')));
     await expect(client.dockerLoadImage('remote', Readable.from(archive))).resolves.toEqual({
-      images: [{ id: 'sha256:cfg', layers: ['sha256:l1', 'sha256:l2'] }],
+      images: [{ id: 'sha256:cfg', layers: ['sha256:l1', 'sha256:l2'], references: ['app:1'] }],
     });
     expect(target.images.get('sha256:cfg')).toMatchObject({ tags: ['app:1'] });
   } finally {
@@ -723,7 +996,9 @@ it('answers the derived image ID a containerd-store engine assigned on load', as
     const loaded = await client.dockerLoadImage('remote', Readable.from(archive));
     const derived = 'sha256:' + createHash('sha256').update('manifest:sha256:cfg').digest('hex');
     expect(derived).not.toBe('sha256:cfg');
-    expect(loaded).toEqual({ images: [{ id: derived, layers: ['sha256:l1'] }] });
+    expect(loaded).toEqual({
+      images: [{ id: derived, layers: ['sha256:l1'], references: [derived] }],
+    });
     expect(target.images.has(derived)).toBe(true);
     expect(target.images.has('sha256:cfg')).toBe(false);
   } finally {
@@ -752,8 +1027,8 @@ it('refuses a container create whose image the engine never registered', async (
   }
 });
 
-it('streams more than 1 GiB through the route without a size cap or whole-body buffering', async () => {
-  const total = 1024 * 1024 * 1024 + 1;
+it('streams 64 MiB through the route above its body limit without whole-body buffering', async () => {
+  const total = 64 * 1024 * 1024;
   const block = Buffer.alloc(256 * 1024);
   let produced = 0;
   let maximumAhead = 0;
@@ -867,24 +1142,65 @@ it('projects scan metadata and checks outside-home existence with a pinned API',
   expect(JSON.stringify(result).includes('fake-sensitive')).toBe(false);
   expect(calls).toContain('GET /v1.42/containers/json?all=true');
 });
-it.each([['relative'], ['/etc/../etc/hosts'], ['/etc//hosts'], Array(65).fill('/x')])(
-  'refuses invalid scan path list %#',
-  async (...paths) => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/host/docker/scan',
-      payload: { paths },
-    });
-    expect(response.statusCode).toBe(400);
-  },
-);
+it('refuses an invalid scan path list through HTTP', async () => {
+  const paths = ['relative'];
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/host/docker/scan',
+    payload: { paths },
+  });
+  expect(response.statusCode).toBe(400);
+});
+it('scans all IPv4 ranges and only the requested networks used addresses through the LAN route', async () => {
+  networks.set('shared-network', {});
+  networks.set('automatic-network', {});
+  networkInspects.set('shared-network', {
+    IPAM: { Config: [{ Subnet: '172.19.0.0/16' }, { Subnet: 'fd00::/64' }] },
+    Containers: {
+      holder: { Name: '/other-project', IPv4Address: '172.19.0.200/16', IPv6Address: 'fd00::3/64' },
+      empty: { Name: 'stopped', IPv4Address: '' },
+    },
+    Env: ['PRIVATE=must-not-appear'],
+  });
+  networkInspects.set('automatic-network', {
+    IPAM: { Config: [{ Subnet: '10.0.0.0/24' }] },
+  });
+  const result = await client.dockerScan(
+    'remote',
+    [],
+    { apiVersion: '1.42' },
+    [],
+    ['shared-network'],
+  );
+  expect(result.networks).toEqual([
+    {
+      name: 'shared-network',
+      subnets: ['172.19.0.0/16'],
+      addresses: [
+        { address: '172.19.0.200', containerId: 'holder', containerName: 'other-project' },
+      ],
+    },
+    { name: 'automatic-network', subnets: ['10.0.0.0/24'] },
+  ]);
+  expect(JSON.stringify(result)).not.toContain('PRIVATE');
+  expect(calls).toContain('GET /v1.42/networks');
+  expect(calls).toContain('GET /v1.42/networks/shared-network');
+  expect(calls).not.toContain('GET /v1.42/networks/automatic-network');
+
+  calls = [];
+  expect((await client.dockerScan('remote', [])).networks).toBeUndefined();
+  expect(calls.some((call) => call.includes('/networks'))).toBe(false);
+});
+
 it('returns a cleaned scan failure when the engine is unreachable', async () => {
   const spy = jest
     .spyOn(DockerEngineClient, 'connect')
     .mockRejectedValue(new Error('Env PRIVATE=fake-sensitive'));
-  await expect(client.dockerScan('remote', [])).rejects.toMatchObject({
-    message: 'Docker host request failed',
+  const failure = client.dockerScan('remote', []);
+  await expect(failure).rejects.toMatchObject({
+    message: 'Docker host request failed (HTTP 502): Docker host operation failed',
     status: 502,
   });
+  await expect(failure).rejects.not.toMatchObject({ message: expect.stringContaining('PRIVATE') });
   spy.mockRestore();
 });

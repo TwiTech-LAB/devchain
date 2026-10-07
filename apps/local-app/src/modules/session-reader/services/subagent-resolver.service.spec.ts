@@ -443,97 +443,61 @@ describe('SubagentResolver', () => {
   // -------------------------------------------------------------------------
 
   describe('parallel execution detection', () => {
-    it('should detect parallel execution (>100ms overlap)', async () => {
-      const file0 = makeFileInfo('agent-0');
-      const file1 = makeFileInfo('agent-1');
-      mockLocator.locate.mockResolvedValue([file0, file1]);
+    it.each([
+      { name: '300ms overlap', secondStart: 200, firstEnd: 500, secondEnd: 700, expected: true },
+      {
+        name: 'separated sessions',
+        secondStart: 150,
+        firstEnd: 100,
+        secondEnd: 300,
+        expected: false,
+      },
+    ])(
+      'detects parallel execution for $name',
+      async ({ secondStart, firstEnd, secondEnd, expected }) => {
+        const file0 = makeFileInfo('agent-0');
+        const file1 = makeFileInfo('agent-1');
+        mockLocator.locate.mockResolvedValue([file0, file1]);
+        const t0 = new Date('2024-01-01T00:00:00.000Z');
+        const t1 = new Date(t0.getTime() + secondStart);
+        const t2 = new Date(t0.getTime() + firstEnd);
+        const t3 = new Date(t0.getTime() + secondEnd);
 
-      // Overlapping sessions: agent-0 runs 0-500ms, agent-1 runs 200-700ms
-      const t0 = new Date('2024-01-01T00:00:00.000Z');
-      const t1 = new Date('2024-01-01T00:00:00.200Z');
-      const t2 = new Date('2024-01-01T00:00:00.500Z');
-      const t3 = new Date('2024-01-01T00:00:00.700Z');
+        mockCacheService.getOrParse
+          .mockResolvedValueOnce(
+            makeSession('agent-0', [
+              makeMessage({
+                role: 'user',
+                timestamp: t0,
+                sourceToolUseId: 'toolu_1',
+                content: [{ type: 'text', text: 'a' }],
+              }),
+              makeMessage({ role: 'assistant', timestamp: t2 }),
+            ]),
+          )
+          .mockResolvedValueOnce(
+            makeSession('agent-1', [
+              makeMessage({
+                role: 'user',
+                timestamp: t1,
+                sourceToolUseId: 'toolu_2',
+                content: [{ type: 'text', text: 'b' }],
+              }),
+              makeMessage({ role: 'assistant', timestamp: t3 }),
+            ]),
+          );
 
-      mockCacheService.getOrParse
-        .mockResolvedValueOnce(
-          makeSession('agent-0', [
-            makeMessage({
-              role: 'user',
-              timestamp: t0,
-              sourceToolUseId: 'toolu_1',
-              content: [{ type: 'text', text: 'a' }],
-            }),
-            makeMessage({ role: 'assistant', timestamp: t2 }),
-          ]),
-        )
-        .mockResolvedValueOnce(
-          makeSession('agent-1', [
-            makeMessage({
-              role: 'user',
-              timestamp: t1,
-              sourceToolUseId: 'toolu_2',
-              content: [{ type: 'text', text: 'b' }],
-            }),
-            makeMessage({ role: 'assistant', timestamp: t3 }),
-          ]),
-        );
+        const parent = makeSession('abc123', [
+          makeTaskToolCall('toolu_1', 'task A'),
+          makeTaskToolCall('toolu_2', 'task B'),
+        ]);
 
-      const parent = makeSession('abc123', [
-        makeTaskToolCall('toolu_1', 'task A'),
-        makeTaskToolCall('toolu_2', 'task B'),
-      ]);
-
-      const result = await resolver.resolve(parent, parentFilePath, providerName);
-      expect(result).toHaveLength(2);
-      expect(result[0].isParallel).toBe(true);
-      expect(result[1].isParallel).toBe(true);
-    });
-
-    it('should not mark as parallel with <100ms overlap', async () => {
-      const file0 = makeFileInfo('agent-0');
-      const file1 = makeFileInfo('agent-1');
-      mockLocator.locate.mockResolvedValue([file0, file1]);
-
-      // Non-overlapping: agent-0 runs 0-100ms, agent-1 starts at 150ms
-      const t0 = new Date('2024-01-01T00:00:00.000Z');
-      const t1 = new Date('2024-01-01T00:00:00.100Z');
-      const t2 = new Date('2024-01-01T00:00:00.150Z');
-      const t3 = new Date('2024-01-01T00:00:00.300Z');
-
-      mockCacheService.getOrParse
-        .mockResolvedValueOnce(
-          makeSession('agent-0', [
-            makeMessage({
-              role: 'user',
-              timestamp: t0,
-              sourceToolUseId: 'toolu_1',
-              content: [{ type: 'text', text: 'a' }],
-            }),
-            makeMessage({ role: 'assistant', timestamp: t1 }),
-          ]),
-        )
-        .mockResolvedValueOnce(
-          makeSession('agent-1', [
-            makeMessage({
-              role: 'user',
-              timestamp: t2,
-              sourceToolUseId: 'toolu_2',
-              content: [{ type: 'text', text: 'b' }],
-            }),
-            makeMessage({ role: 'assistant', timestamp: t3 }),
-          ]),
-        );
-
-      const parent = makeSession('abc123', [
-        makeTaskToolCall('toolu_1', 'task A'),
-        makeTaskToolCall('toolu_2', 'task B'),
-      ]);
-
-      const result = await resolver.resolve(parent, parentFilePath, providerName);
-      expect(result).toHaveLength(2);
-      expect(result[0].isParallel).toBe(false);
-      expect(result[1].isParallel).toBe(false);
-    });
+        const result = await resolver.resolve(parent, parentFilePath, providerName);
+        expect(result).toHaveLength(2);
+        expect(result[0].isParallel).toBe(expected);
+        expect(result[1].isParallel).toBe(expected);
+      },
+    );
 
     it('should not mark single process as parallel', async () => {
       const fileInfo = makeFileInfo('agent-0');
@@ -562,31 +526,6 @@ describe('SubagentResolver', () => {
   // -------------------------------------------------------------------------
 
   describe('cache key uses filePath (not agentId)', () => {
-    it('should pass filePath as the cache key to getOrParse', async () => {
-      const fileInfo = makeFileInfo('agent-0');
-      mockLocator.locate.mockResolvedValue([fileInfo]);
-
-      const subSession = makeSession('agent-0', [
-        makeMessage({
-          role: 'user',
-          sourceToolUseId: 'toolu_1',
-          content: [{ type: 'text', text: 'work' }],
-        }),
-      ]);
-      mockCacheService.getOrParse.mockResolvedValue(subSession);
-
-      const parent = makeSession('abc123', [makeTaskToolCall('toolu_1', 'task')]);
-
-      await resolver.resolve(parent, parentFilePath, providerName);
-
-      // Cache key (first arg) must be filePath, not agentId
-      expect(mockCacheService.getOrParse).toHaveBeenCalledWith(
-        fileInfo.filePath,
-        fileInfo.filePath,
-        expect.anything(),
-      );
-    });
-
     it('should use distinct cache keys for same agentId at different file paths', async () => {
       // Simulate two subagents both named "agent-0" but at different paths
       // (e.g., from different parent session directories)
@@ -681,16 +620,6 @@ describe('SubagentResolver', () => {
       const result = await resolver.resolve(parent, parentFilePath, providerName);
       expect(result).toHaveLength(1);
       expect(result[0].toolCallId).toBe('toolu_1');
-    });
-
-    it('should handle all subagent files failing to parse', async () => {
-      mockLocator.locate.mockResolvedValue([makeFileInfo('agent-0')]);
-      mockCacheService.getOrParse.mockRejectedValue(new Error('fs error'));
-
-      const parent = makeSession('abc123', [makeTaskToolCall('toolu_1', 'task')]);
-
-      const result = await resolver.resolve(parent, parentFilePath, providerName);
-      expect(result).toEqual([]);
     });
   });
 

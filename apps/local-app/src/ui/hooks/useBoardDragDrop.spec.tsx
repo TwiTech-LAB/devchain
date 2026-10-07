@@ -41,21 +41,20 @@ describe('useBoardDragDrop', () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
 
-  it('ends a started drag without changing caches or saving', () => {
+  it.each([
+    {
+      label: 'drag end',
+      finish: (h: ReturnType<typeof setup>) => h.result.current.handleDragEnd(),
+    },
+    {
+      label: 'same-status drop',
+      finish: (h: ReturnType<typeof setup>) => h.result.current.handleDrop(epic, 'todo'),
+    },
+  ] as const)('keeps caches and save untouched on $label', ({ finish }) => {
     const h = setup();
     act(() => h.result.current.handleDragStart(epic));
     expect(h.result.current.draggedEpic).toEqual(epic);
-    act(() => h.result.current.handleDragEnd());
-    expect(h.result.current.draggedEpic).toBeNull();
-    expect(h.client.getQueryData(h.epicsKey)).toEqual(h.data);
-    act(() => jest.runOnlyPendingTimers());
-    expect(h.onDropStatusChange).not.toHaveBeenCalled();
-  });
-
-  it('treats a same-status drop as a no-op', () => {
-    const h = setup();
-    act(() => h.result.current.handleDragStart(epic));
-    act(() => h.result.current.handleDrop(epic, 'todo'));
+    act(() => finish(h));
     expect(h.result.current.draggedEpic).toBeNull();
     expect(h.client.getQueryData(h.epicsKey)).toEqual(h.data);
     act(() => jest.runOnlyPendingTimers());

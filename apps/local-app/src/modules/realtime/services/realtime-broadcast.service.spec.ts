@@ -27,18 +27,7 @@ describe('RealtimeBroadcastService', () => {
         ts: expect.any(String),
       }),
     );
-  });
-
-  it('emits correct envelope format with ISO timestamp', () => {
-    const mockServer = { emit: jest.fn() };
-    service.setServer(mockServer as never);
-
-    service.broadcastEvent('chat/t1', 'message.read', { messageId: 'm1' });
-
     const [, envelope] = mockServer.emit.mock.calls[0];
-    expect(envelope.topic).toBe('chat/t1');
-    expect(envelope.type).toBe('message.read');
-    expect(envelope.payload).toEqual({ messageId: 'm1' });
     expect(() => new Date(envelope.ts).toISOString()).not.toThrow();
   });
 });

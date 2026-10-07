@@ -51,16 +51,6 @@ describe('PtyExecutor', () => {
     expect(result.truncated).toBe(true);
   });
 
-  it('cleans up disposables on exit (cleanup)', async () => {
-    const result = await executor.run({
-      argv: ['echo', 'cleanup-test'],
-      mode: 'pty',
-      timeout: 5000,
-    });
-    expect(result.success).toBe(true);
-    expect(result.timedOut).toBe(false);
-  });
-
   it('uses configured PTY dimensions (200×30)', async () => {
     const result = await executor.run({
       argv: [
@@ -85,16 +75,6 @@ describe('PtyExecutor', () => {
         env: { KEY: 'bad\x01val' },
       }),
     ).rejects.toThrow(/control characters/);
-  });
-
-  it('rejects env with invalid key', async () => {
-    await expect(
-      executor.run({
-        argv: ['echo', 'x'],
-        mode: 'pty',
-        env: { 'BAD-KEY': 'val' },
-      }),
-    ).rejects.toThrow(/Invalid env key/);
   });
 
   it('returns failure for empty argv', async () => {

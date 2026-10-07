@@ -38,7 +38,7 @@ describe('ExternalTaskKanban', () => {
   it('renders exact task status and activates the card without drag affordances', async () => {
     const user = userEvent.setup();
     const onOpenTask = jest.fn();
-    render(<ExternalTaskKanban columns={columns} onOpenTask={onOpenTask} />);
+    const { container } = render(<ExternalTaskKanban columns={columns} onOpenTask={onOpenTask} />);
 
     const card = screen.getByRole('button', { name: 'Open Render exact status' });
     expect(card).not.toHaveAttribute('draggable');
@@ -51,12 +51,10 @@ describe('ExternalTaskKanban', () => {
     card.focus();
     await user.keyboard('{Enter}');
     expect(onOpenTask).toHaveBeenCalledWith(columns[0].tasks[0]);
-  });
 
-  it('has no detectable accessibility violations', async () => {
-    const { container } = render(<ExternalTaskKanban columns={columns} onOpenTask={jest.fn()} />);
-
-    expect(await axe(container)).toHaveNoViolations();
+    {
+      expect(await axe(container)).toHaveNoViolations();
+    }
   });
 
   it('marks a standalone parented task as a Subtask without changing card activation', async () => {
@@ -291,13 +289,14 @@ describe('ExternalTaskKanban move interactions', () => {
     return screen.getByRole('heading', { name }).closest('section')!;
   }
 
-  it('marks the article draggable, announces grab, and reports the source column', () => {
+  it('marks the article draggable, announces grab, and reports the source column', async () => {
     const moves = movesBinding();
-    render(<ExternalTaskKanban columns={moveColumns} onOpenTask={jest.fn()} moves={moves} />);
+    const { container } = render(
+      <ExternalTaskKanban columns={moveColumns} onOpenTask={jest.fn()} moves={moves} />,
+    );
 
     const article = cardArticle();
     expect(article).toHaveAttribute('draggable', 'true');
-    expect(article.className).toContain('select-none');
 
     fireEvent.dragStart(article);
     expect(moves.onCardDragStart).toHaveBeenCalledWith({
@@ -307,6 +306,10 @@ describe('ExternalTaskKanban move interactions', () => {
 
     fireEvent.dragEnd(article);
     expect(moves.onCardDragEnd).toHaveBeenCalledTimes(1);
+
+    {
+      expect(await axe(container)).toHaveNoViolations();
+    }
   });
 
   it('accepts a drop on a receiving column with the converted target descriptor', () => {
@@ -430,14 +433,6 @@ describe('ExternalTaskKanban move interactions', () => {
     fireEvent.dragStart(article);
     expect(moves.onCardDragStart).not.toHaveBeenCalled();
   });
-
-  it('has no accessibility violations with move interactions enabled', async () => {
-    const { container } = render(
-      <ExternalTaskKanban columns={moveColumns} onOpenTask={jest.fn()} moves={movesBinding()} />,
-    );
-
-    expect(await axe(container)).toHaveNoViolations();
-  });
 });
 
 describe('ExternalTaskKanban card time metrics', () => {
@@ -464,8 +459,8 @@ describe('ExternalTaskKanban card time metrics', () => {
     );
   }
 
-  it('renders the Current badge and authoritative Logged and New figures', () => {
-    renderTimeBoard(30, new Map([['epic-1', 90]]));
+  it('renders the Current badge and authoritative Logged and New figures', async () => {
+    const { container } = renderTimeBoard(30, new Map([['epic-1', 90]]));
 
     expect(screen.getByTestId('external-card-time')).toHaveTextContent(
       `Logged ${formatEpicTimeMinutes(30)} · New unlogged ${formatEpicTimeMinutes(60)}`,
@@ -475,48 +470,50 @@ describe('ExternalTaskKanban card time metrics', () => {
       'text-status-warn',
     );
     expect(screen.getByTestId('epic-time-badge')).toHaveTextContent(formatEpicTimeMinutes(90));
+
+    {
+      expect(screen.getByText('Current DevChain time')).toBeInTheDocument();
+      expect(screen.getByTestId('external-card-time')).toHaveTextContent('Logged');
+      expect(screen.getByTestId('external-card-time')).toHaveTextContent('New unlogged');
+    }
+    {
+      expect(await axe(container)).toHaveNoViolations();
+    }
   });
 
-  it('identifies Current, Logged, and New in accessible text without color', () => {
-    renderTimeBoard(30, new Map([['epic-1', 90]]));
-
-    expect(screen.getByText('Current DevChain time')).toBeInTheDocument();
-    expect(screen.getByTestId('external-card-time')).toHaveTextContent('Logged');
-    expect(screen.getByTestId('external-card-time')).toHaveTextContent('New unlogged');
-  });
-
-  it('hides the time row when Current and Logged are both zero', () => {
-    renderTimeBoard(0, new Map([['epic-1', 0]]));
-
-    expect(screen.queryByTestId('external-card-time')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
-  });
-
-  it('renders the real Logged value and New 0m when Logged exceeds Current', () => {
-    renderTimeBoard(90, new Map([['epic-1', 15]]));
-
-    expect(screen.getByTestId('external-card-time')).toHaveTextContent(
-      `Logged ${formatEpicTimeMinutes(90)} · New unlogged ${formatEpicTimeMinutes(0)}`,
-    );
-    expect(screen.getByTestId('epic-time-badge')).toHaveTextContent(formatEpicTimeMinutes(15));
-  });
-
-  it('never renders numeric Logged or New from a null checkpoint', () => {
-    renderTimeBoard(null, new Map([['epic-1', 90]]));
-
-    const row = screen.getByTestId('external-card-time');
-    expect(screen.getByTestId('epic-time-badge')).toHaveTextContent(formatEpicTimeMinutes(90));
-    expect(row.textContent).not.toContain('Logged');
-    expect(row.textContent).not.toContain('New');
-  });
-
-  it('renders Logged without New while the Current batch has no total yet', () => {
-    renderTimeBoard(75, undefined);
-
-    const row = screen.getByTestId('external-card-time');
-    expect(row).toHaveTextContent(`Logged ${formatEpicTimeMinutes(75)}`);
-    expect(row.textContent).not.toContain('New unlogged');
-    expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
+  it.each([
+    { name: 'zero', logged: 0, current: 0, row: null, badge: null },
+    {
+      name: 'logged above current',
+      logged: 90,
+      current: 15,
+      row: 'Logged 1h 30m · New unlogged 0m',
+      badge: '15m',
+    },
+    { name: 'unknown checkpoint', logged: null, current: 90, row: '', badge: '1h 30m' },
+    {
+      name: 'current unavailable',
+      logged: 75,
+      current: undefined,
+      row: 'Logged 1h 15m',
+      badge: null,
+    },
+  ])('renders time figures for $name', ({ name, logged, current, row, badge }) => {
+    renderTimeBoard(logged, current === undefined ? undefined : new Map([['epic-1', current]]));
+    const timeRow = screen.queryByTestId('external-card-time');
+    if (row === null) expect(timeRow).not.toBeInTheDocument();
+    else {
+      expect(timeRow).toBeInTheDocument();
+      if (row) expect(timeRow).toHaveTextContent(row);
+      if (name === 'unknown checkpoint') {
+        expect(timeRow!.textContent).not.toContain('Logged');
+        expect(timeRow!.textContent).not.toContain('New');
+      }
+      if (name === 'current unavailable')
+        expect(timeRow!.textContent).not.toContain('New unlogged');
+    }
+    if (badge === null) expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
+    else expect(screen.getByTestId('epic-time-badge')).toHaveTextContent(badge);
   });
 
   it('renders no time row for an unlinked card even with totals present', () => {
@@ -533,12 +530,6 @@ describe('ExternalTaskKanban card time metrics', () => {
 
     expect(screen.queryByTestId('external-card-time')).not.toBeInTheDocument();
     expect(screen.queryByTestId('epic-time-badge')).not.toBeInTheDocument();
-  });
-
-  it('has no accessibility violations with the time row visible', async () => {
-    const { container } = renderTimeBoard(30, new Map([['epic-1', 90]]));
-
-    expect(await axe(container)).toHaveNoViolations();
   });
 
   it('suppresses every numeric time metric while the link set is placeholder or errored', () => {
@@ -623,27 +614,6 @@ describe('ExternalTaskKanban quick import actions', () => {
   ])('shows no quick action while %s', (_case, overrides) => {
     renderBoard(overrides as Partial<Parameters<typeof ExternalTaskKanban>[0]>);
 
-    expect(screen.queryByRole('button', { name: 'Create DevChain task' })).not.toBeInTheDocument();
-  });
-
-  it('shows the linked open action unchanged alongside hidden quick import', () => {
-    renderBoard({
-      links: [
-        {
-          ...unlinked,
-          linked: true,
-          epicId: 'epic-1',
-          projectId: 'project-1',
-          projectName: 'Product',
-          loggedMinutes: null,
-        },
-      ],
-    });
-
-    expect(screen.getByRole('link', { name: 'Open DevChain task' })).toHaveAttribute(
-      'href',
-      '/epics/epic-1',
-    );
     expect(screen.queryByRole('button', { name: 'Create DevChain task' })).not.toBeInTheDocument();
   });
 

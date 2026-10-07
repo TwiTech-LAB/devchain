@@ -315,55 +315,34 @@ describe('useIntegrationConnections', () => {
     );
   });
 
-  it('preserves field and provider reason metadata from safe API errors', async () => {
-    fetchMock
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [] }) })
-      .mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({
-          code: 'jira_authentication_failed',
-          message: 'Jira integration request failed',
-          details: { provider: 'jira', reason: 'authentication_failed', retryable: false },
-        }),
-      });
-    const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
-      wrapper: wrapper(queryClient),
-    });
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
-
-    let caught: unknown;
-    await act(async () => {
-      try {
-        await result.current.replaceConnection({
-          provider: 'jira',
-          siteUrl: 'https://acme.atlassian.net',
-          email: 'private@example.com',
-          token: 'bad-token',
-        });
-      } catch (error) {
-        caught = error;
-      }
-    });
-
-    expect(caught).toBeInstanceOf(IntegrationConnectionApiError);
-    if (!(caught instanceof IntegrationConnectionApiError)) {
-      throw new Error('expected an IntegrationConnectionApiError');
-    }
-    expect(caught).toMatchObject({
+  it.each([
+    {
+      label: 'preserves field and provider reason metadata from safe API errors',
+      errorCode: 'jira_authentication_failed',
+      reason: 'authentication_failed',
+      siteUrl: 'https://acme.atlassian.net',
+      token: 'bad-token',
       field: 'token',
       providerReason: 'authentication_failed',
-    });
-  });
-
-  it('routes Jira tenant-policy rejection back to the site URL field', async () => {
+    },
+    {
+      label: 'routes Jira tenant-policy rejection back to the site URL field',
+      errorCode: 'jira_request_rejected',
+      reason: 'request_rejected',
+      siteUrl: 'https://jira.example.com',
+      token: 'token',
+      field: 'siteUrl',
+      providerReason: 'request_rejected',
+    },
+  ] as const)('$label', async ({ errorCode, reason, siteUrl, token, field, providerReason }) => {
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [] }) })
       .mockResolvedValueOnce({
         ok: false,
         json: async () => ({
-          code: 'jira_request_rejected',
+          code: errorCode,
           message: 'Jira integration request failed',
-          details: { provider: 'jira', reason: 'request_rejected', retryable: false },
+          details: { provider: 'jira', reason: reason, retryable: false },
         }),
       });
     const { result } = renderHook(() => useIntegrationConnections({ projectId: PROJECT_ID }), {
@@ -376,9 +355,9 @@ describe('useIntegrationConnections', () => {
       try {
         await result.current.replaceConnection({
           provider: 'jira',
-          siteUrl: 'https://jira.example.com',
+          siteUrl: siteUrl,
           email: 'private@example.com',
-          token: 'token',
+          token: token,
         });
       } catch (error) {
         caught = error;
@@ -390,8 +369,8 @@ describe('useIntegrationConnections', () => {
       throw new Error('expected an IntegrationConnectionApiError');
     }
     expect(caught).toMatchObject({
-      field: 'siteUrl',
-      providerReason: 'request_rejected',
+      field: field,
+      providerReason: providerReason,
     });
   });
 

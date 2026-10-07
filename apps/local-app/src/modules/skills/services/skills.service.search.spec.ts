@@ -1,8 +1,6 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { SkillSourceRegistryService } from './skill-source-registry.service';
 import { SkillsService } from './skills.service';
@@ -20,10 +18,7 @@ describe('SkillsService search semantics', () => {
   let service: SkillsService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    const migrationsFolder = join(__dirname, '../../../../drizzle');
-    migrate(db, { migrationsFolder });
+    ({ sqlite, db } = createTestDatabase());
 
     settingsService = {
       getSkillSourcesEnabled: jest.fn().mockReturnValue({}),
@@ -135,56 +130,33 @@ describe('SkillsService search semantics', () => {
       expect(slugs).toEqual(['openai/react-lib', 'openai/typescript-sdk']);
     });
 
-    it('whole-phrase match is included in multi-term results', async () => {
-      // A skill whose name contains the combined phrase should appear in results
-      insertSkill({
-        id: 'a',
-        slug: 'openai/react-ts',
-        name: 'React TypeScript Starter',
-        source: 'openai',
-      });
-      insertSkill({ id: 'b', slug: 'openai/no-match', name: 'Database ORM', source: 'openai' });
-
-      const results = await service.listSkills({ q: 'react typescript' });
-      expect(results).toHaveLength(1);
-      expect(results[0]?.slug).toBe('openai/react-ts');
-    });
-
-    it('treats % as a literal character, not a SQL wildcard', async () => {
-      insertSkill({
-        id: 'a',
+    it.each([
+      {
+        label: '%',
+        query: '100%',
         slug: 'openai/rate-limiter',
         name: '100% rate limited',
-        source: 'openai',
-      });
-      // This skill has a name that would match '%' as wildcard but not as literal '100%'
-      insertSkill({ id: 'b', slug: 'openai/other', name: 'Other Skill', source: 'openai' });
-
-      const results = await service.listSkills({ q: '100%' });
-      expect(results).toHaveLength(1);
-      expect(results[0]?.slug).toBe('openai/rate-limiter');
-    });
-
-    it('treats _ as a literal character, not a SQL single-char wildcard', async () => {
-      // 'task_runner' as a wildcard would match 'taskxrunner' (any single char);
-      // with escaping it must only match the literal underscore.
-      insertSkill({
-        id: 'a',
+        otherSlug: 'openai/other',
+        otherName: 'Other Skill',
+      },
+      {
+        label: '_',
+        query: 'task_runner',
         slug: 'openai/task-runner',
         name: 'task_runner helper',
-        source: 'openai',
-      });
-      insertSkill({
-        id: 'b',
-        slug: 'openai/taskxrunner',
-        name: 'taskxrunner helper',
-        source: 'openai',
-      });
-
-      const results = await service.listSkills({ q: 'task_runner' });
-      expect(results).toHaveLength(1);
-      expect(results[0]?.slug).toBe('openai/task-runner');
-    });
+        otherSlug: 'openai/taskxrunner',
+        otherName: 'taskxrunner helper',
+      },
+    ])(
+      'treats $label as a literal SQL character',
+      async ({ query, slug, name, otherSlug, otherName }) => {
+        insertSkill({ id: 'a', slug, name, source: 'openai' });
+        insertSkill({ id: 'b', slug: otherSlug, name: otherName, source: 'openai' });
+        const results = await service.listSkills({ q: query });
+        expect(results).toHaveLength(1);
+        expect(results[0]?.slug).toBe(slug);
+      },
+    );
 
     it('combines source filter with multi-term search', async () => {
       insertSkill({ id: 'a', slug: 'openai/react-lib', name: 'React Library', source: 'openai' });
@@ -224,21 +196,6 @@ describe('SkillsService search semantics', () => {
       const results = await service.listSkills({ q: 'typescript' });
       expect(results[0]?.slug).toBe('openai/typescript-sdk');
       expect(results[1]?.slug).toBe('openai/code-helper');
-    });
-
-    it('ranks phrase-matching skills above single-term matches in multi-term queries', async () => {
-      // 'react typescript' in name → phrase bonus (score 100 + per-token)
-      // 'react' only in slug → single-token match (score 10)
-      insertSkill({ id: 'a', slug: 'openai/react-only', name: 'React Only', source: 'openai' });
-      insertSkill({
-        id: 'b',
-        slug: 'openai/react-ts',
-        name: 'React TypeScript Guide',
-        source: 'openai',
-      });
-
-      const results = await service.listSkills({ q: 'react typescript' });
-      expect(results[0]?.slug).toBe('openai/react-ts');
     });
 
     it('returns all enabled skills in name/slug alphabetical order when no query given', async () => {

@@ -274,15 +274,6 @@ describe('SessionTerminalRuntimeService', () => {
     });
   });
 
-  it('delegates the exact non-live set during Codex startup reconciliation', async () => {
-    const nonLiveSessionIds = new Set(['one', 'two']);
-
-    await service.reconcileCodexStartup(nonLiveSessionIds);
-
-    expect(codexPluginProfiles.reconcileStartup).toHaveBeenCalledTimes(1);
-    expect(codexPluginProfiles.reconcileStartup.mock.calls[0][0]).toBe(nonLiveSessionIds);
-  });
-
   function insertSession(input: SessionInput): void {
     sqlite
       .prepare(

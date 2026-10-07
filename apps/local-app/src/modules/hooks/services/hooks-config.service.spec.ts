@@ -177,17 +177,6 @@ describe('HooksConfigService', () => {
       ]);
     });
 
-    it('should use absolute path for hook command', async () => {
-      await service.ensureHooksConfig(tempDir);
-
-      const settings = JSON.parse(
-        await readFile(join(tempDir, '.claude', 'settings.local.json'), 'utf-8'),
-      );
-      const command = settings.hooks.SessionStart[0].hooks[0].command;
-      expect(command).toContain(tempDir);
-      expect(command).toContain('.claude/hooks/devchain-relay.sh');
-    });
-
     it('fresh-install settings.local.json is byte-stable and Copilot-schema-free (Claude golden)', async () => {
       // Safety net for the P3 hook generalization: the Claude installer output
       // must be byte-for-byte unchanged — exact matcher groups + `command`/
@@ -230,12 +219,6 @@ describe('HooksConfigService', () => {
       ]);
     });
 
-    it('should not throw on errors (non-fatal)', async () => {
-      // Pass a path that will fail (read-only scenarios handled by the service)
-      // The service wraps everything in try/catch, so this should not throw
-      await expect(service.ensureHooksConfig(tempDir)).resolves.toBeUndefined();
-    });
-
     it('should generate a relay script that forwards tool fields', async () => {
       await service.ensureHooksConfig(tempDir);
       const script = await readFile(
@@ -257,27 +240,30 @@ describe('HooksConfigService', () => {
   });
 
   describe('relay jq extraction (executed against mock hook JSON)', () => {
+    let toolsAvailable = false;
+    beforeAll(() => {
+      try {
+        execFileSync('bash', ['-c', 'command -v jq >/dev/null']);
+        toolsAvailable = true;
+      } catch {
+        toolsAvailable = false;
+      }
+    });
     /**
      * Materializes the real relay script and runs it through bash with a stubbed
      * `curl` (captures the POST body) and a mock PreToolUse hook JSON on stdin.
      * Proves the jq pipeline extracts toolName/toolInput(object)/toolUseId.
      */
-    function runRelay(hookJson: unknown): Record<string, unknown> | null {
-      return runRelayTimed(hookJson)?.payload ?? null;
+    async function runRelay(hookJson: unknown): Promise<Record<string, unknown> | null> {
+      return (await runRelayTimed(hookJson))?.payload ?? null;
     }
 
     /** Runs the relay; `curlDelaySec` makes the stubbed POST slow, `elapsedMs` times the relay. */
-    function runRelayTimed(
+    async function runRelayTimed(
       hookJson: unknown,
       { curlDelaySec = 0 }: { curlDelaySec?: number } = {},
-    ): { payload: Record<string, unknown>; elapsedMs: number } | null {
-      let bashOk = true;
-      try {
-        execFileSync('bash', ['-c', 'command -v jq >/dev/null && command -v bash >/dev/null']);
-      } catch {
-        bashOk = false;
-      }
-      if (!bashOk) return null;
+    ): Promise<{ payload: Record<string, unknown>; elapsedMs: number } | null> {
+      if (!toolsAvailable) return null;
 
       const scriptPath = join(tempDir, '.claude', 'hooks', 'devchain-relay.sh');
       const binDir = join(tempDir, 'fakebin');
@@ -295,12 +281,8 @@ sleep ${curlDelaySec}
 exit 0
 `;
 
-      execFileSync('mkdir', ['-p', binDir]);
-      // Write + chmod the fake curl synchronously via bash to keep the test simple.
-      execFileSync('bash', [
-        '-c',
-        `cat > "${join(binDir, 'curl')}" <<'EOF'\n${fakeCurl}EOF\nchmod +x "${join(binDir, 'curl')}"`,
-      ]);
+      await mkdir(binDir, { recursive: true });
+      await writeFile(join(binDir, 'curl'), fakeCurl, { mode: 0o755 });
 
       const startedAt = Date.now();
       execFileSync('bash', [scriptPath], {
@@ -318,19 +300,23 @@ exit 0
 
       const elapsedMs = Date.now() - startedAt;
 
-      // A turn hook posts in the background; give it a moment to land.
-      execFileSync('bash', [
-        '-c',
-        `for _ in $(seq 50); do [ -f "${captureFile}" ] && exit 0; sleep 0.1; done; exit 1`,
-      ]);
-      const raw = execFileSync('cat', [captureFile]).toString();
-      return { payload: JSON.parse(raw) as Record<string, unknown>, elapsedMs };
+      // The background POST publishes its capture atomically before the simulated delay.
+      for (let attempt = 0; attempt < 200; attempt++) {
+        try {
+          const raw = await readFile(captureFile, 'utf8');
+          return { payload: JSON.parse(raw) as Record<string, unknown>, elapsedMs };
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      throw new Error('Relay POST did not capture its payload');
     }
 
     it('extracts toolName, toolInput (as object), and toolUseId from a PreToolUse hook', async () => {
       await service.ensureHooksConfig(tempDir);
 
-      const payload = runRelay({
+      const payload = await runRelay({
         hook_event_name: 'PreToolUse',
         session_id: 'claude-session-1',
         tool_name: 'AskUserQuestion',
@@ -375,7 +361,7 @@ exit 0
     it('omits tool fields for a SessionStart hook (backward compatible)', async () => {
       await service.ensureHooksConfig(tempDir);
 
-      const payload = runRelay({
+      const payload = await runRelay({
         hook_event_name: 'SessionStart',
         session_id: 'claude-session-1',
         source: 'startup',
@@ -388,6 +374,8 @@ exit 0
       expect('toolName' in payload).toBe(false);
       expect('toolInput' in payload).toBe(false);
       expect('toolUseId' in payload).toBe(false);
+      expect(payload).not.toHaveProperty('firedAtMs');
+      expect(HookEventSchema.safeParse(payload).success).toBe(true);
     });
 
     it.each(['UserPromptSubmit', 'Stop'])(
@@ -395,19 +383,19 @@ exit 0
       async (hookEventName) => {
         await service.ensureHooksConfig(tempDir);
 
-        const result = runRelayTimed(
+        const result = await runRelayTimed(
           {
             hook_event_name: hookEventName,
             session_id: 'claude-session-1',
             transcript_path: '/tmp/transcript.jsonl',
             prompt: 'Refactor the parser',
           },
-          { curlDelaySec: 8 },
+          { curlDelaySec: 2 },
         );
         if (result === null) return;
 
         // The relay returns without waiting for the slow POST.
-        expect(result.elapsedMs).toBeLessThan(6000);
+        expect(result.elapsedMs).toBeLessThan(1000);
         expect(result.payload).toMatchObject({
           hookEventName,
           claudeSessionId: 'claude-session-1',
@@ -418,19 +406,5 @@ exit 0
         expect(HookEventSchema.safeParse(result.payload).success).toBe(true);
       },
     );
-
-    it('stamps no hook time on other hooks (strict variants stay valid)', async () => {
-      await service.ensureHooksConfig(tempDir);
-
-      const payload = runRelay({
-        hook_event_name: 'SessionStart',
-        session_id: 'claude-session-1',
-        source: 'startup',
-      });
-      if (payload === null) return;
-
-      expect(payload).not.toHaveProperty('firedAtMs');
-      expect(HookEventSchema.safeParse(payload).success).toBe(true);
-    });
   });
 });

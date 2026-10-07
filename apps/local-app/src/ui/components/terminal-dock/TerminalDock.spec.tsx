@@ -129,14 +129,17 @@ describe('TerminalDock collapsed bar pills', () => {
       expect(screen.getByText('Agent Two')).toBeInTheDocument();
     });
 
-    it('falls back to subtitle when Agent detail not found', () => {
-      const session = createMockSession({ id: 'session-1' });
+    it.each([
+      ['Subtitle Agent', 'session-1', 'Subtitle Agent'],
+      [undefined, 'abcd1234-5678-9abc-def0-123456789abc', 'abcd1234'],
+    ])('falls back to %s for session %s', (subtitle, sessionId, label) => {
+      const session = createMockSession({ id: sessionId });
 
       mockWindows = [
         createMockWindow({
           id: 'window-1',
-          sessionId: 'session-1',
-          subtitle: 'Subtitle Agent',
+          sessionId,
+          subtitle,
           details: [], // No Agent detail
         }),
       ];
@@ -145,31 +148,12 @@ describe('TerminalDock collapsed bar pills', () => {
         <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
       );
 
-      expect(screen.getByText('Subtitle Agent')).toBeInTheDocument();
-    });
-
-    it('falls back to session ID prefix when no agent name or subtitle', () => {
-      const session = createMockSession({ id: 'abcd1234-5678-9abc-def0-123456789abc' });
-
-      mockWindows = [
-        createMockWindow({
-          id: 'window-1',
-          sessionId: 'abcd1234-5678-9abc-def0-123456789abc',
-          subtitle: undefined,
-          details: [],
-        }),
-      ];
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      expect(screen.getByText('abcd1234')).toBeInTheDocument();
+      expect(screen.getByText(label)).toBeInTheDocument();
     });
   });
 
   describe('Focused window pill styling', () => {
-    it('has aria-pressed="true" for focused visible window', () => {
+    it('has aria-pressed="true" for focused visible window', async () => {
       const session = createMockSession({ id: 'session-1' });
 
       mockWindows = [
@@ -188,33 +172,17 @@ describe('TerminalDock collapsed bar pills', () => {
 
       const pill = screen.getByRole('button', { name: /focused agent/i });
       expect(pill).toHaveAttribute('aria-pressed', 'true');
-    });
 
-    it('has primary styling classes for focused window', () => {
-      const session = createMockSession({ id: 'session-1' });
-
-      mockWindows = [
-        createMockWindow({
-          id: 'window-1',
-          sessionId: 'session-1',
-          minimized: false,
-          details: [{ label: 'Agent', value: 'Focused Agent' }],
-        }),
-      ];
-      mockFocusedWindowId = 'window-1';
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      const pill = screen.getByRole('button', { name: /focused agent/i });
-      expect(pill).toHaveClass('bg-primary');
-      expect(pill).toHaveClass('text-primary-foreground');
+      {
+        const pill = screen.getByRole('button', { name: /focused agent/i });
+        expect(pill).toHaveClass('bg-primary');
+        expect(pill).toHaveClass('text-primary-foreground');
+      }
     });
   });
 
   describe('Visible but not focused window pill styling', () => {
-    it('has aria-pressed="false" for visible but not focused window', () => {
+    it('has aria-pressed="false" for visible but not focused window', async () => {
       const session = createMockSession({ id: 'session-1' });
 
       mockWindows = [
@@ -233,33 +201,17 @@ describe('TerminalDock collapsed bar pills', () => {
 
       const pill = screen.getByRole('button', { name: /visible agent/i });
       expect(pill).toHaveAttribute('aria-pressed', 'false');
-    });
 
-    it('has secondary styling classes for visible but not focused window', () => {
-      const session = createMockSession({ id: 'session-1' });
-
-      mockWindows = [
-        createMockWindow({
-          id: 'window-1',
-          sessionId: 'session-1',
-          minimized: false,
-          details: [{ label: 'Agent', value: 'Visible Agent' }],
-        }),
-      ];
-      mockFocusedWindowId = null; // Not focused
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      const pill = screen.getByRole('button', { name: /visible agent/i });
-      expect(pill).toHaveClass('bg-secondary');
-      expect(pill).toHaveClass('text-secondary-foreground');
+      {
+        const pill = screen.getByRole('button', { name: /visible agent/i });
+        expect(pill).toHaveClass('bg-secondary');
+        expect(pill).toHaveClass('text-secondary-foreground');
+      }
     });
   });
 
   describe('Minimized window pill styling', () => {
-    it('has aria-pressed="false" for minimized window', () => {
+    it('has aria-pressed="false" for minimized window', async () => {
       const session = createMockSession({ id: 'session-1' });
 
       mockWindows = [
@@ -277,42 +229,32 @@ describe('TerminalDock collapsed bar pills', () => {
 
       const pill = screen.getByRole('button', { name: /minimized agent/i });
       expect(pill).toHaveAttribute('aria-pressed', 'false');
-    });
 
-    it('has muted styling classes for minimized window', () => {
-      const session = createMockSession({ id: 'session-1' });
-
-      mockWindows = [
-        createMockWindow({
-          id: 'window-1',
-          sessionId: 'session-1',
-          minimized: true,
-          details: [{ label: 'Agent', value: 'Minimized Agent' }],
-        }),
-      ];
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      const pill = screen.getByRole('button', { name: /minimized agent/i });
-      expect(pill).toHaveClass('bg-muted');
+      {
+        const pill = screen.getByRole('button', { name: /minimized agent/i });
+        expect(pill).toHaveClass('bg-muted');
+      }
     });
   });
 
   describe('Click minimized pill calls restoreWindow', () => {
-    it('calls restoreWindow with window ID when clicking minimized pill', () => {
+    it.each([
+      ['restore', true, false],
+      ['focus', false, false],
+      ['minimize', false, true],
+    ] as const)('dispatches %s when clicking a pill', (action, minimized, focused) => {
       const session = createMockSession({ id: 'session-1' });
 
       mockWindows = [
         createMockWindow({
           id: 'window-abc',
           sessionId: 'session-1',
-          minimized: true,
+          minimized,
           details: [{ label: 'Agent', value: 'Click Me Agent' }],
         }),
       ];
 
+      mockFocusedWindowId = focused ? 'window-abc' : null;
       renderWithQueryClient(
         <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
       );
@@ -320,73 +262,30 @@ describe('TerminalDock collapsed bar pills', () => {
       const pill = screen.getByRole('button', { name: /click me agent/i });
       fireEvent.click(pill);
 
-      expect(mockRestoreWindow).toHaveBeenCalledTimes(1);
-      expect(mockRestoreWindow).toHaveBeenCalledWith('window-abc');
-      expect(mockFocusWindow).not.toHaveBeenCalled();
-      expect(mockMinimizeWindow).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('Click visible but not focused pill calls focusWindow', () => {
-    it('calls focusWindow with window ID when clicking visible but not focused pill', () => {
-      const session = createMockSession({ id: 'session-1' });
-
-      mockWindows = [
-        createMockWindow({
-          id: 'window-xyz',
-          sessionId: 'session-1',
-          minimized: false,
-          details: [{ label: 'Agent', value: 'Focus Me Agent' }],
-        }),
-      ];
-      mockFocusedWindowId = null; // Not focused
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      const pill = screen.getByRole('button', { name: /focus me agent/i });
-      fireEvent.click(pill);
-
-      expect(mockFocusWindow).toHaveBeenCalledTimes(1);
-      expect(mockFocusWindow).toHaveBeenCalledWith('window-xyz');
-      expect(mockRestoreWindow).not.toHaveBeenCalled();
-      expect(mockMinimizeWindow).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('Click focused pill calls minimizeWindow', () => {
-    it('calls minimizeWindow with window ID when clicking focused pill', () => {
-      const session = createMockSession({ id: 'session-1' });
-
-      mockWindows = [
-        createMockWindow({
-          id: 'window-focused',
-          sessionId: 'session-1',
-          minimized: false,
-          details: [{ label: 'Agent', value: 'Focused Agent' }],
-        }),
-      ];
-      mockFocusedWindowId = 'window-focused'; // This window is focused
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      const pill = screen.getByRole('button', { name: /focused agent/i });
-      fireEvent.click(pill);
-
-      expect(mockMinimizeWindow).toHaveBeenCalledTimes(1);
-      expect(mockMinimizeWindow).toHaveBeenCalledWith('window-focused');
-      expect(mockFocusWindow).not.toHaveBeenCalled();
-      expect(mockRestoreWindow).not.toHaveBeenCalled();
+      const callbacks = {
+        restore: mockRestoreWindow,
+        focus: mockFocusWindow,
+        minimize: mockMinimizeWindow,
+      };
+      for (const [name, callback] of Object.entries(callbacks)) {
+        expect(callback).toHaveBeenCalledTimes(name === action ? 1 : 0);
+      }
+      expect(callbacks[action]).toHaveBeenCalledWith('window-abc');
     });
   });
 
   describe('No pills when no open windows', () => {
-    it('renders no pills when no terminal windows are open', () => {
+    it.each([false, true])('renders no pills when sessionless=%s', (sessionless) => {
       const session = createMockSession({ id: 'session-1' });
-      mockWindows = [];
+      mockWindows = sessionless
+        ? [
+            createMockWindow({
+              id: 'window-1',
+              sessionId: undefined,
+              details: [{ label: 'Agent', value: 'No Session' }],
+            }),
+          ]
+        : [];
 
       renderWithQueryClient(
         <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
@@ -400,27 +299,14 @@ describe('TerminalDock collapsed bar pills', () => {
       expect(buttons).toHaveLength(1); // Only the header toggle button
       expect(buttons[0]).toHaveAttribute('aria-expanded', 'false');
     });
-
-    it('renders no pills when windows exist but none have sessionId', () => {
-      mockWindows = [
-        createMockWindow({
-          id: 'window-1',
-          sessionId: undefined, // No sessionId
-          details: [{ label: 'Agent', value: 'No Session' }],
-        }),
-      ];
-
-      renderWithQueryClient(<TerminalDock {...defaultProps} expanded={false} sessions={[]} />);
-
-      // No pill buttons should exist
-      const buttons = screen.getAllByRole('button');
-      expect(buttons).toHaveLength(1); // Only the header toggle button
-    });
   });
 
   describe('Status dot colors', () => {
-    it('shows green status dot for running session', () => {
-      const session = createMockSession({ id: 'session-1', status: 'running' });
+    it.each([
+      ['running', 'bg-status-ok'],
+      ['stopped', 'bg-muted-foreground'],
+    ] as const)('renders %s session status', (status, statusClass) => {
+      const session = createMockSession({ id: 'session-1', status });
 
       mockWindows = [
         createMockWindow({
@@ -436,32 +322,12 @@ describe('TerminalDock collapsed bar pills', () => {
 
       const pill = screen.getByRole('button', { name: /running agent/i });
       const statusDot = pill.querySelector('span.rounded-full');
-      expect(statusDot).toHaveClass('bg-status-ok');
-    });
-
-    it('shows gray status dot for non-running session', () => {
-      const session = createMockSession({ id: 'session-1', status: 'stopped' });
-
-      mockWindows = [
-        createMockWindow({
-          id: 'window-1',
-          sessionId: 'session-1',
-          details: [{ label: 'Agent', value: 'Stopped Agent' }],
-        }),
-      ];
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      const pill = screen.getByRole('button', { name: /stopped agent/i });
-      const statusDot = pill.querySelector('span.rounded-full');
-      expect(statusDot).toHaveClass('bg-muted-foreground');
+      expect(statusDot).toHaveClass(statusClass);
     });
   });
 
   describe('Provider icon rendering', () => {
-    it('renders provider icon when providerIcon detail exists', () => {
+    it.each([true, false])('renders provider icon when present=%s', (present) => {
       const session = createMockSession({ id: 'session-1' });
       const mockIconUri = 'data:image/svg+xml;base64,abc123';
 
@@ -471,7 +337,7 @@ describe('TerminalDock collapsed bar pills', () => {
           sessionId: 'session-1',
           details: [
             { label: 'Agent', value: 'Agent With Icon' },
-            { label: 'providerIcon', value: mockIconUri },
+            ...(present ? [{ label: 'providerIcon', value: mockIconUri }] : []),
           ],
         }),
       ];
@@ -482,28 +348,10 @@ describe('TerminalDock collapsed bar pills', () => {
 
       const pill = screen.getByRole('button', { name: /agent with icon/i });
       const img = pill.querySelector('img');
-      expect(img).toBeInTheDocument();
-      expect(img).toHaveAttribute('src', mockIconUri);
-    });
-
-    it('does not render img when providerIcon detail is missing', () => {
-      const session = createMockSession({ id: 'session-1' });
-
-      mockWindows = [
-        createMockWindow({
-          id: 'window-1',
-          sessionId: 'session-1',
-          details: [{ label: 'Agent', value: 'Agent No Icon' }],
-        }),
-      ];
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      const pill = screen.getByRole('button', { name: /agent no icon/i });
-      const img = pill.querySelector('img');
-      expect(img).not.toBeInTheDocument();
+      if (present) {
+        expect(img).toBeInTheDocument();
+        expect(img).toHaveAttribute('src', mockIconUri);
+      } else expect(img).not.toBeInTheDocument();
     });
   });
 
@@ -518,40 +366,26 @@ describe('TerminalDock collapsed bar pills', () => {
         const statusDot = screen.getByText('●');
         expect(statusDot).toHaveClass('text-status-ok');
       });
+
+      {
+        expect(screen.getByText('0 sessions')).toBeInTheDocument();
+      }
     });
 
-    it('shows label in "N sessions" format', () => {
-      const sessions = [
-        createMockSession({ id: 'session-1' }),
-        createMockSession({ id: 'session-2' }),
-        createMockSession({ id: 'session-3' }),
-      ];
+    it.each([
+      [1, '1 session'],
+      [3, '3 sessions'],
+    ])('labels %s sessions', (count, label) => {
+      const sessions = Array.from({ length: count }, (_, i) =>
+        createMockSession({ id: 'session-' + i }),
+      );
       mockWindows = [];
 
       renderWithQueryClient(
         <TerminalDock {...defaultProps} expanded={false} sessions={sessions} />,
       );
 
-      expect(screen.getByText('3 sessions')).toBeInTheDocument();
-    });
-
-    it('shows singular "session" for single session', () => {
-      const session = createMockSession({ id: 'session-1' });
-      mockWindows = [];
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[session]} />,
-      );
-
-      expect(screen.getByText('1 session')).toBeInTheDocument();
-    });
-
-    it('shows "0 sessions" when no sessions exist', () => {
-      mockWindows = [];
-
-      renderWithQueryClient(<TerminalDock {...defaultProps} expanded={false} sessions={[]} />);
-
-      expect(screen.getByText('0 sessions')).toBeInTheDocument();
+      expect(screen.getByText(label)).toBeInTheDocument();
     });
   });
 
@@ -571,36 +405,6 @@ describe('TerminalDock collapsed bar pills', () => {
 
       // userEvent.dblClick fires: click(detail=1) → click(detail=2) → dblclick
       // Header bar only has onDoubleClick, no onClick, so only dblclick triggers onToggle
-      expect(onToggle).toHaveBeenCalledTimes(1);
-    });
-
-    it('works in both directions: collapsed to expanded', async () => {
-      const user = userEvent.setup();
-      const onToggle = jest.fn();
-      mockWindows = [];
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={false} sessions={[]} onToggle={onToggle} />,
-      );
-
-      const headerBar = screen.getByLabelText('Terminal session dock').firstChild as Element;
-      await user.dblClick(headerBar);
-
-      expect(onToggle).toHaveBeenCalledTimes(1);
-    });
-
-    it('works in both directions: expanded to collapsed', async () => {
-      const user = userEvent.setup();
-      const onToggle = jest.fn();
-      mockWindows = [];
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={true} sessions={[]} onToggle={onToggle} />,
-      );
-
-      const headerBar = screen.getByLabelText('Terminal session dock').firstChild as Element;
-      await user.dblClick(headerBar);
-
       expect(onToggle).toHaveBeenCalledTimes(1);
     });
 
@@ -679,22 +483,6 @@ describe('TerminalDock collapsed bar pills', () => {
       expect(screen.queryByTestId('right-slot-content')).not.toBeInTheDocument();
     });
 
-    it('renders right slot content when rightSlot prop is provided', () => {
-      mockWindows = [];
-
-      renderWithQueryClient(
-        <TerminalDock
-          {...defaultProps}
-          expanded={false}
-          sessions={[]}
-          rightSlot={<span data-testid="right-slot-content">Status</span>}
-        />,
-      );
-
-      expect(screen.getByTestId('right-slot-content')).toBeInTheDocument();
-      expect(screen.getByText('Status')).toBeInTheDocument();
-    });
-
     it('left group (toggle button + session pills) still renders correctly when rightSlot is provided', () => {
       const session = createMockSession({ id: 'session-1' });
 
@@ -722,6 +510,7 @@ describe('TerminalDock collapsed bar pills', () => {
       expect(screen.getByRole('button', { name: /agent one/i })).toBeInTheDocument();
       // Right slot also present
       expect(screen.getByTestId('right-slot-content')).toBeInTheDocument();
+      expect(screen.getByText('Status')).toBeInTheDocument();
     });
   });
 
@@ -738,20 +527,6 @@ describe('TerminalDock collapsed bar pills', () => {
       // Wait a tick for any queries to potentially fire
       await waitFor(() => {
         expect(mockFetchAgentSummary).not.toHaveBeenCalled();
-      });
-    });
-
-    it('calls fetchAgentSummary when dock is expanded (expanded=true)', async () => {
-      mockFetchAgentSummary.mockClear();
-      const session = createMockSession({ id: 'session-1', agentId: 'agent-456' });
-      mockWindows = [];
-
-      renderWithQueryClient(
-        <TerminalDock {...defaultProps} expanded={true} sessions={[session]} />,
-      );
-
-      await waitFor(() => {
-        expect(mockFetchAgentSummary).toHaveBeenCalledWith('agent-456', expect.any(Function));
       });
     });
 

@@ -1,7 +1,7 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { ConflictError, NotFoundError } from '../../../common/errors/error-types';
@@ -13,10 +13,9 @@ describe('LocalStorageService - project owner', () => {
   let service: LocalStorageService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('journal_mode = WAL');
     const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: join(__dirname, '../../../../drizzle') });
     sqlite.pragma('foreign_keys = ON');
     service = new LocalStorageService(db);
   });
@@ -273,7 +272,9 @@ describe('LocalStorageService - project owner', () => {
       )
       .run(randomUUID(), owner.id, `tmux-${owner.id}`, now, now, now);
 
-    await expect(service.deleteAgent(owner.id)).rejects.toThrow(/active session/);
+    const deletion = service.deleteAgent(owner.id);
+    await expect(deletion).rejects.toThrow(ConflictError);
+    await expect(deletion).rejects.toThrow(/active session/);
 
     expect(ownerIds(project.id)).toEqual([owner.id]);
   });

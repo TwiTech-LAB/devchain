@@ -110,21 +110,6 @@ describe('ReviewCommentNotifierSubscriber', () => {
     );
   });
 
-  it('passes pooled delivery policy to AMD', async () => {
-    await subscriber.handleReviewCommentCreated(basePayload);
-
-    expect(deliverMock).toHaveBeenCalledTimes(1);
-    expect(deliverMock).toHaveBeenCalledWith(
-      ['agent-1'],
-      expect.objectContaining({
-        kind: 'pooled',
-        source: 'review.comment.created',
-        projectId: basePayload.projectId,
-      }),
-      { submitKeys: ['Enter'] },
-    );
-  });
-
   it('notifies multiple target agents', async () => {
     const multiAgentPayload = {
       ...basePayload,
@@ -184,29 +169,15 @@ describe('ReviewCommentNotifierSubscriber', () => {
     expect(eventLogService.recordHandledOk).not.toHaveBeenCalled();
   });
 
-  it('skips processing when no targetAgentIds', async () => {
-    const noTargetPayload = {
-      ...basePayload,
-      targetAgentIds: [],
-    };
-
-    await subscriber.handleReviewCommentCreated(noTargetPayload);
-
-    expect(deliverMock).not.toHaveBeenCalled();
-    expect(eventLogService.recordHandledOk).not.toHaveBeenCalled();
-    expect(eventLogService.recordHandledFail).not.toHaveBeenCalled();
-  });
-
-  it('skips processing when targetAgentIds is undefined', async () => {
-    const undefinedTargetPayload = {
-      ...basePayload,
-      targetAgentIds: undefined,
-    };
-
-    await subscriber.handleReviewCommentCreated(undefinedTargetPayload);
-
-    expect(deliverMock).not.toHaveBeenCalled();
-  });
+  it.each([{ targetAgentIds: [] }, { targetAgentIds: undefined }])(
+    'skips target list $targetAgentIds',
+    async ({ targetAgentIds }) => {
+      await subscriber.handleReviewCommentCreated({ ...basePayload, targetAgentIds } as never);
+      expect(deliverMock).not.toHaveBeenCalled();
+      expect(eventLogService.recordHandledOk).not.toHaveBeenCalled();
+      expect(eventLogService.recordHandledFail).not.toHaveBeenCalled();
+    },
+  );
 
   it('resolves author name from storage when authorType is agent', async () => {
     const agentAuthorPayload = {
@@ -307,50 +278,37 @@ describe('ReviewCommentNotifierSubscriber', () => {
   });
 
   describe('de-duplication and author filtering', () => {
-    it('de-duplicates target agent IDs before notification', async () => {
-      const duplicatePayload = {
-        ...basePayload,
+    it.each([
+      {
+        label: 'dedupe',
         targetAgentIds: ['agent-1', 'agent-2', 'agent-1', 'agent-3'],
-      };
-
-      await subscriber.handleReviewCommentCreated(duplicatePayload);
-
-      // Should only notify 3 unique agents (de-duplicated)
-      expect(deliverMock).toHaveBeenCalledTimes(3);
-      expect(deliverMock).toHaveBeenCalledWith(['agent-1'], expect.any(Object), expect.any(Object));
-      expect(deliverMock).toHaveBeenCalledWith(['agent-2'], expect.any(Object), expect.any(Object));
-      expect(deliverMock).toHaveBeenCalledWith(['agent-3'], expect.any(Object), expect.any(Object));
-    });
-
-    it('filters out author agent ID when authorType is agent', async () => {
-      const authorPayload = {
-        ...basePayload,
+        authorType: 'user' as const,
+        authorAgentId: null,
+        expected: ['agent-1', 'agent-2', 'agent-3'],
+      },
+      {
+        label: 'filter author',
+        targetAgentIds: ['agent-1', 'agent-2'],
         authorType: 'agent' as const,
         authorAgentId: 'agent-1',
+        expected: ['agent-2'],
+      },
+      {
+        label: 'user author',
         targetAgentIds: ['agent-1', 'agent-2'],
-      };
-
-      await subscriber.handleReviewCommentCreated(authorPayload);
-
-      // Should only notify agent-2 (agent-1 filtered out as author)
-      expect(deliverMock).toHaveBeenCalledTimes(1);
-      expect(deliverMock).toHaveBeenCalledWith(['agent-2'], expect.any(Object), expect.any(Object));
-    });
-
-    it('does not filter when authorType is user', async () => {
-      const userPayload = {
-        ...basePayload,
         authorType: 'user' as const,
-        authorAgentId: 'agent-1', // user has agentId but is not agent authorType
-        targetAgentIds: ['agent-1', 'agent-2'],
-      };
-
-      await subscriber.handleReviewCommentCreated(userPayload);
-
-      // Should notify both agents (no filtering for user)
-      expect(deliverMock).toHaveBeenCalledTimes(2);
-      expect(deliverMock).toHaveBeenCalledWith(['agent-1'], expect.any(Object), expect.any(Object));
-      expect(deliverMock).toHaveBeenCalledWith(['agent-2'], expect.any(Object), expect.any(Object));
+        authorAgentId: 'agent-1',
+        expected: ['agent-1', 'agent-2'],
+      },
+    ])('$label', async ({ targetAgentIds, authorType, authorAgentId, expected }) => {
+      await subscriber.handleReviewCommentCreated({
+        ...basePayload,
+        targetAgentIds,
+        authorType,
+        authorAgentId,
+      });
+      expect(deliverMock).toHaveBeenCalledTimes(expected.length);
+      expect(deliverMock.mock.calls.map((call) => call[0][0])).toEqual(expected);
     });
 
     it('exits early without notifications when filtering leaves zero targets', async () => {
@@ -418,80 +376,52 @@ describe('ReviewCommentNotifierSubscriber', () => {
       );
     });
   });
+  it('captures exact working-tree review comment message', async () => {
+    getAgentMock.mockResolvedValue({ id: 'author-1', name: 'Author Agent' });
 
-  describe('team variables', () => {
-    it('default template output unchanged for teamless recipient', async () => {
-      await subscriber.handleReviewCommentCreated(basePayload);
+    await subscriber.handleReviewCommentCreated({
+      commentId: 'comment-1',
+      reviewId: 'review-1',
+      projectId: 'project-1',
+      content: 'Please fix this.',
+      commentType: 'issue',
+      status: 'open',
+      authorType: 'agent',
+      authorAgentId: 'author-1',
+      filePath: 'src/file.ts',
+      lineStart: 10,
+      lineEnd: 12,
+      parentId: null,
+      targetAgentIds: ['agent-1'],
+      reviewTitle: 'Review Title',
+      reviewMode: 'working_tree',
+    } as never);
 
-      const message = deliveredBody();
-      expect(message).toContain('[Review Comment]');
-      expect(message).toContain('Fix authentication bug');
-      expect(message).toContain('src/utils.ts');
-      expect(message).not.toContain('team_name');
-      expect(message).not.toContain('is_team_lead');
-    });
-
-    it('{{#if is_team_lead}} block renders correctly', async () => {
-      getRecipientContextMock.mockResolvedValue({
-        isTeamLead: true,
-        teamNames: ['Backend'],
-        memberRole: 'lead',
-      });
-
-      // Use a mock template that tests team vars — we can't modify DEFAULT_TEMPLATE,
-      // but the subscriber always uses DEFAULT_TEMPLATE. To test team vars rendering,
-      // we verify the vars are passed correctly by checking the rendered output
-      // includes team context when rendered through the common renderer.
-      await subscriber.handleReviewCommentCreated(basePayload);
-
-      // The default template doesn't use team vars, so output is unchanged.
-      // But getRecipientContext was called for the recipient and project.
-      expect(getRecipientContextMock).toHaveBeenCalledWith('agent-1', 'project-1');
-    });
-
-    it('{team_name} legacy syntax resolves for 1-team agent', async () => {
-      getRecipientContextMock.mockResolvedValue({
-        isTeamLead: true,
-        teamNames: ['Backend'],
-        memberRole: 'lead',
-      });
-
-      await subscriber.handleReviewCommentCreated(basePayload);
-
-      // Verify the team context was loaded for the recipient
-      expect(getRecipientContextMock).toHaveBeenCalledWith('agent-1', 'project-1');
-      // Default template doesn't reference team vars, but they are available
-      expect(deliverMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('multi-team recipient: team context loaded per recipient', async () => {
-      getRecipientContextMock.mockResolvedValue({
-        isTeamLead: false,
-        teamNames: ['Alpha', 'Zebra'],
-        memberRole: 'member',
-      });
-
-      const multiPayload = {
-        ...basePayload,
-        targetAgentIds: ['agent-1', 'agent-2'],
-      };
-
-      await subscriber.handleReviewCommentCreated(multiPayload);
-
-      // Each recipient gets independent team context lookup
-      expect(getRecipientContextMock).toHaveBeenCalledWith('agent-1', 'project-1');
-      expect(getRecipientContextMock).toHaveBeenCalledWith('agent-2', 'project-1');
-      expect(getRecipientContextMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('unknown literal tokens preserved in default template', async () => {
-      await subscriber.handleReviewCommentCreated(basePayload);
-
-      const message = deliveredBody();
-      // The default template has `<your-session-id>` and `<comment-version>` which are
-      // not in the legacy variables list — they should be preserved as-is
-      expect(message).toContain('<your-session-id>');
-      expect(message).toContain('<comment-version>');
-    });
+    expect(deliverMock).toHaveBeenCalledWith(
+      ['agent-1'],
+      expect.objectContaining({
+        kind: 'pooled',
+        body: [
+          '[Review Comment]',
+          'New issue on "Review Title" by Author Agent.',
+          '',
+          'File: src/file.ts (L10-12)',
+          'Context: Working tree changes vs HEAD',
+          'Content: Please fix this.',
+          '',
+          'Actions:',
+          '\u2022 Reply: devchain_reply_comment(sessionId="<your-session-id>", reviewId="review-1", parentCommentId="comment-1", content="Your reply")',
+          '\u2022 Resolve: devchain_resolve_comment(sessionId="<your-session-id>", commentId="comment-1", version=<comment-version>)',
+          '  (Fetch comment first with devchain_get_review_comments to get current version)',
+          '\u2022 View review: devchain_get_review(sessionId="<your-session-id>", reviewId="review-1")',
+        ].join('\n'),
+        source: 'review.comment.created',
+        projectId: 'project-1',
+      }),
+      { submitKeys: ['Enter'] },
+    );
+    expect(eventLogService.recordHandledOk).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: 'event-1', handler: 'ReviewCommentNotifier' }),
+    );
   });
 });

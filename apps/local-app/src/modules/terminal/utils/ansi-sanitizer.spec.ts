@@ -1,4 +1,4 @@
-import { stripAlternateScreenSequences, sanitizeAnsiForClient } from './ansi-sanitizer';
+import { stripAlternateScreenSequences } from './ansi-sanitizer';
 
 // Test layer: pure-function unit. This is the cheapest layer that proves the
 // strip regex/semantics — no DI, no mocks, no terminal state. The OpenCode
@@ -64,19 +64,5 @@ describe('stripAlternateScreenSequences', () => {
 
   it('leaves an empty string empty', () => {
     expect(stripAlternateScreenSequences('')).toBe('');
-  });
-});
-
-describe('sanitizeAnsiForClient', () => {
-  // sanitizeAnsiForClient is the extendable hook that currently delegates to
-  // stripAlternateScreenSequences. Pin the delegation so future policy changes
-  // (OSC/DSR filtering) are intentional and don't silently drop the alt-screen
-  // strip that default providers depend on for scrollback accumulation.
-  it('strips alt-screen toggles (delegates to stripAlternateScreenSequences)', () => {
-    expect(sanitizeAnsiForClient('\x1b[?1049henter\x1b[?1049l')).toBe('enter');
-  });
-
-  it('preserves mouse-tracking-only DECSETs', () => {
-    expect(sanitizeAnsiForClient('\x1b[?1000h')).toBe('\x1b[?1000h');
   });
 });

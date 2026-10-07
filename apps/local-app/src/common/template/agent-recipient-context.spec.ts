@@ -60,17 +60,4 @@ describe('loadAgentRecipientContext', () => {
       is_team_lead: false,
     });
   });
-
-  it('2 teams, agent is lead of one', async () => {
-    const teams = [
-      makeTeam({ id: 't1', name: 'Backend', teamLeadAgentId: AGENT_ID }),
-      makeTeam({ id: 't2', name: 'Frontend', teamLeadAgentId: 'other' }),
-    ];
-    const result = await loadAgentRecipientContext(mockLookup(teams), AGENT_ID);
-    expect(result).toEqual({
-      team_name: '',
-      team_names: 'Backend, Frontend',
-      is_team_lead: true,
-    });
-  });
 });

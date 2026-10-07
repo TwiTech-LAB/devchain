@@ -36,6 +36,8 @@ interface SyncTarget {
   /** Hash of the whole-arriving tables as last applied, to skip pulls that change nothing. */
   appliedHash: string | null;
   inFlight: Promise<void> | null;
+  /** A queued pull that has not started; `pullNow` callers join it. */
+  queuedPull: Promise<void> | null;
 }
 
 /**
@@ -107,6 +109,7 @@ export class RemoteLiveSyncService
       resnapshotAt: 0,
       appliedHash: null,
       inFlight: null,
+      queuedPull: null,
     });
     logger.info({ projectId, remoteId }, 'Live sync started');
   }
@@ -125,6 +128,12 @@ export class RemoteLiveSyncService
     return this.targets.has(projectId);
   }
 
+  runExclusive<T>(projectId: string, work: (active: () => boolean) => Promise<T>): Promise<T> {
+    const target = this.targets.get(projectId);
+    if (!target) return work(() => false);
+    return this.enqueue(target, () => work(() => this.isCurrent(target)));
+  }
+
   /** Runs one pull for the project now, unless one is in flight (then waits for it). */
   async syncNow(projectId: string): Promise<void> {
     const target = this.targets.get(projectId);
@@ -136,9 +145,7 @@ export class RemoteLiveSyncService
   async pullNow(projectId: string): Promise<void> {
     const target = this.targets.get(projectId);
     if (!target) return;
-    await target.inFlight;
-    if (!this.isCurrent(target)) return;
-    await (target.inFlight ?? this.launch(target));
+    await (target.queuedPull ?? this.launch(target));
   }
 
   private tick(): void {
@@ -148,16 +155,28 @@ export class RemoteLiveSyncService
   }
 
   private launch(target: SyncTarget): Promise<void> {
-    const run = this.pullWithFiles(target)
-      .catch((error: unknown) => {
+    target.queuedPull = this.enqueue(target, async () => {
+      target.queuedPull = null;
+      try {
+        await this.pullWithFiles(target);
+      } catch (error: unknown) {
         if (!this.stopped) {
           logger.warn({ error, projectId: target.projectId }, 'Live sync pull failed');
         }
-      })
-      .finally(() => {
-        target.inFlight = null;
-      });
-    target.inFlight = run;
+      }
+    });
+    return target.queuedPull;
+  }
+
+  private enqueue<T>(target: SyncTarget, work: () => Promise<T>): Promise<T> {
+    const run = (target.inFlight ?? Promise.resolve()).then(work).finally(() => {
+      if (target.inFlight === drained) target.inFlight = null;
+    });
+    const drained = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    target.inFlight = drained;
     return run;
   }
 

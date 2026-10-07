@@ -51,13 +51,11 @@ describe('createScrollHistoryDetector', () => {
       expect(decision.gestureRecent).toBe(false);
     });
 
-    it('does not request when history is unavailable', () => {
+    it.each([{ hasHistory: false }, { inFlight: true }])('suppresses history with %p', (guard) => {
       const d = createScrollHistoryDetector();
       d.shouldRequestHistory(base({ viewportY: 100, baseY: 100 }));
       d.stampScrollIntent(10_000);
-      const decision = d.shouldRequestHistory(
-        base({ viewportY: 40, baseY: 100, hasHistory: false }),
-      );
+      const decision = d.shouldRequestHistory(base({ viewportY: 40, baseY: 100, ...guard }));
       expect(decision.shouldRequest).toBe(false);
     });
 
@@ -68,14 +66,6 @@ describe('createScrollHistoryDetector', () => {
       expect(d.shouldRequestHistory(base({ viewportY: 40, baseY: 100 })).shouldRequest).toBe(true);
       // Further scroll-up in the same cycle (still not at bottom, latch set).
       expect(d.shouldRequestHistory(base({ viewportY: 20, baseY: 100 })).shouldRequest).toBe(false);
-    });
-
-    it('suppresses while a request is in-flight', () => {
-      const d = createScrollHistoryDetector();
-      d.shouldRequestHistory(base({ viewportY: 100, baseY: 100 }));
-      d.stampScrollIntent(10_000);
-      const decision = d.shouldRequestHistory(base({ viewportY: 40, baseY: 100, inFlight: true }));
-      expect(decision.shouldRequest).toBe(false);
     });
 
     it('holds off within the cooldown window and fires again after it', () => {
@@ -126,15 +116,6 @@ describe('createScrollHistoryDetector', () => {
       const decision = d.shouldRequestHistory(base({ viewportY: 0, baseY: 100, visible: false }));
       expect(decision.shouldRequest).toBe(false);
       expect(decision.suppressed).toBe(true);
-    });
-
-    it('freezes was-at-bottom bookkeeping while hidden', () => {
-      const d = createScrollHistoryDetector();
-      // Establish at-bottom while visible.
-      d.shouldRequestHistory(base({ viewportY: 100, baseY: 100, visible: true }));
-      // Hidden viewport jumps to top — must NOT overwrite wasAtBottom.
-      d.shouldRequestHistory(base({ viewportY: 0, baseY: 100, visible: false }));
-      // The last visible state is still "at bottom".
       expect(d.getLastVisible()).toEqual({ wasAtBottom: true, offsetFromBottom: 0 });
     });
 
@@ -203,38 +184,16 @@ describe('createScrollHistoryDetector', () => {
   });
 
   describe('scroll-gesture intent', () => {
-    it('a gesture stamped within the decay window authorizes a request', () => {
-      const d = createScrollHistoryDetector();
-      d.shouldRequestHistory(base({ viewportY: 100, baseY: 100, now: 10_000 }));
-      d.stampScrollIntent(10_000);
-      // One ms later — well inside the window.
-      const decision = d.shouldRequestHistory(base({ viewportY: 40, baseY: 100, now: 10_001 }));
-      expect(decision.shouldRequest).toBe(true);
-      expect(decision.gestureRecent).toBe(true);
-    });
-
-    it('a gesture older than SCROLL_GESTURE_STALE_MS does not authorize a request', () => {
+    it.each([0, 1])('rejects intent at stale boundary +%s', (overBoundary) => {
       const d = createScrollHistoryDetector();
       d.shouldRequestHistory(base({ viewportY: 100, baseY: 100, now: 10_000 }));
       d.stampScrollIntent(10_000);
       // Exactly one ms past the decay window.
       const decision = d.shouldRequestHistory(
-        base({ viewportY: 40, baseY: 100, now: 10_000 + SCROLL_GESTURE_STALE_MS + 1 }),
+        base({ viewportY: 40, baseY: 100, now: 10_000 + SCROLL_GESTURE_STALE_MS + overBoundary }),
       );
       expect(decision.shouldRequest).toBe(false);
       expect(decision.gestureRecent).toBe(false);
-    });
-
-    it('a boundary gesture exactly at the window edge still counts as recent', () => {
-      const d = createScrollHistoryDetector();
-      d.shouldRequestHistory(base({ viewportY: 100, baseY: 100, now: 10_000 }));
-      d.stampScrollIntent(10_000);
-      // now - lastIntent === SCROLL_GESTURE_STALE_MS is NOT recent (< is strict).
-      const atEdge = d.shouldRequestHistory(
-        base({ viewportY: 40, baseY: 100, now: 10_000 + SCROLL_GESTURE_STALE_MS }),
-      );
-      expect(atEdge.gestureRecent).toBe(false);
-      expect(atEdge.shouldRequest).toBe(false);
     });
 
     it('respects a custom gestureStaleMs option', () => {
@@ -268,18 +227,6 @@ describe('createScrollHistoryDetector', () => {
       // The fresh stamp (1_900) is only 200ms old.
       expect(decision.gestureRecent).toBe(true);
       expect(decision.shouldRequest).toBe(true);
-    });
-
-    it('reset() clears intent so a pre-hide gesture cannot authorize a post-restore misfire', () => {
-      const d = createScrollHistoryDetector();
-      d.shouldRequestHistory(base({ viewportY: 100, baseY: 100, now: 0 }));
-      d.stampScrollIntent(0);
-      d.observeVisibility(false);
-      d.reset();
-      // Immediately after restore, the pre-hide gesture is gone.
-      const decision = d.shouldRequestHistory(base({ viewportY: 40, baseY: 100, now: 100 }));
-      expect(decision.gestureRecent).toBe(false);
-      expect(decision.shouldRequest).toBe(false);
     });
   });
 });

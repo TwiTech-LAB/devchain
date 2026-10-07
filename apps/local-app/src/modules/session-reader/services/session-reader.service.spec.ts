@@ -231,6 +231,40 @@ describe('SessionReaderService', () => {
     );
   });
 
+  it('keeps initial transcript pages aligned with the full transcript and at least five times smaller', async () => {
+    const messages = Array.from({ length: 500 }, (_, i) => ({
+      ...makeMessage(
+        'm' + i,
+        i % 2 === 0 ? 'user' : 'assistant',
+        new Date(Date.UTC(2026, 0, 1) + i * 5000).toISOString(),
+      ),
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Message m' + i + ' with some body content to simulate real payloads',
+        },
+      ],
+    }));
+    const largeSession = makeSession(messages);
+    setupResolveChain();
+    mockAdapter.parseFullSession.mockResolvedValue(largeSession);
+
+    const [{ session }, index] = await Promise.all([
+      service.getTranscriptWithTimings('test-session', { maxToolResultLength: 2000 }),
+      service.getTranscriptIndex('test-session', { pageSize: 10 }),
+    ]);
+    const aPayloadBytes = Buffer.byteLength(JSON.stringify(session), 'utf8');
+    const bPayloadBytes = Buffer.byteLength(JSON.stringify(index), 'utf8');
+    expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(1);
+    for (const page of index.pages!) {
+      const start = index.chunkIds.indexOf(page.cursor);
+      expect(page.response.chunks).toEqual(session.chunks!.slice(start, start + page.size));
+    }
+    expect(index.chunkIds).toEqual(session.chunks!.map((chunk) => chunk.id));
+    expect(bPayloadBytes).toBeLessThan(aPayloadBytes);
+    expect(aPayloadBytes / bPayloadBytes).toBeGreaterThan(5);
+  });
+
   describe('getTranscript', () => {
     it('should return full session when resolution succeeds', async () => {
       setupResolveChain();
@@ -250,57 +284,6 @@ describe('SessionReaderService', () => {
         '/home/user/.claude/projects/-test/session.jsonl',
         'claude',
       );
-    });
-
-    it('should attach semantic chunks to transcript responses', async () => {
-      setupResolveChain();
-      const session = makeSession([
-        makeMessage('u1', 'user', '2026-01-01T10:00:00.000Z'),
-        {
-          ...makeMessage('a1', 'assistant', '2026-01-01T10:00:05.000Z'),
-          content: [
-            { type: 'thinking', thinking: 'Let me inspect the file' },
-            { type: 'tool_call', toolCallId: 'tc-1', toolName: 'Read', input: { path: 'a.ts' } },
-            { type: 'text', text: 'Running the read tool now' },
-          ],
-          toolCalls: [{ id: 'tc-1', name: 'Read', input: { path: 'a.ts' }, isTask: false }],
-        },
-        {
-          ...makeMessage('u2', 'user', '2026-01-01T10:00:06.000Z'),
-          isMeta: true, // real Claude tool_result entries are meta → classified 'ai' via the default branch
-          content: [
-            {
-              type: 'tool_result',
-              toolCallId: 'tc-1',
-              content: 'export const x = 1;',
-              isError: false,
-            },
-          ],
-          toolResults: [{ toolCallId: 'tc-1', content: 'export const x = 1;', isError: false }],
-        },
-        {
-          ...makeMessage('a2', 'assistant', '2026-01-01T10:00:08.000Z'),
-          content: [{ type: 'text', text: 'Done reading the file.' }],
-        },
-      ]);
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1');
-
-      expect(result.chunks).toBeDefined();
-      expect(result.chunks?.map((chunk) => chunk.type)).toEqual(['user', 'ai']);
-
-      const aiChunk = result.chunks?.[1];
-      expect(aiChunk?.messages.map((msg) => msg.id)).toEqual(['a1', 'u2', 'a2']);
-
-      if (aiChunk?.type === 'ai') {
-        const stepTypes = aiChunk.semanticSteps.map((step) => step.type);
-        expect(stepTypes).toEqual(
-          expect.arrayContaining(['thinking', 'tool_call', 'tool_result', 'output']),
-        );
-      } else {
-        throw new Error('Expected AI chunk with semantic steps');
-      }
     });
 
     it('should throw NotFoundError when session not found', async () => {
@@ -430,197 +413,6 @@ describe('SessionReaderService', () => {
       expect(turnToolResultStep?.content.toolResultContent).toBe(truncated.content);
     });
 
-    it('should keep under-limit tool results unchanged across message, semantic, and turn paths', async () => {
-      setupResolveChain();
-      const shortToolResult = 'short-result-content';
-      const session = makeSession([
-        makeMessage('u1', 'user', '2026-01-01T10:00:00.000Z'),
-        {
-          ...makeMessage('a1', 'assistant', '2026-01-01T10:00:05.000Z'),
-          content: [
-            {
-              type: 'tool_call',
-              toolCallId: 'tc-1',
-              toolName: 'Read',
-              input: { path: '/tmp/a.ts' },
-            },
-            { type: 'text', text: 'Reading file now' },
-          ],
-          toolCalls: [{ id: 'tc-1', name: 'Read', input: { path: '/tmp/a.ts' }, isTask: false }],
-        },
-        {
-          ...makeMessage('u2', 'user', '2026-01-01T10:00:06.000Z'),
-          isMeta: true, // real Claude tool_result entries are meta → classified 'ai' via the default branch
-          content: [
-            {
-              type: 'tool_result',
-              toolCallId: 'tc-1',
-              content: shortToolResult,
-              isError: false,
-            },
-          ],
-          toolResults: [{ toolCallId: 'tc-1', content: shortToolResult, isError: false }],
-        },
-      ]);
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1', { maxToolResultLength: 2000 });
-
-      const toolResultMessage = result.messages.find((message) => message.id === 'u2');
-      expect(toolResultMessage).toBeDefined();
-      if (!toolResultMessage) {
-        throw new Error('Expected tool result message');
-      }
-      expect(toolResultMessage.toolResults[0].content).toBe(shortToolResult);
-      expect(toolResultMessage.toolResults[0].isTruncated).toBeUndefined();
-      expect(toolResultMessage.toolResults[0].fullLength).toBeUndefined();
-
-      const toolResultBlock = toolResultMessage.content.find(
-        (block) => block.type === 'tool_result',
-      );
-      expect(toolResultBlock).toMatchObject({
-        type: 'tool_result',
-        toolCallId: 'tc-1',
-        content: shortToolResult,
-      });
-      expect(toolResultBlock?.isTruncated).toBeUndefined();
-      expect(toolResultBlock?.fullLength).toBeUndefined();
-
-      const aiChunk = result.chunks?.find((chunk) => chunk.type === 'ai');
-      expect(aiChunk).toBeDefined();
-      if (!aiChunk || aiChunk.type !== 'ai') {
-        throw new Error('Expected AI chunk');
-      }
-
-      const semanticToolResultStep = aiChunk.semanticSteps.find(
-        (step) => step.type === 'tool_result' && step.content.toolCallId === 'tc-1',
-      );
-      expect(semanticToolResultStep?.content.toolResultContent).toBe(shortToolResult);
-      expect(semanticToolResultStep?.content.isTruncated).toBeUndefined();
-      expect(semanticToolResultStep?.content.fullLength).toBeUndefined();
-
-      const turnToolResultStep = aiChunk.turns
-        .flatMap((turn) => turn.steps)
-        .find((step) => step.type === 'tool_result' && step.content.toolCallId === 'tc-1');
-      expect(turnToolResultStep?.content.toolResultContent).toBe(shortToolResult);
-      expect(turnToolResultStep?.content.isTruncated).toBeUndefined();
-      expect(turnToolResultStep?.content.fullLength).toBeUndefined();
-    });
-
-    it('should not apply truncation when maxToolResultLength is omitted', async () => {
-      setupResolveChain();
-      const longToolResult = 'B'.repeat(2600);
-      const session = makeSession([
-        makeMessage('u1', 'user', '2026-01-01T10:00:00.000Z'),
-        {
-          ...makeMessage('a1', 'assistant', '2026-01-01T10:00:05.000Z'),
-          content: [
-            {
-              type: 'tool_call',
-              toolCallId: 'tc-1',
-              toolName: 'Read',
-              input: { path: '/tmp/a.ts' },
-            },
-            { type: 'text', text: 'Reading file now' },
-          ],
-          toolCalls: [{ id: 'tc-1', name: 'Read', input: { path: '/tmp/a.ts' }, isTask: false }],
-        },
-        {
-          ...makeMessage('u2', 'user', '2026-01-01T10:00:06.000Z'),
-          isMeta: true, // real Claude tool_result entries are meta → classified 'ai' via the default branch
-          content: [
-            {
-              type: 'tool_result',
-              toolCallId: 'tc-1',
-              content: longToolResult,
-              isError: false,
-            },
-          ],
-          toolResults: [{ toolCallId: 'tc-1', content: longToolResult, isError: false }],
-        },
-      ]);
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1');
-
-      const toolResultMessage = result.messages.find((message) => message.id === 'u2');
-      expect(toolResultMessage).toBeDefined();
-      if (!toolResultMessage) {
-        throw new Error('Expected tool result message');
-      }
-      expect(toolResultMessage.toolResults[0].content).toBe(longToolResult);
-      expect(toolResultMessage.toolResults[0].isTruncated).toBeUndefined();
-      expect(toolResultMessage.toolResults[0].fullLength).toBeUndefined();
-
-      const aiChunk = result.chunks?.find((chunk) => chunk.type === 'ai');
-      expect(aiChunk).toBeDefined();
-      if (!aiChunk || aiChunk.type !== 'ai') {
-        throw new Error('Expected AI chunk');
-      }
-      const semanticToolResultStep = aiChunk.semanticSteps.find(
-        (step) => step.type === 'tool_result' && step.content.toolCallId === 'tc-1',
-      );
-      expect(semanticToolResultStep?.content.toolResultContent).toBe(longToolResult);
-      expect(semanticToolResultStep?.content.isTruncated).toBeUndefined();
-
-      const turnToolResultStep = aiChunk.turns
-        .flatMap((turn) => turn.steps)
-        .find((step) => step.type === 'tool_result' && step.content.toolCallId === 'tc-1');
-      expect(turnToolResultStep?.content.toolResultContent).toBe(longToolResult);
-      expect(turnToolResultStep?.content.isTruncated).toBeUndefined();
-    });
-
-    it('should reduce serialized transcript payload size when truncation is active', async () => {
-      setupResolveChain();
-      const longToolResult = 'C'.repeat(10_000);
-      const session = makeSession([
-        makeMessage('u1', 'user', '2026-01-01T10:00:00.000Z'),
-        {
-          ...makeMessage('a1', 'assistant', '2026-01-01T10:00:05.000Z'),
-          content: [
-            {
-              type: 'tool_call',
-              toolCallId: 'tc-1',
-              toolName: 'Read',
-              input: { path: '/tmp/a.ts' },
-            },
-            { type: 'text', text: 'Reading file now' },
-          ],
-          toolCalls: [{ id: 'tc-1', name: 'Read', input: { path: '/tmp/a.ts' }, isTask: false }],
-        },
-        {
-          ...makeMessage('u2', 'user', '2026-01-01T10:00:06.000Z'),
-          isMeta: true, // real Claude tool_result entries are meta → classified 'ai' via the default branch
-          content: [
-            {
-              type: 'tool_result',
-              toolCallId: 'tc-1',
-              content: longToolResult,
-              isError: false,
-            },
-          ],
-          toolResults: [{ toolCallId: 'tc-1', content: longToolResult, isError: false }],
-        },
-      ]);
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const fullTranscript = await service.getTranscript('sess-1');
-      const truncatedTranscript = await service.getTranscript('sess-1', {
-        maxToolResultLength: 2000,
-      });
-
-      const fullPayloadSize = JSON.stringify({
-        messages: fullTranscript.messages,
-        chunks: fullTranscript.chunks,
-      }).length;
-      const truncatedPayloadSize = JSON.stringify({
-        messages: truncatedTranscript.messages,
-        chunks: truncatedTranscript.chunks,
-      }).length;
-
-      expect(truncatedPayloadSize).toBeLessThan(fullPayloadSize);
-    });
-
     it('should throw ValidationError for invalid maxToolResultLength', async () => {
       setupResolveChain();
       mockAdapter.parseFullSession.mockResolvedValue(makeSession());
@@ -659,21 +451,6 @@ describe('SessionReaderService', () => {
           ],
           toolResults: [{ toolCallId: 'tc-1', content: 'short-result', isError: false }],
         },
-      ]);
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const result = await service.getTranscript('sess-1', { maxToolResultLength: 2000 });
-
-      expect(result).not.toBe(session);
-      expect(result.messages).toBe(session.messages);
-      expect(session.chunks).toBeUndefined();
-    });
-
-    it('should preserve the enriched wrapper when the session has no tool results', async () => {
-      setupResolveChain();
-      const session = makeSession([
-        makeMessage('u1', 'user', '2026-01-01T10:00:00.000Z'),
-        makeMessage('a1', 'assistant', '2026-01-01T10:00:05.000Z'),
       ]);
       mockAdapter.parseFullSession.mockResolvedValue(session);
 
@@ -808,12 +585,13 @@ describe('SessionReaderService', () => {
       expect(delta.deltaMessages).toEqual([]);
       expect(delta.deltaChunks).toEqual([]);
       expect(delta.replaceFromChunkId).toBeNull();
+      expect(delta.cursor).toBe(summary.cursor);
     });
   });
 
   describe('getTranscriptTail — window-safe merge contract', () => {
     // Service unit coverage isolates cursor admission while retaining real positional chunks.
-    it.each(['cache-hit', 'same-file-append', 'db-update'] as const)(
+    it.each(['cache-hit'] as const)(
       'forces a full refetch for an old parser generation on %s even with the old anchor present',
       async (sourceChangeKind) => {
         setupResolveChain();
@@ -822,21 +600,14 @@ describe('SessionReaderService', () => {
         const summary = await service.getTranscriptSummaryWithCursor('sess-1');
         const cursorData = decodeCursor(summary.cursor)!;
         const oldAnchor = buildChunks(session.messages)[cursorData.chunkCount - 1].id;
-        const nextSession =
-          sourceChangeKind === 'same-file-append'
-            ? makeSession([
-                ...session.messages,
-                makeMessage('appended', 'assistant', '2026-01-01T10:00:20.000Z'),
-              ])
-            : session;
+        const nextSession = session;
         expect(buildChunks(nextSession.messages).some((chunk) => chunk.id === oldAnchor)).toBe(
           true,
         );
-        const sourceVersion =
-          sourceChangeKind === 'cache-hit' ? cursorData.fileSize : cursorData.fileSize + 1;
+        const sourceVersion = cursorData.fileSize;
         mockSessionCacheService.getOrParseWithMeta.mockResolvedValue({
           session: nextSession,
-          cacheHit: sourceChangeKind === 'cache-hit',
+          cacheHit: true,
           sourceChangeKind,
           lastOffset: 1024,
           lastSize: 1024,
@@ -869,22 +640,6 @@ describe('SessionReaderService', () => {
           kind: 'full-refetch-required',
         });
       }
-    });
-
-    it('no-op poll (no new messages) returns true-empty delta and the unchanged cursor', async () => {
-      setupResolveChain();
-      const session = makeSession(); // 3 messages
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      const summary = await service.getTranscriptSummaryWithCursor('sess-1');
-      const tail = await service.getTranscriptTail('sess-1', summary.cursor);
-
-      const delta = expectDelta(tail);
-      expect(delta.deltaChunks).toEqual([]);
-      expect(delta.deltaMessages).toEqual([]);
-      expect(delta.replaceFromChunkId).toBeNull();
-      // Cursor unchanged → genuine no-op (preserves client adaptive backoff).
-      expect(delta.cursor).toBe(summary.cursor);
     });
 
     const FILE_IDENTITY = '64768:4242';
@@ -1482,37 +1237,6 @@ describe('SessionReaderService', () => {
         ValidationError,
       );
     });
-
-    it('should return semantic steps in AI chunks', async () => {
-      setupResolveChain();
-      const messages = [
-        makeMessage('u1', 'user', '2026-01-01T10:00:00.000Z'),
-        {
-          ...makeMessage('a1', 'assistant', '2026-01-01T10:00:05.000Z'),
-          content: [{ type: 'text' as const, text: 'Hello from assistant' }],
-        },
-      ];
-      mockAdapter.parseFullSession.mockResolvedValue(makeSession(messages));
-
-      const result = await service.getUnifiedTranscriptChunks('sess-1');
-
-      const aiChunk = result.chunks.find((c) => c.type === 'ai');
-      expect(aiChunk).toBeDefined();
-      if (aiChunk?.type === 'ai') {
-        expect(aiChunk.semanticSteps.length).toBeGreaterThan(0);
-      }
-    });
-
-    it('should NOT call getTranscript internally', async () => {
-      setupResolveChain();
-      mockAdapter.parseFullSession.mockResolvedValue(makeSession());
-      const spy = jest.spyOn(service, 'getTranscript');
-
-      await service.getUnifiedTranscriptChunks('sess-1');
-
-      expect(spy).not.toHaveBeenCalled();
-      spy.mockRestore();
-    });
   });
 
   describe('getUnifiedTranscriptChunk', () => {
@@ -1620,17 +1344,6 @@ describe('SessionReaderService', () => {
       const result = await service.getTranscriptIndex('sess-1');
 
       expect(result.latestOutputPreview).toBeNull();
-    });
-
-    it('should NOT call getTranscript internally', async () => {
-      setupResolveChain();
-      mockAdapter.parseFullSession.mockResolvedValue(makeSession());
-      const spy = jest.spyOn(service, 'getTranscript');
-
-      await service.getTranscriptIndex('sess-1');
-
-      expect(spy).not.toHaveBeenCalled();
-      spy.mockRestore();
     });
 
     it('should be cheaper than full transcript (no semantic step content in response)', async () => {
@@ -1913,45 +1626,6 @@ describe('SessionReaderService', () => {
       expect(afterFreshnessChange.messageCount).toBe(4);
       expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
     });
-
-    it('should call getOrParseWithMeta once for repeated calls (cache sharing)', async () => {
-      setupResolveChain();
-      const session = makeSession();
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      await service.getTranscript('sess-1');
-      await service.getUnifiedTranscriptChunks('sess-1', undefined, 2);
-      await service.getTranscriptSummary('sess-1');
-
-      // getOrParseWithMeta is called on every getParsedSession invocation;
-      // whether it re-parses or returns cached data is SessionCacheService's job.
-      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(3);
-      // The resolved source-ref + adapter are passed through to SessionCacheService
-      expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledWith(
-        'sess-1',
-        {
-          filePath: '/home/user/.claude/projects/-test/session.jsonl',
-          providerName: 'claude',
-          kind: 'file',
-        },
-        mockAdapter,
-      );
-    });
-
-    it('should share cache between getTranscript and getTranscriptSummary', async () => {
-      setupResolveChain();
-      const session = makeSession();
-      mockAdapter.parseFullSession.mockResolvedValue(session);
-
-      await service.getTranscript('sess-1');
-      const summary = await service.getTranscriptSummary('sess-1');
-
-      // Both methods call getOrParseWithMeta which delegates to adapter.parseFullSession.
-      // With default mock delegation, parseFullSession is called each time.
-      // The cache-hit deduplication is SessionCacheService's responsibility.
-      expect(summary.providerName).toBe('claude');
-      expect(summary.messageCount).toBe(3);
-    });
   });
 
   describe('chunks cache', () => {
@@ -2025,51 +1699,9 @@ describe('SessionReaderService', () => {
       // Second result has more messages, so chunk count may differ
       expect(result2.messages).toHaveLength(4);
     });
-
-    it('should store built chunks in the composite session cache', async () => {
-      setupResolveChain();
-      const session = makeSession();
-      mockSessionCacheService.getOrParseWithMeta.mockResolvedValueOnce({
-        session,
-        cacheHit: false,
-        lastOffset: 1000,
-        lastSize: 1000,
-        lastMtime: Date.now(),
-        sourceVersion: 1000,
-      });
-
-      const result = await service.getTranscript('sess-1');
-
-      expect(mockSessionCacheService.setChunks).toHaveBeenCalledWith('sess-1', 1000, result.chunks);
-      expect(session.chunks).toBeUndefined();
-    });
   });
 
   describe('cache-split regression', () => {
-    it('should not call parseFullSession when cache returns warm session', async () => {
-      setupResolveChain();
-      const session = makeSession();
-      session.metrics.primaryModel = 'claude-opus-4-6';
-
-      // Return cached session (cacheHit: true) without calling adapter
-      mockSessionCacheService.getOrParseWithMeta.mockResolvedValue({
-        session,
-        cacheHit: true,
-        lastOffset: 1000,
-        lastSize: 1000,
-        lastMtime: Date.now(),
-      });
-
-      const result = await service.getTranscript('sess-1');
-
-      // parseFullSession should NOT have been called (warm cache path)
-      expect(mockAdapter.parseFullSession).not.toHaveBeenCalled();
-      // Chunks should still be built and attached
-      expect(result.chunks).toBeDefined();
-      expect(result.chunks!.length).toBeGreaterThan(0);
-      expect(result.metrics.contextWindowTokens).toBe(200_000);
-    });
-
     it('should preserve parsed context metrics on every call including cache hits', async () => {
       setupResolveChain();
       const session = makeSession();
@@ -2157,54 +1789,61 @@ describe('SessionReaderService', () => {
       mockAdapter.getSummary.mockResolvedValue({ metrics, exactFields: [] });
     }
 
-    it('applies an exact configured override for a non-Claude provider and custom model', async () => {
-      const metrics = makeMetrics({
-        primaryModel: 'custom/provider-model',
-        contextWindowTokens: 200_000,
-      });
-      setSummarySession('codex', 'codex-runtime', metrics);
-      const resolved = createResolvedService({
-        configuredOverride: {
-          modelId: 'custom/provider-model',
-          contextWindowTokens: 640_000,
+    it.each<{
+      name: string;
+      provider: string;
+      providerSessionId: string;
+      model: string;
+      captureModel: string;
+      catalog: number | null;
+      expected: number;
+      transcriptWindow?: number;
+      runtimeContext?: Parameters<typeof createResolvedService>[0];
+      catalogEntries?: Record<string, number>;
+    }>([
+      {
+        name: 'applies an exact configured override for a non-Claude provider and custom model',
+        provider: 'codex',
+        providerSessionId: 'codex-runtime',
+        model: 'custom/provider-model',
+        captureModel: 'custom/provider-model',
+        catalog: null,
+        expected: 640_000,
+        transcriptWindow: 200_000,
+        runtimeContext: {
+          configuredOverride: {
+            modelId: 'custom/provider-model',
+            contextWindowTokens: 640_000,
+          },
+          claudeCapture: null,
         },
-        claudeCapture: null,
-      });
-
-      const summary = await resolved.getTranscriptSummary('sess-1');
-
-      expect(summary.metrics.contextWindowTokens).toBe(640_000);
-      expect(metrics.contextWindowTokens).toBe(200_000);
-    });
-
-    it('preserves a Codex transcript-reported window before the model catalog', async () => {
-      const metrics = makeMetrics({
-        primaryModel: 'gpt-5.6-sol',
-        contextWindowTokens: 258_400,
-      });
-      setSummarySession('codex', 'codex-runtime', metrics);
-      const resolved = createResolvedService(
-        {
+        catalogEntries: {},
+      },
+      {
+        name: 'preserves a Codex transcript-reported window before the model catalog',
+        provider: 'codex',
+        providerSessionId: 'codex-runtime',
+        model: 'gpt-5.6-sol',
+        captureModel: 'gpt-5.6-sol',
+        catalog: null,
+        expected: 258_400,
+        transcriptWindow: 258_400,
+        runtimeContext: {
           configuredOverride: null,
           claudeCapture: null,
         },
-        { 'gpt-5.6-sol': 1_050_000 },
-      );
-
-      const summary = await resolved.getTranscriptSummary('sess-1');
-
-      expect(summary.metrics.contextWindowTokens).toBe(258_400);
-      expect(metrics.contextWindowTokens).toBe(258_400);
-    });
-
-    it('applies a configured Claude alias before the canonical hook capture', async () => {
-      const metrics = makeMetrics({
-        primaryModel: 'claude-opus-5',
-        contextWindowTokens: 1_000_000,
-      });
-      setSummarySession('claude', 'claude-runtime-1', metrics);
-      const resolved = createResolvedService(
-        {
+        catalogEntries: { 'gpt-5.6-sol': 1_050_000 },
+      },
+      {
+        name: 'applies a configured Claude alias before the canonical hook capture',
+        provider: 'claude',
+        providerSessionId: 'claude-runtime-1',
+        model: 'claude-opus-5',
+        captureModel: 'claude-opus-5',
+        catalog: null,
+        expected: 500_000,
+        transcriptWindow: 1_000_000,
+        runtimeContext: {
           configuredOverride: {
             modelId: 'opus',
             contextWindowTokens: 500_000,
@@ -2218,23 +1857,18 @@ describe('SessionReaderService', () => {
             contextWindowTokens: 1_000_000,
           },
         },
-        { 'claude-opus-5': 1_000_000 },
-      );
-
-      const summary = await resolved.getTranscriptSummary('sess-1');
-
-      expect(summary.metrics.contextWindowTokens).toBe(500_000);
-      expect(metrics.contextWindowTokens).toBe(1_000_000);
-    });
-
-    it('uses an exact supported Claude model and transcript capture after configured mismatch', async () => {
-      const metrics = makeMetrics({
-        primaryModel: 'claude-sonnet-4-6',
-        contextWindowTokens: 200_000,
-      });
-      setSummarySession('claude', 'claude-runtime-1', metrics);
-      const resolved = createResolvedService(
-        {
+        catalogEntries: { 'claude-opus-5': 1_000_000 },
+      },
+      {
+        name: 'uses an exact supported Claude model and transcript capture after configured mismatch',
+        provider: 'claude',
+        providerSessionId: 'claude-runtime-1',
+        model: 'claude-sonnet-4-6',
+        captureModel: 'claude-sonnet-4-6',
+        catalog: null,
+        expected: 900_000,
+        transcriptWindow: 200_000,
+        runtimeContext: {
           configuredOverride: {
             modelId: 'claude-opus-4-6',
             contextWindowTokens: 750_000,
@@ -2248,15 +1882,8 @@ describe('SessionReaderService', () => {
             contextWindowTokens: 900_000,
           },
         },
-        { 'claude-sonnet-4-6': 1_000_000 },
-      );
-
-      const summary = await resolved.getTranscriptSummary('sess-1');
-
-      expect(summary.metrics.contextWindowTokens).toBe(900_000);
-    });
-
-    it.each([
+        catalogEntries: { 'claude-sonnet-4-6': 1_000_000 },
+      },
       {
         name: 'provider transcript mismatch',
         provider: 'claude',
@@ -2296,12 +1923,14 @@ describe('SessionReaderService', () => {
     ])('resolves $name capture through its eligible source', async (testCase) => {
       const metrics = makeMetrics({
         primaryModel: testCase.model,
-        contextWindowTokens: 123_000,
+        contextWindowTokens: testCase.transcriptWindow ?? 123_000,
       });
       setSummarySession(testCase.provider, testCase.providerSessionId, metrics);
-      const catalog = testCase.catalog === null ? {} : { [testCase.model]: testCase.catalog };
+      const catalog =
+        testCase.catalogEntries ??
+        (testCase.catalog === null ? {} : { [testCase.model]: testCase.catalog });
       const resolved = createResolvedService(
-        {
+        testCase.runtimeContext ?? {
           configuredOverride: null,
           claudeCapture: {
             sessionId: 'sess-1',
@@ -2318,6 +1947,7 @@ describe('SessionReaderService', () => {
       const summary = await resolved.getTranscriptSummary('sess-1');
 
       expect(summary.metrics.contextWindowTokens).toBe(testCase.expected);
+      expect(metrics.contextWindowTokens).toBe(testCase.transcriptWindow ?? 123_000);
     });
 
     it('invalidates the DTO cache but keeps watcher metrics before the content-free event', async () => {

@@ -15,6 +15,9 @@ import { RemoteOperationsService } from './remote-operations.service';
 import { utils } from 'ssh2';
 import { ClaimRemoteSchema, InstallHostSchema, SshCredentialsSchema } from './remote-operation.dto';
 
+/** A Connect choices store that remembers nothing. */
+const noChoices = { recordAttach: () => undefined } as never;
+
 jest.mock('node:os', () => {
   const actual = jest.requireActual('node:os');
   const identity = { username: 'devchain', home: '/home/devchain' };
@@ -54,6 +57,11 @@ it('refuses to connect a provisioning remote without an address', async () => {
     runner as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    noChoices,
     {} as never,
     {} as never,
     {} as never,
@@ -172,6 +180,11 @@ describe('RemoteOperationsService.detach', () => {
       {} as never,
       {} as never,
       {} as never,
+      noChoices,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
   });
 
@@ -234,20 +247,29 @@ describe('RemoteOperationsService.detach', () => {
     expect(rows.get('op-attach')?.state).toBe('failed');
   });
 
-  it('replaces a failed detach only when forced', async () => {
-    rows.set('op-old', operation({ id: 'op-old', kind: 'detach', steps: [] }));
+  it.each(['detach', 'force_sync', 'git_owner'] as const)(
+    'replaces a failed %s only when forced and preserves recovery details',
+    async (kind) => {
+      const forceSync = {
+        source: 'home',
+        kinds: ['code', 'git'],
+        backups: [{ side: 'vm', kind: 'code', path: '/backup' }],
+        replaced: { count: 2, sample: ['changed'] },
+      };
+      rows.set('op-old', operation({ id: 'op-old', kind, steps: [], details: { forceSync } }));
 
-    await expect(service.detach('remote-1', 'project-1', false)).rejects.toMatchObject({
-      details: { code: 'REMOTE_OPERATION_IN_PROGRESS', operationId: 'op-old' },
-    });
-    const detach = await service.detach('remote-1', 'project-1', true);
+      await expect(service.detach('remote-1', 'project-1', false)).rejects.toMatchObject({
+        details: { code: 'REMOTE_OPERATION_IN_PROGRESS', operationId: 'op-old' },
+      });
+      const detach = await service.detach('remote-1', 'project-1', true);
 
-    expect(detach.id).toBe('op-detach');
-    expect(rows.get('op-old')).toMatchObject({
-      state: 'cancelled',
-      details: { supersededBy: 'op-detach' },
-    });
-  });
+      expect(detach.id).toBe('op-detach');
+      expect(rows.get('op-old')).toMatchObject({
+        state: 'cancelled',
+        details: { forceSync, supersededBy: 'op-detach' },
+      });
+    },
+  );
 
   it('leaves a running operation to the storage guard without waiting on it', async () => {
     rows.set('op-attach', operation({ state: 'running' }));
@@ -312,6 +334,11 @@ describe('RemoteOperationsService.installHost credentials', () => {
       { isSupported: jest.fn(), getSupportedProviders: jest.fn() } as never,
       installOperation as never,
       { resolve: jest.fn(async (input: never) => ({ credentials: input })) } as never,
+      {} as never,
+      noChoices,
+      {} as never,
+      {} as never,
+      {} as never,
       {} as never,
     );
     const ssh = {
@@ -383,6 +410,11 @@ describe('RemoteOperationsService.installHost credentials', () => {
         }),
       } as never,
       {} as never,
+      noChoices,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
     const ssh = { user: 'vm-admin', keyName: 'id_rsa' };
 
@@ -441,6 +473,11 @@ describe('RemoteOperationsService.installHost account validation', () => {
       installOperation as never,
       sshKeys as never,
       {} as never,
+      noChoices,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
     return { service, runner, storage, installOperation, sshKeys };
   }
@@ -485,6 +522,11 @@ describe('RemoteOperationsService.installHost account validation', () => {
       runner as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      noChoices,
       {} as never,
       {} as never,
       {} as never,
@@ -550,6 +592,11 @@ describe('RemoteOperationsService updateLogins', () => {
         {} as never,
         {} as never,
         {} as never,
+        noChoices,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
       );
       const result = await service.updateLogins('remote-1', {
         providerAuth: { claude: 'reuse:new' },
@@ -598,6 +645,11 @@ describe('RemoteOperationsService updateLogins', () => {
       {} as never,
       {} as never,
       {} as never,
+      noChoices,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
     await service.retry(current.id, { codex: 'reuse:new' });
     expect(storage.updateRemoteOperation).toHaveBeenCalledWith(current.id, {
@@ -626,6 +678,11 @@ it('persists public keys when claiming an own VM', async () => {
     runner as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    noChoices,
     {} as never,
     {} as never,
     {} as never,
@@ -674,6 +731,11 @@ describe('RemoteOperationsService.claim by address', () => {
       runner as never,
       remotes as never,
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      noChoices,
       {} as never,
       {} as never,
       {} as never,

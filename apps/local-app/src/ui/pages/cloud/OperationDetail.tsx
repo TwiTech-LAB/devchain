@@ -8,9 +8,15 @@ import {
   type SshCredentials,
 } from '@/ui/hooks/useRemoteOperations';
 import type { ProviderAuthGenerationView } from '@/ui/hooks/useProviderAuth';
+import type { ForceSyncOperationDetails } from '@/modules/remotes/operations/force-sync.operation';
 import type { DockerTransferDetails } from '@/modules/remotes/docker/docker-plan.dto';
 import type { DockerCopyBackResult } from '@/modules/remotes/docker/docker-copy-back.dto';
 import type { TranscriptTransferDetails } from '@/modules/remotes/transcripts/transcript-transfer.dto';
+import {
+  CONFLICT_BASELINE_MAX,
+  ConflictReportSchema,
+  RemoteNeedSchema,
+} from '@/modules/file-sync/file-sync.dto';
 import {
   errorFirstLine,
   kindWords,
@@ -54,7 +60,7 @@ export interface ActivityActions {
 }
 
 /** Steps that wait for a sync and report per-folder progress while they run. */
-const FILE_SYNC_WAIT_STEPS = new Set(['file_sync_initial', 'file_sync_final']);
+const FILE_SYNC_WAIT_STEPS = new Set(['file_sync_initial', 'file_sync_final', 'force_copy']);
 
 /** Steps whose `details.docker` bytes advance: the transfer and the bind restores. */
 const DOCKER_TRANSFER_STEPS = new Set(['docker_push', 'docker_create_host', 'docker_copy_home']);
@@ -307,6 +313,8 @@ function OperationNotes({
   const checkWarnings = Array.isArray(details.checkWarnings)
     ? details.checkWarnings.filter((warning): warning is string => typeof warning === 'string')
     : [];
+  const dockerUserWarning =
+    typeof details.dockerUserWarning === 'string' ? details.dockerUserWarning : null;
   const transcripts = details.transcripts as TranscriptTransferDetails | undefined;
   const transcriptStep = operation.steps.find(
     (step) => step.id === 'transcripts_push' || step.id === 'transcripts_pull',
@@ -337,9 +345,81 @@ function OperationNotes({
       ? details.gitConfig
       : null;
   const gitConfigError = typeof details.gitConfigError === 'string' ? details.gitConfigError : null;
+  const forceSync =
+    kind === 'force_sync'
+      ? (details.forceSync as Partial<ForceSyncOperationDetails['forceSync']> | undefined)
+      : undefined;
+  const forceSource = forceSync?.source ?? details.source;
+  const vmEdits = RemoteNeedSchema.safeParse(details.vmEdits);
+  const conflicts = ConflictReportSchema.safeParse(details.fileSyncConflicts);
 
   return (
     <div className="space-y-3">
+      {kind === 'force_sync' && (forceSource === 'home' || forceSource === 'vm') && (
+        <Note label="Force sync files" title="Force sync files">
+          <p>
+            Source:{' '}
+            {forceSource === 'home'
+              ? 'This PC'
+              : `The VM (${names.remotes.get(operation.remoteId) ?? operation.remoteId})`}
+            .
+          </p>
+          {forceSync?.backups?.map((backup) => (
+            <p key={`${backup.side}:${backup.kind}`}>
+              {backup.side === 'home' ? 'This PC' : 'The VM'} · {backup.kind}:{' '}
+              <code className="break-all">{backup.path}</code>
+            </p>
+          ))}
+          {forceSync?.replaced && (
+            <>
+              <p>{forceSync.replaced.count} files replaced or deleted.</p>
+              <ul className="list-disc pl-5">
+                {forceSync.replaced.sample.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </Note>
+      )}
+      {(kind === 'attach' || kind === 'force_sync') &&
+        (details.gitInit === 'created' || forceSync?.gitInit === 'created') && (
+          <Note label="Git repository" title="Git repository">
+            <p className="text-muted-foreground">Created a Git repository on this PC.</p>
+          </Note>
+        )}
+      {kind === 'attach' && vmEdits.success && (
+        <Note label="VM files" title={`Brought ${vmEdits.data.total} files from the VM`}>
+          <p className="text-muted-foreground">{vmEdits.data.deleted} deletions.</p>
+          <ul className="list-disc pl-5 text-muted-foreground">
+            {vmEdits.data.sample.map((file) => (
+              <li key={file.path}>
+                {file.path}
+                {file.deleted ? ' (deleted)' : ''}
+              </li>
+            ))}
+          </ul>
+        </Note>
+      )}
+      {kind === 'attach' && conflicts.success && (
+        <Note
+          label="File conflicts"
+          title={`${conflicts.data.total} conflicts kept as .sync-conflict copies`}
+        >
+          <ul className="list-disc pl-5 text-muted-foreground">
+            {conflicts.data.sample.map((path) => (
+              <li key={path}>{path}</li>
+            ))}
+          </ul>
+          {conflicts.data.baselineOverCap && (
+            <p className="text-muted-foreground">
+              DevChain could not separate the new conflicts because the project had more than{' '}
+              {CONFLICT_BASELINE_MAX.toLocaleString('en-US')} conflict copies before this Connect.
+              This total includes all conflict copies.
+            </p>
+          )}
+        </Note>
+      )}
       {transcripts && transcriptStep && (
         <Note label="Transcript copy" title="Transcripts">
           <p className="text-muted-foreground">
@@ -351,6 +431,11 @@ function OperationNotes({
               `; ${transcripts.skipped} sessions have a transcript path that cannot be copied`}
             .
           </p>
+        </Note>
+      )}
+      {dockerUserWarning && (
+        <Note label="Docker user ids" title="The VM user has other ids than this PC">
+          <p className="text-muted-foreground">{dockerUserWarning}</p>
         </Note>
       )}
       {kind === 'install_host' && checkWarnings.length > 0 && (
@@ -379,6 +464,19 @@ function OperationNotes({
             </>
           )}
         </Note>
+      )}
+      {(
+        [
+          ['guardWarning', 'Home git guard'],
+          ['vmGuardWarning', 'VM git guard'],
+          ['vmGuardSkipped', 'VM guard skipped'],
+        ] as const
+      ).map(([key, label]) =>
+        typeof details[key] === 'string' && details[key] ? (
+          <Note key={key} label={label} title={label}>
+            <p className="text-muted-foreground">{details[key]}</p>
+          </Note>
+        ) : null,
       )}
       {verified.length > 0 && (
         <Note label="Login test results" title="Login tests">
@@ -493,7 +591,13 @@ function OperationNotes({
 
 /** Kinds a running operation may still be cancelled in. */
 function runningCancelAllowed(operation: RemoteOperationDto): boolean {
-  if (['install_host', 'create_vm', 'update_logins'].includes(operation.kind)) return true;
+  // A started force copy is refused earlier, in cancelAllowed.
+  if (
+    ['install_host', 'create_vm', 'update_logins', 'force_sync', 'git_owner'].includes(
+      operation.kind,
+    )
+  )
+    return true;
   // Mirrors the server rule in AttachOperation.assertCancellable: once the VM
   // owns the project, the project must be disconnected, not cancelled.
   if (operation.kind === 'attach')
@@ -506,8 +610,26 @@ function runningCancelAllowed(operation: RemoteOperationDto): boolean {
   );
 }
 
+function forceCopyStarted(operation: RemoteOperationDto): boolean {
+  return operation.steps.some(
+    (step) =>
+      step.id === 'force_copy' &&
+      (step.startedAt != null || (step.state !== 'pending' && step.state !== 'skipped')),
+  );
+}
+
 /** A failed operation offers Cancel unless its recovery leaves Cancel out. */
 function cancelAllowed(operation: RemoteOperationDto, recovery: RecoveryAction[] | null): boolean {
+  if (
+    operation.kind === 'git_owner' &&
+    operation.steps.some(
+      (step) =>
+        step.id === 'git_flip' &&
+        (step.startedAt != null || (step.state !== 'pending' && step.state !== 'skipped')),
+    )
+  )
+    return false;
+  if (operation.kind === 'force_sync' && forceCopyStarted(operation)) return false;
   if (operation.state === 'failed') return recovery ? recovery.includes('cancel') : true;
   if (operation.state === 'running') return runningCancelAllowed(operation);
   return false;
@@ -657,6 +779,9 @@ export function OperationDetail({
         </p>
       )}
 
+      {state === 'failed' && operation.kind === 'force_sync' && forceCopyStarted(operation) && (
+        <p className="text-sm">Retry, or force a disconnect from the project row.</p>
+      )}
       <div className="flex flex-wrap gap-2">
         {canRetry && (
           <Button size="sm" {...press('retry', () => actions.retry(operation))}>

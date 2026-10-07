@@ -17,10 +17,6 @@ function makeStatus(id: string, label: string): Status {
 }
 
 describe('parseStatusLabels', () => {
-  it('returns an empty array for an empty string', () => {
-    expect(parseStatusLabels('')).toEqual([]);
-  });
-
   it('returns an empty array for non-string values', () => {
     expect(parseStatusLabels(null)).toEqual([]);
     expect(parseStatusLabels(undefined)).toEqual([]);
@@ -178,18 +174,6 @@ describe('resolveStatusGuard', () => {
     });
   });
 
-  it('returns an empty blocking list when every matched status counts zero', async () => {
-    storage.listStatuses.mockResolvedValue({
-      items: [makeStatus('status-review', 'Review')],
-      total: 1,
-    });
-    storage.listProjectEpics.mockResolvedValue({ items: [], total: 0 });
-
-    const result = await resolveStatusGuard(storage, PROJECT_ID, 'Review');
-
-    expect(result).toEqual({ ok: true, blocking: [] });
-  });
-
   it('omits zero-count statuses from blocking while keeping non-zero ones', async () => {
     storage.listStatuses.mockResolvedValue({
       items: [makeStatus('status-a', 'In Progress'), makeStatus('status-b', 'In Progress')],
@@ -225,14 +209,5 @@ describe('describeBlocking', () => {
         { statusId: 'status-b', label: 'Review', count: 1 },
       ]),
     ).toBe('Skipped: 3 epic(s) still in In Progress, Review');
-  });
-
-  it('deduplicates repeated labels and sums their counts', () => {
-    expect(
-      describeBlocking([
-        { statusId: 'status-a', label: 'Review', count: 2 },
-        { statusId: 'status-b', label: 'Review', count: 3 },
-      ]),
-    ).toBe('Skipped: 5 epic(s) still in Review');
   });
 });

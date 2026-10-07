@@ -8,7 +8,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { fakeSystem } = require("./helpers");
-const { installVersion } = require("../lib/claim");
+const { installVersion, ensureIdsProfile } = require("../lib/claim");
 const {
   refreshHelper,
   runClisHelper,
@@ -66,7 +66,10 @@ test("the caller uses the new helper result and a 45-minute deadline", async () 
     paths: { binDir: "/usr/local/bin" },
     run: async (...args) => {
       calls.push(args);
-      return { stdout: '{"cliVersions":{"future-provider":"9.0.0"}}\n' };
+      return {
+        stdout:
+          '{"cliVersions":{"future-provider":"9.0.0"},"skippedTools":["renamed-tool"]}\n',
+      };
     },
   };
   assert.deepEqual(await runClisHelper("0.25.0", sys), {
@@ -84,8 +87,9 @@ test("the caller uses the new helper result and a 45-minute deadline", async () 
 async function executeBin(
   argv,
   install,
-  packages = async () => {},
+  packages = async () => ({ skippedTools: [] }),
   claim = { refreshHostUnit: async () => false },
+  system = { marker: true },
 ) {
   let stdout = "";
   let stderr = "";
@@ -101,12 +105,11 @@ async function executeBin(
     ),
     {
       require: (name) => {
-        if (name === "../lib/system")
-          return { createSystem: () => ({ marker: true }) };
+        if (name === "../lib/system") return { createSystem: () => system };
         if (name === "../lib/clis") return { installClis: install };
         if (name === "../lib/packages") return { ensureBasePackages: packages };
         if (name === "../lib/update") return {};
-        if (name === "../lib/claim") return claim;
+        if (name === "../lib/claim") return { ensureIdsProfile: () => {}, ...claim };
         return require(name);
       },
       process: {
@@ -134,7 +137,9 @@ async function executeBin(
   return { stdout, stderr, exitCode };
 }
 
-test("--clis emits exactly one JSON line", async () => {
+// The entrypoint seam verifies CLI continuation and the stdout contract while
+// package error handling is covered by the package table.
+test("--clis installs CLIs after skipped tools and emits exactly one JSON line", async () => {
   const order = [];
   const result = await executeBin(
     ["--clis", "0.25.0"],
@@ -148,11 +153,13 @@ test("--clis emits exactly one JSON line", async () => {
       assert.equal(version, "0.25.0");
       assert.equal(sys.marker, true);
       order.push("packages");
+      return { skippedTools: ["renamed-tool"] };
     },
   );
   assert.deepEqual(order, ["packages", "clis"]);
   assert.deepEqual(result, {
-    stdout: '{"cliVersions":{"agy":"agy 2.0.0"}}\n',
+    stdout:
+      '{"cliVersions":{"agy":"agy 2.0.0"},"skippedTools":["renamed-tool"]}\n',
     stderr: "",
     exitCode: 0,
   });
@@ -168,6 +175,7 @@ test("--clis re-writes the host unit on a claimed VM after the CLIs, logging to 
     },
     async () => {
       order.push("packages");
+      return { skippedTools: [] };
     },
     {
       refreshHostUnit: async (sys) => {
@@ -179,7 +187,7 @@ test("--clis re-writes the host unit on a claimed VM after the CLIs, logging to 
   );
   assert.deepEqual(order, ["packages", "clis", "unit"]);
   assert.deepEqual(result, {
-    stdout: '{"cliVersions":{"agy":"agy 2.0.0"}}\n',
+    stdout: '{"cliVersions":{"agy":"agy 2.0.0"},"skippedTools":[]}\n',
     stderr: "devchain-host.service refreshed from this version's template.\n",
     exitCode: 0,
   });
@@ -220,4 +228,29 @@ test("--clis errors use JSON stderr and preserve failure and validation exit cod
   const invalid = await executeBin(["--clis", "../bad"], fail);
   assert.equal(invalid.exitCode, 2);
   assert.equal(JSON.parse(invalid.stderr).code, "INVALID_VERSION");
+});
+
+// Execute the entrypoint with a real temp filesystem to verify installation and idempotency.
+test("--clis installs the login ids profile and a second run preserves it", async (t) => {
+  const { sys, cleanup } = fakeSystem();
+  t.after(cleanup);
+  const profile = path.join(sys.paths.profileDir, "devchain-ids.sh");
+  const run = () => executeBin(
+    ["--clis", "0.25.0"],
+    async () => ({}),
+    async () => ({ skippedTools: [] }),
+    { ensureIdsProfile, refreshHostUnit: async () => false },
+    sys,
+  );
+  assert.equal((await run()).exitCode, 0);
+  assert.equal(
+    fs.readFileSync(profile, "utf8"),
+    'export DEVCHAIN_UID="$(id -u)" DEVCHAIN_GID="$(id -g)"\n',
+  );
+  assert.equal(fs.statSync(profile).mode & 0o777, 0o644);
+  const before = fs.statSync(profile, { bigint: true });
+  assert.equal((await run()).exitCode, 0);
+  const after = fs.statSync(profile, { bigint: true });
+  assert.equal(after.ino, before.ino);
+  assert.equal(after.mtimeNs, before.mtimeNs);
 });

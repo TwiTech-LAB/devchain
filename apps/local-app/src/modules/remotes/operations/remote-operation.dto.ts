@@ -12,6 +12,12 @@ import { DockerCopyBackRequestSchema } from '../docker/docker-copy-back.dto';
 
 export const RemoteOperationIdSchema = z.string().uuid();
 
+export const ForceSyncSourceSchema = z.enum(['home', 'vm']);
+export type ForceSyncSource = z.infer<typeof ForceSyncSourceSchema>;
+export const ForceSyncProjectSchema = z
+  .object({ projectId: z.string().min(1), source: ForceSyncSourceSchema })
+  .strict();
+
 export const AttachProjectSchema = z
   .object({
     projectId: z.string().min(1),

@@ -30,6 +30,8 @@ import { DestroyVmOperation } from './destroy-vm.operation';
 import { VM_LIFECYCLE_KINDS, type RemoteOperationDefinition } from './remote-operation.types';
 import { UpdateLoginsOperation } from './update-logins.operation';
 import { InstallHostOperation } from './install-host.operation';
+import { ForceSyncOperation } from './force-sync.operation';
+import { GitOwnerOperation } from './git-owner.operation';
 
 const logger = createLogger('RemoteOperationRunner');
 
@@ -63,11 +65,15 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
     @Optional() destroyVm?: DestroyVmOperation,
     @Optional() installHost?: InstallHostOperation,
     @Optional() updateLogins?: UpdateLoginsOperation,
+    @Optional() forceSync?: ForceSyncOperation,
+    @Optional() gitOwner?: GitOwnerOperation,
   ) {
     this.definitions = new Map<RemoteOperationKind, RemoteOperationDefinition>([
       [attach.kind, attach],
       ...(updateLogins ? [[updateLogins.kind, updateLogins] as const] : []),
       [detach.kind, detach],
+      ...(forceSync ? [[forceSync.kind, forceSync] as const] : []),
+      ...(gitOwner ? [[gitOwner.kind, gitOwner] as const] : []),
       [claim.kind, claim],
       [updateHost.kind, updateHost],
       ...(installHost ? [[installHost.kind, installHost] as const] : []),
@@ -81,6 +87,17 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
     const unfinished = await this.storage.listRemoteOperations({ states: ['running'] });
     for (const operation of unfinished) {
       logger.info({ operationId: operation.id, kind: operation.kind }, 'Resuming remote operation');
+      try {
+        const from = this.definitions.get(operation.kind)?.resumeFrom?.(operation) ?? null;
+        if (from !== null)
+          await this.persist(operation, { steps: stepsFrom(operation.steps, from, false) });
+      } catch (error) {
+        // One row that cannot be prepared must not stop startup; the run itself reports it.
+        logger.warn(
+          { error, operationId: operation.id },
+          'Remote operation resume step reset failed',
+        );
+      }
       this.launch(operation.id);
     }
   }
@@ -130,17 +147,11 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
       });
     }
     const from = this.definition(current.kind).retryFrom?.(current) ?? null;
-    const fromIndex = from === null ? -1 : current.steps.findIndex((step) => step.id === from);
     const operation = await this.persist(current, {
       state: 'running',
       // A takeover may have cancelled it since the read.
       expectedState: 'failed',
-      steps: current.steps.map((step, index) =>
-        step.state === 'failed' ||
-        (fromIndex >= 0 && index >= fromIndex && step.state !== 'skipped')
-          ? { ...step, state: 'pending', error: null }
-          : step,
-      ),
+      steps: stepsFrom(current.steps, from, true),
     });
     this.launch(id);
     return operation;
@@ -415,29 +426,48 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
   private progressReporter(
     id: string,
     details: Record<string, unknown>,
-  ): { report: (patch: Record<string, unknown>) => Promise<void>; close: () => Promise<void> } {
+  ): {
+    report: (patch: Record<string, unknown>, options?: { durable?: boolean }) => Promise<void>;
+    close: () => Promise<void>;
+  } {
     let timer: NodeJS.Timeout | null = null;
     let writing: Promise<void> = Promise.resolve();
     let closed = false;
-    const write = () => {
-      timer = null;
-      writing = writing.then(async () => {
-        if (closed || this.stopped) return;
-        try {
-          const updated = await this.storage.updateRemoteOperation(id, { details: { ...details } });
-          this.publish(updated);
-        } catch (error) {
-          logger.warn({ error, operationId: id }, 'Remote operation progress was not saved');
-        }
+    const write = (durable = false) => {
+      const snapshot = { ...details };
+      const saved = writing.then(async () => {
+        // An awaited checkpoint must finish even if close or cancel arrives.
+        if (!durable && (closed || this.stopped)) return;
+        const updated = await this.storage.updateRemoteOperation(id, { details: snapshot });
+        this.publish(updated);
       });
+      writing = saved.catch((error) => {
+        logger.warn({ error, operationId: id }, 'Remote operation progress was not saved');
+      });
+      return saved;
     };
     return {
-      report: async (patch) => {
-        if (closed) return;
+      report: async (patch, options) => {
+        if (closed) {
+          if (options?.durable) throw new Error('The operation step has ended.');
+          return;
+        }
         Object.assign(details, patch);
+        if (options?.durable) {
+          if (timer) clearTimeout(timer);
+          timer = null;
+          await write(true);
+          return;
+        }
         if (timer) return;
         const since = Date.now() - (this.lastPublishedAt.get(id) ?? 0);
-        timer = setTimeout(write, Math.max(0, PROGRESS_PUBLISH_INTERVAL_MS - since));
+        timer = setTimeout(
+          () => {
+            timer = null;
+            void write().catch(() => undefined);
+          },
+          Math.max(0, PROGRESS_PUBLISH_INTERVAL_MS - since),
+        );
         timer.unref?.();
       },
       close: async () => {
@@ -456,6 +486,21 @@ function withStep(
   patch: Partial<RemoteOperationStep>,
 ): RemoteOperationStep[] {
   return steps.map((step, i) => (i === index ? { ...step, ...patch } : step));
+}
+
+/** Resets `from` and every later step that is not skipped, and with `failed` also any failed step. */
+function stepsFrom(
+  steps: RemoteOperationStep[],
+  from: string | null,
+  failed: boolean,
+): RemoteOperationStep[] {
+  const fromIndex = from === null ? -1 : steps.findIndex((step) => step.id === from);
+  return steps.map((step, index) =>
+    (failed && step.state === 'failed') ||
+    (fromIndex >= 0 && index >= fromIndex && step.state !== 'skipped')
+      ? { ...step, state: 'pending', error: null }
+      : step,
+  );
 }
 
 const MAX_ERROR_MESSAGE_LENGTH = 2_000;

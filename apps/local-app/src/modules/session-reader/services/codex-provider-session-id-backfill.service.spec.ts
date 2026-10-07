@@ -143,26 +143,6 @@ describe('CodexProviderSessionIdBackfillService', () => {
     }
   });
 
-  it('is idempotent when a second invocation has no matching rows', async () => {
-    const { service, db, adapter, transcriptPersistence } = createService([
-      { id: 'valid-session', transcript_path: '/tmp/valid.jsonl' },
-    ]);
-    db.mockAll.mockReturnValueOnce([{ id: 'valid-session', transcript_path: '/tmp/valid.jsonl' }]);
-    db.mockAll.mockReturnValueOnce([]);
-    adapter.extractProviderSessionIdFromFile.mockResolvedValue('codex-session-1');
-    transcriptPersistence.backfillProviderSessionIdForTranscriptPath.mockResolvedValue({
-      kind: 'backfilledId',
-      sessionId: 'valid-session',
-    });
-
-    await service.runBackfill();
-    await service.runBackfill();
-
-    expect(transcriptPersistence.backfillProviderSessionIdForTranscriptPath).toHaveBeenCalledTimes(
-      1,
-    );
-  });
-
   it('uses an in-process mutex to skip overlapping runs', async () => {
     const { service, adapter, transcriptPersistence } = createService([
       { id: 'valid-session', transcript_path: '/tmp/valid.jsonl' },

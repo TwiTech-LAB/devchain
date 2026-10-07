@@ -216,7 +216,11 @@ function sleep(milliseconds) {
 function acquireTargetLock(locksRoot, canonicalTargetPath, attemptNonce) {
   const lockKey = sha256(canonicalTargetPath);
   const lockPath = path.join(locksRoot, lockKey + ".lock");
-  const deadline = Date.now() + 5000;
+  const requestedTimeout = Number(process.env.DEVCHAIN_CODEX_PROFILE_LOCK_TIMEOUT_MS);
+  const lockTimeoutMs = Number.isFinite(requestedTimeout)
+    ? Math.min(5000, Math.max(50, requestedTimeout))
+    : 5000;
+  const deadline = Date.now() + lockTimeoutMs;
   while (Date.now() < deadline) {
     try {
       fs.mkdirSync(lockPath, { mode: DIRECTORY_MODE });

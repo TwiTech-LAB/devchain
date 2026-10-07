@@ -1702,6 +1702,30 @@
     "max_input_tokens": 922000,
     "max_output_tokens": 128000
   },
+  "azure/us/gpt-6.1-sol": {
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.000011,
+    "cache_read_input_token_cost": 1.1e-7,
+    "cache_creation_input_token_cost": 0.00000275,
+    "max_input_tokens": 922000,
+    "max_output_tokens": 128000
+  },
+  "azure/eu/gpt-6.1-sol": {
+    "input_cost_per_token": 0.0000024,
+    "output_cost_per_token": 0.000012,
+    "cache_read_input_token_cost": 1.2e-7,
+    "cache_creation_input_token_cost": 0.000003,
+    "max_input_tokens": 922000,
+    "max_output_tokens": 128000
+  },
+  "azure/apac/gpt-6.1-sol": {
+    "input_cost_per_token": 0.0000024,
+    "output_cost_per_token": 0.000012,
+    "cache_read_input_token_cost": 1.2e-7,
+    "cache_creation_input_token_cost": 0.000003,
+    "max_input_tokens": 922000,
+    "max_output_tokens": 128000
+  },
   "azure/gpt-chat-latest": {
     "input_cost_per_token": 0.000005,
     "output_cost_per_token": 0.00003,
@@ -3194,13 +3218,13 @@
   "gemini/deep-research-preview-04-2026": {
     "input_cost_per_token": 0.000002,
     "output_cost_per_token": 0.000012,
-    "max_input_tokens": 131072,
+    "max_input_tokens": 1048576,
     "max_output_tokens": 65536
   },
   "gemini/deep-research-max-preview-04-2026": {
     "input_cost_per_token": 0.000002,
     "output_cost_per_token": 0.000012,
-    "max_input_tokens": 131072,
+    "max_input_tokens": 1048576,
     "max_output_tokens": 65536
   },
   "gemini/gemini-2.5-flash": {
@@ -6183,11 +6207,15 @@
   },
   "gemini/gemini-3.5-transcribe": {
     "input_cost_per_token": 0.000002,
-    "output_cost_per_token": 0.000012
+    "output_cost_per_token": 0.000012,
+    "max_input_tokens": 98304,
+    "max_output_tokens": 32768
   },
   "gemini/gemini-3.5-transcribe-live": {
     "input_cost_per_token": 0.0000035,
-    "output_cost_per_token": 0.000021
+    "output_cost_per_token": 0.000021,
+    "max_input_tokens": 131072,
+    "max_output_tokens": 65536
   },
   "vertex_ai/gemini-3.5-transcribe-preview": {
     "input_cost_per_token": 0.000002,
@@ -6772,9 +6800,9 @@
     "max_output_tokens": 128000
   },
   "openrouter/google/gemma-4-26b-a4b-it": {
-    "input_cost_per_token": 7.65e-8,
-    "output_cost_per_token": 2.55e-7,
-    "cache_read_input_token_cost": 4.25e-8,
+    "input_cost_per_token": 6.75e-8,
+    "output_cost_per_token": 2.25e-7,
+    "cache_read_input_token_cost": 3.75e-8,
     "max_input_tokens": 262144,
     "max_output_tokens": 235929
   },
@@ -8379,6 +8407,26 @@
     "output_cost_per_token": 0.000006,
     "max_input_tokens": 8192,
     "max_output_tokens": 16384
+  },
+  "gemini/gemini-nano-banana-2.1": {
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.0000075,
+    "max_input_tokens": 131072,
+    "max_output_tokens": 32768
+  },
+  "gemini-nano-banana-2.1": {
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.0000075,
+    "cache_read_input_token_cost": 1.5e-7,
+    "max_input_tokens": 131072,
+    "max_output_tokens": 32768
+  },
+  "vertex_ai/gemini-nano-banana-2.1": {
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.0000075,
+    "cache_read_input_token_cost": 1.5e-7,
+    "max_input_tokens": 131072,
+    "max_output_tokens": 32768
   },
   "anthropic.claude-3-haiku-20240307-v1:0": {
     "input_cost_per_token": 2.5e-7,

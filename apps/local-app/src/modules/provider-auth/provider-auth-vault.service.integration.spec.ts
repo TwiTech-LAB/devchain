@@ -1,10 +1,9 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import { join } from 'node:path';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { NotFoundError, ValidationError } from '../../common/errors/error-types';
 import { ProviderAdapterFactory } from '../providers/adapters/provider-adapter.factory';
 import type {
@@ -25,8 +24,6 @@ jest.mock('node:os', () => {
   return { ...actual, homedir: jest.fn(actual.homedir) };
 });
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../drizzle');
-
 // Layer: backend integration. The vault's contract is SQLite behavior —
 // the FK release on remote deletion and the ciphertext column — plus the
 // real cipher file, which only a migrated schema with a secret directory exercises.
@@ -40,9 +37,9 @@ describe('ProviderAuthVaultService', () => {
   let remoteB: string;
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
-    const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    const database = createTestDatabase();
+    sqlite = database.sqlite;
+    const db = database.db;
     sqlite.pragma('foreign_keys = ON');
     secretDirectory = mkdtempSync(join(os.tmpdir(), 'devchain-provider-auth-'));
     pcHome = mkdtempSync(join(os.tmpdir(), 'devchain-provider-auth-home-'));

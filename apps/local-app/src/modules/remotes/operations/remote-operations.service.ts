@@ -38,6 +38,19 @@ import type { UpdateLoginsDetails } from './update-logins.operation';
 import type { UpdateHostDetails } from './update-host.operation';
 import { InstallHostOperation, type InstallHostDetails } from './install-host.operation';
 import { SshKeyService } from '../host-install/ssh-key.service';
+import { ConnectChoicesStore } from '../connect-choices.store';
+import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
+import type { ForceSyncSource } from './remote-operation.dto';
+import { GitOwnerOperation } from './git-owner.operation';
+import { GitOwnerStore, type GitOwner } from '../git-owner.store';
+import { RemoteHostClient } from './remote-host.client';
+import { RemoteOperationStepRefusedError } from './remote-operation.errors';
+import { TURN_FALLBACK_IDLE_MS } from '../../terminal/services/terminal-activity.service';
+import {
+  type GitOwnerStartResult,
+  type GitOwnerStatus,
+  type GitSwitchAgent,
+} from './git-owner.dto';
 
 const logger = createLogger('RemoteOperationsService');
 
@@ -52,7 +65,133 @@ export class RemoteOperationsService {
     private readonly installHostOperation: InstallHostOperation,
     private readonly sshKeys: SshKeyService,
     @Inject(REMOTE_HEALTH_PORT) private readonly health: RemoteHealthPort,
+    private readonly choices: ConnectChoicesStore,
+    private readonly files: RemoteFileSyncService,
+    private readonly gitSwitch: GitOwnerOperation,
+    private readonly gitOwners: GitOwnerStore,
+    private readonly host: RemoteHostClient,
   ) {}
+
+  async gitOwner(
+    remoteId: string,
+    projectId: string,
+    owner: GitOwner,
+    force: boolean,
+  ): Promise<GitOwnerStartResult> {
+    requireRemoteAddress(await this.storage.getRemote(remoteId));
+    await this.assertNoOpenVmOperation(remoteId);
+    await this.storage.getProject(projectId);
+    if (owner === 'vm' && force)
+      throw new RemoteOperationStepRefusedError(
+        'GIT_RETURN_FORCE_UNSUPPORTED',
+        'Return does not support --force. Run `devchain git return`.',
+      );
+    const [open] = await this.storage.listRemoteOperations({
+      projectId,
+      states: ['running', 'failed'],
+      limit: 1,
+    });
+    let cancelledOperationId: string | undefined;
+    if (open) {
+      if (open.kind !== 'git_owner' || open.remoteId !== remoteId)
+        throw inProgress(open, 'Another operation is open for this project.');
+      if (open.state === 'running') return open;
+      await this.runner.whenIdle(open.id);
+      const current = await this.storage.getRemoteOperation(open.id);
+      if (current.state === 'running') return current;
+      if (current.state === 'failed') {
+        if (current.details.owner === owner && (current.details.force === true) === force)
+          return this.retry(current.id);
+        // After git_flip has started, the cancel refuses with GIT_SWITCH_UNFINISHED.
+        await this.runner.cancel(current.id);
+        cancelledOperationId = current.id;
+      }
+    }
+    const binding = await this.storage.getRemoteProjectBinding(projectId);
+    if (binding?.state !== 'remote' || binding.remoteId !== remoteId)
+      throw new RemoteOperationStepRefusedError(
+        'GIT_PROJECT_NOT_CONNECTED',
+        'The project must be connected to this VM to move Git.',
+        { projectId, remoteId },
+      );
+    if (this.gitOwners.get(projectId) === owner)
+      return { owner, changed: false, ...(cancelledOperationId && { cancelledOperationId }) };
+    await this.gitSwitch.validate(remoteId, projectId);
+    const unknownAgents: GitSwitchAgent[] = [];
+    if (owner === 'home' && !force) {
+      let busy: GitSwitchAgent[];
+      try {
+        const sessions = await this.host.listSessions(remoteId, projectId);
+        busy = [];
+        for (const session of sessions) {
+          if (session.status !== 'running' || !session.agentId || session.activityState === 'idle')
+            continue;
+          const agent = await this.storage.getAgent(session.agentId);
+          const starting =
+            session.activityState !== 'busy' &&
+            Date.now() - Date.parse(session.startedAt) < TURN_FALLBACK_IDLE_MS;
+          const state =
+            session.activityState === 'busy' ? 'busy' : starting ? 'starting' : 'unknown';
+          const info: GitSwitchAgent = {
+            agentName: agent.name,
+            state,
+            since: state === 'busy' ? (session.busySince ?? session.startedAt) : session.startedAt,
+          };
+          if (state === 'unknown') unknownAgents.push(info);
+          else busy.push(info);
+        }
+      } catch (error) {
+        logger.warn({ error, projectId, remoteId }, 'VM agent sessions could not be checked');
+        throw new RemoteOperationStepRefusedError(
+          'GIT_TAKE_AGENTS_UNKNOWN',
+          'Agent sessions on the VM could not be checked. Try again, or use `devchain git take --force`.',
+        );
+      }
+      if (busy.length)
+        throw new RemoteOperationStepRefusedError(
+          'GIT_TAKE_AGENTS_BUSY',
+          'Agents on the VM are busy or starting. Wait for them to finish, or use `devchain git take --force`.',
+          { agents: busy },
+        );
+    }
+    return this.runner.start({
+      kind: 'git_owner',
+      remoteId,
+      projectId,
+      details: { owner, force, unknownAgents },
+    });
+  }
+
+  async gitOwnerStatus(projectId: string): Promise<GitOwnerStatus> {
+    await this.storage.getProject(projectId);
+    const binding = await this.storage.getRemoteProjectBinding(projectId);
+    const [operation] = await this.storage.listRemoteOperations({
+      projectId,
+      kinds: ['git_owner'],
+      states: ['running', 'failed'],
+      limit: 1,
+    });
+    const remote = binding ? await this.storage.getRemote(binding.remoteId) : null;
+    const step =
+      operation?.steps.find((item) => item.state === 'running' || item.state === 'failed') ??
+      operation?.steps.find((item) => item.state === 'pending');
+    return {
+      connected: binding?.state === 'remote',
+      remoteId: binding?.remoteId ?? null,
+      remoteName: remote?.name ?? null,
+      owner: binding ? this.gitOwners.get(projectId) : 'home',
+      open: operation
+        ? {
+            operationId: operation.id,
+            owner: operation.details.owner as GitOwner,
+            force: operation.details.force === true,
+            state: operation.state === 'failed' ? 'failed' : 'running',
+            step: step?.id ?? null,
+            error: step?.error ?? null,
+          }
+        : null,
+    };
+  }
 
   /**
    * Claims an unclaimed VM. With `baseUrl` (the bootstrap's address) the
@@ -170,6 +309,7 @@ export class RemoteOperationsService {
       // Only a real POSIX uid can be requested; null never leaves a field the
       // bootstrap would refuse.
       ...(identity.uid !== null ? { uid: identity.uid } : {}),
+      ...(identity.gid !== null ? { gid: identity.gid } : {}),
       version: getAppVersion(),
       port: input.port ?? getEnvConfig().PORT,
       providerAuth,
@@ -262,11 +402,33 @@ export class RemoteOperationsService {
     requireRemoteAddress(await this.storage.getRemote(remoteId));
     await this.assertNoOpenVmOperation(remoteId);
     await this.storage.getProject(projectId);
-    return this.runner.start({
+    const includeDocker = Boolean(docker?.items.length);
+    const operation = await this.runner.start({
       kind: 'attach',
       remoteId,
       projectId,
-      details: docker?.items.length ? { dockerSelection: docker } : {},
+      details: includeDocker ? { dockerSelection: docker } : {},
+    });
+    this.choices.recordAttach(projectId, remoteId, includeDocker);
+    return operation;
+  }
+
+  async forceSync(
+    remoteId: string,
+    projectId: string,
+    source: ForceSyncSource,
+  ): Promise<RemoteOperation> {
+    requireRemoteAddress(await this.storage.getRemote(remoteId));
+    await this.assertNoOpenVmOperation(remoteId);
+    await this.storage.getProject(projectId);
+    const offer = await this.files.forceSyncOffer(projectId);
+    if (!offer.offered)
+      throw new ConflictError(offer.reason ?? 'Force sync is not available for this project.');
+    return this.runner.start({
+      kind: 'force_sync',
+      remoteId,
+      projectId,
+      details: { source, forceSync: { source } },
     });
   }
 
@@ -274,7 +436,7 @@ export class RemoteOperationsService {
    * A detach takes over a failed operation of the project without rolling it
    * back: a failed attach that already handed the project to the remote (its
    * rollback would release the host copy with the host's work), or, when
-   * forced, a failed detach whose host steps cannot run. Any other open
+   * forced, a failed detach or force sync whose host steps cannot run. Any other open
    * operation keeps the detach out (409 from storage).
    */
   async detach(
@@ -331,7 +493,18 @@ export class RemoteOperationsService {
     if (current.kind === 'detach' && !force) {
       throw inProgress(current, 'A disconnect failed; retry it or force a new disconnect.');
     }
-    if (current.kind !== 'attach' && current.kind !== 'detach') {
+    if ((current.kind === 'force_sync' || current.kind === 'git_owner') && !force) {
+      throw inProgress(
+        current,
+        `${current.kind === 'git_owner' ? 'The Git switch' : 'Force sync'} failed; retry it, or force a disconnect.`,
+      );
+    }
+    if (
+      current.kind !== 'attach' &&
+      current.kind !== 'detach' &&
+      current.kind !== 'force_sync' &&
+      current.kind !== 'git_owner'
+    ) {
       throw inProgress(current, 'Another operation is open for this project.');
     }
     return this.runner.supersede(current, { supersededAt: new Date().toISOString() });
@@ -363,6 +536,11 @@ export class RemoteOperationsService {
     ssh?: InstallHostData['ssh'],
   ): Promise<RemoteOperation> {
     const operation = await this.storage.getRemoteOperation(id);
+    // A switch that just failed may still be finishing; a running one is refused at once below.
+    if (operation.kind === 'git_owner' && operation.state === 'failed') {
+      await this.runner.whenIdle(id);
+      await this.gitSwitch.validate(operation.remoteId, operation.projectId!, operation);
+    }
     const mismatch = claimIdentityMismatch(operation.kind, operation.details);
     if (mismatch) {
       throw new ValidationError(mismatch, {

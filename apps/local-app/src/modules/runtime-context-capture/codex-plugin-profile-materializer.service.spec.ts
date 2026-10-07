@@ -439,15 +439,15 @@ describe('CodexPluginProfileMaterializerService (unit)', () => {
     });
 
     const result = spawnSync(helperArgv[0], helperArgv.slice(1), {
-      env: { ...process.env, CODEX_HOME: codexHome },
+      env: { ...process.env, CODEX_HOME: codexHome, DEVCHAIN_CODEX_PROFILE_LOCK_TIMEOUT_MS: '300' },
       encoding: 'utf8',
-      timeout: 7_000,
+      timeout: 2_000,
     });
 
     expect(result.status).toBe(78);
     expect(result.stderr).toBe('DEVCHAIN_CODEX_PROFILE_ERROR:lock_timeout\n');
     await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
-  }, 10_000);
+  }, 2_000);
 
   it('refuses source hash mismatches without exposing inherited environment values', async () => {
     const prepared = await prepare(service);

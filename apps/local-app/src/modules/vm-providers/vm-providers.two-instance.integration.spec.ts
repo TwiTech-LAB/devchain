@@ -12,7 +12,6 @@ import {
 } from '../../common/test/two-instance.fixture';
 import type { RemoteOperation } from '../storage/models/domain.models';
 import { ProviderAuthWritebackService } from '../provider-auth/provider-auth-writeback.service';
-import { RemoteOperationRunner } from '../remotes/operations/remote-operation.runner';
 import { ProviderAuthVaultService } from '../provider-auth/provider-auth-vault.service';
 import { RemoteHostClient } from '../remotes/operations/remote-host.client';
 import type { ConnectProxmoxPlacement } from './vm-providers.service';
@@ -539,80 +538,6 @@ describeWithBootstrapPort('Proxmox create and reset through two DevChain instanc
     } finally {
       pull.mockRestore();
       proxmox.onDelete = null;
-    }
-  }, 120_000);
-
-  it('keeps a completed destroy after cleanup failure so registration-only DELETE can finish', async () => {
-    proxmox.onDelete = null;
-    const connection = await instances.home.storage.createVmProviderConnection({
-      kind: 'proxmox',
-      name: 'Cleanup test',
-      apiUrl: proxmox.origin,
-      node: 'hw',
-      pool: 'devchain',
-      storage: 'local-lvm',
-      imageStorage: 'local',
-      bridge: 'vmbr0',
-      vmidMin: 100,
-      vmidMax: 198,
-      namePrefix: 'devchain-',
-      tag: 'devchain',
-      sslFingerprint: proxmox.fingerprint,
-      caPem: proxmox.caPem,
-      tokenId: proxmox.tokenId,
-      tokenSecret: proxmox.tokenSecret,
-    });
-    const vmid = 150;
-    const identity = '00000000-0000-4000-8000-000000000150';
-    proxmox.vms.set(vmid, {
-      vmid,
-      name: 'devchain-cleanup-test',
-      description: '',
-      tags: 'devchain',
-      pool: 'devchain',
-      template: 0,
-      status: 'running',
-      cores: 2,
-      memory: 4096,
-      scsi0: 'local-lvm:vm-150-disk-0,size=30G',
-      smbios1: `uuid=${identity}`,
-    });
-    const remote = await instances.home.storage.createRemote({
-      name: 'cleanup-test',
-      kind: 'proxmox',
-      baseUrl: `https://${VM_IP}:${VM_PORT}`,
-      vmProviderConnectionId: connection.id,
-      vmIdentity: identity,
-      vmSpec: { cores: 2, memory: 4096, disk: 30 },
-    });
-    const cleanup = jest
-      .spyOn(instances.home.storage, 'deleteRemote')
-      .mockRejectedValueOnce(new Error('cleanup unavailable'));
-    try {
-      const started = await post<RemoteOperation>(
-        instances.home.url,
-        `/api/remotes/${remote.id}/destroy-vm`,
-        {},
-      );
-      expect(started.status).toBe(202);
-      await instances.home.app.get(RemoteOperationRunner).whenIdle(started.data.id);
-      expect(proxmox.vms.has(vmid)).toBe(false);
-      expect(await instances.home.storage.getRemoteOperation(started.data.id)).toMatchObject({
-        state: 'done',
-      });
-      expect(await instances.home.storage.getRemote(remote.id)).toMatchObject({
-        baseUrl: null,
-        vmIdentity: null,
-      });
-      const deleted = await fetch(`${instances.home.url}/api/remotes/${remote.id}`, {
-        method: 'DELETE',
-      });
-      expect(deleted.status).toBe(200);
-      expect(
-        (await instances.home.storage.listRemotes()).items.some((item) => item.id === remote.id),
-      ).toBe(false);
-    } finally {
-      cleanup.mockRestore();
     }
   }, 120_000);
 

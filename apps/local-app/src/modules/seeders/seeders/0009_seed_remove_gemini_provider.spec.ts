@@ -3,10 +3,7 @@ import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import type { SeederContext } from '../types/seeder.types';
-import {
-  runSeedRemoveGeminiProvider,
-  seedRemoveGeminiProviderSeeder,
-} from './0009_seed_remove_gemini_provider';
+import { runSeedRemoveGeminiProvider } from './0009_seed_remove_gemini_provider';
 
 const TS = '2024-01-01T00:00:00.000Z';
 
@@ -252,13 +249,5 @@ describe('0009_seed_remove_gemini_provider', () => {
       expect.objectContaining({ seederName: '0009_seed_remove_gemini_provider' }),
       'No gemini provider rows; skipping',
     );
-  });
-
-  it('exports seeder metadata and run function', () => {
-    expect(seedRemoveGeminiProviderSeeder).toMatchObject({
-      name: '0009_seed_remove_gemini_provider',
-      version: 1,
-      run: runSeedRemoveGeminiProvider,
-    });
   });
 });

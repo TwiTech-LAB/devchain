@@ -1,5 +1,5 @@
 const fs = require("node:fs");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { tmpdir, constants } = require("node:os");
 const { join } = require("node:path");
 
@@ -444,4 +444,45 @@ describe("exclusive command process integration", () => {
     expect((await signal.result).code).toBe(143);
     expect(exists(join(root, "unlocked"))).toBe(false);
   });
+
+  const userScope =
+    process.platform === "linux" &&
+    spawnSync(
+      "systemd-run",
+      [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--expand-environment=no",
+        "--",
+        "true",
+      ],
+      { stdio: "ignore" },
+    ).status === 0;
+
+  (userScope ? it : it.skip)(
+    "runs the command in its own user scope with literal arguments",
+    async () => {
+      const report = join(root, "report.json");
+      const literal = "literal ${HOME} $$ \\$x";
+      const child = launch("scoped", "", {
+        unlocked: true,
+        args: [
+          "-e",
+          `const fs = require('node:fs');
+            fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({
+              arg: process.argv[1],
+              cgroup: fs.readFileSync('/proc/self/cgroup', 'utf8'),
+            }));`,
+          literal,
+        ],
+      });
+      expect((await child.result).code).toBe(0);
+      const { arg, cgroup } = JSON.parse(fs.readFileSync(report, "utf8"));
+      expect(arg).toBe(literal);
+      expect(cgroup).toMatch(/\/run-[^/]+\.scope$/m);
+      expect(cgroup).not.toBe(fs.readFileSync("/proc/self/cgroup", "utf8"));
+    },
+  );
 });

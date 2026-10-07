@@ -249,34 +249,47 @@ describe('Layout auto-compact recommendation modal', () => {
     expect(modal).toHaveAttribute('data-provider-name', 'claude');
   });
 
-  it('does not open modal for silent auto-compact recommendations', async () => {
+  it.each([
+    {
+      label: 'silent recommendation',
+      stored: null,
+      payload: {
+        reason: 'claude_auto_compact_disabled',
+        agentName: 'Silent Agent',
+        providerId: 'provider-1',
+        providerName: 'claude',
+        silent: true,
+        bootId: 'test-boot-id-123',
+      },
+    },
+    {
+      label: 'matching boot ID',
+      stored: 'test-boot-id-123',
+      payload: {
+        reason: 'claude_auto_compact_disabled',
+        agentName: 'Builder Agent',
+        providerId: 'provider-1',
+        providerName: 'claude',
+        silent: false,
+        bootId: 'test-boot-id-123',
+      },
+    },
+    {
+      label: 'legacy absent boot ID',
+      stored: 'true',
+      payload: {
+        reason: 'claude_auto_compact_disabled',
+        agentName: 'Builder Agent',
+        providerId: 'provider-1',
+        providerName: 'claude',
+        silent: false,
+      },
+    },
+  ] as const)('suppresses modal for $label', async ({ stored, payload }) => {
+    if (stored !== null)
+      localStorage.setItem('devchain:autoCompact:recommended:provider-1', stored);
     await renderLayout();
-
-    await emitSessionRecommendation({
-      reason: 'claude_auto_compact_disabled',
-      agentName: 'Silent Agent',
-      providerId: 'provider-1',
-      providerName: 'claude',
-      silent: true,
-      bootId: 'test-boot-id-123',
-    });
-
-    expect(screen.queryByTestId('auto-compact-modal')).not.toBeInTheDocument();
-  });
-
-  it('does not open modal when localStorage bootId matches current bootId', async () => {
-    localStorage.setItem('devchain:autoCompact:recommended:provider-1', 'test-boot-id-123');
-    await renderLayout();
-
-    await emitSessionRecommendation({
-      reason: 'claude_auto_compact_disabled',
-      agentName: 'Builder Agent',
-      providerId: 'provider-1',
-      providerName: 'claude',
-      silent: false,
-      bootId: 'test-boot-id-123',
-    });
-
+    await emitSessionRecommendation(payload);
     expect(screen.queryByTestId('auto-compact-modal')).not.toBeInTheDocument();
   });
 
@@ -386,23 +399,6 @@ describe('Layout auto-compact recommendation modal', () => {
 
     // Modal should appear because bootId changed
     expect(screen.getByTestId('auto-compact-modal')).toBeInTheDocument();
-  });
-
-  it('falls back to any-truthy suppression when bootId is absent from payload', async () => {
-    localStorage.setItem('devchain:autoCompact:recommended:provider-1', 'true');
-    await renderLayout();
-
-    // Payload without bootId (backward compat with old server)
-    await emitSessionRecommendation({
-      reason: 'claude_auto_compact_disabled',
-      agentName: 'Builder Agent',
-      providerId: 'provider-1',
-      providerName: 'claude',
-      silent: false,
-    });
-
-    // Modal should be suppressed (fallback: any truthy value in localStorage)
-    expect(screen.queryByTestId('auto-compact-modal')).not.toBeInTheDocument();
   });
 
   it('stores "true" when payload lacks bootId and user dismisses', async () => {

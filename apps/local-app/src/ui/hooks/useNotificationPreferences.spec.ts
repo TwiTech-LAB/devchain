@@ -68,16 +68,6 @@ describe('useNotificationPreferences', () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.preferences).toEqual(prefs);
-  });
-
-  it('returns fetched catalog metadata', async () => {
-    mockPreferencesAndCatalog([]);
-
-    const { result } = renderHook(() => useNotificationPreferences(), {
-      wrapper: makeWrapper(),
-    });
-
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.catalog).toEqual([
       expect.objectContaining({ id: 'epic.assigned', group: 'epic', label: 'Epic assigned' }),
     ]);
@@ -162,7 +152,7 @@ describe('useNotificationPreferences', () => {
       result.current.upsert.mutate({ category: 'security.session_revoked', enabled: false });
     });
 
-    await waitFor(() => result.current.upsert.isError);
+    await waitFor(() => expect(result.current.upsert.isError).toBe(true));
 
     const pref = result.current.preferences.find((p) => p.category === 'security.session_revoked');
     expect(pref?.enabled).toBe(true);

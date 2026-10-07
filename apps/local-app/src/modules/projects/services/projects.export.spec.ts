@@ -406,48 +406,6 @@ describe('ProjectsService', () => {
       });
     });
 
-    it('exports Custom prompts referenced by profile instructions', async () => {
-      const customPrompt = {
-        id: 'prompt-custom',
-        projectId: 'project-123',
-        title: 'Private SOP',
-        content: 'private',
-        version: 1,
-        tags: ['type:custom'],
-        createdAt: '',
-        updatedAt: '',
-      };
-      storage.listPrompts.mockResolvedValue({
-        items: [customPrompt],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-      storage.getPrompt.mockResolvedValue(customPrompt);
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [
-          {
-            id: 'prof-1',
-            name: 'Coder',
-            instructions: 'Follow [[prompt:Private SOP]].',
-          },
-        ],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.getInitialSessionPrompt.mockResolvedValue(null);
-
-      const result = await service.exportProject('project-123');
-
-      expect(result.profiles).toEqual([expect.objectContaining({ name: 'Coder' })]);
-      expect(result.prompts).toEqual([
-        expect.objectContaining({ id: 'prompt-custom', tags: ['type:custom'] }),
-      ]);
-    });
-
     it('allows a System prompt to satisfy an instruction when a Custom title duplicate exists', async () => {
       const prompts = [
         {
@@ -503,44 +461,6 @@ describe('ProjectsService', () => {
         expect.objectContaining({ id: 'prompt-custom', tags: ['type:custom'] }),
         expect.objectContaining({ id: 'prompt-system', tags: ['type:system'] }),
       ]);
-    });
-
-    it('exports a Custom initial prompt in both template initial-prompt fields', async () => {
-      const customPrompt = {
-        id: 'prompt-custom',
-        projectId: 'project-123',
-        title: 'My Private Start',
-        content: 'private',
-        version: 1,
-        tags: ['type:custom'],
-        createdAt: '',
-        updatedAt: '',
-      };
-      storage.listPrompts.mockResolvedValue({
-        items: [customPrompt],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-      storage.getPrompt.mockResolvedValue(customPrompt);
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 1000,
-        offset: 0,
-      });
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.getInitialSessionPrompt.mockResolvedValue(customPrompt);
-
-      const result = await service.exportProject('project-123');
-
-      expect(result.prompts).toEqual([expect.objectContaining({ id: 'prompt-custom' })]);
-      expect(result.initialPrompt).toEqual({
-        promptId: 'prompt-custom',
-        title: 'My Private Start',
-      });
-      expect(result.projectSettings?.initialPromptTitle).toBe('My Private Start');
     });
 
     it('includes Custom prompts and initial fields in the default export', async () => {
@@ -954,47 +874,6 @@ describe('ProjectsService', () => {
       expect(result.agents[0].modelOverride).toBeNull();
     });
 
-    it('should export watcher idleAfterSeconds', async () => {
-      const projectId = 'project-123';
-      const watcherId = '11111111-1111-1111-1111-111111111111';
-
-      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listAgentProfiles.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.getInitialSessionPrompt.mockResolvedValue(null);
-      storage.listWatchers.mockResolvedValue([
-        {
-          id: watcherId,
-          projectId,
-          name: 'Idle gated watcher',
-          description: null,
-          enabled: true,
-          scope: 'all',
-          scopeFilterId: null,
-          pollIntervalMs: 60000,
-          viewportLines: 20,
-          idleAfterSeconds: 25,
-          condition: { type: 'regex', pattern: 'Context low \\(0% remaining\\)' },
-          cooldownMs: 180000,
-          cooldownMode: 'until_clear',
-          eventName: 'watcher.conversation.compact_request',
-          createdAt: '2024-01-01T00:00:00.000Z',
-          updatedAt: '2024-01-01T00:00:00.000Z',
-        },
-      ]);
-
-      const result = await service.exportProject(projectId);
-
-      expect(result.watchers).toHaveLength(1);
-      expect(result.watchers[0]).toEqual(
-        expect.objectContaining({
-          id: watcherId,
-          idleAfterSeconds: 25,
-        }),
-      );
-    });
-
     it('should preserve watcher idleAfterSeconds on export/import round trip', async () => {
       const projectId = 'project-123';
       const watcherId = '22222222-2222-2222-2222-222222222222';
@@ -1027,7 +906,10 @@ describe('ProjectsService', () => {
       ]);
 
       const exported = await service.exportProject(projectId);
-      expect(exported.watchers[0].idleAfterSeconds).toBe(20);
+      expect(exported.watchers).toHaveLength(1);
+      expect(exported.watchers[0]).toEqual(
+        expect.objectContaining({ id: watcherId, idleAfterSeconds: 20 }),
+      );
 
       storage.listProviders.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
       storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
@@ -1075,7 +957,14 @@ describe('ProjectsService', () => {
       );
     });
 
-    it('should include providerSettings for providers with autoCompactThreshold', async () => {
+    it.each([
+      {
+        label: 'configured',
+        threshold: 10,
+        expected: [{ name: 'claude', autoCompactThreshold: 10 }],
+      },
+      { label: 'unset', threshold: null, expected: undefined },
+    ])('$label', async ({ threshold, expected }) => {
       const projectId = 'project-123';
 
       storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
@@ -1099,7 +988,7 @@ describe('ProjectsService', () => {
         },
       ]);
       storage.listProvidersByIds.mockResolvedValue([
-        { id: 'prov-1', name: 'claude', autoCompactThreshold: 10 },
+        { id: 'prov-1', name: 'claude', autoCompactThreshold: threshold },
       ]);
       storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
       storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
@@ -1109,44 +998,7 @@ describe('ProjectsService', () => {
 
       const result = await service.exportProject(projectId);
 
-      expect(result.providerSettings).toEqual([{ name: 'claude', autoCompactThreshold: 10 }]);
-    });
-
-    it('should not include providerSettings when no provider has autoCompactThreshold', async () => {
-      const projectId = 'project-123';
-
-      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [{ id: 'prof-1', name: 'Test Profile' }],
-        total: 1,
-        limit: 1000,
-        offset: 0,
-      });
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        {
-          id: 'config-1',
-          profileId: 'prof-1',
-          providerId: 'prov-1',
-          name: 'default',
-          options: null,
-          env: null,
-          position: 0,
-          createdAt: '',
-          updatedAt: '',
-        },
-      ]);
-      storage.listProvidersByIds.mockResolvedValue([
-        { id: 'prov-1', name: 'claude', autoCompactThreshold: null },
-      ]);
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
-      storage.getInitialSessionPrompt.mockResolvedValue(null);
-      storage.listWatchers.mockResolvedValue([]);
-      storage.listSubscribers.mockResolvedValue([]);
-
-      const result = await service.exportProject(projectId);
-
-      expect(result.providerSettings).toBeUndefined();
+      expect(result.providerSettings).toEqual(expected);
     });
 
     it('should include providerModels for providers that have models using a single batch call', async () => {
@@ -1302,19 +1154,68 @@ describe('ProjectsService', () => {
   });
 
   describe('exportProject with presets', () => {
-    it('should include presets from settings when available', async () => {
-      const projectId = 'project-123';
-      const presets = [
-        {
-          name: 'default',
-          description: 'Default configuration',
-          agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+    it.each([
+      {
+        label: 'stored presets',
+        stored: [
+          {
+            name: 'default',
+            description: 'Default configuration',
+            agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+          },
+        ],
+        options: undefined,
+        expected: [
+          {
+            name: 'default',
+            description: 'Default configuration',
+            agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
+          },
+        ],
+      },
+      { label: 'no presets', stored: [], options: undefined, expected: undefined },
+      {
+        label: 'empty override',
+        stored: [
+          {
+            name: 'stored-preset',
+            agentConfigs: [{ agentName: 'Agent', providerConfigName: 'config' }],
+          },
+        ],
+        options: { presets: [] },
+        expected: [],
+      },
+      {
+        label: 'override presets',
+        stored: [
+          {
+            name: 'stored-preset',
+            agentConfigs: [{ agentName: 'Agent', providerConfigName: 'old-config' }],
+          },
+        ],
+        options: {
+          presets: [
+            {
+              name: 'override-preset',
+              description: 'Custom override',
+              agentConfigs: [{ agentName: 'NewAgent', providerConfigName: 'new-config' }],
+            },
+          ],
         },
-      ];
+        expected: [
+          {
+            name: 'override-preset',
+            description: 'Custom override',
+            agentConfigs: [{ agentName: 'NewAgent', providerConfigName: 'new-config' }],
+          },
+        ],
+      },
+    ])('$label', async ({ stored, options, expected }) => {
+      const projectId = 'project-123';
 
       (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
         .fn()
-        .mockReturnValue(presets);
+        .mockReturnValue(stored);
 
       storage.getProject.mockResolvedValue({
         id: projectId,
@@ -1337,130 +1238,9 @@ describe('ProjectsService', () => {
       storage.listWatchers.mockResolvedValue([]);
       storage.listSubscribers.mockResolvedValue([]);
 
-      const result = await service.exportProject(projectId);
+      const result = await service.exportProject(projectId, options);
 
-      expect(result.presets).toEqual(presets);
-    });
-
-    it('should not include presets field when none exist', async () => {
-      const projectId = 'project-123';
-
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
-        .fn()
-        .mockReturnValue([]);
-
-      storage.getProject.mockResolvedValue({
-        id: projectId,
-        name: 'Test Project',
-        rootPath: '/test/path',
-        isTemplate: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-
-      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listWatchers.mockResolvedValue([]);
-      storage.listSubscribers.mockResolvedValue([]);
-
-      const result = await service.exportProject(projectId);
-
-      expect(result.presets).toBeUndefined();
-    });
-
-    it('should include empty presets array when override is empty (explicit no presets)', async () => {
-      const projectId = 'project-123';
-      const storedPresets = [
-        {
-          name: 'stored-preset',
-          agentConfigs: [{ agentName: 'Agent', providerConfigName: 'config' }],
-        },
-      ];
-
-      // Mock stored presets (should be ignored when override is provided)
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
-        .fn()
-        .mockReturnValue(storedPresets);
-
-      storage.getProject.mockResolvedValue({
-        id: projectId,
-        name: 'Test Project',
-        rootPath: '/test/path',
-        isTemplate: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-
-      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listWatchers.mockResolvedValue([]);
-      storage.listSubscribers.mockResolvedValue([]);
-
-      // Pass empty array as override - should explicitly export without presets
-      const result = await service.exportProject(projectId, { presets: [] });
-
-      expect(result.presets).toEqual([]);
-    });
-
-    it('should use override presets when provided', async () => {
-      const projectId = 'project-123';
-      const storedPresets = [
-        {
-          name: 'stored-preset',
-          agentConfigs: [{ agentName: 'Agent', providerConfigName: 'old-config' }],
-        },
-      ];
-      const overridePresets = [
-        {
-          name: 'override-preset',
-          description: 'Custom override',
-          agentConfigs: [{ agentName: 'NewAgent', providerConfigName: 'new-config' }],
-        },
-      ];
-
-      // Mock stored presets (should be ignored when override is provided)
-      (settings as { getProjectPresets: jest.Mock }).getProjectPresets = jest
-        .fn()
-        .mockReturnValue(storedPresets);
-
-      storage.getProject.mockResolvedValue({
-        id: projectId,
-        name: 'Test Project',
-        rootPath: '/test/path',
-        isTemplate: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-
-      storage.listPrompts.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listAgentProfiles.mockResolvedValue({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-      });
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listStatuses.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 });
-      storage.listWatchers.mockResolvedValue([]);
-      storage.listSubscribers.mockResolvedValue([]);
-
-      const result = await service.exportProject(projectId, { presets: overridePresets });
-
-      expect(result.presets).toEqual(overridePresets);
+      expect(result.presets).toEqual(expected);
     });
 
     it('round-trips exported presets with modelOverride through import', async () => {

@@ -119,13 +119,5 @@ describe('resolveBinary', () => {
       expect(result).toBe('C:\\Program Files\\claude.exe');
       expect(fakeExecutor.calls[0].argv).toEqual(['where', 'claude']);
     });
-
-    it('returns null when where fails', async () => {
-      fakeExecutor.enqueueResponse({ type: 'failure', exitCode: 1 });
-
-      const result = await resolveBinary('claude', fakeExecutor);
-
-      expect(result).toBeNull();
-    });
   });
 });

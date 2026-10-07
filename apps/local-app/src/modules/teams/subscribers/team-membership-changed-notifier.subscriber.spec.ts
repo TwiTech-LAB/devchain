@@ -106,20 +106,21 @@ describe('TeamMembershipChangedNotifierSubscriber', () => {
       );
     });
 
-    it('falls back to agent ID when name is null', async () => {
-      await subscriber.handleMemberAdded({ ...addedPayload, addedAgentName: null });
-
-      expect(deliverMock.mock.calls[0][1].body).toBe(
-        "Agent 'agent-new' was added to team 'Alpha Team'. Description: Handles backend API work",
-      );
-    });
-
-    it('omits description text when added agent description is absent', async () => {
-      await subscriber.handleMemberAdded({ ...addedPayload, addedAgentDescription: null });
-
-      expect(deliverMock.mock.calls[0][1].body).toBe(
-        "Agent 'New Agent' was added to team 'Alpha Team'.",
-      );
+    it.each([
+      {
+        label: 'missing name',
+        override: { addedAgentName: null },
+        expected:
+          "Agent 'agent-new' was added to team 'Alpha Team'. Description: Handles backend API work",
+      },
+      {
+        label: 'missing description',
+        override: { addedAgentDescription: null },
+        expected: "Agent 'New Agent' was added to team 'Alpha Team'.",
+      },
+    ])('$label', async ({ override, expected }) => {
+      await subscriber.handleMemberAdded({ ...addedPayload, ...override });
+      expect(deliverMock.mock.calls[0][1].body).toBe(expected);
     });
 
     it('records success in EventLogService', async () => {

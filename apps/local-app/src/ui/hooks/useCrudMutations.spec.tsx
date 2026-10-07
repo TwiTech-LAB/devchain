@@ -36,15 +36,12 @@ describe('optimistic list patterns', () => {
   };
 
   describe('optimisticAdd (temp-id add)', () => {
-    it('prepends by default and increments total', () => {
-      const next = optimisticAdd(base, { id: 'temp', name: 'New' });
-      expect(next.items.map((i) => i.id)).toEqual(['temp', 'a', 'b']);
-      expect(next.total).toBe(3);
-    });
-
-    it('appends when position=append', () => {
-      const next = optimisticAdd(base, { id: 'temp', name: 'New' }, { position: 'append' });
-      expect(next.items.map((i) => i.id)).toEqual(['a', 'b', 'temp']);
+    it.each([
+      { label: 'default prepend', options: undefined, order: ['temp', 'a', 'b'] },
+      { label: 'explicit append', options: { position: 'append' }, order: ['a', 'b', 'temp'] },
+    ] as const)('$label', ({ options, order }) => {
+      const next = optimisticAdd(base, { id: 'temp', name: 'New' }, options);
+      expect(next.items.map((item) => item.id)).toEqual(order);
       expect(next.total).toBe(3);
     });
 

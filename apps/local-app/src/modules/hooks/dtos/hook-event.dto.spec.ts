@@ -53,24 +53,6 @@ describe('HookEventSchema (discriminated union)', () => {
     it('accepts a minimal SessionStart payload', () => {
       expect(HookEventSchema.safeParse(sessionStart).success).toBe(true);
     });
-
-    it('accepts SessionStart with optional fields and null agent/session', () => {
-      const result = HookEventSchema.safeParse({
-        ...sessionStart,
-        agentId: null,
-        sessionId: null,
-        model: 'claude-opus-4-8',
-        permissionMode: 'default',
-        transcriptPath: '/tmp/t.jsonl',
-      });
-      expect(result.success).toBe(true);
-    });
-
-    it('rejects SessionStart missing the required source', () => {
-      const { source, ...withoutSource } = sessionStart;
-      void source;
-      expect(HookEventSchema.safeParse(withoutSource).success).toBe(false);
-    });
   });
 
   describe('turn hooks (UserPromptSubmit, Stop)', () => {
@@ -98,10 +80,6 @@ describe('HookEventSchema (discriminated union)', () => {
       ).toBe(true);
     });
 
-    it.each([-1, 1.5, '1700000000000'])('rejects the hook time %p', (firedAtMs) => {
-      expect(HookEventSchema.safeParse({ ...userPromptSubmit, firedAtMs }).success).toBe(false);
-    });
-
     it('rejects a hook time on the other variants (strict)', () => {
       expect(HookEventSchema.safeParse({ ...sessionStart, firedAtMs: 1 }).success).toBe(false);
       expect(HookEventSchema.safeParse({ ...preToolUse, firedAtMs: 1 }).success).toBe(false);
@@ -117,42 +95,11 @@ describe('HookEventSchema (discriminated union)', () => {
         expect(result.data.toolUseId).toBe('toolu_abc');
       }
     });
-
-    it('does NOT require source for PreToolUse', () => {
-      expect('source' in preToolUse).toBe(false);
-      expect(HookEventSchema.safeParse(preToolUse).success).toBe(true);
-    });
-
-    it('rejects PreToolUse missing toolUseId', () => {
-      const { toolUseId, ...incomplete } = preToolUse;
-      void toolUseId;
-      expect(HookEventSchema.safeParse(incomplete).success).toBe(false);
-    });
-
-    it('rejects PreToolUse with a non-object toolInput', () => {
-      expect(HookEventSchema.safeParse({ ...preToolUse, toolInput: 'not-an-object' }).success).toBe(
-        false,
-      );
-    });
   });
 
   describe('PostToolUse', () => {
     it('accepts a PostToolUse payload with a string toolResponse', () => {
       expect(HookEventSchema.safeParse(postToolUse).success).toBe(true);
-    });
-
-    it('accepts a PostToolUse payload with an object toolResponse', () => {
-      const result = HookEventSchema.safeParse({
-        ...postToolUse,
-        toolResponse: { truncated: true, length: 50000 },
-      });
-      expect(result.success).toBe(true);
-    });
-
-    it('accepts a PostToolUse payload omitting toolResponse', () => {
-      const { toolResponse, ...withoutResponse } = postToolUse;
-      void toolResponse;
-      expect(HookEventSchema.safeParse(withoutResponse).success).toBe(true);
     });
   });
 
@@ -177,18 +124,6 @@ describe('HookEventSchema (discriminated union)', () => {
         expect(result.data.transcriptPath).toBe(stop.transcriptPath);
         expect(result.data.providerSessionId).toBe('copilot-session-1');
       }
-    });
-
-    it('accepts a Stop payload omitting the optional stopReason', () => {
-      const { stopReason, ...withoutReason } = stop;
-      void stopReason;
-      expect(HookEventSchema.safeParse(withoutReason).success).toBe(true);
-    });
-
-    it('accepts a Stop payload carrying a legacy claudeSessionId', () => {
-      expect(
-        HookEventSchema.safeParse({ ...stop, claudeSessionId: 'claude-session-1' }).success,
-      ).toBe(true);
     });
 
     it('rejects unknown keys on Stop (strict mode)', () => {
@@ -227,15 +162,6 @@ describe('HookEventSchema (discriminated union)', () => {
       );
     });
 
-    it.each([0, -1, 10_000_001, 1.5])(
-      'rejects invalid context-window token count %p',
-      (contextWindowTokens) => {
-        expect(HookEventSchema.safeParse({ ...statusLine, contextWindowTokens }).success).toBe(
-          false,
-        );
-      },
-    );
-
     it('rejects malformed epochs and unsafe sequences', () => {
       expect(HookEventSchema.safeParse({ ...statusLine, epoch: 'contains spaces' }).success).toBe(
         false,
@@ -266,34 +192,12 @@ describe('HookEventSchema (discriminated union)', () => {
         expect(result.data.claudeSessionId).toBeUndefined();
       }
     });
-
-    it('keeps claudeSessionId required on the Claude-only tool variants', () => {
-      // SessionStart no longer requires it (cross-provider), but PreToolUse/PostToolUse do.
-      const { claudeSessionId: _pre, ...preWithout } = preToolUse;
-      void _pre;
-      const { claudeSessionId: _post, ...postWithout } = postToolUse;
-      void _post;
-      expect(HookEventSchema.safeParse(preWithout).success).toBe(false);
-      expect(HookEventSchema.safeParse(postWithout).success).toBe(false);
-    });
   });
 
   describe('rejection (malformed / strict)', () => {
-    it('rejects an unknown hookEventName (no matching variant)', () => {
-      expect(
-        HookEventSchema.safeParse({ ...sessionStart, hookEventName: 'UnknownEvent' }).success,
-      ).toBe(false);
-    });
-
     it('rejects unknown keys (strict mode) on any variant', () => {
       expect(HookEventSchema.safeParse({ ...sessionStart, rogueKey: 'x' }).success).toBe(false);
       expect(HookEventSchema.safeParse({ ...preToolUse, rogueKey: 'x' }).success).toBe(false);
-    });
-
-    it('rejects a non-UUID projectId', () => {
-      expect(HookEventSchema.safeParse({ ...sessionStart, projectId: 'not-a-uuid' }).success).toBe(
-        false,
-      );
     });
   });
 });

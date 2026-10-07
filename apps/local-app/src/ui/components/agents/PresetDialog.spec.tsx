@@ -161,35 +161,29 @@ describe('PresetDialog', () => {
       });
     });
 
-    it('renders dialog with correct title for create mode', () => {
+    it('shows create preset fields, selection count and disabled save', () => {
       renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      expect(screen.getByText('Save as Preset')).toBeInTheDocument();
-      expect(
-        screen.getByText('Create a named configuration from agent provider assignments'),
-      ).toBeInTheDocument();
+      {
+        expect(screen.getByText('Save as Preset')).toBeInTheDocument();
+        expect(
+          screen.getByText('Create a named configuration from agent provider assignments'),
+        ).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('Agent Configurations')).toBeInTheDocument();
+        expect(screen.getByText('2 selected')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByRole('button', { name: 'Save Preset' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+      }
+      {
+        const saveButton = screen.getByRole('button', { name: 'Save Preset' });
+        expect(saveButton).toBeDisabled();
+      }
     });
 
-    it('renders name field as required', () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      expect(screen.getByLabelText('Name *')).toBeInTheDocument();
-    });
-
-    it('renders description field', () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      expect(screen.getByLabelText('Description')).toBeInTheDocument();
-    });
-
-    it('shows agents with provider configs in selection list', () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      expect(screen.getByText('Agent Configurations')).toBeInTheDocument();
-      expect(screen.getByText('2 selected')).toBeInTheDocument();
-    });
-
-    it('shows all agents with profileId, including unassigned ones', async () => {
+    it('shows all profiled agents with controls and assigned selection', async () => {
       mockProfileConfigs({
         'profile-1': [
           { id: 'config-1', name: 'claude-config' },
@@ -198,36 +192,31 @@ describe('PresetDialog', () => {
         'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
       });
       renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      // Wait for profile configs to load
-      await waitFor(() => {
-        expect(screen.getByText('Coder')).toBeInTheDocument();
-        expect(screen.getByText('Reviewer')).toBeInTheDocument();
-        expect(screen.getByText('Tester')).toBeInTheDocument(); // Unassigned agent now shown
-      });
-    });
-
-    it('uses wider modal layout and truncating agent-name row styling', async () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      const dialog = screen.getByRole('dialog');
-      expect(dialog).toHaveClass('max-w-xl');
-      expect(screen.getByTestId('preset-agents-scroll')).toHaveClass('h-56');
-
-      await waitFor(() => {
-        expect(screen.getByTestId('preset-agent-name-agent-1')).toBeInTheDocument();
-      });
-
-      const agentName = screen.getByTestId('preset-agent-name-agent-1');
-      expect(agentName).toHaveClass('truncate');
-      expect(agentName).toHaveAttribute('title', 'Coder');
-    });
-
-    it('shows save button and cancel button', () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      expect(screen.getByRole('button', { name: 'Save Preset' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+      {
+        await waitFor(() => {
+          expect(screen.getByText('Coder')).toBeInTheDocument();
+          expect(screen.getByText('Reviewer')).toBeInTheDocument();
+          expect(screen.getByText('Tester')).toBeInTheDocument(); // Unassigned agent now shown
+        });
+      }
+      {
+        await waitFor(() => {
+          expect(screen.getByText('Coder')).toBeInTheDocument();
+        });
+        const checkboxes = screen.getAllByRole('checkbox');
+        expect(checkboxes).toHaveLength(3);
+        const selects = screen.getAllByRole('combobox');
+        expect(selects).toHaveLength(3);
+      }
+      {
+        await waitFor(() => {
+          expect(screen.getByText('Coder')).toBeInTheDocument();
+        });
+        const checkboxes = screen.getAllByRole('checkbox');
+        expect(checkboxes[0]).toBeChecked();
+        expect(checkboxes[1]).toBeChecked();
+        expect(checkboxes[2]).not.toBeChecked();
+      }
     });
   });
 
@@ -248,32 +237,29 @@ describe('PresetDialog', () => {
       agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
     };
 
-    it('renders dialog with correct title for edit mode', () => {
+    it('shows edit preset fields, selection count and update action', () => {
       renderWithQueryClient(<PresetDialog {...defaultProps} presetToEdit={mockPreset} />);
-
-      expect(screen.getByText('Edit Preset')).toBeInTheDocument();
-      expect(
-        screen.getByText('Modify the preset name, description, or agent configurations'),
-      ).toBeInTheDocument();
-    });
-
-    it('pre-fills existing preset values', () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} presetToEdit={mockPreset} />);
-
-      expect(screen.getByLabelText('Name *')).toHaveValue('existing-preset');
-      expect(screen.getByLabelText('Description')).toHaveValue('Test preset description');
-    });
-
-    it('shows correct agent count for edit mode', () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} presetToEdit={mockPreset} />);
-
-      expect(screen.getByText('1 selected')).toBeInTheDocument();
-    });
-
-    it('shows update button instead of save button', () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} presetToEdit={mockPreset} />);
-
-      expect(screen.getByRole('button', { name: 'Update Preset' })).toBeInTheDocument();
+      {
+        expect(screen.getByText('Edit Preset')).toBeInTheDocument();
+        expect(
+          screen.getByText('Modify the preset name, description, or agent configurations'),
+        ).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByLabelText('Name *')).toHaveValue('existing-preset');
+        expect(screen.getByLabelText('Description')).toHaveValue('Test preset description');
+      }
+      {
+        expect(screen.getByText('1 selected')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByRole('button', { name: 'Update Preset' })).toBeInTheDocument();
+      }
+      {
+        expect(
+          screen.queryByText('A preset with this name already exists'),
+        ).not.toBeInTheDocument();
+      }
     });
   });
 
@@ -308,26 +294,6 @@ describe('PresetDialog', () => {
 
       expect(screen.getByText('A preset with this name already exists')).toBeInTheDocument();
     });
-
-    it('excludes current preset from duplicate check in edit mode', () => {
-      const mockPreset = {
-        name: 'existing-preset',
-        description: 'Test',
-        agentConfigs: [{ agentName: 'Coder', providerConfigName: 'claude-config' }],
-      };
-
-      renderWithQueryClient(<PresetDialog {...defaultProps} presetToEdit={mockPreset} />);
-
-      // Should not show duplicate error for its own name
-      expect(screen.queryByText('A preset with this name already exists')).not.toBeInTheDocument();
-    });
-
-    it('disables save button when invalid', () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      const saveButton = screen.getByRole('button', { name: 'Save Preset' });
-      expect(saveButton).toBeDisabled();
-    });
   });
 
   describe('create mode interactions', () => {
@@ -358,104 +324,6 @@ describe('PresetDialog', () => {
       expect(nameInput).toHaveValue('my-preset');
       expect(descInput).toHaveValue('My test preset');
     });
-
-    // TODO(test-strategy-overhaul): SKIPPED — fetch mock timing issues with React Query in jsdom.
-    // The core functionality is covered by backend tests. Needs service-layer mocking or Playwright.
-    it.skip('calls create API and closes on success', async () => {});
-
-    // TODO(test-strategy-overhaul): SKIPPED — complex mock setup with multiple fetch calls in jsdom.
-    // Error handling is covered by backend tests. Needs service-layer mocking.
-    it.skip('shows error toast when API call fails', async () => {});
-  });
-
-  describe('dialog close behavior', () => {
-    beforeEach(() => {
-      mockProfileConfigs({
-        'profile-1': [
-          { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'codex-config' },
-        ],
-        'profile-2': [{ id: 'config-3', name: 'gpt-config' }],
-      });
-    });
-
-    // TODO(test-strategy-overhaul): SKIPPED — mock fetch timing issues with React Query in jsdom.
-    // The actual functionality works correctly in manual testing. Needs service-layer mocking.
-    it.skip('closes dialog when cancel clicked', async () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Save as Preset')).toBeInTheDocument();
-      });
-
-      const cancelButtonText = screen.getByText('Cancel');
-      const cancelButton = cancelButtonText.closest('button') as HTMLElement;
-      await userEvent.click(cancelButton);
-
-      expect(defaultProps.onOpenChange).toHaveBeenCalledWith(false);
-    });
-  });
-
-  describe('Checkbox/Select interaction pattern', () => {
-    beforeEach(() => {
-      mockProfileConfigs({
-        'profile-1': [
-          { id: 'config-1', name: 'claude-config' },
-          { id: 'config-2', name: 'codex-config' },
-          { id: 'config-3', name: 'gpt-config' },
-        ],
-        'profile-2': [{ id: 'config-4', name: 'test-config' }],
-      });
-    });
-
-    it('renders checkboxes and selects for all agents with profileId', async () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Coder')).toBeInTheDocument();
-      });
-
-      // Should have 3 checkboxes (one per agent with profileId)
-      const checkboxes = screen.getAllByRole('checkbox');
-      expect(checkboxes).toHaveLength(3);
-
-      // Should have 3 selects (one per agent with profileId)
-      const selects = screen.getAllByRole('combobox');
-      expect(selects).toHaveLength(3);
-    });
-
-    it('unassigned agent (Tester) is now visible with controls', async () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Tester')).toBeInTheDocument();
-      });
-
-      // Tester should have a checkbox and select
-      const checkboxes = screen.getAllByRole('checkbox');
-      const selects = screen.getAllByRole('combobox');
-
-      // Third agent is Tester (index 2)
-      expect(checkboxes[2]).toBeInTheDocument();
-      expect(selects[2]).toBeInTheDocument();
-    });
-
-    it('shows correct initial state - assigned agents checked', async () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Coder')).toBeInTheDocument();
-      });
-
-      const checkboxes = screen.getAllByRole('checkbox');
-
-      // Coder and Reviewer should be checked (have existing configs)
-      expect(checkboxes[0]).toBeChecked(); // Coder
-      expect(checkboxes[1]).toBeChecked(); // Reviewer
-
-      // Tester should be unchecked (no existing config)
-      expect(checkboxes[2]).not.toBeChecked(); // Tester
-    });
   });
 
   describe('model override selection', () => {
@@ -478,13 +346,21 @@ describe('PresetDialog', () => {
       );
     });
 
-    it('shows model selects when selected config provider has models', async () => {
+    it('shows model selectors with the current override selected', async () => {
       renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      await waitFor(() => {
-        expect(screen.getByTestId('preset-model-select-agent-1')).toBeInTheDocument();
-        expect(screen.getByTestId('preset-model-select-agent-2')).toBeInTheDocument();
-      });
+      {
+        await waitFor(() => {
+          expect(screen.getByTestId('preset-model-select-agent-1')).toBeInTheDocument();
+          expect(screen.getByTestId('preset-model-select-agent-2')).toBeInTheDocument();
+        });
+      }
+      {
+        await waitFor(() => {
+          expect(screen.getByTestId('preset-model-select-agent-1')).toHaveTextContent(
+            'claude-sonnet-4-5',
+          );
+        });
+      }
     });
 
     it('hides model select when provider has no models', async () => {
@@ -499,16 +375,6 @@ describe('PresetDialog', () => {
 
       await waitFor(() => {
         expect(screen.queryByTestId('preset-model-select-agent-1')).not.toBeInTheDocument();
-      });
-    });
-
-    it('preselects model override from current agent in create mode', async () => {
-      renderWithQueryClient(<PresetDialog {...defaultProps} />);
-
-      await waitFor(() => {
-        expect(screen.getByTestId('preset-model-select-agent-1')).toHaveTextContent(
-          'claude-sonnet-4-5',
-        );
       });
     });
 
@@ -630,7 +496,7 @@ describe('PresetDialog', () => {
 
       // The select should exist and be interactive (has other options available)
       const coderSelect = screen.getAllByRole('combobox')[0];
-      expect(coderSelect).toBeInTheDocument();
+      await waitFor(() => expect(coderSelect).not.toBeDisabled());
     });
   });
 

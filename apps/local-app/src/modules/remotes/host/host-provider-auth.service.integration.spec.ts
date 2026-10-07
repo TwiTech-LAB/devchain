@@ -173,12 +173,19 @@ describe('HostProviderAuthService', () => {
     expect(readFileSync(join(home, 'stdin.log'), 'utf8').trim()).toBe('stdin=/dev/null');
   });
 
-  it('refuses on an instance that is not a claimed host', async () => {
-    rmSync(join(etcDir, 'claim.json'));
-    await expect(service.verify('claude', [])).rejects.toMatchObject({
-      details: { code: 'NOT_A_HOST' },
-    });
-  });
+  it.each(['verify', 'families', 'apply'] as const)(
+    'refuses %s on an instance that is not a claimed host',
+    async (method) => {
+      rmSync(join(etcDir, 'claim.json'));
+      const result =
+        method === 'verify'
+          ? service.verify('claude', [])
+          : method === 'families'
+            ? service.families(0)
+            : service.apply({ env: {}, files: [] });
+      await expect(result).rejects.toMatchObject({ details: { code: 'NOT_A_HOST' } });
+    },
+  );
 
   it('applies files 0600 in 0700 dirs and merges env into host.env', async () => {
     const result = await service.apply({
@@ -404,15 +411,6 @@ describe('HostProviderAuthService', () => {
       const [second] = await service.families(first.files[0].mtime);
 
       expect(Buffer.from(second.files[0].contentBase64, 'base64').toString('utf8')).toBe(refreshed);
-    });
-
-    it('refuses the report on an instance that is not a claimed host', async () => {
-      writeCodexAuth(CODEX_REFRESHED);
-      rmSync(join(etcDir, 'claim.json'));
-
-      await expect(service.families(0)).rejects.toMatchObject({
-        details: { code: 'NOT_A_HOST' },
-      });
     });
 
     it('reports nothing when no family file exists', async () => {

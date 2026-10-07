@@ -9,28 +9,26 @@ jest.mock('@/ui/hooks/use-toast', () => ({
 
 describe('toast-helpers', () => {
   describe('getErrorMessage', () => {
-    it('returns the message of an Error instance', () => {
-      expect(getErrorMessage(new Error('boom'), 'fallback')).toBe('boom');
+    it.each([
+      {
+        label: 'returns the message of an Error instance',
+        message: 'boom',
+        expectedMessage: 'boom',
+      },
+      {
+        label: 'uses an empty Error message verbatim rather than the fallback',
+        message: '',
+        expectedMessage: '',
+      },
+    ] as const)('$label', ({ message, expectedMessage }) => {
+      expect(getErrorMessage(new Error(message), 'fallback')).toBe(expectedMessage);
     });
 
-    it('returns the fallback for a non-Error thrown value', () => {
-      expect(getErrorMessage('a string', 'fallback')).toBe('fallback');
-      expect(getErrorMessage(42, 'fallback')).toBe('fallback');
-      expect(getErrorMessage(null, 'fallback')).toBe('fallback');
-      expect(getErrorMessage(undefined, 'fallback')).toBe('fallback');
-    });
-
-    it('returns the fallback for a plain object that is not an Error instance', () => {
-      // Duck-typed objects with a `message` field must NOT be treated as Errors:
-      // the instanceof guard is the whole point.
-      expect(getErrorMessage({ message: 'sneaky' }, 'fallback')).toBe('fallback');
-      expect(getErrorMessage({}, 'fallback')).toBe('fallback');
-    });
-
-    it('uses an empty Error message verbatim rather than the fallback', () => {
-      // An Error with an empty message is still an Error — preserve exact
-      // behavior of the original ternary (Error branch wins).
-      expect(getErrorMessage(new Error(''), 'fallback')).toBe('');
+    it.each([
+      { label: 'primitive non-Errors', values: ['a string', 42, null, undefined] },
+      { label: 'duck-typed objects', values: [{ message: 'sneaky' }, {}] },
+    ] as const)('uses fallback for $label', ({ values }) => {
+      for (const value of values) expect(getErrorMessage(value, 'fallback')).toBe('fallback');
     });
   });
 
@@ -65,21 +63,6 @@ describe('toast-helpers', () => {
       expect(mockToast).toHaveBeenCalledWith({
         title: 'Error',
         description: 'Something broke.',
-        variant: 'destructive',
-      });
-    });
-
-    it('composes with getErrorMessage to mirror the dominant ternary pattern', () => {
-      const { result } = renderHook(() => useToastHelpers());
-      act(() => {
-        result.current.showError({
-          title: 'Failed to create provider',
-          description: getErrorMessage(new Error('network'), 'Failed to create provider'),
-        });
-      });
-      expect(mockToast).toHaveBeenCalledWith({
-        title: 'Failed to create provider',
-        description: 'network',
         variant: 'destructive',
       });
     });

@@ -146,6 +146,30 @@ describe('MessageActivityList', () => {
     expect(await screen.findByText(/First message content/)).toBeInTheDocument();
     expect(await screen.findByText(/Second message in batch/)).toBeInTheDocument();
     expect(await screen.findByText(/Single queued message/)).toBeInTheDocument();
+
+    {
+      expect(await screen.findByText('batch of 2')).toBeInTheDocument();
+    }
+    {
+      expect(await screen.findByText('delivered')).toBeInTheDocument();
+      expect(await screen.findByText('queued')).toBeInTheDocument();
+      expect(await screen.findByText('failed')).toBeInTheDocument();
+    }
+    {
+      expect(await screen.findByText(/Error: No active session/)).toBeInTheDocument();
+    }
+    {
+      expect(await screen.findByText('[epic.assigned]')).toBeInTheDocument();
+      expect(await screen.findByText('[chat.message]')).toBeInTheDocument();
+    }
+    {
+      const testAgentLabels = await screen.findAllByText('→ Test Agent');
+      expect(testAgentLabels.length).toBeGreaterThan(0);
+      expect(await screen.findByText('→ Another Agent')).toBeInTheDocument();
+    }
+    {
+      expect(await screen.findByText(/4 total/)).toBeInTheDocument();
+    }
   });
 
   it('shows empty state when no messages', async () => {
@@ -184,83 +208,6 @@ describe('MessageActivityList', () => {
     });
 
     expect(await screen.findByText(/Failed to load messages/)).toBeInTheDocument();
-  });
-
-  it('groups messages by batchId', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageActivityList projectId="project-1" />
-        </Wrapper>,
-      );
-    });
-
-    // Should show "batch of 2" for the batched messages
-    expect(await screen.findByText('batch of 2')).toBeInTheDocument();
-  });
-
-  it('displays status badges', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageActivityList projectId="project-1" />
-        </Wrapper>,
-      );
-    });
-
-    expect(await screen.findByText('delivered')).toBeInTheDocument();
-    expect(await screen.findByText('queued')).toBeInTheDocument();
-    expect(await screen.findByText('failed')).toBeInTheDocument();
-  });
-
-  it('shows error message for failed messages', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageActivityList projectId="project-1" />
-        </Wrapper>,
-      );
-    });
-
-    expect(await screen.findByText(/Error: No active session/)).toBeInTheDocument();
-  });
-
-  it('shows message source in brackets', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageActivityList projectId="project-1" />
-        </Wrapper>,
-      );
-    });
-
-    expect(await screen.findByText('[epic.assigned]')).toBeInTheDocument();
-    expect(await screen.findByText('[chat.message]')).toBeInTheDocument();
-  });
-
-  it('shows agent name with arrow indicator', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageActivityList projectId="project-1" />
-        </Wrapper>,
-      );
-    });
-
-    // T2-FIX: Use findAllByText since "Test Agent" appears in multiple batch groups
-    const testAgentLabels = await screen.findAllByText('→ Test Agent');
-    expect(testAgentLabels.length).toBeGreaterThan(0);
-    expect(await screen.findByText('→ Another Agent')).toBeInTheDocument();
   });
 
   it('calls onMessageClick when message row is clicked', async () => {
@@ -352,20 +299,6 @@ describe('MessageActivityList', () => {
         queryKey: ['messages', 'project-1'],
       });
     });
-  });
-
-  it('shows total message count', async () => {
-    const { Wrapper } = createWrapper();
-
-    await act(async () => {
-      render(
-        <Wrapper>
-          <MessageActivityList projectId="project-1" />
-        </Wrapper>,
-      );
-    });
-
-    expect(await screen.findByText(/4 total/)).toBeInTheDocument();
   });
 
   it('truncates long message text', async () => {

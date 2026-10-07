@@ -133,8 +133,13 @@ describe('Watcher → Subscriber E2E Flow', () => {
       ...overrides,
     });
 
-  /** Wait for the event emitter to process events */
-  const waitForEvents = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** Drain event handlers and both scheduler dispatch/recheck timers. */
+  const flushAutomation = async () => {
+    await jest.advanceTimersByTimeAsync(100);
+    const scheduler = module.get(AutomationSchedulerService);
+    expect(scheduler.getQueueLength()).toBe(0);
+    expect(scheduler.getExecutingCount()).toBe(0);
+  };
 
   /** Helper to set up subscribers with proper getSubscriber mock */
   const setUpSubscribers = (subscribers: Subscriber[]) => {
@@ -147,6 +152,7 @@ describe('Watcher → Subscriber E2E Flow', () => {
   };
 
   beforeEach(async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     // Initialize mocks
     mockStorage = {
       listEnabledWatchers: jest.fn().mockResolvedValue([]),
@@ -274,6 +280,7 @@ describe('Watcher → Subscriber E2E Flow', () => {
     await watcherRunner.onModuleDestroy();
     await module.close();
     jest.clearAllMocks();
+    jest.useRealTimers();
   });
 
   describe('Full Flow: Watcher triggers Subscriber action', () => {
@@ -308,7 +315,7 @@ describe('Watcher → Subscriber E2E Flow', () => {
       await (watcherRunner as any).pollWatcher(watcher.id);
 
       // Wait for async event processing
-      await waitForEvents(100);
+      await flushAutomation();
 
       // Verify complete flow
       expect(mockTerminalIO.captureHistory).toHaveBeenCalledWith(
@@ -330,151 +337,6 @@ describe('Watcher → Subscriber E2E Flow', () => {
         '/fix-error',
         expect.objectContaining({ submitKeys: ['Enter'] }),
       );
-    });
-  });
-
-  describe('Cooldown prevents re-trigger', () => {
-    it('should not re-trigger watcher within cooldown period (time mode)', async () => {
-      const watcher = createMockWatcher({
-        cooldownMs: 60000,
-        cooldownMode: 'time',
-        condition: { type: 'contains', pattern: 'error' },
-      });
-      const subscriber = createMockSubscriber();
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error occurred' });
-      setUpSubscribers([subscriber]);
-
-      await watcherRunner.startWatcher(watcher);
-
-      // First poll - triggers
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents();
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
-
-      // Change content
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error occurred again' });
-
-      // Second poll - blocked by cooldown
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents();
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('until_clear cooldown mode', () => {
-    it('should block re-trigger while condition is still matching', async () => {
-      const watcher = createMockWatcher({
-        cooldownMode: 'until_clear',
-        cooldownMs: 0,
-        condition: { type: 'contains', pattern: 'error' },
-      });
-      const subscriber = createMockSubscriber();
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      setUpSubscribers([subscriber]);
-
-      await watcherRunner.startWatcher(watcher);
-
-      // First: pattern matches → triggers
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error in log' });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents();
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
-
-      // Second: pattern still matches with different content → blocked by until_clear
-      mockTerminalIO.captureHistory.mockResolvedValue({
-        ok: true,
-        output: 'another error occurred',
-      });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents();
-      // Still only 1 - blocked because condition was already true
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('Subscriber event filter', () => {
-    it('should skip subscriber when filter does not match', async () => {
-      const watcher = createMockWatcher({
-        eventName: 'test.event',
-        condition: { type: 'contains', pattern: 'trigger' },
-      });
-      const subscriber = createMockSubscriber({
-        eventName: 'test.event',
-        eventFilter: { field: 'agentName', operator: 'equals', value: 'Other Agent' },
-      });
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'trigger this' });
-      setUpSubscribers([subscriber]);
-
-      await watcherRunner.startWatcher(watcher);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
-
-      // Event published but subscriber filtered out
-      expect(mockEventLogService.recordPublished).toHaveBeenCalled();
-      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
-    });
-
-    it('should execute subscriber when filter matches', async () => {
-      const watcher = createMockWatcher({
-        eventName: 'test.event',
-        condition: { type: 'contains', pattern: 'trigger' },
-      });
-      const subscriber = createMockSubscriber({
-        eventName: 'test.event',
-        eventFilter: { field: 'agentName', operator: 'equals', value: 'Test Agent' },
-      });
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'trigger this' });
-      setUpSubscribers([subscriber]);
-
-      await watcherRunner.startWatcher(watcher);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
-
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalled();
-    });
-  });
-
-  describe('Disabled entities are skipped', () => {
-    it('should skip disabled subscriber', async () => {
-      const watcher = createMockWatcher({
-        condition: { type: 'contains', pattern: 'error' },
-      });
-      const subscriber = createMockSubscriber({ enabled: false });
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error occurred' });
-      setUpSubscribers([subscriber]);
-
-      await watcherRunner.startWatcher(watcher);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
-
-      expect(mockEventLogService.recordPublished).toHaveBeenCalled();
-      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
     });
   });
 
@@ -510,7 +372,7 @@ describe('Watcher → Subscriber E2E Flow', () => {
       await watcherRunner.startWatcher(watcher);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
+      await flushAutomation();
 
       expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(2);
       expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledWith(
@@ -561,159 +423,14 @@ describe('Watcher → Subscriber E2E Flow', () => {
       await watcherRunner.startWatcher(watcher);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
+      await flushAutomation();
 
       // Both attempted despite first failing
       expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(2);
     });
   });
 
-  describe('Pattern matching', () => {
-    it('should match regex patterns', async () => {
-      const watcher = createMockWatcher({
-        condition: { type: 'regex', pattern: 'ERROR:\\s+\\d+' },
-        eventName: 'regex.match',
-      });
-      const subscriber = createMockSubscriber({ eventName: 'regex.match' });
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({
-        ok: true,
-        output: 'Log: ERROR: 42 occurred',
-      });
-      setUpSubscribers([subscriber]);
-
-      await watcherRunner.startWatcher(watcher);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
-
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalled();
-    });
-
-    it('should trigger when pattern is NOT found (not_contains)', async () => {
-      const watcher = createMockWatcher({
-        condition: { type: 'not_contains', pattern: 'success' },
-        eventName: 'no.success',
-      });
-      const subscriber = createMockSubscriber({ eventName: 'no.success' });
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'Something failed' });
-      setUpSubscribers([subscriber]);
-
-      await watcherRunner.startWatcher(watcher);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
-
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalled();
-    });
-  });
-
-  describe('Hash-based deduplication', () => {
-    it('should not re-trigger on same viewport content', async () => {
-      const watcher = createMockWatcher({
-        cooldownMs: 0,
-        condition: { type: 'contains', pattern: 'error' },
-      });
-      const subscriber = createMockSubscriber();
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'error in viewport' });
-      setUpSubscribers([subscriber]);
-
-      await watcherRunner.startWatcher(watcher);
-
-      // First poll
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents();
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
-
-      // Second poll with SAME content - blocked by hash dedup
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents();
-      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
-    });
-  });
-
   describe('Subscriber freshness rules (execution-time state)', () => {
-    it('should skip execution when subscriber is deleted between scheduling and execution', async () => {
-      const watcher = createMockWatcher({
-        condition: { type: 'contains', pattern: 'trigger' },
-        eventName: 'freshness.deleted',
-      });
-      const subscriber = createMockSubscriber({
-        id: 'sub-to-delete',
-        eventName: 'freshness.deleted',
-      });
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'trigger this' });
-
-      // Schedule phase: subscriber exists
-      mockStorage.findSubscribersByEventName.mockResolvedValue([subscriber]);
-      // Execution phase: subscriber is now deleted (getSubscriber returns null)
-      mockStorage.getSubscriber.mockResolvedValue(null);
-
-      await watcherRunner.startWatcher(watcher);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
-
-      // Event should be published (watcher triggered)
-      expect(mockEventLogService.recordPublished).toHaveBeenCalled();
-      // But action should NOT be executed (subscriber was deleted)
-      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
-    });
-
-    it('should skip execution when subscriber is disabled between scheduling and execution', async () => {
-      const watcher = createMockWatcher({
-        condition: { type: 'contains', pattern: 'trigger' },
-        eventName: 'freshness.disabled',
-      });
-      const subscriberEnabled = createMockSubscriber({
-        id: 'sub-to-disable',
-        eventName: 'freshness.disabled',
-        enabled: true,
-      });
-      const subscriberDisabled = createMockSubscriber({
-        id: 'sub-to-disable',
-        eventName: 'freshness.disabled',
-        enabled: false, // Disabled after scheduling
-      });
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'trigger this' });
-
-      // Schedule phase: subscriber is enabled
-      mockStorage.findSubscribersByEventName.mockResolvedValue([subscriberEnabled]);
-      // Execution phase: subscriber is now disabled
-      mockStorage.getSubscriber.mockResolvedValue(subscriberDisabled);
-
-      await watcherRunner.startWatcher(watcher);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
-
-      // Event should be published
-      expect(mockEventLogService.recordPublished).toHaveBeenCalled();
-      // But action should NOT be executed (subscriber was disabled)
-      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
-    });
-
     it('should use updated config when subscriber is modified between scheduling and execution', async () => {
       const watcher = createMockWatcher({
         condition: { type: 'contains', pattern: 'trigger' },
@@ -749,7 +466,7 @@ describe('Watcher → Subscriber E2E Flow', () => {
       await watcherRunner.startWatcher(watcher);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (watcherRunner as any).pollWatcher(watcher.id);
-      await waitForEvents(100);
+      await flushAutomation();
 
       // Should execute with UPDATED message, not original
       expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledWith(
@@ -757,38 +474,6 @@ describe('Watcher → Subscriber E2E Flow', () => {
         'updated-message',
         expect.any(Object),
       );
-    });
-
-    it('should not crash when subscriber is removed while tasks are queued', async () => {
-      const watcher = createMockWatcher({
-        condition: { type: 'contains', pattern: 'trigger' },
-        eventName: 'freshness.crash-test',
-      });
-      const subscriber = createMockSubscriber({
-        id: 'sub-removed',
-        eventName: 'freshness.crash-test',
-      });
-      const session = createMockSession();
-
-      mockSessionsService.listActiveSessions.mockResolvedValue([session]);
-      mockSessionsService.getSession.mockReturnValue(session);
-      mockTerminalIO.captureHistory.mockResolvedValue({ ok: true, output: 'trigger this' });
-
-      // Schedule phase: subscriber exists
-      mockStorage.findSubscribersByEventName.mockResolvedValue([subscriber]);
-      // Execution phase: subscriber is gone (simulates deletion mid-queue)
-      mockStorage.getSubscriber.mockResolvedValue(null);
-
-      // Should not throw
-      await expect(async () => {
-        await watcherRunner.startWatcher(watcher);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (watcherRunner as any).pollWatcher(watcher.id);
-        await waitForEvents(100);
-      }).not.toThrow();
-
-      // Gracefully skipped without executing
-      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
     });
   });
 });

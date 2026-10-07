@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 /**
  * Persistence of the managed Docker exclusions in the settings map: a
  * changed or empty selection recomputes them, they survive an app restart,
@@ -6,8 +7,6 @@
  */
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import {
   FileSyncManagedExclusionsStore,
   InvalidManagedExclusionsError,
@@ -16,11 +15,7 @@ import {
 const SETTINGS_KEY = 'fileSync.managedExclusions';
 
 function openStore(): { store: FileSyncManagedExclusionsStore; sqlite: Database.Database } {
-  const sqlite = new Database(':memory:');
-  sqlite.pragma('journal_mode = WAL');
-  const db = drizzle(sqlite);
-  sqlite.pragma('foreign_keys = OFF');
-  migrate(db, { migrationsFolder: join(__dirname, '../../../drizzle') });
+  const { sqlite, db } = createTestDatabase();
   sqlite.pragma('foreign_keys = ON');
   return { store: new FileSyncManagedExclusionsStore(db), sqlite };
 }

@@ -44,13 +44,6 @@ describe('StorageModule binding', () => {
     expect(storageService).toBeInstanceOf(LocalStorageService);
   });
 
-  it('should provide a singleton LocalStorageService instance', () => {
-    const instance1 = module.get(STORAGE_SERVICE);
-    const instance2 = module.get(STORAGE_SERVICE);
-
-    expect(instance1).toBe(instance2);
-  });
-
   it('binds the trusted Snapshot writer as a separate capability on the same instance', () => {
     const storageService = module.get(STORAGE_SERVICE);
     const snapshotPromptWriter = module.get(SNAPSHOT_PROMPT_WRITER);

@@ -4,14 +4,11 @@ import { Badge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
-import {
-  DEFAULT_FILE_SYNC_IGNORES,
-  IGNORE_PATTERNS_MAX,
-  IGNORE_PATTERN_MAX_LENGTH,
-} from '@/modules/file-sync/file-sync.dto';
+import { DEFAULT_FILE_SYNC_IGNORES } from '@/modules/file-sync/file-sync.dto';
+import { ignorePatternProblem } from '@/modules/file-sync/ignore-pattern-matcher';
 import type { IgnoreDraft } from './connect-ignores';
 
-/** The project's ignore patterns as removable chips. Edits stay local until Connect. */
+/** The project's ignore patterns as removable chips. Edits stay local until saved. */
 export function IgnoreListEditor({
   list,
   disabled,
@@ -27,14 +24,8 @@ export function IgnoreListEditor({
   const add = (event: FormEvent) => {
     event.preventDefault();
     const trimmed = pattern.trim();
-    if (!trimmed) return;
-    if (list.includes(trimmed)) return setProblem(`${trimmed} is already in the list.`);
-    if (trimmed.length > IGNORE_PATTERN_MAX_LENGTH) {
-      return setProblem(`A pattern can have at most ${IGNORE_PATTERN_MAX_LENGTH} characters.`);
-    }
-    if (list.length >= IGNORE_PATTERNS_MAX) {
-      return setProblem(`The list can hold at most ${IGNORE_PATTERNS_MAX} patterns.`);
-    }
+    const issue = ignorePatternProblem(list, trimmed);
+    if (issue) return setProblem(issue);
     setProblem(null);
     setPattern('');
     onChange({ list: [...list, trimmed], restored: false });

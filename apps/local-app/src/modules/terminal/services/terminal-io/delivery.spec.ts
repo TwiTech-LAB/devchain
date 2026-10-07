@@ -27,7 +27,21 @@ function makeService(followNoteEnabled = true) {
   return { fake, promptState, svc };
 }
 
+async function advanceDelivery<T>(pending: Promise<T>): Promise<T> {
+  // Attach rejection handling before timers run, including paths asserted with rejects.
+  const observed = pending.then(
+    (value) => ({ ok: true as const, value }),
+    (error) => ({ ok: false as const, error }),
+  );
+  await jest.advanceTimersByTimeAsync(10000);
+  const result = await observed;
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
 describe('TerminalIOService delivery', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
   describe('deliver', () => {
     it('sends bracketed-paste via load-buffer + paste-buffer argv sequence', async () => {
       const { fake, svc } = makeService();
@@ -48,9 +62,10 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'success' });
 
       const opts: DeliveryOptions = { agentId: 'agent-1', confirm: true };
-      const result = await svc.deliver(target, 'hello', opts);
+      const result = await advanceDelivery(svc.deliver(target, 'hello', opts));
 
       expect(result.confirmed).toBe(true);
+      expect(result.method).toBe('nonce');
       expect(result.retryCount).toBe(0);
 
       const loadBufferCall = fake.calls.find((c) => c.argv[1] === 'load-buffer');
@@ -68,31 +83,6 @@ describe('TerminalIOService delivery', () => {
       expect(sendKeysCall!.argv).toContain('Enter');
     });
 
-    it('3-tier confirmation: nonce found returns nonce method', async () => {
-      const { fake, svc } = makeService();
-      // baseline
-      fake.enqueueResponse({ type: 'success', stdout: 'baseline' });
-      // load-buffer, paste-buffer, delete-buffer
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-      // confirmation poll — nonce found
-      fake.enqueueResponse({
-        type: 'success',
-        stdout: `output [MsgId:${NONCE}]`,
-      });
-      // send-keys
-      fake.enqueueResponse({ type: 'success' });
-
-      const result = await svc.deliver(target, 'msg', {
-        agentId: 'a1',
-        confirm: true,
-      });
-
-      expect(result.confirmed).toBe(true);
-      expect(result.method).toBe('nonce');
-    });
-
     it('confirmed-path retry success: first sendKeys fails, second succeeds', async () => {
       const { fake, svc } = makeService();
       fake.enqueueResponse({ type: 'success', stdout: '' });
@@ -105,7 +95,9 @@ describe('TerminalIOService delivery', () => {
       // submit-key retry succeeds
       fake.enqueueResponse({ type: 'success' });
 
-      const result = await svc.deliver(target, 'msg', { agentId: 'a1', confirm: true });
+      const result = await advanceDelivery(
+        svc.deliver(target, 'msg', { agentId: 'a1', confirm: true }),
+      );
 
       expect(result.confirmed).toBe(true);
       expect(result.method).toBe('nonce');
@@ -124,9 +116,9 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'failure', stderr: 'fail1' });
       fake.enqueueResponse({ type: 'failure', stderr: 'fail2' });
 
-      await expect(svc.deliver(target, 'msg', { agentId: 'a1', confirm: true })).rejects.toThrow(
-        /Failed to send keys/,
-      );
+      await expect(
+        advanceDelivery(svc.deliver(target, 'msg', { agentId: 'a1', confirm: true })),
+      ).rejects.toThrow(/Failed to send keys/);
     });
 
     it('unconfirmed-path retry success: first submit fails, second succeeds', async () => {
@@ -140,11 +132,13 @@ describe('TerminalIOService delivery', () => {
       // submit-key retry succeeds
       fake.enqueueResponse({ type: 'success' });
 
-      const result = await svc.deliver(target, 'msg', {
-        agentId: 'a1',
-        confirm: false,
-        postPasteDelayMs: 0,
-      });
+      const result = await advanceDelivery(
+        svc.deliver(target, 'msg', {
+          agentId: 'a1',
+          confirm: false,
+          postPasteDelayMs: 0,
+        }),
+      );
 
       expect(result.confirmed).toBe(true);
       const submitCalls = fake.calls.filter((c) => c.argv[1] === 'send-keys');
@@ -157,7 +151,7 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'failure', stderr: 'session gone' });
 
       await expect(
-        svc.deliver(target, 'msg', { agentId: 'a1', preKeys: ['Escape'] }),
+        advanceDelivery(svc.deliver(target, 'msg', { agentId: 'a1', preKeys: ['Escape'] })),
       ).rejects.toThrow(/Failed to send keys/);
 
       // Only 1 call — no retry for pre-keys
@@ -173,11 +167,13 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'success' });
       fake.enqueueResponse({ type: 'success', stdout: `[MsgId:${NONCE}]` });
 
-      const result = await svc.deliver(target, 'msg', {
-        agentId: 'a1',
-        confirm: true,
-        submitKeys: [],
-      });
+      const result = await advanceDelivery(
+        svc.deliver(target, 'msg', {
+          agentId: 'a1',
+          confirm: true,
+          submitKeys: [],
+        }),
+      );
 
       expect(result.confirmed).toBe(true);
       const submitCalls = fake.calls.filter((c) => c.argv[1] === 'send-keys');
@@ -200,10 +196,12 @@ describe('TerminalIOService delivery', () => {
       // send-keys
       fake.enqueueResponse({ type: 'success' });
 
-      const result = await svc.deliver(target, 'msg', {
-        agentId: 'a1',
-        confirm: true,
-      });
+      const result = await advanceDelivery(
+        svc.deliver(target, 'msg', {
+          agentId: 'a1',
+          confirm: true,
+        }),
+      );
 
       expect(result.confirmed).toBe(true);
       expect(result.method).toBe('paste_indicator');
@@ -235,12 +233,14 @@ describe('TerminalIOService delivery', () => {
       // send-keys (Enter)
       fake.enqueueResponse({ type: 'success' });
 
-      const result = await svc.deliver(target, 'msg', {
-        agentId: 'a1',
-        confirm: true,
-        confirmTimeoutMs: 50,
-        maxAttempts: 2,
-      });
+      const result = await advanceDelivery(
+        svc.deliver(target, 'msg', {
+          agentId: 'a1',
+          confirm: true,
+          confirmTimeoutMs: 50,
+          maxAttempts: 2,
+        }),
+      );
 
       expect(result.retryCount).toBe(1);
       expect(result.confirmed).toBe(true);
@@ -270,54 +270,41 @@ describe('TerminalIOService delivery', () => {
       // Fallback Enter
       fake.enqueueResponse({ type: 'success' });
 
-      const result = await svc.deliver(target, 'msg', {
-        agentId: 'a1',
-        confirm: true,
-        confirmTimeoutMs: 50,
-        maxAttempts: 2,
-      });
+      const result = await advanceDelivery(
+        svc.deliver(target, 'msg', {
+          agentId: 'a1',
+          confirm: true,
+          confirmTimeoutMs: 50,
+          maxAttempts: 2,
+        }),
+      );
 
       expect(result.confirmed).toBe(false);
       expect(result.retryCount).toBe(1);
     }, 15000);
 
-    it('pre-keys fail-fast: no retry on pre-key failure', async () => {
+    it('enforces the 500 ms per-agent gap between consecutive deliveries', async () => {
       const { fake, svc } = makeService();
-      // send-keys (pre-key) fails
-      fake.enqueueResponse({ type: 'failure', stderr: 'session not found' });
-
-      await expect(
-        svc.deliver(target, 'msg', {
-          agentId: 'a1',
-          preKeys: ['Escape'],
-        }),
-      ).rejects.toThrow(/Failed to send keys/);
-
-      expect(fake.calls).toHaveLength(1);
-    });
-
-    it('enforces per-agent gap between consecutive deliver calls', async () => {
-      const { fake, svc } = makeService();
-
-      for (let i = 0; i < 20; i++) {
-        fake.enqueueResponse({ type: 'success', stdout: '' });
-      }
-
-      const start = Date.now();
       await svc.deliver(target, 'first', {
         agentId: 'same-agent',
         confirm: false,
         postPasteDelayMs: 0,
       });
-      await svc.deliver(target, 'second', {
-        agentId: 'same-agent',
-        confirm: false,
-        postPasteDelayMs: 0,
-      });
-      const elapsed = Date.now() - start;
-
-      expect(elapsed).toBeGreaterThanOrEqual(400);
-    }, 10000);
+      const before = fake.calls.length;
+      let settled = false;
+      const second = svc
+        .deliver(target, 'second', { agentId: 'same-agent', confirm: false, postPasteDelayMs: 0 })
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+      await jest.advanceTimersByTimeAsync(499);
+      expect(settled).toBe(false);
+      expect(fake.calls).toHaveLength(before);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(await second).toMatchObject({ confirmed: true });
+      expect(fake.calls.filter((call) => call.argv[1] === 'paste-buffer')).toHaveLength(2);
+    });
   });
 
   describe('deliverImmediate', () => {
@@ -343,12 +330,14 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'success' });
       fake.enqueueResponse({ type: 'success' });
 
-      await svc.deliverImmediate(target, 'first line\nsecond line', {
-        bracketed: true,
-        submitKeys: [],
-        confirm: false,
-        postPasteDelayMs: 0,
-      });
+      await advanceDelivery(
+        svc.deliverImmediate(target, 'first line\nsecond line', {
+          bracketed: true,
+          submitKeys: [],
+          confirm: false,
+          postPasteDelayMs: 0,
+        }),
+      );
 
       const loadBufferCall = runSpy.mock.calls.find(
         ([options]) => options.argv[1] === 'load-buffer',
@@ -374,11 +363,13 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'success', stdout: `output [MsgId:${NONCE}]` });
       fake.enqueueResponse({ type: 'success' });
 
-      const result = await svc.deliverGuarded(
-        target,
-        'guarded',
-        { agentId: 'a1', confirm: true, postPasteDelayMs: 0 },
-        quietSnapshot(promptState),
+      const result = await advanceDelivery(
+        svc.deliverGuarded(
+          target,
+          'guarded',
+          { agentId: 'a1', confirm: true, postPasteDelayMs: 0 },
+          quietSnapshot(promptState),
+        ),
       );
 
       expect(result).toEqual(
@@ -410,17 +401,19 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'success', stdout: `output [MsgId:${NONCE}]` });
       fake.enqueueResponse({ type: 'success' });
 
-      const result = await svc.deliverGuarded(
-        target,
-        'guarded retry',
-        {
-          agentId: 'a1',
-          confirm: true,
-          confirmTimeoutMs: 0,
-          maxAttempts: 2,
-          postPasteDelayMs: 0,
-        },
-        quietSnapshot(promptState),
+      const result = await advanceDelivery(
+        svc.deliverGuarded(
+          target,
+          'guarded retry',
+          {
+            agentId: 'a1',
+            confirm: true,
+            confirmTimeoutMs: 0,
+            maxAttempts: 2,
+            postPasteDelayMs: 0,
+          },
+          quietSnapshot(promptState),
+        ),
       );
 
       expect(result).toEqual(
@@ -459,7 +452,7 @@ describe('TerminalIOService delivery', () => {
       const { fake, svc } = makeService();
       enqueueConfirmedPaste(fake);
 
-      const result = await svc.deliver(target, 'hello', NOTE_OPTS);
+      const result = await advanceDelivery(svc.deliver(target, 'hello', NOTE_OPTS));
 
       expect(result.confirmed).toBe(true);
       expect(fake.calls.map((c) => c.argv[1])).toEqual([
@@ -484,7 +477,7 @@ describe('TerminalIOService delivery', () => {
         return run(opts);
       });
 
-      await svc.deliver(target, 'hello', { ...NOTE_OPTS, confirm: false });
+      await advanceDelivery(svc.deliver(target, 'hello', { ...NOTE_OPTS, confirm: false }));
 
       expect(writtenAt).toHaveLength(2);
       expect(writtenAt[1] - writtenAt[0]).toBeGreaterThanOrEqual(95);
@@ -494,7 +487,7 @@ describe('TerminalIOService delivery', () => {
       const { fake, svc } = makeService();
       enqueuePaste(fake, { type: 'failure', stderr: 'capture failed' });
 
-      const result = await svc.deliver(target, 'hello', NOTE_OPTS);
+      const result = await advanceDelivery(svc.deliver(target, 'hello', NOTE_OPTS));
 
       expect(result.confirmed).toBe(true);
       expect(noteCalls(fake)).toHaveLength(1);
@@ -504,12 +497,14 @@ describe('TerminalIOService delivery', () => {
     it('types the note once when confirmation is off', async () => {
       const { fake, svc } = makeService();
 
-      await svc.deliver(target, 'hello', { ...NOTE_OPTS, confirm: false });
-      await svc.deliverImmediate(target, 'hello', {
-        confirm: false,
-        postPasteDelayMs: 0,
-        followNote: true,
-      });
+      await advanceDelivery(svc.deliver(target, 'hello', { ...NOTE_OPTS, confirm: false }));
+      await advanceDelivery(
+        svc.deliverImmediate(target, 'hello', {
+          confirm: false,
+          postPasteDelayMs: 0,
+          followNote: true,
+        }),
+      );
 
       expect(fake.calls.map((c) => c.argv[1])).toEqual([
         'load-buffer',
@@ -535,11 +530,13 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'success' }); // Escape
       enqueueConfirmedPaste(fake);
 
-      const result = await svc.deliver(target, 'hello', {
-        ...NOTE_OPTS,
-        confirmTimeoutMs: 0,
-        maxAttempts: 2,
-      });
+      const result = await advanceDelivery(
+        svc.deliver(target, 'hello', {
+          ...NOTE_OPTS,
+          confirmTimeoutMs: 0,
+          maxAttempts: 2,
+        }),
+      );
 
       expect(result).toEqual(expect.objectContaining({ confirmed: true, retryCount: 1 }));
       expect(noteCalls(fake)).toHaveLength(1);
@@ -558,7 +555,7 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'failure', stderr: 'transient' }); // Enter
       fake.enqueueResponse({ type: 'success' }); // Enter retry
 
-      const result = await svc.deliver(target, 'hello', NOTE_OPTS);
+      const result = await advanceDelivery(svc.deliver(target, 'hello', NOTE_OPTS));
 
       expect(result.confirmed).toBe(true);
       expect(noteCalls(fake)).toHaveLength(1);
@@ -571,7 +568,7 @@ describe('TerminalIOService delivery', () => {
       fake.enqueueResponse({ type: 'failure', stderr: 'note failed' }); // note
       fake.enqueueResponse({ type: 'success' }); // Enter
 
-      const result = await svc.deliver(target, 'hello', NOTE_OPTS);
+      const result = await advanceDelivery(svc.deliver(target, 'hello', NOTE_OPTS));
 
       expect(result.confirmed).toBe(true);
       expect(noteCalls(fake)).toHaveLength(1);
@@ -585,11 +582,13 @@ describe('TerminalIOService delivery', () => {
         if (attempt < 1) fake.enqueueResponse({ type: 'success' }); // Escape
       }
 
-      const result = await svc.deliver(target, 'hello', {
-        ...NOTE_OPTS,
-        confirmTimeoutMs: 0,
-        maxAttempts: 2,
-      });
+      const result = await advanceDelivery(
+        svc.deliver(target, 'hello', {
+          ...NOTE_OPTS,
+          confirmTimeoutMs: 0,
+          maxAttempts: 2,
+        }),
+      );
 
       expect(result.confirmed).toBe(false);
       expect(noteCalls(fake)).toHaveLength(0);
@@ -608,13 +607,17 @@ describe('TerminalIOService delivery', () => {
     ])('does not type the note when %s', async (_label, text, options) => {
       const { fake, svc } = makeService();
 
-      await svc.deliver(target, text, {
-        agentId: 'a1',
-        confirm: false,
-        postPasteDelayMs: 0,
-        ...options,
-      });
-      await svc.deliverImmediate(target, text, { confirm: false, postPasteDelayMs: 0, ...options });
+      await advanceDelivery(
+        svc.deliver(target, text, {
+          agentId: 'a1',
+          confirm: false,
+          postPasteDelayMs: 0,
+          ...options,
+        }),
+      );
+      await advanceDelivery(
+        svc.deliverImmediate(target, text, { confirm: false, postPasteDelayMs: 0, ...options }),
+      );
 
       expect(fake.calls.filter((c) => c.argv[1] === 'paste-buffer')).toHaveLength(2);
       expect(noteCalls(fake)).toHaveLength(0);
@@ -623,11 +626,13 @@ describe('TerminalIOService delivery', () => {
     it('types the note for a message that only mentions a command', async () => {
       const { fake, svc } = makeService();
 
-      await svc.deliverImmediate(target, 'please run /compact', {
-        confirm: false,
-        postPasteDelayMs: 0,
-        followNote: true,
-      });
+      await advanceDelivery(
+        svc.deliverImmediate(target, 'please run /compact', {
+          confirm: false,
+          postPasteDelayMs: 0,
+          followNote: true,
+        }),
+      );
 
       expect(noteCalls(fake)).toHaveLength(1);
     });
@@ -639,11 +644,8 @@ describe('TerminalIOService delivery', () => {
       const snapshot = promptState.getQuietSnapshot(target.name)!;
       promptState.recordExecutedInput(target.name);
 
-      const result = await svc.deliverGuarded(
-        target,
-        'hello',
-        { ...NOTE_OPTS, confirm: false },
-        snapshot,
+      const result = await advanceDelivery(
+        svc.deliverGuarded(target, 'hello', { ...NOTE_OPTS, confirm: false }, snapshot),
       );
 
       expect(result).toEqual({ deferred: 'human_draft' });
@@ -657,61 +659,32 @@ describe('TerminalIOService delivery', () => {
     });
 
     describe('settings gate', () => {
-      it('deliver does not type the note when the switch is off', async () => {
-        const { fake, svc } = makeService(false);
-
-        const result = await svc.deliver(target, 'hello', { ...NOTE_OPTS, confirm: false });
-
-        expect(result.confirmed).toBe(true);
-        expect(noteCalls(fake)).toHaveLength(0);
-        expect(fake.calls.map((c) => c.argv[1])).toEqual([
-          'load-buffer',
-          'paste-buffer',
-          'delete-buffer',
-          'send-keys',
-        ]);
-      });
-
-      it('deliverImmediate does not type the note when the switch is off', async () => {
-        const { fake, svc } = makeService(false);
-
-        await svc.deliverImmediate(target, 'hello', {
-          confirm: false,
-          postPasteDelayMs: 0,
-          followNote: true,
-        });
-
-        expect(noteCalls(fake)).toHaveLength(0);
-        expect(fake.calls.map((c) => c.argv[1])).toEqual([
-          'load-buffer',
-          'paste-buffer',
-          'delete-buffer',
-          'send-keys',
-        ]);
-      });
-
-      it('deliverGuarded does not type the note when the switch is off', async () => {
-        const { fake, promptState, svc } = makeService(false);
-        const draft = promptState.recordPromptText(target.name);
-        promptState.transitionToAwaiting(target.name, draft.generation);
-        const snapshot = promptState.getQuietSnapshot(target.name)!;
-
-        const result = await svc.deliverGuarded(
-          target,
-          'hello',
-          { ...NOTE_OPTS, confirm: false },
-          snapshot,
-        );
-
-        expect(result).toEqual(expect.objectContaining({ confirmed: true }));
-        expect(noteCalls(fake)).toHaveLength(0);
-        expect(fake.calls.map((c) => c.argv[1])).toEqual([
-          'load-buffer',
-          'paste-buffer',
-          'delete-buffer',
-          'send-keys',
-        ]);
-      });
+      it.each(['deliver', 'deliverImmediate', 'deliverGuarded'] as const)(
+        '%s omits the follow note when disabled',
+        async (method) => {
+          const { fake, promptState, svc } = makeService(false);
+          const options = { ...NOTE_OPTS, confirm: false, postPasteDelayMs: 0, followNote: true };
+          if (method === 'deliverGuarded') {
+            const draft = promptState.recordPromptText(target.name);
+            promptState.transitionToAwaiting(target.name, draft.generation);
+            const snapshot = promptState.getQuietSnapshot(target.name)!;
+            expect(
+              await advanceDelivery(svc.deliverGuarded(target, 'hello', options, snapshot)),
+            ).toMatchObject({ confirmed: true });
+          } else {
+            expect(await advanceDelivery(svc[method](target, 'hello', options))).toMatchObject({
+              confirmed: true,
+            });
+          }
+          expect(noteCalls(fake)).toHaveLength(0);
+          expect(fake.calls.map((c) => c.argv[1])).toEqual([
+            'load-buffer',
+            'paste-buffer',
+            'delete-buffer',
+            'send-keys',
+          ]);
+        },
+      );
     });
   });
 

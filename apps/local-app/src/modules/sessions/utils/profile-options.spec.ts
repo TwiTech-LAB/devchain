@@ -9,75 +9,45 @@ import {
 } from './profile-options';
 
 describe('parseProfileOptions', () => {
-  it('returns empty array for empty input', () => {
-    expect(parseProfileOptions(undefined)).toEqual([]);
-    expect(parseProfileOptions(null)).toEqual([]);
-    expect(parseProfileOptions('')).toEqual([]);
+  it.each([
+    { label: 'empty', inputs: [undefined, null, ''], expected: [] },
+    {
+      label: 'whitespace',
+      inputs: ['--model sonnet --max-tokens 4000'],
+      expected: ['--model', 'sonnet', '--max-tokens', '4000'],
+    },
+    {
+      label: 'quoted',
+      inputs: ['--prompt \'Hello World\' "quoted value"'],
+      expected: ['--prompt', 'Hello World', 'quoted value'],
+    },
+    {
+      label: 'escaped',
+      inputs: ['--flag\\ value "double\\"quote"'],
+      expected: ['--flag value', 'double"quote'],
+    },
+  ])('parses $label arguments', ({ inputs, expected }) => {
+    for (const input of inputs) expect(parseProfileOptions(input)).toEqual(expected);
   });
 
-  it('splits on whitespace', () => {
-    expect(parseProfileOptions('--model sonnet --max-tokens 4000')).toEqual([
-      '--model',
-      'sonnet',
-      '--max-tokens',
-      '4000',
-    ]);
-  });
-
-  it('honors quoted arguments', () => {
-    expect(parseProfileOptions('--prompt \'Hello World\' "quoted value"')).toEqual([
-      '--prompt',
-      'Hello World',
-      'quoted value',
-    ]);
-  });
-
-  it('allows escaped spaces and quotes', () => {
-    expect(parseProfileOptions('--flag\\ value "double\\"quote"')).toEqual([
-      '--flag value',
-      'double"quote',
-    ]);
-  });
-
-  it('rejects control characters', () => {
-    expect(() => parseProfileOptions('bad\nvalue')).toThrow(ProfileOptionsError);
-  });
-
-  it('rejects unterminated quotes', () => {
-    expect(() => parseProfileOptions("--model 'unfinished")).toThrow(ProfileOptionsError);
-  });
+  it.each(['bad\nvalue', "--model 'unfinished"])(
+    'rejects malformed profile options %j',
+    (options) => {
+      expect(() => parseProfileOptions(options)).toThrow(ProfileOptionsError);
+    },
+  );
 });
 
 describe('stripFlag', () => {
-  it('removes the two-token `--flag value` form', () => {
-    expect(stripFlag(['--effort', 'high', '--verbose'], '--effort')).toEqual(['--verbose']);
-  });
-
-  it('removes the single-token `--flag=value` form', () => {
-    expect(stripFlag(['--effort=high', '--verbose'], '--effort')).toEqual(['--verbose']);
-  });
-
-  it('removes every occurrence (both forms) in one pass', () => {
-    expect(
-      stripFlag(['--effort', 'low', '-x', '--effort=high', '--effort', 'max'], '--effort'),
-    ).toEqual(['-x']);
-  });
-
-  it('leaves args untouched when the flag is absent (byte-identical)', () => {
-    const args = ['--model', 'opus', '--verbose'];
-    expect(stripFlag(args, '--effort')).toEqual(args);
-  });
-
-  it('does not strip flags that merely share a prefix', () => {
-    // `--effort-budget` must survive a strip of `--effort`.
-    expect(stripFlag(['--effort-budget', '5', '--effort', 'high'], '--effort')).toEqual([
-      '--effort-budget',
-      '5',
-    ]);
-  });
-
-  it('drops a dangling flag with no following value', () => {
-    expect(stripFlag(['--verbose', '--effort'], '--effort')).toEqual(['--verbose']);
+  it.each([
+    { args: ['--effort', 'high', '--verbose'], expected: ['--verbose'] },
+    { args: ['--effort=high', '--verbose'], expected: ['--verbose'] },
+    { args: ['--effort', 'low', '-x', '--effort=high', '--effort', 'max'], expected: ['-x'] },
+    { args: ['--model', 'opus', '--verbose'], expected: ['--model', 'opus', '--verbose'] },
+    { args: ['--effort-budget', '5', '--effort', 'high'], expected: ['--effort-budget', '5'] },
+    { args: ['--verbose', '--effort'], expected: ['--verbose'] },
+  ])('strips effort flags from $args', ({ args, expected }) => {
+    expect(stripFlag(args, '--effort')).toEqual(expected);
   });
 });
 
@@ -158,16 +128,13 @@ describe('injectModelOverride', () => {
       model: 'new',
       expected: ['--model', 'new', '--verbose', '--flag'],
     },
+    {
+      args: ['--verbose', '-m'],
+      model: 'new-model',
+      expected: ['--model', 'new-model', '--verbose'],
+    },
   ])('rewrites model flags for $args with override $model', ({ args, model, expected }) => {
     expect(injectModelOverride(args, model)).toEqual(expected);
-  });
-
-  it('handles model flag without trailing value', () => {
-    expect(injectModelOverride(['--verbose', '-m'], 'new-model')).toEqual([
-      '--model',
-      'new-model',
-      '--verbose',
-    ]);
   });
 
   it('does not mutate input array', () => {
@@ -182,31 +149,14 @@ describe('injectModelOverride', () => {
 });
 
 describe('extractModelFromArgs', () => {
-  it('extracts model from --model X', () => {
-    expect(extractModelFromArgs(['--model', 'opus'])).toBe('opus');
-  });
-
-  it('extracts model from -m X', () => {
-    expect(extractModelFromArgs(['-m', 'sonnet'])).toBe('sonnet');
-  });
-
-  it('extracts model from --model=X', () => {
-    expect(extractModelFromArgs(['--model=haiku'])).toBe('haiku');
-  });
-
-  it('extracts model from -m=X', () => {
-    expect(extractModelFromArgs(['-m=opus[1m]'])).toBe('opus[1m]');
-  });
-
-  it('returns null when no model flag is present', () => {
-    expect(extractModelFromArgs(['--dangerously-skip-permissions'])).toBeNull();
-  });
-
-  it('returns null for empty args', () => {
-    expect(extractModelFromArgs([])).toBeNull();
-  });
-
-  it('returns null when --model flag has no value', () => {
-    expect(extractModelFromArgs(['--model'])).toBeNull();
+  it.each([
+    { args: ['--model', 'opus'], expected: 'opus' },
+    { args: ['-m', 'sonnet'], expected: 'sonnet' },
+    { args: ['--model=haiku'], expected: 'haiku' },
+    { args: ['-m=opus[1m]'], expected: 'opus[1m]' },
+    { args: ['--dangerously-skip-permissions'], expected: null },
+    { args: ['--model'], expected: null },
+  ])('extracts model from $args', ({ args, expected }) => {
+    expect(extractModelFromArgs(args)).toBe(expected);
   });
 });

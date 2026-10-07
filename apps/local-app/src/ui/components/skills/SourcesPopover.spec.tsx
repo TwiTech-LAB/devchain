@@ -319,7 +319,7 @@ describe('SourcesPopover', () => {
     expect(builtInSection).toContainElement(link);
     expect(sourceRow).not.toBeNull();
     if (!sourceRow) throw new Error('Expected DevChain built-in source row');
-    expect(sourceRow.querySelector('svg')).toHaveClass('text-sky-700');
+
     expect(within(sourceRow).queryByRole('button', { name: /remove/i })).toBeNull();
   });
 

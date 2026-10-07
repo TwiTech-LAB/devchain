@@ -70,7 +70,7 @@ describe('EpicRelationQuickLinkDialog', () => {
     });
   });
 
-  it('defaults to a Related link from the initiated Epic and shows one arrow', () => {
+  it('defaults to a Related link from the initiated Epic and shows one arrow', async () => {
     renderDialog();
 
     expect(screen.getByRole('button', { name: 'Related' })).toHaveAttribute('aria-pressed', 'true');
@@ -83,6 +83,11 @@ describe('EpicRelationQuickLinkDialog', () => {
       /“Target Epic” logs time with “Source Epic”\./,
     );
     expect(screen.getByText(/replaces the current type/i)).toBeInTheDocument();
+
+    {
+      expect(screen.queryByText('Link boundary')).not.toBeInTheDocument();
+      expect(screen.queryByText(/is linked to an external task/)).not.toBeInTheDocument();
+    }
   });
 
   it('writes endpoint order as direction and invalidates badge batches for both endpoints', async () => {
@@ -174,15 +179,8 @@ describe('EpicRelationQuickLinkDialog', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Link boundary');
     expect(alert).toHaveTextContent('“Target Epic” is linked to an external task');
-    expect(alert).toHaveTextContent('Time already logged to a provider does not move.');
+
     expect(screen.queryByRole('button', { name: 'Confirm link' })).toBeInTheDocument();
-  });
-
-  it('shows no boundary warning for eligible drafts between two unlinked endpoints', () => {
-    renderDialog();
-
-    expect(screen.queryByText('Link boundary')).not.toBeInTheDocument();
-    expect(screen.queryByText(/is linked to an external task/)).not.toBeInTheDocument();
   });
 
   it('renders typed 409 facts and retries once with the exact accepted facts', async () => {

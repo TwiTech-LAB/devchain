@@ -18,17 +18,6 @@ describe('epic-relations route warnings', () => {
     { id: 'epic-c', title: 'Gamma' },
   ];
 
-  it('names the target as the logging anchor with source and target semantics', () => {
-    // Source epic-a contributes time; target epic-c includes and logs it, so
-    // the target is named first.
-    const lines = relationRouteChangeWarning(
-      'flip',
-      { sourceEpicId: 'epic-a', targetEpicId: 'epic-c' },
-      endpoints,
-    );
-    expect(lines[0]).toBe('Current route: “Gamma” logs time with “Alpha”.');
-  });
-
   it('states that a replacement removes the old Related pair', () => {
     const lines = relationRouteChangeWarning(
       'replace',

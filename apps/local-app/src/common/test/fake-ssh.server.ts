@@ -1,5 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto';
-import { Server, type AuthContext, type Connection, type ServerChannel } from 'ssh2';
+import { Server, utils, type AuthContext, type Connection, type ServerChannel } from 'ssh2';
 
 export interface FakeSshServer {
   port: number;
@@ -9,11 +8,13 @@ export interface FakeSshServer {
 }
 
 export function hostKey(): string {
-  return generateKeyPairSync('rsa', {
-    modulusLength: 2_048,
-    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
-    publicKeyEncoding: { type: 'pkcs1', format: 'pem' },
-  }).privateKey;
+  // ssh2's generator can strip a leading NUL from an ed25519 public key.
+  // Only parseable fixtures may reach the server's constructor.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const key = utils.generateKeyPairSync('ed25519').private;
+    if (!(utils.parseKey(key) instanceof Error)) return key;
+  }
+  throw new Error('ssh2 did not generate a valid ed25519 fixture');
 }
 
 export async function startFakeSsh(

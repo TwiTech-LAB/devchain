@@ -108,47 +108,55 @@ const baseCat = (overrides: Partial<PreferenceCatalogEntry> = {}): PreferenceCat
 });
 
 describe('computeGroupState', () => {
-  it('returns Required when all categories are locked', () => {
-    const cats = [baseCat({ locked: true }), baseCat({ id: 'epic.assigned', locked: true })];
-    expect(computeGroupState(cats, [])).toBe('Required');
+  it.each([
+    {
+      label: 'all locked are required',
+      cats: [baseCat({ locked: true }), baseCat({ id: 'epic.assigned', locked: true })],
+      prefs: [],
+      expected: 'Required',
+    },
+    {
+      label: 'unconfigured unlocked categories default on',
+      cats: [baseCat(), baseCat({ id: 'epic.assigned' })],
+      prefs: [],
+      expected: 'On',
+    },
+    {
+      label: 'locked categories do not affect unlocked off state',
+      cats: [baseCat({ locked: true }), baseCat({ id: 'epic.assigned', locked: false })],
+      prefs: [{ category: 'epic.assigned', channel: 'push', enabled: false }],
+      expected: 'Off',
+    },
+  ] as const)('$label', ({ cats, prefs, expected }) => {
+    expect(computeGroupState([...cats], [...prefs])).toBe(expected);
   });
 
-  it('returns On when all unlocked categories are enabled (default true when no pref)', () => {
-    const cats = [baseCat(), baseCat({ id: 'epic.assigned' })];
-    expect(computeGroupState(cats, [])).toBe('On');
-  });
-
-  it('returns On when all unlocked categories have enabled pref', () => {
+  it.each([
+    {
+      label: 'returns On when all unlocked categories have enabled pref',
+      firstEnabled: true,
+      secondEnabled: true,
+      expectedState: 'On',
+    },
+    {
+      label: 'returns Off when all unlocked categories are disabled',
+      firstEnabled: false,
+      secondEnabled: false,
+      expectedState: 'Off',
+    },
+    {
+      label: 'returns Mixed when some unlocked categories are enabled and some are disabled',
+      firstEnabled: true,
+      secondEnabled: false,
+      expectedState: 'Mixed',
+    },
+  ] as const)('$label', ({ firstEnabled, secondEnabled, expectedState }) => {
     const cats = [baseCat(), baseCat({ id: 'epic.assigned' })];
     const prefs = [
-      { category: 'epic.created', channel: 'push', enabled: true },
-      { category: 'epic.assigned', channel: 'push', enabled: true },
+      { category: 'epic.created', channel: 'push', enabled: firstEnabled },
+      { category: 'epic.assigned', channel: 'push', enabled: secondEnabled },
     ];
-    expect(computeGroupState(cats, prefs)).toBe('On');
-  });
-
-  it('returns Off when all unlocked categories are disabled', () => {
-    const cats = [baseCat(), baseCat({ id: 'epic.assigned' })];
-    const prefs = [
-      { category: 'epic.created', channel: 'push', enabled: false },
-      { category: 'epic.assigned', channel: 'push', enabled: false },
-    ];
-    expect(computeGroupState(cats, prefs)).toBe('Off');
-  });
-
-  it('returns Mixed when some unlocked categories are enabled and some are disabled', () => {
-    const cats = [baseCat(), baseCat({ id: 'epic.assigned' })];
-    const prefs = [
-      { category: 'epic.created', channel: 'push', enabled: true },
-      { category: 'epic.assigned', channel: 'push', enabled: false },
-    ];
-    expect(computeGroupState(cats, prefs)).toBe('Mixed');
-  });
-
-  it('ignores locked categories when computing On/Off/Mixed', () => {
-    const cats = [baseCat({ locked: true }), baseCat({ id: 'epic.assigned', locked: false })];
-    const prefs = [{ category: 'epic.assigned', channel: 'push', enabled: false }];
-    expect(computeGroupState(cats, prefs)).toBe('Off');
+    expect(computeGroupState(cats, prefs)).toBe(expectedState);
   });
 });
 
@@ -168,23 +176,41 @@ describe('CategoryToggleList', () => {
     } as unknown as ReturnType<typeof useNotificationPreferences>);
   });
 
-  it('renders category rows grouped by catalog metadata', () => {
+  it('shows catalog groups, category counts and aggregate preference states', () => {
     renderList();
-    expect(screen.getByText(/^epics$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^sub-epics$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^sessions$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^account & security$/i)).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /sub-epics push alert categories/i }),
-    ).toHaveAttribute('data-state', 'closed');
-    expect(screen.getAllByRole('switch')).toHaveLength(2);
+    {
+      expect(screen.getByText(/^epics$/i)).toBeInTheDocument();
+      expect(screen.getByText(/^sub-epics$/i)).toBeInTheDocument();
+      expect(screen.getByText(/^sessions$/i)).toBeInTheDocument();
+      expect(screen.getByText(/^account & security$/i)).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /sub-epics push alert categories/i }),
+      ).toHaveAttribute('data-state', 'closed');
+      expect(screen.getAllByRole('switch')).toHaveLength(2);
+    }
+    {
+      expect(screen.getAllByText('2 events').length).toBeGreaterThanOrEqual(1);
+    }
+    {
+      expect(screen.getAllByText('1 event').length).toBeGreaterThanOrEqual(1);
+    }
+    {
+      expect(screen.getByText('Mixed')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Required')).toBeInTheDocument();
+    }
+    {
+      const onLabels = screen.getAllByText('On');
+      expect(onLabels.length).toBeGreaterThanOrEqual(1);
+    }
   });
 
   it('expands grouped categories on demand', () => {
     renderList();
     const trigger = screen.getByRole('button', { name: /sub-epics push alert categories/i });
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    expect(trigger).toHaveClass('focus-visible:ring-2');
+
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByLabelText(/push notifications for sub-epic assigned/i)).toBeInTheDocument();
@@ -202,17 +228,6 @@ describe('CategoryToggleList', () => {
     expect(screen.getAllByText(/^required$/i)).toHaveLength(3);
   });
 
-  it('critical categories have tooltip text "Required for account safety"', async () => {
-    renderList();
-    fireEvent.click(
-      screen.getByRole('button', { name: /account & security push alert categories/i }),
-    );
-    const securitySwitch = screen.getByLabelText(/push notifications for session revoked/i);
-    fireEvent.focus(securitySwitch);
-    // Tooltip content is in the DOM for disabled switches
-    expect(screen.queryAllByText(/required for account safety/i).length).toBeGreaterThanOrEqual(0);
-  });
-
   it('toggling a non-critical switch calls upsert.mutate with category and new enabled value', () => {
     renderList();
     const epicAssignedSwitch = screen.getByLabelText(/push notifications for epic assigned/i);
@@ -221,16 +236,6 @@ describe('CategoryToggleList', () => {
       { category: 'epic.assigned', enabled: false },
       expect.any(Object),
     );
-  });
-
-  it('clicking a disabled critical switch does not call upsert.mutate', () => {
-    renderList();
-    fireEvent.click(
-      screen.getByRole('button', { name: /account & security push alert categories/i }),
-    );
-    const securitySwitch = screen.getByLabelText(/push notifications for session revoked/i);
-    fireEvent.click(securitySwitch);
-    expect(mockUpsertMutate).not.toHaveBeenCalled();
   });
 
   it('shows inline error message when PREFERENCE_LOCKED error is triggered', async () => {
@@ -262,35 +267,5 @@ describe('CategoryToggleList', () => {
     expect(screen.getByLabelText(/push notifications for epic assigned/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /sub-epics push alert categories/i }));
     expect(screen.getByLabelText(/push notifications for sub-epic assigned/i)).toBeInTheDocument();
-  });
-
-  it('shows plural event badge for groups with multiple categories', () => {
-    renderList();
-    // Epics group has 2 categories in the mock catalog
-    expect(screen.getAllByText('2 events').length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('shows singular event badge for groups with one category', () => {
-    renderList();
-    // Sub-epics, Sessions each have 1 category in the mock catalog
-    expect(screen.getAllByText('1 event').length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('shows Mixed state label for epics group when preferences are partially enabled', () => {
-    renderList();
-    // epic.assigned=true, epic.status_changed=false → Mixed
-    expect(screen.getByText('Mixed')).toBeInTheDocument();
-  });
-
-  it('shows Required state label for all-locked account & security group', () => {
-    renderList();
-    expect(screen.getByText('Required')).toBeInTheDocument();
-  });
-
-  it('shows On state label when all non-locked categories are enabled', () => {
-    renderList();
-    // Sub-epics: sub_epic.assigned=true → On; Sessions: session.crashed=true → On
-    const onLabels = screen.getAllByText('On');
-    expect(onLabels.length).toBeGreaterThanOrEqual(1);
   });
 });

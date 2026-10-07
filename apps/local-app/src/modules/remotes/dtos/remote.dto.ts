@@ -1,6 +1,7 @@
 import type { ProviderCliRuntimeReport } from '@devchain/shared';
 import type { DockerRuntime } from '../../core/controllers/docker-runtime';
 import { z } from 'zod';
+import type { VmUserMismatch } from '../vm-user-identity';
 import type {
   Remote,
   RemoteOperationKind,
@@ -112,6 +113,7 @@ export interface RemoteListItemDto extends Remote {
   /** The remote process's real account ids, when its runtime reports them. */
   uid: number | null;
   gid: number | null;
+  dockerUserMismatch?: VmUserMismatch | null;
   /**
    * Keys stored on the remote that shadow its applied `host.env` logins,
    * names only; null when the remote's runtime reports none.

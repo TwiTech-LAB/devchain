@@ -1,3 +1,6 @@
+import type { ForceSyncOffer } from '@/modules/remotes/sync/remote-file-sync.dto';
+import type { ForceSyncSource } from '@/modules/remotes/operations/remote-operation.dto';
+import { ForceSyncDialog } from './ForceSyncDialog';
 import { ApiKeyDialog } from './ApiKeyDialog';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -44,11 +47,14 @@ import { ConnectDialog, type ConnectRequest } from './ConnectDialog';
 import { AddVmDialog, type CreateVmRequest } from './AddVmDialog';
 import { DisconnectProjectDialog } from './DisconnectProjectDialog';
 import { FirstRunChecklist } from './FirstRunChecklist';
+import { FixFileSyncDialog } from './FixFileSyncDialog';
+import { FileSyncSettingsDialog } from './FileSyncSettingsDialog';
 import { GenerateLoginDialog } from './GenerateLoginDialog';
 import { NeedsAttention } from './NeedsAttention';
 import { addressHost } from './own-vm-address';
 import type { ActivityActions } from './OperationDetail';
 import { ProjectList, type ProjectListData, type ProjectListRow } from './ProjectList';
+import { ProjectSummary } from './ProjectSummary';
 import { useProjectActionIntent } from './project-action-intent';
 import { LoginsTab } from './LoginsTab';
 import { ProxmoxConnectDialog } from './ProxmoxConnectDialog';
@@ -58,6 +64,7 @@ import {
   POWER_ON_GRACE_MS,
   attentionItems,
   createStatusContext,
+  canFixFileSync,
   projectStatus,
   vmReachable,
   vmStatus,
@@ -78,10 +85,10 @@ import {
   type VmMenuKey,
 } from './VmList';
 
-const TAB_KEYS = ['overview', 'vms', 'logins', 'proxmox'] as const;
+const TAB_KEYS = ['overview', 'projects', 'vms', 'logins', 'proxmox'] as const;
 type TabKey = (typeof TAB_KEYS)[number];
 
-/** The Remote VMs page: header, Overview, Logins and Proxmox tabs, and every dialog they open. */
+/** The Remote VMs page and every dialog its tabs open. */
 export function RemoteVmSection() {
   const {
     remotes,
@@ -165,6 +172,27 @@ export function RemoteVmSection() {
     projectId?: string;
     remoteId?: string;
   } | null>(null);
+  const [fixFileSyncProjectId, setFixFileSyncProjectId] = useState<string | null>(null);
+  const [forceSyncTarget, setForceSyncTarget] = useState<{
+    projectId: string;
+    remoteId: string;
+    remoteName: string;
+    offer: ForceSyncOffer;
+  } | null>(null);
+  const closeForceSync = dismiss(() => setForceSyncTarget(null));
+  const forceSync = (source: ForceSyncSource) => {
+    if (forceSyncTarget)
+      start(
+        {
+          action: 'forceSync',
+          remoteId: forceSyncTarget.remoteId,
+          projectId: forceSyncTarget.projectId,
+          source,
+        },
+        closeForceSync,
+      );
+  };
+  const [fileSyncProjectId, setFileSyncProjectId] = useState<string | null>(null);
   /** `remoteId` and `force` come from a stopped operation's recovery action. */
   const [disconnectTarget, setDisconnectTarget] = useState<{
     id: string;
@@ -400,12 +428,28 @@ export function RemoteVmSection() {
     error: projectsError,
     truncated: projectsTruncated,
   };
+  const settingsRow = projectRows.find((row) => row.project.id === fileSyncProjectId);
   /** The projects bound to a VM, for the dialogs that list what a change affects. */
   const boundProjects = (remoteId: string) =>
     (statusContext.bindingsByRemote.get(remoteId) ?? []).map((binding) => ({
       id: binding.projectId,
       name: projectNames.get(binding.projectId) ?? binding.projectId,
     }));
+
+  const openForceSync = (offer: ForceSyncOffer) => {
+    if (!fixFileSyncProjectId) return;
+    const binding = bindingByProjectId.get(fixFileSyncProjectId);
+    if (!binding) return;
+    setStartError(null);
+    setForceSyncTarget({
+      projectId: fixFileSyncProjectId,
+      remoteId: binding.remoteId,
+      remoteName: remoteNameById.get(binding.remoteId) ?? binding.remoteId,
+      offer,
+    });
+    setFixFileSyncProjectId(null);
+    setDisconnectTarget(null);
+  };
 
   const openActivityList = () => {
     setActivityError(null);
@@ -505,6 +549,44 @@ export function RemoteVmSection() {
     );
   };
 
+  const renderProjectSettingsAction = (row: ProjectListRow) => {
+    const openForceDisconnect = () =>
+      setDisconnectTarget({
+        id: row.project.id,
+        name: row.project.name,
+        remoteId: row.status.remoteId ?? undefined,
+        force: true,
+      });
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={row.status.state === 'busy'}
+          onClick={() => setFileSyncProjectId(row.project.id)}
+        >
+          File sync settings
+        </Button>
+        {canFixFileSync(bindingByProjectId.get(row.project.id)) && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={row.status.state === 'busy'}
+            onClick={() => setFixFileSyncProjectId(row.project.id)}
+          >
+            Fix file sync
+          </Button>
+        )}
+        {row.status.operation?.kind === 'force_sync' && row.status.operation.state === 'failed' && (
+          <Button size="sm" variant="destructive" onClick={openForceDisconnect}>
+            Force disconnect
+          </Button>
+        )}
+        {renderProjectAction(row)}
+      </div>
+    );
+  };
+
   const onVmAction = (remote: RemoteListItemDto, vmAction: VmAction) => {
     switch (vmAction.kind) {
       case 'enter-api-key':
@@ -553,6 +635,8 @@ export function RemoteVmSection() {
   };
   const onAttentionAction = (attentionAction: AttentionAction) => {
     switch (attentionAction.kind) {
+      case 'fix-file-sync':
+        return setFixFileSyncProjectId(attentionAction.projectId);
       case 'enter-api-key': {
         const remote = remotes.find((item) => item.id === attentionAction.remoteId);
         if (remote) setApiKeyTarget({ remote, mode: 'enter' });
@@ -632,6 +716,10 @@ export function RemoteVmSection() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList className="h-auto flex-wrap">
             <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="projects">
+              Projects
+              <CountBadge count={projectData.rows.length} />
+            </TabsTrigger>
             <TabsTrigger value="vms">
               VMs
               <CountBadge count={remotes.length} />
@@ -677,7 +765,18 @@ export function RemoteVmSection() {
               onManageVms={() => setTab('vms')}
             />
           )}
-          <ProjectList {...projectData} renderAction={renderProjectAction} />
+          {overviewLoaded && !showChecklist && projectRows.some((row) => row.onVm) && (
+            <ProjectSummary
+              rows={projectRows}
+              remoteNames={remoteNameById}
+              onOpenVm={viewVmOnVmsTab}
+              onManageProjects={() => setTab('projects')}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="projects">
+          <ProjectList {...projectData} renderAction={renderProjectSettingsAction} />
         </TabsContent>
 
         <TabsContent value="vms">
@@ -718,6 +817,16 @@ export function RemoteVmSection() {
         </TabsContent>
       </Tabs>
 
+      {settingsRow && (
+        <FileSyncSettingsDialog
+          key={settingsRow.project.id}
+          projectId={settingsRow.project.id}
+          projectName={settingsRow.project.name}
+          connected={bindingByProjectId.get(settingsRow.project.id)?.state === 'remote'}
+          busy={settingsRow.status.state === 'busy'}
+          onClose={() => setFileSyncProjectId(null)}
+        />
+      )}
       {connectTarget && (
         <ConnectDialog
           initialProjectId={connectTarget.projectId}
@@ -748,6 +857,33 @@ export function RemoteVmSection() {
           error={startError}
           onClose={closeDisconnect}
           onDisconnect={disconnect}
+          onFixFileSync={() => setFixFileSyncProjectId(disconnectTarget.id)}
+        />
+      )}
+      {fixFileSyncProjectId && (
+        <FixFileSyncDialog
+          key={fixFileSyncProjectId}
+          projectId={fixFileSyncProjectId}
+          projectName={projectNames.get(fixFileSyncProjectId) ?? fixFileSyncProjectId}
+          warning={bindingByProjectId.get(fixFileSyncProjectId)?.fileSyncWarning}
+          onForceSync={openForceSync}
+          onClose={() => setFixFileSyncProjectId(null)}
+          onEditSettings={() => {
+            setFileSyncProjectId(fixFileSyncProjectId);
+            setFixFileSyncProjectId(null);
+          }}
+        />
+      )}
+      {forceSyncTarget && (
+        <ForceSyncDialog
+          key={forceSyncTarget.projectId}
+          projectName={projectNames.get(forceSyncTarget.projectId) ?? forceSyncTarget.projectId}
+          remoteName={forceSyncTarget.remoteName}
+          offer={forceSyncTarget.offer}
+          pending={action.isPending}
+          error={startError}
+          onClose={closeForceSync}
+          onForceSync={forceSync}
         />
       )}
       {ownVmTarget && (

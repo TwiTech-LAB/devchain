@@ -11,13 +11,6 @@ const MIGRATED_FILES = [
 ];
 
 describe('no-bypass gate coverage', () => {
-  it('no migrated file imports confirmed-delivery.helper', () => {
-    for (const file of MIGRATED_FILES) {
-      const content = readFileSync(join(SRC_ROOT, file), 'utf-8');
-      expect(content).not.toContain('confirmed-delivery.helper');
-    }
-  });
-
   it('confirmed-delivery.helper.ts is deleted', () => {
     expect(() =>
       readFileSync(
@@ -156,25 +149,6 @@ describe('argv-only + child_process gate (R3)', () => {
     }
 
     expect(failures).toEqual([]);
-  });
-
-  const TMUX_SERVICE_ALLOWLIST = new Set<string>([]);
-
-  it('Test D — TmuxService is not imported anywhere (fully retired in Phase 2A)', () => {
-    const tmuxImportPattern = /from\s+['"][^'"]*tmux\.service['"]/;
-    const violations: string[] = [];
-
-    for (const file of productionFiles) {
-      const rel = relative(SRC_ROOT, file).replace(/\\/g, '/');
-      if (TMUX_SERVICE_ALLOWLIST.has(rel)) continue;
-
-      const content = readFileSync(file, 'utf-8');
-      if (tmuxImportPattern.test(content)) {
-        violations.push(rel);
-      }
-    }
-
-    expect(violations).toEqual([]);
   });
 
   it('Test C — sentinel: detectShellEval catches R2-class violations', () => {

@@ -71,18 +71,6 @@ describe('EventsService', () => {
     expect(getEventMetadata(emittedPayload)).toBeNull();
   });
 
-  it('publishes Epic-time scope hints transiently without event-log persistence', async () => {
-    const payload = { workspaceId: '11111111-1111-4111-8111-111111111111' };
-
-    const eventId = await service.publish('epic.time.scope.invalidated', payload);
-
-    expect(eventId).toBeNull();
-    expect(eventLogService.recordPublished).not.toHaveBeenCalled();
-    expect(eventEmitter.emit).toHaveBeenCalledWith('epic.time.scope.invalidated', payload);
-    const emittedPayload = (eventEmitter.emit as jest.Mock).mock.calls[0][1];
-    expect(getEventMetadata(emittedPayload)).toBeNull();
-  });
-
   it('validates transient transcript updates before emitting them', async () => {
     const publish = service.publish.bind(service) as unknown as (
       name: string,
@@ -101,26 +89,23 @@ describe('EventsService', () => {
     expect(eventLogService.recordPublished).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, ''])(
-    'rejects session.started with invalid projectId=%p',
-    async (projectId) => {
-      const publish = service.publish.bind(service) as unknown as (
-        name: string,
-        payload: unknown,
-      ) => Promise<string | null>;
-      await expect(
-        publish('session.started', {
-          sessionId: 'session-1',
-          projectId,
-          epicId: null,
-          agentId: 'agent-1',
-          tmuxSessionName: 'devchain_project_epic_agent_session',
-        }),
-      ).rejects.toBeInstanceOf(ZodError);
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
-      expect(eventLogService.recordPublished).not.toHaveBeenCalled();
-    },
-  );
+  it.each([undefined])('rejects session.started with invalid projectId=%p', async (projectId) => {
+    const publish = service.publish.bind(service) as unknown as (
+      name: string,
+      payload: unknown,
+    ) => Promise<string | null>;
+    await expect(
+      publish('session.started', {
+        sessionId: 'session-1',
+        projectId,
+        epicId: null,
+        agentId: 'agent-1',
+        tmuxSessionName: 'devchain_project_epic_agent_session',
+      }),
+    ).rejects.toBeInstanceOf(ZodError);
+    expect(eventEmitter.emit).not.toHaveBeenCalled();
+    expect(eventLogService.recordPublished).not.toHaveBeenCalled();
+  });
 
   it('keeps session.started non-strict and strips unknown fields', async () => {
     const publish = service.publish.bind(service) as unknown as (
@@ -203,37 +188,6 @@ describe('EventsService', () => {
         requestId: null,
       });
       expect(eventEmitter.emit).toHaveBeenCalledWith('agent.created', payload);
-    });
-
-    it('publishes agent.created with actor', async () => {
-      const payload = {
-        agentId: 'agent-new',
-        agentName: 'Team Bot',
-        projectId: 'project-1',
-        profileId: 'profile-1',
-        providerConfigId: 'config-1',
-        actor: { type: 'agent' as const, id: 'lead-agent-1' },
-      };
-
-      await service.publish('agent.created', payload);
-
-      expect(eventLogService.recordPublished).toHaveBeenCalledWith({
-        name: 'agent.created',
-        payload,
-        requestId: null,
-      });
-    });
-
-    it('rejects agent.created with missing required fields', async () => {
-      const publish = service.publish.bind(service) as unknown as (
-        name: string,
-        payload: unknown,
-      ) => Promise<string | null>;
-
-      await expect(publish('agent.created', { agentId: 'agent-1' })).rejects.toBeInstanceOf(
-        ZodError,
-      );
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
   });
 });

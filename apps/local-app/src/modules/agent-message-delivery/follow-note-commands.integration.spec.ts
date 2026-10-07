@@ -187,63 +187,25 @@ describe('follow note for commands sent through DevChain', () => {
     await chain.pool.onModuleDestroy();
   });
 
-  it('delivers an automation /compact with Deliver Immediately without the note', async () => {
-    const result = await runAutomation(chain.amd, '/compact');
-
-    expect(result.success).toBe(true);
-    expect(paneWrites(chain.executor).map((c) => c.argv[1])).toEqual(['paste-buffer', 'send-keys']);
-    expect(noteWrites(chain.executor)).toHaveLength(0);
-  });
-
-  it('delivers an ordinary automation message with the note', async () => {
-    const result = await runAutomation(chain.amd, 'Please re-run the failing tests.');
-
-    expect(result.success).toBe(true);
-    expect(paneWrites(chain.executor).map((c) => c.argv[1])).toEqual([
-      'paste-buffer',
-      'send-keys',
-      'send-keys',
-    ]);
-    expect(noteWrites(chain.executor)).toHaveLength(1);
-  });
-
-  it('delivers a plain phone /compact without the note', async () => {
-    const outcome = await sendPlainPhoneMessage(chain.amd, '/compact');
-
-    expect(outcome.results[0]?.status).toBe('delivered');
-    expect(paneWrites(chain.executor).map((c) => c.argv[1])).toEqual(['paste-buffer', 'send-keys']);
-    expect(noteWrites(chain.executor)).toHaveLength(0);
-  });
-
-  it('delivers an ordinary plain phone message with the note', async () => {
-    const outcome = await sendPlainPhoneMessage(chain.amd, 'How is the build going?');
-
-    expect(outcome.results[0]?.status).toBe('delivered');
-    expect(paneWrites(chain.executor).map((c) => c.argv[1])).toEqual([
-      'paste-buffer',
-      'send-keys',
-      'send-keys',
-    ]);
-    expect(noteWrites(chain.executor)).toHaveLength(1);
-  });
-
-  it('suppresses the note for an ordinary automation message when the switch is off', async () => {
-    chain = buildChain(false);
-
-    const result = await runAutomation(chain.amd, 'Please re-run the failing tests.');
-
-    expect(result.success).toBe(true);
-    expect(paneWrites(chain.executor).map((c) => c.argv[1])).toEqual(['paste-buffer', 'send-keys']);
-    expect(noteWrites(chain.executor)).toHaveLength(0);
-  });
-
-  it('suppresses the note for an ordinary plain phone message when the switch is off', async () => {
-    chain = buildChain(false);
-
-    const outcome = await sendPlainPhoneMessage(chain.amd, 'How is the build going?');
-
-    expect(outcome.results[0]?.status).toBe('delivered');
-    expect(paneWrites(chain.executor).map((c) => c.argv[1])).toEqual(['paste-buffer', 'send-keys']);
-    expect(noteWrites(chain.executor)).toHaveLength(0);
-  });
+  it.each([
+    { source: 'automation', text: '/compact', enabled: true, notes: 0 },
+    { source: 'automation', text: 'Please re-run the failing tests.', enabled: true, notes: 1 },
+    { source: 'phone', text: '/compact', enabled: true, notes: 0 },
+    { source: 'phone', text: 'How is the build going?', enabled: true, notes: 1 },
+    { source: 'automation', text: 'Please re-run the failing tests.', enabled: false, notes: 0 },
+  ])(
+    '$source delivers $text with notes=$notes when enabled=$enabled',
+    async ({ source, text, enabled, notes }) => {
+      chain = buildChain(enabled);
+      if (source === 'automation') {
+        expect((await runAutomation(chain.amd, text)).success).toBe(true);
+      } else {
+        expect((await sendPlainPhoneMessage(chain.amd, text)).results[0]?.status).toBe('delivered');
+      }
+      expect(paneWrites(chain.executor).map((c) => c.argv[1])).toEqual(
+        notes ? ['paste-buffer', 'send-keys', 'send-keys'] : ['paste-buffer', 'send-keys'],
+      );
+      expect(noteWrites(chain.executor)).toHaveLength(notes);
+    },
+  );
 });

@@ -20,6 +20,7 @@ import { MessagePoolSettingsDelegate } from '../local/delegates/message-pool-set
 import { RegistrySettingsDelegate } from '../local/delegates/registry-settings.delegate';
 import {
   type HomePushedSkillSource,
+  type CompletedSkillSync,
   SkillsSettingsDelegate,
 } from '../local/delegates/skills-settings.delegate';
 import { ProviderCliSettingsDelegate } from '../local/delegates/provider-cli-settings.delegate';
@@ -104,6 +105,12 @@ export class SettingsService {
   // --- Skills ---
   getSkillsSyncOnStartup(): boolean {
     return this.skillsDelegate.getSkillsSyncOnStartup();
+  }
+  getSkillsCompletedSyncs(): Record<string, CompletedSkillSync> {
+    return this.skillsDelegate.getSkillsCompletedSyncs();
+  }
+  setSkillCompletedSync(sourceName: string, entry: CompletedSkillSync): void {
+    this.skillsDelegate.setSkillCompletedSync(sourceName, entry);
   }
   getSkillSourcesEnabled(): Record<string, boolean> {
     return this.skillsDelegate.getSkillSourcesEnabled();

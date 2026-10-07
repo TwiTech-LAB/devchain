@@ -539,76 +539,24 @@ describe('TemplateCacheService', () => {
   });
 
   describe('semver version handling', () => {
-    it('should correctly identify 10.0.0 as newer than 9.0.0', async () => {
-      const content = { prompts: [] };
-
-      // Add 9.0.0 first
-      await service.saveTemplate('test-template', '9.0.0', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'v9',
-        size: 10,
-      });
-
-      // Add 10.0.0 - should be identified as latest
-      await service.saveTemplate('test-template', '10.0.0', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'v10',
-        size: 10,
-      });
-
-      const index = service.getIndex();
-      expect(index.templates['test-template'].latestVersion).toBe('10.0.0');
-
-      // Also check listCached returns correct latestCached
-      const cached = service.listCached();
-      const template = cached.find((t) => t.slug === 'test-template');
-      expect(template?.latestCached).toBe('10.0.0');
-    });
-
-    it('should handle versions added out of order', async () => {
-      const content = { prompts: [] };
-
-      // Add versions out of semver order
-      await service.saveTemplate('test-template', '2.0.0', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'v2',
-        size: 10,
-      });
-
-      await service.saveTemplate('test-template', '1.0.0', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'v1',
-        size: 10,
-      });
-
-      await service.saveTemplate('test-template', '10.0.0', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'v10',
-        size: 10,
-      });
-
-      const index = service.getIndex();
-      expect(index.templates['test-template'].latestVersion).toBe('10.0.0');
-    });
-
-    it('should handle pre-release versions correctly (1.0.0 > 1.0.0-beta)', async () => {
-      const content = { prompts: [] };
-
-      await service.saveTemplate('test-template', '1.0.0-beta', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'beta',
-        size: 10,
-      });
-
-      await service.saveTemplate('test-template', '1.0.0', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'stable',
-        size: 10,
-      });
-
-      const index = service.getIndex();
-      // 1.0.0 should be latest (pre-release has lower precedence)
-      expect(index.templates['test-template'].latestVersion).toBe('1.0.0');
+    it.each([
+      { label: 'numeric major order', versions: ['9.0.0', '10.0.0'], expected: '10.0.0' },
+      { label: 'out of order', versions: ['2.0.0', '1.0.0', '10.0.0'], expected: '10.0.0' },
+      { label: 'prerelease', versions: ['1.0.0-beta', '1.0.0'], expected: '1.0.0' },
+      { label: 'numeric patch order', versions: ['1.0.9', '1.0.10'], expected: '1.0.10' },
+    ])('$label', async ({ versions, expected }) => {
+      for (const version of versions) {
+        await service.saveTemplate(
+          'test-template',
+          version,
+          { prompts: [] },
+          { cachedAt: new Date().toISOString(), checksum: version, size: 10 },
+        );
+      }
+      expect(service.getIndex().templates['test-template'].latestVersion).toBe(expected);
+      expect(service.listCached().find((t) => t.slug === 'test-template')?.latestCached).toBe(
+        expected,
+      );
     });
 
     it('should update latestVersion correctly after removing latest version', async () => {
@@ -638,25 +586,6 @@ describe('TemplateCacheService', () => {
       const index = service.getIndex();
       // Should now be 9.0.0, not 1.0.0 (which would be lexicographically "largest")
       expect(index.templates['test-template'].latestVersion).toBe('9.0.0');
-    });
-
-    it('should handle patch version ordering correctly', async () => {
-      const content = { prompts: [] };
-
-      await service.saveTemplate('test-template', '1.0.9', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'v1.0.9',
-        size: 10,
-      });
-
-      await service.saveTemplate('test-template', '1.0.10', content, {
-        cachedAt: new Date().toISOString(),
-        checksum: 'v1.0.10',
-        size: 10,
-      });
-
-      const index = service.getIndex();
-      expect(index.templates['test-template'].latestVersion).toBe('1.0.10');
     });
   });
 });

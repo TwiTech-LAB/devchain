@@ -1,4 +1,4 @@
-> **Type:** instructions SOP (v1.15)
+> **Type:** instructions SOP (v1.16)
 > **Priority:** mandatory
 
 ---
@@ -90,7 +90,7 @@
 
 Check that delivered work **fully** satisfies the original `🚀 TODO WORK DETAILS`:
 
-* Coverage: All acceptance criteria met? Edge cases handled?
+* Coverage: All acceptance criteria met, each tested once at the cheapest layer? Request a revision for tests that break the Testing Standards in `docs/development-standards.md`.
 * Quality: Correctness, coherence, regressions avoided, tests/docs updated.
 * Scope control: No unnecessary complexity and you don't see code critical issues from your coding standards.
 

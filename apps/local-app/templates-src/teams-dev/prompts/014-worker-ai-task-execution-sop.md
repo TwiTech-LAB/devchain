@@ -1,4 +1,4 @@
-# Worker AI — Task Execution SOP (v1.6)
+# Worker AI — Task Execution SOP (v1.9)
 
 > **Type:** agent-instructions
 > **Priority:** mandatory
@@ -80,15 +80,16 @@ devchain_add_epic_comment(task_id, "STATUS: STARTED — Confirmed scope; reading
 
    * Make only changes necessary to satisfy acceptance.
    * Make sure to address the last review feedback if it's the case
-   * Update/author tests alongside code.
+   * Test each acceptance criterion once, at the cheapest layer that can catch its bug. Extend an existing test or table before adding a new one. Delete tests your change makes obsolete.
 4. **Quality Gate (local)**:
    * Run type checks and linters (e.g., `mypy`, `ruff/flake8`, etc.).
    * While you work, run only the tests for the code you changed.
-   * Before REVIEW, run the full test suite once:
+   * Before REVIEW, run the project's "Affected tests" command once.
+   * Run the full test suite instead only if there is no such command or you changed project-level files (test config, test setup, dependencies, build config):
      `devchain queue full-tests -- <test command> > /tmp/full-tests-<task-id>.log 2>&1; echo "exit=$?"; tail -n 40 /tmp/full-tests-<task-id>.log`
    * If `devchain queue` is not available, run the same command without `devchain queue full-tests --`.
-   * After a failure: fix it, run the failing tests, then run the full suite once more.
-   * Ensure no regressions; ensure coverage for changed areas.
+   * After a failure: fix it, then run the failed tests again.
+   * Ensure no regressions. Write tests by the Testing Standards in `docs/development-standards.md`.
 5. **Already implemented elsewhere**:
 
    * If the work is already covered by another task, do not re‑implement it.
@@ -111,7 +112,7 @@ Upon completing implementation **or** upon hitting a blocker, prepare a structur
 * Tests:
 
   * Added/updated: `<test_file>::<test_name>` …
-  * Full suite: `<command>` → `<passed/failed counts>`, log `<path>`
+  * Before-review run: `<command>` → `<passed/failed counts>`
 * Docs:
 
   * Updated: `<doc-slug or path>`

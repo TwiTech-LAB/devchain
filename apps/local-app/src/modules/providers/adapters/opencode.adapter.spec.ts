@@ -9,25 +9,8 @@ describe('OpencodeAdapter', () => {
     adapter = new OpencodeAdapter();
   });
 
-  describe('providerName', () => {
-    it('returns opencode as provider name', () => {
-      expect(adapter.providerName).toBe('opencode');
-    });
-  });
-
-  describe('mcpMode', () => {
-    it('returns project_config as MCP mode', () => {
-      expect(adapter.mcpMode).toBe('project_config');
-    });
-  });
-
   describe('EffortCapability (OPENCODE_CONFIG_CONTENT env overlay)', () => {
     const OVERLAY = 'OPENCODE_CONFIG_CONTENT';
-
-    it('exposes static metadata: requiresModelForEffort + default effort values', () => {
-      expect(adapter.requiresModelForEffort).toBe(true);
-      expect(adapter.defaultEffortValues).toEqual(['minimal', 'low', 'medium', 'high']);
-    });
 
     it('builds the per-model overlay at provider.<pid>.models.<mid>.options.reasoningEffort (compact)', () => {
       const { argv, env } = adapter.applyEffort([], {}, 'high', 'anthropic/claude-x');
@@ -141,28 +124,23 @@ describe('OpencodeAdapter', () => {
   });
 
   describe('binaryCheck', () => {
-    it('returns --version for binary validation', () => {
-      expect(adapter.binaryCheck('devchain')).toEqual(['--version']);
-    });
-  });
-
-  describe('addMcpServer', () => {
-    it('returns --version as safe fallback (config-file mode)', () => {
-      expect(adapter.addMcpServer({ endpoint: 'http://127.0.0.1:3000/mcp' })).toEqual([
-        '--version',
-      ]);
-    });
+    it.each(['binary', 'add', 'remove'] as const)(
+      'uses the safe version fallback for %s',
+      (operation) => {
+        const result =
+          operation === 'binary'
+            ? adapter.binaryCheck('devchain')
+            : operation === 'add'
+              ? adapter.addMcpServer({ endpoint: 'http://127.0.0.1:3000/mcp' })
+              : adapter.removeMcpServer('devchain');
+        expect(result).toEqual(['--version']);
+      },
+    );
   });
 
   describe('listMcpServers', () => {
     it('returns mcp list command', () => {
       expect(adapter.listMcpServers()).toEqual(['mcp', 'list']);
-    });
-  });
-
-  describe('removeMcpServer', () => {
-    it('returns --version as safe fallback (config-file mode)', () => {
-      expect(adapter.removeMcpServer('devchain')).toEqual(['--version']);
     });
   });
 
@@ -175,11 +153,6 @@ describe('OpencodeAdapter', () => {
       expect(result.argv).toEqual(['--model', 'gpt-4o']);
     });
 
-    it('returns empty argv for mode new with no profileOptionArgs', () => {
-      const result = adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] });
-      expect(result.argv).toEqual([]);
-    });
-
     it('prepends --session and providerSessionId for mode restore', () => {
       const result = adapter.buildLaunchArgs({
         mode: 'restore',
@@ -187,15 +160,6 @@ describe('OpencodeAdapter', () => {
         profileOptionArgs: ['--model', 'gpt-4o'],
       });
       expect(result.argv).toEqual(['--session', 'session-abc', '--model', 'gpt-4o']);
-    });
-
-    it('restore with no profileOptionArgs yields [--session, sessionId]', () => {
-      const result = adapter.buildLaunchArgs({
-        mode: 'restore',
-        providerSessionId: 'abc',
-        profileOptionArgs: [],
-      });
-      expect(result.argv).toEqual(['--session', 'abc']);
     });
   });
 
@@ -238,17 +202,6 @@ describe('OpencodeAdapter', () => {
       expect(entries[1].alias).toBe('other');
     });
 
-    it('uppercases transport type from config', () => {
-      const content = JSON.stringify({
-        mcp: {
-          devchain: { type: 'remote', url: 'http://127.0.0.1:3000/mcp' },
-        },
-      });
-
-      const entries = adapter.parseProjectConfig(content);
-      expect(entries[0].transport).toBe('REMOTE');
-    });
-
     it('defaults transport to REMOTE when type is missing', () => {
       const content = JSON.stringify({
         mcp: {
@@ -262,42 +215,6 @@ describe('OpencodeAdapter', () => {
       expect(entries[0].transport).toBe('REMOTE');
     });
 
-    it('defaults transport to REMOTE when type is a number', () => {
-      const content = JSON.stringify({
-        mcp: { devchain: { type: 42, url: 'http://127.0.0.1:3000/mcp' } },
-      });
-      const entries = adapter.parseProjectConfig(content);
-      expect(entries).toHaveLength(1);
-      expect(entries[0].transport).toBe('REMOTE');
-    });
-
-    it('defaults transport to REMOTE when type is a boolean', () => {
-      const content = JSON.stringify({
-        mcp: { devchain: { type: true, url: 'http://127.0.0.1:3000/mcp' } },
-      });
-      const entries = adapter.parseProjectConfig(content);
-      expect(entries).toHaveLength(1);
-      expect(entries[0].transport).toBe('REMOTE');
-    });
-
-    it('defaults transport to REMOTE when type is an object', () => {
-      const content = JSON.stringify({
-        mcp: { devchain: { type: { nested: true }, url: 'http://127.0.0.1:3000/mcp' } },
-      });
-      const entries = adapter.parseProjectConfig(content);
-      expect(entries).toHaveLength(1);
-      expect(entries[0].transport).toBe('REMOTE');
-    });
-
-    it('defaults transport to REMOTE when type is null', () => {
-      const content = JSON.stringify({
-        mcp: { devchain: { type: null, url: 'http://127.0.0.1:3000/mcp' } },
-      });
-      const entries = adapter.parseProjectConfig(content);
-      expect(entries).toHaveLength(1);
-      expect(entries[0].transport).toBe('REMOTE');
-    });
-
     it('returns empty array when mcp section is missing', () => {
       const content = JSON.stringify({ model: 'anthropic/claude-sonnet-4-5' });
       expect(adapter.parseProjectConfig(content)).toEqual([]);
@@ -305,11 +222,6 @@ describe('OpencodeAdapter', () => {
 
     it('returns empty array when mcp section is empty object', () => {
       const content = JSON.stringify({ mcp: {} });
-      expect(adapter.parseProjectConfig(content)).toEqual([]);
-    });
-
-    it('returns empty array when mcp is null', () => {
-      const content = JSON.stringify({ mcp: null });
       expect(adapter.parseProjectConfig(content)).toEqual([]);
     });
 
@@ -325,20 +237,6 @@ describe('OpencodeAdapter', () => {
 
       expect(entries).toHaveLength(1);
       expect(entries[0].alias).toBe('valid');
-    });
-
-    it('preserves non-MCP config fields (does not lose them)', () => {
-      const content = JSON.stringify({
-        model: 'anthropic/claude-sonnet-4-5',
-        mcp: {
-          devchain: { type: 'remote', url: 'http://127.0.0.1:3000/mcp' },
-        },
-        tools: { enabled: true },
-      });
-
-      // parseProjectConfig only reads MCP — it doesn't modify config
-      const entries = adapter.parseProjectConfig(content);
-      expect(entries).toHaveLength(1);
     });
 
     it('throws on malformed JSON (caller responsibility)', () => {

@@ -98,14 +98,14 @@ describe('SshRunner host verification', () => {
   });
 
   it('explains when a VM refuses the configured public key', async () => {
-    const wrongKey = utils.generateKeyPairSync('ed25519');
+    const wrongKey = hostKey();
     const server = await startFakeSsh(hostKey(), 0, '', (context) => context.reject(['publickey']));
     try {
       await expect(
         runner.connect({
           host: '127.0.0.1',
           port: server.port,
-          credentials: { user: 'ubuntu', privateKey: wrongKey.private },
+          credentials: { user: 'ubuntu', privateKey: wrongKey },
         }),
       ).rejects.toMatchObject({
         code: 'SSH_AUTH_FAILED',

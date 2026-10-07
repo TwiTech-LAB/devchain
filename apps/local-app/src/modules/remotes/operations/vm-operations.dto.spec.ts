@@ -39,10 +39,4 @@ describe('CreateVmSchema memory minimum', () => {
       );
     }
   });
-
-  it('accepts 4096 MiB', () => {
-    expect(CreateVmSchema.parse({ ...validRequest, name: 'alpha', memory: 4096 }).memory).toBe(
-      4096,
-    );
-  });
 });

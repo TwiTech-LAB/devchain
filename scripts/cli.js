@@ -16,6 +16,8 @@ const { spawn, execSync, execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
 const { InteractiveCLI } = require('./lib/interactive-cli');
 const { runHostInstallCommand } = require('./lib/host-install');
+const { runGitOwnerCommand } = require('./lib/git-owner');
+const { getLocalApiBaseUrl } = require('./lib/local-api');
 const { runHostApiKeyReset } = require('./lib/host-api-key');
 const { QUEUE_NAME, runExclusive } = require('./lib/exclusive-run');
 const readline = require('readline');
@@ -1412,6 +1414,34 @@ async function main(argv) {
       });
     });
 
+  const git = program.command('git').description('Move Git control between this PC and the VM');
+  for (const name of ['status', 'take', 'return']) {
+    const command = git
+      .command(name)
+      .description(
+        {
+          status: 'Show Git control and any unfinished switch',
+          take: 'Move Git control to this PC',
+          return: 'Move Git control back to the VM',
+        }[name],
+      )
+      .option('--project <path>', 'Project folder (defaults to the current folder)');
+    if (name === 'take') {
+      command.option('--force', "Stop this project's agent sessions on the VM before the switch");
+    }
+    command.action(async (options) => {
+      process.exitCode = await runGitOwnerCommand(name, options, {
+        getMachineRole,
+        getLocalApiBaseUrl: () =>
+          getLocalApiBaseUrl({
+            readPidFile,
+            isProcessRunning,
+            resolveSharedModuleSpecifier,
+          }),
+      });
+    });
+  }
+
   const host = program.command('host').description('Manage DevChain hosts');
 
   host
@@ -1424,7 +1454,10 @@ async function main(argv) {
     .option('--passphrase-stdin', 'Read the SSH key passphrase from one line of stdin')
     .option('--sudo-password-stdin', 'Read the optional sudo password from one line of stdin')
     .option('--projects <project-ids...>', 'Project ids to include in the disk estimate')
-    .option('--no-docker', 'Do not install Docker Engine and Compose on the VM (installed by default)')
+    .option(
+      '--no-docker',
+      'Do not install Docker Engine and Compose on the VM (installed by default)',
+    )
     .option(
       '--provider-auth <provider=choice>',
       'Provider login choice: skip, generate, or reuse:<entry-id> (repeatable)',
@@ -1432,15 +1465,12 @@ async function main(argv) {
     )
     .action(async (options) => {
       const exitCode = await runHostInstallCommand(options, {
-        getLocalApiBaseUrl: async () => {
-          const pidData = readPidFile();
-          if (!pidData || !isProcessRunning(pidData.pid)) return null;
-          const { HostResolver } = await import(resolveSharedModuleSpecifier());
-          return HostResolver.buildInternalBaseUrl({
-            host: pidData.host || '127.0.0.1',
-            port: pidData.port,
-          });
-        },
+        getLocalApiBaseUrl: () =>
+          getLocalApiBaseUrl({
+            readPidFile,
+            isProcessRunning,
+            resolveSharedModuleSpecifier,
+          }),
       });
       process.exitCode = exitCode;
     });

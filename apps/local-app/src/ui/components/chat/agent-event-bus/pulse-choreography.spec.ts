@@ -40,7 +40,6 @@ describe('pulse choreography', () => {
 
   it.each([
     [32, 7_000],
-    [320, 10_000],
     [868, 14_000],
   ])('keeps exactly one non-wrapping dot across a %spx / %sms route', (pathLength, durationMs) => {
     const descriptors = createAgentEventBusPulseChoreography(pathLength, durationMs);

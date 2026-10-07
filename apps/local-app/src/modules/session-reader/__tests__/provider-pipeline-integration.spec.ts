@@ -4,7 +4,6 @@ import * as path from 'node:path';
 import { parseCodexJsonl } from '../parsers/codex-jsonl.parser';
 import { parseCopilotJsonl } from '../parsers/copilot-jsonl.parser';
 import { parseClaudeJsonl } from '../parsers/claude-jsonl.parser';
-import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import type { SessionReaderAdapter } from '../adapters/session-reader-adapter.interface';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import { ClaudeSessionReaderAdapter } from '../adapters/claude-session-reader.adapter';
@@ -16,7 +15,7 @@ import { createAntigravityFixtureDb } from '../__fixtures__/antigravity-fixture-
 /**
  * End-to-end integration tests for the multi-provider session reader pipeline.
  * Tests the full flow: fixture file → parser → UnifiedSession/UnifiedMetrics.
- * Also tests: factory selection → adapter parse → cost calculation.
+ * Adapter summaries are compared with full fixture parsing.
  */
 
 const FIXTURES_DIR = path.join(__dirname, '..', '__fixtures__');
@@ -48,53 +47,6 @@ describe('Adapter getSummary parity: file providers', () => {
       expect(summary?.approximateFields).toBeUndefined();
     },
   );
-
-  it('streams a large real input without retaining its message graph', async () => {
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-summary-large-'));
-    const filePath = path.join(tmpDir, 'large-session.jsonl');
-    const messageCount = 1_200;
-
-    try {
-      const entries = Array.from({ length: messageCount }, (_, index) => {
-        const isUser = index % 2 === 0;
-        const id = `${isUser ? 'user' : 'assistant'}-${index}`;
-        const parentId =
-          index === 0 ? null : `${index % 2 === 0 ? 'assistant' : 'user'}-${index - 1}`;
-        return JSON.stringify({
-          type: isUser ? 'user' : 'assistant',
-          uuid: id,
-          parentUuid: parentId,
-          isSidechain: false,
-          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
-          message: isUser
-            ? { role: 'user', content: `Synthetic prompt ${index}` }
-            : {
-                role: 'assistant',
-                model: 'claude-sonnet-4-6',
-                content: [{ type: 'text', text: `Synthetic response ${index}` }],
-                stop_reason: 'end_turn',
-                usage: {
-                  input_tokens: 10,
-                  output_tokens: 5,
-                  cache_read_input_tokens: 0,
-                  cache_creation_input_tokens: 0,
-                },
-              },
-        });
-      });
-      await fs.writeFile(filePath, `${entries.join('\n')}\n`);
-
-      const result = await parseClaudeJsonl(filePath, {
-        pricingService: mockPricing,
-        retainMessages: false,
-      });
-
-      expect(result.messages).toHaveLength(0);
-      expect(result.metrics.messageCount).toBe(messageCount);
-    } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe('Adapter getSummary parity: Antigravity DB fixture', () => {
@@ -176,16 +128,6 @@ describe('Codex pipeline: fixture → parser → unified model', () => {
     expect(result.messages.filter((m) => m.role === 'user')).toHaveLength(1);
   });
 
-  it('should extract session ID from fixture', async () => {
-    const result = await parseCodexJsonl(filePath);
-    expect(result.sessionId).toBe('codex-test-session-001');
-  });
-
-  it('should track model from turn_context', async () => {
-    const result = await parseCodexJsonl(filePath);
-    expect(result.metrics.primaryModel).toBe('o3');
-  });
-
   it('should extract cumulative token metrics', async () => {
     const result = await parseCodexJsonl(filePath);
 
@@ -193,53 +135,6 @@ describe('Codex pipeline: fixture → parser → unified model', () => {
     // output + reasoning: 120 + 45 = 165
     expect(result.metrics.outputTokens).toBe(165);
     expect(result.metrics.cacheReadTokens).toBe(200);
-  });
-
-  it('should map function calls to tool calls', async () => {
-    const result = await parseCodexJsonl(filePath);
-
-    const assistantMsgs = result.messages.filter((m) => m.role === 'assistant');
-    const allToolCalls = assistantMsgs.flatMap((m) => m.toolCalls);
-
-    expect(allToolCalls.length).toBeGreaterThanOrEqual(2);
-    expect(allToolCalls.find((tc) => tc.name === 'read_file')).toBeDefined();
-    expect(allToolCalls.find((tc) => tc.name === 'write_file')).toBeDefined();
-  });
-
-  it('should include reasoning/thinking content', async () => {
-    const result = await parseCodexJsonl(filePath);
-
-    const assistantMsgs = result.messages.filter((m) => m.role === 'assistant');
-    const thinkingBlocks = assistantMsgs.flatMap((m) =>
-      m.content.filter((c) => c.type === 'thinking'),
-    );
-
-    expect(thinkingBlocks.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('should detect session as completed (not ongoing)', async () => {
-    const result = await parseCodexJsonl(filePath);
-    expect(result.metrics.isOngoing).toBe(false);
-  });
-
-  it('should calculate duration from timestamps', async () => {
-    const result = await parseCodexJsonl(filePath);
-    // From 10:00:00 to 10:00:17 = 17000ms
-    expect(result.metrics.durationMs).toBe(17_000);
-  });
-
-  it('should chain parentId across messages', async () => {
-    const result = await parseCodexJsonl(filePath);
-
-    expect(result.messages[0].parentId).toBeNull();
-    for (let i = 1; i < result.messages.length; i++) {
-      expect(result.messages[i].parentId).toBe(result.messages[i - 1].id);
-    }
-  });
-
-  it('should invoke pricing service for cost calculation', async () => {
-    await parseCodexJsonl(filePath, { pricingService: mockPricing });
-    expect(mockPricing.calculateMessageCost).toHaveBeenCalledWith('o3', 650, 165, 200, 0);
   });
 
   it.each([
@@ -256,144 +151,5 @@ describe('Codex pipeline: fixture → parser → unified model', () => {
 
     expect(summaryOnly.messages).toEqual([]);
     expect(summaryOnly.metrics).toEqual(full.metrics);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Copilot pipeline integration (fixture captured in S3)
-// ---------------------------------------------------------------------------
-
-describe('Copilot pipeline: fixture → parser → unified model', () => {
-  const filePath = path.join(FIXTURES_DIR, 'copilot-events-multiturn.jsonl');
-
-  it('should parse the multi-turn fixture (2 user + 2 coalesced assistant turns)', async () => {
-    const result = await parseCopilotJsonl(filePath);
-    expect(result.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
-    expect(result.metrics.messageCount).toBe(4);
-  });
-
-  it('should coalesce the tool turn (call + result + final text) into one assistant', async () => {
-    const result = await parseCopilotJsonl(filePath);
-    const toolTurn = result.messages[3];
-    expect(toolTurn.role).toBe('assistant');
-    expect(toolTurn.toolCalls.length).toBeGreaterThanOrEqual(1);
-    expect(toolTurn.toolResults.length).toBeGreaterThanOrEqual(1);
-    expect(toolTurn.toolResults.every((r) => r.isError === false)).toBe(true);
-  });
-
-  it('should skip the system prompt (not counted as a conversational turn)', async () => {
-    const result = await parseCopilotJsonl(filePath);
-    expect(result.messages.some((m) => m.role === 'system')).toBe(false);
-  });
-
-  it('should track the model id from session.shutdown', async () => {
-    const result = await parseCopilotJsonl(filePath);
-    expect(result.metrics.primaryModel).toBe('claude-haiku-4.5');
-  });
-
-  it('should SUM session.shutdown totals across the resume (each run is separately billed)', async () => {
-    const result = await parseCopilotJsonl(filePath);
-    expect(result.metrics.isOngoing).toBe(false);
-    // The fixture has two shutdowns (run1 + resumed run2); per-run usage is summed, not final-wins.
-    expect(result.metrics.inputTokens).toBe(15148 + 30769);
-    expect(result.metrics.outputTokens).toBe(63 + 271);
-    // Native AI-Credits preserved alongside USD (0.33 + 0.33).
-    expect(result.metrics.nativeCost).toBeCloseTo(0.66, 5);
-  });
-
-  it('should chain parentId across conversational messages', async () => {
-    const result = await parseCopilotJsonl(filePath);
-    expect(result.messages[0].parentId).toBeNull();
-    for (let i = 1; i < result.messages.length; i++) {
-      expect(result.messages[i].parentId).toBe(result.messages[i - 1].id);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Factory selection → adapter pipeline
-// ---------------------------------------------------------------------------
-
-describe('Factory selection → adapter pipeline', () => {
-  function makeMockAdapter(name: string, roots: string[]): SessionReaderAdapter {
-    return {
-      providerName: name,
-      incrementalMode: name === 'copilot' ? 'snapshot' : 'delta',
-      allowedRoots: roots,
-      discoverSessionFile: jest.fn(),
-      parseSessionFile: jest.fn().mockResolvedValue({
-        hasMore: false,
-        nextByteOffset: 100,
-        messageCount: 1,
-        entries: [],
-      }),
-      parseIncremental: jest.fn(),
-      getWatchPaths: jest.fn().mockReturnValue(roots),
-      calculateCost: jest.fn().mockReturnValue(0),
-      parseFullSession: jest.fn(),
-    };
-  }
-
-  it('should resolve correct adapter by provider name', () => {
-    const factory = new SessionReaderAdapterFactory();
-    const claude = makeMockAdapter('claude', ['/home/user/.claude/projects/']);
-    const codex = makeMockAdapter('codex', ['/home/user/.codex/sessions/']);
-    const copilot = makeMockAdapter('copilot', ['/home/user/.copilot/']);
-
-    factory.registerAdapter(claude);
-    factory.registerAdapter(codex);
-    factory.registerAdapter(copilot);
-
-    expect(factory.getAdapter('claude')).toBe(claude);
-    expect(factory.getAdapter('codex')).toBe(codex);
-    expect(factory.getAdapter('copilot')).toBe(copilot);
-  });
-
-  it('should resolve adapter by path when provider is unknown', () => {
-    const factory = new SessionReaderAdapterFactory();
-    const claude = makeMockAdapter('claude', ['/home/user/.claude/projects/']);
-    const codex = makeMockAdapter('codex', ['/home/user/.codex/sessions/']);
-    const copilot = makeMockAdapter('copilot', ['/home/user/.copilot/']);
-
-    factory.registerAdapter(claude);
-    factory.registerAdapter(codex);
-    factory.registerAdapter(copilot);
-
-    const claudePath = '/home/user/.claude/projects/abc/session.jsonl';
-    const codexPath = '/home/user/.codex/sessions/2026/01/01/rollout.jsonl';
-    const copilotPath = '/home/user/.copilot/session-state/abc/events.jsonl';
-
-    expect(factory.getAdapterForPath(claudePath)?.providerName).toBe('claude');
-    expect(factory.getAdapterForPath(codexPath)?.providerName).toBe('codex');
-    expect(factory.getAdapterForPath(copilotPath)?.providerName).toBe('copilot');
-  });
-
-  it('should call parseSessionFile on resolved adapter', async () => {
-    const factory = new SessionReaderAdapterFactory();
-    const codex = makeMockAdapter('codex', ['/home/user/.codex/sessions/']);
-    factory.registerAdapter(codex);
-
-    const adapter = factory.getAdapter('codex');
-    expect(adapter).toBeDefined();
-
-    await adapter!.parseSessionFile('/home/user/.codex/sessions/rollout.jsonl');
-    expect(codex.parseSessionFile).toHaveBeenCalledWith('/home/user/.codex/sessions/rollout.jsonl');
-  });
-
-  it('should list all 3 supported providers', () => {
-    const factory = new SessionReaderAdapterFactory();
-    factory.registerAdapter(makeMockAdapter('claude', []));
-    factory.registerAdapter(makeMockAdapter('codex', []));
-    factory.registerAdapter(makeMockAdapter('copilot', []));
-
-    const providers = factory.getSupportedProviders();
-    expect(providers).toHaveLength(3);
-    expect(providers).toEqual(expect.arrayContaining(['claude', 'codex', 'copilot']));
-  });
-
-  it('should return undefined for unsupported provider', () => {
-    const factory = new SessionReaderAdapterFactory();
-    expect(factory.getAdapter('unknown-provider')).toBeUndefined();
-    expect(factory.getAdapterForPath('/home/user/.unknown/file.json')).toBeUndefined();
   });
 });

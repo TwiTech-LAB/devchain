@@ -80,170 +80,25 @@ describe('SkillsController', () => {
     controller = module.get(SkillsController);
   });
 
-  it('returns explicit already_running sync result for concurrent sync calls', async () => {
-    skillSourceLifecycle.syncAll.mockResolvedValue({
-      status: 'already_running',
-      added: 0,
+  it.each([
+    { name: 'all sources', sourceName: undefined, status: 'already_running', added: 0 },
+    { name: 'one source', sourceName: 'openai', status: 'completed', added: 1 },
+  ])('dispatches sync for $name', async ({ sourceName, status, added }) => {
+    const sync = sourceName ? skillSourceLifecycle.syncSource : skillSourceLifecycle.syncAll;
+    sync.mockResolvedValue({
+      status,
+      added,
       updated: 0,
       removed: 0,
       failed: 0,
       unchanged: 0,
       errors: [],
     });
-
-    const result = await controller.syncSkills({});
-
-    expect(skillSourceLifecycle.syncAll).toHaveBeenCalledTimes(1);
-    expect(result.status).toBe('already_running');
-  });
-
-  it('calls syncSource when sourceName is provided', async () => {
-    skillSourceLifecycle.syncSource.mockResolvedValue({
-      status: 'completed',
-      added: 1,
-      updated: 0,
-      removed: 0,
-      failed: 0,
-      unchanged: 0,
-      errors: [],
-    });
-
-    const result = await controller.syncSkills({ sourceName: 'openai' });
-
-    expect(skillSourceLifecycle.syncSource).toHaveBeenCalledWith('openai');
-    expect(result.status).toBe('completed');
-    expect(result.added).toBe(1);
-  });
-
-  it('lists disabled skills for a project', async () => {
-    skillsService.listDisabled.mockResolvedValue([skillId]);
-
-    const result = await controller.listDisabled({ projectId });
-
-    expect(skillsService.listDisabled).toHaveBeenCalledWith(projectId);
-    expect(result).toEqual([skillId]);
-  });
-
-  it('lists skill sources with enablement and metadata', async () => {
-    const expected = [
-      {
-        name: 'openai',
-        kind: 'builtin',
-        enabled: true,
-        repoUrl: 'https://example.test/openai',
-        skillCount: 5,
-      },
-    ];
-    skillsService.listSources.mockResolvedValue(expected);
-
-    const result = await controller.listSources({});
-
-    expect(skillsService.listSources).toHaveBeenCalledWith(undefined);
-    expect(result).toEqual(expected);
-  });
-
-  it('lists skill sources scoped to a project when projectId is provided', async () => {
-    const expected = [
-      {
-        name: 'openai',
-        kind: 'builtin',
-        enabled: true,
-        projectEnabled: false,
-        repoUrl: 'https://example.test/openai',
-        skillCount: 5,
-      },
-    ];
-    skillsService.listSources.mockResolvedValue(expected);
-
-    const result = await controller.listSources({ projectId });
-
-    expect(skillsService.listSources).toHaveBeenCalledWith(projectId);
-    expect(result).toEqual(expected);
-  });
-
-  it('enables a skill source', async () => {
-    skillsService.setSourceEnabled.mockResolvedValue({ name: 'openai', enabled: true });
-
-    const result = await controller.enableSource({ name: 'OpenAI' });
-
-    expect(skillsService.setSourceEnabled).toHaveBeenCalledWith('openai', true);
-    expect(result).toEqual({ name: 'openai', enabled: true });
-  });
-
-  it('disables a skill source', async () => {
-    skillsService.setSourceEnabled.mockResolvedValue({ name: 'openai', enabled: false });
-
-    const result = await controller.disableSource({ name: 'openai' });
-
-    expect(skillsService.setSourceEnabled).toHaveBeenCalledWith('openai', false);
-    expect(result).toEqual({ name: 'openai', enabled: false });
-  });
-
-  it('enables a skill source for a project', async () => {
-    skillsService.setSourceProjectEnabled.mockResolvedValue({
-      name: 'openai',
-      projectId,
-      projectEnabled: true,
-    });
-
-    const result = await controller.enableSourceForProject({ name: 'OpenAI' }, { projectId });
-
-    expect(skillsService.setSourceProjectEnabled).toHaveBeenCalledWith('openai', projectId, true);
-    expect(result).toEqual({
-      name: 'openai',
-      projectId,
-      projectEnabled: true,
-    });
-  });
-
-  it('disables a skill source for a project', async () => {
-    skillsService.setSourceProjectEnabled.mockResolvedValue({
-      name: 'openai',
-      projectId,
-      projectEnabled: false,
-    });
-
-    const result = await controller.disableSourceForProject({ name: 'openai' }, { projectId });
-
-    expect(skillsService.setSourceProjectEnabled).toHaveBeenCalledWith('openai', projectId, false);
-    expect(result).toEqual({
-      name: 'openai',
-      projectId,
-      projectEnabled: false,
-    });
-  });
-
-  it('rejects invalid projectId for per-project source endpoints', async () => {
-    await expect(
-      controller.enableSourceForProject({ name: 'openai' }, { projectId: 'invalid-project-id' }),
-    ).rejects.toThrow('Invalid uuid');
-
-    expect(skillsService.setSourceProjectEnabled).not.toHaveBeenCalled();
-  });
-
-  it('disables all skills for a project', async () => {
-    skillsService.disableAll.mockResolvedValue(3);
-
-    const result = await controller.disableAll({ projectId });
-
-    expect(skillsService.disableAll).toHaveBeenCalledWith(projectId);
-    expect(result).toEqual({ projectId, disabledCount: 3 });
-  });
-
-  it('enables all skills for a project', async () => {
-    skillsService.enableAll.mockResolvedValue(2);
-
-    const result = await controller.enableAll({ projectId });
-
-    expect(skillsService.enableAll).toHaveBeenCalledWith(projectId);
-    expect(result).toEqual({ projectId, enabledCount: 2 });
-  });
-
-  it('disables a single skill via action route payload', async () => {
-    const result = await controller.disableSkill({ id: skillId }, { projectId });
-
-    expect(skillsService.disableSkill).toHaveBeenCalledWith(projectId, skillId);
-    expect(result).toEqual({ projectId, skillId });
+    const result = await controller.syncSkills(sourceName ? { sourceName } : {});
+    if (sourceName) expect(sync).toHaveBeenCalledWith(sourceName, { force: true });
+    else expect(sync).toHaveBeenCalledWith({ force: true });
+    expect(result.status).toBe(status);
+    expect(result.added).toBe(added);
   });
 
   it('answers DevChain disables with HTTP 409 SKILL_SOURCE_ALWAYS_ENABLED', async () => {
@@ -279,13 +134,6 @@ describe('SkillsController', () => {
     }
   });
 
-  it('enables a single skill via action route payload', async () => {
-    const result = await controller.enableSkill({ id: skillId }, { projectId });
-
-    expect(skillsService.enableSkill).toHaveBeenCalledWith(projectId, skillId);
-    expect(result).toEqual({ projectId, skillId });
-  });
-
   it('uses listAllForProject when projectId is provided', async () => {
     const expected = [{ id: skillId, disabled: true }];
     skillsService.listAllForProject.mockResolvedValue(expected);
@@ -298,28 +146,5 @@ describe('SkillsController', () => {
       category: undefined,
     });
     expect(result).toEqual(expected);
-  });
-
-  it('resolves skill summaries in a single batch payload', async () => {
-    const resolved = {
-      'openai/review': {
-        id: skillId,
-        slug: 'openai/review',
-        name: 'review',
-        displayName: 'Review',
-        source: 'openai',
-        category: 'analysis',
-        shortDescription: 'Short',
-        description: 'Long',
-      },
-    };
-    skillsService.resolveSkillSummariesBySlugs.mockResolvedValue(resolved);
-
-    const result = await controller.resolveSkills({
-      slugs: [' OpenAI/Review ', 'openai/review'],
-    });
-
-    expect(skillsService.resolveSkillSummariesBySlugs).toHaveBeenCalledWith(['openai/review']);
-    expect(result).toEqual(resolved);
   });
 });

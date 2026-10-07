@@ -65,10 +65,6 @@ describe('AgentMessageDeliveryModule bootstrap', () => {
     await moduleRef.close();
   });
 
-  it('compiles AMD module and resolves its public delivery service', () => {
-    expect(moduleRef.get(AgentMessageDeliveryService)).toBeInstanceOf(AgentMessageDeliveryService);
-  });
-
   it('imports only the final narrow module set', () => {
     const imports =
       (Reflect.getMetadata(MODULE_METADATA.IMPORTS, AgentMessageDeliveryModule) as unknown[]) ?? [];

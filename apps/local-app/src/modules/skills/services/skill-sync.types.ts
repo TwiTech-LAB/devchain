@@ -13,3 +13,8 @@ export interface SyncResult {
   unchanged: number;
   errors: SyncError[];
 }
+
+export interface SyncOptions {
+  /** Sync even when the source commit matches the last completed sync. */
+  force?: boolean;
+}

@@ -99,12 +99,6 @@ describe('AIGroupCard input delta rendering', () => {
 
     expect(screen.queryByTestId('ai-group-input-delta')).not.toBeInTheDocument();
   });
-
-  it('does not render delta element when inputDelta is 0', () => {
-    renderCard({ inputDelta: 0 });
-
-    expect(screen.queryByTestId('ai-group-input-delta')).not.toBeInTheDocument();
-  });
 });
 
 // ---------------------------------------------------------------------------

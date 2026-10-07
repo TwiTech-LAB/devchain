@@ -94,7 +94,9 @@ describe('ToolCallItem', () => {
     expect(screen.queryByTestId('tool-call-input')).not.toBeInTheDocument();
 
     // Click to expand
+    expect(screen.getByTestId('tool-call-trigger')).toHaveAttribute('data-state', 'closed');
     fireEvent.click(screen.getByTestId('tool-call-trigger'));
+    expect(screen.getByTestId('tool-call-trigger')).toHaveAttribute('data-state', 'open');
     expect(screen.getByTestId('tool-call-input')).toBeInTheDocument();
     expect(screen.getByTestId('tool-call-result')).toBeInTheDocument();
     expect(screen.getByText(/file contents here/)).toBeInTheDocument();

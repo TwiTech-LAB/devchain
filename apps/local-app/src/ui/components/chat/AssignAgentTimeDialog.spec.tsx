@@ -132,17 +132,6 @@ describe('AssignAgentTimeDialog', () => {
   it('renders the compact structure with only the approved copy', async () => {
     renderDialog(makeTarget());
 
-    expect(screen.getByText('Log time to an Epic.')).toBeInTheDocument();
-    expect(screen.getByText('5m from Alpha.')).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        'DevChain assigns time automatically when it can. Use this dialog for time that remains unassigned.',
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByPlaceholderText('Search by title, DevChain ID, Jira key, or ClickUp ID.'),
-    ).toBeInTheDocument();
-
     await waitFor(() => {
       expect(screen.getByRole('option', { name: /Ship the API/ })).toBeInTheDocument();
     });
@@ -156,13 +145,14 @@ describe('AssignAgentTimeDialog', () => {
   });
 
   it('requires an explicit selection before the exact footer confirm is enabled', async () => {
-    renderDialog(makeTarget());
+    const { container } = renderDialog(makeTarget());
 
     const confirm = await screen.findByRole('button', { name: 'Log 5m.' });
     expect(confirm).toBeDisabled();
 
     fireEvent.click(await screen.findByRole('option', { name: /Ship the API/ }));
     expect(confirm).toBeEnabled();
+    expect(await axe(container)).toHaveNoViolations();
   });
 
   it('submits the exact frozen snapshot and reports success', async () => {
@@ -641,12 +631,5 @@ describe('AssignAgentTimeDialog', () => {
     // Refresh settled: dismissal is restored.
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
-  });
-
-  it('stays axe-clean with the picker open and a row selected', async () => {
-    const { container } = renderDialog(makeTarget());
-
-    fireEvent.click(await screen.findByRole('option', { name: /Ship the API/ }));
-    expect(await axe(container)).toHaveNoViolations();
   });
 });

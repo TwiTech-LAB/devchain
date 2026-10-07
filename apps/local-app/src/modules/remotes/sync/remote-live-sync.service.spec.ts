@@ -4,9 +4,16 @@ import { ReplicaApplyError } from '../../../common/errors/error-types';
 import type { RemoteProjectBinding } from '../../storage/models/domain.models';
 import { RemoteHostRequestError } from '../operations/remote-host.client';
 import { RemoteLiveSyncService } from './remote-live-sync.service';
+import { RemoteFileSyncService } from './remote-file-sync.service';
 
 const PROJECT = 'project-1';
 const REMOTE = 'remote-1';
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => (resolve = done));
+  return { promise, resolve };
+}
 
 function changes(
   cursor: string,
@@ -113,10 +120,69 @@ describe('RemoteLiveSyncService', () => {
 
   afterEach(async () => {
     await service.onApplicationShutdown();
+    jest.useRealTimers();
     delete process.env.REMOTES_SYNC_INTERVAL_MS;
     delete process.env.REMOTES_RECONCILE_INTERVAL_MS;
     resetEnvConfig();
   });
+
+  it.each(
+    (['force_sync', 'git_owner'] as const).flatMap((kind) =>
+      (['running', 'failed'] as const).map((state) => ({ kind, state })),
+    ),
+  )(
+    'retains the $state $kind hold after restarting live sync while DB pulls continue',
+    async ({ kind, state }) => {
+      const storage = {
+        listRemoteOperations: jest.fn(async () => [{ kind, state }]),
+      };
+      const fileBoundary = {
+        ensureFolder: jest.fn(),
+        device: jest.fn(),
+        revertLocalChanges: jest.fn(),
+      };
+      const index = { refreshIndexFromHead: jest.fn() };
+      for (let boot = 0; boot < 2; boot++) {
+        await service.onApplicationShutdown();
+        const health = { getState: () => ({ online: true, versionMatches: true }) };
+        const upkeep = new RemoteFileSyncService(
+          fileBoundary as never,
+          host as never,
+          bindings as never,
+          health as never,
+          {} as never,
+          index as never,
+          {} as never,
+          storage as never,
+          {} as never,
+          {} as never,
+          {} as never,
+        );
+        service = new RemoteLiveSyncService(
+          health as never,
+          bindings as never,
+          host as never,
+          applier as never,
+          builder as never,
+          upkeep,
+        );
+        await service.onApplicationBootstrap();
+        await service.syncNow(PROJECT);
+      }
+      expect(host.changes).toHaveBeenCalledTimes(2);
+      expect(applier.apply).toHaveBeenCalledTimes(2);
+      expect(storage.listRemoteOperations).toHaveBeenCalledWith({
+        projectId: PROJECT,
+        kinds: ['force_sync', 'git_owner'],
+        states: ['running', 'failed'],
+        limit: 1,
+      });
+      expect(fileBoundary.ensureFolder).not.toHaveBeenCalled();
+      expect(fileBoundary.device).not.toHaveBeenCalled();
+      expect(fileBoundary.revertLocalChanges).not.toHaveBeenCalled();
+      expect(index.refreshIndexFromHead).not.toHaveBeenCalled();
+    },
+  );
 
   it('pulls since the binding cursor, applies live, then advances the cursor', async () => {
     host.changes.mockResolvedValueOnce(changes('2026-09-22T10:00:05.000Z', { epics: 1 }));
@@ -313,12 +379,17 @@ describe('RemoteLiveSyncService', () => {
           release = () => resolve(changes('2026-09-22T10:00:05.000Z', { epics: 1 }));
         }),
     );
-    service.start(PROJECT, REMOTE);
+    jest.useFakeTimers();
+    await service.onApplicationBootstrap();
 
     const first = service.syncNow(PROJECT);
     const second = service.syncNow(PROJECT);
-    await new Promise((resolve) => setImmediate(resolve));
-    release();
+    try {
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(host.changes).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+    }
     await Promise.all([first, second]);
 
     expect(host.changes).toHaveBeenCalledTimes(1);
@@ -367,6 +438,7 @@ describe('RemoteLiveSyncService', () => {
     service.start(PROJECT, REMOTE);
     const first = service.syncNow(PROJECT);
     const concurrent = service.syncNow(PROJECT);
+    await Promise.resolve();
     expect(files.tick).toHaveBeenCalledTimes(1);
     let stopped = false;
     const stop = service.stop(PROJECT).then(() => {
@@ -379,6 +451,92 @@ describe('RemoteLiveSyncService', () => {
     await Promise.all([first, concurrent, stop]);
     expect(files.forget).toHaveBeenCalledWith(PROJECT);
     expect(host.changes).not.toHaveBeenCalled();
+  });
+
+  // Unit tests observe queue ordering through the runner's public callbacks, with deterministic gates.
+  it('serializes exclusive saves behind ticks and retains the last queued owner', async () => {
+    jest.useFakeTimers();
+    await service.onApplicationBootstrap();
+    const events: string[] = [];
+    const [tickGate, saveGate, tickReady, saveReady] = [
+      deferred(),
+      deferred(),
+      deferred(),
+      deferred(),
+    ];
+    files.tick.mockImplementationOnce(async () => {
+      events.push('tick');
+      tickReady.resolve();
+      await tickGate.promise;
+    });
+    const tick = service.syncNow(PROJECT);
+    await tickReady.promise;
+    const first = service.runExclusive(PROJECT, async (active) => {
+      expect(active()).toBe(true);
+      events.push('first-save');
+      saveReady.resolve();
+      await saveGate.promise;
+      return 'applied';
+    });
+    const second = service.runExclusive(PROJECT, async () => {
+      events.push('second-save');
+    });
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(events).toEqual(['tick']);
+    tickGate.resolve();
+    await saveReady.promise;
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(files.tick).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(['tick', 'first-save']);
+    saveGate.resolve();
+    await expect(first).resolves.toBe('applied');
+    await Promise.all([tick, second]);
+    expect(events).toEqual(['tick', 'first-save', 'second-save']);
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(files.tick).toHaveBeenCalledTimes(2);
+  });
+
+  it('drains queued work on stop and gives it an inactive lifecycle', async () => {
+    service.start(PROJECT, REMOTE);
+    const [gate, ready] = [deferred(), deferred()];
+    const first = service.runExclusive(PROJECT, async () => {
+      ready.resolve();
+      await gate.promise;
+    });
+    await ready.promise;
+    const second = service.runExclusive(PROJECT, async (active) => active());
+    const stop = service.stop(PROJECT);
+    expect(service.isRunning(PROJECT)).toBe(false);
+    expect(files.forget).not.toHaveBeenCalled();
+    gate.resolve();
+    await expect(second).resolves.toBe(false);
+    await Promise.all([first, stop]);
+    expect(files.forget).toHaveBeenCalledWith(PROJECT);
+  });
+
+  it('continues queued work after an exclusive callback rejects', async () => {
+    service.start(PROJECT, REMOTE);
+    const failed = service.runExclusive(PROJECT, async () => {
+      throw new Error('save failed');
+    });
+    const next = service.runExclusive(PROJECT, async () => 'saved');
+    await expect(failed).rejects.toThrow('save failed');
+    await expect(next).resolves.toBe('saved');
+    await service.syncNow(PROJECT);
+    expect(host.changes).toHaveBeenCalledTimes(1);
+  });
+
+  it('pullNow still pulls when another exclusive save is queued while it waits', async () => {
+    service.start(PROJECT, REMOTE);
+    const gate = deferred();
+    const first = service.runExclusive(PROJECT, async () => {
+      await gate.promise;
+    });
+    const pull = service.pullNow(PROJECT);
+    const later = service.runExclusive(PROJECT, async () => 'saved');
+    gate.resolve();
+    await Promise.all([first, pull, later]);
+    expect(host.changes).toHaveBeenCalledTimes(1);
   });
 
   it('writes nothing for a pull that finishes after stop', async () => {

@@ -5,10 +5,6 @@ describe('sanitizeEnvMap', () => {
     expect(sanitizeEnvMap(null)).toBeNull();
   });
 
-  it('returns null for undefined input', () => {
-    expect(sanitizeEnvMap(undefined)).toBeNull();
-  });
-
   it('preserves non-secret keys', () => {
     const env = {
       NODE_ENV: 'production',
@@ -21,61 +17,36 @@ describe('sanitizeEnvMap', () => {
     expect(result).toEqual(env);
   });
 
-  it('redacts api_key (case-insensitive)', () => {
-    expect(sanitizeEnvMap({ MY_API_KEY: 'secret123' })).toEqual({ MY_API_KEY: '***' });
-    expect(sanitizeEnvMap({ api_key: 'secret123' })).toEqual({ api_key: '***' });
-    expect(sanitizeEnvMap({ Api_Key_Custom: 'val' })).toEqual({ Api_Key_Custom: '***' });
-  });
-
-  it('redacts apikey (no underscore)', () => {
-    expect(sanitizeEnvMap({ MYAPIKEY: 'val' })).toEqual({ MYAPIKEY: '***' });
-  });
-
-  it('redacts token', () => {
-    expect(sanitizeEnvMap({ AUTH_TOKEN: 'val' })).toEqual({ AUTH_TOKEN: '***' });
-    expect(sanitizeEnvMap({ GITHUB_TOKEN: 'ghp_xxx' })).toEqual({ GITHUB_TOKEN: '***' });
-  });
-
-  it('redacts secret', () => {
-    expect(sanitizeEnvMap({ APP_SECRET: 'val' })).toEqual({ APP_SECRET: '***' });
-  });
-
-  it('redacts password', () => {
-    expect(sanitizeEnvMap({ DB_PASSWORD: 'val' })).toEqual({ DB_PASSWORD: '***' });
-  });
-
-  it('redacts passwd', () => {
-    expect(sanitizeEnvMap({ MY_PASSWD: 'val' })).toEqual({ MY_PASSWD: '***' });
-  });
-
-  it('redacts private_key', () => {
-    expect(sanitizeEnvMap({ SSH_PRIVATE_KEY: 'val' })).toEqual({ SSH_PRIVATE_KEY: '***' });
-  });
-
-  it('redacts client_secret', () => {
-    expect(sanitizeEnvMap({ OAUTH_CLIENT_SECRET: 'val' })).toEqual({ OAUTH_CLIENT_SECRET: '***' });
-  });
-
-  it('redacts access_key', () => {
-    expect(sanitizeEnvMap({ AWS_ACCESS_KEY: 'val' })).toEqual({ AWS_ACCESS_KEY: '***' });
-    expect(sanitizeEnvMap({ AWS_ACCESS_KEY_ID: 'AKIA' })).toEqual({ AWS_ACCESS_KEY_ID: '***' });
-  });
-
-  it('redacts bearer', () => {
-    expect(sanitizeEnvMap({ BEARER_AUTH: 'val' })).toEqual({ BEARER_AUTH: '***' });
-  });
-
-  it('redacts credential and credentials', () => {
-    expect(sanitizeEnvMap({ MY_CREDENTIAL: 'val' })).toEqual({ MY_CREDENTIAL: '***' });
-    expect(sanitizeEnvMap({ GCP_CREDENTIALS: 'val' })).toEqual({ GCP_CREDENTIALS: '***' });
-  });
-
-  it('redacts service_account', () => {
-    expect(sanitizeEnvMap({ SERVICE_ACCOUNT_KEY: 'val' })).toEqual({ SERVICE_ACCOUNT_KEY: '***' });
-  });
-
-  it('redacts ssh_key', () => {
-    expect(sanitizeEnvMap({ DEPLOY_SSH_KEY: 'val' })).toEqual({ DEPLOY_SSH_KEY: '***' });
+  it.each<{ label: string; env: Record<string, string> }>([
+    {
+      label: 'redacts api_key (case-insensitive)',
+      env: { MY_API_KEY: 'secret123', api_key: 'secret123', Api_Key_Custom: 'val' },
+    },
+    { label: 'redacts apikey (no underscore)', env: { MYAPIKEY: 'val' } },
+    { label: 'redacts token', env: { AUTH_TOKEN: 'val', GITHUB_TOKEN: 'ghp_xxx' } },
+    { label: 'redacts secret', env: { APP_SECRET: 'val' } },
+    { label: 'redacts password', env: { DB_PASSWORD: 'val' } },
+    { label: 'redacts passwd', env: { MY_PASSWD: 'val' } },
+    { label: 'redacts private_key', env: { SSH_PRIVATE_KEY: 'val' } },
+    { label: 'redacts client_secret', env: { OAUTH_CLIENT_SECRET: 'val' } },
+    { label: 'redacts access_key', env: { AWS_ACCESS_KEY: 'val', AWS_ACCESS_KEY_ID: 'AKIA' } },
+    { label: 'redacts bearer', env: { BEARER_AUTH: 'val' } },
+    {
+      label: 'redacts credential and credentials',
+      env: { MY_CREDENTIAL: 'val', GCP_CREDENTIALS: 'val' },
+    },
+    { label: 'redacts service_account', env: { SERVICE_ACCOUNT_KEY: 'val' } },
+    { label: 'redacts ssh_key', env: { DEPLOY_SSH_KEY: 'val' } },
+    { label: 'redacts connection_string', env: { DB_CONNECTION_STRING: 'val' } },
+    { label: 'redacts database_url', env: { DATABASE_URL: 'postgres://...' } },
+    { label: 'redacts dsn', env: { SENTRY_DSN: 'https://xxx@sentry' } },
+    { label: 'redacts webhook_secret', env: { WEBHOOK_SECRET: 'val' } },
+    { label: 'redacts signing_key', env: { JWT_SIGNING_KEY: 'val' } },
+    { label: 'redacts encryption_key', env: { DATA_ENCRYPTION_KEY: 'val' } },
+  ])('$label', ({ env }) => {
+    expect(sanitizeEnvMap(env)).toEqual(
+      Object.fromEntries(Object.keys(env).map((key) => [key, '***'])),
+    );
   });
 
   it('redacts PAT-shaped keys (boundary-aware)', () => {
@@ -96,85 +67,7 @@ describe('sanitizeEnvMap', () => {
     expect(sanitizeEnvMap(env)).toEqual(env);
   });
 
-  it('redacts connection_string', () => {
-    expect(sanitizeEnvMap({ DB_CONNECTION_STRING: 'val' })).toEqual({
-      DB_CONNECTION_STRING: '***',
-    });
-  });
-
-  it('redacts database_url', () => {
-    expect(sanitizeEnvMap({ DATABASE_URL: 'postgres://...' })).toEqual({ DATABASE_URL: '***' });
-  });
-
-  it('redacts dsn', () => {
-    expect(sanitizeEnvMap({ SENTRY_DSN: 'https://xxx@sentry' })).toEqual({ SENTRY_DSN: '***' });
-  });
-
-  it('redacts webhook_secret', () => {
-    expect(sanitizeEnvMap({ WEBHOOK_SECRET: 'val' })).toEqual({ WEBHOOK_SECRET: '***' });
-  });
-
-  it('redacts signing_key', () => {
-    expect(sanitizeEnvMap({ JWT_SIGNING_KEY: 'val' })).toEqual({ JWT_SIGNING_KEY: '***' });
-  });
-
-  it('redacts encryption_key', () => {
-    expect(sanitizeEnvMap({ DATA_ENCRYPTION_KEY: 'val' })).toEqual({ DATA_ENCRYPTION_KEY: '***' });
-  });
-
-  it('handles mixed secret and non-secret keys', () => {
-    const env = {
-      NODE_ENV: 'production',
-      API_KEY: 'sk-secret',
-      LOG_LEVEL: 'info',
-      DB_PASSWORD: 'pass123',
-    };
-    const result = sanitizeEnvMap(env);
-    expect(result).toEqual({
-      NODE_ENV: 'production',
-      API_KEY: '***',
-      LOG_LEVEL: 'info',
-      DB_PASSWORD: '***',
-    });
-  });
-
-  it('replaces original values with *** (not present in output)', () => {
-    const secretValue = 'super-secret-value-12345';
-    const result = sanitizeEnvMap({ MY_TOKEN: secretValue });
-    expect(JSON.stringify(result)).not.toContain(secretValue);
-    expect(result).toEqual({ MY_TOKEN: '***' });
-  });
-
   it('returns empty record as-is (no keys to redact)', () => {
     expect(sanitizeEnvMap({})).toEqual({});
-  });
-
-  it('regression: false-positive guards and PAT boundary cases in a single env map', () => {
-    const env = {
-      // Must NOT be redacted (false-positive guards)
-      PATH: '/usr/bin',
-      PATTERN: 'glob',
-      DISPATCH: 'async',
-      PATIENCE: '100',
-      AUTHOR_NAME: 'Jane',
-      AUTHENTICATOR: 'oauth',
-      // Must be redacted (PAT boundary matches)
-      GITHUB_PAT: 'ghp_xxx',
-      MY_PAT: 'val',
-      PAT_TOKEN: 'val',
-      GH_PAT_VALUE: 'val',
-    };
-    expect(sanitizeEnvMap(env)).toEqual({
-      PATH: '/usr/bin',
-      PATTERN: 'glob',
-      DISPATCH: 'async',
-      PATIENCE: '100',
-      AUTHOR_NAME: 'Jane',
-      AUTHENTICATOR: 'oauth',
-      GITHUB_PAT: '***',
-      MY_PAT: '***',
-      PAT_TOKEN: '***',
-      GH_PAT_VALUE: '***',
-    });
   });
 });

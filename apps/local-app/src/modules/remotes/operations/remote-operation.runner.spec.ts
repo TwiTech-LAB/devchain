@@ -150,6 +150,124 @@ describe('RemoteOperationRunner', () => {
     beforeEach(() => jest.useFakeTimers());
     afterEach(() => jest.useRealTimers());
 
+    it.each(['queued', 'in-flight'] as const)(
+      'serializes a durable checkpoint after %s progress and keeps it through cancellation',
+      async (previous) => {
+        const beforeCheckpoint = deferred();
+        const oldWrite = deferred();
+        const checkpointSaved = deferred();
+        const finish = deferred();
+        const update = storage.updateRemoteOperation.bind(storage);
+        const writes: string[] = [];
+        jest.spyOn(storage, 'updateRemoteOperation').mockImplementation(async (id, patch) => {
+          if (patch.details?.phase === 'old' && !patch.steps && !patch.state) {
+            await oldWrite.promise;
+            writes.push('old');
+          }
+          if (patch.details?.phase === 'new' && !patch.steps && !patch.state) writes.push('new');
+          return update(id, patch);
+        });
+        const effect = jest.fn();
+        const runner = runnerFor(
+          definition([
+            step('sync', async ({ progress, operation }) => {
+              await progress({ phase: 'old' });
+              await beforeCheckpoint.promise;
+              await progress({ phase: 'new', fileSyncMode: 'merge' }, { durable: true });
+              expect((await storage.getRemoteOperation(operation.id)).details.fileSyncMode).toBe(
+                'merge',
+              );
+              effect();
+              checkpointSaved.resolve();
+              await finish.promise;
+            }),
+            step('next'),
+          ]),
+        );
+        const operation = await runner.start({
+          kind: 'attach',
+          remoteId: 'remote-1',
+          projectId: 'project-1',
+          details: {},
+        });
+        await jest.advanceTimersByTimeAsync(previous === 'in-flight' ? 1000 : 0);
+        beforeCheckpoint.resolve();
+        await jest.advanceTimersByTimeAsync(0);
+        const cancelling = runner.cancel(operation.id);
+        if (previous === 'in-flight') expect(effect).not.toHaveBeenCalled();
+        oldWrite.resolve();
+        await checkpointSaved.promise;
+        finish.resolve();
+        await jest.advanceTimersByTimeAsync(0);
+        await cancelling;
+        await runner.whenIdle(operation.id);
+        expect(writes).toEqual(previous === 'in-flight' ? ['old', 'new'] : ['new']);
+        expect((await storage.getRemoteOperation(operation.id)).details).toMatchObject({
+          phase: 'new',
+          fileSyncMode: 'merge',
+        });
+        expect((await storage.getRemoteOperation(operation.id)).state).toBe('cancelled');
+      },
+    );
+
+    it('rejects a durable storage failure before the step can mutate folders', async () => {
+      const update = storage.updateRemoteOperation.bind(storage);
+      jest.spyOn(storage, 'updateRemoteOperation').mockImplementation(async (id, patch) => {
+        if (patch.details?.fileSyncMode && !patch.steps) throw new Error('database unavailable');
+        return update(id, patch);
+      });
+      const effect = jest.fn();
+      const runner = runnerFor(
+        definition([
+          step('sync', async ({ progress }) => {
+            await progress({ fileSyncMode: 'merge' }, { durable: true });
+            effect();
+          }),
+        ]),
+      );
+      const operation = await runner.start({
+        kind: 'attach',
+        remoteId: 'remote-1',
+        projectId: 'project-1',
+        details: {},
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      await runner.whenIdle(operation.id);
+      expect(effect).not.toHaveBeenCalled();
+      expect((await storage.getRemoteOperation(operation.id)).steps[0].error?.message).toBe(
+        'database unavailable',
+      );
+    });
+
+    it('finishes an awaited checkpoint through shutdown even when the step outcome is no longer saved', async () => {
+      const write = deferred();
+      const update = storage.updateRemoteOperation.bind(storage);
+      jest.spyOn(storage, 'updateRemoteOperation').mockImplementation(async (id, patch) => {
+        if (patch.details?.fileSyncMode && !patch.steps) await write.promise;
+        return update(id, patch);
+      });
+      const runner = runnerFor(
+        definition([
+          step('sync', async ({ progress }) => {
+            await progress({ fileSyncMode: 'merge' }, { durable: true });
+          }),
+        ]),
+      );
+      const operation = await runner.start({
+        kind: 'attach',
+        remoteId: 'remote-1',
+        projectId: 'project-1',
+        details: {},
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      runner.onApplicationShutdown();
+      write.resolve();
+      await runner.whenIdle(operation.id);
+      const persisted = await storage.getRemoteOperation(operation.id);
+      expect(persisted.details.fileSyncMode).toBe('merge');
+      expect(persisted.steps[0].state).toBe('running');
+    });
+
     it('persists and publishes the latest progress at most once a second without changing steps', async () => {
       const gate = deferred();
       const runner = runnerFor(
@@ -306,6 +424,40 @@ describe('RemoteOperationRunner', () => {
     expect(steps[0].run).not.toHaveBeenCalled();
     expect(steps[1].run).toHaveBeenCalledTimes(1);
     expect(steps[2].run).toHaveBeenCalledTimes(1);
+    expect((await storage.getRemoteOperation('op-9')).state).toBe('done');
+  });
+
+  it('resumes the other operations at startup when one row cannot be prepared', async () => {
+    const steps = [step('one')];
+    const runner = runnerFor(definition(steps));
+    const row = (id: string, kind: string) =>
+      ({
+        id,
+        kind,
+        remoteId: 'remote-1',
+        projectId: 'project-1',
+        state: 'running',
+        steps: [
+          {
+            id: 'one',
+            label: 'one',
+            state: 'pending',
+            startedAt: null,
+            endedAt: null,
+            error: null,
+          },
+        ],
+        details: {},
+        createdAt: 'now',
+        updatedAt: 'now',
+      }) as never;
+    // No definition is registered for this kind in this runner.
+    storage.rows.set('op-unknown', row('op-unknown', 'force_sync'));
+    storage.rows.set('op-9', row('op-9', 'attach'));
+
+    await expect(runner.onApplicationBootstrap()).resolves.toBeUndefined();
+    await runner.whenIdle('op-9');
+
     expect((await storage.getRemoteOperation('op-9')).state).toBe('done');
   });
 

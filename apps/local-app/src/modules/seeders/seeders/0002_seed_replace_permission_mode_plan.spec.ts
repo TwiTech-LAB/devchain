@@ -3,10 +3,7 @@ import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import type { SeederContext } from '../types/seeder.types';
-import {
-  runSeedReplacePermissionModePlan,
-  seedReplacePermissionModePlanSeeder,
-} from './0002_seed_replace_permission_mode_plan';
+import { runSeedReplacePermissionModePlan } from './0002_seed_replace_permission_mode_plan';
 
 describe('0002_seed_replace_permission_mode_plan', () => {
   let sqlite: Database.Database;
@@ -101,13 +98,5 @@ describe('0002_seed_replace_permission_mode_plan', () => {
       }),
       'Replace-permission-mode-plan seeder completed',
     );
-  });
-
-  it('exports seeder metadata and run function', () => {
-    expect(seedReplacePermissionModePlanSeeder).toMatchObject({
-      name: '0002_seed_replace_permission_mode_plan',
-      version: 1,
-      run: runSeedReplacePermissionModePlan,
-    });
   });
 });

@@ -1,3 +1,4 @@
+import { processIdsEnv } from '../../../../common/process-ids-env';
 import type {
   ProviderAdapter,
   LaunchInitialPromptBehavior,
@@ -149,6 +150,11 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
 
   if (input.runtimeEnv && Object.keys(input.runtimeEnv).length > 0) {
     env = { ...(env ?? {}), ...input.runtimeEnv };
+  }
+
+  const idsEnv = processIdsEnv();
+  if (Object.keys(idsEnv).length > 0) {
+    env = { ...(env ?? {}), ...idsEnv };
   }
 
   const finalOptionArgs = [...(input.providerOptionArgs ?? []), ...optionArgs];

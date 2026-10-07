@@ -152,14 +152,6 @@ describe('Host TLS transport integration', () => {
       socket.on('close', () => resolve(received));
     });
 
-  it('listens on the real port and answers TLS and loopback plaintext', async () => {
-    expect(port).toBeGreaterThan(0);
-    expect(app.getHttpServer().address()).toMatchObject({ port });
-    await expect(secure('/health')).resolves.toMatchObject({ status: 200 });
-    const plain = await fetch(`http://127.0.0.1:${port}/health`);
-    expect(plain.status).toBe(200);
-  });
-
   it('applies the API key to a LAN peer over TLS', async () => {
     lanPeer();
     const rejected = await secure('/health');

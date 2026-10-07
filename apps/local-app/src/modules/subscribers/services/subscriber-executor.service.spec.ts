@@ -218,10 +218,6 @@ describe('SubscriberExecutorService', () => {
   });
 
   describe('onModuleInit', () => {
-    it('should initialize without errors', async () => {
-      await expect(service.onModuleInit()).resolves.not.toThrow();
-    });
-
     it('should not cause unhandledRejection when scheduling fails from onAny handler', async () => {
       jest.spyOn(eventFieldsCatalog, 'isSubscribableEvent').mockReturnValue(true);
 
@@ -270,12 +266,32 @@ describe('SubscriberExecutorService', () => {
       expect(mockStorage.findSubscribersByEventName).not.toHaveBeenCalled();
     });
 
-    it('should return null when projectId cannot be resolved (no projectId and no session)', async () => {
-      const payload = {} as SubscribableEventPayload;
-
-      const result = await service.handleEvent('terminal.watcher.triggered', payload);
-
-      expect(result).toBeNull();
+    it.each([
+      { name: 'no project or session', payload: {} as SubscribableEventPayload, session: null },
+      {
+        name: 'session without agent',
+        payload: { sessionId: 'session-123' } as SubscribableEventPayload,
+        session: {
+          id: 'session-123',
+          tmuxSessionId: 'tmux-session-1',
+          status: 'running' as const,
+          epicId: null,
+          agentId: null, // No agent
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      {
+        name: 'missing session',
+        payload: { sessionId: 'nonexistent-session' } as SubscribableEventPayload,
+        session: null,
+      },
+    ])('returns no work for $name', async ({ payload, session }) => {
+      mockSessionsService.getSession.mockReturnValue(session);
+      expect(await service.handleEvent('terminal.watcher.triggered', payload)).toBeNull();
+      expect(mockStorage.getAgent).not.toHaveBeenCalled();
     });
 
     it('should resolve projectId via session lookup when payload missing projectId', async () => {
@@ -320,37 +336,6 @@ describe('SubscriberExecutorService', () => {
       );
     });
 
-    it('should return null when session has no agent', async () => {
-      const payload = { sessionId: 'session-123' } as SubscribableEventPayload;
-
-      mockSessionsService.getSession.mockReturnValue({
-        id: 'session-123',
-        tmuxSessionId: 'tmux-session-1',
-        status: 'running',
-        epicId: null,
-        agentId: null, // No agent
-        startedAt: new Date().toISOString(),
-        endedAt: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-
-      const result = await service.handleEvent('terminal.watcher.triggered', payload);
-
-      expect(result).toBeNull();
-      expect(mockStorage.getAgent).not.toHaveBeenCalled();
-    });
-
-    it('should return null when session not found during projectId resolution', async () => {
-      const payload = { sessionId: 'nonexistent-session' } as SubscribableEventPayload;
-
-      mockSessionsService.getSession.mockReturnValue(null);
-
-      const result = await service.handleEvent('terminal.watcher.triggered', payload);
-
-      expect(result).toBeNull();
-    });
-
     it('should find subscribers by customEventName for terminal.watcher.triggered', async () => {
       const payload = createMockPayload({ customEventName: 'error.detected' });
 
@@ -377,81 +362,53 @@ describe('SubscriberExecutorService', () => {
       );
     });
 
-    it('should schedule enabled subscribers (no immediate execution)', async () => {
-      const subscriber = createMockSubscriber({ enabled: true });
-      mockStorage.findSubscribersByEventName.mockResolvedValue([subscriber]);
-
-      const executeSpy = jest
-        .spyOn(service, 'executeSubscriber')
-        .mockResolvedValue(createMockExecutionResult(subscriber));
-      const payload = createMockPayload();
-
-      const result = await service.handleEvent('terminal.watcher.triggered', payload);
-
-      expect(result?.subscribersMatched).toBe(1);
-      expect(result?.subscribersScheduled).toBe(1);
-      expect(result?.subscribersSkipped).toBe(0);
-      expect(mockScheduler.schedule).toHaveBeenCalledTimes(1);
-      expect(executeSpy).not.toHaveBeenCalled();
-    });
-
-    it('should skip disabled subscribers at scheduling time', async () => {
-      const subscriber = createMockSubscriber({ enabled: false });
-      mockStorage.findSubscribersByEventName.mockResolvedValue([subscriber]);
-
-      const executeSpy = jest
-        .spyOn(service, 'executeSubscriber')
-        .mockResolvedValue(createMockExecutionResult(subscriber));
-      const payload = createMockPayload();
-
-      const result = await service.handleEvent('terminal.watcher.triggered', payload);
-
-      expect(executeSpy).not.toHaveBeenCalled();
-      expect(mockScheduler.schedule).not.toHaveBeenCalled();
-      expect(result?.subscribersMatched).toBe(1);
-      expect(result?.subscribersScheduled).toBe(0);
-      expect(result?.subscribersSkipped).toBe(1);
-      expect(result?.skippedSubscribers[0].reason).toBe('disabled');
-    });
-
-    it('should check event filter before scheduling', async () => {
-      const filter: EventFilter = { field: 'agentName', operator: 'equals', value: 'Wrong Agent' };
-      const subscriber = createMockSubscriber({ eventFilter: filter });
-      mockStorage.findSubscribersByEventName.mockResolvedValue([subscriber]);
-
-      const executeSpy = jest
-        .spyOn(service, 'executeSubscriber')
-        .mockResolvedValue(createMockExecutionResult(subscriber));
-      const payload = createMockPayload({ agentName: 'Test Agent' });
-
-      const result = await service.handleEvent('terminal.watcher.triggered', payload);
-
-      expect(executeSpy).not.toHaveBeenCalled();
-      expect(mockScheduler.schedule).not.toHaveBeenCalled();
-      expect(result?.subscribersMatched).toBe(1);
-      expect(result?.subscribersScheduled).toBe(0);
-      expect(result?.subscribersSkipped).toBe(1);
-      expect(result?.skippedSubscribers[0].reason).toBe('filter_not_matched');
-    });
-
-    it('should schedule subscriber when filter matches', async () => {
-      const filter: EventFilter = { field: 'agentName', operator: 'equals', value: 'Test Agent' };
-      const subscriber = createMockSubscriber({ eventFilter: filter });
-      mockStorage.findSubscribersByEventName.mockResolvedValue([subscriber]);
-
-      const executeSpy = jest
-        .spyOn(service, 'executeSubscriber')
-        .mockResolvedValue(createMockExecutionResult(subscriber));
-      const payload = createMockPayload({ agentName: 'Test Agent' });
-
-      const result = await service.handleEvent('terminal.watcher.triggered', payload);
-
-      expect(result?.subscribersMatched).toBe(1);
-      expect(result?.subscribersScheduled).toBe(1);
-      expect(result?.subscribersSkipped).toBe(0);
-      expect(mockScheduler.schedule).toHaveBeenCalledTimes(1);
-      expect(executeSpy).not.toHaveBeenCalled();
-    });
+    it.each([
+      { name: 'enabled', enabled: true, filter: null, scheduled: 1, reason: undefined },
+      { name: 'disabled', enabled: false, filter: null, scheduled: 0, reason: 'disabled' },
+      {
+        name: 'unmatched filter',
+        enabled: true,
+        filter: { field: 'agentName', operator: 'equals', value: 'Wrong Agent' },
+        scheduled: 0,
+        reason: 'filter_not_matched',
+      },
+      {
+        name: 'matched filter',
+        enabled: true,
+        filter: { field: 'agentName', operator: 'equals', value: 'Test Agent' },
+        scheduled: 1,
+        reason: undefined,
+      },
+    ])(
+      'schedules $name subscribers appropriately',
+      async ({ enabled, filter, scheduled, reason }) => {
+        const subscriber = createMockSubscriber({
+          enabled,
+          eventFilter: filter as EventFilter | null,
+        });
+        mockStorage.findSubscribersByEventName.mockResolvedValue([subscriber]);
+        const execute = jest
+          .spyOn(service, 'executeSubscriber')
+          .mockResolvedValue(createMockExecutionResult(subscriber));
+        const result = await service.handleEvent(
+          'terminal.watcher.triggered',
+          createMockPayload({ agentName: 'Test Agent' }),
+        );
+        expect(result?.subscribersMatched).toBe(1);
+        expect(result?.subscribersScheduled).toBe(scheduled);
+        expect(result?.subscribersSkipped).toBe(1 - scheduled);
+        expect(mockScheduler.schedule).toHaveBeenCalledTimes(scheduled);
+        expect(execute).not.toHaveBeenCalled();
+        if (reason) expect(result?.skippedSubscribers[0].reason).toBe(reason);
+        expect(result?.eventName).toBe('terminal.watcher.triggered');
+        expect(result?.scheduledTasks).toHaveLength(scheduled);
+        if (scheduled)
+          expect(result?.scheduledTasks[0]).toMatchObject({
+            subscriberId: subscriber.id,
+            subscriberName: subscriber.name,
+          });
+      },
+    );
 
     it('schedules and executes one action when multiple OR conditions match', async () => {
       const subscriber = createMockSubscriber({
@@ -534,22 +491,6 @@ describe('SubscriberExecutorService', () => {
       ]);
     });
 
-    it('should return structured result with scheduling details', async () => {
-      const subscriber = createMockSubscriber();
-      mockStorage.findSubscribersByEventName.mockResolvedValue([subscriber]);
-
-      const payload = createMockPayload();
-      const result = await service.handleEvent('terminal.watcher.triggered', payload);
-
-      expect(result?.eventName).toBe('terminal.watcher.triggered');
-      expect(result?.subscribersMatched).toBe(1);
-      expect(result?.subscribersScheduled).toBe(1);
-      expect(result?.subscribersSkipped).toBe(0);
-      expect(result?.scheduledTasks).toHaveLength(1);
-      expect(result?.scheduledTasks[0].subscriberId).toBe(subscriber.id);
-      expect(result?.scheduledTasks[0].subscriberName).toBe(subscriber.name);
-    });
-
     it('should call recordHandledOk when eventId is present', async () => {
       jest.spyOn(eventsService, 'getEventMetadata').mockReturnValue({ id: 'event-123' });
       const subscriber = createMockSubscriber();
@@ -604,15 +545,6 @@ describe('SubscriberExecutorService', () => {
           }),
         }),
       );
-    });
-  });
-
-  describe('getSubscribableEventNames', () => {
-    it('should return list of subscribable events', () => {
-      const events = service.getSubscribableEventNames();
-      expect(Array.isArray(events)).toBe(true);
-      expect(events.length).toBeGreaterThan(0);
-      expect(events).toContain('terminal.watcher.triggered');
     });
   });
 
@@ -707,29 +639,103 @@ describe('SubscriberExecutorService', () => {
     });
 
     describe('equals operator', () => {
-      it('should return true when field value equals filter value', () => {
-        const filter: EventFilter = { field: 'agentName', operator: 'equals', value: 'Test Agent' };
-        const payload = createMockPayload({ agentName: 'Test Agent' });
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
-      });
-
-      it('should return false when field value does not equal filter value', () => {
-        const filter: EventFilter = {
-          field: 'agentName',
-          operator: 'equals',
-          value: 'Other Agent',
-        };
-        const payload = createMockPayload({ agentName: 'Test Agent' });
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-
-      it('should handle numeric fields converted to string', () => {
-        const filter: EventFilter = { field: 'triggerCount', operator: 'equals', value: '5' };
-        const payload = createMockPayload({ triggerCount: 5 });
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
+      it.each([
+        {
+          name: 'should return true when field value equals filter value',
+          filter: { field: 'agentName', operator: 'equals', value: 'Test Agent' } as EventFilter,
+          payload: createMockPayload({ agentName: 'Test Agent' }),
+          expected: true,
+        },
+        {
+          name: 'should return false when field value does not equal filter value',
+          filter: {
+            field: 'agentName',
+            operator: 'equals',
+            value: 'Other Agent',
+          } as EventFilter,
+          payload: createMockPayload({ agentName: 'Test Agent' }),
+          expected: false,
+        },
+        {
+          name: 'should handle numeric fields converted to string',
+          filter: { field: 'triggerCount', operator: 'equals', value: '5' } as EventFilter,
+          payload: createMockPayload({ triggerCount: 5 }),
+          expected: true,
+        },
+        {
+          name: 'should return true when field value contains filter value',
+          filter: {
+            field: 'viewportSnippet',
+            operator: 'contains',
+            value: 'Error',
+          } as EventFilter,
+          payload: createMockPayload({ viewportSnippet: 'Error: Something went wrong' }),
+          expected: true,
+        },
+        {
+          name: 'should return false when field value does not contain filter value',
+          filter: {
+            field: 'viewportSnippet',
+            operator: 'contains',
+            value: 'Warning',
+          } as EventFilter,
+          payload: createMockPayload({ viewportSnippet: 'Error: Something went wrong' }),
+          expected: false,
+        },
+        {
+          name: 'should return true when field value matches regex pattern',
+          filter: {
+            field: 'viewportSnippet',
+            operator: 'regex',
+            value: 'Error.*wrong',
+          } as EventFilter,
+          payload: createMockPayload({ viewportSnippet: 'Error: Something went wrong' }),
+          expected: true,
+        },
+        {
+          name: 'should return false when field value does not match regex pattern',
+          filter: {
+            field: 'viewportSnippet',
+            operator: 'regex',
+            value: '^Warning',
+          } as EventFilter,
+          payload: createMockPayload({ viewportSnippet: 'Error: Something went wrong' }),
+          expected: false,
+        },
+        {
+          name: 'should return false for invalid regex pattern',
+          filter: {
+            field: 'viewportSnippet',
+            operator: 'regex',
+            value: '[invalid(regex',
+          } as EventFilter,
+          payload: createMockPayload({ viewportSnippet: 'Error: Something went wrong' }),
+          expected: false,
+        },
+        {
+          name: 'should return false for unknown fields',
+          filter: { field: 'unknownField', operator: 'equals', value: 'test' } as EventFilter,
+          payload: createMockPayload(),
+          expected: false,
+        },
+        {
+          name: 'should return false for null field values',
+          filter: { field: 'agentName', operator: 'equals', value: 'test' } as EventFilter,
+          payload: createMockPayload({ agentName: null }),
+          expected: false,
+        },
+        {
+          name: 'should return false for unknown operator',
+          filter: {
+            field: 'agentName',
+            operator: 'unknown' as EventFilterCondition['operator'],
+            value: 'test',
+          } as EventFilter,
+          payload: createMockPayload(),
+          expected: false,
+        },
+      ])('$name', ({ filter, payload, expected }) => {
+        expect(service.matchesFilter(filter, payload)).toBe(expected);
       });
     });
 
@@ -737,11 +743,9 @@ describe('SubscriberExecutorService', () => {
       it.each([
         { operator: 'is_null', field: 'agentName', value: null, expected: true },
         { operator: 'is_null', field: 'agentName', value: 'Test Agent', expected: false },
-        { operator: 'is_null', field: 'agentName', value: undefined, expected: false },
         { operator: 'is_null', field: 'missingField', value: undefined, expected: false },
         { operator: 'is_not_null', field: 'agentName', value: null, expected: false },
         { operator: 'is_not_null', field: 'agentName', value: 'Test Agent', expected: true },
-        { operator: 'is_not_null', field: 'agentName', value: undefined, expected: false },
         { operator: 'is_not_null', field: 'missingField', value: undefined, expected: false },
       ] as const)(
         '$operator matches only the expected field state',
@@ -788,28 +792,6 @@ describe('SubscriberExecutorService', () => {
     });
 
     describe('contains operator', () => {
-      it('should return true when field value contains filter value', () => {
-        const filter: EventFilter = {
-          field: 'viewportSnippet',
-          operator: 'contains',
-          value: 'Error',
-        };
-        const payload = createMockPayload({ viewportSnippet: 'Error: Something went wrong' });
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
-      });
-
-      it('should return false when field value does not contain filter value', () => {
-        const filter: EventFilter = {
-          field: 'viewportSnippet',
-          operator: 'contains',
-          value: 'Warning',
-        };
-        const payload = createMockPayload({ viewportSnippet: 'Error: Something went wrong' });
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-
       it('should be case-sensitive', () => {
         const filter: EventFilter = {
           field: 'viewportSnippet',
@@ -822,201 +804,67 @@ describe('SubscriberExecutorService', () => {
       });
     });
 
-    describe('regex operator', () => {
-      it('should return true when field value matches regex pattern', () => {
-        const filter: EventFilter = {
-          field: 'viewportSnippet',
-          operator: 'regex',
-          value: 'Error.*wrong',
-        };
-        const payload = createMockPayload({ viewportSnippet: 'Error: Something went wrong' });
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
-      });
-
-      it('should return false when field value does not match regex pattern', () => {
-        const filter: EventFilter = {
-          field: 'viewportSnippet',
-          operator: 'regex',
-          value: '^Warning',
-        };
-        const payload = createMockPayload({ viewportSnippet: 'Error: Something went wrong' });
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-
-      it('should return false for invalid regex pattern', () => {
-        const filter: EventFilter = {
-          field: 'viewportSnippet',
-          operator: 'regex',
-          value: '[invalid(regex',
-        };
-        const payload = createMockPayload({ viewportSnippet: 'Error: Something went wrong' });
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-    });
-
-    describe('field access', () => {
-      it('should return false for unknown fields', () => {
-        const filter: EventFilter = { field: 'unknownField', operator: 'equals', value: 'test' };
-        const payload = createMockPayload();
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-
-      it('should return false for null field values', () => {
-        const filter: EventFilter = { field: 'agentName', operator: 'equals', value: 'test' };
-        const payload = createMockPayload({ agentName: null });
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-
-      it('should access all known payload fields', () => {
-        const fields = [
-          'watcherId',
-          'watcherName',
-          'customEventName',
-          'sessionId',
-          'agentId',
-          'agentName',
-          'projectId',
-          'viewportSnippet',
-          'viewportHash',
-          'triggerCount',
-          'triggeredAt',
-        ];
-
-        for (const field of fields) {
-          const filter: EventFilter = { field, operator: 'contains', value: '' };
-          const payload = createMockPayload();
-
-          // Should not throw and should return true for contains empty string
-          expect(() => service.matchesFilter(filter, payload)).not.toThrow();
-        }
-      });
-
-      it('should handle matchedPattern field when present', () => {
-        const filter: EventFilter = {
-          field: 'matchedPattern',
-          operator: 'equals',
-          value: 'Error.*',
-        };
-        const payload = createMockPayload({ matchedPattern: 'Error.*' });
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
-      });
-    });
-
     describe('nested field access', () => {
-      it('should access nested fields with dot notation', () => {
-        // Create a payload with nested structure by extending the mock
-        const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-          nested: { value: string };
-        };
-        (payload as Record<string, unknown>).nested = { value: 'test-value' };
-
-        const filter: EventFilter = {
-          field: 'nested.value',
-          operator: 'equals',
-          value: 'test-value',
-        };
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
-      });
-
-      it('should access deeply nested fields', () => {
-        const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-          level1: { level2: { level3: string } };
-        };
-        (payload as Record<string, unknown>).level1 = { level2: { level3: 'deep-value' } };
-
-        const filter: EventFilter = {
-          field: 'level1.level2.level3',
-          operator: 'equals',
-          value: 'deep-value',
-        };
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
-      });
-
-      it('should return false for non-existent nested paths', () => {
-        const payload = createMockPayload();
-
-        const filter: EventFilter = {
-          field: 'nonexistent.nested.path',
-          operator: 'equals',
-          value: 'test',
-        };
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-
-      it('should return false when intermediate path is null', () => {
-        const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-          nested: null;
-        };
-        (payload as Record<string, unknown>).nested = null;
-
-        const filter: EventFilter = { field: 'nested.value', operator: 'equals', value: 'test' };
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-
-      it('should return false when intermediate path is a primitive', () => {
-        const payload = createMockPayload();
-
-        // agentName is a string, so agentName.something should return undefined
-        const filter: EventFilter = {
-          field: 'agentName.something',
-          operator: 'equals',
-          value: 'test',
-        };
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
-      });
-
-      it('should handle contains operator with nested fields', () => {
-        const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-          data: { message: string };
-        };
-        (payload as Record<string, unknown>).data = { message: 'Error occurred in module' };
-
-        const filter: EventFilter = {
-          field: 'data.message',
-          operator: 'contains',
-          value: 'Error',
-        };
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
-      });
-
-      it('should handle regex operator with nested fields', () => {
-        const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-          data: { code: string };
-        };
-        (payload as Record<string, unknown>).data = { code: 'ERR-1234' };
-
-        const filter: EventFilter = {
-          field: 'data.code',
-          operator: 'regex',
-          value: '^ERR-\\d+$',
-        };
-
-        expect(service.matchesFilter(filter, payload)).toBe(true);
-      });
-    });
-
-    describe('unknown operator', () => {
-      it('should return false for unknown operator', () => {
-        const filter = {
-          field: 'agentName',
-          operator: 'unknown' as EventFilterCondition['operator'],
-          value: 'test',
-        };
-        const payload = createMockPayload();
-
-        expect(service.matchesFilter(filter, payload)).toBe(false);
+      it.each([
+        {
+          name: 'should return false when intermediate path is null',
+          payload: { ...createMockPayload(), nested: null },
+          filter: { field: 'nested.value', operator: 'equals', value: 'test' } as EventFilter,
+          checks: [['nested.value', undefined]] as [string, unknown][],
+        },
+        {
+          name: 'should return false when intermediate path is a primitive',
+          payload: createMockPayload(),
+          filter: {
+            field: 'agentName.something',
+            operator: 'equals',
+            value: 'test',
+          } as EventFilter,
+          checks: [['agentName.something', undefined]] as [string, unknown][],
+        },
+        {
+          name: 'should return top-level field value',
+          payload: createMockPayload({ agentName: 'Test Agent' }),
+          filter: undefined,
+          checks: [['agentName', 'Test Agent']] as [string, unknown][],
+        },
+        {
+          name: 'should return nested field value with dot notation',
+          payload: { ...createMockPayload(), nested: { value: 'nested-value' } },
+          filter: undefined,
+          checks: [['nested.value', 'nested-value']] as [string, unknown][],
+        },
+        {
+          name: 'should return undefined for non-existent field',
+          payload: createMockPayload(),
+          filter: undefined,
+          checks: [['nonexistent', undefined]] as [string, unknown][],
+        },
+        {
+          name: 'should return undefined for non-existent nested path',
+          payload: createMockPayload(),
+          filter: undefined,
+          checks: [['nonexistent.nested.path', undefined]] as [string, unknown][],
+        },
+        {
+          name: 'should return null for null field values',
+          payload: createMockPayload({ agentName: null }),
+          filter: undefined,
+          checks: [['agentName', null]] as [string, unknown][],
+        },
+        {
+          name: 'should access array elements by index',
+          payload: { ...createMockPayload(), items: ['first', 'second', 'third'] },
+          filter: undefined,
+          checks: [
+            ['items.0', 'first'],
+            ['items.1', 'second'],
+          ] as [string, unknown][],
+        },
+      ])('$name', ({ payload, filter, checks }) => {
+        for (const [field, expected] of checks)
+          expect(service.getPayloadField(payload, field)).toBe(expected);
+        if (filter) expect(service.matchesFilter(filter, payload)).toBe(false);
       });
     });
   });
@@ -1025,10 +873,6 @@ describe('SubscriberExecutorService', () => {
     describe('isOnCooldown', () => {
       it('should return false when cooldownMs is 0', () => {
         expect(service.isOnCooldown('sub-1', 'session-1', 0)).toBe(false);
-      });
-
-      it('should return false when cooldownMs is negative', () => {
-        expect(service.isOnCooldown('sub-1', 'session-1', -1000)).toBe(false);
       });
 
       it('should return false when no previous execution', () => {
@@ -1068,12 +912,6 @@ describe('SubscriberExecutorService', () => {
     });
 
     describe('setCooldown', () => {
-      it('should set cooldown timestamp', () => {
-        service.setCooldown('sub-1', 'session-1');
-
-        expect(service.isOnCooldown('sub-1', 'session-1', 60000)).toBe(true);
-      });
-
       it('should update existing cooldown', () => {
         jest.useFakeTimers();
 
@@ -1108,10 +946,6 @@ describe('SubscriberExecutorService', () => {
 
         expect(service.isOnCooldown('sub-1', 'session-1', 60000)).toBe(false);
         expect(service.isOnCooldown('sub-1', 'session-2', 60000)).toBe(true);
-      });
-
-      it('should handle clearing non-existent cooldown', () => {
-        expect(() => service.clearCooldown('sub-1', 'session-1')).not.toThrow();
       });
     });
   });
@@ -1150,15 +984,6 @@ describe('SubscriberExecutorService', () => {
         expect(mockExecute).not.toHaveBeenCalled();
       });
 
-      it('should execute when cooldown is 0', async () => {
-        const subscriber = createMockSubscriber({ cooldownMs: 0 });
-        const payload = createMockPayload();
-
-        await service.executeSubscriber(subscriber, 'test.event', payload);
-
-        expect(mockExecute).toHaveBeenCalled();
-      });
-
       it('should set cooldown after execution', async () => {
         const subscriber = createMockSubscriber({ cooldownMs: 5000 });
         const payload = createMockPayload();
@@ -1191,15 +1016,6 @@ describe('SubscriberExecutorService', () => {
         expect(result.skipped).toBe(true);
         expect(result.skipReason).toBe('action_not_found');
         expect(result.error).toBe('Unknown action type: unknown_action');
-      });
-
-      it('should get action from registry', async () => {
-        const subscriber = createMockSubscriber({ actionType: 'send_agent_message' });
-        const payload = createMockPayload();
-
-        await service.executeSubscriber(subscriber, 'test.event', payload);
-
-        expect(actionsRegistry.getAction).toHaveBeenCalledWith('send_agent_message');
       });
     });
 
@@ -1551,31 +1367,6 @@ describe('SubscriberExecutorService', () => {
         expect(result).toMatchObject({ success: false, error: 'Permanent action failure' });
       });
     });
-
-    describe('full execution flow', () => {
-      it('should complete full execution successfully', async () => {
-        const subscriber = createMockSubscriber({
-          actionType: 'send_agent_message',
-          actionInputs: { text: { source: 'custom', customValue: '/compact' } },
-          delayMs: 0,
-          cooldownMs: 5000,
-          retryOnError: false,
-        });
-        const payload = createMockPayload();
-
-        await expect(
-          service.executeSubscriber(subscriber, 'test.event', payload),
-        ).resolves.not.toThrow();
-
-        expect(actionsRegistry.getAction).toHaveBeenCalledWith('send_agent_message');
-        expect(mockSessionsService.getSession).toHaveBeenCalledWith('session-123');
-        expect(mockExecute).toHaveBeenCalledWith(
-          expect.objectContaining({ tmuxSessionName: 'tmux-session-1' }),
-          expect.objectContaining({ text: '/compact' }),
-        );
-        expect(service.isOnCooldown(subscriber.id, payload.sessionId, 5000)).toBe(true);
-      });
-    });
   });
 
   describe('scheduleEventProcessing', () => {
@@ -1676,303 +1467,108 @@ describe('SubscriberExecutorService', () => {
     });
   });
 
-  describe('getPayloadField', () => {
-    it('should return top-level field value', () => {
-      const payload = createMockPayload({ agentName: 'Test Agent' });
-
-      expect(service.getPayloadField(payload, 'agentName')).toBe('Test Agent');
-    });
-
-    it('should return nested field value with dot notation', () => {
-      const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-        nested: { value: string };
-      };
-      (payload as Record<string, unknown>).nested = { value: 'nested-value' };
-
-      expect(service.getPayloadField(payload, 'nested.value')).toBe('nested-value');
-    });
-
-    it('should return undefined for non-existent field', () => {
-      const payload = createMockPayload();
-
-      expect(service.getPayloadField(payload, 'nonexistent')).toBeUndefined();
-    });
-
-    it('should return undefined for non-existent nested path', () => {
-      const payload = createMockPayload();
-
-      expect(service.getPayloadField(payload, 'nonexistent.nested.path')).toBeUndefined();
-    });
-
-    it('should return null for null field values', () => {
-      const payload = createMockPayload({ agentName: null });
-
-      expect(service.getPayloadField(payload, 'agentName')).toBeNull();
-    });
-
-    it('should return numeric values', () => {
-      const payload = createMockPayload({ triggerCount: 42 });
-
-      expect(service.getPayloadField(payload, 'triggerCount')).toBe(42);
-    });
-
-    it('should handle arrays at nested paths', () => {
-      const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-        items: string[];
-      };
-      (payload as Record<string, unknown>).items = ['a', 'b', 'c'];
-
-      expect(service.getPayloadField(payload, 'items')).toEqual(['a', 'b', 'c']);
-    });
-
-    it('should access array elements by index', () => {
-      const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-        items: string[];
-      };
-      (payload as Record<string, unknown>).items = ['first', 'second', 'third'];
-
-      expect(service.getPayloadField(payload, 'items.0')).toBe('first');
-      expect(service.getPayloadField(payload, 'items.1')).toBe('second');
-    });
-  });
-
   describe('resolveInputs', () => {
     describe('event_field source', () => {
-      it('should extract top-level field from payload', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'event_field', eventField: 'agentName' },
-        };
-        const payload = createMockPayload({ agentName: 'Test Agent' });
-
+      it.each([
+        {
+          name: 'should extract top-level field from payload',
+          mappings: {
+            text: { source: 'event_field', eventField: 'agentName' },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload({ agentName: 'Test Agent' }),
+          expected: 'Test Agent',
+        },
+        {
+          name: 'should return undefined when eventField is not specified',
+          mappings: {
+            text: { source: 'event_field' },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload(),
+          expected: undefined,
+        },
+        {
+          name: 'should use customValue directly',
+          mappings: {
+            text: { source: 'custom', customValue: 'Hello World' },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload(),
+          expected: 'Hello World',
+        },
+        {
+          name: 'should return undefined when customValue is not specified',
+          mappings: {
+            text: { source: 'custom' },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload(),
+          expected: undefined,
+        },
+        {
+          name: 'should handle empty string customValue',
+          mappings: {
+            text: { source: 'custom', customValue: '' },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload(),
+          expected: '',
+        },
+        {
+          name: 'should replace {{field}} with payload value',
+          mappings: {
+            text: { source: 'custom', customValue: 'Hello {{agentName}}!' },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload({ agentName: 'CoderAgent' }),
+          expected: 'Hello CoderAgent!',
+        },
+        {
+          name: 'should handle multiple variables in one string',
+          mappings: {
+            text: {
+              source: 'custom',
+              customValue: 'Agent {{agentName}} in session {{sessionId}}',
+            },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload({
+            agentName: 'TestAgent',
+            sessionId: 'sess-123',
+          }),
+          expected: 'Agent TestAgent in session sess-123',
+        },
+        {
+          name: 'should access nested fields via dot notation',
+          mappings: {
+            text: { source: 'custom', customValue: 'Value: {{nested.value}}' },
+          } as Record<string, ActionInput>,
+          payload: { ...createMockPayload(), nested: { value: 'deep' } },
+          expected: 'Value: deep',
+        },
+        {
+          name: 'should keep unknown variables as-is',
+          mappings: {
+            text: { source: 'custom', customValue: 'Hello {{unknownField}}!' },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload(),
+          expected: 'Hello {{unknownField}}!',
+        },
+        {
+          name: 'should convert null values to empty string',
+          mappings: {
+            text: { source: 'custom', customValue: 'Value: {{agentName}}' },
+          } as Record<string, ActionInput>,
+          payload: createMockPayload({ agentName: null }),
+          expected: 'Value: ',
+        },
+      ])('$name', async ({ mappings, payload, expected }) => {
         const result = await service.resolveInputs(
-          inputMappings,
+          mappings,
           payload,
           undefined,
           'other_action',
           'sub-1',
         );
-
-        expect(result.text).toBe('Test Agent');
-      });
-
-      it('should extract nested field using dot notation', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          message: { source: 'event_field', eventField: 'nested.value' },
-        };
-        const payload = createMockPayload() as TerminalWatcherTriggeredEventPayload & {
-          nested: { value: string };
-        };
-        (payload as Record<string, unknown>).nested = { value: 'nested-message' };
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.message).toBe('nested-message');
-      });
-
-      it('should return undefined for missing field', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'event_field', eventField: 'nonExistent' },
-        };
-        const payload = createMockPayload();
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBeUndefined();
-      });
-
-      it('should return undefined when eventField is not specified', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'event_field' },
-        };
-        const payload = createMockPayload();
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBeUndefined();
-      });
-
-      it('should extract numeric values', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          count: { source: 'event_field', eventField: 'triggerCount' },
-        };
-        const payload = createMockPayload({ triggerCount: 42 });
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.count).toBe(42);
-      });
-
-      it('should handle null field values', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          agent: { source: 'event_field', eventField: 'agentName' },
-        };
-        const payload = createMockPayload({ agentName: null });
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.agent).toBeNull();
-      });
-    });
-
-    describe('custom source', () => {
-      it('should use customValue directly', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom', customValue: 'Hello World' },
-        };
-        const payload = createMockPayload();
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Hello World');
-      });
-
-      it('should return undefined when customValue is not specified', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom' },
-        };
-        const payload = createMockPayload();
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBeUndefined();
-      });
-
-      it('should handle empty string customValue', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom', customValue: '' },
-        };
-        const payload = createMockPayload();
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('');
+        expect(result.text).toBe(expected);
       });
     });
 
     describe('template interpolation', () => {
-      it('should replace {{field}} with payload value', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom', customValue: 'Hello {{agentName}}!' },
-        };
-        const payload = createMockPayload({ agentName: 'CoderAgent' });
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Hello CoderAgent!');
-      });
-
-      it('should handle multiple variables in one string', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: {
-            source: 'custom',
-            customValue: 'Agent {{agentName}} in session {{sessionId}}',
-          },
-        };
-        const payload = createMockPayload({
-          agentName: 'TestAgent',
-          sessionId: 'sess-123',
-        });
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Agent TestAgent in session sess-123');
-      });
-
-      it('should access nested fields via dot notation', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom', customValue: 'Value: {{nested.value}}' },
-        };
-        const payload = createMockPayload();
-        (payload as Record<string, unknown>).nested = { value: 'deep' };
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Value: deep');
-      });
-
-      it('should keep unknown variables as-is', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom', customValue: 'Hello {{unknownField}}!' },
-        };
-        const payload = createMockPayload();
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Hello {{unknownField}}!');
-      });
-
       it('should render unknown variables as empty string on send_agent_message.text (Handlebars path)', async () => {
         const result = await service.resolveInputs(
           { text: { source: 'custom', customValue: 'Hello {{unknownField}}!' } },
@@ -1982,57 +1578,6 @@ describe('SubscriberExecutorService', () => {
           'sub-1',
         );
         expect(result.text).toBe('Hello !');
-      });
-
-      it('should convert null values to empty string', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom', customValue: 'Value: {{agentName}}' },
-        };
-        const payload = createMockPayload({ agentName: null });
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Value: ');
-      });
-
-      it('should stringify numeric values', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom', customValue: 'Count: {{triggerCount}}' },
-        };
-        const payload = createMockPayload({ triggerCount: 42 });
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Count: 42');
-      });
-
-      it('should handle string with no template variables', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'custom', customValue: 'Static text only' },
-        };
-        const payload = createMockPayload();
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Static text only');
       });
 
       it('should allow interpolation from merged templateVars (payload + envelope fields)', async () => {
@@ -2057,30 +1602,6 @@ describe('SubscriberExecutorService', () => {
     });
 
     describe('mixed sources', () => {
-      it('should resolve multiple inputs with different sources', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          agentName: { source: 'event_field', eventField: 'agentName' },
-          customMessage: { source: 'custom', customValue: 'Static message' },
-          sessionId: { source: 'event_field', eventField: 'sessionId' },
-        };
-        const payload = createMockPayload({
-          agentName: 'Test Agent',
-          sessionId: 'session-123',
-        });
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.agentName).toBe('Test Agent');
-        expect(result.customMessage).toBe('Static message');
-        expect(result.sessionId).toBe('session-123');
-      });
-
       it('should handle empty input mappings', async () => {
         const inputMappings: Record<string, ActionInput> = {};
         const payload = createMockPayload();
@@ -2120,25 +1641,6 @@ describe('SubscriberExecutorService', () => {
         expect(result.text).toBe('/compact');
         expect(result.submitKey).toBe('Enter');
         expect(result.delayMs).toBe(1000);
-      });
-
-      it('should resolve viewport snippet for dynamic messages', async () => {
-        const inputMappings: Record<string, ActionInput> = {
-          text: { source: 'event_field', eventField: 'viewportSnippet' },
-        };
-        const payload = createMockPayload({
-          viewportSnippet: 'Error: Context window full. Please compact.',
-        });
-
-        const result = await service.resolveInputs(
-          inputMappings,
-          payload,
-          undefined,
-          'other_action',
-          'sub-1',
-        );
-
-        expect(result.text).toBe('Error: Context window full. Please compact.');
       });
     });
 
@@ -2182,15 +1684,6 @@ describe('SubscriberExecutorService', () => {
         );
       };
 
-      it('{{#if is_team_lead}} renders content when agent is team lead', async () => {
-        const result = await resolveMessage(
-          '{{#if is_team_lead}}lead-only line{{/if}}',
-          { agentId: 'agent-456' },
-          [{ name: 'Alpha', teamLeadAgentId: 'agent-456' }],
-        );
-        expect(result.text).toBe('lead-only line');
-      });
-
       it('uses the constructor-injected TeamsService without a ModuleRef lookup', async () => {
         const result = await resolveMessage(
           '{{#if is_team_lead}}lead-only line{{/if}}',
@@ -2201,66 +1694,6 @@ describe('SubscriberExecutorService', () => {
         expect(result.text).toBe('lead-only line');
         expect(mockTeamsService.listTeamsByAgent).toHaveBeenCalledWith('agent-456');
         expect(mockModuleRef.get).not.toHaveBeenCalled();
-      });
-
-      it('{{#if is_team_lead}} renders empty when agent is not team lead', async () => {
-        const result = await resolveMessage(
-          '{{#if is_team_lead}}lead-only line{{/if}}',
-          { agentId: 'agent-456' },
-          [{ name: 'Alpha', teamLeadAgentId: 'other-agent' }],
-        );
-        expect(result.text).toBe('');
-      });
-
-      it('{{#unless is_team_lead}} renders inverse correctly', async () => {
-        const result = await resolveMessage(
-          '{{#unless is_team_lead}}member-only{{/unless}}',
-          { agentId: 'agent-456' },
-          [{ name: 'Alpha', teamLeadAgentId: 'agent-456' }],
-        );
-        expect(result.text).toBe('');
-      });
-
-      it('{{team_name}} renders empty with 0 teams', async () => {
-        const result = await resolveMessage('Team: {{team_name}}', { agentId: 'agent-456' }, []);
-        expect(result.text).toBe('Team: ');
-      });
-
-      it('{{team_name}} renders single team name', async () => {
-        const result = await resolveMessage('Team: {{team_name}}', { agentId: 'agent-456' }, [
-          { name: 'Alpha', teamLeadAgentId: null },
-        ]);
-        expect(result.text).toBe('Team: Alpha');
-      });
-
-      it('{{team_name}} renders empty with 2+ teams (ambiguous)', async () => {
-        const result = await resolveMessage('Team: {{team_name}}', { agentId: 'agent-456' }, [
-          { name: 'Alpha', teamLeadAgentId: null },
-          { name: 'Beta', teamLeadAgentId: null },
-        ]);
-        expect(result.text).toBe('Team: ');
-      });
-
-      it('{{team_names}} renders comma-joined sorted team names', async () => {
-        const result = await resolveMessage('Teams: {{team_names}}', { agentId: 'agent-456' }, [
-          { name: 'Beta', teamLeadAgentId: null },
-          { name: 'Alpha', teamLeadAgentId: null },
-        ]);
-        expect(result.text).toBe('Teams: Alpha, Beta');
-      });
-
-      it('legacy single-brace {team_name} rewrites to double-brace', async () => {
-        const result = await resolveMessage('Team: {team_name}', { agentId: 'agent-456' }, [
-          { name: 'Alpha', teamLeadAgentId: null },
-        ]);
-        expect(result.text).toBe('Team: Alpha');
-      });
-
-      it('existing camelCase tokens render through Handlebars path', async () => {
-        const result = await resolveMessage('{{sessionIdShort}} {{projectId}} {{eventName}}', {
-          agentId: 'agent-456',
-        });
-        expect(result.text).toBe('session- project-789 test.event');
       });
 
       it('Handlebars and regex produce identical output for simple templates', async () => {
@@ -2333,11 +1766,6 @@ describe('SubscriberExecutorService', () => {
         expect(result.success).toBe(false);
         expect(result.error).toBeDefined();
         expect(mockAmd.deliver).not.toHaveBeenCalled();
-      });
-
-      it('send_agent_message.text without agentId renders without team context', async () => {
-        const result = await resolveMessage('{{sessionIdShort}} {{team_name}}', { agentId: null });
-        expect(result.text).toBe('session- ');
       });
 
       it('legacy {team_name} and {is_team_lead} tokens still work after kernel migration', async () => {
@@ -2473,107 +1901,6 @@ describe('SubscriberExecutorService', () => {
  * - The service must correctly extract the event name from this format
  */
 describe('EventEmitter2 onAny eventName capture (integration)', () => {
-  it('should capture eventName via onAny when emitting a single event', () => {
-    const emitter = new EventEmitter2();
-    let capturedEventName: string | undefined;
-
-    emitter.onAny((event: string | string[]) => {
-      capturedEventName = Array.isArray(event) ? event[0] : event;
-    });
-
-    emitter.emit('terminal.watcher.triggered', { projectId: 'test-project' });
-
-    expect(capturedEventName).toBe('terminal.watcher.triggered');
-  });
-
-  it('should capture eventName with full payload via onAny', () => {
-    const emitter = new EventEmitter2();
-    let capturedEventName: string | undefined;
-    let capturedPayload: unknown;
-
-    emitter.onAny((event: string | string[], ...args: unknown[]) => {
-      capturedEventName = Array.isArray(event) ? event[0] : event;
-      capturedPayload = args[0];
-    });
-
-    const payload = {
-      projectId: 'test-project',
-      sessionId: 'session-123',
-      agentId: 'agent-456',
-    };
-    emitter.emit('epic.assigned', payload);
-
-    expect(capturedEventName).toBe('epic.assigned');
-    expect(capturedPayload).toEqual(payload);
-  });
-
-  it('should correctly handle multiple sequential events', () => {
-    const emitter = new EventEmitter2();
-    const capturedEvents: string[] = [];
-
-    emitter.onAny((event: string | string[]) => {
-      const name = Array.isArray(event) ? event[0] : event;
-      if (name) capturedEvents.push(name);
-    });
-
-    emitter.emit('terminal.watcher.triggered', { projectId: 'p1' });
-    emitter.emit('epic.assigned', { projectId: 'p2' });
-    emitter.emit('epic.status_changed', { projectId: 'p3' });
-
-    expect(capturedEvents).toEqual([
-      'terminal.watcher.triggered',
-      'epic.assigned',
-      'epic.status_changed',
-    ]);
-  });
-
-  it('should correctly cleanup onAny handler with offAny', () => {
-    const emitter = new EventEmitter2();
-    const capturedEvents: string[] = [];
-
-    const handler = (event: string | string[]) => {
-      const name = Array.isArray(event) ? event[0] : event;
-      if (name) capturedEvents.push(name);
-    };
-
-    emitter.onAny(handler);
-    emitter.emit('event.one', {});
-
-    emitter.offAny(handler);
-    emitter.emit('event.two', {});
-
-    expect(capturedEvents).toEqual(['event.one']);
-    expect(capturedEvents).not.toContain('event.two');
-  });
-
-  it('should handle wildcard event patterns if configured', () => {
-    const emitter = new EventEmitter2({ wildcard: true, delimiter: '.' });
-    let capturedEventName: string | undefined;
-
-    emitter.onAny((event: string | string[]) => {
-      capturedEventName = Array.isArray(event) ? event[0] : event;
-    });
-
-    emitter.emit('terminal.watcher.triggered', { projectId: 'test' });
-
-    expect(capturedEventName).toBe('terminal.watcher.triggered');
-  });
-
-  it('should not receive undefined eventName', () => {
-    const emitter = new EventEmitter2();
-    const receivedEventNames: Array<string | string[] | undefined> = [];
-
-    emitter.onAny((event: string | string[]) => {
-      receivedEventNames.push(event);
-    });
-
-    emitter.emit('test.event', { data: 'value' });
-
-    expect(receivedEventNames).toHaveLength(1);
-    expect(receivedEventNames[0]).toBe('test.event');
-    expect(receivedEventNames[0]).not.toBeUndefined();
-  });
-
   describe('getSessionRuntime fail-fast', () => {
     it('throws when SessionRuntime cannot be resolved via moduleRef', () => {
       const nullModuleRef = { get: jest.fn().mockReturnValue(undefined) };

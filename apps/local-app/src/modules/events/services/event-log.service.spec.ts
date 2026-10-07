@@ -504,22 +504,16 @@ describe('EventLogService', () => {
       expect(cleanupSpy).toHaveBeenCalledTimes(2);
     });
 
-    it('uses the 24-hour maintenance cadence after a partial batch', async () => {
-      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
-      jest.spyOn(service, 'cleanupExpiredEvents').mockResolvedValue(99);
-
+    it.each([
+      { name: 'partial batch', fails: false, delay: 86400000 },
+      { name: 'failed batch', fails: true, delay: 60000 },
+    ])('schedules retention after a $name', async ({ fails, delay }) => {
+      const timeout = jest.spyOn(global, 'setTimeout');
+      const cleanup = jest.spyOn(service, 'cleanupExpiredEvents');
+      if (fails) cleanup.mockRejectedValue(new Error('database busy'));
+      else cleanup.mockResolvedValue(99);
       await service.onModuleInit();
-
-      expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 86_400_000);
-    });
-
-    it('retries after 60 seconds when a batch fails', async () => {
-      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
-      jest.spyOn(service, 'cleanupExpiredEvents').mockRejectedValue(new Error('database busy'));
-
-      await service.onModuleInit();
-
-      expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 60_000);
+      expect(timeout).toHaveBeenLastCalledWith(expect.any(Function), delay);
     });
 
     it('does not resurrect a timer when destroyed during an awaited batch', async () => {

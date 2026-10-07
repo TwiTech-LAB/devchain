@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import type { ConnectChoicesDto } from '@/modules/remotes/connect-choices.dto';
 import type { DockerSelection } from '@/modules/remotes/docker/docker-plan.dto';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
 import { Button } from '@/ui/components/ui/button';
@@ -19,15 +20,19 @@ import {
   type DockerSectionState,
 } from './ConnectDockerSection';
 import {
+  FileListChangedError,
   ignoreChange,
   useProjectIgnores,
   useSaveProjectIgnores,
   type IgnoreDraft,
 } from './connect-ignores';
+import { ConnectOwnerProblems } from './ConnectOwnerProblems';
 import { IgnoreListEditor } from './IgnoreListEditor';
 import { ProjectList, type ProjectListData } from './ProjectList';
 import { connectBlockedReason, type VmStatus } from './remote-status';
 import { StartError } from './StartError';
+import { useConnectChoices } from './connect-choices';
+import { useDockerPresence } from './docker-presence';
 
 type Step = 'target' | 'files' | 'review';
 const STEPS: Step[] = ['target', 'files', 'review'];
@@ -41,8 +46,8 @@ const STEP_LABELS: Record<Step, string> = {
 const CONNECTABLE_PROJECT_STATES = new Set(['local', 'cleanup-failed']);
 
 /**
- * The VM Connect opens on: the one it was opened from while it is ready, else
- * the only ready one. An explicit VM never falls back to another VM.
+ * An explicit or remembered target is selected only while ready. Without a
+ * target, select the only ready VM.
  */
 function defaultRemoteId(initialRemoteId: string | undefined, readyIds: string[]): string | null {
   if (initialRemoteId) return readyIds.includes(initialRemoteId) ? initialRemoteId : null;
@@ -151,18 +156,58 @@ export function ConnectDialog({
   const readyIds = remotes
     .filter((remote) => statuses.get(remote.id)?.state === 'ready')
     .map((remote) => remote.id);
-  const [chosenRemote, setChosenRemote] = useState<string | null>(null);
-  const remoteId = chosenRemote ?? defaultRemoteId(initialRemoteId, readyIds);
+  const [chosenRemotes, setChosenRemotes] = useState<Record<string, string>>({});
+  const [restoredChoices, setRestoredChoices] = useState<Record<string, ConnectChoicesDto>>({});
+  const choices = useConnectChoices(projectId);
+  const presence = useDockerPresence(projectId);
+  const savedChoices = projectId ? restoredChoices[projectId] : undefined;
+  const chosenRemote = chosenRemotes[projectId ?? ''] ?? chosenRemotes[''];
+  const remoteId =
+    chosenRemote ?? defaultRemoteId(initialRemoteId ?? savedChoices?.remoteId, readyIds);
   const remoteReady = remoteId !== null && readyIds.includes(remoteId);
   const [draft, setDraft] = useState<IgnoreDraft | null>(null);
   const [docker, setDocker] = useState<DockerSectionState>(NO_DOCKER_STATE);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [suggestionsPending, setSuggestionsPending] = useState(false);
   const [filesVisited, setFilesVisited] = useState(false);
+
+  useEffect(() => {
+    if (!projectId || choices.isFetching || (!choices.data && !choices.isError)) return;
+    setRestoredChoices((previous) =>
+      previous[projectId]
+        ? previous
+        : { ...previous, [projectId]: choices.data ?? { includeDocker: false, git: 'present' } },
+    );
+  }, [projectId, choices.data, choices.isError, choices.isFetching]);
 
   const ignores = useProjectIgnores(projectId);
   const saveIgnores = useSaveProjectIgnores();
   const loaded = ignores.data ?? [];
+  const mergeSuggestions = useCallback(
+    (patterns: string[], selected: boolean) => {
+      setDraft((previous) => {
+        const list = previous?.list ?? loaded;
+        const next = selected ? [...list] : list.filter((pattern) => !patterns.includes(pattern));
+        if (selected) {
+          // Insert tracked exceptions before their exclusion without reordering the user's rules.
+          let position = next.length;
+          for (const pattern of [...patterns].reverse()) {
+            const existing = next.indexOf(pattern);
+            if (existing >= 0) position = existing;
+            else next.splice(position, 0, pattern);
+          }
+        }
+        return {
+          ...previous,
+          list: next,
+          restored: false,
+          revision: previous?.revision ?? ignores.revision,
+        };
+      });
+    },
+    [loaded, ignores.revision],
+  );
   const change = ignores.data ? ignoreChange(loaded, draft) : ({ kind: 'none' } as const);
   const busy = pending || saving;
 
@@ -190,9 +235,12 @@ export function ConnectDialog({
     setDocker(NO_DOCKER_STATE);
     setFilesVisited(false);
   };
+  /** Keys the VM by project; '' holds a VM picked before the project. */
+  const pinRemote = (id: string) =>
+    setChosenRemotes((previous) => ({ ...previous, [projectId ?? '']: id }));
   const chooseRemote = (id: string) => {
+    pinRemote(id);
     if (id === remoteId) return;
-    setChosenRemote(id);
     setDocker(NO_DOCKER_STATE);
   };
   const goTo = (next: Step) => {
@@ -207,8 +255,13 @@ export function ConnectDialog({
     if (change.kind !== 'none') {
       setSaving(true);
       try {
-        await saveIgnores(projectId, change.kind === 'restore' ? null : change.list);
+        await saveIgnores(
+          projectId,
+          change.kind === 'restore' ? null : change.list,
+          draft?.revision ?? ignores.revision!,
+        );
       } catch (cause) {
+        if (cause instanceof FileListChangedError) setDraft(null);
         setSaveError(getErrorMessage(cause, 'Could not save the file list.'));
         return;
       } finally {
@@ -270,6 +323,11 @@ export function ConnectDialog({
             )}
             <div className="space-y-2">
               <p className="text-sm font-medium">VM</p>
+              {projectId && !savedChoices && (
+                <BusyStatus className="text-sm text-muted-foreground">
+                  Reading the Connect choices…
+                </BusyStatus>
+              )}
               <VmChoices
                 remotes={remotes}
                 statuses={statuses}
@@ -294,13 +352,47 @@ export function ConnectDialog({
                 {ignores.error.message} Connect keeps the project&apos;s current list.
               </p>
             )}
-            {ignores.data && (
-              <IgnoreListEditor list={draft?.list ?? loaded} disabled={busy} onChange={setDraft} />
-            )}
-            <ConnectDockerSection
+            <ConnectOwnerProblems
               key={`${projectId}:${remoteId}`}
               projectId={projectId}
               remoteId={remoteId}
+              list={ignores.data ? (draft?.list ?? loaded) : undefined}
+              disabled={busy}
+              onPatterns={mergeSuggestions}
+              onPending={setSuggestionsPending}
+              manualPatterns={draft?.manualPatterns}
+            />
+            {ignores.data && (
+              <IgnoreListEditor
+                list={draft?.list ?? loaded}
+                disabled={busy}
+                onChange={(next) => {
+                  const current = draft?.list ?? loaded;
+                  const manualPatterns = next.restored
+                    ? next.list
+                    : [
+                        ...new Set([
+                          ...(draft?.manualPatterns ?? []).filter((pattern) =>
+                            next.list.includes(pattern),
+                          ),
+                          ...next.list.filter((pattern) => !current.includes(pattern)),
+                        ]),
+                      ];
+                  setDraft({
+                    ...next,
+                    manualPatterns,
+                    revision: draft?.revision ?? ignores.revision,
+                  });
+                }}
+              />
+            )}
+            <ConnectDockerSection
+              key={`docker:${projectId}:${remoteId}`}
+              projectId={projectId}
+              remoteId={remoteId}
+              initialIncludeDocker={savedChoices?.includeDocker}
+              presence={presence}
+              managedVm={remotes.find((remote) => remote.id === remoteId)?.kind === 'proxmox'}
               disabled={busy}
               onStateChange={setDocker}
             />
@@ -338,6 +430,12 @@ export function ConnectDialog({
             <section aria-label="What happens" className="space-y-1">
               <h3 className="font-medium">What happens</h3>
               <ol className="list-decimal space-y-1 pl-5">
+                {savedChoices?.git === 'missing' && (
+                  <li>
+                    DevChain creates a Git repository in this project (git init). File sync needs
+                    one.
+                  </li>
+                )}
                 <li>Agent sessions of {projectName ?? 'the project'} stop on this PC.</li>
                 <li>
                   DevChain copies the project, its transcripts
@@ -383,10 +481,10 @@ export function ConnectDialog({
               type="button"
               onClick={() => {
                 // The accepted VM stays the target; a later health change never swaps it.
-                setChosenRemote(remoteId);
+                pinRemote(remoteId!);
                 goTo('files');
               }}
-              disabled={busy || !projectId || !remoteReady}
+              disabled={busy || !projectId || !remoteReady || !savedChoices}
             >
               Next
             </Button>
@@ -395,7 +493,7 @@ export function ConnectDialog({
             <Button
               type="button"
               onClick={() => goTo('review')}
-              pending={docker.pending || ignores.isPending}
+              pending={docker.pending || ignores.isPending || suggestionsPending}
               disabled={busy || dockerBlocks}
             >
               Next

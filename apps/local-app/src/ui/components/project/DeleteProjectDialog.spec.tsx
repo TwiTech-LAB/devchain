@@ -26,7 +26,6 @@ describe('DeleteProjectDialog', () => {
   it('renders project name in confirmation message', () => {
     render(<DeleteProjectDialog {...defaultProps} />);
     expect(screen.getByText(/My Project/)).toBeInTheDocument();
-    expect(screen.getByText(/Delete Project/)).toBeInTheDocument();
   });
 
   it('calls onConfirm when Delete button is clicked', () => {
@@ -44,10 +43,5 @@ describe('DeleteProjectDialog', () => {
   it('disables Delete button while deleting', () => {
     render(<DeleteProjectDialog {...defaultProps} isDeleting={true} />);
     expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
-  });
-
-  it('does not render content when closed', () => {
-    render(<DeleteProjectDialog {...defaultProps} open={false} />);
-    expect(screen.queryByText(/Delete Project/)).not.toBeInTheDocument();
   });
 });

@@ -1,17 +1,15 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { EventName, EventPayload } from '../catalog';
 import { IntegrationCredentialCipher } from '../../storage/local/integration-credential-cipher';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { CommittedEventStore } from './committed-event.store';
 import { DurableEventRegistryService, type PreparedEvent } from './durable-event-registry.service';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 // Layer: backend integration. These assertions need the real SQLite transaction,
 // foreign-key, partial-index, and rollback behavior that mocks cannot reproduce.
@@ -23,9 +21,7 @@ describe('durable factual mutation events', () => {
   let secretDirectory: string;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite, db } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
     registry = new DurableEventRegistryService();
     registry.register({

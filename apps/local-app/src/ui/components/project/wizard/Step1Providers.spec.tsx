@@ -23,20 +23,6 @@ function fam(slug: string, availableProviders: string[]): SetupPreviewFamilyAlte
 }
 
 describe('getUncoveredFamilies', () => {
-  it('returns no families when every family has a selected available provider', () => {
-    expect(getUncoveredFamilies([fam('reasoning', ['claude', 'codex'])], ['claude'])).toEqual([]);
-  });
-
-  it('returns a family when none of its available providers are selected', () => {
-    expect(getUncoveredFamilies([fam('reasoning', ['claude', 'codex'])], [])).toEqual([
-      'reasoning',
-    ]);
-  });
-
-  it('ignores families with no available providers (cannot be fixed by selection)', () => {
-    expect(getUncoveredFamilies([fam('reasoning', [])], ['claude'])).toEqual([]);
-  });
-
   it('returns only the families that actually lose coverage', () => {
     const families = [fam('reasoning', ['claude']), fam('vision', ['codex', 'gemini'])];
     // reasoning covered by claude; vision uncovered (codex + gemini both unselected).
@@ -46,14 +32,10 @@ describe('getUncoveredFamilies', () => {
   it('matches provider names case-insensitively', () => {
     expect(getUncoveredFamilies([fam('reasoning', ['claude'])], ['CLAUDE'])).toEqual([]);
   });
-
-  it('returns no families when there are no family alternatives', () => {
-    expect(getUncoveredFamilies([], ['claude'])).toEqual([]);
-  });
 });
 
 describe('Step1Providers', () => {
-  it('renders a selectable card for every referenced provider', () => {
+  it('shows referenced providers with availability, selection and coverage state', () => {
     render(
       <Step1Providers
         providerSummary={PROVIDERS}
@@ -62,86 +44,43 @@ describe('Step1Providers', () => {
         onSelectedChange={jest.fn()}
       />,
     );
-
-    expect(screen.getByRole('checkbox', { name: 'Claude provider' })).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Codex provider' })).toBeInTheDocument();
-    // Both providers belong to the reasoning family.
-    expect(screen.getAllByText('reasoning')).toHaveLength(2);
-    expect(screen.getByText(/2 agents/)).toBeInTheDocument();
+    {
+      expect(screen.getByRole('checkbox', { name: 'Claude provider' })).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'Codex provider' })).toBeInTheDocument();
+      expect(screen.getAllByText('reasoning')).toHaveLength(2);
+      expect(screen.getByText(/2 agents/)).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByRole('checkbox', { name: 'Codex provider' })).toBeDisabled();
+      expect(screen.getByText('Not installed')).toBeInTheDocument();
+      expect(screen.getByText(/Install it on the Providers page/)).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByRole('checkbox', { name: 'Claude provider' })).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: 'Codex provider' })).not.toBeChecked();
+    }
+    {
+      expect(screen.queryByTestId('wizard-providers-coverage-alert')).not.toBeInTheDocument();
+    }
   });
 
-  it('marks unavailable providers disabled with a not-installed hint (never hidden)', () => {
-    render(
-      <Step1Providers
-        providerSummary={PROVIDERS}
-        selectedProviderNames={['claude']}
-        uncoveredFamilies={[]}
-        onSelectedChange={jest.fn()}
-      />,
-    );
-
-    expect(screen.getByRole('checkbox', { name: 'Codex provider' })).toBeDisabled();
-    expect(screen.getByText('Not installed')).toBeInTheDocument();
-    expect(screen.getByText(/Install it on the Providers page/)).toBeInTheDocument();
-  });
-
-  it('reflects the supplied selection as the checked state', () => {
-    render(
-      <Step1Providers
-        providerSummary={PROVIDERS}
-        selectedProviderNames={['claude']}
-        uncoveredFamilies={[]}
-        onSelectedChange={jest.fn()}
-      />,
-    );
-
-    expect(screen.getByRole('checkbox', { name: 'Claude provider' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Codex provider' })).not.toBeChecked();
-  });
-
-  it('emits the next selection when an available provider is deselected', () => {
+  it.each([
+    { label: 'deselect Claude', selected: ['claude'], name: 'Claude provider', expected: [] },
+    { label: 'select Claude', selected: [], name: 'Claude provider', expected: ['claude'] },
+    { label: 'unavailable Codex', selected: ['claude'], name: 'Codex provider', expected: null },
+  ] as const)('$label', ({ selected, name, expected }) => {
     const onChange = jest.fn();
     render(
       <Step1Providers
         providerSummary={PROVIDERS}
-        selectedProviderNames={['claude']}
+        selectedProviderNames={[...selected]}
         uncoveredFamilies={[]}
         onSelectedChange={onChange}
       />,
     );
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Claude provider' }));
-    expect(onChange).toHaveBeenCalledWith([]);
-  });
-
-  it('emits the provider name when an available provider is selected from empty', () => {
-    const onChange = jest.fn();
-    render(
-      <Step1Providers
-        providerSummary={PROVIDERS}
-        selectedProviderNames={[]}
-        uncoveredFamilies={[]}
-        onSelectedChange={onChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Claude provider' }));
-    expect(onChange).toHaveBeenCalledWith(['claude']);
-  });
-
-  it('does not emit when a disabled (unavailable) provider is clicked', () => {
-    const onChange = jest.fn();
-    render(
-      <Step1Providers
-        providerSummary={PROVIDERS}
-        selectedProviderNames={['claude']}
-        uncoveredFamilies={[]}
-        onSelectedChange={onChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Codex provider' }));
-    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('checkbox', { name }));
+    if (expected === null) expect(onChange).not.toHaveBeenCalled();
+    else expect(onChange).toHaveBeenCalledWith(expected);
   });
 
   it('shows the family-coverage alert naming the uncovered family', () => {
@@ -163,19 +102,6 @@ describe('Step1Providers', () => {
         providerSummary={PROVIDERS}
         selectedProviderNames={[]}
         uncoveredFamilies={['reasoning']}
-        onSelectedChange={jest.fn()}
-      />,
-    );
-
-    expect(screen.queryByTestId('wizard-providers-coverage-alert')).not.toBeInTheDocument();
-  });
-
-  it('hides the alert when every family keeps coverage', () => {
-    render(
-      <Step1Providers
-        providerSummary={PROVIDERS}
-        selectedProviderNames={['claude']}
-        uncoveredFamilies={[]}
         onSelectedChange={jest.fn()}
       />,
     );

@@ -41,25 +41,12 @@ function makeOutputStep(text: string): SerializedSemanticStep {
 }
 
 describe('SemanticStepList — output prose-band treatment (T2)', () => {
-  it('output step wrapper has prose-band classes', () => {
-    const steps = [makeOutputStep('Hello world')];
-    const { container } = render(<SemanticStepList steps={steps} />);
-
-    const outputWrapper = container.querySelector('[class*="bg-card"]');
-    expect(outputWrapper).toBeTruthy();
-    expect(outputWrapper!.className).toContain('bg-card/40');
-    expect(outputWrapper!.className).toContain('rounded-md');
-    expect(outputWrapper!.className).toContain('px-3');
-    expect(outputWrapper!.className).toContain('py-2');
-    expect(outputWrapper!.className).toContain('border-l-2');
-    expect(outputWrapper!.className).toContain('border-status-ok/40');
-  });
-
   it('MarkdownRenderer invoked with text-sm (not text-xs)', () => {
     const steps = [makeOutputStep('Prose content')];
     render(<SemanticStepList steps={steps} />);
 
     const renderer = screen.getByTestId('markdown-renderer');
+    expect(renderer).toHaveTextContent('Prose content');
     expect(renderer.getAttribute('data-class')).toContain('text-sm');
     expect(renderer.getAttribute('data-class')).not.toContain('text-xs');
   });

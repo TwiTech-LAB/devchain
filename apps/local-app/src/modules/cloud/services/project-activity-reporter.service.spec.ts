@@ -83,4 +83,60 @@ describe('ProjectActivityReporterService', () => {
       expect((error as HttpException).getStatus()).toBe(422);
     }
   });
+  it('forwards to notifications-service activity touch endpoint with access token', async () => {
+    cloudSession.getStatus.mockReturnValue(connectedStatus);
+    cloudSession.getAccessToken.mockReturnValue('tok-abc');
+    fetchSpy.mockResolvedValue(mockFetchResponse(204, '', true));
+
+    const result = await service.touchProject(PROJECT_ID);
+
+    expect(result).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`/api/v1/activity/projects/${PROJECT_ID}/touch`),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer tok-abc' }),
+      }),
+    );
+  });
+  it('URL-encodes projectId path segment', async () => {
+    cloudSession.getStatus.mockReturnValue(connectedStatus);
+    cloudSession.getAccessToken.mockReturnValue('tok-abc');
+    fetchSpy.mockResolvedValue(mockFetchResponse(204, '', true));
+
+    await service.touchProject('project/alpha:1');
+
+    const calledUrl = fetchSpy.mock.calls[0][0] as string;
+    expect(calledUrl).toContain(encodeURIComponent('project/alpha:1'));
+  });
+  it('retries once with refreshed token on upstream 401 and refresh success', async () => {
+    cloudSession.getStatus.mockReturnValue(connectedStatus);
+    cloudSession.getAccessToken.mockReturnValueOnce('expired').mockReturnValueOnce('fresh');
+    refreshGate.attemptRefresh.mockResolvedValue('success');
+    fetchSpy
+      .mockResolvedValueOnce(mockFetchResponse(401, 'Unauthorized'))
+      .mockResolvedValueOnce(mockFetchResponse(204, '', true));
+
+    const result = await service.touchProject(PROJECT_ID);
+
+    expect(result).toBeNull();
+    expect(refreshGate.attemptRefresh).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenLastCalledWith(
+      expect.stringContaining(`/api/v1/activity/projects/${PROJECT_ID}/touch`),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer fresh' }),
+      }),
+    );
+  });
+  it('throws UnauthorizedException on upstream 401 when refresh permanently fails', async () => {
+    cloudSession.getStatus.mockReturnValue(connectedStatus);
+    cloudSession.getAccessToken.mockReturnValue('expired');
+    refreshGate.attemptRefresh.mockResolvedValue('permanent_failure');
+    fetchSpy.mockResolvedValue(mockFetchResponse(401, 'Unauthorized'));
+
+    await expect(service.touchProject(PROJECT_ID)).rejects.toThrow(UnauthorizedException);
+    expect(refreshGate.attemptRefresh).toHaveBeenCalledTimes(1);
+  });
 });

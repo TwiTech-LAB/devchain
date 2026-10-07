@@ -21,12 +21,6 @@ describe('E2eePairingController', () => {
     controller = module.get(E2eePairingController);
   });
 
-  it('begin delegates to the service with the channelId', async () => {
-    const res = await controller.begin({ channelId: 'chan-1' });
-    expect(service.beginQrPairing).toHaveBeenCalledWith('chan-1');
-    expect(res.pcEncPubKey).toBe('pub');
-  });
-
   it('begin rejects a missing channelId', async () => {
     await expect(controller.begin({})).rejects.toBeInstanceOf(ValidationError);
     expect(service.beginQrPairing).not.toHaveBeenCalled();
@@ -65,32 +59,20 @@ describe('E2eePairingController', () => {
     );
   });
 
-  it('complete forwards an optional installId (M2 dedup) when present', async () => {
-    await controller.complete({
+  it.each([
+    { name: 'with installId', extra: { installId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } },
+    { name: 'without installId', extra: {} },
+  ])('completes pairing $name', async ({ extra }) => {
+    const input = {
       channelId: 'chan-1',
       deviceEncPubKey: 'dpub',
       deviceEncKid: 'dkid',
       pairingMac: 'mac',
-      installId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    });
-    expect(service.completeQrPairing).toHaveBeenCalledWith({
-      channelId: 'chan-1',
-      deviceEncPubKey: 'dpub',
-      deviceEncKid: 'dkid',
-      pairingMac: 'mac',
-      installId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    });
-  });
-
-  it('complete omits installId from the forwarded input when the body has none (old client)', async () => {
-    await controller.complete({
-      channelId: 'chan-1',
-      deviceEncPubKey: 'dpub',
-      deviceEncKid: 'dkid',
-      pairingMac: 'mac',
-    });
-    const forwarded = service.completeQrPairing.mock.calls[0][0];
-    expect('installId' in forwarded).toBe(false);
+      ...extra,
+    };
+    await controller.complete(input);
+    expect(service.completeQrPairing).toHaveBeenCalledWith(input);
+    expect('installId' in service.completeQrPairing.mock.calls[0][0]).toBe('installId' in extra);
   });
 
   it('complete rejects when the device key/MAC fields are missing', async () => {

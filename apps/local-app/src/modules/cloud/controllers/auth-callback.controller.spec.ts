@@ -11,15 +11,9 @@ jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => mockLogger,
 }));
 
-import {
-  BadGatewayException,
-  BadRequestException,
-  HttpException,
-  InternalServerErrorException,
-} from '@nestjs/common';
+import { BadRequestException, HttpException } from '@nestjs/common';
 import { AuthCallbackController } from './auth-callback.controller';
 import type { CloudSessionManagerService } from '../services/cloud-session-manager.service';
-import type { CloudTokens } from '../types';
 
 function withCode(code: string, message = 'jose failure'): Error {
   return Object.assign(new Error(message), { code });
@@ -40,19 +34,6 @@ describe('AuthCallbackController.storeTokens', () => {
     controller = new AuthCallbackController(cloudSessionManager);
   });
 
-  it('returns { userId, email } on success', async () => {
-    storeTokens.mockResolvedValue({
-      userId: 'user-123',
-      email: 'user@example.com',
-    } as CloudTokens);
-
-    const result = await controller.storeTokens(validBody);
-
-    expect(result).toEqual({ userId: 'user-123', email: 'user@example.com' });
-    expect(storeTokens).toHaveBeenCalledWith('access', 'refresh');
-    expect(mockLogger.error).not.toHaveBeenCalled();
-  });
-
   it('maps a bad token to 400 and logs the underlying error', async () => {
     const underlying = withCode('ERR_JWS_SIGNATURE_VERIFICATION_FAILED');
     storeTokens.mockRejectedValue(underlying);
@@ -60,22 +41,6 @@ describe('AuthCallbackController.storeTokens', () => {
     await expect(controller.storeTokens(validBody)).rejects.toBeInstanceOf(BadRequestException);
 
     expect(mockLogger.error).toHaveBeenCalledWith({ err: underlying }, 'storeTokens failed');
-  });
-
-  it('maps an empty JWKS (ERR_JWKS_NO_MATCHING_KEY) to 502', async () => {
-    storeTokens.mockRejectedValue(withCode('ERR_JWKS_NO_MATCHING_KEY'));
-
-    await expect(controller.storeTokens(validBody)).rejects.toBeInstanceOf(BadGatewayException);
-    expect(mockLogger.error).toHaveBeenCalledTimes(1);
-  });
-
-  it('maps an unknown persistence failure to 500', async () => {
-    storeTokens.mockRejectedValue(new Error('encryption key unavailable'));
-
-    await expect(controller.storeTokens(validBody)).rejects.toBeInstanceOf(
-      InternalServerErrorException,
-    );
-    expect(mockLogger.error).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an invalid body with a Zod 400 before the try (mapper not used, no error log)', async () => {

@@ -98,15 +98,18 @@ describe('HostStatsController', () => {
     expect(result.diskAvailBytes).toBe(0);
   });
 
-  it('clamps cpuPercent to [0, 100] when the sample is degenerate', async () => {
-    // No time elapsed between samples (idle == total delta) -> 0% used.
-    os.cpus.mockReturnValue(cpuSnapshot(1000, 1000));
-
-    const resultPromise = controller.getStats();
+  it.each([
+    { name: 'unchanged counters', end: [1000, 1000], expected: 0 },
+    { name: 'idle delta above total delta', end: [1200, 900], expected: 0 },
+    { name: 'negative idle delta', end: [900, 1200], expected: 100 },
+  ])('returns bounded CPU usage for $name', async ({ end, expected }) => {
+    os.cpus
+      .mockReturnValueOnce(cpuSnapshot(1000, 1000))
+      .mockReturnValueOnce(cpuSnapshot(1000, 1000))
+      .mockReturnValueOnce(cpuSnapshot(end[0], end[1]));
+    const pending = controller.getStats();
     await jest.advanceTimersByTimeAsync(100);
-    const result = await resultPromise;
-
-    expect(result.cpuPercent).toBe(0);
+    expect((await pending).cpuPercent).toBe(expected);
   });
 
   describe('cpu percent strategy', () => {
@@ -138,37 +141,39 @@ describe('HostStatsController', () => {
       expect(result.cpuPercent).toBe(70);
     });
 
-    it('uses the 100 ms sample when the previous reading is under 1 s old', async () => {
-      primeBaseline();
-      await collect(controller.getStats());
-
-      await jest.advanceTimersByTimeAsync(200);
-      // The 200 ms-old baseline would average to a false 0%; the sample reads 33.33%.
-      os.cpus
-        .mockReturnValueOnce(cpuSnapshot(1100, 1000))
-        .mockReturnValueOnce(cpuSnapshot(1150, 1100))
-        .mockReturnValueOnce(cpuSnapshot(1250, 1150));
-      const result = await collect(controller.getStats());
-
-      expect(os.cpus).toHaveBeenCalledTimes(6);
-      expect(result.cpuPercent).toBe(33.33);
-    });
-
-    it('uses the 100 ms sample when the previous reading is over 60 s old', async () => {
-      primeBaseline();
-      await collect(controller.getStats());
-
-      await jest.advanceTimersByTimeAsync(61_000);
-      // The stale baseline would average to 70%; the sample reads 66.67%.
-      os.cpus
-        .mockReturnValueOnce(cpuSnapshot(1300, 1700))
-        .mockReturnValueOnce(cpuSnapshot(1350, 1750))
-        .mockReturnValueOnce(cpuSnapshot(1450, 1950));
-      const result = await collect(controller.getStats());
-
-      expect(os.cpus).toHaveBeenCalledTimes(6);
-      expect(result.cpuPercent).toBe(66.67);
-    });
+    it.each([
+      {
+        name: 'younger than one second',
+        age: 200,
+        snapshots: [
+          [1100, 1000],
+          [1150, 1100],
+          [1250, 1150],
+        ],
+        expected: 33.33,
+      },
+      {
+        name: 'older than sixty seconds',
+        age: 61000,
+        snapshots: [
+          [1300, 1700],
+          [1350, 1750],
+          [1450, 1950],
+        ],
+        expected: 66.67,
+      },
+    ])(
+      'uses a short CPU sample when the baseline is $name',
+      async ({ age, snapshots, expected }) => {
+        primeBaseline();
+        await collect(controller.getStats());
+        await jest.advanceTimersByTimeAsync(age);
+        for (const [idle, busy] of snapshots) os.cpus.mockReturnValueOnce(cpuSnapshot(idle, busy));
+        const result = await collect(controller.getStats());
+        expect(os.cpus).toHaveBeenCalledTimes(6);
+        expect(result.cpuPercent).toBe(expected);
+      },
+    );
 
     it('samples instead of reporting a false 0 when the delta totals are zero', async () => {
       primeBaseline();

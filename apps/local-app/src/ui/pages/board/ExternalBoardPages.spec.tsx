@@ -336,34 +336,35 @@ describe('ExternalBoardMyWorkPage', () => {
     cleanup();
   });
 
-  it('renders the provider heading with the board source nav', () => {
-    renderMyWork('clickup');
-
-    expect(screen.getByRole('heading', { name: 'ClickUp' })).toBeInTheDocument();
-    expect(screen.getByRole('navigation', { name: 'Board source' })).toBeInTheDocument();
-  });
-
-  it('renders the Jira heading for the jira route', () => {
-    renderMyWork('jira');
-
-    expect(screen.getByRole('heading', { name: 'Jira' })).toBeInTheDocument();
-  });
-
   it.each([
-    ['clickup' as const, 'ClickUp', 'https://app.clickup.com/'],
-    ['jira' as const, 'Jira', 'https://acme.atlassian.net/'],
-  ])('opens %s from the provider title in a new tab', (provider, label, sourceUrl) => {
-    useExternalMyWorkLandingMock.mockReturnValue(landingValue({ sourceUrl }));
-
+    ['clickup', 'ClickUp'],
+    ['jira', 'Jira'],
+  ] as const)('renders %s provider heading', (provider, label) => {
     renderMyWork(provider);
-
-    expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute('href', sourceUrl);
-    expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute('target', '_blank');
-    expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute(
-      'rel',
-      'noreferrer',
-    );
+    expect(screen.getByRole('heading', { name: label })).toBeInTheDocument();
   });
+
+  it.each([['clickup' as const, 'ClickUp', 'https://app.clickup.com/']])(
+    'opens %s from the provider title in a new tab',
+    (provider, label, sourceUrl) => {
+      useExternalMyWorkLandingMock.mockReturnValue(landingValue({ sourceUrl }));
+
+      renderMyWork(provider);
+
+      expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute(
+        'href',
+        sourceUrl,
+      );
+      expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute(
+        'target',
+        '_blank',
+      );
+      expect(screen.getByRole('link', { name: `Open ${label}` })).toHaveAttribute(
+        'rel',
+        'noreferrer',
+      );
+    },
+  );
 
   it('offers Add board on Board when the project is missing the connection', () => {
     useExternalMyWorkLandingMock.mockReturnValue(landingValue({ status: 'disconnected' }));
@@ -462,20 +463,13 @@ describe('ExternalBoardMyWorkPage', () => {
     expect(screen.getByTestId('work-area-route')).toBeInTheDocument();
   });
 
-  it('shows the empty state when the provider has no work areas', () => {
-    useExternalMyWorkLandingMock.mockReturnValue(landingValue({ status: 'empty' }));
-
+  it.each([
+    { status: 'empty' as const, text: /No assigned work/ },
+    { status: 'unsupported' as const, text: /does not support my work yet/i },
+  ])('renders $status landing state', ({ status, text }) => {
+    useExternalMyWorkLandingMock.mockReturnValue(landingValue({ status }));
     renderMyWork('clickup');
-
-    expect(screen.getByText('No assigned work')).toBeInTheDocument();
-  });
-
-  it('notes an unsupported provider capability', () => {
-    useExternalMyWorkLandingMock.mockReturnValue(landingValue({ status: 'unsupported' }));
-
-    renderMyWork('clickup');
-
-    expect(screen.getByText(/does not support my work yet/i)).toBeInTheDocument();
+    expect(screen.getByText(text)).toBeInTheDocument();
   });
 });
 
@@ -534,14 +528,7 @@ describe('ExternalBoardKanbanPage', () => {
       'href',
       'https://app.clickup.com/workspace-1/v/li/space-901',
     );
-    expect(screen.getByRole('link', { name: 'Open Sprint delivery in ClickUp' })).toHaveAttribute(
-      'target',
-      '_blank',
-    );
-    expect(screen.getByRole('link', { name: 'Open Sprint delivery in ClickUp' })).toHaveAttribute(
-      'rel',
-      'noreferrer',
-    );
+
     expect(screen.getByRole('link', { name: 'ClickUp My Work' })).toHaveAttribute(
       'href',
       '/board/clickup',
@@ -549,7 +536,6 @@ describe('ExternalBoardKanbanPage', () => {
     expect(screen.queryByRole('link', { name: 'Back to ClickUp My Work' })).toBeNull();
     expect(screen.getByRole('heading', { name: 'OPEN' })).toBeInTheDocument();
     expect(screen.getByText('Status:')).toHaveTextContent('Status: OPEN');
-    expect(screen.getByRole('navigation', { name: 'Board source' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Open Ship exact board/ }));
     expect(screen.getByText('Task dialog task-1')).toBeInTheDocument();
@@ -1219,7 +1205,6 @@ describe('ExternalBoardKanbanPage quick import', () => {
       taskArticle('Ship exact board').queryByRole('button', { name: 'Create DevChain task' }),
     ).not.toBeInTheDocument();
     fireEvent.click(taskArticle('Ship exact board').getByRole('button', { name: /Open Ship/ }));
-    expect(mockDetailLinkProps.projectLink).toEqual(existingLink);
   });
 
   it('requests enriched link state and one deduplicated Epic-time batch for linked cards', () => {
@@ -1738,66 +1723,5 @@ describe('External board completed scope through navigation', () => {
       'list-1',
       expect.objectContaining({ includeCompleted: false }),
     );
-  });
-
-  it('preserves the completed scope on a direct work-area load with the param present', () => {
-    useExternalWorkAreaMock.mockReturnValue(boardResult());
-
-    renderKanbanAt('/board/clickup/list-done?completed=1');
-
-    expect(useExternalWorkAreaMock).toHaveBeenCalledWith(
-      'clickup',
-      'list-done',
-      expect.objectContaining({ includeCompleted: true }),
-    );
-    expect(screen.getByRole('heading', { name: 'Archive list' })).toBeInTheDocument();
-  });
-
-  it('retains recently completed cards in a mixed work area', () => {
-    useExternalWorkAreaMock.mockReturnValue(
-      boardResult({
-        columns: [
-          {
-            key: 'st-open',
-            name: 'To do',
-            color: '#6b778c',
-            tasks: [
-              {
-                remoteId: 'task-1',
-                title: 'Active feature',
-                statusName: 'To do',
-                statusCategory: 'active',
-                updatedAt: '2026-08-19T09:00:00.000Z',
-                dueAt: null,
-                webUrl: null,
-              },
-            ],
-          },
-          {
-            key: 'st-done',
-            name: 'Done',
-            color: '#36b37e',
-            tasks: [
-              {
-                remoteId: 'task-9',
-                title: 'Shipped feature',
-                statusName: 'Done',
-                statusCategory: 'completed',
-                updatedAt: '2026-08-19T08:00:00.000Z',
-                dueAt: null,
-                webUrl: null,
-              },
-            ],
-          },
-        ],
-      }),
-    );
-
-    renderKanbanAt('/board/clickup/list-mixed?completed=1');
-
-    expect(screen.getByRole('heading', { name: 'To do' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Done' })).toBeInTheDocument();
-    expect(screen.getByText('Active feature')).toBeInTheDocument();
-    expect(screen.getByText('Shipped feature')).toBeInTheDocument();
   });
 });

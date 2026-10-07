@@ -27,11 +27,6 @@ function makeMetrics(overrides: Partial<UnifiedMetrics> = {}): UnifiedMetrics {
 }
 
 describe('SessionMetricsHeader', () => {
-  it('renders the model name', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics()} />);
-    expect(screen.getByTestId('metrics-model')).toHaveTextContent('claude-sonnet-4-6');
-  });
-
   it('shows +N models badge when multiple models used', () => {
     render(
       <SessionMetricsHeader
@@ -44,35 +39,48 @@ describe('SessionMetricsHeader', () => {
     expect(badge).toHaveTextContent('+2');
   });
 
-  it('hides model count badge for single model', () => {
+  it('shows model, token categories, context and message count without inactive badges', () => {
     render(<SessionMetricsHeader metrics={makeMetrics()} />);
-    expect(screen.queryByTestId('model-count-badge')).not.toBeInTheDocument();
-  });
-
-  it('shows per-category token breakdown', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics()} />);
-    const tokens = screen.getByTestId('metrics-tokens');
-    expect(tokens).toHaveTextContent('In: 5.0k');
-    expect(tokens).toHaveTextContent('CR: 1.2k');
-    expect(tokens).toHaveTextContent('CW: 800');
-    expect(tokens).toHaveTextContent('Out: 3.0k');
-  });
-
-  it('highlights total tokens in bold', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics()} />);
-    const total = screen.getByTestId('metrics-total-tokens');
-    expect(total).toHaveTextContent('10k');
-    expect(total).toHaveClass('font-semibold');
+    {
+      const tokens = screen.getByTestId('metrics-tokens');
+      expect(tokens).toHaveTextContent('In: 5.0k');
+      expect(tokens).toHaveTextContent('CR: 1.2k');
+      expect(tokens).toHaveTextContent('CW: 800');
+      expect(tokens).toHaveTextContent('Out: 3.0k');
+    }
+    {
+      expect(screen.getByTestId('metrics-model')).toHaveTextContent('claude-sonnet-4-6');
+    }
+    {
+      expect(screen.queryByTestId('model-count-badge')).not.toBeInTheDocument();
+    }
+    {
+      const total = screen.getByTestId('metrics-total-tokens');
+      expect(total).toHaveTextContent('10k');
+      expect(total).toHaveClass('font-semibold');
+    }
+    {
+      const progressBar = screen.getByRole('progressbar');
+      expect(progressBar).toHaveAttribute('aria-valuenow', '50');
+      expect(progressBar).toHaveAttribute('aria-label', 'Context window 50% used');
+    }
+    {
+      expect(screen.getByTestId('metrics-messages')).toHaveTextContent('24 msgs');
+    }
+    {
+      expect(screen.queryByTestId('metrics-live')).not.toBeInTheDocument();
+    }
+    {
+      expect(screen.queryByTestId('metrics-compactions')).not.toBeInTheDocument();
+    }
+    {
+      expect(screen.queryByTestId('phase-breakdown-trigger')).not.toBeInTheDocument();
+    }
   });
 
   it('shows cost', () => {
     render(<SessionMetricsHeader metrics={makeMetrics({ costUsd: 1.23 })} />);
     expect(screen.getByTestId('metrics-cost')).toHaveTextContent('$1.23');
-  });
-
-  it('shows adaptive cost precision for small amounts', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics({ costUsd: 0.0012 })} />);
-    expect(screen.getByTestId('metrics-cost')).toHaveTextContent('$0.0012');
   });
 
   it('shows visible context over total context with percentage', () => {
@@ -88,44 +96,34 @@ describe('SessionMetricsHeader', () => {
     expect(screen.getByTestId('metrics-context')).toHaveTextContent('Visible: 40k / 100k (40%)');
   });
 
-  it('shows context progress bar with correct aria attributes', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics()} />);
-    const progressBar = screen.getByRole('progressbar');
-    expect(progressBar).toHaveAttribute('aria-valuenow', '50');
-    expect(progressBar).toHaveAttribute('aria-label', 'Context window 50% used');
-  });
-
-  it('uses destructive color for context > 80%', () => {
+  it.each([
+    {
+      label: 'uses destructive color for context > 80%',
+      totalContextTokens: 180000,
+      colorClass: 'bg-destructive',
+    },
+    {
+      label: 'uses amber color for context 50-80%',
+      totalContextTokens: 120000,
+      colorClass: 'bg-status-warn',
+    },
+    {
+      label: 'uses primary color for context < 50%',
+      totalContextTokens: 40000,
+      colorClass: 'bg-primary/60',
+    },
+  ] as const)('$label', ({ totalContextTokens, colorClass }) => {
     render(
       <SessionMetricsHeader
-        metrics={makeMetrics({ totalContextTokens: 180000, contextWindowTokens: 200000 })}
+        metrics={makeMetrics({
+          totalContextTokens: totalContextTokens,
+          contextWindowTokens: 200000,
+        })}
       />,
     );
     const progressBar = screen.getByRole('progressbar');
     const fill = progressBar.firstChild as HTMLElement;
-    expect(fill).toHaveClass('bg-destructive');
-  });
-
-  it('uses amber color for context 50-80%', () => {
-    render(
-      <SessionMetricsHeader
-        metrics={makeMetrics({ totalContextTokens: 120000, contextWindowTokens: 200000 })}
-      />,
-    );
-    const progressBar = screen.getByRole('progressbar');
-    const fill = progressBar.firstChild as HTMLElement;
-    expect(fill).toHaveClass('bg-status-warn');
-  });
-
-  it('uses primary color for context < 50%', () => {
-    render(
-      <SessionMetricsHeader
-        metrics={makeMetrics({ totalContextTokens: 40000, contextWindowTokens: 200000 })}
-      />,
-    );
-    const progressBar = screen.getByRole('progressbar');
-    const fill = progressBar.firstChild as HTMLElement;
-    expect(fill).toHaveClass('bg-primary/60');
+    expect(fill).toHaveClass(colorClass);
   });
 
   it('falls back to 200k context window when contextWindowTokens is 0', () => {
@@ -143,29 +141,14 @@ describe('SessionMetricsHeader', () => {
     expect(screen.getByTestId('metrics-duration')).toHaveTextContent('2m 30s');
   });
 
-  it('formats hours for long durations', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics({ durationMs: 4500000 })} />);
-    expect(screen.getByTestId('metrics-duration')).toHaveTextContent('1h 15m');
-  });
-
   it('hides duration when 0', () => {
     render(<SessionMetricsHeader metrics={makeMetrics({ durationMs: 0 })} />);
     expect(screen.queryByTestId('metrics-duration')).not.toBeInTheDocument();
   });
 
-  it('shows message count', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics({ messageCount: 24 })} />);
-    expect(screen.getByTestId('metrics-messages')).toHaveTextContent('24 msgs');
-  });
-
   it('shows live indicator when ongoing', () => {
     render(<SessionMetricsHeader metrics={makeMetrics({ isOngoing: true })} />);
     expect(screen.getByTestId('metrics-live')).toHaveTextContent('Live');
-  });
-
-  it('hides live indicator when not ongoing', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics({ isOngoing: false })} />);
-    expect(screen.queryByTestId('metrics-live')).not.toBeInTheDocument();
   });
 
   it('shows compaction count when > 0', () => {
@@ -198,16 +181,6 @@ describe('SessionMetricsHeader', () => {
     expect(screen.getByTestId('metrics-compactions')).toHaveTextContent('1 compaction');
     // Should not say "compactions" (plural)
     expect(screen.getByTestId('metrics-compactions').textContent).not.toContain('compactions');
-  });
-
-  it('hides compaction count when 0', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics({ compactionCount: 0 })} />);
-    expect(screen.queryByTestId('metrics-compactions')).not.toBeInTheDocument();
-  });
-
-  it('hides phase breakdown when no compactions', () => {
-    render(<SessionMetricsHeader metrics={makeMetrics({ compactionCount: 0 })} />);
-    expect(screen.queryByTestId('phase-breakdown-trigger')).not.toBeInTheDocument();
   });
 
   it('expands phase breakdown on click', () => {

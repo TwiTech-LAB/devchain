@@ -4,23 +4,27 @@
  * the strict schema keeps container settings and Env out. Test layer:
  * integration against a real migrated SQLite database.
  */
-import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
+import type Database from 'better-sqlite3';
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import {
   DockerImportInventoryStore,
   type DockerImportInventory,
 } from './docker-import-inventory.store';
 
+const databases: Database.Database[] = [];
+
+afterEach(() => {
+  for (const sqlite of databases.splice(0)) sqlite.close();
+});
+
+function openDatabase() {
+  const database = createTestDatabase();
+  databases.push(database.sqlite);
+  return database;
+}
+
 function openStore(): DockerImportInventoryStore {
-  const sqlite = new Database(':memory:');
-  sqlite.pragma('journal_mode = WAL');
-  const db = drizzle(sqlite);
-  sqlite.pragma('foreign_keys = OFF');
-  migrate(db, { migrationsFolder: join(__dirname, '../../../../drizzle') });
-  sqlite.pragma('foreign_keys = ON');
-  return new DockerImportInventoryStore(db);
+  return new DockerImportInventoryStore(openDatabase().db);
 }
 
 const IMPORTED_AT = '2026-09-27T12:00:00.000Z';
@@ -84,12 +88,7 @@ describe('DockerImportInventoryStore', () => {
   });
 
   it('survives unbind and app restarts on the same database', () => {
-    const sqlite = new Database(':memory:');
-    sqlite.pragma('journal_mode = WAL');
-    const db = drizzle(sqlite);
-    sqlite.pragma('foreign_keys = OFF');
-    migrate(db, { migrationsFolder: join(__dirname, '../../../../drizzle') });
-    sqlite.pragma('foreign_keys = ON');
+    const { sqlite, db } = openDatabase();
     new DockerImportInventoryStore(db).set('p1', 'r1', inventory());
     // `unbind` removes the binding, never the inventory; a restart reopens
     // the same database.

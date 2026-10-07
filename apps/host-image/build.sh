@@ -119,7 +119,7 @@ fi
 {
   echo '#!/bin/bash'
   for key in IMAGE_VERSION UBUNTU_SERIAL UBUNTU_IMAGE_SHA256 NODE_VERSION SYNCTHING_VERSION \
-    NPM_REGISTRY BOOTSTRAP_PACKAGE; do
+    AST_GREP_VERSION NPM_REGISTRY BOOTSTRAP_PACKAGE DEVCHAIN_REQUIRED_PACKAGES DEVCHAIN_TOOL_PACKAGES; do
     printf 'export %s=%q\n' "$key" "${!key}"
   done
   printf 'export BUILT_AT=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

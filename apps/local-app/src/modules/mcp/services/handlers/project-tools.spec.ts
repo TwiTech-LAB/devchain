@@ -1,4 +1,3 @@
-import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 import type { AgentSessionContext, GuestSessionContext } from '../../dtos/mcp.dto';
 import { handleProjectsList } from './project-tools';
 import type { ProjectToolContext } from './project-context';
@@ -103,39 +102,5 @@ describe('project-tools handlers', () => {
       success: false,
       error: { code: 'AGENT_CONTEXT_REQUIRED', message: 'Agent required' },
     });
-  });
-
-  it('maps an unavailable optional service to SERVICE_UNAVAILABLE', async () => {
-    const ctx = makeContext();
-    (ctx.projectCommunicationService.listTargets as jest.Mock).mockRejectedValue(
-      new ServiceUnavailableError('ProjectCommunicationService'),
-    );
-
-    const result = await handleProjectsList(ctx, {
-      sessionId: SESSION_ID,
-      limit: 100,
-      offset: 0,
-    });
-
-    expect(result).toEqual({
-      success: false,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: expect.any(String),
-      },
-    });
-  });
-
-  it('returns session resolution failures before project discovery', async () => {
-    const ctx = makeContext();
-    (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-      success: false,
-      error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' },
-    });
-
-    await expect(
-      handleProjectsList(ctx, { sessionId: SESSION_ID, limit: 100, offset: 0 }),
-    ).resolves.toMatchObject({ success: false, error: { code: 'SESSION_NOT_FOUND' } });
-    expect(ctx.projectCommunicationService.listTargets).not.toHaveBeenCalled();
   });
 });

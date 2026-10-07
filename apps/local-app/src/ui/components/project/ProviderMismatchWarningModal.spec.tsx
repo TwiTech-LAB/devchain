@@ -23,38 +23,30 @@ describe('ProviderMismatchWarningModal', () => {
       <ProviderMismatchWarningModal open={true} warnings={warnings} onNavigate={onNavigate} />,
     );
 
-    expect(screen.getByText('Provider Mismatch Warning')).toBeInTheDocument();
     expect(screen.getByText('Missing: claude')).toBeInTheDocument();
     expect(screen.getByText('codex')).toBeInTheDocument();
     expect(screen.getByText('Affected agents: Agent A, Agent B')).toBeInTheDocument();
   });
 
-  it('does not render content when open is false', () => {
-    render(
-      <ProviderMismatchWarningModal open={false} warnings={warnings} onNavigate={onNavigate} />,
-    );
-
-    expect(screen.queryByText('Provider Mismatch Warning')).not.toBeInTheDocument();
-  });
-
-  it('calls onNavigate with /chat when Go to Chat is clicked', () => {
-    render(
-      <ProviderMismatchWarningModal open={true} warnings={warnings} onNavigate={onNavigate} />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Go to Chat' }));
-
-    expect(onNavigate).toHaveBeenCalledWith('/chat');
-  });
-
-  it('calls onNavigate with /board when Continue to Board is clicked', () => {
+  it.each([
+    {
+      label: 'calls onNavigate with /chat when Go to Chat is clicked',
+      buttonName: 'Go to Chat',
+      path: '/chat',
+    },
+    {
+      label: 'calls onNavigate with /board when Continue to Board is clicked',
+      buttonName: 'Continue to Board',
+      path: '/board',
+    },
+  ] as const)('$label', ({ buttonName, path }) => {
     render(
       <ProviderMismatchWarningModal open={true} warnings={warnings} onNavigate={onNavigate} />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Continue to Board' }));
+    fireEvent.click(screen.getByRole('button', { name: buttonName }));
 
-    expect(onNavigate).toHaveBeenCalledWith('/board');
+    expect(onNavigate).toHaveBeenCalledWith(path);
   });
 
   it('renders multiple warnings', () => {

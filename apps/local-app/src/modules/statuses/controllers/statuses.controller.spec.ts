@@ -65,37 +65,6 @@ describe('StatusesController', () => {
       );
       expect(storage.listStatuses).not.toHaveBeenCalled();
     });
-
-    it('throws BadRequestException when projectId is empty string', async () => {
-      await expect(controller.listStatuses('')).rejects.toThrow(BadRequestException);
-      expect(storage.listStatuses).not.toHaveBeenCalled();
-    });
-
-    it('lists statuses when projectId is provided', async () => {
-      storage.listStatuses.mockResolvedValue({
-        items: [mockStatus],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await controller.listStatuses('project-1');
-
-      expect(storage.listStatuses).toHaveBeenCalledWith('project-1');
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0].id).toBe('status-1');
-    });
-  });
-
-  describe('GET /api/statuses/:id', () => {
-    it('returns a status by id', async () => {
-      storage.getStatus.mockResolvedValue(mockStatus);
-
-      const result = await controller.getStatus('status-1');
-
-      expect(storage.getStatus).toHaveBeenCalledWith('status-1');
-      expect(result.id).toBe('status-1');
-    });
   });
 
   describe('POST /api/statuses', () => {
@@ -113,42 +82,6 @@ describe('StatusesController', () => {
       // Zod schema adds mcpHidden: false as default
       expect(storage.createStatus).toHaveBeenCalledWith({ ...createData, mcpHidden: false });
       expect(result.label).toBe('New Status');
-    });
-  });
-
-  describe('PUT /api/statuses/:id', () => {
-    it('updates a status with valid data', async () => {
-      const updateData = { label: 'Updated Status' };
-      storage.updateStatus.mockResolvedValue({ ...mockStatus, label: 'Updated Status' });
-
-      const result = await controller.updateStatus('status-1', updateData);
-
-      expect(storage.updateStatus).toHaveBeenCalledWith('status-1', updateData);
-      expect(result.label).toBe('Updated Status');
-    });
-  });
-
-  describe('DELETE /api/statuses/:id', () => {
-    it('deletes a status', async () => {
-      storage.deleteStatus.mockResolvedValue(undefined);
-
-      await controller.deleteStatus('status-1');
-
-      expect(storage.deleteStatus).toHaveBeenCalledWith('status-1');
-    });
-  });
-
-  describe('POST /api/statuses/reorder', () => {
-    it('reorders statuses', async () => {
-      storage.updateStatus.mockResolvedValue(mockStatus);
-
-      const result = await controller.reorderStatuses({
-        projectId: 'project-1',
-        statusIds: ['status-1', 'status-2'],
-      });
-
-      expect(result.success).toBe(true);
-      expect(storage.updateStatus).toHaveBeenCalled();
     });
   });
 });

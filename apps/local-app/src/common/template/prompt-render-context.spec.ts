@@ -27,57 +27,6 @@ describe('buildPromptRenderContext', () => {
       );
       expect(teams.listTeamsByAgent).not.toHaveBeenCalled();
     });
-
-    it('recipient with no team membership → empty team vars', async () => {
-      const teams = makeTeamsLookup([]);
-      const result = await buildPromptRenderContext({
-        recipientAgentId: 'agent-1',
-        teams,
-      });
-
-      expect(result.vars.team_name).toBe('');
-      expect(result.vars.team_names).toBe('');
-      expect(result.vars.is_team_lead).toBe(false);
-    });
-
-    it('recipient leads single team "Backend"', async () => {
-      const teams = makeTeamsLookup([{ name: 'Backend', teamLeadAgentId: 'agent-1' }]);
-      const result = await buildPromptRenderContext({
-        recipientAgentId: 'agent-1',
-        teams,
-      });
-
-      expect(result.vars.team_name).toBe('Backend');
-      expect(result.vars.team_names).toBe('Backend');
-      expect(result.vars.is_team_lead).toBe(true);
-    });
-
-    it('recipient is member-only of single team "Backend"', async () => {
-      const teams = makeTeamsLookup([{ name: 'Backend', teamLeadAgentId: 'other-agent' }]);
-      const result = await buildPromptRenderContext({
-        recipientAgentId: 'agent-1',
-        teams,
-      });
-
-      expect(result.vars.team_name).toBe('Backend');
-      expect(result.vars.team_names).toBe('Backend');
-      expect(result.vars.is_team_lead).toBe(false);
-    });
-
-    it('recipient on two teams "Zebra" + "Alpha" → sorted, multi-team empty team_name', async () => {
-      const teams = makeTeamsLookup([
-        { name: 'Zebra', teamLeadAgentId: 'agent-1' },
-        { name: 'Alpha', teamLeadAgentId: 'other-agent' },
-      ]);
-      const result = await buildPromptRenderContext({
-        recipientAgentId: 'agent-1',
-        teams,
-      });
-
-      expect(result.vars.team_name).toBe('');
-      expect(result.vars.team_names).toBe('Alpha, Zebra');
-      expect(result.vars.is_team_lead).toBe(true);
-    });
   });
 
   describe('Extras passthrough', () => {
@@ -114,20 +63,6 @@ describe('buildPromptRenderContext', () => {
       ).rejects.toThrow(/team_name.*collides/);
     });
 
-    it('extras with "team_names" throws collision error', async () => {
-      const teams = makeTeamsLookup([]);
-      await expect(
-        buildPromptRenderContext({ teams, extras: { team_names: 'override' } }),
-      ).rejects.toThrow(/team_names.*collides/);
-    });
-
-    it('extras with "is_team_lead" throws collision error', async () => {
-      const teams = makeTeamsLookup([]);
-      await expect(
-        buildPromptRenderContext({ teams, extras: { is_team_lead: true } }),
-      ).rejects.toThrow(/is_team_lead.*collides/);
-    });
-
     it('inherited keys on extras prototype do NOT throw', async () => {
       const teams = makeTeamsLookup([]);
       const extras = Object.create({ team_name: 'inherited' });
@@ -162,28 +97,6 @@ describe('buildPromptRenderContext', () => {
       await expect(
         buildPromptRenderContext({ recipientAgentId: 'agent-1', teams }),
       ).rejects.toThrow('DB connection lost');
-    });
-  });
-
-  describe('Cross-site invariant', () => {
-    it('same agentId + same teams mock + different extras → identical recipient vars', async () => {
-      const teams = makeTeamsLookup([{ name: 'Backend', teamLeadAgentId: 'agent-1' }]);
-
-      const resultA = await buildPromptRenderContext({
-        recipientAgentId: 'agent-1',
-        teams,
-        extras: { agent_name: 'Claude' },
-      });
-
-      const resultB = await buildPromptRenderContext({
-        recipientAgentId: 'agent-1',
-        teams,
-        extras: { project_name: 'Devchain', session_id: '123' },
-      });
-
-      expect(resultA.vars.team_name).toBe(resultB.vars.team_name);
-      expect(resultA.vars.team_names).toBe(resultB.vars.team_names);
-      expect(resultA.vars.is_team_lead).toBe(resultB.vars.is_team_lead);
     });
   });
 

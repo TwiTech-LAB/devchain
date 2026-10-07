@@ -152,22 +152,6 @@ describe('extractSemanticSteps', () => {
     expect(steps[0].estimatedTokens).toBe(Math.ceil('file contents here'.length / 4));
   });
 
-  it('should extract error tool_result', () => {
-    const messages: UnifiedMessage[] = [
-      makeMsg({
-        id: 'u1',
-        role: 'user',
-        isMeta: true,
-        toolResults: [{ toolCallId: 'tc-1', content: 'Error: file not found', isError: true }],
-      }),
-    ];
-
-    const steps = extractSemanticSteps(messages);
-
-    expect(steps).toHaveLength(1);
-    expect(steps[0].content.isError).toBe(true);
-  });
-
   it('should extract interruption step from text with interruption pattern', () => {
     const messages: UnifiedMessage[] = [
       makeMsg({

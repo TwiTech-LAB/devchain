@@ -1,27 +1,37 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { mkdir, readFile, stat, lstat, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { mkdir, readFile, stat, writeFile } from 'fs/promises';
+import { dirname, join } from 'path';
 import { z } from 'zod';
-import {
-  SYNCTHING_MARKERS,
-  SYNCTHING_TEMP_PATTERNS,
-} from '../../common/constants/syncthing-markers';
+import { SYNCTHING_GIT_EXCLUDES } from '../../common/constants/syncthing-markers';
 import { AppError } from '../../common/errors/error-types';
 import { STORAGE_SERVICE, type ProjectStorage } from '../storage/interfaces/storage.interface';
 import { FILE_SYNC_PATHS, assertShareableFolder, type FileSyncPaths } from './file-sync-paths';
 import {
+  FILE_SYNC_REPORT_SAMPLE,
+  CONFLICT_BASELINE_MAX,
+  ForceCopyBackupRequestSchema,
+  RECEIVE_ONLY_SAMPLE_MAX,
   FolderSyncStatusSchema,
-  FolderTypeSchema,
+  SyncFolderConfigurationSchema,
   type FolderSyncStatus,
   type FolderType,
+  type RemoteNeed,
+  type ConflictReport,
+  type ConflictBaseline,
   type SyncDevice,
   type SyncFolder,
   type SyncFolderPatch,
   type SyncFolderRequest,
+  type SyncStatusOptions,
+  type ForceCopyBackupRequest,
+  type ForceCopyBackup,
+  type ReceiveOnlyChanges,
 } from './file-sync.dto';
+import { projectRepository } from './project-repository';
 import { FileSyncIgnoresStore } from './file-sync-ignores.store';
 import { SyncthingManager } from './syncthing-manager.service';
 import { SyncthingRestError, type SyncthingRestClient } from './syncthing-rest.client';
+import { captureFileSyncConflictBaseline, scanFileSyncConflicts } from './file-sync-conflicts';
 
 /**
  * Sent in every folder PATCH: Syncthing v1 resets an omitted `fsWatcherDelayS`
@@ -35,8 +45,18 @@ const COMPLETION_POLL_MS = 500;
  * scan hashes every file, so a large project takes far longer than a normal REST call.
  */
 export const SCAN_TIMEOUT_MS = 10 * 60_000;
+/** How many failed files a folder status names; `errors` counts all of them. */
+const FILE_ERROR_SAMPLE = 3;
+const REMOTE_NEED_PAGE_SIZE = 1000;
+const RawRemoteNeedSchema = z.object({
+  files: z.array(z.object({ name: z.string(), deleted: z.boolean(), type: z.string() })),
+});
 
 const RawStatusSchema = FolderSyncStatusSchema.omit({ folderId: true, peer: true });
+
+const FolderErrorsSchema = z.object({
+  errors: z.array(z.object({ path: z.string(), error: z.string() })).nullable(),
+});
 
 const RawCompletionSchema = z.object({
   completion: z.number(),
@@ -74,14 +94,34 @@ export class FileSyncUnavailableError extends AppError {
 }
 
 export class FileSyncTimeoutError extends AppError {
-  constructor(folderId: string, progress: SyncProgress | null, lastError: string | null) {
+  constructor(
+    folderId: string,
+    progress: SyncProgress | null,
+    lastError: string | null,
+    syncErrors: string[] = [],
+  ) {
+    const reasons = lastError ? [...syncErrors, lastError] : syncErrors;
     super(
-      `Folder ${folderId} did not finish syncing in time${lastError ? `: ${lastError}` : ''}`,
+      `Folder ${folderId} did not finish syncing in time${reasons.length ? `: ${reasons.join('; ')}` : ''}`,
       'FILE_SYNC_TIMEOUT',
       504,
-      { folderId, progress, lastError },
+      { folderId, progress, lastError, syncErrors },
     );
   }
+}
+
+/** Syncthing's own errors in one side's folder status, in words. */
+function describeSyncErrors(status: FolderSyncStatus, side: string): string[] {
+  const reasons = status.error ? [`${status.error} on ${side}`] : [];
+  const failed = status.errors ?? 0;
+  if (failed > 0) {
+    const first = status.fileErrors?.[0];
+    reasons.push(
+      `${failed} ${failed === 1 ? 'file' : 'files'} failed to sync on ${side}` +
+        (first ? `. First: ${first.path}: ${first.error}` : ''),
+    );
+  }
+  return reasons;
 }
 
 export function codeFolderId(projectId: string): string {
@@ -101,6 +141,19 @@ export function projectFolderList(
 }
 
 /**
+ * Both sides are idle and the receiver's global index holds exactly the sender's files
+ * and directories. Before this, a receive-only Revert would delete the receiver's files.
+ */
+export function senderIndexReached(sender: FolderSyncStatus, receiver: FolderSyncStatus): boolean {
+  return (
+    sender.state === 'idle' &&
+    receiver.state === 'idle' &&
+    receiver.globalFiles === sender.localFiles &&
+    receiver.globalDirectories === sender.localDirectories
+  );
+}
+
+/**
  * A folder is in sync when the sender sees the receiver's copy complete and
  * valid, both sides are idle, and the receiver holds exactly the sender's
  * files and directories. The sender's completion alone only reflects the
@@ -116,12 +169,9 @@ export function evaluateCompletion(
     peer.completion === 100 &&
     peer.needItems === 0 &&
     peer.remoteState === 'valid' &&
-    sender.state === 'idle' &&
-    receiver.state === 'idle' &&
+    senderIndexReached(sender, receiver) &&
     receiver.needTotalItems === 0 &&
-    receiver.globalFiles === sender.localFiles &&
-    receiver.localFiles === sender.localFiles &&
-    receiver.globalDirectories === sender.localDirectories;
+    receiver.localFiles === sender.localFiles;
   return {
     done,
     progress: {
@@ -154,8 +204,12 @@ export interface WaitForCompleteOptions {
   onProgress?: (progress: SyncProgress) => void;
   pollIntervalMs?: number;
   symmetric?: boolean;
+  /** Revert is asynchronous: wait for its receive-only index to clear as well. */
+  requireNoReceiveOnlyChanges?: boolean;
   /** When it fires, the wait ends with the signal's reason instead of the timeout. */
   signal?: AbortSignal;
+  /** Names the sides in the timeout message, for example "this PC" and "the VM". */
+  sides?: { sender: string; receiver: string };
 }
 
 /**
@@ -208,8 +262,12 @@ export class FileSyncService {
     return this.ignores.get(projectId);
   }
 
-  setIgnores(projectId: string, ignores: string[] | null): string[] {
-    return this.ignores.set(projectId, ignores);
+  getIgnoresRevision(projectId: string): number {
+    return this.ignores.revision(projectId);
+  }
+
+  setIgnores(projectId: string, ignores: string[] | null, revision?: number): string[] {
+    return this.ignores.set(projectId, ignores, revision);
   }
 
   /** The configured layout survives restarts and does not assume a nested git share exists. */
@@ -224,14 +282,8 @@ export class FileSyncService {
   /** New shares follow the home checkout; a worktree's .git file is not a git folder. */
   async initialFolders(projectId: string): Promise<ProjectFolder[]> {
     const root = await this.folderPath(projectId);
-    const gitDirectory = await lstat(join(root, '.git')).then(
-      (info) => info.isDirectory(),
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return false;
-        throw error;
-      },
-    );
-    return projectFolderList(projectId, gitDirectory ? ['code', 'git'] : ['code']);
+    const repository = await projectRepository(root);
+    return projectFolderList(projectId, repository === 'repository' ? ['code', 'git'] : ['code']);
   }
 
   /**
@@ -273,6 +325,21 @@ export class FileSyncService {
    * before the first scan, then unpauses it unless `paused` is set.
    */
   async ensureFolder(request: SyncFolderRequest): Promise<SyncFolder> {
+    if (request.forceCopy && request.type !== 'receiveonly')
+      throw new AppError(
+        'Force copy backups require a receive-only folder',
+        'INVALID_FORCE_COPY',
+        400,
+      );
+    const backupPath = request.forceCopy
+      ? (
+          await this.forceCopyBackup({
+            projectId: request.projectId,
+            kind: request.kind,
+            forceCopy: request.forceCopy,
+          })
+        ).path
+      : undefined;
     const path = await this.folderPath(request.projectId, request.kind);
     const id = projectFolderId(request.projectId, request.kind);
     await mkdir(path, { recursive: true });
@@ -288,14 +355,43 @@ export class FileSyncService {
       fsWatcherEnabled: true,
       fsWatcherDelayS: FOLDER_WATCHER_DELAY_S,
       rescanIntervalS: RESCAN_INTERVAL_S,
-      ...(request.kind === 'git' ? { maxConflicts: 0 } : {}),
+      ...(backupPath
+        ? {
+            maxConflicts: -1,
+            versioning: {
+              type: 'trashcan',
+              fsPath: backupPath,
+              fsType: 'basic',
+              params: { cleanoutDays: '0' },
+            },
+          }
+        : { versioning: { type: '' }, maxConflicts: request.kind === 'git' ? 0 : 10 }),
     });
     await client.request('POST', `/rest/db/ignores?folder=${enc(id)}`, {
       ignore: request.ignores,
     });
     const paused = request.paused ?? false;
     if (!paused) await this.updateFolder(id, { paused: false });
-    return { id, path, type: request.type, paused };
+    return { id, path, type: request.type, paused, ...(backupPath && { backupPath }) };
+  }
+
+  /** Computes and creates a local backup directory without touching any share record. */
+  async forceCopyBackup(request: ForceCopyBackupRequest): Promise<ForceCopyBackup> {
+    const { projectId, kind, forceCopy } = ForceCopyBackupRequestSchema.parse({
+      projectId: request.projectId,
+      kind: request.kind,
+      forceCopy: request.forceCopy,
+    });
+    await this.folderPath(projectId, kind);
+    const path = join(
+      dirname(this.paths.syncthingHome()),
+      'sync-backups',
+      projectId,
+      forceCopy.operationId,
+      kind,
+    );
+    await mkdir(path, { recursive: true });
+    return { path };
   }
 
   /**
@@ -317,13 +413,9 @@ export class FileSyncService {
   }
 
   async folderConfiguration(folderId: string) {
-    return z
-      .object({
-        type: FolderTypeSchema,
-        paused: z.boolean(),
-        devices: z.array(z.object({ deviceID: z.string() })),
-      })
-      .parse(await this.client().request('GET', `/rest/config/folders/${enc(folderId)}`));
+    return SyncFolderConfigurationSchema.parse(
+      await this.client().request('GET', `/rest/config/folders/${enc(folderId)}`),
+    );
   }
 
   async setFolderType(folderId: string, type: FolderType): Promise<void> {
@@ -331,7 +423,11 @@ export class FileSyncService {
   }
 
   /** Folder status; with `peerDeviceId`, also this side's view of the peer's copy. */
-  async status(folderId: string, peerDeviceId?: string): Promise<FolderSyncStatus> {
+  async status(
+    folderId: string,
+    peerDeviceId?: string,
+    options: SyncStatusOptions = {},
+  ): Promise<FolderSyncStatus> {
     const client = this.client();
     const raw = RawStatusSchema.parse(
       await client.request('GET', `/rest/db/status?folder=${enc(folderId)}`),
@@ -344,7 +440,87 @@ export class FileSyncService {
           ),
         )
       : null;
-    return { folderId, ...raw, peer: peer && { deviceId: peerDeviceId ?? '', ...peer } };
+    const fileErrors =
+      raw.errors || options.allErrors
+        ? await this.fileErrors(client, folderId, options.allErrors)
+        : [];
+    return {
+      folderId,
+      ...raw,
+      ...(fileErrors.length || options.allErrors ? { fileErrors } : {}),
+      peer: peer && { deviceId: peerDeviceId ?? '', ...peer },
+    };
+  }
+
+  /** Pagination counts every pending file/deletion without retaining every path. */
+  async remoteNeed(folderId: string, peerDeviceId: string): Promise<RemoteNeed> {
+    const result: RemoteNeed = {
+      total: 0,
+      deleted: 0,
+      sample: [],
+      conflictPaths: [],
+      conflictsOverCap: false,
+    };
+    for (let page = 1; ; page += 1) {
+      const { files } = RawRemoteNeedSchema.parse(
+        await this.client().request(
+          'GET',
+          `/rest/db/remoteneed?folder=${enc(folderId)}&device=${enc(peerDeviceId)}&page=${page}&perpage=${REMOTE_NEED_PAGE_SIZE}`,
+        ),
+      );
+      for (const file of files) {
+        if (file.type === 'FILE_INFO_TYPE_DIRECTORY') continue;
+        result.total += 1;
+        if (file.deleted) result.deleted += 1;
+        if (result.sample.length < FILE_SYNC_REPORT_SAMPLE)
+          result.sample.push({ path: file.name, deleted: file.deleted });
+        if (
+          file.name.split('/').at(-1)?.includes('.sync-conflict-') &&
+          !result.conflictsOverCap &&
+          !result.conflictPaths.includes(file.name)
+        ) {
+          if (result.conflictPaths.length === CONFLICT_BASELINE_MAX) {
+            result.conflictsOverCap = true;
+            result.conflictPaths = [];
+          } else result.conflictPaths.push(file.name);
+        }
+      }
+      if (files.length < REMOTE_NEED_PAGE_SIZE) return result;
+    }
+  }
+
+  async conflicts(
+    projectId: string,
+    baseline: ConflictBaseline,
+    ignores: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ConflictReport> {
+    return scanFileSyncConflicts(await this.folderPath(projectId), baseline, ignores, signal);
+  }
+
+  async conflictBaseline(
+    projectId: string,
+    ignores: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ConflictBaseline> {
+    return captureFileSyncConflictBaseline(await this.folderPath(projectId), ignores, signal);
+  }
+
+  /** A full-list read must surface failures rather than looking like an empty list. */
+  private async fileErrors(client: SyncthingRestClient, folderId: string, allErrors = false) {
+    try {
+      const body = FolderErrorsSchema.parse(
+        await client.request(
+          'GET',
+          `/rest/folder/errors?folder=${enc(folderId)}${allErrors ? '' : `&page=1&perpage=${FILE_ERROR_SAMPLE}`}`,
+        ),
+      );
+      const errors = body.errors ?? [];
+      return allErrors ? errors : errors.slice(0, FILE_ERROR_SAMPLE);
+    } catch (error) {
+      if (allErrors) throw error;
+      return [];
+    }
   }
 
   /** Stops sharing the folder; its files stay on disk. A folder that is gone counts as removed. */
@@ -371,34 +547,73 @@ export class FileSyncService {
     await this.client().request('POST', `/rest/db/revert?folder=${enc(folderId)}`);
   }
 
+  async override(folderId: string): Promise<void> {
+    await this.client().request('POST', `/rest/db/override?folder=${enc(folderId)}`);
+  }
+
+  /** Counts receive-only changes while retaining at most one page of names. */
+  async localChanges(folderId: string): Promise<ReceiveOnlyChanges> {
+    const status = await this.status(folderId);
+    const { files } = z
+      .object({ files: z.array(z.object({ name: z.string() })) })
+      .parse(
+        await this.client().request(
+          'GET',
+          `/rest/db/localchanged?folder=${enc(folderId)}&page=1&perpage=${RECEIVE_ONLY_SAMPLE_MAX}`,
+        ),
+      );
+    return {
+      count: status.receiveOnlyChangedFiles,
+      sample: files.slice(0, RECEIVE_ONLY_SAMPLE_MAX).map((file) => file.name),
+    };
+  }
+
   /**
    * Polls both sides until `evaluateCompletion` holds. Failed polls count as
-   * not done; the last failure is reported if the wait times out. An outside
+   * not done. If the wait times out, it reports Syncthing's errors from the
+   * last poll that read both sides, and the last failed poll. An outside
    * signal ends the wait with its own reason, also when it fires during a poll.
+   * Each poll waits for both callbacks, also when one fails.
    */
   async waitForComplete(folderId: string, options: WaitForCompleteOptions): Promise<SyncProgress> {
     const deadline = Date.now() + options.timeoutMs;
+    const sides = options.sides ?? { sender: 'the sender', receiver: 'the receiver' };
     let progress: SyncProgress | null = null;
     let lastError: string | null = null;
+    let syncErrors: string[] = [];
     for (;;) {
       options.signal?.throwIfAborted();
       let done = false;
       try {
-        const [sender, receiver] = await Promise.all([options.sender(), options.receiver()]);
+        // Both reads end before the poll does: a receiver read may be inside a Revert.
+        const [senderRead, receiverRead] = await Promise.allSettled([
+          options.sender(),
+          options.receiver(),
+        ]);
+        if (senderRead.status === 'rejected') throw senderRead.reason;
+        if (receiverRead.status === 'rejected') throw receiverRead.reason;
+        const [sender, receiver] = [senderRead.value, receiverRead.value];
+        syncErrors = [
+          ...describeSyncErrors(receiver, sides.receiver),
+          ...describeSyncErrors(sender, sides.sender),
+        ];
         const result = options.symmetric
           ? evaluateSymmetricCompletion(sender, receiver)
           : evaluateCompletion(sender, receiver);
         progress = result.progress;
         lastError = null;
         options.onProgress?.(progress);
-        done = result.done;
+        done =
+          result.done &&
+          (!options.requireNoReceiveOnlyChanges || receiver.receiveOnlyChangedFiles === 0);
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
       }
       // A cancel during the poll wins over its answer and over the deadline.
       options.signal?.throwIfAborted();
       if (done && progress) return progress;
-      if (Date.now() >= deadline) throw new FileSyncTimeoutError(folderId, progress, lastError);
+      if (Date.now() >= deadline)
+        throw new FileSyncTimeoutError(folderId, progress, lastError, syncErrors);
       await new Promise((resolve) =>
         setTimeout(resolve, options.pollIntervalMs ?? COMPLETION_POLL_MS),
       );
@@ -435,11 +650,7 @@ async function excludeMarkersFromGit(root: string): Promise<void> {
   const excludePath = join(gitDir, 'info', 'exclude');
   const current = await readFile(excludePath, 'utf8').catch(() => '');
   const lines = new Set(current.split(/\r?\n/).map((line) => line.trim()));
-  const missing = [
-    ...SYNCTHING_MARKERS.map((marker) => `/${marker}`),
-    '*.sync-conflict-*',
-    ...SYNCTHING_TEMP_PATTERNS,
-  ].filter((line) => !lines.has(line));
+  const missing = SYNCTHING_GIT_EXCLUDES.filter((line) => !lines.has(line));
   if (missing.length === 0) return;
   await mkdir(join(gitDir, 'info'), { recursive: true });
   const prefix = current.length > 0 && !current.endsWith('\n') ? '\n' : '';

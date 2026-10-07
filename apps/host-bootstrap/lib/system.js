@@ -6,6 +6,7 @@ const { execFile } = require("node:child_process");
 /** Where the bootstrap reads and writes; tests point these at a temp directory. */
 const DEFAULT_PATHS = {
   etcDir: "/etc/devchain-host",
+  profileDir: "/etc/profile.d",
   tlsDir: "/etc/devchain-host/tls",
   osReleaseFile: "/etc/os-release",
   aptDir: "/etc/apt",
@@ -82,6 +83,18 @@ async function lookupUid(uid) {
   }
 }
 
+async function lookupGroup(nameOrGid) {
+  try {
+    const { stdout } = await run("getent", ["group", String(nameOrGid)]);
+    const line = stdout.trim().split("\n")[0];
+    if (!line) return null;
+    const [name, , gid] = line.split(":");
+    return { name, gid: Number(gid) };
+  } catch {
+    return null;
+  }
+}
+
 async function listUsers() {
   const { stdout } = await run("getent", ["passwd"]);
   return stdout.trim().split("\n").filter(Boolean).map(parsePasswdLine);
@@ -93,6 +106,7 @@ function createSystem(overrides = {}) {
     run: overrides.run ?? run,
     lookupUser: overrides.lookupUser ?? lookupUser,
     lookupUid: overrides.lookupUid ?? lookupUid,
+    lookupGroup: overrides.lookupGroup ?? lookupGroup,
     listUsers: overrides.listUsers ?? listUsers,
     chown:
       overrides.chown ?? ((file, uid, gid) => fs.lchownSync(file, uid, gid)),

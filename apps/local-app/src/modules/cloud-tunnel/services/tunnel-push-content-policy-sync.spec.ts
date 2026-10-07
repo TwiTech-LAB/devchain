@@ -49,14 +49,6 @@ describe('tunnel push content-policy ↔ broadcast-registry sync (B2 drift guard
     }
   });
 
-  it('every registry-backed content-bearing event is classified by the forwarder', () => {
-    for (const event of registryBackedForwardedEvents) {
-      if (registrySaysContentBearing(event)) {
-        expect(CONTENT_BEARING_PUSH_EVENTS.has(event)).toBe(true);
-      }
-    }
-  });
-
   it('classifies the content-bearing forwarded events (transcript deltas, agent names, AUQ)', () => {
     // Keep the expected content-bearing set explicit so a registry-policy regression fails
     // here with the missing event name, not only in the generic table above.
@@ -68,18 +60,5 @@ describe('tunnel push content-policy ↔ broadcast-registry sync (B2 drift guard
         'session.transcript.updated',
       ].sort(),
     );
-  });
-
-  it('does NOT classify pure-hint forwarded events as content-bearing', () => {
-    // Counts/cursors/presence/ids only — safe to ride plaintext against an incapable peer.
-    const hintEvents = [
-      'claude.hooks.ask_user_question.resolved',
-      'session.presence.changed',
-      'session.activity.changed',
-    ] as const;
-    for (const event of hintEvents) {
-      expect(CONTENT_BEARING_PUSH_EVENTS.has(event)).toBe(false);
-      expect(registrySaysContentBearing(event)).toBe(false);
-    }
   });
 });

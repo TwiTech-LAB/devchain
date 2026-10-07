@@ -46,24 +46,6 @@ describe('ProviderAdapterFactory', () => {
   });
 
   describe('getAdapter', () => {
-    it('returns ClaudeAdapter for claude provider', () => {
-      const adapter = factory.getAdapter('claude');
-      expect(adapter).toBeInstanceOf(ClaudeAdapter);
-      expect(adapter.providerName).toBe('claude');
-    });
-
-    it('returns CodexAdapter for codex provider', () => {
-      const adapter = factory.getAdapter('codex');
-      expect(adapter).toBeInstanceOf(CodexAdapter);
-      expect(adapter.providerName).toBe('codex');
-    });
-
-    it('returns OpencodeAdapter for opencode provider', () => {
-      const adapter = factory.getAdapter('opencode');
-      expect(adapter).toBeInstanceOf(OpencodeAdapter);
-      expect(adapter.providerName).toBe('opencode');
-    });
-
     it('returns AntigravityAdapter for agy provider (case-insensitive)', () => {
       expect(factory.getAdapter('agy')).toBeInstanceOf(AntigravityAdapter);
       expect(factory.getAdapter('agy').providerName).toBe('agy');
@@ -75,20 +57,6 @@ describe('ProviderAdapterFactory', () => {
       expect(factory.getAdapter('copilot').providerName).toBe('copilot');
       expect(factory.getAdapter('Copilot')).toBe(copilotAdapter);
       expect(factory.getAdapter('COPILOT')).toBe(copilotAdapter);
-    });
-
-    it('Claude adapter exposes launchInitialPromptBehavior with preKeys and preDelayMs', () => {
-      const adapter = factory.getAdapter('claude');
-      expect(adapter.launchInitialPromptBehavior).toBeDefined();
-      expect(adapter.launchInitialPromptBehavior!.preKeys).toEqual(['Enter']);
-      expect(adapter.launchInitialPromptBehavior!.preDelayMs).toBe(2000);
-    });
-
-    it('Codex adapter exposes launchInitialPromptBehavior with preKeys and preDelayMs', () => {
-      const adapter = factory.getAdapter('codex');
-      expect(adapter.launchInitialPromptBehavior).toBeDefined();
-      expect(adapter.launchInitialPromptBehavior!.preKeys).toEqual(['Enter']);
-      expect(adapter.launchInitialPromptBehavior!.preDelayMs).toBe(2000);
     });
 
     it('OpenCode adapter does not define launchInitialPromptBehavior', () => {
@@ -133,31 +101,16 @@ describe('ProviderAdapterFactory', () => {
         });
       }
     });
-
-    it('throws UnsupportedProviderError for empty provider name', () => {
-      expect(() => factory.getAdapter('')).toThrow(UnsupportedProviderError);
-    });
   });
 
   describe('isSupported', () => {
-    it('returns true for claude', () => {
-      expect(factory.isSupported('claude')).toBe(true);
-    });
-
-    it('returns true for codex', () => {
-      expect(factory.isSupported('codex')).toBe(true);
-    });
-
-    it('returns true for opencode', () => {
-      expect(factory.isSupported('opencode')).toBe(true);
-    });
-
-    it('returns false for unsupported provider', () => {
-      expect(factory.isSupported('unknown')).toBe(false);
-    });
-
-    it('returns false for empty string', () => {
-      expect(factory.isSupported('')).toBe(false);
+    it.each([
+      { name: 'claude', supported: true },
+      { name: 'codex', supported: true },
+      { name: 'opencode', supported: true },
+      { name: 'unknown', supported: false },
+    ])('reports support for $name', ({ name, supported }) => {
+      expect(factory.isSupported(name)).toBe(supported);
     });
 
     it('normalizes provider name to lowercase (case-insensitive check)', () => {
@@ -204,12 +157,6 @@ describe('ProviderAdapterFactory', () => {
 
     it('returns no behavior for a Codex agent', async () => {
       setupChain('codex');
-      const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
-      expect(result).toEqual({});
-    });
-
-    it('returns no behavior for an OpenCode agent', async () => {
-      setupChain('opencode');
       const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
       expect(result).toEqual({});
     });

@@ -23,37 +23,35 @@ describe('TestPushButton', () => {
     fetchSpy.mockRestore();
   });
 
-  it('renders the button', () => {
-    renderButton();
-    expect(screen.getByRole('button', { name: /send test push/i })).toBeInTheDocument();
-  });
-
-  it('shows success message with device count on success', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ sent: 2, failed: 0 }),
-    } as Response);
-
-    renderButton();
+  it.each([
+    {
+      label: 'multiple devices',
+      sent: 2,
+      failed: 0,
+      props: {},
+      text: /test push sent to 2 devices/i,
+    },
+    {
+      label: 'singular device',
+      sent: 1,
+      failed: 0,
+      props: {},
+      text: /test push sent to 1 device\./i,
+    },
+    { label: 'no devices', sent: 0, failed: 0, props: {}, text: /no devices registered/i },
+    { label: 'partial failure', sent: 1, failed: 2, props: {}, text: /sent: 1\. failed: 2/i },
+    {
+      label: 'selected device failure',
+      sent: 1,
+      failed: 2,
+      props: { deviceId: 'device-1', deviceLabel: 'Android' },
+      text: /android: sent 1\. failed: 2\./i,
+    },
+  ] as const)('$label', async ({ sent, failed, props, text }) => {
+    fetchSpy.mockResolvedValue({ ok: true, json: async () => ({ sent, failed }) } as Response);
+    renderButton(props);
     fireEvent.click(screen.getByRole('button', { name: /send test push/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/test push sent to 2 devices/i)).toBeInTheDocument();
-    });
-  });
-
-  it('shows singular device message when sent=1', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ sent: 1, failed: 0 }),
-    } as Response);
-
-    renderButton();
-    fireEvent.click(screen.getByRole('button', { name: /send test push/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/test push sent to 1 device\./i)).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument());
   });
 
   it('sends a deviceId when rendered for one device', async () => {
@@ -76,75 +74,17 @@ describe('TestPushButton', () => {
     );
   });
 
-  it('shows no-devices message when sent=0 and failed=0', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ sent: 0, failed: 0 }),
-    } as Response);
-
-    renderButton();
+  it.each([
+    { label: 'all devices', props: {}, text: /test push failed/i },
+    {
+      label: 'selected device',
+      props: { deviceId: 'device-1', deviceLabel: 'iOS' },
+      text: /test push to ios failed/i,
+    },
+  ] as const)('maps HTTP error for $label', async ({ props, text }) => {
+    fetchSpy.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) } as Response);
+    renderButton(props);
     fireEvent.click(screen.getByRole('button', { name: /send test push/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/no devices registered/i)).toBeInTheDocument();
-    });
-  });
-
-  it('shows partial failure breakdown', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ sent: 1, failed: 2 }),
-    } as Response);
-
-    renderButton();
-    fireEvent.click(screen.getByRole('button', { name: /send test push/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/sent: 1\. failed: 2/i)).toBeInTheDocument();
-    });
-  });
-
-  it('keeps failure copy scoped to selected device', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ sent: 1, failed: 2 }),
-    } as Response);
-
-    renderButton({ deviceId: 'device-1', deviceLabel: 'Android' });
-    fireEvent.click(screen.getByRole('button', { name: /send test push/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/android: sent 1\. failed: 2\./i)).toBeInTheDocument();
-    });
-  });
-
-  it('shows error message on fetch failure', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: async () => ({}),
-    } as unknown as Response);
-
-    renderButton();
-    fireEvent.click(screen.getByRole('button', { name: /send test push/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/test push failed/i)).toBeInTheDocument();
-    });
-  });
-
-  it('keeps error copy scoped to selected device', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: async () => ({}),
-    } as unknown as Response);
-
-    renderButton({ deviceId: 'device-1', deviceLabel: 'iOS' });
-    fireEvent.click(screen.getByRole('button', { name: /send test push/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/test push to ios failed/i)).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument());
   });
 });

@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { getEnvConfig } from '../../../common/config/env.config';
 import { NotFoundError, StorageError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
@@ -10,9 +11,10 @@ import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/s
 import type { CommunitySkillSource, LocalSkillSource } from '../../storage/models/domain.models';
 import type { CreateCommunitySourceDto } from '../dtos/community-sources.dto';
 import type { CreateLocalSourceDto } from '../dtos/local-sources.dto';
+import { cleanupStaleSkillSyncDirectories } from '../adapters/skill-sync-temp-cleanup';
 import { SkillSourceRegistryService } from './skill-source-registry.service';
 import { SkillSyncService } from './skill-sync.service';
-import type { SyncResult } from './skill-sync.types';
+import type { SyncOptions, SyncResult } from './skill-sync.types';
 
 const logger = createLogger('SkillSourceLifecycleService');
 
@@ -47,6 +49,9 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
   ) {}
 
   onApplicationBootstrap(): void {
+    if (!getEnvConfig().SKILLS_STARTUP_SYNC_ENABLED) return;
+    void cleanupStaleSkillSyncDirectories();
+
     if (!this.settingsService.getSkillsSyncOnStartup()) {
       logger.info('Startup skills sync disabled via settings');
       return;
@@ -126,18 +131,20 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
     });
   }
 
-  syncAll(): Promise<SyncResult> {
+  syncAll(options?: SyncOptions): Promise<SyncResult> {
     if (!this.reservePublicSync()) {
       return Promise.resolve(this.createAlreadyRunningResult());
     }
-    return this.executeReservedOperation(() => this.skillSyncService.syncAll());
+    return this.executeReservedOperation(() => this.skillSyncService.syncAll(options));
   }
 
-  syncSource(sourceName: string): Promise<SyncResult> {
+  syncSource(sourceName: string, options?: SyncOptions): Promise<SyncResult> {
     if (!this.reservePublicSync()) {
       return Promise.resolve(this.createAlreadyRunningResult());
     }
-    return this.executeReservedOperation(() => this.skillSyncService.syncSource(sourceName));
+    return this.executeReservedOperation(() =>
+      this.skillSyncService.syncSource(sourceName, options),
+    );
   }
 
   private reservePublicSync(): boolean {

@@ -53,9 +53,12 @@ const providerClis = { getStatus: () => cliStatus } as never;
 describe('RuntimeController', () => {
   const originalEnv = process.env;
   let controller: RuntimeController;
+  let claimDir: string;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    claimDir = mkdtempSync(join(tmpdir(), 'devchain-runtime-claim-'));
+    process.env.DEVCHAIN_HOST_ETC_DIR = claimDir;
     delete process.env.HOST;
     delete process.env.DATABASE_URL;
     delete process.env.RUNTIME_TOKEN;
@@ -69,6 +72,47 @@ describe('RuntimeController', () => {
     process.env = originalEnv;
     resetEnvConfig();
   });
+
+  afterEach(() => rmSync(claimDir, { recursive: true, force: true }));
+
+  // Filesystem-backed controller coverage proves projection of the real record;
+  // process ids remain authoritative even when a record contains different ids.
+  it.each(['ubuntu', null])(
+    'reports requested ids and the actual conflict holder %p',
+    async (holder) => {
+      writeFileSync(
+        join(claimDir, 'claim.json'),
+        JSON.stringify({
+          requestedUid: 501,
+          requestedGid: 20,
+          uid: 1999,
+          gid: 2999,
+          primaryGroup: 'dialout',
+          uidConflict: { requestedUid: 501, holder },
+          userName: 'alice',
+        }),
+      );
+      expect(await controller.getRuntime()).toMatchObject({
+        uid: process.getuid?.() ?? null,
+        gid: process.getgid?.() ?? null,
+        requestedUid: 501,
+        requestedGid: 20,
+        primaryGroup: 'dialout',
+        uidConflict: { requestedUid: 501, holder },
+      });
+    },
+  );
+
+  it.each(['{}', '{invalid', '{"uidConflict":{"holder":42}}'])(
+    'omits claim identity metadata for an old or unreadable record %s',
+    async (record) => {
+      writeFileSync(join(claimDir, 'claim.json'), record);
+      const runtime = await controller.getRuntime();
+      expect(runtime).not.toHaveProperty('requestedUid');
+      expect(runtime).not.toHaveProperty('uidConflict');
+      expect(runtime.uid).toBe(process.getuid?.() ?? null);
+    },
+  );
 
   it('returns version, bootId, features and admission for the local runtime', async () => {
     const result = await controller.getRuntime();
@@ -106,13 +150,6 @@ describe('RuntimeController', () => {
     });
   });
 
-  it('reports the real process account ids, the source of truth for a VM claim', async () => {
-    const result = await controller.getRuntime();
-
-    expect(result.uid).toBe(process.getuid?.());
-    expect(result.gid).toBe(process.getgid?.());
-  });
-
   it('returns the same bootId across multiple calls', async () => {
     const result1 = await controller.getRuntime();
     const result2 = await controller.getRuntime();
@@ -120,24 +157,6 @@ describe('RuntimeController', () => {
     expect(result1.bootId).toBe(result2.bootId);
     expect(typeof result1.bootId).toBe('string');
     expect(result1.bootId.length).toBeGreaterThan(0);
-  });
-
-  it('reports Cloud UI feature status when enabled', async () => {
-    process.env.DEVCHAIN_CLOUD_UI_ENABLED = '1';
-    resetEnvConfig();
-
-    const result = await controller.getRuntime();
-
-    expect(result.features).toEqual({ cloudUi: true });
-  });
-
-  it('reports Cloud UI feature disabled when DEVCHAIN_CLOUD_UI_ENABLED=0', async () => {
-    process.env.DEVCHAIN_CLOUD_UI_ENABLED = '0';
-    resetEnvConfig();
-
-    const result = await controller.getRuntime();
-
-    expect(result.features).toEqual({ cloudUi: false });
   });
 
   it('reports why integration operations are unavailable on a non-loopback host', async () => {

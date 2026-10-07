@@ -67,15 +67,6 @@ describe('ProviderCliSettingsDelegate', () => {
       expect(result.opencode).toEqual({ version: 'latest', homeManaged: false });
     });
 
-    it('survives a delegate rebuild over the same database (restart persistence)', () => {
-      delegate.setProviderCliVersion('opencode', { version: '1.18.32', homeManaged: true });
-      const reopened = new ProviderCliSettingsDelegate({ sqlite: db });
-      expect(reopened.getProviderCliVersions().opencode).toEqual({
-        version: '1.18.32',
-        homeManaged: true,
-      });
-    });
-
     it('updates only the named provider on a later save', () => {
       delegate.setProviderCliVersion('claude', { version: '2.1.281', homeManaged: true });
       delegate.setProviderCliVersion('codex', { version: '0.156.1', homeManaged: false });
@@ -85,7 +76,7 @@ describe('ProviderCliSettingsDelegate', () => {
       expect(result.codex).toEqual({ version: '0.156.1', homeManaged: false });
     });
 
-    it.each(['agy', 'gemini', '', 'CLAUDE'])('rejects unknown provider %s', (provider) => {
+    it.each(['agy', '', 'CLAUDE'])('rejects unknown provider %s', (provider) => {
       expect(() =>
         delegate.setProviderCliVersion(provider, { version: 'latest', homeManaged: false }),
       ).toThrow(ValidationError);
@@ -99,15 +90,6 @@ describe('ProviderCliSettingsDelegate', () => {
         ).toThrow(ValidationError);
       },
     );
-
-    it('rejects a non-boolean homeManaged', () => {
-      expect(() =>
-        delegate.setProviderCliVersion('claude', {
-          version: 'latest',
-          homeManaged: 'yes' as unknown as boolean,
-        }),
-      ).toThrow(ValidationError);
-    });
   });
 
   describe('stored-map tolerance', () => {

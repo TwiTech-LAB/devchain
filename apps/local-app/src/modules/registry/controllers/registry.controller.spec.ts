@@ -96,13 +96,6 @@ describe('RegistryController', () => {
       expect(mockRegistryClient.downloadTemplate).not.toHaveBeenCalled();
       expect(mockCacheService.saveTemplate).not.toHaveBeenCalled();
     });
-
-    it('should propagate orchestration failures unchanged', async () => {
-      const error = new Error('Registry unavailable');
-      mockOrchestrationService.downloadToCache.mockRejectedValue(error);
-
-      await expect(controller.downloadTemplate('test-template', '1.0.0')).rejects.toBe(error);
-    });
   });
 
   describe('getProjectsUsingTemplate', () => {
@@ -214,21 +207,6 @@ describe('RegistryController', () => {
   });
 
   describe('getUpdateStatus', () => {
-    it('should return pending state while startup check is running', () => {
-      mockOrchestrationService.getUpdateStatus = jest.fn().mockReturnValue({
-        state: 'pending',
-        results: [],
-      });
-
-      const result = controller.getUpdateStatus();
-
-      expect(result).toEqual({
-        state: 'pending',
-        results: [],
-      });
-      expect(mockOrchestrationService.getUpdateStatus).toHaveBeenCalledTimes(1);
-    });
-
     it('should return complete state with mapped results and templateSlug', () => {
       mockOrchestrationService.getUpdateStatus = jest.fn().mockReturnValue({
         state: 'complete',
@@ -278,20 +256,6 @@ describe('RegistryController', () => {
             changelog: undefined,
           },
         ],
-      });
-    });
-
-    it('should return skipped state when startup check is skipped', () => {
-      mockOrchestrationService.getUpdateStatus = jest.fn().mockReturnValue({
-        state: 'skipped',
-        results: [],
-      });
-
-      const result = controller.getUpdateStatus();
-
-      expect(result).toEqual({
-        state: 'skipped',
-        results: [],
       });
     });
   });

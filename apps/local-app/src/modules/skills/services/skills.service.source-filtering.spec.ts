@@ -1,8 +1,6 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { SkillSourceRegistryService } from './skill-source-registry.service';
 import { SkillsService } from './skills.service';
@@ -20,10 +18,7 @@ describe('SkillsService source filtering', () => {
   let service: SkillsService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
-    db = drizzle(sqlite);
-    const migrationsFolder = join(__dirname, '../../../../drizzle');
-    migrate(db, { migrationsFolder });
+    ({ sqlite, db } = createTestDatabase());
 
     settingsService = {
       getSkillSourcesEnabled: jest.fn().mockReturnValue({}),

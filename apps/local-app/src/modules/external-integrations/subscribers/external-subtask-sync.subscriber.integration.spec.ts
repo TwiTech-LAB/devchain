@@ -1,10 +1,9 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { remoteProjectSyncedEvent } from '../../events/catalog/remote.project.synced';
 import type { CommittedEvent } from '../../events/services/durable-event-registry.service';
 import type { EventsService } from '../../events/services/events.service';
@@ -34,8 +33,6 @@ jest.mock('node:os', () => {
   const actual = jest.requireActual<typeof import('node:os')>('node:os');
   return { ...actual, homedir: jest.fn(actual.homedir) };
 });
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 interface FakeProvider {
   adapter: ExternalTaskProvider;
@@ -138,6 +135,7 @@ describe('ExternalSubtaskSyncSubscriber', () => {
   let sqlite: Database.Database;
   let storage: LocalStorageService;
   let secretDirectory: string;
+  let cipher: IntegrationCredentialCipher;
   let clickup: FakeProvider;
   let jira: FakeProvider;
   let subscriber: ExternalSubtaskSyncSubscriber;
@@ -148,19 +146,24 @@ describe('ExternalSubtaskSyncSubscriber', () => {
   let parentId: string;
   let childId: string;
 
-  beforeEach(async () => {
-    sqlite = new Database(':memory:');
-    const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
-    sqlite.pragma('foreign_keys = ON');
+  beforeAll(() => {
     secretDirectory = mkdtempSync(join(os.tmpdir(), 'devchain-sync-subscriber-'));
-    storage = new LocalStorageService(
-      db,
-      new IntegrationCredentialCipher({
-        secretDirectory,
-        machineIdentity: 'sync-subscriber-test:test-user',
-      }),
-    );
+    cipher = new IntegrationCredentialCipher({
+      secretDirectory,
+      machineIdentity: 'sync-subscriber-test:test-user',
+    });
+  });
+
+  afterAll(() => {
+    rmSync(secretDirectory, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    const database = createTestDatabase();
+    sqlite = database.sqlite;
+    const db = database.db;
+    sqlite.pragma('foreign_keys = ON');
+    storage = new LocalStorageService(db, cipher);
     clickup = fakeProvider('clickup');
     jira = fakeProvider('jira');
     events = {
@@ -226,7 +229,6 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     for (const dispose of hostDisposals) dispose();
     hostDisposals = [];
     sqlite.close();
-    rmSync(secretDirectory, { recursive: true, force: true });
   });
 
   async function managed(
@@ -249,22 +251,10 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     hostedParentId: string;
     pull: () => Promise<void>;
   }> {
-    const hostSqlite = new Database(':memory:');
-    const hostDb = drizzle(hostSqlite);
-    migrate(hostDb, { migrationsFolder: MIGRATIONS_FOLDER });
+    const { sqlite: hostSqlite, db: hostDb } = createTestDatabase();
     hostSqlite.pragma('foreign_keys = ON');
-    const hostSecrets = mkdtempSync(join(os.tmpdir(), 'devchain-sync-host-'));
-    hostDisposals.push(() => {
-      hostSqlite.close();
-      rmSync(hostSecrets, { recursive: true, force: true });
-    });
-    const host = new LocalStorageService(
-      hostDb,
-      new IntegrationCredentialCipher({
-        secretDirectory: hostSecrets,
-        machineIdentity: 'sync-subscriber-test:host',
-      }),
-    );
+    hostDisposals.push(() => hostSqlite.close());
+    const host = new LocalStorageService(hostDb, cipher);
 
     const project = await host.createProject({
       name: 'Hosted project',

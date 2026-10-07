@@ -190,7 +190,8 @@ describeWithBinary('managed Docker exclusions with two DevChain instances', () =
     managedExclusions().set(projectId, null);
     await operation('attach');
 
-    expect(readFileSync(code(pair.host, 'state/db/rows'), 'utf8')).toBe('home-data');
+    expect(readFileSync(code(pair.home, 'state/db/rows'), 'utf8')).toBe('vm-2');
+    expect(readFileSync(code(pair.host, 'state/db/rows'), 'utf8')).toBe('vm-2');
 
     await operation('detach');
   });

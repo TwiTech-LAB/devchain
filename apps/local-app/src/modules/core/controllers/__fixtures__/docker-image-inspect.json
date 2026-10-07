@@ -1,0 +1,106 @@
+{
+  "classic": {
+    "source": {
+      "engineVersion": "29.8.2",
+      "apiVersion": "1.47",
+      "store": "classic",
+      "image": "memcached:1.6-alpine"
+    },
+    "inspect": {
+      "Id": "sha256:82778deb1b8e44c18e6ceabee843a64c7f5de7772cdbef8b81903905fd811f45",
+      "Os": "linux",
+      "Architecture": "amd64",
+      "Created": "2025-05-30T18:54:14Z",
+      "Config": {
+        "AttachStderr": false,
+        "AttachStdin": false,
+        "AttachStdout": false,
+        "Cmd": ["memcached"],
+        "Domainname": "",
+        "Entrypoint": ["docker-entrypoint.sh"],
+        "Env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "MEMCACHED_VERSION=1.6.38",
+          "MEMCACHED_URL=https://memcached.org/files/memcached-1.6.38.tar.gz",
+          "MEMCACHED_SHA1=2d132faaf4d4ffa4c1b5f55b2f09056a0e9181dd"
+        ],
+        "ExposedPorts": {
+          "11211/tcp": {}
+        },
+        "Hostname": "",
+        "Image": "",
+        "Labels": null,
+        "OnBuild": null,
+        "OpenStdin": false,
+        "StdinOnce": false,
+        "Tty": false,
+        "User": "memcache",
+        "Volumes": null,
+        "WorkingDir": "/"
+      },
+      "RootFS": {
+        "Layers": [
+          "sha256:418dccb7d85a63a6aa574439840f7a6fa6fd2321b3e2394568a317735e867d35",
+          "sha256:28c6d850a84c734ddd34c36158942b2e23803bee05664307fe60ba0c268b566e",
+          "sha256:7084c823bdfd91ce932f48ea8909c5fbd6b32ba755dd91f797b9052876ba3eb3",
+          "sha256:e0d668b907c6dd2bf563970222d4d6e1815760b2e0fd64919a05e86ac56251ba",
+          "sha256:0cf28c1f05be33ae89be0c966faf1cf6e229e06ba57d7aebec78fe8bd6c48e0a",
+          "sha256:fd40d2d588023e26209d28dd646f213df2df7332ecd22b482194d970ea9bda6d"
+        ],
+        "Type": "layers"
+      }
+    }
+  },
+  "containerd": {
+    "source": {
+      "engineVersion": "29.8.2",
+      "apiVersion": "1.47",
+      "store": "containerd",
+      "image": "memcached:1.6-alpine"
+    },
+    "inspect": {
+      "Id": "sha256:bec285431b0cc21d2632edb7c947132a1d099ee1a83d2c403377f8cbd7a05c1b",
+      "Os": "linux",
+      "Architecture": "amd64",
+      "Created": "2025-05-30T18:54:14Z",
+      "Config": {
+        "AttachStderr": false,
+        "AttachStdin": false,
+        "AttachStdout": false,
+        "Cmd": ["memcached"],
+        "Domainname": "",
+        "Entrypoint": ["docker-entrypoint.sh"],
+        "Env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "MEMCACHED_VERSION=1.6.38",
+          "MEMCACHED_URL=https://memcached.org/files/memcached-1.6.38.tar.gz",
+          "MEMCACHED_SHA1=2d132faaf4d4ffa4c1b5f55b2f09056a0e9181dd"
+        ],
+        "ExposedPorts": {
+          "11211/tcp": {}
+        },
+        "Hostname": "",
+        "Image": "",
+        "Labels": null,
+        "OnBuild": null,
+        "OpenStdin": false,
+        "StdinOnce": false,
+        "Tty": false,
+        "User": "memcache",
+        "Volumes": null,
+        "WorkingDir": "/"
+      },
+      "RootFS": {
+        "Layers": [
+          "sha256:418dccb7d85a63a6aa574439840f7a6fa6fd2321b3e2394568a317735e867d35",
+          "sha256:28c6d850a84c734ddd34c36158942b2e23803bee05664307fe60ba0c268b566e",
+          "sha256:7084c823bdfd91ce932f48ea8909c5fbd6b32ba755dd91f797b9052876ba3eb3",
+          "sha256:e0d668b907c6dd2bf563970222d4d6e1815760b2e0fd64919a05e86ac56251ba",
+          "sha256:0cf28c1f05be33ae89be0c966faf1cf6e229e06ba57d7aebec78fe8bd6c48e0a",
+          "sha256:fd40d2d588023e26209d28dd646f213df2df7332ecd22b482194d970ea9bda6d"
+        ],
+        "Type": "layers"
+      }
+    }
+  }
+}

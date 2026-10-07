@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
@@ -13,8 +14,6 @@ import {
 } from 'node:fs';
 import * as os from 'node:os';
 import { dirname, join } from 'node:path';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { ConflictError, ValidationError } from '../../common/errors/error-types';
 import type { ProviderAdapterFactory } from '../providers/adapters/provider-adapter.factory';
 import { LocalStorageService } from '../storage/local/local-storage.service';
@@ -33,8 +32,6 @@ import {
   type ProviderAuthGeneration,
 } from './provider-auth-generator.service';
 import { ProviderAuthVaultService } from './provider-auth-vault.service';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../drizzle');
 
 const CODEX_REFRESH = 'codex-refresh-token-0123456789';
 const AGY_REFRESH = 'agy-refresh-token-0123456789';
@@ -56,7 +53,7 @@ fi
 if [ "$1" = "login" ]; then
   [ -n "$FAKE_CODEX_NEVER" ] && { sleep 30; exit 0; }
   [ -n "$FAKE_CODEX_GIVE_UP" ] && exit 1
-  sleep 0.2
+  sleep 0.05
   mkdir -p "$CODEX_HOME/tmp/arg0"
   printf '{"auth_mode":"chatgpt","tokens":{"access_token":"codex-access-token-0123","refresh_token":"${CODEX_REFRESH}"}}' > "$CODEX_HOME/auth.json"
   exit 0
@@ -178,7 +175,7 @@ describe('ProviderAuthGeneratorService', () => {
       adapters,
       new ChildProcessExecutor(),
       { listProviders: async () => ({ items: providerBins }) } as never,
-      { baseDir, pollIntervalMs: 50, timeoutMs: options.timeoutMs ?? 20_000 },
+      { baseDir, pollIntervalMs: 10, timeoutMs: options.timeoutMs ?? 20_000 },
     );
   }
 
@@ -188,7 +185,7 @@ describe('ProviderAuthGeneratorService', () => {
       const view = generator.get(id);
       if (view.finishedAt) return view;
       if (Date.now() > deadline) throw new Error(`generation still ${view.state}`);
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
   }
 
@@ -234,9 +231,9 @@ describe('ProviderAuthGeneratorService', () => {
     process.env.FAKE_LOG = log;
     process.env.FAKE_ENV_DUMP = join(root, 'agy-env');
 
-    sqlite = new Database(':memory:');
-    const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    const database = createTestDatabase();
+    sqlite = database.sqlite;
+    const db = database.db;
     storage = new LocalStorageService(
       db,
       new IntegrationCredentialCipher({
@@ -389,7 +386,7 @@ describe('ProviderAuthGeneratorService', () => {
 
   it('times out, removes the isolated dir, and stores nothing', async () => {
     process.env.FAKE_CODEX_NEVER = '1';
-    generator = makeGenerator({ timeoutMs: 300 });
+    generator = makeGenerator({ timeoutMs: 100 });
     const started = await generator.start('codex');
 
     const done = await settle(started.id);
@@ -423,23 +420,14 @@ describe('ProviderAuthGeneratorService', () => {
     expect(stdinLines()).toEqual(['stdin=/dev/null']);
   });
 
-  it('refuses a login whose CLI is missing, before creating anything', async () => {
-    rmSync(join(root, 'bin', 'copilot'));
+  it.each(['copilot', 'gh'])('refuses missing %s before creating resources', async (cli) => {
+    rmSync(join(root, 'bin', cli));
 
     await expect(generator.start('copilot')).rejects.toMatchObject({
-      details: { reason: 'provider_cli_missing', cli: 'copilot' },
+      details: { reason: 'provider_cli_missing', cli },
     });
     expect(existsSync(baseDir)).toBe(false);
     expect(terminals.children.size).toBe(0);
-  });
-
-  it('refuses a Copilot login when gh is missing, before creating anything', async () => {
-    rmSync(join(root, 'bin', 'gh'));
-
-    await expect(generator.start('copilot')).rejects.toMatchObject({
-      details: { reason: 'provider_cli_missing', cli: 'gh' },
-    });
-    expect(existsSync(baseDir)).toBe(false);
   });
 
   it('refuses Claude (paste only), unsupported providers, and a second login for one provider', async () => {

@@ -41,7 +41,7 @@ function requestUrls(call: unknown[]): string {
 
 async function settleDebounce() {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await jest.advanceTimersByTimeAsync(250);
   });
 }
 
@@ -51,6 +51,7 @@ describe('MarkdownReferenceInput', () => {
   let rafSpy: jest.SpyInstance;
 
   beforeEach(() => {
+    jest.useFakeTimers();
     if (!globalThis.fetch) {
       globalThis.fetch = jest.fn();
     }
@@ -72,6 +73,7 @@ describe('MarkdownReferenceInput', () => {
       delete (globalThis as unknown as { fetch?: unknown }).fetch;
     }
     rafSpy.mockRestore();
+    jest.useRealTimers();
   });
 
   it('suggests prompts for @ search, requests only /api/prompts, and inserts [[prompt:title]]', async () => {
@@ -95,7 +97,7 @@ describe('MarkdownReferenceInput', () => {
       return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
     });
 
-    const user = userEvent.setup();
+    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
 
     renderWithQuery(<Harness projectId="project-1" />);
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
@@ -116,7 +118,7 @@ describe('MarkdownReferenceInput', () => {
   });
 
   it('treats # as ordinary text without triggering suggestion requests', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
 
     renderWithQuery(<Harness projectId="project-1" />);
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
@@ -155,7 +157,7 @@ describe('MarkdownReferenceInput', () => {
       return Promise.resolve({ ok: true, json: async () => ({ items: [] }) } as Response);
     });
 
-    const user = userEvent.setup();
+    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
 
     renderWithQuery(<Harness projectId="project-1" />);
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
@@ -178,7 +180,7 @@ describe('MarkdownReferenceInput', () => {
   });
 
   it('performs no prompt lookup when projectId is undefined', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
 
     renderWithQuery(<Harness />);
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;

@@ -274,6 +274,27 @@ describe('PluginsPage', () => {
       '/api/provider-plugins/policy?projectId=project-1',
       expect.objectContaining({ signal: expect.anything() }),
     );
+
+    {
+      const claudeRow = (await screen.findByText('Review Tools')).closest('tr');
+      expect(claudeRow).not.toBeNull();
+      expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /install/i })).not.toBeInTheDocument();
+      expect(
+        within(claudeRow as HTMLElement).getByRole('switch', {
+          name: 'DevChain Default policy for Review Tools',
+        }),
+      ).toBeDisabled();
+      expect(
+        within(claudeRow as HTMLElement).getByRole('switch', {
+          name: 'This Project policy for Review Tools',
+        }),
+      ).toBeDisabled();
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        '/api/provider-plugins/install',
+        expect.anything(),
+      );
+    }
   });
 
   it('sorts installed project-effective plugins first, then by normal catalog order', async () => {
@@ -343,29 +364,6 @@ describe('PluginsPage', () => {
       ([url]) => typeof url === 'string' && url.startsWith('/api/provider-plugins/policy?'),
     );
     expect(policyCalls).toHaveLength(2);
-  });
-
-  it('omits installation actions and disables policy changes for plugins not yet installed', async () => {
-    renderPage();
-
-    const claudeRow = (await screen.findByText('Review Tools')).closest('tr');
-    expect(claudeRow).not.toBeNull();
-    expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /install/i })).not.toBeInTheDocument();
-    expect(
-      within(claudeRow as HTMLElement).getByRole('switch', {
-        name: 'DevChain Default policy for Review Tools',
-      }),
-    ).toBeDisabled();
-    expect(
-      within(claudeRow as HTMLElement).getByRole('switch', {
-        name: 'This Project policy for Review Tools',
-      }),
-    ).toBeDisabled();
-    expect(global.fetch).not.toHaveBeenCalledWith(
-      '/api/provider-plugins/install',
-      expect.anything(),
-    );
   });
 
   it('saves a project override and resets an explicit default policy', async () => {

@@ -1,6 +1,7 @@
 import { PROVIDER_CLI_NAMES } from '@devchain/shared';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
 import { HOST_LIFECYCLE_KINDS } from '@/modules/remotes/operations/remote-operation.types';
+import { isStuckFileSyncProblem } from '@/modules/remotes/sync/remote-file-sync.dto';
 import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
 import type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
 import type { StatusTone } from '@/ui/lib/status-tone';
@@ -105,6 +106,9 @@ interface KindWords {
   title: string;
 }
 
+/** Operations that move a project between this PC and a VM, or repair its file sync. */
+const PROJECT_OPERATION_KINDS = ['attach', 'detach', 'force_sync', 'git_owner'];
+
 const KIND_WORDS: Record<string, KindWords> = {
   claim: { busy: 'Setting up', noun: 'Setup', title: 'Set up' },
   install_host: { busy: 'Installing', noun: 'Install', title: 'Install' },
@@ -114,6 +118,8 @@ const KIND_WORDS: Record<string, KindWords> = {
   reset_vm: { busy: 'Resetting', noun: 'Reset', title: 'Reset' },
   destroy_vm: { busy: 'Destroying', noun: 'Destroy', title: 'Destroy' },
   attach: { busy: 'Connecting', noun: 'Connect', title: 'Connect' },
+  force_sync: { busy: 'Force syncing', noun: 'Force sync', title: 'Force sync' },
+  git_owner: { busy: 'Moving Git', noun: 'Git switch', title: 'Git switch' },
   detach: { busy: 'Disconnecting', noun: 'Disconnect', title: 'Disconnect' },
 };
 
@@ -124,6 +130,11 @@ const DOCKER_INSTALL_WORDS: KindWords = {
 };
 
 export function kindWords(operation: RemoteOperationDto): KindWords {
+  if (operation.kind === 'git_owner')
+    return {
+      ...KIND_WORDS.git_owner,
+      busy: operation.details.owner === 'home' ? 'Moving Git to this PC' : 'Moving Git to the VM',
+    };
   if (
     operation.kind === 'update_host' &&
     operation.details.dockerChange === true &&
@@ -160,6 +171,23 @@ function failedStep(operation: RemoteOperationDto) {
 export function errorFirstLine(operation: RemoteOperationDto): string | null {
   const message = failedStep(operation)?.error?.message?.split('\n')[0]?.trim();
   return message ? message : null;
+}
+
+function projectBusyLabel(operation: RemoteOperationDto, vm: string): string {
+  const { kind } = operation;
+  if (kind === 'git_owner') return kindWords(operation).busy;
+  if (kind === 'attach') return `Connecting to ${vm}`;
+  if (kind === 'force_sync') return KIND_WORDS.force_sync.busy;
+  return `Disconnecting from ${vm}`;
+}
+
+export function canFixFileSync(binding: RemoteProjectBindingRow | undefined): boolean {
+  return fileSyncFailedTotal(binding) > 0 || isStuckFileSyncProblem(binding?.fileSyncProblem);
+}
+
+/** Files that fail to sync on both sides of a binding; 0 when none were reported. */
+export function fileSyncFailedTotal(binding: RemoteProjectBindingRow | undefined): number {
+  return (binding?.fileSyncFailed?.home ?? 0) + (binding?.fileSyncFailed?.vm ?? 0);
 }
 
 function sentence(text: string): string {
@@ -230,7 +258,7 @@ function vmChips(remote: RemoteListItemDto, ctx: StatusContext): VmChip[] {
   }
   for (const operation of ctx.open) {
     if (operation.remoteId !== remote.id || operation.state !== 'running') continue;
-    if ((operation.kind !== 'attach' && operation.kind !== 'detach') || !operation.projectId) {
+    if (!PROJECT_OPERATION_KINDS.includes(operation.kind) || !operation.projectId) {
       continue;
     }
     const { current, total } = stepProgress(operation);
@@ -465,13 +493,13 @@ export function projectStatus(projectId: string, ctx: StatusContext): ProjectSta
 
   const running = projectOperations.find(
     (operation) =>
-      operation.state === 'running' && (operation.kind === 'attach' || operation.kind === 'detach'),
+      operation.state === 'running' && PROJECT_OPERATION_KINDS.includes(operation.kind),
   );
   if (running) {
     const vm = remoteName(ctx, running.remoteId);
     return {
       state: 'busy',
-      label: running.kind === 'attach' ? `Connecting to ${vm}` : `Disconnecting from ${vm}`,
+      label: projectBusyLabel(running, vm),
       note: stepNote(running),
       tone: 'running',
       action: { kind: 'view', label: 'View', operationId: running.id },
@@ -553,16 +581,18 @@ export function projectStatus(projectId: string, ctx: StatusContext): ProjectSta
 
 export type RecoveryAction = 'retry' | 'cancel' | 'disconnect-instead' | 'force-disconnect';
 
-/**
- * The actions Activity offers for a failed Connect or Disconnect, following
- * the server: attach refuses Cancel once `bind_remote` has started, and a
- * disconnect takes over an attach whose `bind_remote` is done. Detach may still
- * refuse Cancel while the VM copy is removed; its message shows then. Null for
- * any other operation.
- */
+/** Null leaves the operation's own recovery policy in charge. */
 export function projectRecovery(operation: RemoteOperationDto): RecoveryAction[] | null {
   if (operation.state !== 'failed') return null;
   if (operation.kind === 'detach') return ['retry', 'cancel', 'force-disconnect'];
+  if (operation.kind === 'git_owner') {
+    const flipped = operation.steps.some(
+      (step) =>
+        step.id === 'git_flip' &&
+        (step.startedAt != null || (step.state !== 'pending' && step.state !== 'skipped')),
+    );
+    return flipped ? ['retry', 'force-disconnect'] : ['retry', 'cancel', 'force-disconnect'];
+  }
   if (operation.kind !== 'attach') return null;
   const bindState = operation.steps.find((step) => step.id === 'bind_remote')?.state;
   if (bindState === 'done') return ['retry', 'disconnect-instead'];
@@ -573,6 +603,7 @@ export function projectRecovery(operation: RemoteOperationDto): RecoveryAction[]
 // ── Needs attention ─────────────────────────────────────────────────────────
 
 export type AttentionAction =
+  | { kind: 'fix-file-sync'; label: 'Fix'; projectId: string }
   | { kind: 'open-activity'; label: 'Open'; operationId: string }
   | { kind: 'view-vm'; label: 'View'; remoteId: string }
   | { kind: 'enter-api-key'; label: 'Enter API key'; remoteId: string };
@@ -748,12 +779,15 @@ export function attentionItems(ctx: StatusContext, pc: PcFacts = {}): AttentionI
   }
 
   for (const binding of ctx.bindingByProject.values()) {
+    // The server sends failed counts only together with a warning.
     if (!binding.fileSyncWarning) continue;
     items.push({
       key: `file-sync:${binding.projectId}`,
       tone: 'warn',
       text: sentence(`${projectName(ctx, binding.projectId)}: ${binding.fileSyncWarning}`),
-      action: null,
+      action: canFixFileSync(binding)
+        ? { kind: 'fix-file-sync', label: 'Fix', projectId: binding.projectId }
+        : null,
     });
   }
 

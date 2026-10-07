@@ -1,3 +1,4 @@
+import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
 import { render, screen, waitFor, within, type RenderResult } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -7,6 +8,11 @@ import type { ProbeResultDto, RemoteReadinessDto } from '@/modules/remotes/dtos/
 import type { ProviderAuthEntryItem } from '@/ui/hooks/useProviderAuth';
 import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
 import { useHomeSocket } from '@/ui/hooks/useHomeSocket';
+import type {
+  FileSyncFailedCounts,
+  FileSyncProblem,
+  ProjectFileSyncFailures,
+} from '@/modules/remotes/sync/remote-file-sync.dto';
 import { RemoteVmSection } from '../RemoteVmSection';
 
 /**
@@ -29,6 +35,8 @@ export const fx = {} as {
     hostCursor?: string | null;
     syncError?: string;
     fileSyncWarning?: string;
+    fileSyncProblem?: FileSyncProblem;
+    fileSyncFailed?: FileSyncFailedCounts;
   }[];
   operationsData: RemoteOperationDto[];
   loginsBody: { providerAuth: Record<string, string>; force: boolean } | null;
@@ -59,10 +67,14 @@ export const fx = {} as {
   probeResult: ProbeResultDto;
   /** Each project's file-sync ignore list; a missing project answers the defaults. */
   ignores: Record<string, string[]>;
+  ignoreRevisions: Record<string, number>;
+  autoFixEnabled: Record<string, boolean>;
+  fileSyncFailures: Record<string, ProjectFileSyncFailures>;
   /** Bodies of every `PUT .../ignores`, oldest first, with their project. */
   ignorePuts: Array<{ projectId: string; ignores: string[] | null }>;
   /** Makes `PUT .../ignores` refuse with this message. */
   ignoreSaveError: string | null;
+  ignoreSaveResult: { applied: boolean; message: string };
   /** The vault's logins, as `GET /api/provider-auth` lists them. */
   loginEntries: ProviderAuthEntryItem[];
   /** Bodies of every address check, oldest first. */
@@ -75,7 +87,8 @@ const READY: RemoteReadinessDto = {
   docker: { ok: true, message: null },
 };
 
-export interface TestRemote {
+export interface TestRemote
+  extends Partial<Pick<RemoteListItemDto, 'uid' | 'gid' | 'dockerUserMismatch'>> {
   id: string;
   name: string;
   baseUrl: string | null;
@@ -164,12 +177,51 @@ export const PROJECTS = [
 function setupFetch() {
   fx.mockFetch = jest.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
-    const ignores = /^\/api\/file-sync\/projects\/([^/]+)\/ignores$/.exec(url);
+    const failed = /^\/api\/projects\/([^/]+)\/file-sync\/failed$/.exec(url);
+    if (failed)
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          fx.fileSyncFailures[failed[1]] ?? {
+            ownerSide: 'vm',
+            installedPrefix: ['/.git'],
+            home: { entries: [] },
+            vm: { entries: [] },
+            groups: [],
+            overLimit: false,
+          },
+      } as Response;
+    const autoFix = /^\/api\/projects\/([^/]+)\/file-sync\/auto-fix$/.exec(url);
+    if (autoFix) {
+      const id = decodeURIComponent(autoFix[1]);
+      if (method === 'PUT')
+        fx.autoFixEnabled[id] = (JSON.parse(init?.body as string) as { enabled: boolean }).enabled;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ enabled: fx.autoFixEnabled[id] ?? true, actions: [] }),
+      } as Response;
+    }
+    const ignores = (
+      method === 'PUT'
+        ? /^\/api\/projects\/([^/]+)\/file-sync\/ignores$/
+        : /^\/api\/file-sync\/projects\/([^/]+)\/ignores$/
+    ).exec(url);
     if (ignores) {
       const projectId = decodeURIComponent(ignores[1]);
       if (method === 'PUT') {
-        const body = JSON.parse(init?.body as string) as { ignores: string[] | null };
+        const body = JSON.parse(init?.body as string) as {
+          ignores: string[] | null;
+          revision: number;
+        };
         fx.ignorePuts.push({ projectId, ignores: body.ignores });
+        if (body.revision !== (fx.ignoreRevisions[projectId] ?? 0))
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({ message: 'The file list changed. Review it again.' }),
+          } as Response;
         if (fx.ignoreSaveError) {
           return {
             ok: false,
@@ -179,12 +231,15 @@ function setupFetch() {
         }
         if (body.ignores === null) delete fx.ignores[projectId];
         else fx.ignores[projectId] = body.ignores;
+        fx.ignoreRevisions[projectId] = (fx.ignoreRevisions[projectId] ?? 0) + 1;
       }
       return {
         ok: true,
         status: 200,
         json: async () => ({
           ignores: fx.ignores[projectId] ?? [...DEFAULT_FILE_SYNC_IGNORES],
+          revision: fx.ignoreRevisions[projectId] ?? 0,
+          ...(method === 'PUT' ? fx.ignoreSaveResult : {}),
         }),
       } as Response;
     }
@@ -486,24 +541,31 @@ function setupFetch() {
         }),
       } as Response;
     }
-    if (method === 'POST' && /\/(attach|detach)$/.test(url)) {
-      const action = url.split('/').pop() as 'attach' | 'detach';
+    if (method === 'POST' && /\/(attach|detach|force-sync)$/.test(url)) {
+      const action = url.split('/').pop() as 'attach' | 'detach' | 'force-sync';
       const body = init?.body ? JSON.parse(init.body as string) : {};
       const operation: RemoteOperationDto = {
         ...makeOperation(),
         id: `${action}-op`,
-        kind: action,
+        kind: action === 'force-sync' ? 'force_sync' : action,
         remoteId: url.split('/')[3],
         projectId: body.projectId,
         state: 'running',
       };
-      fx.bindingsData = [
-        {
-          projectId: body.projectId,
-          remoteId: operation.remoteId,
-          state: action === 'attach' ? 'attaching' : 'detaching',
-        },
-      ];
+      if (action === 'force-sync') {
+        operation.details = { source: body.source, forceSync: { source: body.source } };
+        operation.steps = [
+          { id: 'preflight', label: 'Check the VM and the project', state: 'running', error: null },
+          { id: 'force_copy', label: 'Copy files', state: 'pending', error: null },
+        ];
+      } else
+        fx.bindingsData = [
+          {
+            projectId: body.projectId,
+            remoteId: operation.remoteId,
+            state: action === 'attach' ? 'attaching' : 'detaching',
+          },
+        ];
       fx.operationsData = [operation];
       return { ok: true, json: async () => operation } as Response;
     }
@@ -708,13 +770,25 @@ export async function vmRow(name: string): Promise<HTMLElement> {
   });
 }
 
-/** The row of a project in the Projects list. */
+/** A VM's name button in the Overview tab's VM summary; waits until the summary loads. */
+export async function overviewVmButton(name: string): Promise<HTMLElement> {
+  return within(await screen.findByRole('list', { name: 'VMs' })).findByRole('button', { name });
+}
+
+/** The row of a project in the Projects tab's list. */
 export async function projectRow(name: string): Promise<HTMLElement> {
-  // The projects table lives on Overview.
-  await openTab('Overview');
+  await openTab(/^Projects/);
   return within(await screen.findByRole('list', { name: 'Projects' })).findByRole('listitem', {
     name,
   });
+}
+
+/** Opens a project's File sync settings from its row and returns the dialog. */
+export async function openFileSyncSettings(name: string): Promise<HTMLElement> {
+  await userEvent.click(
+    within(await projectRow(name)).getByRole('button', { name: 'File sync settings' }),
+  );
+  return screen.findByRole('dialog', { name: `File sync settings · ${name}` });
 }
 
 /** Opens a VM's ⋯ menu and returns its item names. */
@@ -784,7 +858,11 @@ export function resetRemoteVmFixture(mocks: {
   fx.probeBodies = [];
   fx.loginEntries = [];
   fx.ignores = {};
+  fx.fileSyncFailures = {};
+  fx.ignoreSaveResult = { applied: true, message: 'Applied to the VM and this PC.' };
   fx.ignorePuts = [];
+  fx.ignoreRevisions = {};
+  fx.autoFixEnabled = {};
   fx.ignoreSaveError = null;
   fx.messageHandler = undefined;
   mocks.useSelectedProject

@@ -1,7 +1,6 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import { ValidationError } from '../../common/errors/error-types';
 import { EventsService } from '../events/services/events.service';
 import type { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
@@ -11,7 +10,6 @@ import { EpicTimeStore } from './services/epic-time.store';
 import { LocalStorageService } from '../storage/local/local-storage.service';
 import type { Epic, Project } from '../storage/models/domain.models';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../drizzle');
 const TIME_ZONE = 'UTC';
 
 // Layer: backend integration. Convergence correctness depends on the real
@@ -25,9 +23,8 @@ describe('related-time rollup convergence', () => {
   let project: Project;
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
     storage = new LocalStorageService(db);
     timeService = new EpicTimeService(

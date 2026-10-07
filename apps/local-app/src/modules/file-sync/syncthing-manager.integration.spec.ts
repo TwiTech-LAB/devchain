@@ -1,8 +1,8 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import { resetEnvConfig } from '../../common/config/env.config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { mkdtempSync, readdirSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { createServer, type Server } from 'http';
 import { tmpdir } from 'os';
@@ -52,8 +52,7 @@ describe('SyncthingManager', () => {
   const servers: Server[] = [];
 
   function openDb(): Database.Database {
-    const sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: join(__dirname, '../../../drizzle') });
+    const { sqlite } = createTestDatabase();
     databases.push(sqlite);
     return sqlite;
   }

@@ -116,7 +116,7 @@ it('groups read-only shares transitively while excluding the project-root bind',
     { id: 'a', mounts: [mount('data')] },
     { id: 'b', mounts: [mount('data'), mount('/home/project/state', 'project-bind')] },
     { id: 'c', mounts: [mount('/home/project/state/nested', 'project-bind')] },
-    { id: 'code', mounts: [mount('/home/project', 'project-bind')] },
+    { id: 'code', mounts: [mount('/home/project', 'project-code')] },
   ] as DockerPlanItem[];
   expect(groupDockerData(items, '/home/project')).toEqual([
     {

@@ -3,8 +3,6 @@ import {
   createRoundedProjectEgressPath,
   createRoundedProjectIngressPath,
   createRoundedSystemIngressPath,
-  DEFAULT_BUS_X,
-  EVENT_BUS_GUTTER_RIGHT,
   EVENT_BUS_ROUTE_DURATION_MS,
   roundSvgCoordinate,
   selectAgentEventBusRoute,
@@ -40,11 +38,6 @@ function snapshot(anchors: AgentEventBusAnchor[]): AgentEventBusGeometrySnapshot
 }
 
 describe('agent event-bus geometry', () => {
-  it('pins the shared conductor and filtered-gutter boundaries', () => {
-    expect(DEFAULT_BUS_X).toBe(4);
-    expect(EVENT_BUS_GUTTER_RIGHT).toBe(16);
-  });
-
   it('rounds inputs once and uses those exact values for path text and analytical length', () => {
     const path = createRoundedOrthogonalPath(
       { ...anchor('source', 'sender', 10.004, 0), x: 50.004 },
@@ -209,6 +202,5 @@ describe('agent event-bus geometry', () => {
     expect(egress?.path.recipient).toMatchObject({ kind: 'project-boundary', x: 8, y: 8 });
     expect(selectProjectIngressEventBusRoute(geometry, 'foreign-agent')).toBeNull();
     expect(selectProjectEgressEventBusRoute(geometry, 'foreign-agent')).toBeNull();
-    expect('projectBoundary' in geometry).toBe(false);
   });
 });

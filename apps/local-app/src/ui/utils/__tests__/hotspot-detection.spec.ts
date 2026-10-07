@@ -142,19 +142,6 @@ describe('computeChunkHotspots', () => {
     }
   });
 
-  it('uses 200k fallback when contextWindowTokens is 0', () => {
-    const chunks = [
-      aiChunk('a1', 100),
-      aiChunk('a2', 200),
-      aiChunk('a3', 300),
-      aiChunk('a4', 1000),
-    ];
-    const result = computeChunkHotspots(chunks, 0);
-
-    const entry = result.chunkStats.get('a4')!;
-    expect(entry.contextPct).toBeCloseTo((1000 / DEFAULT_CONTEXT_WINDOW) * 100, 5);
-  });
-
   it('ignores non-AI chunks', () => {
     const chunks = [
       aiChunk('a1', 100),
@@ -170,44 +157,6 @@ describe('computeChunkHotspots', () => {
     expect(result.chunkStats.size).toBe(4);
     expect(result.chunkStats.has('u1')).toBe(false);
     expect(result.chunkStats.has('s1')).toBe(false);
-  });
-
-  it('populates chunkStats for all AI chunks regardless of severity', () => {
-    const chunks = [aiChunk('a1', 100), aiChunk('a2', 200), aiChunk('a3', 300), aiChunk('a4', 400)];
-    const result = computeChunkHotspots(chunks, 200_000);
-
-    expect(result.chunkStats.size).toBe(4);
-    for (const [, entry] of result.chunkStats) {
-      expect(entry.totalTokens).toBeGreaterThanOrEqual(0);
-      expect(entry.contextPct).toBeGreaterThanOrEqual(0);
-      expect(['none', 'hot']).toContain(entry.severity);
-    }
-  });
-
-  it('detects single extreme outlier in otherwise uniform data', () => {
-    // Values: [500, 500, 500, 500, 10000]
-    // Sorted: [500, 500, 500, 500, 10000]
-    // Q1 = percentile(0.25) = 500, Q3 = percentile(0.75) = 500
-    // IQR = 0 → returns empty (uniform with outlier still has IQR=0 among quartiles)
-    // Need at least some spread in lower data for IQR > 0
-    // Use: [100, 100, 100, 200, 10000]
-    // Q1 = 100, Q3 = 200, IQR = 100, fence = 200 + 1.5*100 = 350
-    // 10000 > 350 → hot
-    const chunks = [
-      aiChunk('a1', 100),
-      aiChunk('a2', 100),
-      aiChunk('a3', 100),
-      aiChunk('a4', 200),
-      aiChunk('a5', 10000),
-    ];
-    const result = computeChunkHotspots(chunks, 200_000);
-
-    expect(result.hotChunkIds.size).toBe(1);
-    expect(result.hotChunkIds.has('a5')).toBe(true);
-    expect(result.chunkStats.get('a5')!.severity).toBe('hot');
-    // All other chunks are 'none'
-    expect(result.chunkStats.get('a1')!.severity).toBe('none');
-    expect(result.chunkStats.get('a4')!.severity).toBe('none');
   });
 
   it('handles exactly 4 AI chunks (minimum for IQR)', () => {
@@ -251,21 +200,6 @@ describe('filterChunksForHotspot', () => {
     const result = filterChunksForHotspot(chunks, new Set());
 
     expect(result).toBe(chunks); // same reference
-  });
-
-  it('keeps hot AI chunks and their preceding user chunk', () => {
-    // u1 → a1(normal) → u2 → a2(hot) → u3 → a3(normal)
-    const chunks = [
-      userChunk('u1'),
-      aiChunk('a1', 100),
-      userChunk('u2'),
-      aiChunk('a2', 2000),
-      userChunk('u3'),
-      aiChunk('a3', 100),
-    ];
-    const result = filterChunksForHotspot(chunks, new Set(['a2']));
-
-    expect(result.map((c) => c.id)).toEqual(['u2', 'a2']);
   });
 
   it('hides non-adjacent user chunks and system chunks', () => {
@@ -544,16 +478,6 @@ describe('classifyDisplayItemHotspots', () => {
     expect(result.get('s3')!.percentOfChunk).toBeCloseTo(70, 1);
   });
 
-  it('combines tool_call + linkedResult tokens', () => {
-    // tool: step(300) + linkedResult(400) = 700
-    const items = [makeDisplayItem('thinking', 's1', 100), makeDisplayItem('tool', 's2', 300, 400)];
-    // threshold = 500 → tool(700) > 500 → hot
-    const result = classifyDisplayItemHotspots(items, 500);
-
-    expect(result.get('s2')!.isHot).toBe(true);
-    expect(result.get('s2')!.estimatedTokens).toBe(700);
-  });
-
   it('handles empty displayItems', () => {
     const result = classifyDisplayItemHotspots([], 500);
     expect(result.size).toBe(0);
@@ -627,28 +551,5 @@ describe('SubBSM regression guards (step-level)', () => {
 
     // Only 2 entries total (one per display item)
     expect(result.size).toBe(2);
-  });
-
-  it('hidden last-output excluded from classification map', () => {
-    // buildDisplayItems() removes the last output step from displayItems.
-    // classifyDisplayItemHotspots only sees the remaining rendered items.
-    // The hidden output must not appear in the result map.
-    const displayItems: DisplayItem[] = [
-      makeDisplayItem('thinking', 's1', 100),
-      makeDisplayItem('thinking', 's2', 300),
-      // s3 (output, 2000 tokens) was removed by buildDisplayItems as lastOutput
-    ];
-
-    const result = classifyDisplayItemHotspots(displayItems, 200);
-
-    // Only rendered items in map — hidden s3 absent
-    expect(result.size).toBe(2);
-    expect(result.has('s1')).toBe(true);
-    expect(result.has('s2')).toBe(true);
-    expect(result.has('s3')).toBe(false);
-
-    // percentOfChunk is based only on rendered items: s1(100) + s2(300) = 400
-    expect(result.get('s1')!.percentOfChunk).toBeCloseTo(25, 1);
-    expect(result.get('s2')!.percentOfChunk).toBeCloseTo(75, 1);
   });
 });

@@ -9,7 +9,6 @@ import {
   type DockerPlanMount,
   type DockerPlanSize,
 } from './docker-plan.dto';
-import { resolve } from 'node:path';
 import { within } from './docker-plan-files';
 
 export const DOCKER_LOAD_MARGIN_BYTES = 256 * 1024 * 1024;
@@ -25,16 +24,9 @@ export function copiedMounts(item: DockerPlanItem): DockerPlanMount[] {
     item.temporary ? mount.kind === 'named-volume' : COPYABLE_MOUNT_KINDS.includes(mount.kind),
   );
 }
-/**
- * The mounts whose data the import copies. A bind of the whole project root is
- * code that file sync carries, so it goes before anything else, or the nested
- * dedupe below would hide every in-project data folder behind it.
- */
-export function copiedDataMounts(item: DockerPlanItem, projectRoot: string): DockerPlanMount[] {
-  const root = resolve(projectRoot);
-  return copiedMounts(item).filter(
-    (mount) => isVolumeMount(mount.kind) || resolve(mount.source) !== root,
-  );
+/** The mounts whose data the import copies, decided solely by their kinds. */
+export function copiedDataMounts(item: DockerPlanItem, _projectRoot: string): DockerPlanMount[] {
+  return copiedMounts(item);
 }
 /** The data the item could copy, whatever its current choice omits. */
 export function potentialDataMounts(item: DockerPlanItem, projectRoot: string): DockerPlanMount[] {
@@ -52,6 +44,23 @@ export function movesToVm(item: DockerPlanItem): boolean {
     Boolean(item.selectedMode) &&
     (item.targetAction !== 'leave-as-is' || item.dataAction === 'keep-vm')
   );
+}
+/**
+ * The VM keeps this Compose-built container and its image, and no data copy needs the
+ * image, so Connect does not copy it.
+ */
+export function skipsImageCopy(item: DockerPlanItem, projectRoot: string): boolean {
+  return (
+    item.kind === 'container' &&
+    !item.temporary &&
+    item.buildsFromProject === true &&
+    item.targetAction === 'leave-as-is' &&
+    copiedDataMounts(item, projectRoot).length === 0
+  );
+}
+/** The item goes to the VM with its images: the images Connect checks, counts and copies. */
+export function copiesImages(item: DockerPlanItem, projectRoot: string): boolean {
+  return movesToVm(item) && !skipsImageCopy(item, projectRoot);
 }
 /**
  * The home containers Connect stops because they write data this selected item
@@ -93,6 +102,8 @@ export function planDockerFit(
   filesystems: DockerPlanFilesystem[];
   fit: DockerPlan['fit'];
   bytes: number;
+  /** Part of `bytes` could not be measured. */
+  unknown: boolean;
   images: string[];
 } {
   const groups = new Map<string, DockerPlanFilesystem>();
@@ -127,15 +138,17 @@ export function planDockerFit(
     ...new Map(
       items
         // Data-only and temporary items still need their image for the VM's archive helper.
-        .filter(movesToVm)
+        .filter((item) => copiesImages(item, projectRoot))
         .flatMap((i) => i.images)
         .map((image) => [image.id, image]),
     ).values(),
   ].filter((i) => !presentImages.includes(i.id));
   let bytes = 0;
+  let unknown = false;
   for (const image of images) {
     add(capacity.imageStore?.path ?? 'image-store', capacity.imageStore, image.size);
     bytes += image.size.bytes;
+    unknown ||= image.size.unknown;
   }
   if (images.length) {
     // Keep one image's transient load space plus a fixed operating margin, not a payload multiplier.
@@ -148,6 +161,7 @@ export function planDockerFit(
   }
   for (const mount of uniqueCopiedMounts(items, projectRoot)) {
     bytes += mount.size.bytes;
+    unknown ||= mount.size.unknown;
     if (isVolumeMount(mount.kind))
       add(capacity.dockerRoot?.path ?? 'docker-root', capacity.dockerRoot, mount.size);
     else {
@@ -162,7 +176,7 @@ export function planDockerFit(
     (['refused', 'unknown', 'warning'] as const).find((status) =>
       filesystems.some((f) => f.status === status),
     ) ?? 'fits';
-  return { filesystems, fit, bytes, images: images.map((i) => i.id) };
+  return { filesystems, fit, bytes, unknown, images: images.map((i) => i.id) };
 }
 function filesystemStatus(group: DockerPlanFilesystem): DockerPlanFilesystem['status'] {
   if (group.freeBytes !== null && group.requiredBytes > group.freeBytes) return 'refused';

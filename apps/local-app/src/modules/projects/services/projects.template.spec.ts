@@ -280,162 +280,151 @@ describe('ProjectsService', () => {
   });
 
   describe('getTemplateManifestForProject', () => {
-    it('should return null when no template metadata exists', async () => {
-      settings.getProjectTemplateMetadata.mockReturnValue(null);
+    it.each([
+      {
+        label: 'no metadata',
+        metadata: null,
+        bundled: null,
+        registry: null,
+        bundledError: false,
+        registryError: false,
+      },
+      {
+        label: 'no slug',
+        metadata: { templateSlug: '', installedVersion: '1.0.0', source: 'registry' },
+        bundled: null,
+        registry: null,
+        bundledError: false,
+        registryError: false,
+      },
+      {
+        label: 'bundled error',
+        metadata: { templateSlug: 'missing-template', installedVersion: null, source: 'bundled' },
+        bundled: null,
+        registry: null,
+        bundledError: true,
+        registryError: false,
+      },
+      {
+        label: 'registry error',
+        metadata: {
+          templateSlug: 'missing-template',
+          installedVersion: '1.0.0',
+          source: 'registry',
+        },
+        bundled: null,
+        registry: null,
+        bundledError: false,
+        registryError: true,
+      },
+      {
+        label: 'no manifest',
+        metadata: { templateSlug: 'no-manifest', installedVersion: null, source: 'bundled' },
+        bundled: { content: { profiles: [], agents: [] }, source: 'bundled', version: null },
+        registry: null,
+        bundledError: false,
+        registryError: false,
+      },
+      {
+        label: 'registry falls back to bundled',
+        metadata: {
+          templateSlug: 'registry-template',
+          installedVersion: '1.0.0',
+          source: 'registry',
+        },
+        bundled: null,
+        registry: {
+          content: { _manifest: { name: 'Bundled Version' } },
+          source: 'bundled',
+          version: null,
+        },
+        bundledError: false,
+        registryError: false,
+      },
+      {
+        label: 'file source',
+        metadata: {
+          templateSlug: 'file-based-template',
+          installedVersion: '1.0.0',
+          source: 'file',
+        },
+        bundled: null,
+        registry: null,
+        bundledError: false,
+        registryError: false,
+      },
+    ])(
+      'returns null manifest for $label',
+      async ({ metadata, bundled, registry, bundledError, registryError }) => {
+        settings.getProjectTemplateMetadata.mockReturnValue(metadata);
+        if (bundledError) {
+          unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
+            throw new Error('Template not found');
+          });
+        } else {
+          unifiedTemplateService.getBundledTemplate.mockReturnValue(bundled);
+        }
+        if (registryError) {
+          unifiedTemplateService.getTemplate.mockRejectedValue(new Error('Template not found'));
+        } else {
+          unifiedTemplateService.getTemplate.mockResolvedValue(registry);
+        }
+        expect(await service.getTemplateManifestForProject('project-123')).toBeNull();
+        expect(settings.getProjectTemplateMetadata).toHaveBeenCalledWith('project-123');
+        if (metadata?.source === 'registry' && metadata.templateSlug) {
+          expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith(
+            metadata.templateSlug,
+            metadata.installedVersion,
+          );
+        }
+        if (metadata?.source === 'file') {
+          expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
+          expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
+        }
+      },
+    );
 
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      expect(result).toBeNull();
-      expect(settings.getProjectTemplateMetadata).toHaveBeenCalledWith('project-123');
-    });
-
-    it('should return null when metadata has no templateSlug', async () => {
-      settings.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: '',
-        installedVersion: '1.0.0',
-        source: 'registry',
-      });
-
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      expect(result).toBeNull();
-    });
-
-    it('should return manifest from bundled template', async () => {
-      const manifest = {
-        name: 'Test Template',
-        version: '1.0.0',
-        description: 'A test template',
-      };
-
-      settings.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'test-template',
-        installedVersion: null,
+    it.each([
+      {
         source: 'bundled',
+        slug: 'test-template',
+        version: null,
+        manifest: { name: 'Test Template', version: '1.0.0', description: 'A test template' },
+      },
+      {
+        source: 'registry',
+        slug: 'registry-template',
+        version: '2.5.0',
+        manifest: {
+          name: 'Registry Template',
+          version: '2.5.0',
+          description: 'A registry template',
+        },
+      },
+    ])('resolves $source manifest', async ({ source, slug, version, manifest }) => {
+      settings.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: slug,
+        installedVersion: version,
+        source,
       });
-
       unifiedTemplateService.getBundledTemplate.mockReturnValue({
         content: { _manifest: manifest },
-        source: 'bundled',
-        version: null,
+        source,
+        version,
       });
-
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      expect(result).toEqual(manifest);
-      expect(unifiedTemplateService.getBundledTemplate).toHaveBeenCalledWith('test-template');
-      expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
-    });
-
-    it('should return manifest from registry template with installedVersion', async () => {
-      const manifest = {
-        name: 'Registry Template',
-        version: '2.5.0',
-        description: 'A registry template',
-      };
-
-      settings.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'registry-template',
-        installedVersion: '2.5.0',
-        source: 'registry',
-      });
-
       unifiedTemplateService.getTemplate.mockResolvedValue({
         content: { _manifest: manifest },
-        source: 'registry',
-        version: '2.5.0',
+        source,
+        version,
       });
-
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      expect(result).toEqual(manifest);
-      expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith('registry-template', '2.5.0');
-      expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
-    });
-
-    it('should return null when bundled template throws error', async () => {
-      settings.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'missing-template',
-        installedVersion: null,
-        source: 'bundled',
-      });
-
-      unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
-        throw new Error('Template not found');
-      });
-
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      expect(result).toBeNull();
-    });
-
-    it('should return null when registry template throws error', async () => {
-      settings.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'missing-template',
-        installedVersion: '1.0.0',
-        source: 'registry',
-      });
-
-      unifiedTemplateService.getTemplate.mockRejectedValue(new Error('Template not found'));
-
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      expect(result).toBeNull();
-    });
-
-    it('should return null when template has no _manifest field', async () => {
-      settings.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'no-manifest',
-        installedVersion: null,
-        source: 'bundled',
-      });
-
-      unifiedTemplateService.getBundledTemplate.mockReturnValue({
-        content: { profiles: [], agents: [] }, // No _manifest
-        source: 'bundled',
-        version: null,
-      });
-
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      expect(result).toBeNull();
-    });
-
-    it('should return null when registry source requested but bundled returned (honor stored source)', async () => {
-      settings.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'registry-template',
-        installedVersion: '1.0.0',
-        source: 'registry', // Project was created from registry template
-      });
-
-      // UnifiedTemplateService fell back to bundled (registry version not cached)
-      unifiedTemplateService.getTemplate.mockResolvedValue({
-        content: { _manifest: { name: 'Bundled Version' } },
-        source: 'bundled', // Wrong source - should be registry
-        version: null,
-      });
-
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      // Should reject bundled fallback and return null
-      expect(result).toBeNull();
-      expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith('registry-template', '1.0.0');
-    });
-
-    it('should return null for file-based templates (source: file)', async () => {
-      settings.getProjectTemplateMetadata.mockReturnValue({
-        templateSlug: 'file-based-template',
-        installedVersion: '1.0.0',
-        source: 'file',
-      });
-
-      const result = await service.getTemplateManifestForProject('project-123');
-
-      // File-based templates cannot provide manifest (source file may have moved/changed)
-      expect(result).toBeNull();
-      // Should not attempt to fetch template
-      expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
-      expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
+      expect(await service.getTemplateManifestForProject('project-123')).toEqual(manifest);
+      if (source === 'bundled') {
+        expect(unifiedTemplateService.getBundledTemplate).toHaveBeenCalledWith(slug);
+        expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
+      } else {
+        expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith(slug, version);
+        expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
+      }
     });
   });
 
@@ -453,84 +442,67 @@ describe('ProjectsService', () => {
       expect(unifiedTemplateService.getBundledTemplate).toHaveBeenCalledWith('test-template');
     });
 
-    it('should return null when versions are equal', () => {
-      unifiedTemplateService.getBundledTemplate.mockReturnValue({
-        content: { _manifest: { version: '1.0.0' } },
-        source: 'bundled',
-        version: null,
-      });
-
-      const result = service.getBundledUpgradeVersion('test-template', '1.0.0');
-
-      expect(result).toBeNull();
-    });
-
-    it('should return null when installed is newer', () => {
-      unifiedTemplateService.getBundledTemplate.mockReturnValue({
-        content: { _manifest: { version: '1.0.0' } },
-        source: 'bundled',
-        version: null,
-      });
-
-      const result = service.getBundledUpgradeVersion('test-template', '2.0.0');
-
-      expect(result).toBeNull();
-    });
-
-    it('should return null when installed version is null', () => {
-      const result = service.getBundledUpgradeVersion('test-template', null);
-
-      expect(result).toBeNull();
-      expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
-    });
-
-    it('should return null when bundled template has no version', () => {
-      unifiedTemplateService.getBundledTemplate.mockReturnValue({
-        content: { _manifest: {} }, // No version
-        source: 'bundled',
-        version: null,
-      });
-
-      const result = service.getBundledUpgradeVersion('test-template', '1.0.0');
-
-      expect(result).toBeNull();
-    });
-
-    it('should return null when bundled template not found', () => {
-      unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
-        throw new Error('Template not found');
-      });
-
-      const result = service.getBundledUpgradeVersion('nonexistent', '1.0.0');
-
-      expect(result).toBeNull();
-    });
-
-    it('should return null when installed version is invalid semver', () => {
-      unifiedTemplateService.getBundledTemplate.mockReturnValue({
-        content: { _manifest: { version: '2.0.0' } },
-        source: 'bundled',
-        version: null,
-      });
-
-      // Invalid semver strings that would throw in isLessThan
-      const invalidVersions = ['1.0', 'v1.0.0', 'latest', 'invalid', ''];
-      for (const invalidVersion of invalidVersions) {
-        const result = service.getBundledUpgradeVersion('test-template', invalidVersion);
-        expect(result).toBeNull();
+    it.each([
+      {
+        scenario: 'versions are equal',
+        installedVersions: ['1.0.0'],
+        bundledVersion: '1.0.0',
+        missingTemplate: false,
+      },
+      {
+        scenario: 'installed is newer',
+        installedVersions: ['2.0.0'],
+        bundledVersion: '1.0.0',
+        missingTemplate: false,
+      },
+      {
+        scenario: 'installed version is null',
+        installedVersions: [null],
+        bundledVersion: '2.0.0',
+        missingTemplate: false,
+      },
+      {
+        scenario: 'bundled template has no version',
+        installedVersions: ['1.0.0'],
+        bundledVersion: null,
+        missingTemplate: false,
+      },
+      {
+        scenario: 'bundled template is not found',
+        installedVersions: ['1.0.0'],
+        bundledVersion: '2.0.0',
+        missingTemplate: true,
+      },
+      {
+        scenario: 'installed version is invalid semver',
+        installedVersions: ['1.0', 'v1.0.0', 'latest', 'invalid', ''],
+        bundledVersion: '2.0.0',
+        missingTemplate: false,
+      },
+      {
+        scenario: 'bundled version is invalid semver',
+        installedVersions: ['1.0.0'],
+        bundledVersion: 'invalid-version',
+        missingTemplate: false,
+      },
+    ])('returns null when $scenario', ({ installedVersions, bundledVersion, missingTemplate }) => {
+      if (missingTemplate) {
+        unifiedTemplateService.getBundledTemplate.mockImplementation(() => {
+          throw new Error('Template not found');
+        });
+      } else {
+        unifiedTemplateService.getBundledTemplate.mockReturnValue({
+          content: { _manifest: bundledVersion ? { version: bundledVersion } : {} },
+          source: 'bundled',
+          version: null,
+        });
       }
-    });
-
-    it('should return null when bundled version is invalid semver', () => {
-      unifiedTemplateService.getBundledTemplate.mockReturnValue({
-        content: { _manifest: { version: 'invalid-version' } },
-        source: 'bundled',
-        version: null,
-      });
-
-      const result = service.getBundledUpgradeVersion('test-template', '1.0.0');
-
-      expect(result).toBeNull();
+      for (const installedVersion of installedVersions) {
+        expect(service.getBundledUpgradeVersion('test-template', installedVersion)).toBeNull();
+      }
+      if (installedVersions[0] === null) {
+        expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
+      }
     });
   });
 
@@ -563,35 +535,93 @@ describe('ProjectsService', () => {
       expect(result.get('p2')).toBeNull(); // Already at latest
     });
 
-    it('should return null for registry projects', () => {
-      const projects = [
-        {
-          projectId: 'p1',
-          templateSlug: 'template-a',
-          installedVersion: '1.0.0',
-          source: 'registry' as const,
-        },
-      ];
-
+    it.each([
+      {
+        label: 'registry source',
+        projects: [
+          {
+            projectId: 'p1',
+            templateSlug: 'template-a',
+            installedVersion: '1.0.0',
+            source: 'registry' as const,
+          },
+        ],
+        bundledVersion: '2.0.0',
+        expected: [['p1', null]],
+      },
+      {
+        label: 'no slug',
+        projects: [
+          {
+            projectId: 'p1',
+            templateSlug: null,
+            installedVersion: '1.0.0',
+            source: 'bundled' as const,
+          },
+        ],
+        bundledVersion: '2.0.0',
+        expected: [['p1', null]],
+      },
+      {
+        label: 'invalid installed versions',
+        projects: [
+          {
+            projectId: 'p1',
+            templateSlug: 'template-a',
+            installedVersion: 'invalid-version', // Invalid semver
+            source: 'bundled' as const,
+          },
+          {
+            projectId: 'p2',
+            templateSlug: 'template-a',
+            installedVersion: '1.0', // Missing patch
+            source: 'bundled' as const,
+          },
+          {
+            projectId: 'p3',
+            templateSlug: 'template-a',
+            installedVersion: 'v1.0.0', // Has 'v' prefix
+            source: 'bundled' as const,
+          },
+          {
+            projectId: 'p4',
+            templateSlug: 'template-a',
+            installedVersion: '1.0.0', // Valid - should work
+            source: 'bundled' as const,
+          },
+        ],
+        bundledVersion: '2.0.0',
+        expected: [
+          ['p1', null],
+          ['p2', null],
+          ['p3', null],
+          ['p4', '2.0.0'],
+        ],
+      },
+      {
+        label: 'invalid bundled version',
+        projects: [
+          {
+            projectId: 'p1',
+            templateSlug: 'template-a',
+            installedVersion: '1.0.0',
+            source: 'bundled' as const,
+          },
+        ],
+        bundledVersion: 'not-a-valid-semver',
+        expected: [['p1', null]],
+      },
+    ])('handles bundled-upgrade $label', ({ projects, bundledVersion, expected }) => {
+      unifiedTemplateService.getBundledTemplate.mockReturnValue({
+        content: { _manifest: { version: bundledVersion } },
+        source: 'bundled',
+        version: null,
+      });
       const result = service.getBundledUpgradesForProjects(projects);
-
-      expect(result.get('p1')).toBeNull();
-      expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
-    });
-
-    it('should return null for projects without template slug', () => {
-      const projects = [
-        {
-          projectId: 'p1',
-          templateSlug: null,
-          installedVersion: '1.0.0',
-          source: 'bundled' as const,
-        },
-      ];
-
-      const result = service.getBundledUpgradesForProjects(projects);
-
-      expect(result.get('p1')).toBeNull();
+      expect([...result]).toEqual(expected);
+      if (projects[0].source === 'registry') {
+        expect(unifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
+      }
     });
 
     it('should cache bundled template lookups', () => {
@@ -629,71 +659,6 @@ describe('ProjectsService', () => {
       expect(result.get('p1')).toBe('2.0.0');
       expect(result.get('p2')).toBe('2.0.0');
       expect(result.get('p3')).toBeNull();
-    });
-
-    it('should return null for projects with invalid semver versions (not crash)', () => {
-      unifiedTemplateService.getBundledTemplate.mockReturnValue({
-        content: { _manifest: { version: '2.0.0' } },
-        source: 'bundled',
-        version: null,
-      });
-
-      const projects = [
-        {
-          projectId: 'p1',
-          templateSlug: 'template-a',
-          installedVersion: 'invalid-version', // Invalid semver
-          source: 'bundled' as const,
-        },
-        {
-          projectId: 'p2',
-          templateSlug: 'template-a',
-          installedVersion: '1.0', // Missing patch
-          source: 'bundled' as const,
-        },
-        {
-          projectId: 'p3',
-          templateSlug: 'template-a',
-          installedVersion: 'v1.0.0', // Has 'v' prefix
-          source: 'bundled' as const,
-        },
-        {
-          projectId: 'p4',
-          templateSlug: 'template-a',
-          installedVersion: '1.0.0', // Valid - should work
-          source: 'bundled' as const,
-        },
-      ];
-
-      // Should not throw - gracefully handle invalid versions
-      const result = service.getBundledUpgradesForProjects(projects);
-
-      expect(result.get('p1')).toBeNull(); // Invalid - no upgrade
-      expect(result.get('p2')).toBeNull(); // Invalid - no upgrade
-      expect(result.get('p3')).toBeNull(); // Invalid - no upgrade
-      expect(result.get('p4')).toBe('2.0.0'); // Valid - upgrade available
-    });
-
-    it('should return null when bundled template has invalid semver version', () => {
-      unifiedTemplateService.getBundledTemplate.mockReturnValue({
-        content: { _manifest: { version: 'not-a-valid-semver' } },
-        source: 'bundled',
-        version: null,
-      });
-
-      const projects = [
-        {
-          projectId: 'p1',
-          templateSlug: 'template-a',
-          installedVersion: '1.0.0',
-          source: 'bundled' as const,
-        },
-      ];
-
-      // Should not throw - gracefully handle invalid bundled version
-      const result = service.getBundledUpgradesForProjects(projects);
-
-      expect(result.get('p1')).toBeNull();
     });
   });
 });

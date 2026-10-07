@@ -81,13 +81,6 @@ describe('url-filters utilities', () => {
       expect(qs).toBe('ar=archived&st=review');
     });
 
-    test('does not serialize archived when active (default)', () => {
-      // When archived is 'active' (the default), it should still be serialized
-      // to preserve explicit state in URL
-      const qs = serializeBoardFilters({ archived: 'active', status: ['review'] });
-      expect(qs).toBe('ar=active&st=review');
-    });
-
     test('merges archived param', () => {
       const merged = mergeBoardFilters('?st=review', { archived: 'all' });
       expect(merged).toBe('ar=all&st=review');

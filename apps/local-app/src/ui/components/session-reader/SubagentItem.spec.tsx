@@ -25,14 +25,11 @@ describe('SubagentItem', () => {
     render(<SubagentItem step={makeStep()} />);
     const trigger = screen.getByTestId('subagent-trigger');
     expect(trigger).toHaveTextContent('Explore codebase for auth patterns');
-  });
-
-  it('shows duration in trigger', () => {
-    render(<SubagentItem step={makeStep()} />);
+    expect(trigger).toHaveAttribute('data-state', 'closed');
     expect(screen.getByText('5.0s')).toBeInTheDocument();
   });
 
-  it('expands to show details on click', () => {
+  it('expands to show model, tokens and duration', () => {
     render(<SubagentItem step={makeStep()} />);
 
     // Details hidden initially
@@ -45,20 +42,9 @@ describe('SubagentItem', () => {
     expect(details).toHaveTextContent('claude-sonnet-4-6');
     expect(details).toHaveTextContent('3.5k');
     expect(details).toHaveTextContent('5.0s');
-  });
-
-  it('shows model in details', () => {
-    render(<SubagentItem step={makeStep()} />);
-    fireEvent.click(screen.getByTestId('subagent-trigger'));
     expect(screen.getByText('Model')).toBeInTheDocument();
-    expect(screen.getByText('claude-sonnet-4-6')).toBeInTheDocument();
-  });
-
-  it('shows token count in details', () => {
-    render(<SubagentItem step={makeStep()} />);
-    fireEvent.click(screen.getByTestId('subagent-trigger'));
     expect(screen.getByText('Tokens')).toBeInTheDocument();
-    expect(screen.getByText('3.5k')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-trigger')).toHaveAttribute('data-state', 'open');
   });
 
   it('uses fallback description when none provided', () => {

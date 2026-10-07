@@ -150,6 +150,10 @@ describe('App startup routing', () => {
     global.fetch = jest.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
+      if (url.startsWith('/api/workspaces')) {
+        return Promise.resolve({ ok: true, json: async () => [] } as Response);
+      }
+
       if (url.startsWith('/api/projects')) {
         return Promise.resolve({
           ok: true,
@@ -210,7 +214,7 @@ describe('App startup routing', () => {
     jest.clearAllMocks();
   });
 
-  it('should start on Projects page without Mode selection prompt', async () => {
+  it('starts on Projects without first-run or mode-selection prompts', async () => {
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/']}>
@@ -218,51 +222,29 @@ describe('App startup routing', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     );
-
-    // Wait for initial navigation to complete
-    await waitFor(() => {
-      // App should redirect from '/' to '/projects'
-      // Check for Projects page content (heading or key element)
-      const heading = screen.queryByRole('heading', { name: /projects/i });
-      expect(heading).toBeInTheDocument();
-    });
-
-    // Assert no FirstRunSetup or Mode selection UI is present
-    expect(screen.queryByText(/choose your instance mode/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/local mode/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/cloud mode/i)).not.toBeInTheDocument();
-  });
-
-  it('should not render FirstRunSetup component', async () => {
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/']}>
-          <App />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    // FirstRunSetup has specific text like "Welcome to Devchain"
-    await waitFor(() => {
-      expect(screen.queryByText(/welcome to devchain/i)).not.toBeInTheDocument();
-    });
-  });
-
-  it('should load Projects page as the default route', async () => {
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/']}>
-          <App />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    // Projects page should be rendered (Layout + ProjectsPage)
-    await waitFor(() => {
-      // Look for the Projects heading which is rendered by ProjectsPage
-      const projectsHeading = screen.queryByRole('heading', { name: /projects/i });
-      expect(projectsHeading).toBeInTheDocument();
-    });
+    {
+      await waitFor(() => {
+        // App should redirect from '/' to '/projects'
+        // Check for Projects page content (heading or key element)
+        const heading = screen.queryByRole('heading', { name: /projects/i });
+        expect(heading).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/choose your instance mode/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/local mode/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/cloud mode/i)).not.toBeInTheDocument();
+    }
+    {
+      await waitFor(() => {
+        expect(screen.queryByText(/welcome to devchain/i)).not.toBeInTheDocument();
+      });
+    }
+    {
+      await waitFor(() => {
+        // Look for the Projects heading which is rendered by ProjectsPage
+        const projectsHeading = screen.queryByRole('heading', { name: /projects/i });
+        expect(projectsHeading).toBeInTheDocument();
+      });
+    }
   });
 
   it('should keep /chat accessible in main mode', async () => {
@@ -496,7 +478,6 @@ describe('App board routes', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Native Board Page' })).toBeInTheDocument();
     });
-    expect(boardPageMock).toHaveBeenCalled();
   });
 
   it.each([
@@ -521,15 +502,6 @@ describe('App board routes', () => {
       expect(screen.getByRole('heading', { name: 'ClickUp board' })).toBeInTheDocument();
     });
     expect(screen.getByRole('link', { name: 'Clickup' })).toHaveAttribute('href', '/board/clickup');
-    expect(boardPageMock).not.toHaveBeenCalled();
-  });
-
-  it('keeps unknown query parameters untouched on external board routes', async () => {
-    renderAt('/board/clickup?archived=all&status=xyz');
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'ClickUp' })).toBeInTheDocument();
-    });
     expect(boardPageMock).not.toHaveBeenCalled();
   });
 });

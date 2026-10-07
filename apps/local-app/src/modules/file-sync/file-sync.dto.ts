@@ -20,6 +20,8 @@ export const FolderIdSchema = z
 export const IGNORE_PATTERNS_MAX = 200;
 /** The longest ignore pattern the server accepts. */
 export const IGNORE_PATTERN_MAX_LENGTH = 256;
+/** The 409 code of a save whose list changed since the editor read it. */
+export const FILE_SYNC_IGNORES_CHANGED = 'FILE_SYNC_IGNORES_CHANGED';
 const IgnorePatternSchema = z.string().min(1).max(IGNORE_PATTERN_MAX_LENGTH);
 export const IgnorePatternsSchema = z.array(IgnorePatternSchema).max(IGNORE_PATTERNS_MAX);
 
@@ -64,6 +66,34 @@ export const FolderIgnoresSchema = z
 export const SyncDeviceSchema = z.object({ deviceId: DeviceIdSchema, address: PeerAddressSchema });
 export type SyncDevice = z.infer<typeof SyncDeviceSchema>;
 
+const BackupSegmentSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[^/\\\0]+$/)
+  .refine((value) => value !== '.' && value !== '..');
+export const ForceCopySchema = z.object({ operationId: BackupSegmentSchema }).strict();
+export const ForceCopyBackupRequestSchema = z
+  .object({
+    projectId: BackupSegmentSchema,
+    kind: z.enum(['code', 'git']),
+    forceCopy: ForceCopySchema,
+  })
+  .strict();
+export type ForceCopyBackupRequest = z.infer<typeof ForceCopyBackupRequestSchema>;
+export const ForceCopyBackupSchema = z.object({ path: z.string() });
+export type ForceCopyBackup = z.infer<typeof ForceCopyBackupSchema>;
+export const RECEIVE_ONLY_SAMPLE_MAX = 200;
+/** Syncthing's error for a file that changed while it was pulled; Syncthing retries it. */
+export const TRANSIENT_SYNC_ERROR = 'file modified but not rescanned; will try again later';
+export const isTransientSyncError = (error: string): boolean =>
+  error.toLowerCase().includes(TRANSIENT_SYNC_ERROR);
+export const ReceiveOnlyChangesSchema = z.object({
+  count: z.number().int().nonnegative(),
+  sample: z.array(z.string()).max(RECEIVE_ONLY_SAMPLE_MAX),
+});
+export type ReceiveOnlyChanges = z.infer<typeof ReceiveOnlyChangesSchema>;
+
 export const SyncFolderRequestSchema = z
   .object({
     projectId: z.string().trim().min(1).max(128),
@@ -73,8 +103,12 @@ export const SyncFolderRequestSchema = z
     ignores: FolderIgnoresSchema,
     /** Leaves the folder paused, so the caller can unpause both sides in order. */
     paused: z.boolean().optional(),
+    forceCopy: ForceCopySchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((request) => !request.forceCopy || request.type === 'receiveonly', {
+    message: 'Force copy backups require a receive-only folder',
+  });
 export type SyncFolderRequest = z.infer<typeof SyncFolderRequestSchema>;
 
 export const SyncFolderSchema = z.object({
@@ -82,8 +116,16 @@ export const SyncFolderSchema = z.object({
   path: z.string(),
   type: FolderTypeSchema,
   paused: z.boolean(),
+  backupPath: z.string().optional(),
 });
 export type SyncFolder = z.infer<typeof SyncFolderSchema>;
+
+export const SyncFolderConfigurationSchema = z.object({
+  type: FolderTypeSchema,
+  paused: z.boolean(),
+  devices: z.array(z.object({ deviceID: z.string() })),
+});
+export type SyncFolderConfiguration = z.infer<typeof SyncFolderConfigurationSchema>;
 
 export const SyncFolderPatchSchema = z
   .object({
@@ -102,14 +144,25 @@ export const SyncFolderPatchSchema = z
 export type SyncFolderPatch = z.infer<typeof SyncFolderPatchSchema>;
 
 export const SyncStatusQuerySchema = z
-  .object({ folder: FolderIdSchema, device: DeviceIdSchema.optional() })
+  .object({
+    folder: FolderIdSchema,
+    device: DeviceIdSchema.optional(),
+    errors: z.literal('all').optional(),
+  })
   .strict();
+
+export interface SyncStatusOptions {
+  allErrors?: boolean;
+}
 
 export const FolderSyncStatusSchema = z.object({
   folderId: z.string(),
   state: z.string(),
   error: z.string().optional(),
   errors: z.number().optional(),
+  pullErrors: z.number().optional(),
+  /** Sampled by default; the allErrors option requests the complete list. */
+  fileErrors: z.array(z.object({ path: z.string(), error: z.string() })).optional(),
   localFiles: z.number(),
   localDirectories: z.number(),
   globalFiles: z.number(),
@@ -130,5 +183,37 @@ export const FolderSyncStatusSchema = z.object({
 });
 export type FolderSyncStatus = z.infer<typeof FolderSyncStatusSchema>;
 
+/** Reports retain full counts while bounding the paths stored in operation details. */
+export const FILE_SYNC_REPORT_SAMPLE = 20;
+export const CONFLICT_BASELINE_MAX = 1000;
+export const ConflictBaselineSchema = z.union([
+  z.object({
+    baselineOverCap: z.literal(false),
+    paths: z.array(z.string()).max(CONFLICT_BASELINE_MAX),
+  }),
+  z.object({ baselineOverCap: z.literal(true) }).strict(),
+]);
+export type ConflictBaseline = z.infer<typeof ConflictBaselineSchema>;
+export const RemoteNeedQuerySchema = z.object({ device: DeviceIdSchema }).strict();
+export const RemoteNeedSchema = z.object({
+  total: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative(),
+  sample: z
+    .array(z.object({ path: z.string(), deleted: z.boolean() }))
+    .max(FILE_SYNC_REPORT_SAMPLE),
+  conflictPaths: z.array(z.string()).max(CONFLICT_BASELINE_MAX),
+  conflictsOverCap: z.boolean(),
+});
+export type RemoteNeed = z.infer<typeof RemoteNeedSchema>;
+
+export const ConflictReportSchema = z.object({
+  total: z.number().int().nonnegative(),
+  sample: z.array(z.string()).max(FILE_SYNC_REPORT_SAMPLE),
+  baselineOverCap: z.boolean().optional(),
+});
+export type ConflictReport = z.infer<typeof ConflictReportSchema>;
+
 /** `null` returns the project to the default patterns. */
-export const IgnoresBodySchema = z.object({ ignores: IgnorePatternsSchema.nullable() }).strict();
+export const IgnoresBodySchema = z
+  .object({ ignores: IgnorePatternsSchema.nullable(), revision: z.number().int().nonnegative() })
+  .strict();

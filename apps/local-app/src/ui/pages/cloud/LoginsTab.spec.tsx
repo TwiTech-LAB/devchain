@@ -200,19 +200,19 @@ function renderPanel() {
 }
 
 /** Opens Add login with a provider chosen. */
-async function addLogin(provider: string) {
-  await userEvent.click(screen.getByRole('button', { name: 'Add login' }));
-  await userEvent.click(screen.getByRole('combobox', { name: 'Provider' }));
-  await userEvent.click(await screen.findByRole('option', { name: provider }));
+async function addLogin(provider: string, user = userEvent.setup()) {
+  await user.click(screen.getByRole('button', { name: 'Add login' }));
+  await user.click(screen.getByRole('combobox', { name: 'Provider' }));
+  await user.click(await screen.findByRole('option', { name: provider }));
 }
 
 async function openImport() {
   await addLogin('OpenCode');
 }
 
-async function startSignIn(provider: string) {
-  await addLogin(provider);
-  await userEvent.click(screen.getByRole('button', { name: 'Start sign-in' }));
+async function startSignIn(provider: string, user = userEvent.setup()) {
+  await addLogin(provider, user);
+  await user.click(screen.getByRole('button', { name: 'Start sign-in' }));
 }
 
 describe('LoginsTab', () => {
@@ -397,11 +397,9 @@ describe('LoginsTab', () => {
     expect(await screen.findByText('Loading OpenCode logins…')).toBeInTheDocument();
     const submit = screen.getByTestId('opencode-import-submit');
     expect(submit).toBeDisabled();
-    expect(submit.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
 
     await act(async () => releaseLogins());
     expect(await screen.findByRole('checkbox', { name: 'zai-coding-plan' })).toBeChecked();
-    expect(screen.getByTestId('opencode-import-submit').querySelector('svg')).toBeNull();
   });
 
   it('shows the empty state when the PC has no OpenCode logins', async () => {
@@ -425,33 +423,43 @@ describe('LoginsTab', () => {
   });
 
   it('generates a Codex login in the embedded terminal and closes when it is stored', async () => {
-    renderPanel();
+    jest.useFakeTimers();
+    try {
+      renderPanel();
 
-    await waitFor(() => expect(providerAuthListRequests).toBe(1));
-    await startSignIn('Codex');
-    await screen.findByTestId('terminal-stub');
-    // Opening Add login reads the list once more; the stored login adds one refresh.
-    const listed = providerAuthListRequests;
-    expect(screen.getByText('s1')).toBeInTheDocument();
-    expect(screen.getByTestId('login-generation-state')).toHaveTextContent(/Waiting for the login/);
+      await waitFor(() => expect(providerAuthListRequests).toBe(1));
+      await startSignIn('Codex', userEvent.setup({ advanceTimers: jest.advanceTimersByTime }));
+      await screen.findByTestId('terminal-stub');
+      // Opening Add login reads the list once more; the stored login adds one refresh.
+      const listed = providerAuthListRequests;
+      expect(screen.getByText('s1')).toBeInTheDocument();
+      expect(screen.getByTestId('login-generation-state')).toHaveTextContent(
+        /Waiting for the login/,
+      );
 
-    generationState = 'stored';
-    entries = [
-      { id: 'e3', provider: 'codex', kind: 'family', label: 'Codex login', payloadKind: 'files' },
-    ];
-    await waitFor(
-      () =>
-        expect(screen.getByTestId('login-generation-state')).toHaveTextContent(
-          'Login verified and stored.',
-        ),
-      { timeout: 4000 },
-    );
-    await waitFor(() => expect(screen.queryByTestId('terminal-stub')).not.toBeInTheDocument(), {
-      timeout: 4000,
-    });
-    expect(await screen.findByText('Codex login')).toBeInTheDocument();
-    expect(providerAuthListRequests).toBe(listed + 1);
-    expect(generationsStarted).toBe(1);
+      generationState = 'stored';
+      entries = [
+        { id: 'e3', provider: 'codex', kind: 'family', label: 'Codex login', payloadKind: 'files' },
+      ];
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1000);
+      });
+      await waitFor(
+        () =>
+          expect(screen.getByTestId('login-generation-state')).toHaveTextContent(
+            'Login verified and stored.',
+          ),
+        { timeout: 4000 },
+      );
+      await waitFor(() => expect(screen.queryByTestId('terminal-stub')).not.toBeInTheDocument(), {
+        timeout: 4000,
+      });
+      expect(await screen.findByText('Codex login')).toBeInTheDocument();
+      expect(providerAuthListRequests).toBe(listed + 1);
+      expect(generationsStarted).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('still invalidates the provider auth list when a generation is cancelled', async () => {
@@ -519,25 +527,6 @@ describe('LoginsTab', () => {
     expect(screen.getByRole('listitem', { name: 'Main token' })).toBeInTheDocument();
     expect(within(row).queryByLabelText('Name')).not.toBeInTheDocument();
     expect(renameBody).toBeNull();
-  });
-
-  it('shows a login on a VM with the VM name', async () => {
-    entries = [
-      {
-        id: 'e4',
-        provider: 'codex',
-        kind: 'family',
-        label: 'Codex login',
-        payloadKind: 'files',
-        checkedOutRemoteId: 'r9',
-      },
-    ];
-    remotes = [{ id: 'r9', name: 'lab-vm', logins: null } as RemoteListItemDto];
-
-    renderPanel();
-    const row = await screen.findByRole('listitem', { name: 'Codex login' });
-    expect(row).toHaveTextContent('On lab-vm');
-    expect(row).toHaveTextContent('Not checked yet');
   });
 
   // The component layer is the cheapest place to verify confirmation, mutation, and list refresh together.
@@ -658,6 +647,7 @@ describe('LoginsTab sections', () => {
     const spare = screen.getByRole('listitem', { name: 'Spare family' });
     expect(spare).toHaveTextContent('Free');
     expect(within(spare).queryByRole('button', { name: /Release/ })).not.toBeInTheDocument();
+    expect(family).toHaveTextContent('Not checked yet');
   });
 });
 

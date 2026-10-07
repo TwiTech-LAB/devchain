@@ -184,39 +184,6 @@ describe('EpicAssignmentNotifierSubscriber', () => {
     },
   );
 
-  it('classifies returned failures from epic.created through the same outcome helper', async () => {
-    deliverMock.mockResolvedValue({
-      status: 'failed',
-      results: [{ agentId: 'agent-1', status: 'failed', error: 'SESSION_NOT_FOUND' }],
-    });
-
-    await subscriber.handleEpicCreated({
-      epicId: 'epic-1',
-      projectId: 'project-1',
-      title: 'New Epic',
-      agentId: 'agent-1',
-      assignmentRecipientIds: ['agent-1'],
-      actor: { type: 'agent' as const, id: 'agent-2' },
-      projectName: 'Demo Project',
-      agentName: 'Helper Agent',
-    } as never);
-
-    expect(eventLogService.recordHandledFail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventId: 'event-1',
-        handler: 'EpicAssignmentNotifier',
-        detail: {
-          poolStatus: 'failed',
-          recipientCount: 1,
-          failedCount: 1,
-          failedAgentIds: ['agent-1'],
-          errorCode: 'SESSION_NOT_FOUND',
-        },
-      }),
-    );
-    expect(eventLogService.recordHandledOk).not.toHaveBeenCalled();
-  });
-
   it.each([
     ['SESSION_NOT_RUNNING', 'SESSION_NOT_RUNNING'],
     ['SESSION_NOT_FOUND', 'SESSION_NOT_FOUND'],
@@ -301,7 +268,9 @@ describe('EpicAssignmentNotifierSubscriber', () => {
     expect(getEpicMock).not.toHaveBeenCalled();
     expect(deliverMock).toHaveBeenCalledWith(
       ['agent-1'],
-      expect.objectContaining({ body: expect.stringContaining('Add Feature') }),
+      expect.objectContaining({
+        body: expect.stringContaining('Add Feature -> Storage Agent (Storage Project)'),
+      }),
       expect.any(Object),
     );
   });

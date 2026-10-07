@@ -139,26 +139,9 @@ describe('useEpicRelationCountsBatch', () => {
         epicRelationQueryKeys.batchRoot(),
       );
     }
-  });
-
-  it('re-admits to the primed active cache immediately after a disabled stretch', async () => {
-    fetchMock.mockResolvedValue(
-      batchResponse([{ epicId: 'epic-1', related: 0, blocks: 0, blockedBy: 1, total: 1 }]),
-    );
-    const { result, rerender } = renderHook(
-      ({ enabled }: { enabled: boolean }) => useEpicRelationCountsBatch(['epic-1'], { enabled }),
-      { wrapper: wrapper(client), initialProps: { enabled: true } },
-    );
-
-    await waitFor(() => expect(result.current.query.isSuccess).toBe(true));
-
-    rerender({ enabled: false });
-    expect(result.current.counts).toEqual(new Map());
-
     rerender({ enabled: true });
-    // The active cache entry serves the badge again right away; any later
-    // refresh is a fresh active-scope request, not a disabled-scope leak.
-    expect(result.current.counts?.get('epic-1')?.blockedBy).toBe(1);
+    expect(result.current.counts?.get('epic-1')?.total).toBe(2);
+    expect(result.current.counts?.get('epic-1')?.blockedBy).toBe(0);
   });
 
   it('issues no request for an empty ID set', () => {

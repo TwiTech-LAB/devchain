@@ -1,9 +1,8 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import * as crypto from 'node:crypto';
-import { join } from 'node:path';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import {
   ForbiddenError,
   IndexedRelationError,
@@ -24,7 +23,6 @@ jest.mock('node:crypto', () => {
   return { ...actual, randomUUID: jest.fn(actual.randomUUID) };
 });
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 const LOWER_EPIC_ID = '00000000-0000-4000-8000-000000000010';
 const HIGHER_EPIC_ID = 'ffffffff-ffff-4fff-8fff-fffffffffff0';
 const RELATION_ID = '99999999-9999-4999-8999-999999999999';
@@ -42,8 +40,7 @@ describe('EpicsService atomic relation creation', () => {
 
   beforeEach(async () => {
     resetRandomUUID();
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    ({ sqlite } = createTestDatabase());
     sqlite.pragma('foreign_keys = ON');
     storage = new LocalStorageService(drizzle(sqlite));
     events = {

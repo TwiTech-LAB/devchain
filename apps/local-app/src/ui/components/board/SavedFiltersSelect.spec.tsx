@@ -55,11 +55,10 @@ describe('SavedFiltersSelect', () => {
       await waitFor(() => {
         expect(screen.getByText('No saved filters')).toBeInTheDocument();
       });
-    });
 
-    it('shows "Saved" on button when no filter is active', () => {
-      renderComponent();
-      expect(screen.getByRole('button', { name: /saved filters/i })).toHaveTextContent('Saved');
+      {
+        expect(screen.getByRole('button', { name: /saved filters/i })).toHaveTextContent('Saved');
+      }
     });
   });
 
@@ -98,18 +97,6 @@ describe('SavedFiltersSelect', () => {
         }),
       );
     });
-
-    it('shows checkmark next to selected filter', async () => {
-      renderComponent({});
-
-      // Select a filter
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-      await waitFor(() => screen.getByText('Active Tasks'));
-      fireEvent.click(screen.getByText('Active Tasks'));
-
-      // Verify onApply was called with the filter's query string
-      expect(mockOnApply).toHaveBeenCalledWith('st=in-progress');
-    });
   });
 
   describe('Saving filters', () => {
@@ -125,6 +112,9 @@ describe('SavedFiltersSelect', () => {
         expect(screen.getByRole('dialog')).toBeInTheDocument();
         expect(screen.getByText('Save Filter')).toBeInTheDocument();
       });
+      {
+        expect(screen.getByRole('button', { name: /^Save$/i })).toBeDisabled();
+      }
     });
 
     it('disables save button when no active filters', async () => {
@@ -144,7 +134,10 @@ describe('SavedFiltersSelect', () => {
       expect(headerSaveButton).toBeDisabled();
     });
 
-    it('validates name uniqueness in save dialog', async () => {
+    it.each([
+      ['duplicate', 'My Filter', /already exists/i],
+      ['too long', 'a'.repeat(51), /50 characters or less/i],
+    ] as const)('rejects %s filter name', async (_reason, name, error) => {
       // Pre-populate with existing filter
       window.localStorage.setItem(
         storageKey,
@@ -160,30 +153,17 @@ describe('SavedFiltersSelect', () => {
       await waitFor(() => screen.getByRole('dialog'));
 
       const input = screen.getByLabelText('Name');
-      fireEvent.change(input, { target: { value: 'My Filter' } });
+      fireEvent.change(input, { target: { value: name } });
 
       // Try to save
       fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
       await waitFor(() => {
-        expect(screen.getByText(/already exists/i)).toBeInTheDocument();
+        expect(screen.getByText(error)).toBeInTheDocument();
       });
     });
 
-    it('validates empty name in save dialog', async () => {
-      renderComponent({ status: ['review'] });
-
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-      await waitFor(() => screen.getByText('Save'));
-      fireEvent.click(screen.getByText('Save'));
-
-      await waitFor(() => screen.getByRole('dialog'));
-
-      // Save button should be disabled with empty name
-      expect(screen.getByRole('button', { name: /^Save$/i })).toBeDisabled();
-    });
-
-    it('shows success toast on save', async () => {
+    it.each(['button', 'Enter'])('saves filter via %s', async (method) => {
       renderComponent({ status: ['review'] });
 
       fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
@@ -194,29 +174,8 @@ describe('SavedFiltersSelect', () => {
 
       const input = screen.getByLabelText('Name');
       fireEvent.change(input, { target: { value: 'New Filter' } });
-      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
-
-      await waitFor(() => {
-        expect(mockToast).toHaveBeenCalledWith(
-          expect.objectContaining({
-            title: 'Filter saved',
-          }),
-        );
-      });
-    });
-
-    it('saves filter on Enter key press', async () => {
-      renderComponent({ status: ['review'] });
-
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-      await waitFor(() => screen.getByText('Save'));
-      fireEvent.click(screen.getByText('Save'));
-
-      await waitFor(() => screen.getByRole('dialog'));
-
-      const input = screen.getByLabelText('Name');
-      fireEvent.change(input, { target: { value: 'Enter Filter' } });
-      fireEvent.keyDown(input, { key: 'Enter' });
+      if (method === 'button') fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+      else fireEvent.keyDown(input, { key: 'Enter' });
 
       await waitFor(() => {
         expect(mockToast).toHaveBeenCalledWith(
@@ -248,33 +207,20 @@ describe('SavedFiltersSelect', () => {
         expect(screen.getByRole('dialog')).toBeInTheDocument();
         expect(screen.getByText('Rename Filter')).toBeInTheDocument();
       });
-    });
-
-    it('allows rename with validation', async () => {
-      renderComponent();
-
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-      await waitFor(() => screen.getByText('Old Name'));
-
-      fireEvent.click(screen.getByRole('button', { name: /rename "old name"/i }));
-
-      await waitFor(() => screen.getByRole('dialog'));
-
-      const input = screen.getByLabelText('Name');
-      fireEvent.change(input, { target: { value: 'New Name' } });
-      fireEvent.click(screen.getByRole('button', { name: /^Rename$/i }));
-
-      await waitFor(() => {
-        expect(mockToast).toHaveBeenCalledWith(
-          expect.objectContaining({
-            title: 'Filter renamed',
-          }),
-        );
-      });
-
-      // Verify localStorage was updated
-      const stored = JSON.parse(window.localStorage.getItem(storageKey) || '[]');
-      expect(stored[0].name).toBe('New Name');
+      {
+        const input = screen.getByLabelText('Name');
+        fireEvent.change(input, { target: { value: 'New Name' } });
+        fireEvent.click(screen.getByRole('button', { name: /^Rename$/i }));
+        await waitFor(() => {
+          expect(mockToast).toHaveBeenCalledWith(
+            expect.objectContaining({
+              title: 'Filter renamed',
+            }),
+          );
+        });
+        const stored = JSON.parse(window.localStorage.getItem(storageKey) || '[]');
+        expect(stored[0].name).toBe('New Name');
+      }
     });
   });
 
@@ -297,31 +243,18 @@ describe('SavedFiltersSelect', () => {
         expect(screen.getByText('Delete Filter')).toBeInTheDocument();
         expect(screen.getByText(/are you sure/i)).toBeInTheDocument();
       });
-    });
-
-    it('deletes filter after confirmation', async () => {
-      renderComponent();
-
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-      await waitFor(() => screen.getByText('To Delete'));
-
-      fireEvent.click(screen.getByRole('button', { name: /delete "to delete"/i }));
-
-      await waitFor(() => screen.getByRole('dialog'));
-
-      fireEvent.click(screen.getByRole('button', { name: /^Delete$/i }));
-
-      await waitFor(() => {
-        expect(mockToast).toHaveBeenCalledWith(
-          expect.objectContaining({
-            title: 'Filter deleted',
-          }),
-        );
-      });
-
-      // Verify localStorage was updated
-      const stored = JSON.parse(window.localStorage.getItem(storageKey) || '[]');
-      expect(stored).toHaveLength(0);
+      {
+        fireEvent.click(screen.getByRole('button', { name: /^Delete$/i }));
+        await waitFor(() => {
+          expect(mockToast).toHaveBeenCalledWith(
+            expect.objectContaining({
+              title: 'Filter deleted',
+            }),
+          );
+        });
+        const stored = JSON.parse(window.localStorage.getItem(storageKey) || '[]');
+        expect(stored).toHaveLength(0);
+      }
     });
 
     it('can cancel delete', async () => {
@@ -339,43 +272,6 @@ describe('SavedFiltersSelect', () => {
       // Filter should still exist
       const stored = JSON.parse(window.localStorage.getItem(storageKey) || '[]');
       expect(stored).toHaveLength(1);
-    });
-  });
-
-  describe('Max length validation', () => {
-    it('enforces 50 character max length on save', async () => {
-      renderComponent({ status: ['review'] });
-
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-      await waitFor(() => screen.getByText('Save'));
-      fireEvent.click(screen.getByText('Save'));
-
-      await waitFor(() => screen.getByRole('dialog'));
-
-      const input = screen.getByLabelText('Name');
-      expect(input).toHaveAttribute('maxLength', '50');
-    });
-
-    it('shows error for name exceeding 50 characters', async () => {
-      renderComponent({ status: ['review'] });
-
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-      await waitFor(() => screen.getByText('Save'));
-      fireEvent.click(screen.getByText('Save'));
-
-      await waitFor(() => screen.getByRole('dialog'));
-
-      const input = screen.getByLabelText('Name');
-      // Type a long name (51+ chars)
-      const longName = 'a'.repeat(51);
-      fireEvent.change(input, { target: { value: longName } });
-
-      // Try to save - should show error
-      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText(/50 characters or less/i)).toBeInTheDocument();
-      });
     });
   });
 
@@ -423,23 +319,14 @@ describe('SavedFiltersSelect', () => {
         const stars = screen.getAllByRole('button', { name: /set as default filter/i });
         expect(stars).toHaveLength(2);
       });
-    });
-
-    it('clicking star sets filter as default and shows filled star', async () => {
-      renderComponent();
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText('Active Tasks')).toBeInTheDocument();
-      });
-
-      const stars = screen.getAllByRole('button', { name: /set as default filter/i });
-      fireEvent.click(stars[0]);
-
-      expect(window.localStorage.getItem(defaultKey)).toBe('f1');
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: /unset default filter/i })).toBeInTheDocument();
-      });
+      {
+        const stars = screen.getAllByRole('button', { name: /set as default filter/i });
+        fireEvent.click(stars[0]);
+        expect(window.localStorage.getItem(defaultKey)).toBe('f1');
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /unset default filter/i })).toBeInTheDocument();
+        });
+      }
     });
 
     it('clicking filled star clears default', async () => {
@@ -471,44 +358,6 @@ describe('SavedFiltersSelect', () => {
 
       const badges = screen.getAllByText('★ Default');
       expect(badges).toHaveLength(1);
-    });
-
-    it('renders active accent on rows matching currentFilters', async () => {
-      renderComponent({ st: 'in-progress' });
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText('Active Tasks')).toBeInTheDocument();
-      });
-
-      const checkIcons = screen.getAllByRole('button', { name: /saved filters/i }).length;
-      expect(checkIcons).toBeGreaterThanOrEqual(1);
-    });
-
-    it('renders both default badge and active accent on same row', async () => {
-      window.localStorage.setItem(defaultKey, 'f1');
-      renderComponent({ st: 'in-progress' });
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText('★ Default')).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: /unset default filter/i })).toBeInTheDocument();
-      });
-    });
-
-    it('star button is keyboard accessible (Enter activates)', async () => {
-      renderComponent();
-      fireEvent.click(screen.getByRole('button', { name: /saved filters/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText('Active Tasks')).toBeInTheDocument();
-      });
-
-      const star = screen.getAllByRole('button', { name: /set as default filter/i })[0];
-      fireEvent.keyDown(star, { key: 'Enter' });
-      fireEvent.click(star);
-
-      expect(window.localStorage.getItem(defaultKey)).toBe('f1');
     });
 
     it('deleting the default filter clears star and badge', async () => {

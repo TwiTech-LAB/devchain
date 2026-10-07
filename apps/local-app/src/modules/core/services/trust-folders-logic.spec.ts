@@ -5,53 +5,72 @@ describe('getEffectiveTrust', () => {
     expect(getEffectiveTrust('/repos/foo', {})).toEqual({ kind: 'no_rule' });
   });
 
-  it('exact TRUST_FOLDER → trusted exact', () => {
-    expect(getEffectiveTrust('/repos/foo', { '/repos/foo': 'TRUST_FOLDER' })).toEqual({
-      kind: 'trusted',
-      via: 'exact',
-    });
-  });
-
-  it('ancestor TRUST_FOLDER covers descendant', () => {
-    expect(getEffectiveTrust('/repos/foo', { '/repos': 'TRUST_FOLDER' })).toEqual({
-      kind: 'trusted',
-      via: 'ancestor',
-    });
-  });
-
-  it('TRUST_PARENT for same path → trusted via parent_rule (effective = dirname)', () => {
-    expect(getEffectiveTrust('/repos/foo', { '/repos/foo': 'TRUST_PARENT' })).toEqual({
-      kind: 'trusted',
-      via: 'parent_rule',
-    });
-  });
-
-  it('ancestor TRUST_PARENT (rule /repos, project /repos/foo) → trusted via parent_rule', () => {
-    expect(getEffectiveTrust('/repos/foo', { '/repos': 'TRUST_PARENT' })).toEqual({
-      kind: 'trusted',
-      via: 'parent_rule',
-    });
-  });
-
-  it('sibling via TRUST_PARENT (rule /repos/bar, project /repos/foo) → trusted via parent_rule', () => {
-    expect(getEffectiveTrust('/repos/foo', { '/repos/bar': 'TRUST_PARENT' })).toEqual({
-      kind: 'trusted',
-      via: 'parent_rule',
-    });
-  });
-
-  it('exact DO_NOT_TRUST → distrusted exact', () => {
-    expect(getEffectiveTrust('/repos/foo', { '/repos/foo': 'DO_NOT_TRUST' })).toEqual({
-      kind: 'distrusted',
-      via: 'exact',
-    });
-  });
-
-  it('ancestor DO_NOT_TRUST → distrusted ancestor', () => {
-    expect(getEffectiveTrust('/repos/foo', { '/repos': 'DO_NOT_TRUST' })).toEqual({
-      kind: 'distrusted',
-      via: 'ancestor',
-    });
+  it.each([
+    {
+      name: 'exact TRUST_FOLDER → trusted exact',
+      project: '/repos/foo',
+      rules: { '/repos/foo': 'TRUST_FOLDER' } as Parameters<typeof getEffectiveTrust>[1],
+      expected: {
+        kind: 'trusted',
+        via: 'exact',
+      },
+    },
+    {
+      name: 'ancestor TRUST_FOLDER covers descendant',
+      project: '/repos/foo',
+      rules: { '/repos': 'TRUST_FOLDER' } as Parameters<typeof getEffectiveTrust>[1],
+      expected: {
+        kind: 'trusted',
+        via: 'ancestor',
+      },
+    },
+    {
+      name: 'TRUST_PARENT for same path → trusted via parent_rule (effective = dirname)',
+      project: '/repos/foo',
+      rules: { '/repos/foo': 'TRUST_PARENT' } as Parameters<typeof getEffectiveTrust>[1],
+      expected: {
+        kind: 'trusted',
+        via: 'parent_rule',
+      },
+    },
+    {
+      name: 'ancestor TRUST_PARENT (rule /repos, project /repos/foo) → trusted via parent_rule',
+      project: '/repos/foo',
+      rules: { '/repos': 'TRUST_PARENT' } as Parameters<typeof getEffectiveTrust>[1],
+      expected: {
+        kind: 'trusted',
+        via: 'parent_rule',
+      },
+    },
+    {
+      name: 'sibling via TRUST_PARENT (rule /repos/bar, project /repos/foo) → trusted via parent_rule',
+      project: '/repos/foo',
+      rules: { '/repos/bar': 'TRUST_PARENT' } as Parameters<typeof getEffectiveTrust>[1],
+      expected: {
+        kind: 'trusted',
+        via: 'parent_rule',
+      },
+    },
+    {
+      name: 'exact DO_NOT_TRUST → distrusted exact',
+      project: '/repos/foo',
+      rules: { '/repos/foo': 'DO_NOT_TRUST' } as Parameters<typeof getEffectiveTrust>[1],
+      expected: {
+        kind: 'distrusted',
+        via: 'exact',
+      },
+    },
+    {
+      name: 'ancestor DO_NOT_TRUST → distrusted ancestor',
+      project: '/repos/foo',
+      rules: { '/repos': 'DO_NOT_TRUST' } as Parameters<typeof getEffectiveTrust>[1],
+      expected: {
+        kind: 'distrusted',
+        via: 'ancestor',
+      },
+    },
+  ])('$name', ({ project, rules, expected }) => {
+    expect(getEffectiveTrust(project, rules)).toEqual(expected);
   });
 
   it('longest match wins (more specific rule prevails)', () => {

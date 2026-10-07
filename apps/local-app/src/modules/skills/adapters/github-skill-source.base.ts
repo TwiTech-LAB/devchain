@@ -17,6 +17,11 @@ import {
   validatePathSegment as validatePathSegmentFromValue,
 } from './skill-parsing.utils';
 import type { ParsedSkillMarkdown } from './skill-parsing.utils';
+import {
+  SKILL_SYNC_ARCHIVE_FILE,
+  SKILL_SYNC_EXTRACT_DIR,
+  SKILL_SYNC_TEMP_PREFIX,
+} from './skill-sync-temp-cleanup';
 
 const logger = createLogger('GitHubSkillSourceBase');
 
@@ -189,9 +194,11 @@ export abstract class GitHubSkillSourceBase {
   protected async prepareExtractedRepository(): Promise<ExtractedRepositoryContext> {
     this.ensureRepoConfigured();
     const safeSourceName = this.validatePathSegment(this.sourceName, 'sourceName');
-    const tempRoot = await fs.mkdtemp(join(tmpdir(), `skills-${safeSourceName}-`));
-    const archivePath = join(tempRoot, 'repo.tar.gz');
-    const extractPath = join(tempRoot, 'repo');
+    const tempRoot = await fs.mkdtemp(
+      join(tmpdir(), `${SKILL_SYNC_TEMP_PREFIX}${safeSourceName}-`),
+    );
+    const archivePath = join(tempRoot, SKILL_SYNC_ARCHIVE_FILE);
+    const extractPath = join(tempRoot, SKILL_SYNC_EXTRACT_DIR);
     let disposed = false;
 
     const dispose = async (): Promise<void> => {

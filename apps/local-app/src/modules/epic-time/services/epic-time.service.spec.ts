@@ -681,87 +681,38 @@ describe('EpicTimeService', () => {
       expect(projection.currentByDate).toEqual([{ activityDate: '2026-01-02', minutes: 1 }]);
       expect(store.listResolvedScope).toHaveBeenCalledWith(['child']);
     });
-
-    it('rejects invalid zones and missing Epics like getDetail', () => {
-      expect(() => service.getDailyProjection('root', 'Not/A_Zone')).toThrow(ValidationError);
-      expect(() => service.getDailyProjection('root', '+01:00')).toThrow(ValidationError);
-      store.getEpicTimeScope.mockReturnValue(null);
-      expect(() => service.getDailyProjection('missing', 'UTC')).toThrow(NotFoundError);
-    });
   });
 
   describe('agent time buffers', () => {
-    it('returns the storage snapshot untouched', () => {
-      const snapshot = { capturedAt: '2026-01-02T00:00:00.000Z', items: [] };
-      store.listAgentTimeBuffers.mockReturnValue(snapshot);
-
-      expect(service.getAgentTimeBuffers('project-1')).toBe(snapshot);
-      expect(store.listAgentTimeBuffers).toHaveBeenCalledWith('project-1');
-    });
-
-    it('publishes the scope invalidation only after the assignment commits', async () => {
-      store.assignAgentTimeBuffer.mockResolvedValue({ workspaceId: 'workspace-1' });
-      const input = {
-        projectId: '11111111-1111-4111-8111-111111111111',
-        agentId: 'agent-1',
-        targetEpicId: '22222222-2222-4222-8222-222222222222',
-        capturedAt: '2026-01-02T00:00:00.000Z',
-        snapshotToken: 'a'.repeat(64),
-      };
-
-      await expect(service.assignAgentTimeBuffer(input)).resolves.toEqual({
-        workspaceId: 'workspace-1',
-      });
-      expect(events.publish).toHaveBeenCalledTimes(1);
-      expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
-        workspaceId: 'workspace-1',
-      });
-    });
-
-    it('never publishes when the assignment fails closed', async () => {
-      store.assignAgentTimeBuffer.mockRejectedValue(new ConflictError('stale'));
-      const input = {
-        projectId: '11111111-1111-4111-8111-111111111111',
-        agentId: 'agent-1',
-        targetEpicId: '22222222-2222-4222-8222-222222222222',
-        capturedAt: '2026-01-02T00:00:00.000Z',
-        snapshotToken: 'a'.repeat(64),
-      };
-
-      await expect(service.assignAgentTimeBuffer(input)).rejects.toThrow(ConflictError);
-      expect(events.publish).not.toHaveBeenCalled();
-    });
-
-    it('publishes the scope invalidation only after the reset commits', async () => {
-      store.resetAgentTimeBuffer.mockResolvedValue({ workspaceId: 'workspace-1' });
-      const input = {
-        projectId: '11111111-1111-4111-8111-111111111111',
-        agentId: 'agent-1',
-        capturedAt: '2026-01-02T00:00:00.000Z',
-        snapshotToken: 'a'.repeat(64),
-      };
-
-      await expect(service.resetAgentTimeBuffer(input)).resolves.toEqual({
-        workspaceId: 'workspace-1',
-      });
-      expect(events.publish).toHaveBeenCalledTimes(1);
-      expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
-        workspaceId: 'workspace-1',
-      });
-    });
-
-    it('never publishes when the reset fails closed', async () => {
-      store.resetAgentTimeBuffer.mockRejectedValue(new ConflictError('stale'));
-      const input = {
-        projectId: '11111111-1111-4111-8111-111111111111',
-        agentId: 'agent-1',
-        capturedAt: '2026-01-02T00:00:00.000Z',
-        snapshotToken: 'a'.repeat(64),
-      };
-
-      await expect(service.resetAgentTimeBuffer(input)).rejects.toThrow(ConflictError);
-      expect(events.publish).not.toHaveBeenCalled();
-    });
+    it.each([
+      { method: 'assignAgentTimeBuffer', fails: false },
+      { method: 'assignAgentTimeBuffer', fails: true },
+      { method: 'resetAgentTimeBuffer', fails: false },
+      { method: 'resetAgentTimeBuffer', fails: true },
+    ] as const)(
+      '$method publishes only after successful commit (fails=$fails)',
+      async ({ method, fails }) => {
+        const input = {
+          projectId: '11111111-1111-4111-8111-111111111111',
+          agentId: 'agent-1',
+          targetEpicId: '22222222-2222-4222-8222-222222222222',
+          capturedAt: '2026-01-02T00:00:00.000Z',
+          snapshotToken: 'a'.repeat(64),
+        };
+        if (fails) {
+          store[method].mockRejectedValue(new ConflictError('stale'));
+          await expect(service[method](input)).rejects.toThrow(ConflictError);
+          expect(events.publish).not.toHaveBeenCalled();
+        } else {
+          store[method].mockResolvedValue({ workspaceId: 'workspace-1' });
+          await expect(service[method](input)).resolves.toEqual({ workspaceId: 'workspace-1' });
+          expect(events.publish).toHaveBeenCalledTimes(1);
+          expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
+            workspaceId: 'workspace-1',
+          });
+        }
+      },
+    );
 
     it('refuses assignment and reset before the store when the project is not writable here', async () => {
       const projectId = '11111111-1111-4111-8111-111111111111';

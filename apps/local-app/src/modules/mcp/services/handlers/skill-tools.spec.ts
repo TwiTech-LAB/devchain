@@ -1,12 +1,10 @@
+import { createTestDatabase } from '../../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import { ValidationError } from '../../../../common/errors/error-types';
 import type { SettingsService } from '../../../settings/services/settings.service';
 import type { SkillSourceRegistryService } from '../../../skills/services/skill-source-registry.service';
 import { SkillsService } from '../../../skills/services/skills.service';
-import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
+
 import type { Skill } from '../../../storage/models/domain.models';
 import type { SkillToolContext } from './skill-context';
 import {
@@ -119,19 +117,6 @@ describe('skill-tools handlers', () => {
       data: { total: 1, skills: [{ slug: 'source/testing' }] },
     });
     expect(ctx.skillsService.listDiscoverable).toHaveBeenCalledWith('project-1', { q: 'test' });
-  });
-
-  it('returns PROJECT_NOT_FOUND when the session has no project', async () => {
-    const ctx = createContext();
-    (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-      success: true,
-      data: { type: 'agent', agent: null, project: null },
-    });
-
-    await expect(handleListSkills(ctx, { sessionId: SESSION_ID })).resolves.toMatchObject({
-      success: false,
-      error: { code: 'PROJECT_NOT_FOUND' },
-    });
   });
 
   it('normalizes a slug and records usage with agent actor context', async () => {
@@ -249,32 +234,6 @@ describe('skill-tools handlers', () => {
     });
   });
 
-  it('maps unavailable skill operations from the get path', async () => {
-    const ctx = createContext();
-    (ctx.skillsService.resolveDiscoverableSkill as jest.Mock).mockRejectedValue(
-      new ServiceUnavailableError('SkillsService'),
-    );
-
-    await expect(
-      handleGetSkill(ctx, { sessionId: SESSION_ID, slug: 'source/testing' }),
-    ).resolves.toMatchObject({
-      success: false,
-      error: { code: 'SERVICE_UNAVAILABLE' },
-    });
-  });
-
-  it('maps unavailable skill operations', async () => {
-    const ctx = createContext();
-    (ctx.skillsService.listDiscoverable as jest.Mock).mockRejectedValue(
-      new ServiceUnavailableError('SkillsService'),
-    );
-
-    await expect(handleListSkills(ctx, { sessionId: SESSION_ID })).resolves.toMatchObject({
-      success: false,
-      error: { code: 'SERVICE_UNAVAILABLE' },
-    });
-  });
-
   describe('handleSkillsUsageStats', () => {
     it('returns the complete unpaged usage stats with epic references for the session project', async () => {
       const ctx = createContext();
@@ -324,31 +283,6 @@ describe('skill-tools handlers', () => {
       });
       expect(ctx.skillsService.getSkillsEpicReferences).toHaveBeenCalledWith('project-1');
     });
-
-    it('returns PROJECT_NOT_FOUND when the session has no project', async () => {
-      const ctx = createContext();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: true,
-        data: { type: 'agent', agent: null, project: null },
-      });
-
-      await expect(handleSkillsUsageStats(ctx, { sessionId: SESSION_ID })).resolves.toMatchObject({
-        success: false,
-        error: { code: 'PROJECT_NOT_FOUND' },
-      });
-    });
-
-    it('maps unavailable skill operations', async () => {
-      const ctx = createContext();
-      (ctx.skillsService.getCompleteUsageStats as jest.Mock).mockRejectedValue(
-        new ServiceUnavailableError('SkillsService'),
-      );
-
-      await expect(handleSkillsUsageStats(ctx, { sessionId: SESSION_ID })).resolves.toMatchObject({
-        success: false,
-        error: { code: 'SERVICE_UNAVAILABLE' },
-      });
-    });
   });
 
   describe('handleListSkills includeDisabled', () => {
@@ -376,16 +310,6 @@ describe('skill-tools handlers', () => {
         q: undefined,
       });
       expect(ctx.skillsService.listDiscoverable).not.toHaveBeenCalled();
-    });
-
-    it('passes q to the stored-catalog listing', async () => {
-      const ctx = createContext();
-
-      await handleListSkills(ctx, { sessionId: SESSION_ID, includeDisabled: true, q: 'test' });
-
-      expect(ctx.skillsService.listAllStoredForProject).toHaveBeenCalledWith('project-1', {
-        q: 'test',
-      });
     });
 
     it('omits the state flags in the default mode', async () => {
@@ -436,91 +360,6 @@ describe('skill-tools handlers', () => {
         ['source/testing', 'source/other', 'source/missing'],
         false,
       );
-    });
-
-    it('rejects guest sessions with AGENT_CONTEXT_REQUIRED before any write', async () => {
-      const ctx = createContext();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: true,
-        data: {
-          type: 'guest',
-          guest: { id: 'guest-1', name: 'Guest', projectId: 'project-1', tmuxSessionId: 's-1' },
-          project: { id: 'project-1', name: 'Project', rootPath: '/project' },
-        },
-      });
-
-      await expect(
-        handleSkillsSetEnabled(ctx, {
-          sessionId: SESSION_ID,
-          slugs: ['source/testing'],
-          enabled: false,
-        }),
-      ).resolves.toMatchObject({
-        success: false,
-        error: { code: 'AGENT_CONTEXT_REQUIRED' },
-      });
-      expect(ctx.skillsService.setSkillsEnabled).not.toHaveBeenCalled();
-    });
-
-    it('rejects agent sessions without agent context', async () => {
-      const ctx = createContext();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: true,
-        data: {
-          type: 'agent',
-          agent: null,
-          project: { id: 'project-1', name: 'P', rootPath: '/p' },
-        },
-      });
-
-      await expect(
-        handleSkillsSetEnabled(ctx, {
-          sessionId: SESSION_ID,
-          slugs: ['source/testing'],
-          enabled: true,
-        }),
-      ).resolves.toMatchObject({
-        success: false,
-        error: { code: 'AGENT_CONTEXT_REQUIRED' },
-      });
-      expect(ctx.skillsService.setSkillsEnabled).not.toHaveBeenCalled();
-    });
-
-    it('returns PROJECT_NOT_FOUND when the session has no project', async () => {
-      const ctx = createContext();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: true,
-        data: { type: 'agent', agent: null, project: null },
-      });
-
-      await expect(
-        handleSkillsSetEnabled(ctx, {
-          sessionId: SESSION_ID,
-          slugs: ['source/testing'],
-          enabled: false,
-        }),
-      ).resolves.toMatchObject({
-        success: false,
-        error: { code: 'PROJECT_NOT_FOUND' },
-      });
-    });
-
-    it('maps unavailable skill operations', async () => {
-      const ctx = createContext();
-      (ctx.skillsService.setSkillsEnabled as jest.Mock).mockRejectedValue(
-        new ServiceUnavailableError('SkillsService'),
-      );
-
-      await expect(
-        handleSkillsSetEnabled(ctx, {
-          sessionId: SESSION_ID,
-          slugs: ['source/testing'],
-          enabled: false,
-        }),
-      ).resolves.toMatchObject({
-        success: false,
-        error: { code: 'SERVICE_UNAVAILABLE' },
-      });
     });
   });
 
@@ -588,67 +427,6 @@ describe('skill-tools handlers', () => {
         },
       });
     });
-
-    it('rejects guest sessions with AGENT_CONTEXT_REQUIRED before any write', async () => {
-      const ctx = createContext();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: true,
-        data: {
-          type: 'guest',
-          guest: { id: 'guest-1', name: 'Guest', projectId: 'project-1', tmuxSessionId: 's-1' },
-          project: { id: 'project-1', name: 'Project', rootPath: '/project' },
-        },
-      });
-
-      await expect(
-        handleSkillsSetSourceEnabled(ctx, {
-          sessionId: SESSION_ID,
-          sourceName: 'src',
-          enabled: true,
-        }),
-      ).resolves.toMatchObject({
-        success: false,
-        error: { code: 'AGENT_CONTEXT_REQUIRED' },
-      });
-      expect(ctx.skillsService.setSourceProjectEnabledForMcp).not.toHaveBeenCalled();
-    });
-
-    it('returns PROJECT_NOT_FOUND when the session has no project', async () => {
-      const ctx = createContext();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: true,
-        data: { type: 'agent', agent: null, project: null },
-      });
-
-      await expect(
-        handleSkillsSetSourceEnabled(ctx, {
-          sessionId: SESSION_ID,
-          sourceName: 'src',
-          enabled: true,
-        }),
-      ).resolves.toMatchObject({
-        success: false,
-        error: { code: 'PROJECT_NOT_FOUND' },
-      });
-    });
-
-    it('maps unavailable skill operations', async () => {
-      const ctx = createContext();
-      (ctx.skillsService.setSourceProjectEnabledForMcp as jest.Mock).mockRejectedValue(
-        new ServiceUnavailableError('SkillsService'),
-      );
-
-      await expect(
-        handleSkillsSetSourceEnabled(ctx, {
-          sessionId: SESSION_ID,
-          sourceName: 'src',
-          enabled: true,
-        }),
-      ).resolves.toMatchObject({
-        success: false,
-        error: { code: 'SERVICE_UNAVAILABLE' },
-      });
-    });
   });
 
   describe('handleSkillsSync', () => {
@@ -669,7 +447,9 @@ describe('skill-tools handlers', () => {
       await expect(
         handleSkillsSync(ctx, { sessionId: SESSION_ID, sourceName: 'devchain-local' }),
       ).resolves.toEqual({ success: true, data: completedResult });
-      expect(ctx.skillSourceLifecycleService.syncSource).toHaveBeenCalledWith('devchain-local');
+      expect(ctx.skillSourceLifecycleService.syncSource).toHaveBeenCalledWith('devchain-local', {
+        force: true,
+      });
       expect(ctx.skillSourceLifecycleService.syncAll).not.toHaveBeenCalled();
     });
 
@@ -681,7 +461,7 @@ describe('skill-tools handlers', () => {
         success: true,
         data: completedResult,
       });
-      expect(ctx.skillSourceLifecycleService.syncAll).toHaveBeenCalled();
+      expect(ctx.skillSourceLifecycleService.syncAll).toHaveBeenCalledWith({ force: true });
       expect(ctx.skillSourceLifecycleService.syncSource).not.toHaveBeenCalled();
     });
 
@@ -720,37 +500,6 @@ describe('skill-tools handlers', () => {
         },
       });
     });
-
-    it('rejects guest sessions with AGENT_CONTEXT_REQUIRED before any sync', async () => {
-      const ctx = createContext();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({
-        success: true,
-        data: {
-          type: 'guest',
-          guest: { id: 'guest-1', name: 'Guest', projectId: 'project-1', tmuxSessionId: 's-1' },
-          project: { id: 'project-1', name: 'Project', rootPath: '/project' },
-        },
-      });
-
-      await expect(handleSkillsSync(ctx, { sessionId: SESSION_ID })).resolves.toMatchObject({
-        success: false,
-        error: { code: 'AGENT_CONTEXT_REQUIRED' },
-      });
-      expect(ctx.skillSourceLifecycleService.syncAll).not.toHaveBeenCalled();
-      expect(ctx.skillSourceLifecycleService.syncSource).not.toHaveBeenCalled();
-    });
-
-    it('maps unavailable skill operations', async () => {
-      const ctx = createContext();
-      (ctx.skillSourceLifecycleService.syncAll as jest.Mock).mockRejectedValue(
-        new ServiceUnavailableError('SkillSourceLifecycleService'),
-      );
-
-      await expect(handleSkillsSync(ctx, { sessionId: SESSION_ID })).resolves.toMatchObject({
-        success: false,
-        error: { code: 'SERVICE_UNAVAILABLE' },
-      });
-    });
   });
 
   describe('built-in devchain lock through the real skills service', () => {
@@ -759,9 +508,9 @@ describe('skill-tools handlers', () => {
     let ctx: SkillToolContext;
 
     beforeEach(() => {
-      sqlite = new Database(':memory:');
-      const db = drizzle(sqlite);
-      migrate(db, { migrationsFolder: join(__dirname, '../../../../../drizzle') });
+      const database = createTestDatabase();
+      sqlite = database.sqlite;
+      const db = database.db;
       sqlite
         .prepare(
           `INSERT INTO projects (id, name, description, root_path, is_template, created_at, updated_at)

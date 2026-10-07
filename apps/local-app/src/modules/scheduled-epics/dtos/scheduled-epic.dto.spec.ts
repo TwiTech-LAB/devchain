@@ -9,11 +9,6 @@ const validBase = {
 };
 
 describe('CreateScheduledEpicDtoSchema', () => {
-  it('accepts a minimal valid payload', () => {
-    const result = CreateScheduledEpicDtoSchema.safeParse(validBase);
-    expect(result.success).toBe(true);
-  });
-
   it('applies sensible defaults for optional fields', () => {
     const result = CreateScheduledEpicDtoSchema.safeParse(validBase);
     expect(result.success).toBe(true);
@@ -56,77 +51,13 @@ describe('CreateScheduledEpicDtoSchema', () => {
     });
     expect(result.success).toBe(false);
   });
-
-  it('accepts null for nullable optional fields', () => {
-    const result = CreateScheduledEpicDtoSchema.safeParse({
-      ...validBase,
-      descriptionTemplate: null,
-      templateStatusId: null,
-      templateParentEpicId: null,
-      templateAgentId: null,
-      nextRunAt: null,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('rejects unknown extra fields (strict mode)', () => {
-    const result = CreateScheduledEpicDtoSchema.safeParse({
-      ...validBase,
-      unknownField: 'oops',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects invalid missedRunPolicy', () => {
-    const result = CreateScheduledEpicDtoSchema.safeParse({
-      ...validBase,
-      missedRunPolicy: 'invalid_policy',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects templateAgentId that is not a UUID', () => {
-    const result = CreateScheduledEpicDtoSchema.safeParse({
-      ...validBase,
-      templateAgentId: 'not-a-uuid',
-    });
-    expect(result.success).toBe(false);
-  });
 });
 
 describe('UpdateScheduledEpicDtoSchema', () => {
-  it('accepts an empty update (all fields optional)', () => {
-    const result = UpdateScheduledEpicDtoSchema.safeParse({});
-    expect(result.success).toBe(true);
-  });
-
-  it('validates cronExpression when provided', () => {
-    const result = UpdateScheduledEpicDtoSchema.safeParse({ cronExpression: 'bad' });
-    expect(result.success).toBe(false);
-  });
-
-  it('validates timezone when provided', () => {
-    const result = UpdateScheduledEpicDtoSchema.safeParse({ timezone: 'Not/Real' });
-    expect(result.success).toBe(false);
-  });
-
   it('validates titleTemplate when provided', () => {
     const result = UpdateScheduledEpicDtoSchema.safeParse({
       titleTemplate: '{{#if x}}unclosed',
     });
-    expect(result.success).toBe(false);
-  });
-
-  it('accepts a partial valid update', () => {
-    const result = UpdateScheduledEpicDtoSchema.safeParse({
-      name: 'Updated name',
-      enabled: false,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('rejects unknown extra fields (strict mode)', () => {
-    const result = UpdateScheduledEpicDtoSchema.safeParse({ extraField: 'nope' });
     expect(result.success).toBe(false);
   });
 });

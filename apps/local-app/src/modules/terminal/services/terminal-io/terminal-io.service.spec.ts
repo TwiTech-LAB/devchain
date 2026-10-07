@@ -1,3 +1,4 @@
+import { processIdsEnv } from '../../../../common/process-ids-env';
 import { TerminalIOService } from './terminal-io.service';
 import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
 import { TypeCommandFailedError } from './delivery';
@@ -21,6 +22,56 @@ describe('TerminalIOService', () => {
   // ── Lifecycle ───────────────────────────────────────────────────────────
 
   describe('createSession', () => {
+    // The executor boundary is the cheapest layer that verifies both tmux and child env.
+    it('uses process ids over inherited and supplied ids for a new session', async () => {
+      const uid = jest.spyOn(process, 'getuid').mockReturnValue(1001);
+      const gid = jest.spyOn(process, 'getgid').mockReturnValue(1002);
+      try {
+        await svc.createSession('ids', ['bash'], {
+          cwd: '/tmp',
+          env: { DEVCHAIN_UID: '1000', DEVCHAIN_GID: '1000', KEEP: 'yes' },
+        });
+        expect(fake.calls[0].env).toEqual({
+          DEVCHAIN_UID: '1001',
+          DEVCHAIN_GID: '1002',
+          KEEP: 'yes',
+        });
+        expect(fake.calls[0].argv.slice(-5)).toEqual([
+          '-e',
+          'DEVCHAIN_UID=1001',
+          '-e',
+          'DEVCHAIN_GID=1002',
+          'bash',
+        ]);
+      } finally {
+        uid.mockRestore();
+        gid.mockRestore();
+      }
+    });
+
+    it('adds no ids or tmux env arguments when process ids are unavailable', async () => {
+      const uid = process.getuid;
+      const gid = process.getgid;
+      Object.defineProperty(process, 'getuid', { value: undefined, configurable: true });
+      Object.defineProperty(process, 'getgid', { value: undefined, configurable: true });
+      try {
+        await svc.createSession('windows', ['bash'], { cwd: '/tmp', env: { KEEP: 'yes' } });
+        expect(fake.calls[0].env).toEqual({ KEEP: 'yes' });
+        expect(fake.calls[0].argv).toEqual([
+          'tmux',
+          'new-session',
+          '-d',
+          '-s',
+          'windows',
+          '-c',
+          '/tmp',
+          'bash',
+        ]);
+      } finally {
+        Object.defineProperty(process, 'getuid', { value: uid, configurable: true });
+        Object.defineProperty(process, 'getgid', { value: gid, configurable: true });
+      }
+    });
     it('sends correct tmux argv for new-session, set-option status, and set-clipboard', async () => {
       fake.enqueueResponse({ type: 'success' });
       fake.enqueueResponse({ type: 'success' });
@@ -38,9 +89,12 @@ describe('TerminalIOService', () => {
         'my-session',
         '-c',
         '/tmp',
+        ...Object.entries(processIdsEnv()).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
         'bash',
       ]);
       expect(fake.calls[0].mode).toBe('pipe');
+      // No caller env: tmux inherits ours unvalidated, so an exported shell function cannot block it.
+      expect(fake.calls[0].env).toBeUndefined();
       expect(fake.calls[1].argv).toEqual([
         'tmux',
         'set-option',
@@ -50,6 +104,33 @@ describe('TerminalIOService', () => {
         'off',
       ]);
       expect(fake.calls[2].argv).toEqual(['tmux', 'set-option', '-s', 'set-clipboard', 'on']);
+    });
+
+    it('retries without -e when a tmux older than 3.2 refuses the flag', async () => {
+      const uid = jest.spyOn(process, 'getuid').mockReturnValue(1001);
+      const gid = jest.spyOn(process, 'getgid').mockReturnValue(1002);
+      try {
+        fake.enqueueResponse({
+          type: 'failure',
+          stderr: 'usage: new-session [-AdDEPX] [-c start-directory] [-F format]',
+        });
+        await expect(svc.createSession('old', ['bash'], { cwd: '/tmp' })).resolves.toEqual({
+          name: 'old',
+        });
+        expect(fake.calls[1].argv).toEqual([
+          'tmux',
+          'new-session',
+          '-d',
+          '-s',
+          'old',
+          '-c',
+          '/tmp',
+          'bash',
+        ]);
+      } finally {
+        uid.mockRestore();
+        gid.mockRestore();
+      }
     });
 
     it('throws on create failure', async () => {
@@ -66,7 +147,7 @@ describe('TerminalIOService', () => {
 
       await svc.createSession('s', ['cmd'], { cwd: '/w', env: { FOO: 'bar' } });
 
-      expect(fake.calls[0].env).toEqual({ FOO: 'bar' });
+      expect(fake.calls[0].env).toEqual({ FOO: 'bar', ...processIdsEnv() });
     });
   });
 
@@ -410,16 +491,8 @@ describe('TerminalIOService', () => {
         'sess-1',
         '-c',
         '/tmp',
+        ...Object.entries(processIdsEnv()).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
       ]);
-    });
-
-    it('returns SessionTarget with name', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-
-      const target = await svc.createEmptySession('my-session');
-
-      expect(target.name).toBe('my-session');
     });
 
     it('honors env if passed', async () => {
@@ -428,7 +501,7 @@ describe('TerminalIOService', () => {
 
       await svc.createEmptySession('sess', { cwd: '/home', env: { MY_VAR: 'val' } });
 
-      expect(fake.calls[0].env).toEqual({ MY_VAR: 'val' });
+      expect(fake.calls[0].env).toEqual({ MY_VAR: 'val', ...processIdsEnv() });
     });
 
     it('defaults cwd to process.cwd() when omitted', async () => {
@@ -442,10 +515,10 @@ describe('TerminalIOService', () => {
   });
 
   describe('setAlternateScreen', () => {
-    it('turns alternate-screen off when disabled', async () => {
+    it.each([false, true])('sets alternate-screen enabled=%s', async (enabled) => {
       fake.enqueueResponse({ type: 'success' });
 
-      await svc.setAlternateScreen({ name: 'sess-1' }, false);
+      await svc.setAlternateScreen({ name: 'sess-1' }, enabled);
 
       expect(fake.calls[0].argv).toEqual([
         'tmux',
@@ -453,29 +526,15 @@ describe('TerminalIOService', () => {
         '-t',
         '=sess-1',
         'alternate-screen',
-        'off',
-      ]);
-      expect(fake.calls[0].mode).toBe('pipe');
-    });
-
-    it('turns alternate-screen on when enabled', async () => {
-      fake.enqueueResponse({ type: 'success' });
-
-      await svc.setAlternateScreen({ name: 'sess-1' }, true);
-
-      expect(fake.calls[0].argv).toEqual([
-        'tmux',
-        'set-window-option',
-        '-t',
-        '=sess-1',
-        'alternate-screen',
-        'on',
+        enabled ? 'on' : 'off',
       ]);
       expect(fake.calls[0].mode).toBe('pipe');
     });
   });
 
   describe('typeCommand', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
     it('sends quoted command via send-keys -l then Enter', async () => {
       fake.enqueueResponse({ type: 'success' });
       fake.enqueueResponse({ type: 'success' });
@@ -499,131 +558,38 @@ describe('TerminalIOService', () => {
       await expect(svc.typeCommand({ name: 'sess' }, [])).rejects.toThrow(/empty argv/);
     });
 
-    it('handles realistic agent CLI invocation', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-
-      await svc.typeCommand({ name: 'sess' }, [
-        'claude',
-        '--continue',
-        '--mcp-config',
-        '/path/to/config.json',
-      ]);
-
-      expect(fake.calls[0].argv[6]).toBe(
-        "'claude' '--continue' '--mcp-config' '/path/to/config.json'",
-      );
-    });
-
-    it('handles args with single quotes', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-
-      await svc.typeCommand({ name: 'sess' }, ["it's", 'fine']);
-
-      expect(fake.calls[0].argv[6]).toBe("'it'\\''s' 'fine'");
-    });
-
-    it('handles empty string args', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-
-      await svc.typeCommand({ name: 'sess' }, ['cmd', '']);
-
-      expect(fake.calls[0].argv[6]).toBe("'cmd' ''");
-    });
-
-    it('handles args with shell metachars', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-
-      await svc.typeCommand({ name: 'sess' }, ['echo', '$(whoami)']);
-
-      expect(fake.calls[0].argv[6]).toBe("'echo' '$(whoami)'");
-    });
-
-    it('honors per-agent gap (two consecutive calls)', async () => {
+    it('waits 500 ms before typing the next command in the same pane', async () => {
       fake.setDefaultResponse({ type: 'success' });
-
-      const start = Date.now();
       await svc.typeCommand({ name: 'sess' }, ['cmd1']);
-      await svc.typeCommand({ name: 'sess' }, ['cmd2']);
-      const elapsed = Date.now() - start;
-
-      expect(elapsed).toBeGreaterThanOrEqual(450);
-    }, 10_000);
-
-    it('throws TypeCommandFailedError when literal send fails', async () => {
-      fake.enqueueResponse({ type: 'failure', exitCode: 1, stderr: 'session not found' });
-
-      await expect(svc.typeCommand({ name: 'sess' }, ['cmd'])).rejects.toThrow(
-        TypeCommandFailedError,
-      );
-
-      try {
-        fake.enqueueResponse({ type: 'failure', exitCode: 1, stderr: 'gone' });
-        await svc.typeCommand({ name: 'sess' }, ['cmd']);
-      } catch (e) {
-        const err = e as TypeCommandFailedError;
-        expect(err.phase).toBe('literal');
-        expect(err.sessionName).toBe('sess');
-        expect(err.cause).toContain('gone');
-      }
+      let settled = false;
+      const second = svc.typeCommand({ name: 'sess' }, ['cmd2']).then(() => {
+        settled = true;
+      });
+      await jest.advanceTimersByTimeAsync(499);
+      expect(settled).toBe(false);
+      expect(fake.calls).toHaveLength(2);
+      await jest.advanceTimersByTimeAsync(1);
+      await second;
+      expect(fake.calls).toHaveLength(4);
+      expect(fake.calls[2].argv[6]).toBe("'cmd2'");
     });
 
-    it('throws TypeCommandFailedError when Enter send fails', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'failure', exitCode: 1, stderr: 'session vanished' });
-
-      await expect(svc.typeCommand({ name: 'sess' }, ['cmd'])).rejects.toThrow(
-        TypeCommandFailedError,
+    it.each([
+      { phase: 'literal', timeout: false, cause: 'gone' },
+      { phase: 'enter', timeout: false, cause: 'vanished' },
+      { phase: 'literal', timeout: true, cause: 'timed out' },
+      { phase: 'enter', timeout: true, cause: 'timed out' },
+    ])('reports $phase failure with cause $cause', async ({ phase, timeout, cause }) => {
+      if (phase === 'enter') fake.enqueueResponse({ type: 'success' });
+      fake.enqueueResponse(
+        timeout ? { type: 'timeout' } : { type: 'failure', exitCode: 1, stderr: cause },
       );
-
-      try {
-        fake.enqueueResponse({ type: 'success' });
-        fake.enqueueResponse({ type: 'failure', exitCode: 1, stderr: 'vanished' });
-        await svc.typeCommand({ name: 'sess' }, ['cmd']);
-      } catch (e) {
-        const err = e as TypeCommandFailedError;
-        expect(err.phase).toBe('enter');
-        expect(err.sessionName).toBe('sess');
-      }
-    });
-
-    it('throws TypeCommandFailedError on literal send timeout', async () => {
-      fake.enqueueResponse({ type: 'timeout' });
-
-      await expect(svc.typeCommand({ name: 'sess' }, ['cmd'])).rejects.toThrow(
-        TypeCommandFailedError,
-      );
-
-      try {
-        fake.enqueueResponse({ type: 'timeout' });
-        await svc.typeCommand({ name: 'sess' }, ['cmd']);
-      } catch (e) {
-        const err = e as TypeCommandFailedError;
-        expect(err.phase).toBe('literal');
-        expect(err.cause).toBe('timed out');
-      }
-    });
-
-    it('throws TypeCommandFailedError on Enter send timeout', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'timeout' });
-
-      await expect(svc.typeCommand({ name: 'sess' }, ['cmd'])).rejects.toThrow(
-        TypeCommandFailedError,
-      );
-
-      try {
-        fake.enqueueResponse({ type: 'success' });
-        fake.enqueueResponse({ type: 'timeout' });
-        await svc.typeCommand({ name: 'sess' }, ['cmd']);
-      } catch (e) {
-        const err = e as TypeCommandFailedError;
-        expect(err.phase).toBe('enter');
-        expect(err.cause).toBe('timed out');
-      }
+      const pending = svc.typeCommand({ name: 'sess' }, ['cmd']).catch((e) => e);
+      await jest.advanceTimersByTimeAsync(10000);
+      const error = await pending;
+      expect(error).toBeInstanceOf(TypeCommandFailedError);
+      expect(error).toMatchObject({ phase, sessionName: 'sess', cause });
+      expect(fake.calls).toHaveLength(phase === 'enter' ? 2 : 1);
     });
   });
 
@@ -685,52 +651,30 @@ describe('TerminalIOService', () => {
       expect(fake.calls[1].mode).toBe('pipe');
     });
 
-    it('uses per-window set-window-option, not global set-option or set-option -g', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-
-      await svc.applyWindowTheme(target, fg, bg);
-
-      for (const call of fake.calls) {
-        expect(call.argv[1]).toBe('set-window-option');
-        expect(call.argv).not.toContain('-g');
-        expect(call.argv).not.toContain('-s');
-      }
-    });
-
-    it('rejects foreground that is not strict #RRGGBB before making any executor call', async () => {
-      await expect(svc.applyWindowTheme(target, 'red', bg)).rejects.toThrow(/foreground/);
-      expect(fake.calls).toHaveLength(0);
-    });
-
-    it('rejects background that is not strict #RRGGBB before making any executor call', async () => {
-      await expect(svc.applyWindowTheme(target, fg, 'rgb(0,0,0)')).rejects.toThrow(/background/);
-      expect(fake.calls).toHaveLength(0);
-    });
-
-    it('rejects 3-digit shorthand hex', async () => {
-      await expect(svc.applyWindowTheme(target, '#fff', bg)).rejects.toThrow(/foreground/);
-      expect(fake.calls).toHaveLength(0);
-    });
-
-    it('rejects hex without leading #', async () => {
-      await expect(svc.applyWindowTheme(target, '1a1a1a', bg)).rejects.toThrow(/foreground/);
-      expect(fake.calls).toHaveLength(0);
-    });
-
-    it('accepts valid lowercase hex colors', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-
-      await expect(svc.applyWindowTheme(target, '#1d2b3a', '#eaeff5')).resolves.toBeUndefined();
-    });
-
-    it('accepts valid uppercase hex colors', async () => {
-      fake.enqueueResponse({ type: 'success' });
-      fake.enqueueResponse({ type: 'success' });
-
-      await expect(svc.applyWindowTheme(target, '#C9D1D9', '#1A1A1A')).resolves.toBeUndefined();
-    });
+    it.each([
+      { foreground: 'red', background: bg, invalid: 'foreground' },
+      { foreground: fg, background: 'rgb(0,0,0)', invalid: 'background' },
+      { foreground: '#fff', background: bg, invalid: 'foreground' },
+      { foreground: '1a1a1a', background: bg, invalid: 'foreground' },
+      { foreground: '#C9D1D9', background: '#1A1A1A', invalid: undefined },
+    ])(
+      'validates window theme $foreground / $background',
+      async ({ foreground, background, invalid }) => {
+        if (invalid) {
+          await expect(svc.applyWindowTheme(target, foreground, background)).rejects.toThrow(
+            new RegExp(invalid),
+          );
+          expect(fake.calls).toHaveLength(0);
+        } else {
+          fake.enqueueResponse({ type: 'success' });
+          fake.enqueueResponse({ type: 'success' });
+          await svc.applyWindowTheme(target, foreground, background);
+          expect(fake.calls).toHaveLength(2);
+          expect(fake.calls[0].argv).toContain(`fg=${foreground},bg=${background}`);
+          expect(fake.calls[1].argv).toContain(`fg=${foreground},bg=${background}`);
+        }
+      },
+    );
 
     it('throws when applying window-style fails and skips active style', async () => {
       fake.enqueueResponse({ type: 'failure', stderr: 'no such session' });

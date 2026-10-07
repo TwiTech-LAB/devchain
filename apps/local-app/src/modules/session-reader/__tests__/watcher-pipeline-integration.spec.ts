@@ -94,17 +94,16 @@ async function flush(): Promise<void> {
   }
 }
 
-/**
- * Advance through a full stat-poll + debounce cycle using sync timer
- * advancement + real I/O flushing. Runs two full poll+debounce rounds
- * to ensure all async work completes even under heavy load.
- */
-async function advancePollCycle(): Promise<void> {
+/** Advance the poll and debounce timers, awaiting their real I/O refresh work. */
+async function advancePollCycle(service: TranscriptWatcherService): Promise<void> {
+  const watchers = (
+    service as unknown as { watchers: Map<string, { activeRefresh?: Promise<void> }> }
+  ).watchers;
   for (let round = 0; round < 2; round++) {
     jest.advanceTimersByTime(3000);
-    await flush();
+    await watchers.get('test-session')?.activeRefresh;
     jest.advanceTimersByTime(200);
-    await flush();
+    await watchers.get('test-session')?.activeRefresh;
   }
 }
 
@@ -170,7 +169,7 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
       ].join('\n') + '\n';
     await fsp.appendFile(filePath, newContent, 'utf8');
 
-    await advancePollCycle();
+    await advancePollCycle(service);
 
     expect(mockEvents.publish).toHaveBeenCalledWith(
       'session.transcript.updated',
@@ -187,32 +186,6 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
     // Lane summary reflects the appended content (initial 2 + appended 2 = 4).
     expect(service.getLastKnownMessageCount('test-session')).toBe(4);
     expect(service.getLastKnownSummaryMetrics('test-session')?.messageCount).toBe(4);
-  }, 15_000);
-
-  it('lane: successive appends advance the lane summary with the cache empty', async () => {
-    await service.startWatching('test-session', filePath, 'claude');
-
-    const newContent =
-      [
-        userLine('u-002', 'a-001', '2026-01-15T10:00:30.000Z', 'First append'),
-        assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Second response'),
-        userLine('u-003', 'a-002', '2026-01-15T10:01:00.000Z', 'Third message'),
-      ].join('\n') + '\n';
-    await fsp.appendFile(filePath, newContent, 'utf8');
-
-    await advancePollCycle();
-
-    expect(mockEvents.publish).toHaveBeenCalledWith(
-      'session.transcript.updated',
-      expect.objectContaining({
-        kind: 'full-refetch-required',
-        sessionId: 'test-session',
-        sourceChangeKind: 'unknown-full-parse',
-      }),
-    );
-    // The lane never populates the cache (initial 2 + appended 3 = 5 messages tracked in O(1)).
-    expect(cacheService.size).toBe(0);
-    expect(service.getLastKnownMessageCount('test-session')).toBe(5);
   }, 15_000);
 
   it('should emit transcript.ended with final metrics on stopWatching', async () => {
@@ -256,7 +229,7 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
         assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Sure'),
       ].join('\n') + '\n';
     await fsp.appendFile(filePath, newContent, 'utf8');
-    await advancePollCycle();
+    await advancePollCycle(service);
 
     const updates = mockEvents.publish.mock.calls.filter(
       ([name]) => name === 'session.transcript.updated',
@@ -336,7 +309,7 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
     await service.startWatching('test-session', filePath, 'claude');
 
     // Advance one poll cycle without changing the file
-    await advancePollCycle();
+    await advancePollCycle(service);
 
     // No transcript.updated events should be published
     expect(mockEvents.publish).not.toHaveBeenCalledWith(
@@ -351,7 +324,7 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
     // Delete the file
     await fsp.unlink(filePath);
 
-    await advancePollCycle();
+    await advancePollCycle(service);
 
     expect(service.activeWatcherCount).toBe(0);
     expect(mockEvents.publish).toHaveBeenCalledWith(
@@ -416,7 +389,7 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
         assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Reply one'),
       ].join('\n') + '\n';
     await fsp.appendFile(filePath, first, 'utf8');
-    await advancePollCycle();
+    await advancePollCycle(service);
     expect(service.getLastKnownMessageCount('test-session')).toBe(4);
 
     // Represent the 2 s cooldown window: the next eligible refresh is in the future.
@@ -633,7 +606,7 @@ describe('Watcher → Parser → Broadcast pipeline integration', () => {
         assistantLine('a-002', 'u-002', '2026-01-15T10:00:35.000Z', 'Reply'),
       ].join('\n') + '\n';
     await fsp.appendFile(filePath, appended, 'utf8');
-    await advancePollCycle(); // consume the append; the lane is now fully current
+    await advancePollCycle(service); // consume the append; the lane is now fully current
 
     const updatesBefore = mockEvents.publish.mock.calls.filter(
       ([name]) => name === 'session.transcript.updated',

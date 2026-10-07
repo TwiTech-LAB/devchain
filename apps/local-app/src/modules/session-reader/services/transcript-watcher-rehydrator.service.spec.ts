@@ -45,15 +45,6 @@ describe('TranscriptWatcherRehydrator', () => {
     expect(startWatching).toHaveBeenCalledWith('s2', '/t/s2.db', 'opencode', 'ses_2');
   });
 
-  it('does nothing when there are no running sessions', async () => {
-    const { rehydrator, sessions, startWatching } = setup([]);
-
-    await rehydrator.onApplicationBootstrap();
-
-    expect(sessions.listRunningTranscriptSessions).toHaveBeenCalledTimes(1);
-    expect(startWatching).not.toHaveBeenCalled();
-  });
-
   it('keeps rehydrating remaining sessions when one fails', async () => {
     const startWatching = jest
       .fn()

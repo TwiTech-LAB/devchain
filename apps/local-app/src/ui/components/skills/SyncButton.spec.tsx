@@ -35,82 +35,67 @@ describe('SyncButton', () => {
     toastSpy.mockReset();
   });
 
-  it('shows "Sync in progress" when backend reports already_running', async () => {
-    triggerSyncMock.mockResolvedValue({
-      status: 'already_running',
-      added: 0,
-      updated: 0,
-      removed: 0,
-      failed: 0,
-      unchanged: 0,
-      errors: [],
-    });
-
+  it.each([
+    {
+      label: 'already running',
+      response: {
+        status: 'already_running',
+        added: 0,
+        updated: 0,
+        removed: 0,
+        failed: 0,
+        unchanged: 0,
+        errors: [],
+      },
+      expected: { title: 'Sync in progress' },
+    },
+    {
+      label: 'normal completion summary',
+      response: {
+        status: 'completed',
+        added: 2,
+        updated: 1,
+        removed: 4,
+        failed: 0,
+        unchanged: 3,
+        errors: [],
+      },
+      expected: {
+        title: 'Skills sync complete',
+        description: 'Added: 2, Updated: 1, Removed: 4, Failed: 0',
+      },
+    },
+    {
+      label: 'deduplicated errors and affected sources',
+      response: {
+        status: 'completed',
+        added: 0,
+        updated: 0,
+        removed: 0,
+        failed: 3,
+        unchanged: 5,
+        errors: [
+          {
+            sourceName: 'anthropic',
+            message: 'GitHub API rate limit reached (60 requests per hour without a token).',
+          },
+          {
+            sourceName: 'openai',
+            message: 'GitHub API rate limit reached (60 requests per hour without a token).',
+          },
+          { sourceName: 'vercel', skillSlug: 'vercel/x', message: 'Download timed out.' },
+        ],
+      },
+      expected: {
+        title: 'Skills sync complete',
+        description:
+          'Added: 0, Updated: 0, Removed: 0, Failed: 3. anthropic, openai: GitHub API rate limit reached (60 requests per hour without a token). vercel: Download timed out.',
+      },
+    },
+  ] as const)('$label', async ({ response, expected }) => {
+    triggerSyncMock.mockResolvedValue(response);
     renderWithQueryClient(<SyncButton />);
-
     fireEvent.click(screen.getByRole('button', { name: /sync skills now/i }));
-
-    await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: 'Sync in progress',
-        }),
-      );
-    });
-  });
-
-  it('shows completion summary when sync finishes normally', async () => {
-    triggerSyncMock.mockResolvedValue({
-      status: 'completed',
-      added: 2,
-      updated: 1,
-      removed: 4,
-      failed: 0,
-      unchanged: 3,
-      errors: [],
-    });
-
-    renderWithQueryClient(<SyncButton />);
-
-    fireEvent.click(screen.getByRole('button', { name: /sync skills now/i }));
-
-    await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: 'Skills sync complete',
-          description: 'Added: 2, Updated: 1, Removed: 4, Failed: 0',
-        }),
-      );
-    });
-  });
-
-  it('adds each distinct error once with the sources that hit it', async () => {
-    const rateLimit = 'GitHub API rate limit reached (60 requests per hour without a token).';
-    triggerSyncMock.mockResolvedValue({
-      status: 'completed',
-      added: 0,
-      updated: 0,
-      removed: 0,
-      failed: 3,
-      unchanged: 5,
-      errors: [
-        { sourceName: 'anthropic', message: rateLimit },
-        { sourceName: 'openai', message: rateLimit },
-        { sourceName: 'vercel', skillSlug: 'vercel/x', message: 'Download timed out.' },
-      ],
-    });
-
-    renderWithQueryClient(<SyncButton />);
-
-    fireEvent.click(screen.getByRole('button', { name: /sync skills now/i }));
-
-    await waitFor(() => {
-      expect(toastSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: 'Skills sync complete',
-          description: `Added: 0, Updated: 0, Removed: 0, Failed: 3. anthropic, openai: ${rateLimit} vercel: Download timed out.`,
-        }),
-      );
-    });
+    await waitFor(() => expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining(expected)));
   });
 });

@@ -31,6 +31,7 @@ import {
   DockerScanRequestSchema,
   DockerContainerCreateSchema,
   DockerIdsSchema,
+  DockerImageMatchRequestSchema,
   DockerNetworkCreateSchema,
   DockerOwnerSchema,
   DockerResourceIdSchema,
@@ -70,9 +71,9 @@ export class HostDockerController {
     @Req() req: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
-    const { paths, volumes } = parse(DockerScanRequestSchema, body);
+    const { paths, volumes, networks } = parse(DockerScanRequestSchema, body);
     return this.run(req, reply, (signal, apiVersion) =>
-      this.docker.scan(paths, signal, apiVersion, volumes),
+      this.docker.scan(paths, signal, apiVersion, volumes, networks),
     );
   }
 
@@ -103,6 +104,21 @@ export class HostDockerController {
       this.docker.imagesPresent(input.ids, signal, apiVersion),
     );
   }
+  @Post('images/match')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Inspect VM images under the requested references for home comparison' })
+  @ApiResponse({ status: 200 })
+  matchImages(
+    @Body() body: unknown,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const { refs } = parse(DockerImageMatchRequestSchema, body);
+    return this.run(req, reply, (signal, apiVersion) =>
+      this.docker.matchImages(refs, signal, apiVersion),
+    );
+  }
+
   @Post('images/load')
   @HttpCode(200)
   @ApiConsumes('application/x-tar', 'application/octet-stream')
@@ -196,9 +212,9 @@ export class HostDockerController {
   ) {
     const resourceKind = parse(z.enum(['volumes', 'containers', 'networks']), kind);
     parse(DockerResourceIdSchema, id);
-    const { projectId } = parse(DockerOwnerSchema, query);
+    const { projectId, projectRoot } = parse(DockerOwnerSchema, query);
     return this.run(req, reply, (signal, apiVersion) =>
-      this.docker.remove(resourceKind, id, projectId, signal, apiVersion),
+      this.docker.remove(resourceKind, id, projectId, signal, apiVersion, projectRoot),
     );
   }
   @Get('archive')
@@ -250,9 +266,9 @@ export class HostDockerController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
     parse(DockerResourceIdSchema, id);
-    const { projectId } = parse(DockerOwnerSchema, query);
+    const { projectId, projectRoot } = parse(DockerOwnerSchema, query);
     return this.run(req, reply, (signal, apiVersion) =>
-      this.docker.stopContainer(id, projectId, signal, apiVersion),
+      this.docker.stopContainer(id, projectId, signal, apiVersion, projectRoot),
     );
   }
   @Put('archive')

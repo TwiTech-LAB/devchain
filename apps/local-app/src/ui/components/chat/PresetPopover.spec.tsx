@@ -53,20 +53,12 @@ describe('PresetPopover', () => {
     expect(screen.getByLabelText('Select preset')).toBeInTheDocument();
   });
 
-  it('renders the trigger button with Layers icon', () => {
-    render(<PresetPopover {...defaultProps} />);
-    const btn = screen.getByLabelText('Select preset');
-    expect(btn).toBeInTheDocument();
-    expect(btn).not.toBeDisabled();
-  });
-
-  it('disables trigger when disabled prop is true', () => {
-    render(<PresetPopover {...defaultProps} disabled />);
-    expect(screen.getByLabelText('Select preset')).toBeDisabled();
-  });
-
-  it('disables trigger when applying is true', () => {
-    render(<PresetPopover {...defaultProps} applying />);
+  it.each([
+    { name: 'disabled', disabled: true },
+    { name: 'applying', applying: true },
+    { name: 'empty applying', applying: true, presets: [], alwaysShowTrigger: true },
+  ])('disables preset trigger for $name', ({ name: _name, ...props }) => {
+    render(<PresetPopover {...defaultProps} {...props} />);
     expect(screen.getByLabelText('Select preset')).toBeDisabled();
   });
 
@@ -131,12 +123,5 @@ describe('PresetPopover', () => {
     fireEvent.click(screen.getByLabelText('Select preset'));
 
     expect(screen.getByText('Loading presets...')).toBeInTheDocument();
-  });
-
-  it('shows "Applying..." text when applying with empty presets and alwaysShowTrigger', () => {
-    render(<PresetPopover {...defaultProps} presets={[]} alwaysShowTrigger applying />);
-    // Trigger is disabled when applying, but we can still verify it exists
-    const btn = screen.getByLabelText('Select preset');
-    expect(btn).toBeDisabled();
   });
 });

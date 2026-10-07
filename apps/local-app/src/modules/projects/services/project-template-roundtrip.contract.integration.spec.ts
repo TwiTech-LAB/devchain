@@ -1,3 +1,4 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 /**
  * Template Round-Trip Contract Safety Net (`template-roundtrip`).
  *
@@ -28,9 +29,7 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { join } from 'path';
 
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
@@ -71,11 +70,10 @@ interface Harness {
 }
 
 function createHarness(): Harness {
-  const sqlite = new Database(':memory:');
+  const sqlite = createTestDatabase().sqlite;
   sqlite.pragma('journal_mode = WAL');
   const db: BetterSQLite3Database = drizzle(sqlite);
   sqlite.pragma('foreign_keys = OFF');
-  migrate(db, { migrationsFolder: join(__dirname, '../../../..', 'drizzle') });
   sqlite.pragma('foreign_keys = ON');
 
   const localStorage = new LocalStorageService(db);

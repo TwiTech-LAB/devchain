@@ -106,39 +106,35 @@ describe('ProjectsService.setupPreview', () => {
     jest.clearAllMocks();
   });
 
-  it('resolves by slug via unifiedTemplateService and enriches', async () => {
-    const payload = buildValidPayload();
-    unifiedTemplateService.getTemplate.mockResolvedValue({ content: payload });
-
-    const result = await service.setupPreview({ slug: 'my-template', version: '1.0.0' });
-
-    expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith('my-template', '1.0.0');
-    expect(result.payload.profiles).toHaveLength(1);
-    assertEnrichment(result);
-  });
-
-  it('resolves by templatePath via getTemplateFromFilePath and enriches', async () => {
-    const payload = buildValidPayload();
-    unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({ content: payload });
-
-    const result = await service.setupPreview({ templatePath: '/abs/template.json' });
-
-    expect(unifiedTemplateService.getTemplateFromFilePath).toHaveBeenCalledWith(
-      '/abs/template.json',
-    );
-    expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
-    assertEnrichment(result);
-  });
-
-  it('resolves by rawContent directly (no template service call) and enriches', async () => {
-    const payload = buildValidPayload();
-
-    const result = await service.setupPreview({ rawContent: payload });
-
-    expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
-    expect(unifiedTemplateService.getTemplateFromFilePath).not.toHaveBeenCalled();
-    assertEnrichment(result);
-  });
+  it.each(['slug', 'templatePath', 'rawContent'] as const)(
+    'resolves and enriches %s preview',
+    async (source) => {
+      const payload = buildValidPayload();
+      unifiedTemplateService.getTemplate.mockResolvedValue({ content: payload });
+      unifiedTemplateService.getTemplateFromFilePath.mockReturnValue({ content: payload });
+      const input =
+        source === 'slug'
+          ? { slug: 'my-template', version: '1.0.0' }
+          : source === 'templatePath'
+            ? { templatePath: '/abs/template.json' }
+            : { rawContent: payload };
+      const result = await service.setupPreview(input);
+      if (source === 'slug') {
+        expect(unifiedTemplateService.getTemplate).toHaveBeenCalledWith('my-template', '1.0.0');
+      } else {
+        expect(unifiedTemplateService.getTemplate).not.toHaveBeenCalled();
+      }
+      if (source === 'templatePath') {
+        expect(unifiedTemplateService.getTemplateFromFilePath).toHaveBeenCalledWith(
+          '/abs/template.json',
+        );
+      } else {
+        expect(unifiedTemplateService.getTemplateFromFilePath).not.toHaveBeenCalled();
+      }
+      expect(result.payload.profiles).toHaveLength(1);
+      assertEnrichment(result);
+    },
+  );
 
   it('throws ZodError for invalid rawContent (surfaces as 400 with details by the filter)', async () => {
     // profiles[].provider.name is required; omitting it must fail ExportSchema.parse.

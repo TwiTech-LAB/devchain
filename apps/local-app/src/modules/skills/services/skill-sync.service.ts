@@ -14,7 +14,7 @@ import { Skill } from '../../storage/models/domain.models';
 import { SkillCategoryService } from './skill-category.service';
 import { SkillSourceRegistryService } from './skill-source-registry.service';
 import { SkillsService } from './skills.service';
-import type { SyncResult } from './skill-sync.types';
+import type { SyncOptions, SyncResult } from './skill-sync.types';
 
 const logger = createLogger('SkillSyncService');
 
@@ -27,7 +27,7 @@ export class SkillSyncService {
     private readonly settingsService: SettingsService,
   ) {}
 
-  async syncAll(): Promise<SyncResult> {
+  async syncAll(options: SyncOptions = {}): Promise<SyncResult> {
     const adapters = await this.skillSourceRegistry.getAdapters();
     const sourceSettings = this.settingsService.getSkillSourcesEnabled();
     const enabledAdapters = adapters.filter((adapter) =>
@@ -48,7 +48,7 @@ export class SkillSyncService {
     }
 
     const settledResults = await Promise.allSettled(
-      enabledAdapters.map((adapter) => this.syncAdapter(adapter)),
+      enabledAdapters.map((adapter) => this.syncAdapter(adapter, options)),
     );
 
     return settledResults.reduce<SyncResult>((acc, result, index) => {
@@ -66,7 +66,7 @@ export class SkillSyncService {
     }, this.createEmptyResult());
   }
 
-  async syncSource(sourceName: string): Promise<SyncResult> {
+  async syncSource(sourceName: string, options: SyncOptions = {}): Promise<SyncResult> {
     const normalizedSourceName = sourceName.trim().toLowerCase();
     const adapter = await this.skillSourceRegistry.getAdapterBySourceName(normalizedSourceName);
     if (!adapter) {
@@ -85,16 +85,30 @@ export class SkillSyncService {
       return this.createEmptyResult();
     }
 
-    return this.syncAdapter(adapter);
+    return this.syncAdapter(adapter, options);
   }
 
-  private async syncAdapter(adapter: SkillSourceAdapter): Promise<SyncResult> {
+  private async syncAdapter(
+    adapter: SkillSourceAdapter,
+    options: SyncOptions,
+  ): Promise<SyncResult> {
     const result = this.createEmptyResult();
     let sourceCommit = '';
     let syncContext: SkillSourceSyncContext | null = null;
 
     try {
       sourceCommit = await adapter.getLatestCommit();
+      const completed = this.settingsService.getSkillsCompletedSyncs()[adapter.sourceName];
+      if (!options.force && completed?.commit === sourceCommit) {
+        const storedSkills = await this.skillsService.listSkillsBySource(adapter.sourceName);
+        if (
+          storedSkills.length === completed.skillCount &&
+          storedSkills.every((skill) => skill.status !== 'sync_error')
+        ) {
+          result.unchanged = completed.skillCount;
+          return result;
+        }
+      }
       syncContext = await adapter.createSyncContext();
     } catch (error) {
       if (syncContext) {
@@ -123,6 +137,16 @@ export class SkillSyncService {
     }
 
     try {
+      // A skill that discovery could not read fails the run, so no completion entry hides it.
+      for (const { skillName, message } of syncContext.discoveryErrors) {
+        result.failed += 1;
+        result.errors.push({
+          sourceName: adapter.sourceName,
+          skillSlug: this.buildSkillSlug(adapter.sourceName, skillName),
+          message,
+        });
+      }
+
       for (const [skillName, manifest] of syncContext.manifests.entries()) {
         const skillSlug = this.buildSkillSlug(adapter.sourceName, skillName);
         const existingSkill = await this.getExistingSkill(skillSlug);
@@ -192,7 +216,13 @@ export class SkillSyncService {
         }
       }
 
-      await this.cleanupStaleSkills(adapter.sourceName, syncContext, result);
+      const skillCount = await this.cleanupStaleSkills(adapter.sourceName, syncContext, result);
+      if (result.failed === 0) {
+        this.settingsService.setSkillCompletedSync(adapter.sourceName, {
+          commit: sourceCommit,
+          skillCount,
+        });
+      }
     } finally {
       try {
         await syncContext.dispose();
@@ -210,20 +240,23 @@ export class SkillSyncService {
     return result;
   }
 
+  /** Removes skills the source no longer lists; returns the count of skills kept. */
   private async cleanupStaleSkills(
     sourceName: string,
     syncContext: SkillSourceSyncContext,
     result: SyncResult,
-  ): Promise<void> {
+  ): Promise<number> {
     const expectedSlugs = new Set(
       Array.from(syncContext.manifests.keys()).map((skillName) =>
         this.buildSkillSlug(sourceName, skillName),
       ),
     );
     const existingSkills = await this.skillsService.listSkillsBySource(sourceName);
+    let keptCount = 0;
 
     for (const existingSkill of existingSkills) {
       if (expectedSlugs.has(existingSkill.slug)) {
+        keptCount += 1;
         continue;
       }
 
@@ -246,6 +279,7 @@ export class SkillSyncService {
         });
       }
     }
+    return keptCount;
   }
 
   private async markSkillSyncError(params: {

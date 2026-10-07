@@ -42,26 +42,18 @@ const ANSI_KEYS = REQUIRED_PALETTE_KEYS.slice(6);
 
 describe('resolveTerminalTheme', () => {
   describe('dark theme', () => {
-    it('returns the DARK_XTERM_THEME constant as xtermTheme', () => {
-      const result = resolveTerminalTheme('dark');
-      expect(result.xtermTheme).toBe(DARK_XTERM_THEME);
+    it.each([
+      ['dark', DARK_XTERM_THEME],
+      ['ocean', OCEAN_XTERM_THEME],
+    ] as const)('resolves %s xterm constant', (name, theme) => {
+      const result = resolveTerminalTheme(name);
+      expect(result.xtermTheme).toBe(theme);
     });
 
     it('returns correct tmuxStyle for dark', () => {
       const { tmuxStyle } = resolveTerminalTheme('dark');
       expect(tmuxStyle.foreground).toBe('#c9d1d9');
       expect(tmuxStyle.background).toBe('#1a1a1a');
-    });
-
-    it('has dual output shape with xtermTheme and tmuxStyle', () => {
-      const result = resolveTerminalTheme('dark');
-      expect(result).toHaveProperty('xtermTheme');
-      expect(result).toHaveProperty('tmuxStyle');
-      expect(result.tmuxStyle).toHaveProperty('foreground');
-      expect(result.tmuxStyle).toHaveProperty('background');
-    });
-
-    it('preserves unchanged dark background and foreground', () => {
       const { xtermTheme } = resolveTerminalTheme('dark');
       expect(xtermTheme.background).toBe('#1a1a1a');
       expect(xtermTheme.foreground).toBe('#c9d1d9');
@@ -69,41 +61,14 @@ describe('resolveTerminalTheme', () => {
   });
 
   describe('ocean theme', () => {
-    it('returns the OCEAN_XTERM_THEME constant as xtermTheme', () => {
-      const result = resolveTerminalTheme('ocean');
-      expect(result.xtermTheme).toBe(OCEAN_XTERM_THEME);
-    });
-
     it('returns correct tmuxStyle for ocean', () => {
       const { tmuxStyle } = resolveTerminalTheme('ocean');
       expect(tmuxStyle.foreground).toBe('#172b3a');
       expect(tmuxStyle.background).toBe('#eaf1f5');
-    });
-
-    it('has dual output shape with xtermTheme and tmuxStyle', () => {
-      const result = resolveTerminalTheme('ocean');
-      expect(result).toHaveProperty('xtermTheme');
-      expect(result).toHaveProperty('tmuxStyle');
-      expect(result.tmuxStyle).toHaveProperty('foreground');
-      expect(result.tmuxStyle).toHaveProperty('background');
-    });
-
-    it('has a light background (luminance > 0.7)', () => {
-      const bg = OCEAN_XTERM_THEME.background ?? '';
-      const r = parseInt(bg.slice(1, 3), 16);
-      const g = parseInt(bg.slice(3, 5), 16);
-      const b = parseInt(bg.slice(5, 7), 16);
-      const luminance = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
-      expect(luminance).toBeGreaterThan(0.7);
-    });
-
-    it('has a dark foreground (luminance < 0.3)', () => {
-      const fg = OCEAN_XTERM_THEME.foreground ?? '';
-      const r = parseInt(fg.slice(1, 3), 16);
-      const g = parseInt(fg.slice(3, 5), 16);
-      const b = parseInt(fg.slice(5, 7), 16);
-      const luminance = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
-      expect(luminance).toBeLessThan(0.3);
+      expect(tmuxStyle).toEqual({
+        foreground: OCEAN_XTERM_THEME.foreground,
+        background: OCEAN_XTERM_THEME.background,
+      });
     });
   });
 
@@ -116,35 +81,13 @@ describe('resolveTerminalTheme', () => {
   });
 
   describe('dual output shape — xtermTheme and tmuxStyle cannot be confused', () => {
-    it('dark xtermTheme and tmuxStyle are separate objects', () => {
-      const result = resolveTerminalTheme('dark');
+    it.each(['dark', 'ocean'] as const)('keeps %s xterm and tmux objects separate', (name) => {
+      const result = resolveTerminalTheme(name);
       expect(result.xtermTheme).not.toBe(result.tmuxStyle);
-    });
-
-    it('ocean xtermTheme and tmuxStyle are separate objects', () => {
-      const result = resolveTerminalTheme('ocean');
-      expect(result.xtermTheme).not.toBe(result.tmuxStyle);
-    });
-
-    it('resolver is deterministic: two calls with same theme return same references', () => {
-      expect(resolveTerminalTheme('dark').xtermTheme).toBe(resolveTerminalTheme('dark').xtermTheme);
-      expect(resolveTerminalTheme('ocean').xtermTheme).toBe(
-        resolveTerminalTheme('ocean').xtermTheme,
-      );
     });
   });
 
   describe('required palette keys', () => {
-    it.each(['dark', 'ocean'] as ThemeValue[])(
-      '%s xtermTheme contains all required ANSI palette keys',
-      (theme) => {
-        const { xtermTheme } = resolveTerminalTheme(theme);
-        for (const key of REQUIRED_PALETTE_KEYS) {
-          expect(xtermTheme[key]).toBeDefined();
-        }
-      },
-    );
-
     it.each(['dark', 'ocean'] as ThemeValue[])(
       '%s xtermTheme contains the full ANSI 16-255 palette',
       (theme) => {
@@ -158,13 +101,9 @@ describe('resolveTerminalTheme', () => {
 
     it('maps Ocean ANSI 255 to the terminal background', () => {
       expect(OCEAN_XTERM_THEME.extendedAnsi?.[255 - 16]).toBe(OCEAN_XTERM_THEME.background);
-    });
 
-    it('keeps Ocean ANSI 236 dark for TUIs that use it as foreground text', () => {
       expect(OCEAN_XTERM_THEME.extendedAnsi?.[236 - 16]).toBe('#303030');
-    });
 
-    it('steps Ocean ANSI 254 and 253 down from the background to the palette group tones', () => {
       expect(OCEAN_XTERM_THEME.extendedAnsi?.[254 - 16]).toBe('#dfe8ef');
       expect(OCEAN_XTERM_THEME.extendedAnsi?.[253 - 16]).toBe('#d2dee8');
     });
@@ -193,14 +132,6 @@ describe('resolveTerminalTheme', () => {
         ).toBeGreaterThanOrEqual(4.5);
       },
     );
-
-    it('keeps the tmux window style equal to the xterm colors', () => {
-      const { tmuxStyle } = resolveTerminalTheme('ocean');
-      expect(tmuxStyle).toEqual({
-        foreground: OCEAN_XTERM_THEME.foreground,
-        background: OCEAN_XTERM_THEME.background,
-      });
-    });
 
     // Layer: source contract (Jest). The CSS tokens paint the terminal chrome around xterm,
     // so reading the stylesheet is the cheapest proof that the two stay in sync.

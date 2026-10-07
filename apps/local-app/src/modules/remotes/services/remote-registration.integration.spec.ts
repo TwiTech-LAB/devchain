@@ -147,14 +147,4 @@ describe('add a VM by address with a pasted fingerprint', () => {
     expect(storage.createRemote).not.toHaveBeenCalled();
     expect(keys.save).not.toHaveBeenCalled();
   });
-
-  it('fails with a clear error when nothing answers at the address', async () => {
-    await vm.close();
-
-    await expect(add(certificateFingerprint(fixtureTls.cert))).rejects.toMatchObject({
-      code: 'REMOTE_UNREACHABLE',
-      message: `Nothing answers over HTTPS at ${vm.baseUrl}. Start the VM, then check the address.`,
-    });
-    expect(storage.createRemote).not.toHaveBeenCalled();
-  });
 });

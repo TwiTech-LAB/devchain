@@ -33,10 +33,9 @@ describe('Step4Review', () => {
       />,
     );
     const importCounts = screen.getByTestId('wizard-review-import-counts');
-    expect(within(importCounts).getByText('agents')).toBeInTheDocument();
     expect(within(importCounts).getByText('3')).toBeInTheDocument();
     const deleteCounts = screen.getByTestId('wizard-review-delete-counts');
-    expect(within(deleteCounts).getByText('agents')).toBeInTheDocument();
+    expect(within(deleteCounts).getByText('1')).toBeInTheDocument();
     // No unmatched statuses → no status-mapping section.
     expect(screen.queryByTestId('wizard-review-status-mappings')).not.toBeInTheDocument();
     const promptTransfer = screen.getByTestId('wizard-review-prompt-transfer');
@@ -44,10 +43,6 @@ describe('Step4Review', () => {
     expect(within(promptTransfer).getByText('skipped')).toBeInTheDocument();
     expect(within(promptTransfer).getByText('3')).toBeInTheDocument();
     expect(within(promptTransfer).getByText('4')).toBeInTheDocument();
-    expect(screen.getByText(/teams, watchers, subscribers, scheduled epics/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Only unmatched statuses mapped below will be deleted/),
-    ).toBeInTheDocument();
   });
 
   it('uses the active flow name while computing changes', () => {

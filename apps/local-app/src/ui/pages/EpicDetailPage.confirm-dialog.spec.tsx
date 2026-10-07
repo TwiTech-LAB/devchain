@@ -213,34 +213,22 @@ describe('EpicDetailPage confirm dialogs', () => {
     mockEpicFetches();
   });
 
-  it('shows creator attribution in metadata when present', async () => {
-    epicCreatedBy = 'Creator Agent';
+  it.each(['Creator Agent', null])('renders creator attribution %s', async (createdBy) => {
+    epicCreatedBy = createdBy;
     const { Wrapper } = createWrapper();
-
     render(
       <Wrapper>
         <EpicDetailPage />
       </Wrapper>,
     );
-
-    expect(await screen.findByText('Created by')).toBeInTheDocument();
-    expect(screen.getByText('Creator Agent')).toBeInTheDocument();
-  });
-
-  it('keeps metadata unchanged when creator attribution is null', async () => {
-    const { Wrapper } = createWrapper();
-
-    render(
-      <Wrapper>
-        <EpicDetailPage />
-      </Wrapper>,
-    );
-
     await screen.findByText('Metadata');
-    expect(screen.queryByText('Created by')).not.toBeInTheDocument();
+    if (createdBy) {
+      expect(screen.getByText('Created by')).toBeInTheDocument();
+      expect(screen.getByText(createdBy)).toBeInTheDocument();
+    } else expect(screen.queryByText('Created by')).not.toBeInTheDocument();
   });
 
-  it('cancels sub-epic delete without calling the delete endpoint', async () => {
+  it('cancels then confirms sub-epic delete through the delete endpoint', async () => {
     const { Wrapper } = createWrapper();
     render(
       <Wrapper>
@@ -254,17 +242,9 @@ describe('EpicDetailPage confirm dialogs', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
 
     expect(mockApiFetch).not.toHaveBeenCalledWith('/api/epics/sub-epic-1', expect.anything());
-  });
-
-  it('confirms sub-epic delete through the delete endpoint', async () => {
-    const { Wrapper } = createWrapper();
-    render(
-      <Wrapper>
-        <EpicDetailPage />
-      </Wrapper>,
-    );
 
     fireEvent.click(await screen.findByRole('button', { name: /delete child work item/i }));
+
     fireEvent.click(await screen.findByRole('button', { name: /^delete$/i }));
 
     await waitFor(() => {
@@ -272,7 +252,7 @@ describe('EpicDetailPage confirm dialogs', () => {
     });
   });
 
-  it('cancels main epic delete without calling the delete endpoint', async () => {
+  it('cancels then confirms main epic delete through the delete endpoint and keeps navigation behavior', async () => {
     const { Wrapper } = createWrapper();
     render(
       <Wrapper>
@@ -286,17 +266,9 @@ describe('EpicDetailPage confirm dialogs', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
 
     expect(mockApiFetch).not.toHaveBeenCalledWith('/api/epics/epic-1', { method: 'DELETE' });
-  });
-
-  it('confirms main epic delete through the delete endpoint and keeps navigation behavior', async () => {
-    const { Wrapper } = createWrapper();
-    render(
-      <Wrapper>
-        <EpicDetailPage />
-      </Wrapper>,
-    );
 
     fireEvent.click(await screen.findByRole('button', { name: /delete epic/i }));
+
     fireEvent.click(await screen.findByRole('button', { name: /^delete$/i }));
 
     await waitFor(() => {

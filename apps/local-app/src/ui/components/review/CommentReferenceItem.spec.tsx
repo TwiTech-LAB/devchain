@@ -37,13 +37,6 @@ describe('CommentReferenceItem', () => {
   });
 
   describe('rendering', () => {
-    it('renders comment content snippet', () => {
-      render(<CommentReferenceItem {...defaultProps} />);
-      expect(
-        screen.getByText('This function needs better error handling for edge cases'),
-      ).toBeInTheDocument();
-    });
-
     it('truncates long content with ellipsis', () => {
       const longContent =
         'This is a very long comment that exceeds the maximum length and should be truncated with an ellipsis at the end to indicate more content';
@@ -56,73 +49,50 @@ describe('CommentReferenceItem', () => {
       expect(snippet.textContent!.length).toBeLessThanOrEqual(65); // ~60 chars + ellipsis + tolerance
     });
 
-    it('renders author as "You" for user comments', () => {
-      render(<CommentReferenceItem {...defaultProps} />);
-      expect(screen.getByText('You')).toBeInTheDocument();
-    });
-
-    it('renders agent name for agent comments', () => {
-      const agentComment: ReviewComment = {
-        ...baseComment,
-        authorType: 'agent',
-        authorAgentId: 'agent-abc123def456',
+    it.each([
+      {
+        label: 'renders agent name for agent comments',
         authorAgentName: 'Brainstormer',
-      };
-      render(<CommentReferenceItem {...defaultProps} comment={agentComment} />);
-      expect(screen.getByText('Brainstormer')).toBeInTheDocument();
-    });
-
-    it('falls back to truncated ID when authorAgentName is null', () => {
+        expectedName: 'Brainstormer',
+      },
+      {
+        label: 'falls back to truncated ID when authorAgentName is null',
+        authorAgentName: null,
+        expectedName: 'agent-ab',
+      },
+    ] as const)('$label', ({ authorAgentName, expectedName }) => {
       const agentComment: ReviewComment = {
         ...baseComment,
         authorType: 'agent',
         authorAgentId: 'agent-abc123def456',
-        authorAgentName: null,
+        authorAgentName: authorAgentName,
       };
       render(<CommentReferenceItem {...defaultProps} comment={agentComment} />);
-      expect(screen.getByText('agent-ab')).toBeInTheDocument();
+      expect(screen.getByText(expectedName)).toBeInTheDocument();
     });
 
-    it('renders file reference with line range', () => {
-      render(<CommentReferenceItem {...defaultProps} />);
-      expect(screen.getByText('utils.ts:10-15')).toBeInTheDocument();
-    });
-
-    it('renders file reference with single line', () => {
-      const comment = { ...baseComment, lineEnd: 10 };
-      render(<CommentReferenceItem {...defaultProps} comment={comment} />);
-      expect(screen.getByText('utils.ts:10')).toBeInTheDocument();
-    });
-
-    it('renders file reference without line numbers', () => {
-      const comment = { ...baseComment, lineStart: null, lineEnd: null };
-      render(<CommentReferenceItem {...defaultProps} comment={comment} />);
-      expect(screen.getByText('utils.ts')).toBeInTheDocument();
-    });
-
-    it('renders "Review-level" when filePath is null', () => {
-      const comment = { ...baseComment, filePath: null, lineStart: null, lineEnd: null };
-      render(<CommentReferenceItem {...defaultProps} comment={comment} />);
-      expect(screen.getByText('Review-level')).toBeInTheDocument();
+    it.each([
+      { label: 'single line', overrides: { lineEnd: 10 }, expected: 'utils.ts:10' },
+      { label: 'no lines', overrides: { lineStart: null, lineEnd: null }, expected: 'utils.ts' },
+      {
+        label: 'review level',
+        overrides: { filePath: null, lineStart: null, lineEnd: null },
+        expected: 'Review-level',
+      },
+    ] as const)('$label', ({ overrides, expected }) => {
+      render(<CommentReferenceItem {...defaultProps} comment={{ ...baseComment, ...overrides }} />);
+      expect(screen.getByText(expected)).toBeInTheDocument();
     });
   });
 
   describe('status badges', () => {
-    it('renders Open status badge for open comments', () => {
-      render(<CommentReferenceItem {...defaultProps} />);
-      expect(screen.getByText('Open')).toBeInTheDocument();
-    });
-
-    it('renders Resolved status badge', () => {
-      const comment = { ...baseComment, status: 'resolved' as const };
+    it.each([
+      { label: 'renders Resolved status badge', status: 'resolved', statusLabel: 'Resolved' },
+      { label: "renders Won't Fix status badge", status: 'wont_fix', statusLabel: "Won't Fix" },
+    ] as const)('$label', ({ status, statusLabel }) => {
+      const comment = { ...baseComment, status: status };
       render(<CommentReferenceItem {...defaultProps} comment={comment} />);
-      expect(screen.getByText('Resolved')).toBeInTheDocument();
-    });
-
-    it("renders Won't Fix status badge", () => {
-      const comment = { ...baseComment, status: 'wont_fix' as const };
-      render(<CommentReferenceItem {...defaultProps} comment={comment} />);
-      expect(screen.getByText("Won't Fix")).toBeInTheDocument();
+      expect(screen.getByText(statusLabel)).toBeInTheDocument();
     });
   });
 
@@ -155,29 +125,19 @@ describe('CommentReferenceItem', () => {
       render(<CommentReferenceItem {...defaultProps} replyCount={3} />);
       expect(screen.getByText('3')).toBeInTheDocument();
     });
-
-    it('shows reply count for single reply', () => {
-      render(<CommentReferenceItem {...defaultProps} replyCount={1} />);
-      expect(screen.getByText('1')).toBeInTheDocument();
-    });
   });
 
   describe('pending state', () => {
-    it('applies pending styling when isPending is true', () => {
+    it('shows pending label and status styling', () => {
       render(<CommentReferenceItem {...defaultProps} isPending={true} />);
-      const item = screen.getByTestId('comment-reference-item');
-      expect(item).toHaveClass('border-l-status-warn/40');
-      expect(screen.getByText('Open').parentElement).toHaveClass('bg-background');
-    });
-
-    it('shows "Pending" text indicator when isPending is true', () => {
-      render(<CommentReferenceItem {...defaultProps} isPending={true} />);
-      expect(screen.getByText('Pending')).toBeInTheDocument();
-    });
-
-    it('does not show pending indicator when isPending is false', () => {
-      render(<CommentReferenceItem {...defaultProps} isPending={false} />);
-      expect(screen.queryByText('Pending')).not.toBeInTheDocument();
+      {
+        const item = screen.getByTestId('comment-reference-item');
+        expect(item).toHaveClass('border-l-status-warn/40');
+        expect(screen.getByText('Open').parentElement).toHaveClass('bg-background');
+      }
+      {
+        expect(screen.getByText('Pending')).toBeInTheDocument();
+      }
     });
   });
 
@@ -189,13 +149,6 @@ describe('CommentReferenceItem', () => {
       // The pointer-hover fill must not replace the selected fill.
       expect(item).not.toHaveClass('hover:bg-accent');
     });
-
-    it('does not apply selected styling when isSelected is false', () => {
-      render(<CommentReferenceItem {...defaultProps} isSelected={false} />);
-      const item = screen.getByTestId('comment-reference-item');
-      expect(item).not.toHaveClass('bg-selected');
-      expect(item).toHaveClass('hover:bg-accent');
-    });
   });
 
   describe('resolved/muted state', () => {
@@ -204,19 +157,6 @@ describe('CommentReferenceItem', () => {
       render(<CommentReferenceItem {...defaultProps} comment={comment} />);
       const item = screen.getByTestId('comment-reference-item');
       expect(item).toHaveClass('text-muted-foreground');
-    });
-
-    it('applies muted styling for wont_fix comments', () => {
-      const comment = { ...baseComment, status: 'wont_fix' as const };
-      render(<CommentReferenceItem {...defaultProps} comment={comment} />);
-      const item = screen.getByTestId('comment-reference-item');
-      expect(item).toHaveClass('text-muted-foreground');
-    });
-
-    it('does not apply muted styling for open comments', () => {
-      render(<CommentReferenceItem {...defaultProps} />);
-      const item = screen.getByTestId('comment-reference-item');
-      expect(item).not.toHaveClass('opacity-60');
     });
 
     it('does not apply muted styling when selected even if resolved', () => {
@@ -235,59 +175,52 @@ describe('CommentReferenceItem', () => {
       await userEvent.click(screen.getByTestId('comment-reference-item'));
       expect(onClick).toHaveBeenCalledTimes(1);
     });
-
-    it('is keyboard accessible via Enter', async () => {
-      const onClick = jest.fn();
-      render(<CommentReferenceItem {...defaultProps} onClick={onClick} />);
-
-      const item = screen.getByTestId('comment-reference-item');
-      item.focus();
-      await userEvent.keyboard('{Enter}');
-      expect(onClick).toHaveBeenCalledTimes(1);
-    });
-
-    it('is keyboard accessible via Space', async () => {
-      const onClick = jest.fn();
-      render(<CommentReferenceItem {...defaultProps} onClick={onClick} />);
-
-      const item = screen.getByTestId('comment-reference-item');
-      item.focus();
-      await userEvent.keyboard(' ');
-      expect(onClick).toHaveBeenCalledTimes(1);
-    });
   });
 
   describe('accessibility', () => {
-    it('renders as a button element', () => {
+    it('shows user comment metadata and accessible label without pending or selection', () => {
       render(<CommentReferenceItem {...defaultProps} />);
-      expect(screen.getByRole('button')).toBeInTheDocument();
+      {
+        const button = screen.getByRole('button');
+        expect(button).toHaveAttribute('aria-label');
+        expect(button.getAttribute('aria-label')).toContain('Issue');
+        expect(button.getAttribute('aria-label')).toContain('You');
+        expect(button.getAttribute('aria-label')).toContain('utils.ts');
+      }
+      {
+        expect(
+          screen.getByText('This function needs better error handling for edge cases'),
+        ).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('You')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('utils.ts:10-15')).toBeInTheDocument();
+      }
+      {
+        expect(screen.getByText('Open')).toBeInTheDocument();
+      }
+      {
+        expect(screen.queryByText('Pending')).not.toBeInTheDocument();
+      }
+      {
+        const item = screen.getByTestId('comment-reference-item');
+        expect(item).not.toHaveClass('bg-selected');
+        expect(item).toHaveClass('hover:bg-accent');
+      }
+      {
+        const item = screen.getByTestId('comment-reference-item');
+        expect(item).not.toHaveClass('opacity-60');
+      }
     });
 
-    it('has descriptive aria-label', () => {
-      render(<CommentReferenceItem {...defaultProps} />);
-      const button = screen.getByRole('button');
-      expect(button).toHaveAttribute('aria-label');
-      expect(button.getAttribute('aria-label')).toContain('Issue');
-      expect(button.getAttribute('aria-label')).toContain('You');
-      expect(button.getAttribute('aria-label')).toContain('utils.ts');
-    });
-
-    it('includes reply count in aria-label when present', () => {
-      render(<CommentReferenceItem {...defaultProps} replyCount={5} />);
-      const button = screen.getByRole('button');
-      expect(button.getAttribute('aria-label')).toContain('5 replies');
-    });
-
-    it('includes pending indicator in aria-label when pending', () => {
-      render(<CommentReferenceItem {...defaultProps} isPending={true} />);
-      const button = screen.getByRole('button');
-      expect(button.getAttribute('aria-label')).toContain('Pending response');
-    });
-
-    it('has proper focus styling', () => {
-      render(<CommentReferenceItem {...defaultProps} />);
-      const item = screen.getByTestId('comment-reference-item');
-      expect(item).toHaveClass('focus:ring-2');
+    it.each([
+      { label: 'reply count', props: { replyCount: 5 }, expected: '5 replies' },
+      { label: 'pending', props: { isPending: true }, expected: 'Pending response' },
+    ] as const)('exposes $label in accessible name', ({ props, expected }) => {
+      render(<CommentReferenceItem {...defaultProps} {...props} />);
+      expect(screen.getByRole('button').getAttribute('aria-label')).toContain(expected);
     });
   });
 

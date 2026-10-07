@@ -1,6 +1,7 @@
 import { groupDockerData, checkDockerDataGroup } from './docker-data-groups';
 import { Inject, Injectable } from '@nestjs/common';
 import { Readable } from 'node:stream';
+import { join, resolve } from 'node:path';
 import { AppError } from '../../../common/errors/error-types';
 import {
   DockerEngineClient,
@@ -22,12 +23,21 @@ import {
   vmImageCandidates,
 } from '../operations/docker-import-inventory.store';
 import { RemoteHostClient, type HostRuntime } from '../operations/remote-host.client';
-import { DockerPlanRequestSchema, isVolumeMount, type DockerPlan } from './docker-plan.dto';
+import { ConnectChoicesStore } from '../connect-choices.store';
+import { vmUserMismatch, vmUserWarning, type VmUserMismatch } from '../vm-user-identity';
 import {
+  DockerPlanRequestSchema,
+  isVolumeMount,
+  type DockerPlan,
+  type DockerPresence,
+} from './docker-plan.dto';
+import {
+  copiesImages,
   estimateDockerPlan,
   movesToVm,
   planDockerFit,
   potentialDataMounts,
+  skipsImageCopy,
   uniqueCopiedMounts,
   writerStops,
   keptWriterStops,
@@ -38,6 +48,8 @@ import {
   applyDockerDataPolicy,
   blocksMode,
   dockerReconnect,
+  dockerNetworkPolicy,
+  dockerNetworkWarnings,
 } from './docker-plan-policy';
 import {
   DockerPlanSourceService,
@@ -51,11 +63,11 @@ import {
  */
 export async function pagedDockerScan(
   paths: string[],
-  scan: (page: string[]) => Promise<DockerScanResult>,
+  scan: (page: string[], first: boolean) => Promise<DockerScanResult>,
 ): Promise<DockerScanResult> {
-  const result = await scan(paths.slice(0, 64));
+  const result = await scan(paths.slice(0, 64), true);
   for (let offset = 64; offset < paths.length; offset += 64) {
-    const more = await scan(paths.slice(offset, offset + 64));
+    const more = await scan(paths.slice(offset, offset + 64), false);
     for (const c of more.containers) {
       const original = result.containers.find((entry) => entry.id === c.id);
       if (original && c.metadata) original.metadata = c.metadata;
@@ -71,6 +83,12 @@ interface DockerCopySpeeds {
   probeSeconds: number;
   exportRate: number | null;
 }
+interface DockerPlanOptions {
+  estimate?: boolean;
+  reuse?: boolean;
+  /** Project-anchored paths still excluded from file sync during copy-back. */
+  dataBindPaths?: readonly string[];
+}
 
 @Injectable()
 export class DockerPlanService {
@@ -82,23 +100,30 @@ export class DockerPlanService {
     private readonly source: DockerPlanSourceService,
     private readonly remote: RemoteHostClient,
     private readonly inventory: DockerImportInventoryStore,
+    private readonly choices: ConnectChoicesStore,
   ) {}
 
   async projectRoot(projectId: string): Promise<string> {
     return (await this.storage.getProject(projectId)).rootPath;
   }
 
+  async presence(projectId: string, signal?: AbortSignal): Promise<DockerPresence> {
+    return this.source.presence(await this.projectRoot(projectId), signal);
+  }
+
   /**
    * Connect calls this again before stopping anything. No cached plan or client paths are trusted.
    * `estimate: false` skips the copy-time probe for a caller that does not show the estimate.
    * `reuse` lets the dialog reuse measurements of the last two minutes that its choices
-   * cannot change: the disk usage, folder sizes and copy speeds. Connect never passes it.
+   * cannot change: disk usage, writable-layer sizes, folder sizes, linked containers'
+   * Compose configurations and copy speeds.
+   * Connect never passes it.
    */
   async plan(
     projectId: string,
     input: unknown,
     signal?: AbortSignal,
-    { estimate = true, reuse = false }: { estimate?: boolean; reuse?: boolean } = {},
+    { estimate = true, reuse = false, dataBindPaths = [] }: DockerPlanOptions = {},
   ): Promise<DockerPlan> {
     const request = DockerPlanRequestSchema.parse(input);
     const [project] = await Promise.all([
@@ -113,10 +138,12 @@ export class DockerPlanService {
       apiVersion: null,
       items: [],
       filesystems: [],
+      copySize: { bytes: 0, unknown: false },
       fit: 'unknown',
       canConnect: false,
       warnings: [],
       managedExclusions: [],
+      codePaths: [],
       reconnect: null,
       estimate: null,
     };
@@ -149,6 +176,9 @@ export class DockerPlanService {
     } catch {
       return unavailable(plan, 'remote', 'remote-unreachable', 'The VM is unavailable.');
     }
+    const mismatch = vmUserMismatch(this.source.uid(), this.source.gid(), runtime);
+    if (mismatch)
+      return unavailable(plan, 'remote', 'vm-user-mismatch', vmUserWarning(mismatch), mismatch);
     if (!runtime.docker?.installed)
       return unavailable(
         plan,
@@ -174,15 +204,27 @@ export class DockerPlanService {
       );
     }
     const options = { signal: scanSignal, apiVersion: plan.apiVersion };
+    const inventory = this.inventory.get(projectId, request.remoteId);
+    const absolutePaths = (paths: readonly string[]) =>
+      paths.map((path) => join(project.rootPath, path));
     let scanned;
     try {
-      scanned = await this.source.scan(client, project.rootPath, scanSignal, { reuse });
+      scanned = await this.source.scan(client, project.rootPath, scanSignal, {
+        reuse,
+        previousBindPaths: absolutePaths(inventory?.items.flatMap((item) => item.bindPaths) ?? []),
+        dataBindPaths: absolutePaths(dataBindPaths),
+      });
     } catch (error) {
       if (error instanceof DockerEngineError && error.code === 'unsupported')
         throw new AppError(error.message, 'DOCKER_UNSUPPORTED_SETTING', 422);
       throw error;
     }
     plan.items = scanned.items;
+    plan.codePaths = scanned.codePaths.map((path) =>
+      resolve(path) === resolve(project.rootPath)
+        ? '/'
+        : projectAnchoredPath(project.rootPath, path),
+    );
     const dataGroups = groupDockerData(plan.items, project.rootPath);
     const holderVolumes = [...new Set(dataGroups.flatMap((g) => g.volumes))];
     const externalPaths = [
@@ -196,15 +238,22 @@ export class DockerPlanService {
       ]),
     ];
     let target: DockerScanResult;
+    const fixedNetworks = [
+      ...new Set(plan.items.flatMap((i) => i.fixedIPv4?.map((f) => f.network) ?? [])),
+    ];
+    // A fixed address implies its network is in item.networks too.
+    const scanNetworks = plan.items.some((item) => item.networks?.length);
     try {
-      target = await pagedDockerScan(externalPaths, (paths) =>
-        this.remote.dockerScan(request.remoteId, paths, options, holderVolumes),
+      target = await pagedDockerScan(externalPaths, (paths, first) =>
+        first && scanNetworks
+          ? this.remote.dockerScan(request.remoteId, paths, options, holderVolumes, fixedNetworks)
+          : this.remote.dockerScan(request.remoteId, paths, options, holderVolumes),
       );
     } catch (error) {
       if (signal?.aborted) throw error;
       return unavailable(plan, 'remote', 'remote-docker-routes', VM_ROUTES_MESSAGE);
     }
-    const records = this.inventory.get(projectId, request.remoteId)?.groups ?? [];
+    const records = inventory?.groups ?? [];
     plan.dataGroups = dataGroups.map((group) =>
       checkDockerDataGroup(group, records, scanned.holders, target, projectId),
     );
@@ -214,10 +263,18 @@ export class DockerPlanService {
       target,
       projectId,
       runtime.homePath ?? null,
-      runtime.uid ?? null,
-      scanned.uid,
+      project.rootPath,
+      request.items === undefined ? this.choices.get(projectId)?.items : undefined,
     );
     applyDockerDataPolicy(plan.items, plan.dataGroups, request, target);
+    for (const item of plan.items) {
+      if (item.selectedMode && skipsImageCopy(item, project.rootPath)) {
+        item.images = item.images.map((image) => ({ ...image, notCopied: true }));
+        item.notes.push('Image: not copied; the VM builds it from the synced project.');
+      }
+    }
+    plan.networks = dockerNetworkPolicy(plan.items, target);
+    plan.warnings.push(...dockerNetworkWarnings(plan.networks));
     // The dialog shows exactly who the handoff stops besides the moving containers.
     const containerIds = new Set(plan.items.filter((i) => i.kind === 'container').map((i) => i.id));
     const movingContainers = new Set(
@@ -229,8 +286,7 @@ export class DockerPlanService {
           ? keptWriterStops(item, plan.items)
           : writerStops(item, containerIds, project.rootPath)
       ).filter((id) => !movingContainers.has(id));
-    // The dialog shows each item's data size, so it counts with the fit check's own
-    // rule: a bind of the whole project root counts nothing, a nested bind once.
+    // Per-item sizes use the same mount-kind and deduplication rules as the fit check.
     for (const item of plan.items) {
       const data = uniqueCopiedMounts(
         [{ ...item, selectedMode: 'container-and-data', dataAction: undefined }],
@@ -250,9 +306,12 @@ export class DockerPlanService {
     const binds: DockerPathCapacity[] = [];
     // The same images `planDockerFit` counts; kept data may need one for a missing VM container.
     const imageIds = [
-      ...new Set(plan.items.filter(movesToVm).flatMap((i) => i.images.map((image) => image.id))),
+      ...new Set(
+        plan.items
+          .filter((item) => copiesImages(item, project.rootPath))
+          .flatMap((i) => i.images.map((image) => image.id)),
+      ),
     ];
-    const inventory = this.inventory.get(projectId, request.remoteId);
     const candidates = new Map(imageIds.map((id) => [id, vmImageCandidates(inventory, id)]));
     let present: { ids: string[] };
     try {
@@ -290,6 +349,7 @@ export class DockerPlanService {
       project.rootPath,
     );
     plan.filesystems = fit.filesystems;
+    plan.copySize = { bytes: fit.bytes, unknown: fit.unknown };
     plan.fit = fit.fit;
     plan.canConnect =
       fit.fit !== 'refused' &&
@@ -371,10 +431,16 @@ function unavailable(
   side: 'home' | 'remote',
   code: string,
   message: string,
+  userMismatch?: VmUserMismatch,
 ): DockerPlan {
   return {
     ...plan,
-    availability: { available: false, side, reason: { code, message } },
+    availability: {
+      available: false,
+      side,
+      reason: { code, message },
+      ...(userMismatch ? { userMismatch } : {}),
+    },
     items: [],
     apiVersion: null,
   };

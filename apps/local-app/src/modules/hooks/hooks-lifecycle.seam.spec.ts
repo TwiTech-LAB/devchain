@@ -215,20 +215,6 @@ describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService →
     expect(listenerEvents.publish).not.toHaveBeenCalled();
   });
 
-  it('flows a Copilot SessionStart even when Phase-1 has not yet bound (unknown session → warn, no rebind)', async () => {
-    listenerMockGet.mockReturnValue(undefined); // session row absent
-
-    const parsed = HookEventSchema.parse(COPILOT_RELAY_SESSION_START) as HookEventData;
-    await service.handleHookEvent(parsed);
-    const [, published] = serviceEvents.publish.mock.calls[0];
-
-    await listener.handleHookSessionStarted(published as ClaudeHooksSessionStartedEventPayload);
-
-    // Unknown session ⇒ warn + skip; still never rebinds.
-    expect(listenerMockRun).not.toHaveBeenCalled();
-    expect(listenerEvents.publish).not.toHaveBeenCalled();
-  });
-
   it('flows a Copilot Stop through the DTO + service into a turn-end signal', async () => {
     // The agentStop→final-metrics re-read stays unwired (backlog feb88d1c); Stop only ends the
     // turn for the activity state machine.

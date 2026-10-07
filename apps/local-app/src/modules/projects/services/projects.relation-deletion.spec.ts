@@ -2,13 +2,14 @@ import type { EventEmitter2 } from '@nestjs/event-emitter';
 import type { EventsService } from '../../events/services/events.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
+import { PROJECT_WORKSPACE_CHANGED_EVENT } from '../events/project-workspace-changed.events';
 import { ProjectsService } from './projects.service';
 import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
-describe('ProjectsService relation invalidation on deletion', () => {
+describe('ProjectsService relation invalidation and workspace changes', () => {
   const PROJECT_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
   const WORKSPACE_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
-  let storage: { getProject: jest.Mock; deleteProject: jest.Mock };
+  let storage: { getProject: jest.Mock; deleteProject: jest.Mock; updateProject: jest.Mock };
   let settings: {
     clearProjectTemplateMetadata: jest.Mock;
     clearProjectPresets: jest.Mock;
@@ -16,11 +17,14 @@ describe('ProjectsService relation invalidation on deletion', () => {
   };
   let events: { publish: jest.Mock };
   let service: ProjectsService;
+  let eventEmitter: { emit: jest.Mock };
+  let provisioning: { provisionProject: jest.Mock };
 
   beforeEach(() => {
     storage = {
       getProject: jest.fn().mockResolvedValue({ id: PROJECT_ID, workspaceId: WORKSPACE_ID }),
       deleteProject: jest.fn().mockResolvedValue(undefined),
+      updateProject: jest.fn(),
     };
     settings = {
       clearProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
@@ -28,6 +32,8 @@ describe('ProjectsService relation invalidation on deletion', () => {
       setProjectActivePreset: jest.fn().mockResolvedValue(undefined),
     };
     events = { publish: jest.fn().mockResolvedValue(null) };
+    eventEmitter = { emit: jest.fn() };
+    provisioning = { provisionProject: jest.fn() };
     service = new ProjectsService(
       storage as unknown as StorageService,
       {} as never,
@@ -36,9 +42,9 @@ describe('ProjectsService relation invalidation on deletion', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
+      provisioning as never,
       createProjectWriteAdmissionStub() as never,
-      { emit: jest.fn() } as unknown as EventEmitter2,
+      eventEmitter as unknown as EventEmitter2,
       undefined,
       undefined,
       undefined,
@@ -84,5 +90,23 @@ describe('ProjectsService relation invalidation on deletion', () => {
     expect(settings.clearProjectTemplateMetadata).not.toHaveBeenCalled();
     expect(settings.clearProjectPresets).not.toHaveBeenCalled();
     expect(settings.setProjectActivePreset).not.toHaveBeenCalled();
+  });
+  it('publishes the project move synchronously after storage commits it', async () => {
+    const before = { id: 'project-1', workspaceId: 'workspace-1', rootPath: '/repo' };
+    const moved = { ...before, workspaceId: 'workspace-2' };
+    storage.getProject.mockResolvedValue(before);
+    storage.updateProject.mockResolvedValue(moved);
+
+    await service.updateProject('project-1', { workspaceId: 'workspace-2' });
+
+    expect(eventEmitter.emit).toHaveBeenCalledWith(PROJECT_WORKSPACE_CHANGED_EVENT, {
+      projectId: 'project-1',
+      previousWorkspaceId: 'workspace-1',
+      workspaceId: 'workspace-2',
+    });
+    expect(storage.updateProject.mock.invocationCallOrder[0]).toBeLessThan(
+      eventEmitter.emit.mock.invocationCallOrder[0],
+    );
+    expect(provisioning.provisionProject).not.toHaveBeenCalled();
   });
 });

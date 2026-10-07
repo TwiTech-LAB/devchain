@@ -121,7 +121,7 @@ describe('ActivityDialog', () => {
   it('shows a detail with a back link when it came from the list', async () => {
     const { onOpenList } = renderDialog({ mode: 'detail', operationId: 'failed', fromList: true });
     const dialog = screen.getByRole('dialog', { name: 'Change logins · lab-vm' });
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('Agents are running.');
+
     await userEvent.click(within(dialog).getByRole('button', { name: 'All activity' }));
     expect(onOpenList).toHaveBeenCalled();
   });

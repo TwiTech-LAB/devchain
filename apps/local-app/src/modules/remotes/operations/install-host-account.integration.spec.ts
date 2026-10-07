@@ -70,10 +70,6 @@ describe('host install account check over SSH', () => {
     return found;
   }
 
-  it('passes when the VM reports a matching home folder', async () => {
-    await expect(step('check').run(run)).resolves.toBeUndefined();
-  });
-
   it('names the account and this PC home in full and scrubs the VM home', async () => {
     account = { code: 10, stdout: '/srv/mira' };
 

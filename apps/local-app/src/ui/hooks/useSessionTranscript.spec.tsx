@@ -99,27 +99,47 @@ function captureWsHandler(): (envelope: WsEnvelope) => void {
 // ---------------------------------------------------------------------------
 
 describe('computeAdaptiveDebounceMs', () => {
-  it('returns base 250ms for small sessions (count < 200)', () => {
-    expect(computeAdaptiveDebounceMs(0)).toBe(250);
-    expect(computeAdaptiveDebounceMs(50)).toBe(250);
-    expect(computeAdaptiveDebounceMs(199)).toBe(250);
-  });
+  it.each([
+    {
+      label: 'returns base 250ms for small sessions (count < 200)',
+      firstCount: 0,
+      firstExpected: 250,
+      secondCount: 50,
+      secondExpected: 250,
+      thirdCount: 199,
+      thirdExpected: 250,
+    },
+    {
+      label: 'caps at 5000ms for large sessions',
+      firstCount: 2000,
+      firstExpected: 5000,
+      secondCount: 5000,
+      secondExpected: 5000,
+      thirdCount: 100000,
+      thirdExpected: 5000,
+    },
+  ] as const)(
+    '$label',
+    ({ firstCount, firstExpected, secondCount, secondExpected, thirdCount, thirdExpected }) => {
+      expect(computeAdaptiveDebounceMs(firstCount)).toBe(firstExpected);
+      expect(computeAdaptiveDebounceMs(secondCount)).toBe(secondExpected);
+      expect(computeAdaptiveDebounceMs(thirdCount)).toBe(thirdExpected);
+    },
+  );
 
-  it('scales debounce with message count for medium sessions', () => {
-    expect(computeAdaptiveDebounceMs(200)).toBe(750);
-    expect(computeAdaptiveDebounceMs(400)).toBe(1250);
-    expect(computeAdaptiveDebounceMs(600)).toBe(1750);
-    expect(computeAdaptiveDebounceMs(1000)).toBe(2750);
-  });
-
-  it('caps at 5000ms for large sessions', () => {
-    expect(computeAdaptiveDebounceMs(2000)).toBe(5000);
-    expect(computeAdaptiveDebounceMs(5000)).toBe(5000);
-    expect(computeAdaptiveDebounceMs(100000)).toBe(5000);
-  });
-
-  it('returns base 250ms when messageCount is undefined', () => {
-    expect(computeAdaptiveDebounceMs(undefined)).toBe(250);
+  it.each([
+    {
+      label: 'medium sessions',
+      cases: [
+        [200, 750],
+        [400, 1250],
+        [600, 1750],
+        [1000, 2750],
+      ],
+    },
+    { label: 'missing count', cases: [[undefined, 250]] },
+  ] as const)('uses adaptive debounce for $label', ({ cases }) => {
+    for (const [count, expected] of cases) expect(computeAdaptiveDebounceMs(count)).toBe(expected);
   });
 });
 
@@ -142,15 +162,6 @@ describe('useSessionTranscript', () => {
   // Disabled (null sessionId)
   // -------------------------------------------------------------------------
 
-  it('should not fetch when sessionId is null', () => {
-    renderHook(() => useSessionTranscript(null), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    expect(fetchTranscriptSummaryMock).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it('should return empty defaults when sessionId is null', () => {
     const { result } = renderHook(() => useSessionTranscript(null), {
       wrapper: createWrapper(queryClient),
@@ -158,6 +169,8 @@ describe('useSessionTranscript', () => {
 
     expect(result.current.metrics).toBeUndefined();
     expect(result.current.isLive).toBe(false);
+    expect(fetchTranscriptSummaryMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
@@ -229,19 +242,6 @@ describe('useSessionTranscript', () => {
   // WebSocket subscription
   // -------------------------------------------------------------------------
 
-  it('should register a WS message handler via useAppSocket', () => {
-    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
-
-    renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    expect(useAppSocketMock).toHaveBeenCalled();
-    const handlers = useAppSocketMock.mock.calls[0][0];
-    expect(handlers).toHaveProperty('message');
-    expect(typeof handlers.message).toBe('function');
-  });
-
   it('refreshes only the summary for an addressed runtime-context update', async () => {
     fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
@@ -263,39 +263,6 @@ describe('useSessionTranscript', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: transcriptQueryKeys.summary('session-1'),
       exact: true,
-    });
-  });
-
-  it('should invalidate the summary on WS "updated" event after debounce', async () => {
-    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
-
-    const { result } = renderHook(
-      () => useSessionTranscript('session-1', { wsInvalidationDebounceMs: 10 }),
-      {
-        wrapper: createWrapper(queryClient),
-      },
-    );
-
-    await waitFor(() => {
-      expect(result.current.metrics).toBeDefined();
-    });
-
-    const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
-    const handler = captureWsHandler();
-
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'updated',
-        payload: { sessionId: 'session-1', newMessageCount: 3, metrics: {} },
-        ts: new Date().toISOString(),
-      });
-    });
-
-    await waitFor(() => {
-      expect(invalidateSpy).toHaveBeenCalledWith({
-        queryKey: transcriptQueryKeys.summary('session-1'),
-      });
     });
   });
 
@@ -339,63 +306,32 @@ describe('useSessionTranscript', () => {
 
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledTimes(1);
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: transcriptQueryKeys.summary('session-1'),
+      });
     });
   });
 
-  it('should invalidate the summary on WS "discovered" event', async () => {
+  it.each([
+    { type: 'discovered', payload: { sessionId: 'session-1', providerName: 'claude-code' } },
+    { type: 'ended', payload: { sessionId: 'session-1' } },
+  ] as const)('invalidates summary on $type', async ({ type, payload }) => {
     fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
-
     const { result } = renderHook(() => useSessionTranscript('session-1'), {
       wrapper: createWrapper(queryClient),
     });
-
-    await waitFor(() => {
-      expect(result.current.metrics).toBeDefined();
-    });
-
-    const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
+    await waitFor(() => expect(result.current.metrics).toBeDefined());
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
     const handler = captureWsHandler();
-
-    act(() => {
+    act(() =>
       handler({
         topic: 'session/session-1/transcript',
-        type: 'discovered',
-        payload: { sessionId: 'session-1', providerName: 'claude-code' },
+        type,
+        payload,
         ts: new Date().toISOString(),
-      });
-    });
-
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: transcriptQueryKeys.summary('session-1'),
-    });
-  });
-
-  it('should invalidate the summary on WS "ended" event', async () => {
-    fetchTranscriptSummaryMock.mockResolvedValue(makeSummary());
-
-    const { result } = renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    await waitFor(() => {
-      expect(result.current.metrics).toBeDefined();
-    });
-
-    const invalidateSpy = jest.spyOn(queryClient, 'invalidateQueries');
-    const handler = captureWsHandler();
-
-    act(() => {
-      handler({
-        topic: 'session/session-1/transcript',
-        type: 'ended',
-        payload: { sessionId: 'session-1', finalMetrics: {}, endReason: 'session.stopped' },
-        ts: new Date().toISOString(),
-      });
-    });
-
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: transcriptQueryKeys.summary('session-1'),
-    });
+      }),
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: transcriptQueryKeys.summary('session-1') });
   });
 
   it('should ignore WS events for different sessions', async () => {
@@ -428,20 +364,6 @@ describe('useSessionTranscript', () => {
   // isLive
   // -------------------------------------------------------------------------
 
-  it('should set isLive=true when session is ongoing', async () => {
-    const summary = makeSummary({ isOngoing: true });
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-
-    const { result } = renderHook(() => useSessionTranscript('session-1'), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    await waitFor(() => {
-      expect(result.current.isLive).toBe(true);
-    });
-  });
-
   it('should set isLive=false when session is not ongoing', async () => {
     const summary = makeSummary({ isOngoing: false });
 
@@ -458,13 +380,28 @@ describe('useSessionTranscript', () => {
     expect(result.current.isLive).toBe(false);
   });
 
-  it('keeps a running DevChain session live after a completed transcript turn', async () => {
-    const summary = makeSummary({ isOngoing: false });
+  it.each([
+    {
+      label: 'keeps a running DevChain session live after a completed transcript turn',
+      isOngoing: false,
+      isSessionRunning: true,
+      expectedLive: true,
+      expectedInterval: 5_000,
+    },
+    {
+      label: 'stops summary polling when DevChain lifecycle reports the session stopped',
+      isOngoing: true,
+      isSessionRunning: false,
+      expectedLive: false,
+      expectedInterval: false,
+    },
+  ] as const)('$label', async ({ isOngoing, isSessionRunning, expectedLive, expectedInterval }) => {
+    const summary = makeSummary({ isOngoing: isOngoing });
 
     fetchTranscriptSummaryMock.mockResolvedValue(summary);
 
     const { result } = renderHook(
-      () => useSessionTranscript('session-1', { isSessionRunning: true }),
+      () => useSessionTranscript('session-1', { isSessionRunning: isSessionRunning }),
       {
         wrapper: createWrapper(queryClient),
       },
@@ -474,7 +411,7 @@ describe('useSessionTranscript', () => {
       expect(result.current.metrics).toBeDefined();
     });
 
-    expect(result.current.isLive).toBe(true);
+    expect(result.current.isLive).toBe(expectedLive);
 
     const summaryOptions: unknown = queryClient.getQueryCache().find({
       queryKey: transcriptQueryKeys.summary('session-1'),
@@ -493,45 +430,7 @@ describe('useSessionTranscript', () => {
           state: { data: ReturnType<typeof makeSummary> };
         }) => number | false
       )({ state: { data: summary } }),
-    ).toBe(5_000);
-  });
-
-  it('stops summary polling when DevChain lifecycle reports the session stopped', async () => {
-    const summary = makeSummary({ isOngoing: true });
-
-    fetchTranscriptSummaryMock.mockResolvedValue(summary);
-
-    const { result } = renderHook(
-      () => useSessionTranscript('session-1', { isSessionRunning: false }),
-      {
-        wrapper: createWrapper(queryClient),
-      },
-    );
-
-    await waitFor(() => {
-      expect(result.current.metrics).toBeDefined();
-    });
-
-    expect(result.current.isLive).toBe(false);
-
-    const summaryOptions: unknown = queryClient.getQueryCache().find({
-      queryKey: transcriptQueryKeys.summary('session-1'),
-      exact: true,
-    })?.options;
-    const refetchInterval =
-      summaryOptions !== null &&
-      typeof summaryOptions === 'object' &&
-      'refetchInterval' in summaryOptions
-        ? summaryOptions.refetchInterval
-        : undefined;
-    expect(typeof refetchInterval).toBe('function');
-    expect(
-      (
-        refetchInterval as (query: {
-          state: { data: ReturnType<typeof makeSummary> };
-        }) => number | false
-      )({ state: { data: summary } }),
-    ).toBe(false);
+    ).toBe(expectedInterval);
   });
 
   // -------------------------------------------------------------------------
@@ -582,6 +481,8 @@ describe('useSessionTranscript', () => {
       wrapper: createWrapper(queryClient),
     });
 
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
     expect(() => result.current.refetch()).not.toThrow();
+    expect(invalidate).not.toHaveBeenCalled();
   });
 });

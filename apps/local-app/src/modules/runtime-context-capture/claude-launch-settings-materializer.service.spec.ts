@@ -384,7 +384,7 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
 
   it('recovers a stale lock, rejects concurrent posts, and removes per-session artifacts', async () => {
     const bodies: Record<string, unknown>[] = [];
-    const apiUrl = await listen((body) => bodies.push(body), 250);
+    const apiUrl = await listen((body) => bodies.push(body), 80);
     await writeRuntimeContextEndpointDiscovery(apiUrl, runtimeRoot);
     const result = await prepare();
     const locatorPath = result.runtimeEnv.DEVCHAIN_STATUSLINE_LOCATOR;

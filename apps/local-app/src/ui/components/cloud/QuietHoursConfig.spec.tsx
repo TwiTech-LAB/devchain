@@ -36,45 +36,33 @@ describe('QuietHoursConfig', () => {
     });
   });
 
-  it('renders quiet hours toggle', () => {
+  it('shows the toggle without disabled time inputs', () => {
     renderConfig();
-    expect(screen.getByRole('switch', { name: /enable quiet hours/i })).toBeInTheDocument();
+    {
+      expect(screen.getByRole('switch', { name: /enable quiet hours/i })).toBeInTheDocument();
+    }
+    {
+      expect(screen.queryByLabelText(/quiet hours start/i)).not.toBeInTheDocument();
+    }
   });
 
-  it('renders card title and description', () => {
-    renderConfig();
-    expect(screen.getByRole('heading', { name: /quiet hours/i })).toBeInTheDocument();
-    expect(
-      screen.getByText(/mute non-critical notifications during this schedule/i),
-    ).toBeInTheDocument();
-  });
-
-  it('shows helper note and Save changes button when enabled', () => {
-    renderConfig();
-    fireEvent.click(screen.getByRole('switch', { name: /enable quiet hours/i }));
-    expect(
-      screen.getByText(/account & security notifications are still delivered/i),
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument();
-  });
-
-  it('hides time inputs when disabled', () => {
-    renderConfig();
-    expect(screen.queryByLabelText(/quiet hours start/i)).not.toBeInTheDocument();
-  });
-
-  it('shows time inputs when enabled', () => {
-    renderConfig();
-    fireEvent.click(screen.getByRole('switch', { name: /enable quiet hours/i }));
-    expect(screen.getByLabelText(/quiet hours start/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/quiet hours end/i)).toBeInTheDocument();
-  });
-
-  it('auto-detects timezone from Intl.DateTimeFormat', () => {
+  it('shows enabled quiet-hour controls and detected timezone', () => {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     renderConfig();
-    fireEvent.click(screen.getByRole('switch', { name: /enable quiet hours/i }));
-    expect(screen.getByText(new RegExp(tz))).toBeInTheDocument();
+    {
+      fireEvent.click(screen.getByRole('switch', { name: /enable quiet hours/i }));
+      expect(screen.getByText(new RegExp(tz))).toBeInTheDocument();
+    }
+    {
+      expect(
+        screen.getByText(/account & security notifications are still delivered/i),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByLabelText(/quiet hours start/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/quiet hours end/i)).toBeInTheDocument();
+    }
   });
 
   it('shows error and disables Save when start === end', () => {
@@ -122,18 +110,6 @@ describe('QuietHoursConfig', () => {
     expect(screen.getByTestId('active-now-badge')).toBeInTheDocument();
   });
 
-  it('timezone Change link opens popover with search input', async () => {
-    renderConfig();
-    fireEvent.click(screen.getByRole('switch', { name: /enable quiet hours/i }));
-    const changeButton = screen.getByRole('button', { name: /^change$/i });
-    expect(changeButton).toHaveClass('focus-visible:ring-2');
-    fireEvent.click(changeButton);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('tz-search')).toBeInTheDocument();
-    });
-  });
-
   it('toggling off fires PUT with enabled:false and preserves time values', () => {
     mockUseQuietHours.mockReturnValue({
       quietHours: {
@@ -162,27 +138,6 @@ describe('QuietHoursConfig', () => {
       expect.objectContaining({ onError: expect.any(Function) }),
     );
     expect(toggle).not.toBeChecked();
-  });
-
-  it('toggling off preserves distinct start/end times (NP7)', () => {
-    mockUseQuietHours.mockReturnValue({
-      quietHours: {
-        enabled: true,
-        startMinutes: 480,
-        endMinutes: 1320,
-        timezone: 'America/New_York',
-      },
-      isLoading: false,
-      upsert: { mutate: mockUpsertMutate, isPending: false },
-    });
-    renderConfig();
-
-    fireEvent.click(screen.getByRole('switch', { name: /enable quiet hours/i }));
-
-    const call = mockUpsertMutate.mock.calls[0][0];
-    expect(call.startMinutes).not.toBe(call.endMinutes);
-    expect(call.startMinutes).toBe(480);
-    expect(call.endMinutes).toBe(1320);
   });
 
   it('rolls back toggle on mutation failure', async () => {

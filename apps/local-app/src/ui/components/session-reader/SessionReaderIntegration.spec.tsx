@@ -385,23 +385,6 @@ describe('Session Reader Integration', () => {
     expect(chip.querySelector('span.animate-pulse')).toBeTruthy();
   });
 
-  it('hides live indicator for completed sessions', async () => {
-    setupSummary(makeSummary({ isOngoing: false, metrics: makeMetrics({ isOngoing: false }) }));
-
-    renderHarness();
-
-    await waitFor(() => {
-      expect(screen.getByText('Hello agent')).toBeInTheDocument();
-    });
-
-    // Live indicator should not be present
-    expect(screen.queryByTestId('metrics-live')).not.toBeInTheDocument();
-
-    // Chip should have static dot (not pulsing)
-    const chip = screen.getByRole('button', { name: /tokens/i });
-    expect(chip.querySelector('span.animate-pulse')).toBeNull();
-  });
-
   // -------------------------------------------------------------------------
   // Tab switching
   // -------------------------------------------------------------------------

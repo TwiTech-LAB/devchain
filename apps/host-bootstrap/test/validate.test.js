@@ -122,3 +122,16 @@ test("error messages never echo values", () => {
     assert.doesNotMatch(error.message, /secret-value/);
   }
 });
+
+test("accepts an optional gid and drops one outside the group range", () => {
+  for (const gid of [1, 20, 1000, 60000]) {
+    assert.equal(validateClaim({ ...base, gid }).gid, gid);
+  }
+  assert.equal("gid" in validateClaim(base), false);
+  for (const gid of [0, -1, 60001, 1000000]) {
+    assert.equal("gid" in validateClaim({ ...base, gid }), false);
+  }
+  for (const gid of [20.5, "20", null]) {
+    refused({ ...base, gid }, /gid/);
+  }
+});

@@ -15,13 +15,16 @@ import {
   DOCKER_ARCHIVE_SHA256_TRAILER,
   DockerArchiveWriteResultSchema,
   DockerImageLoadResultSchema,
+  DockerImageMatchResultSchema,
   type DockerArchiveRequest,
   type DockerArchiveWriteResult,
   type DockerBindPrepare,
   type DockerCapacityResult,
   type DockerContainerCreate,
   type DockerHostOptions,
+  type DockerOwnerOptions,
   type DockerImageLoadResult,
+  type DockerImageMatchResult,
   type DockerNetworkCreate,
   type DockerScanResult,
   type DockerVolumeCreate,
@@ -39,8 +42,10 @@ import {
   type TranscriptRef,
   type TranscriptListing,
 } from '../transcripts/transcript-transfer.dto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { z } from 'zod';
+import { RemoteSessionSchema, type RemoteSession } from './git-owner.dto';
+import { VmUidConflictSchema } from '../vm-user-identity';
 import {
   HostSkillSettingsStatusSchema,
   type HostSkillSettings,
@@ -66,15 +71,44 @@ import {
 } from '../time/project-time-settler.service';
 import {
   FolderSyncStatusSchema,
+  ForceCopyBackupSchema,
+  ReceiveOnlyChangesSchema,
+  RemoteNeedSchema,
   SyncDeviceSchema,
   SyncFolderSchema,
+  SyncFolderConfigurationSchema,
   type FolderSyncStatus,
+  type RemoteNeed,
   type SyncDevice,
   type SyncFolder,
+  type SyncFolderConfiguration,
   type SyncFolderPatch,
   type SyncFolderRequest,
+  type SyncStatusOptions,
+  type ForceCopyBackupRequest,
+  type ForceCopyBackup,
+  type ReceiveOnlyChanges,
 } from '../../file-sync/file-sync.dto';
 import { SCAN_TIMEOUT_MS } from '../../file-sync/file-sync.service';
+import {
+  SyncChownResultSchema,
+  unsupportedChown,
+  type SyncChownRequest,
+  type SyncChownResult,
+} from '../../file-sync/sync-chown.dto';
+import {
+  SyncPathInspectionSchema,
+  type SyncInspectRequest,
+  type SyncPathInspection,
+} from '../../file-sync/sync-path-inspection.dto';
+import {
+  GitGuardInstallResultSchema,
+  GitGuardRemoveResultSchema,
+  GitIndexResultSchema,
+  type GitGuardRemoveResult,
+  type GitIndexResult,
+  type VmGitGuardRequest,
+} from '../../file-sync/git-guard.dto';
 import type { ProviderAuthClaimBundle } from '../../provider-auth/provider-auth-adapters';
 import type { HostProviderApplyInput } from '../host/host-provider-auth.service';
 import { DockerRuntimeSchema } from '../../core/controllers/docker-runtime';
@@ -116,6 +150,10 @@ const HostRuntimeSchema = z
     /** The running process's real account ids; absent on older builds. */
     uid: z.number().nullable().optional(),
     gid: z.number().nullable().optional(),
+    requestedUid: z.number().int().optional(),
+    requestedGid: z.number().int().optional(),
+    primaryGroup: z.string().optional(),
+    uidConflict: VmUidConflictSchema.optional(),
     imageVersion: z.string().nullable().optional(),
     cliVersions: z.record(z.string()).nullable().optional(),
   })
@@ -140,6 +178,7 @@ export interface HostClaimRequest {
   homePath: string;
   /** This PC's uid; the VM takes it when free, older bootstraps drop it. */
   uid?: number;
+  gid?: number;
   version: string;
   port: number;
   providerAuth: ProviderAuthClaimBundle;
@@ -196,6 +235,9 @@ export class RemoteHostClient {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: RemoteStorage,
     private readonly apiKeys: RemoteApiKeyService,
+    @Optional()
+    @Inject('REMOTE_HOST_RUNTIME_TIMEOUT_MS')
+    private readonly runtimeTimeoutMs = RUNTIME_TIMEOUT_MS,
   ) {}
 
   private async dockerClient(
@@ -218,12 +260,18 @@ export class RemoteHostClient {
     try {
       return await action(await this.dockerClient(remoteId, options));
     } catch (error) {
-      throw new RemoteHostRequestError('Docker host request failed', {
-        remoteId,
-        path: '/api/host/docker',
-        status: error instanceof DockerEngineError ? (error.status ?? null) : null,
-        hostCode: error instanceof DockerEngineError ? error.code : null,
-      });
+      const status = error instanceof DockerEngineError ? (error.status ?? null) : null;
+      // The VM's own reason, so a refusal on either machine can be diagnosed.
+      const reason = error instanceof DockerEngineError ? error.reason : undefined;
+      throw new RemoteHostRequestError(
+        `Docker host request failed${status ? ` (HTTP ${status})` : ''}${reason ? `: ${reason}` : ''}`,
+        {
+          remoteId,
+          path: '/api/host/docker',
+          status,
+          hostCode: error instanceof DockerEngineError ? error.code : null,
+        },
+      );
     }
   }
 
@@ -244,12 +292,13 @@ export class RemoteHostClient {
     paths: string[],
     options: DockerHostOptions = {},
     volumes?: string[],
+    networks?: string[],
   ): Promise<DockerScanResult> {
     return this.dockerJson(
       remoteId,
       'POST',
       '/api/host/docker/scan',
-      { paths, ...(volumes && { volumes }) },
+      { paths, ...(volumes && { volumes }), ...(networks && { networks }) },
       options,
     );
   }
@@ -269,6 +318,16 @@ export class RemoteHostClient {
   ): Promise<{ ids: string[] }> {
     return this.dockerJson(remoteId, 'POST', '/api/host/docker/images/present', { ids }, options);
   }
+  async dockerMatchImages(
+    remoteId: string,
+    refs: string[],
+    options: DockerHostOptions = {},
+  ): Promise<DockerImageMatchResult> {
+    const path = '/api/host/docker/images/match';
+    const answer = await this.dockerJson<unknown>(remoteId, 'POST', path, { refs }, options);
+    return checkDockerAnswer(DockerImageMatchResultSchema, answer, remoteId, path);
+  }
+
   dockerCreateVolume(
     remoteId: string,
     input: DockerVolumeCreate,
@@ -308,12 +367,12 @@ export class RemoteHostClient {
     kind: 'volumes' | 'containers' | 'networks',
     id: string,
     projectId: string,
-    options: DockerHostOptions = {},
+    options: DockerOwnerOptions = {},
   ): Promise<void> {
     return this.dockerJson(
       remoteId,
       'DELETE',
-      `/api/host/docker/${kind}/${enc(id)}?${new URLSearchParams({ projectId })}`,
+      `/api/host/docker/${kind}/${enc(id)}?${new URLSearchParams({ projectId, ...(options.projectRoot !== undefined ? { projectRoot: options.projectRoot } : {}) })}`,
       undefined,
       options,
     );
@@ -351,12 +410,12 @@ export class RemoteHostClient {
     remoteId: string,
     id: string,
     projectId: string,
-    options: DockerHostOptions = {},
+    options: DockerOwnerOptions = {},
   ): Promise<void> {
     return this.dockerJson(
       remoteId,
       'POST',
-      `/api/host/docker/containers/${enc(id)}/stop?${new URLSearchParams({ projectId })}`,
+      `/api/host/docker/containers/${enc(id)}/stop?${new URLSearchParams({ projectId, ...(options.projectRoot !== undefined ? { projectRoot: options.projectRoot } : {}) })}`,
       undefined,
       options,
     );
@@ -650,12 +709,73 @@ export class RemoteHostClient {
     return parsed.data;
   }
 
+  async installGitGuard(
+    remoteId: string,
+    projectId: string,
+    request: VmGitGuardRequest,
+  ): Promise<{ warning: string | null }> {
+    const path = `/api/host/projects/${enc(projectId)}/git-guard`;
+    const response = await this.request(remoteId, path, {
+      method: 'POST',
+      body: JSON.stringify(request),
+      expect: [200],
+    });
+    return parseBody(GitGuardInstallResultSchema, response, remoteId, path);
+  }
+
+  async removeGitGuard(
+    remoteId: string,
+    projectId: string,
+    options: { refreshIndex?: boolean } = {},
+  ): Promise<GitGuardRemoveResult> {
+    const path = `/api/host/projects/${enc(projectId)}/git-guard`;
+    const response = await this.request(remoteId, path, {
+      method: 'DELETE',
+      ...(options.refreshIndex !== undefined && {
+        body: JSON.stringify({ refreshIndex: options.refreshIndex }),
+      }),
+      ...(options.refreshIndex && { timeoutMs: REPLICA_TIMEOUT_MS }),
+      expect: [200],
+    });
+    return parseBody(GitGuardRemoveResultSchema, response, remoteId, path);
+  }
+
+  async refreshGitIndex(
+    remoteId: string,
+    projectId: string,
+    since: string | null,
+  ): Promise<GitIndexResult> {
+    const path = `/api/host/projects/${enc(projectId)}/git-index`;
+    const response = await this.request(remoteId, path, {
+      method: 'POST',
+      body: JSON.stringify({ since }),
+      // A large repository's index rebuild can outlast the control timeout.
+      timeoutMs: REPLICA_TIMEOUT_MS,
+      expect: [200],
+    });
+    return parseBody(GitIndexResultSchema, response, remoteId, path);
+  }
+
   async thaw(remoteId: string, projectId: string): Promise<void> {
     const response = await this.request(remoteId, `/api/host/projects/${enc(projectId)}/thaw`, {
       method: 'POST',
       expect: [204],
     });
     await discardBody(response);
+  }
+
+  async listSessions(
+    remoteId: string,
+    projectId?: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<RemoteSession[]> {
+    const path = `/api/sessions${projectId ? `?${new URLSearchParams({ projectId })}` : ''}`;
+    const response = await this.request(remoteId, path, {
+      method: 'GET',
+      ...(options.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
+      expect: [200],
+    });
+    return parseBody(z.array(RemoteSessionSchema), response, remoteId, path);
   }
 
   async stopSessions(remoteId: string, projectId: string): Promise<void> {
@@ -764,6 +884,19 @@ export class RemoteHostClient {
     return parseBody(SyncFolderSchema, response, remoteId, path);
   }
 
+  async syncForceCopyBackup(
+    remoteId: string,
+    request: ForceCopyBackupRequest,
+  ): Promise<ForceCopyBackup> {
+    const path = '/api/host/sync/force-copy-backup';
+    const response = await this.request(remoteId, path, {
+      method: 'POST',
+      body: JSON.stringify(request),
+      expect: [200],
+    });
+    return parseBody(ForceCopyBackupSchema, response, remoteId, path);
+  }
+
   async syncFolderType(remoteId: string, folderId: string, patch: SyncFolderPatch): Promise<void> {
     const response = await this.request(remoteId, `/api/host/sync/folders/${enc(folderId)}`, {
       method: 'PATCH',
@@ -771,6 +904,15 @@ export class RemoteHostClient {
       expect: [204],
     });
     await discardBody(response);
+  }
+
+  async syncFolderConfiguration(
+    remoteId: string,
+    folderId: string,
+  ): Promise<SyncFolderConfiguration> {
+    const path = `/api/host/sync/folders/${enc(folderId)}/configuration`;
+    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
+    return parseBody(SyncFolderConfigurationSchema, response, remoteId, path);
   }
 
   /** Stops sharing the folder on the host; a folder the host no longer has counts as removed. */
@@ -801,17 +943,80 @@ export class RemoteHostClient {
     await discardBody(response);
   }
 
+  async syncOverride(remoteId: string, folderId: string): Promise<void> {
+    const response = await this.request(
+      remoteId,
+      `/api/host/sync/folders/${enc(folderId)}/override`,
+      {
+        method: 'POST',
+        expect: [204],
+      },
+    );
+    await discardBody(response);
+  }
+
+  async syncLocalChanges(remoteId: string, folderId: string): Promise<ReceiveOnlyChanges> {
+    const path = `/api/host/sync/folders/${enc(folderId)}/local-changes`;
+    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
+    return parseBody(ReceiveOnlyChangesSchema, response, remoteId, path);
+  }
+
   /** With `deviceId`, includes the host's view of that device's copy. */
   async syncStatus(
     remoteId: string,
     folderId: string,
     deviceId?: string,
+    options: SyncStatusOptions = {},
   ): Promise<FolderSyncStatus> {
     const query = new URLSearchParams({ folder: folderId });
     if (deviceId) query.set('device', deviceId);
+    if (options.allErrors) query.set('errors', 'all');
     const path = `/api/host/sync/status?${query.toString()}`;
     const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
     return parseBody(FolderSyncStatusSchema, response, remoteId, path);
+  }
+
+  async syncFolderExists(remoteId: string, folderId: string): Promise<boolean> {
+    const path = `/api/host/sync/status?${new URLSearchParams({ folder: folderId })}`;
+    const response = await this.request(remoteId, path, { method: 'GET', expect: [200, 404] });
+    if (response.status === 404) {
+      await discardBody(response);
+      return false;
+    }
+    await parseBody(FolderSyncStatusSchema, response, remoteId, path);
+    return true;
+  }
+
+  async syncRemoteNeed(remoteId: string, folderId: string, deviceId: string): Promise<RemoteNeed> {
+    const path = `/api/host/sync/folders/${enc(folderId)}/remote-need?${new URLSearchParams({ device: deviceId })}`;
+    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
+    return parseBody(RemoteNeedSchema, response, remoteId, path);
+  }
+
+  async syncInspect(remoteId: string, input: SyncInspectRequest): Promise<SyncPathInspection> {
+    const path = '/api/host/sync/inspect';
+    const response = await this.request(remoteId, path, {
+      method: 'POST',
+      body: JSON.stringify(input),
+      expect: [200],
+      timeoutMs: 60_000,
+    });
+    return parseBody(SyncPathInspectionSchema, response, remoteId, path);
+  }
+
+  async syncChown(remoteId: string, input: SyncChownRequest): Promise<SyncChownResult> {
+    const path = '/api/host/sync/chown';
+    const response = await this.request(remoteId, path, {
+      method: 'POST',
+      body: JSON.stringify(input),
+      expect: [200, 404],
+      timeoutMs: 60_000,
+    });
+    if (response.status === 404) {
+      await discardBody(response);
+      return unsupportedChown(null, input.items);
+    }
+    return parseBody(SyncChownResultSchema, response, remoteId, path);
   }
 
   /** Sets the host's tunnel-attestation label; keeps the phone's instance name in sync. */
@@ -846,7 +1051,7 @@ export class RemoteHostClient {
     const response = await this.fetchUrl(baseUrl, '/api/runtime', {
       method: 'GET',
       expect: [200],
-      timeoutMs: RUNTIME_TIMEOUT_MS,
+      timeoutMs: this.runtimeTimeoutMs,
       label: baseUrl,
       certificate,
     });
@@ -861,7 +1066,7 @@ export class RemoteHostClient {
   async discoverRuntime(
     origin: string,
   ): Promise<{ runtime: HostRuntime | null; certificate: string }> {
-    const answer = await discoverRuntime(origin, RUNTIME_TIMEOUT_MS);
+    const answer = await discoverRuntime(origin, this.runtimeTimeoutMs);
     const parsed = HostRuntimeSchema.safeParse(answer.body);
     return {
       runtime: answer.status === 200 && parsed.success ? parsed.data : null,
@@ -1228,6 +1433,16 @@ function parseDockerAnswer<T>(
   } catch {
     // Not JSON: the schema refuses the null below.
   }
+  return checkDockerAnswer(schema, value, remoteId, path);
+}
+
+/** A Docker answer, checked by `schema`; anything else is an invalid host response. */
+function checkDockerAnswer<T>(
+  schema: z.ZodType<T>,
+  value: unknown,
+  remoteId: string,
+  path: string,
+): T {
   const parsed = schema.safeParse(value);
   if (!parsed.success)
     throw new RemoteHostRequestError('Docker host request failed', {
@@ -1240,7 +1455,7 @@ function parseDockerAnswer<T>(
 }
 
 async function parseBody<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   response: Response,
   remoteId: string,
   path: string,

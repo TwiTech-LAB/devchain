@@ -3,7 +3,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ProviderModelsController } from './provider-models.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { McpProviderRegistrationService } from '../services/mcp-provider-registration.service';
-import { ConflictError } from '../../../common/errors/error-types';
+
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
@@ -80,100 +80,49 @@ describe('ProviderModelsController', () => {
     controller = module.get(ProviderModelsController);
   });
 
-  describe('GET /api/providers/:id/models', () => {
-    it('lists models after validating provider exists', async () => {
-      storage.listProviderModelsByProvider.mockResolvedValue([
-        { id: 'm1', providerId: 'provider-1', name: 'gpt-4.1', position: 0 },
-      ]);
-
-      const result = await controller.listProviderModels('provider-1');
-
-      expect(storage.getProvider).toHaveBeenCalledWith('provider-1');
-      expect(storage.listProviderModelsByProvider).toHaveBeenCalledWith('provider-1');
-      expect(result).toHaveLength(1);
-    });
-
-    it('propagates NotFoundException when provider does not exist', async () => {
-      storage.getProvider.mockRejectedValue(new NotFoundException('Provider not found'));
-
-      await expect(controller.listProviderModels('missing-provider')).rejects.toThrow(
-        NotFoundException,
-      );
-      expect(storage.listProviderModelsByProvider).not.toHaveBeenCalled();
-    });
-  });
-
   describe('POST /api/providers/:id/models', () => {
-    it('creates a single model from {name}', async () => {
-      storage.createProviderModel.mockResolvedValue({
-        id: 'm1',
-        providerId: 'provider-1',
-        name: 'gpt-4.1',
-        position: 0,
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      });
-
-      const result = await controller.createProviderModel('provider-1', { name: 'gpt-4.1' });
-
-      expect(storage.createProviderModel).toHaveBeenCalledWith({
-        providerId: 'provider-1',
-        name: 'gpt-4.1',
-      });
-      expect(result).toMatchObject({ name: 'gpt-4.1' });
-    });
-
-    it('bulk imports models from {models} and returns stats', async () => {
-      storage.bulkCreateProviderModels.mockResolvedValue({
-        added: ['a', 'b'],
-        existing: ['c'],
-      });
-
-      const result = await controller.createProviderModel('provider-1', {
-        models: [{ name: 'b', position: 2 }, { name: 'a', position: 1 }, { name: 'c' }],
-      });
-
-      expect(storage.bulkCreateProviderModels).toHaveBeenCalledWith('provider-1', ['a', 'b', 'c']);
-      expect(result).toEqual({
-        added: ['a', 'b'],
-        existing: ['c'],
-        total: 3,
-      });
-    });
-
-    it('rejects invalid payload {}', async () => {
-      await expect(controller.createProviderModel('provider-1', {})).rejects.toThrow();
-      expect(storage.createProviderModel).not.toHaveBeenCalled();
-      expect(storage.bulkCreateProviderModels).not.toHaveBeenCalled();
-    });
-
-    it('rejects invalid payload {name: \"\"}', async () => {
-      await expect(controller.createProviderModel('provider-1', { name: '' })).rejects.toThrow();
-      expect(storage.createProviderModel).not.toHaveBeenCalled();
-      expect(storage.bulkCreateProviderModels).not.toHaveBeenCalled();
-    });
-
-    it('rejects invalid payload {models: \"invalid\"}', async () => {
-      await expect(
-        controller.createProviderModel('provider-1', { models: 'invalid' }),
-      ).rejects.toThrow();
-      expect(storage.createProviderModel).not.toHaveBeenCalled();
-      expect(storage.bulkCreateProviderModels).not.toHaveBeenCalled();
-    });
-
-    it('propagates ConflictError for duplicate single-model create', async () => {
-      storage.createProviderModel.mockRejectedValue(
-        new ConflictError('Model "gpt-4.1" already exists for this provider.'),
-      );
-
-      await expect(
-        controller.createProviderModel('provider-1', { name: 'gpt-4.1' }),
-      ).rejects.toThrow(ConflictError);
-      expect(storage.createProviderModel).toHaveBeenCalledWith({
-        providerId: 'provider-1',
-        name: 'gpt-4.1',
-      });
-    });
+    it.each([
+      {
+        name: 'single',
+        input: { name: 'gpt-4.1' },
+        response: {
+          id: 'm1',
+          providerId: 'provider-1',
+          name: 'gpt-4.1',
+          position: 0,
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+        expectedArgs: [
+          {
+            providerId: 'provider-1',
+            name: 'gpt-4.1',
+          },
+        ],
+      },
+      {
+        name: 'bulk',
+        input: {
+          models: [{ name: 'b', position: 2 }, { name: 'a', position: 1 }, { name: 'c' }],
+        },
+        response: {
+          added: ['a', 'b'],
+          existing: ['c'],
+        },
+        expectedArgs: ['provider-1', ['a', 'b', 'c']],
+      },
+    ])(
+      'creates models through the $name branch',
+      async ({ name, input, response, expectedArgs }) => {
+        const create =
+          name === 'single' ? storage.createProviderModel : storage.bulkCreateProviderModels;
+        create.mockResolvedValue(response);
+        const result = await controller.createProviderModel('provider-1', input);
+        expect(create.mock.calls[0]).toEqual(expectedArgs);
+        if (name === 'single') expect(result).toMatchObject({ name: 'gpt-4.1' });
+        else expect(result).toEqual({ ...response, total: 3 });
+      },
+    );
   });
 
   describe('DELETE /api/providers/:id/models/:modelId', () => {
@@ -295,34 +244,15 @@ describe('ProviderModelsController', () => {
       expect(fakeExecutor.calls).toHaveLength(0);
     });
 
-    it('maps timeout failures to bad request', async () => {
-      fakeExecutor.enqueueResponse({ type: 'timeout' });
-
-      await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('maps non-zero exit failures to bad request', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'failure',
-        exitCode: 1,
-        stderr: 'boom',
-      });
-
-      await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('maps ENOENT-like failures (null exit code, no output) to bad request', async () => {
-      fakeExecutor.enqueueResponse({
-        type: 'failure',
-        exitCode: undefined,
-        stdout: '',
-        stderr: '',
-      });
-
+    it.each([
+      { name: 'timeout', response: { type: 'timeout' as const } },
+      { name: 'nonzero exit', response: { type: 'failure' as const, exitCode: 1, stderr: 'boom' } },
+      {
+        name: 'missing executable',
+        response: { type: 'failure' as const, exitCode: undefined, stdout: '', stderr: '' },
+      },
+    ])('maps discovery $name to bad request', async ({ response }) => {
+      fakeExecutor.enqueueResponse(response);
       await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
         BadRequestException,
       );

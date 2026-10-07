@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as semver from 'semver';
 import {
@@ -9,6 +10,7 @@ import {
   HOST_INSTALL_MIN_MEMORY_MIB,
   type HostInstallPins,
 } from '../host-install/host-install-block';
+import { HostInstallService, parseVersionsEnv } from '../host-install/host-install.service';
 import { HOME_ROOTS, USER_NAME } from '../operations/claim.operation';
 import { MIN_HOST_IMAGE_VERSION } from '../host-image';
 import { MIN_VM_MEMORY_MIB } from '../operations/vm-operations.dto';
@@ -32,34 +34,19 @@ const bootstrapRender = requireFromTest(
   '../../../../../host-bootstrap/lib/render.js',
 ) as BootstrapRenderModule;
 
-function imageAptPackages(): string[] {
-  const lines = readFileSync(
-    join(__dirname, '../../../../../host-image/customize.sh'),
-    'utf8',
-  ).split(/\r?\n/);
-  const first = lines.findIndex((line) =>
-    /^\s*apt-get\s+install\s+-y\s+--no-install-recommends(?:\s|\\|$)/.test(line),
-  );
-  const packages: string[] = [];
-  for (let index = first; index >= 0 && index < lines.length; index += 1) {
-    let line = lines[index].replace(/\s+#.*$/, '').trim();
-    const continued = line.endsWith('\\');
-    if (continued) line = line.slice(0, -1).trim();
-    if (index === first) {
-      line = line.replace(/^apt-get\s+install\s+-y\s+--no-install-recommends/, '').trim();
-    }
-    packages.push(...line.split(/\s+/).filter(Boolean));
-    if (!continued) break;
-  }
-  return packages;
-}
+const imageVersions = parseVersionsEnv(
+  readFileSync(join(__dirname, '../../../../../host-image/versions.env'), 'utf8'),
+);
+const imageRequiredPackages = imageVersions.DEVCHAIN_REQUIRED_PACKAGES.split(/\s+/);
+const imageToolPackages = imageVersions.DEVCHAIN_TOOL_PACKAGES.split(/\s+/);
 
 const installerPins: HostInstallPins = {
   nodeVersion: '24.21.0',
   syncthingVersion: '2.1.5',
   npmRegistry: 'https://registry.npmjs.org/',
   bootstrap: { package: '@devchain/host-bootstrap', version: '0.1.0', sha256: 'a'.repeat(64) },
-  aptPackages: imageAptPackages(),
+  aptPackages: imageRequiredPackages,
+  toolPackages: imageToolPackages,
 };
 
 describe('host bootstrap rule parity', () => {
@@ -94,11 +81,46 @@ describe('host bootstrap rule parity', () => {
 
   it('installs the image package set with guest tools selected by the hypervisor', () => {
     expect(baseHostInstallAptPackages(installerPins)).toEqual(
-      imageAptPackages().filter((name) => name !== 'qemu-guest-agent'),
+      imageRequiredPackages.filter((name) => name !== 'qemu-guest-agent'),
     );
   });
 
-  it('images the shared DevChain and agent base packages', () => {
+  // Loading source pins catches drift in the producer without running npm pack.
+  it('pins both image package lists and keeps agent tools separate from requirements', async () => {
+    const dataDirectory = mkdtempSync(join(tmpdir(), 'devchain-image-package-pins-'));
+    const processExecutor = {
+      run: jest.fn(async () => {
+        writeFileSync(join(dataDirectory, 'bootstrap.tgz'), 'archive');
+        return { success: true, stdout: '[{"filename":"bootstrap.tgz"}]' };
+      }),
+    };
+    try {
+      const service = new HostInstallService(processExecutor as never, {
+        moduleDirectory: __dirname,
+        cwd: join(__dirname, '../../../../../..'),
+        dataDirectory,
+      });
+      const { pins } = await service.loadInputs();
+      expect(pins.aptPackages).toEqual(imageRequiredPackages);
+      expect(pins.toolPackages).toEqual(imageToolPackages);
+    } finally {
+      rmSync(dataDirectory, { recursive: true, force: true });
+    }
+    expect(imageRequiredPackages).toEqual([
+      'qemu-guest-agent',
+      'tmux',
+      'git',
+      'curl',
+      'ca-certificates',
+      'xz-utils',
+      'build-essential',
+      'python3',
+      'jq',
+      'openssl',
+      'procps',
+    ]);
+    expect(imageToolPackages).not.toContain('yq');
+    expect(imageToolPackages.filter((name) => imageRequiredPackages.includes(name))).toEqual([]);
     const expected = [
       'jq',
       'ripgrep',
@@ -111,8 +133,35 @@ describe('host bootstrap rule parity', () => {
       'rsync',
       'unzip',
       'openssl',
+      'screen',
+      'psmisc',
+      'procps',
+      'time',
+      'lsof',
+      'strace',
+      'htop',
+      'less',
+      'nano',
+      'vim-tiny',
+      'tree',
+      'zip',
+      'net-tools',
+      'iputils-ping',
+      'inetutils-telnet',
+      'netcat-openbsd',
+      'bind9-dnsutils',
+      'traceroute',
+      'mtr-tiny',
+      'tcpdump',
+      'socat',
+      'fd-find',
+      'universal-ctags',
+      'gawk',
+      'shellcheck',
+      'cloc',
+      'git-lfs',
     ];
-    const imagePackages = imageAptPackages();
+    const imagePackages = [...imageRequiredPackages, ...imageToolPackages];
     for (const name of expected) {
       expect(imagePackages).toContain(name);
     }

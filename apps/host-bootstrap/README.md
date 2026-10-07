@@ -13,7 +13,7 @@ contract").
 
 ## Installed hosts
 
-The installer shares `apps/host-image/versions.env`, its apt package list and
+The installer shares `apps/host-image/versions.env`, its required and tool package lists and
 `files/` settings for inotify and the headless baseline. It writes
 `/usr/share/devchain-host/manifest.json` with `install.method` set to
 `devchain-host-install`, `install.devchainVersion` set to home's version and
@@ -26,24 +26,49 @@ reset the machine ID. See `apps/local-app/src/modules/remotes/host-install/host-
 
 ## Units
 
-| Unit                         | Runs as      | When                                                  |
-| ---------------------------- | ------------ | ----------------------------------------------------- |
-| `devchain-bootstrap.service` | root         | only while `/etc/devchain-host/claim.json` is missing |
+| Unit                         | Runs as      | When                                                                                                          |
+| ---------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------- |
+| `devchain-bootstrap.service` | root         | only while `/etc/devchain-host/claim.json` is missing                                                         |
 | `devchain-host.service`      | claimed user | written at claim time and re-written by `--clis` on a version-changing update; `Conflicts=devchain-bootstrap` |
 
 `devchain-host.service` has no `PAMName=`, so no logind session starts and
 there is no `/run/user/<uid>` and no session bus. Provider env comes from
 `<home>/.devchain/host.env` (`EnvironmentFile=`).
 
+DevChain terminals and provider sessions on each side set `DEVCHAIN_UID` and
+`DEVCHAIN_GID` from the app process's own ids, overriding inherited values.
+Terminal creation also sets the new tmux session's environment explicitly, so
+an existing tmux server cannot retain the wrong ids
+(`apps/local-app/src/common/process-ids-env.ts`,
+`apps/local-app/src/modules/terminal/services/terminal-io/lifecycle.ts`,
+`apps/local-app/src/modules/sessions/services/provider-launch-config/provider-launch-config.service.ts`).
+
+Claim writes `/etc/profile.d/devchain-ids.sh`, and the refreshed
+`devchain-host-update --clis <version>` child installs it on updates too
+(`lib/claim.js` — `ensureIdsProfile` and the claim profile step;
+`bin/devchain-host-update.js`). Its contents are:
+
+```sh
+export DEVCHAIN_UID="$(id -u)" DEVCHAIN_GID="$(id -g)"
+```
+
+The file has mode 0644. Claim refuses a symbolic link at that path.
+It leaves the file unchanged when its contents and mode match.
+The file supplies the login user's ids to manual SSH login shells.
+Non-interactive `ssh vm 'docker compose up -d'` does not load this profile.
+Export the variables explicitly if your Compose file needs them.
+Keep both variables out of `.env`, because that file syncs to both sides
+(`lib/claim.js` — `ensureIdsProfile`).
+
 ## VM certificate
 
 Each VM has one TLS identity: an EC P-256 self-signed certificate for
 `DNS:devchain-host`, valid for 10 years, that the `openssl` CLI creates.
 
-| File | Mode | Written by |
-| ---- | ---- | ---------- |
+| File                                         | Mode                                    | Written by                                                                                                                                        |
+| -------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/etc/devchain-host/tls/key.pem`, `cert.pem` | `0600`, `0644` (directory `0755`, root) | `devchain-bootstrap --ensure-certificate`, the `ExecStartPre=` of `devchain-bootstrap.service`, so the files exist when `systemctl start` returns |
-| `<home>/.devchain/tls/key.pem`, `cert.pem` | `0600`, claimed user (directory `0700`) | the claim's `tls` step, copied from `/etc/devchain-host/tls/` |
+| `<home>/.devchain/tls/key.pem`, `cert.pem`   | `0600`, claimed user (directory `0700`) | the claim's `tls` step, copied from `/etc/devchain-host/tls/`                                                                                     |
 
 - The certificate is created only on an unclaimed VM that has neither file.
   A restart keeps it. One file alone, an unreadable file or a key that does
@@ -77,6 +102,7 @@ gets no answer.
   "userName": "alice",
   "homePath": "/Users/alice",
   "uid": 1000,
+  "gid": 1000,
   "version": "0.24.0",
   "port": 3000,
   "providerAuth": {
@@ -94,18 +120,28 @@ gets no answer.
 
 - `userName`: `^[a-z_][a-z0-9_-]{0,31}$`. `homePath` sits under `/home`,
   `/Users` or `/var/home`. `version` is semver. `port` is 1024–65535.
-- `uid` (optional integer; kept only from 500 to 60000, dropped otherwise, so a
-  directory-service or systemd-homed uid never blocks the claim): this PC's own
-  account id, so containers that run as it can write mounted project files.
-  A non-integer is refused. `useradd` gets `-u <uid> -U`
-  when the uid is at least 1000 and no account on the VM holds it. `-U` gives
-  the user-private group the same number as its gid when that is free too.
-  A uid below 1000 (including macOS 501), a taken uid or an absent field uses
-  normal Linux uid allocation. An existing regular account keeps its ids;
-  existing system accounts and accounts with a different home are refused.
-  The VM's own `/api/runtime` reports the ids the claimed DevChain really
-  runs with, which is the value home trusts even if an old validator ignored
-  the requested uid.
+- `uid`: optional integer from this PC's account. The validator keeps values
+  from 500 to 60000 and drops values outside this range.
+  It refuses non-integers (`lib/validate.js` — `validateClaim`).
+  A new account gets `useradd -u <uid>` when that uid is free, including uid 501.
+  A taken uid or an absent field uses normal Linux allocation.
+  An existing allowed account keeps its ids. Claim refuses an account below
+  uid 500, another home, or uid 500–999 that does not match the request
+  (`lib/claim.js` — `ensureUser`).
+- `gid`: optional integer from this PC's account. The validator keeps values
+  from 1 to 60000 and drops values outside this range, so a home with a
+  directory-service gid can still claim. Claim reuses the group with that
+  number or creates a new group. `useradd -g <gid>` sets the primary group.
+  Thus a Mac with gid 20 uses the VM's existing `dialout` group.
+  Without `gid`, claim retains the uid-only group allocation rules
+  (`lib/validate.js` — `validateClaim`; `lib/claim.js` — `ensurePrimaryGroup`).
+- The claim record includes actual ids, requested ids, the primary group and
+  any uid conflict. A conflict names the real holder when one exists.
+  The VM runtime reports its actual process ids. Home uses those ids to decide
+  whether automatic Docker moves are available
+  (`lib/claim.js` — `accountIdentity`/`writeClaimRecord`;
+  `apps/local-app/src/modules/core/controllers/runtime.controller.ts` — `getRuntime`;
+  `apps/local-app/src/modules/remotes/vm-user-identity.ts` — `vmUserMismatch`).
 - `env`: single-line values. Keys that systemd or DevChain set are refused
   (`HOME`, `PATH`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, …).
 - `files`: at most 32, each inside the home, mode `0600` or `0400`, at most
@@ -121,16 +157,16 @@ the same existing claim-file validation and write path, so this does not change
 the claim contract (`apps/local-app/src/modules/remotes/operations/claim.operation.ts`,
 `apps/host-bootstrap/lib/claim.js`).
 
-| Answer                                                             | Meaning                                                                                      |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `200 {claimed:true, userName, homePath, version, cliVersions, port, claimedAt}` | DevChain answers `/api/runtime` with `version` on the port                    |
-| `400 INVALID_CLAIM`                                                | the body breaks the rules above                                                              |
-| `409 ALREADY_CLAIMED`                                              | claimed, or a claim is running                                                               |
-| `409 USER_EXISTS / HOME_EXISTS`                                    | the account or home exists and is not a previous attempt's                                   |
-| `500 CLAIM_STEP_FAILED`                                            | a step failed (`message` names it). Nothing is recorded, so the same claim can be sent again |
-| `504 HOST_START_TIMEOUT`                                           | the claim is recorded, but DevChain did not answer in time                                   |
+| Answer                                                                          | Meaning                                                                                      |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `200 {claimed:true, userName, homePath, version, cliVersions, port, claimedAt}` | DevChain answers `/api/runtime` with `version` on the port                                   |
+| `400 INVALID_CLAIM`                                                             | the body breaks the rules above                                                              |
+| `409 ALREADY_CLAIMED`                                                           | claimed, or a claim is running                                                               |
+| `409 USER_EXISTS / HOME_EXISTS`                                                 | the account or home exists and is not a previous attempt's                                   |
+| `500 CLAIM_STEP_FAILED`                                                         | a step failed (`message` names it). Nothing is recorded, so the same claim can be sent again |
+| `504 HOST_START_TIMEOUT`                                                        | the claim is recorded, but DevChain did not answer in time                                   |
 
-Claim steps, in order: user, sudoers (checked with `visudo -cf`), tls,
+Claim steps, in order: user, sudoers (checked with `visudo -cf`), profile, tls,
 provider auth, install, helper, clis, activate, service, record (`lib/claim.js`). `claim.json` is written last and
 holds `userName`, `homePath`, `version`, `cliVersions`, `port` and `claimedAt`.
 Among the provider-auth files, home always sends `<home>/.devchain/host-api-key`
@@ -182,14 +218,28 @@ provide `HOME` to the bootstrap service (`lib/clis.js`). CLI downloads have a
 Before the CLI step, claim and version-changing Update VM verify and install
 `dist/host-install/devchain-host-bootstrap.tgz` from the target DevChain
 package, then invoke the refreshed helper as `devchain-host-update --clis <version>`.
-The `--clis` child installs the version's missing base packages, then its CLIs:
-it reads `dist/host-install/pins.json` of the target package, asks dpkg which
-of its `aptPackages` are missing, and installs only those names with
-`--no-install-recommends --no-remove` (apt may upgrade their required
-dependencies; `qemu-guest-agent` is excluded). When nothing is missing, the read-only dpkg query still runs, but no
-configure or apt command runs. An apt failure fails the child with
-`{code:"PACKAGES_FAILED", message}` before any CLI install or activation
-(`lib/packages.js`). This fresh process reads the target package's CLI pins; the already-running
+The `--clis` child reads `dist/host-install/pins.json` from the target package.
+Its `aptPackages` list contains required packages; `toolPackages` contains agent tools.
+Both lists come from `DEVCHAIN_REQUIRED_PACKAGES` and `DEVCHAIN_TOOL_PACKAGES`
+in `apps/host-image/versions.env` (`scripts/copy-cli.js`).
+The child asks dpkg which packages are missing. It installs missing required
+packages with `--no-install-recommends --no-remove`; apt can upgrade required
+dependencies, and this pass excludes `qemu-guest-agent`.
+A required-package failure stops the child with `{code:"PACKAGES_FAILED", message}`
+before any CLI install or activation. A failed `apt-get update` is logged;
+the required install determines success. Missing tools get a group attempt
+of up to 3 minutes, then individual attempts of up to 2 minutes each.
+Tool preparation and all attempts share a 10-minute budget.
+Both tool paths use `--no-install-recommends --no-remove`, so apt cannot remove
+an existing package to resolve a conflict. A failed tool is skipped.
+An apt dry run precedes each attempt, and a tool whose install would change an
+installed package is skipped. After a failed attempt, cleanup purges only the
+unconfigured packages that the tools phase added, so later apt installs still work.
+The child reports skipped names in `skippedTools` and diagnostics on stderr.
+The UI does not show skipped tools. When no packages are missing, the
+read-only dpkg query still runs, but no configure or apt command runs
+(`lib/packages.js`, `bin/devchain-host-update.js`).
+This fresh process reads the target package's CLI pins; the already-running
 claim/update process continues its activation and recording work. The SHA-256
 check against `pins.json` detects a damaged tgz, not a substituted tgz plus digest.
 An equal-version update returns without installing anything (`lib/refresh-helper.js`,
@@ -204,17 +254,20 @@ sudo npm install -g /opt/devchain-host/current/lib/node_modules/devchain-cli/dis
 
 ## Root helpers (sudo, used by DevChain on a claimed VM)
 
-The claimed user gets `NOPASSWD:ALL`, plus explicit lines for the two helpers.
-DevChain calls them with `sudo -n` (`apps/local-app/src/modules/remotes/host`).
+The claimed user gets `NOPASSWD:ALL`, plus explicit lines for the three helpers (`lib/render.js` — `renderSudoers`).
+DevChain calls them with `sudo -n` (`apps/local-app/src/modules/remotes/host`, `apps/local-app/src/modules/file-sync/sync-chown.service.ts`).
 
-| Helper                              | DevChain route                  | Does                                                                                             |
-| ----------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `devchain-host-update <v>`          | `POST /api/host/update` → 202   | starts `devchain-host-update --run <v>` as the transient unit `devchain-host-update` and returns |
-| `devchain-host-update --run <v>`    | —                               | install DevChain and its CLIs, activate, record, restart `devchain-host`, remove other versions  |
-| `devchain-host-update --clis <v>` | — | installs the version's missing base packages, then its CLIs, then re-writes `devchain-host.service` when a claim record exists (any refresh log goes to stderr); prints `{cliVersions}` (package failure: `PACKAGES_FAILED`) |
-| `devchain-host-update --docker`     | `POST /api/host/docker` → 202   | starts `devchain-host-update --docker --run <jobId>` as the transient unit `devchain-host-docker` and returns `{jobId}` |
-| `devchain-host-update --docker --run <jobId>` | — | install Docker Engine and Compose, add the user to the `docker` group, restart `devchain-host`, record `docker.json` |
-| `devchain-host-project-root <path>` | `POST /api/host/projects/roots` | creates the path (missing parents root `0755`), and the leaf is owned by the user                |
+| Helper                                                              | DevChain route                  | Does                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `devchain-host-update <v>`                                          | `POST /api/host/update` → 202   | starts `devchain-host-update --run <v>` as the transient unit `devchain-host-update` and returns                                                                                                                                                                 |
+| `devchain-host-update --run <v>`                                    | —                               | install DevChain and its CLIs, activate, record, restart `devchain-host`, remove other versions                                                                                                                                                                  |
+| `devchain-host-update --clis <v>`                                   | —                               | installs missing required packages strictly and agent tools with skips, then its CLIs; re-writes `devchain-host.service` when a claim record exists; prints `{cliVersions,skippedTools}`; diagnostics go to stderr (required-package failure: `PACKAGES_FAILED`) |
+| `devchain-host-update --docker`                                     | `POST /api/host/docker` → 202   | starts `devchain-host-update --docker --run <jobId>` as the transient unit `devchain-host-docker` and returns `{jobId}`                                                                                                                                          |
+| `devchain-host-update --docker --run <jobId>`                       | —                               | install Docker Engine and Compose, add the user to the `docker` group, restart `devchain-host`, record `docker.json`                                                                                                                                             |
+| `devchain-host-project-root <path>`                                 | `POST /api/host/projects/roots` | creates the path (missing parents root `0755`), and the leaf is owned by the user                                                                                                                                                                                |
+| `devchain-host-project-chown <root> <--file\|--dir\|--tree> <path>` | `POST /api/host/sync/chown`     | changes a file, directory, or eligible tree to the claimed user's uid and gid (`bin/devchain-host-project-chown.js`, `lib/project-chown.js`)                                                                                                                     |
+
+The ownership route validates the checkout and Git facts before calling the helper. Automatic repair uses `--file` for tracked regular code files and `--dir` for qualifying parent directories without recursion. Explicit **Give to** can use `--tree` for untracked, non-ignored output; it refuses tracked descendants. The helper skips symbolic links, different devices, `.git` and nested repositories. A missing helper is reported as unsupported with update/copy guidance (`apps/local-app/src/modules/file-sync/host-sync.controller.ts`, `sync-chown.service.ts`, `lib/project-chown.js`).
 
 The update runs in its own unit because restarting `devchain-host.service`
 kills everything in its cgroup, including the `sudo` DevChain started.

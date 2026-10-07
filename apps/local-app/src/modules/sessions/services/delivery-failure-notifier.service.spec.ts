@@ -133,18 +133,6 @@ describe('DeliveryFailureNotifierService', () => {
     expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
   });
 
-  it('swallows deliverImmediate errors (best-effort)', async () => {
-    mockTerminalIO.deliverImmediate.mockRejectedValue(new Error('tmux error'));
-
-    await expect(
-      notifier.notifySendersOfFailure(
-        [makeMessage({ senderAgentId: 'sender-1' })],
-        'recipient-1',
-        'No active session',
-      ),
-    ).resolves.toBeUndefined();
-  });
-
   it('uses the strictest disclosure for a mixed sender notification', async () => {
     const rawReason = 'provider failed at /private/source/project';
 

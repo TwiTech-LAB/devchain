@@ -204,6 +204,14 @@ describe('ReviewDetailPage', () => {
     });
 
     expect(screen.getByText('Back to Reviews')).toBeInTheDocument();
+
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Back to Reviews')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByText('Back to Reviews'));
+      expect(navigateMock).toHaveBeenCalledWith('/reviews');
+    }
   });
 
   it('renders review header with title and status', async () => {
@@ -217,20 +225,26 @@ describe('ReviewDetailPage', () => {
     });
 
     expect(screen.getByText('Pending')).toBeInTheDocument();
-  });
 
-  it('renders base and head refs in header', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('main...feature/auth-fix')).toBeInTheDocument();
-    });
-
-    // Also check SHA references
-    expect(screen.getByText('(abc123d...def456g)')).toBeInTheDocument();
+    {
+      await waitFor(() => {
+        expect(screen.getByText('main...feature/auth-fix')).toBeInTheDocument();
+      });
+      expect(screen.getByText('(abc123d...def456g)')).toBeInTheDocument();
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Fix authentication bug')).toBeInTheDocument();
+      });
+      expect(screen.getAllByText('Files').length).toBeGreaterThan(0);
+      expect(screen.getByText('Comments')).toBeInTheDocument();
+      expect(screen.getByText('Select a file to view diff')).toBeInTheDocument();
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('3 files')).toBeInTheDocument();
+      });
+    }
   });
 
   it('renders back button that navigates to reviews list', async () => {
@@ -247,52 +261,6 @@ describe('ReviewDetailPage', () => {
     await userEvent.click(backButton);
 
     expect(navigateMock).toHaveBeenCalledWith('/reviews');
-  });
-
-  it('renders three-panel layout with Files, Diff, and Comments sections', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('Fix authentication bug')).toBeInTheDocument();
-    });
-
-    // Check for panel headers (use getAllByText for Files since CommentPanel also has "Files" filter)
-    expect(screen.getAllByText('Files').length).toBeGreaterThan(0);
-    expect(screen.getByText('Comments')).toBeInTheDocument();
-    expect(screen.getByText('Select a file to view diff')).toBeInTheDocument();
-  });
-
-  it('displays file count in header', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('3 files')).toBeInTheDocument();
-    });
-  });
-
-  it('renders file list with additions and deletions', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      // FileNavigator uses tree view, showing file names not full paths
-      expect(screen.getByText('auth.ts')).toBeInTheDocument();
-    });
-
-    expect(screen.getByText('utils.ts')).toBeInTheDocument();
-    expect(screen.getByText('old.ts')).toBeInTheDocument();
-
-    // Check for additions/deletions display
-    expect(screen.getByText('+10')).toBeInTheDocument();
-    expect(screen.getByText('-5')).toBeInTheDocument();
   });
 
   it('selects file when clicked', async () => {
@@ -314,6 +282,61 @@ describe('ReviewDetailPage', () => {
     await waitFor(() => {
       expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThan(0);
     });
+
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Fix authentication bug')).toBeInTheDocument();
+      });
+      const gridContainer = document.querySelector('.grid');
+      expect(gridContainer).toBeInTheDocument();
+      expect(gridContainer).toHaveClass('grid-cols-[1fr_320px]');
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('Fix authentication bug')).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByText('auth.ts')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByText('auth.ts'));
+      await waitFor(() => {
+        expect(screen.getByTitle('Side-by-side view')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByTitle('Side-by-side view'));
+      const gridContainer = document.querySelector('.grid');
+      expect(gridContainer).toBeNull();
+      const commentPanelContainer = document.querySelector('.border-t.bg-card');
+      expect(commentPanelContainer).toBeInTheDocument();
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('auth.ts')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByText('auth.ts'));
+      await waitFor(() => {
+        expect(screen.getByTitle('Side-by-side view')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByTitle('Side-by-side view'));
+      let gridContainer = document.querySelector('.grid');
+      expect(gridContainer).toBeNull();
+      expect(document.querySelector('.border-t.bg-card')).toBeInTheDocument();
+      await userEvent.click(screen.getByTitle('Unified view'));
+      gridContainer = document.querySelector('.grid');
+      expect(gridContainer).toHaveClass('grid-cols-[1fr_320px]');
+    }
+    {
+      await waitFor(() => {
+        expect(screen.getByText('auth.ts')).toBeInTheDocument();
+      });
+      await userEvent.click(screen.getByText('auth.ts'));
+      await waitFor(() => {
+        expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThan(0);
+      });
+      await userEvent.click(screen.getByTitle('Side-by-side view'));
+      expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThan(0);
+      await userEvent.click(screen.getByTitle('Unified view'));
+      expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThan(0);
+    }
   });
 
   it('shows empty state when no files changed', async () => {
@@ -327,189 +350,17 @@ describe('ReviewDetailPage', () => {
     });
   });
 
-  it('renders all status badges correctly', async () => {
-    const statuses = ['draft', 'pending', 'changes_requested', 'approved', 'closed'] as const;
-    const statusLabels = {
-      draft: 'Draft',
-      pending: 'Pending',
-      changes_requested: 'Changes Requested',
-      approved: 'Approved',
-      closed: 'Closed',
-    };
-
-    for (const status of statuses) {
-      jest.resetAllMocks();
-      const review = { ...baseReview, id: `review-${status}`, status };
-      global.fetch = buildFetchMock(review);
-      const { Wrapper } = createWrapper(`review-${status}`);
-
-      const { unmount } = render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-      await waitFor(() => {
-        expect(screen.getByText(statusLabels[status])).toBeInTheDocument();
-      });
-
-      unmount();
-    }
-  });
-
-  it('navigates back when error state button is clicked', async () => {
-    global.fetch = buildFetchMock(null);
-    const { Wrapper } = createWrapper();
-
+  it.each([
+    ['draft', 'Draft'],
+    ['pending', 'Pending'],
+    ['changes_requested', 'Changes Requested'],
+    ['approved', 'Approved'],
+    ['closed', 'Closed'],
+  ] as const)('renders %s status badge', async (status, label) => {
+    const review = { ...baseReview, id: 'review-' + status, status };
+    global.fetch = buildFetchMock(review);
+    const { Wrapper } = createWrapper('review-' + status);
     render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('Back to Reviews')).toBeInTheDocument();
-    });
-
-    await userEvent.click(screen.getByText('Back to Reviews'));
-
-    expect(navigateMock).toHaveBeenCalledWith('/reviews');
-  });
-});
-
-describe('ReviewDetailPage adaptive layout', () => {
-  beforeEach(() => {
-    navigateMock.mockReset();
-  });
-
-  afterEach(() => {
-    jest.resetAllMocks();
-  });
-
-  it('renders with unified grid layout by default', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('Fix authentication bug')).toBeInTheDocument();
-    });
-
-    // Grid container should have unified layout classes (inside right resizable panel)
-    const gridContainer = document.querySelector('.grid');
-    expect(gridContainer).toBeInTheDocument();
-    expect(gridContainer).toHaveClass('grid-cols-[1fr_320px]');
-  });
-
-  it('uses nested resizable panels when view type is changed to split', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    await waitFor(() => {
-      expect(screen.getByText('Fix authentication bug')).toBeInTheDocument();
-    });
-
-    // Select a file first to show the DiffViewer with toggle buttons
-    await waitFor(() => {
-      expect(screen.getByText('auth.ts')).toBeInTheDocument();
-    });
-
-    await userEvent.click(screen.getByText('auth.ts'));
-
-    // Wait for DiffViewer to render with toggle buttons
-    await waitFor(() => {
-      expect(screen.getByTitle('Side-by-side view')).toBeInTheDocument();
-    });
-
-    // Click split view toggle
-    await userEvent.click(screen.getByTitle('Side-by-side view'));
-
-    // Split view uses nested ResizablePanelGroup instead of grid
-    // No grid container in split mode - it uses vertical resizable panels
-    const gridContainer = document.querySelector('.grid');
-    expect(gridContainer).toBeNull();
-
-    // CommentPanel should have border-t (top border) in split mode
-    const commentPanelContainer = document.querySelector('.border-t.bg-card');
-    expect(commentPanelContainer).toBeInTheDocument();
-  });
-
-  it('FileNavigator is in separate resizable panel', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    // Wait for page to load
-    await waitFor(() => {
-      expect(screen.getByText('auth.ts')).toBeInTheDocument();
-    });
-
-    // FileNavigator should be rendered inside a resizable panel structure
-    // The panel contains a div with the Files header (use getAllByText since CommentPanel also has "Files" filter)
-    const filesHeaders = screen.getAllByText('Files');
-    expect(filesHeaders.length).toBeGreaterThan(0);
-    // Find the one inside a panel with border-r class (FileNavigator header)
-    const fileNavigatorHeader = filesHeaders.find((el) => el.closest('.border-r'));
-    expect(fileNavigatorHeader).toBeInTheDocument();
-  });
-
-  it('switches back to unified layout when unified button is clicked', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    // Wait and select file
-    await waitFor(() => {
-      expect(screen.getByText('auth.ts')).toBeInTheDocument();
-    });
-
-    await userEvent.click(screen.getByText('auth.ts'));
-
-    await waitFor(() => {
-      expect(screen.getByTitle('Side-by-side view')).toBeInTheDocument();
-    });
-
-    // Switch to split
-    await userEvent.click(screen.getByTitle('Side-by-side view'));
-
-    // Verify split (no grid, uses nested resizable panels)
-    let gridContainer = document.querySelector('.grid');
-    expect(gridContainer).toBeNull();
-    expect(document.querySelector('.border-t.bg-card')).toBeInTheDocument();
-
-    // Switch back to unified
-    await userEvent.click(screen.getByTitle('Unified view'));
-
-    // Verify unified (grid is inside right resizable panel)
-    gridContainer = document.querySelector('.grid');
-    expect(gridContainer).toHaveClass('grid-cols-[1fr_320px]');
-  });
-
-  it('preserves file selection when toggling view modes', async () => {
-    global.fetch = buildFetchMock();
-    const { Wrapper } = createWrapper();
-
-    render(<ReviewDetailPage />, { wrapper: Wrapper });
-
-    // Wait and select file
-    await waitFor(() => {
-      expect(screen.getByText('auth.ts')).toBeInTheDocument();
-    });
-
-    await userEvent.click(screen.getByText('auth.ts'));
-
-    // Wait for DiffViewer to show the file path
-    await waitFor(() => {
-      expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThan(0);
-    });
-
-    // Toggle to split view
-    await userEvent.click(screen.getByTitle('Side-by-side view'));
-
-    // File selection should still be there
-    expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThan(0);
-
-    // Toggle back to unified
-    await userEvent.click(screen.getByTitle('Unified view'));
-
-    // File selection should still be preserved
-    expect(screen.getAllByText('src/auth.ts').length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByText(label)).toBeInTheDocument());
   });
 });

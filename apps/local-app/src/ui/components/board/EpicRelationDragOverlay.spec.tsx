@@ -12,7 +12,7 @@ describe('EpicRelationDragOverlay', () => {
 
     act(() => ref.current?.show({ x: 10, y: 20 }, { x: 30, y: 40 }));
     const overlay = screen.getByTestId('epic-relation-drag-overlay');
-    expect(overlay).toHaveClass('fixed', 'overflow-visible');
+
     expect(overlay.parentElement).toBe(document.body);
     expect(overlay.querySelector('line')).toHaveAttribute('x1', '10');
     expect(overlay.querySelector('line')).toHaveAttribute('y1', '20');

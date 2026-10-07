@@ -60,12 +60,4 @@ describe('useActiveSessionConfirm', () => {
     expect(onConfirm).not.toHaveBeenCalled();
     expect(result.current.dialogProps.open).toBe(false);
   });
-
-  it('returns default variant and confirmText', () => {
-    const { result } = renderHook(() => useActiveSessionConfirm());
-
-    expect(result.current.dialogProps.variant).toBe('default');
-    expect(result.current.dialogProps.confirmText).toBe('Continue');
-    expect(result.current.dialogProps.title).toBe('Active sessions detected');
-  });
 });

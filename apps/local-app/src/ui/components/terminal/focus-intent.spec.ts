@@ -7,15 +7,10 @@ describe('createFocusIntentTracker', () => {
     expect(tracker.hasRecentIntent(1_000_000)).toBe(false);
   });
 
-  it('reports recent intent immediately after a stamp', () => {
-    const tracker = createFocusIntentTracker();
-    tracker.stamp(1000);
-    expect(tracker.hasRecentIntent(1000)).toBe(true);
-  });
-
   it('treats intent as recent right up to the stale boundary and stale at/after it', () => {
     const tracker = createFocusIntentTracker();
     tracker.stamp(1000);
+    expect(tracker.hasRecentIntent(1000)).toBe(true);
 
     expect(tracker.hasRecentIntent(1000 + FOCUS_INTENT_STALE_MS - 1)).toBe(true);
     expect(tracker.hasRecentIntent(1000 + FOCUS_INTENT_STALE_MS)).toBe(false);

@@ -71,7 +71,7 @@ You are an AI engineer creating a compact, project-specific development standard
 - Use project commands from manifests, task files, or CI whenever available.
 - If no command is present, write `Unknown`; do not pretend a command exists.
 - If a common ecosystem fallback is obvious, label it as `Recommended default`, not as a project rule.
-- The validation table must have two test rows. "Targeted tests" holds the project's command for one file or one test; run it while you work. "Full test suite" holds `devchain queue full-tests -- <the project's full test command>`; run it once before review. The queue runs one full suite at a time, because agents on one machine share its memory.
+- The validation table must have three test rows. "Targeted tests" holds the project's command for one file or one test; run it while you work. "Affected tests" holds the command that runs only the tests affected by current changes (for example Jest `--changedSince=HEAD`), or `Unknown`; run it once before review. "Full test suite" holds `devchain queue full-tests -- <the project's full test command>`; run it before review only when "Affected tests" is `Unknown` or the change touches project-level files (test config, test setup, dependencies, build config). The queue runs one full suite at a time, because agents on one machine share its memory.
 
 Use this table format:
 
@@ -79,7 +79,8 @@ Use this table format:
 | --- | --- | --- | --- |
 | Build | `Unknown` | `Unknown` | Before review when build tooling is identified |
 | Targeted tests | `Unknown` | `Unknown` | While working |
-| Full test suite | `devchain queue full-tests -- <full test command>` | `Unknown` | Once before review |
+| Affected tests | `Unknown` | `Unknown` | Once before review |
+| Full test suite | `devchain queue full-tests -- <full test command>` | `Unknown` | Before review only for project-level changes or when Affected tests is `Unknown` |
 
 Helpful fallback examples, only when labeled `Recommended default`:
 
@@ -98,6 +99,16 @@ Helpful fallback examples, only when labeled `Recommended default`:
 - Test frameworks, locations, naming, fixture strategy, and coverage gates.
 - Unit/integration/e2e expectations only if the repository shows them.
 - Mocking, external service, database, and test data rules if evident.
+- Test each behavior once, at the cheapest layer that can catch its bug; extend existing tests or tables; delete obsolete tests.
+- How to write a good test, with the project's own tools: assert observable behavior through the module's interface, not internal state or the test's own mocks; one behavior per test, named for that behavior; deterministic (fake timers, no real sleeps or network, no state shared between tests); reuse the project's fixtures and helpers; the test must fail when the behavior breaks.
+- Do not write tests that:
+  - only check a call on an internal mock, unless the call is the contract (event, process, network);
+  - check static UI text, markup or styling;
+  - check rules a library enforces (schema types, formats, lengths);
+  - repeat another test with only different input; use one table-driven test;
+  - only check existence or no error;
+  - unit-test code that only forwards calls, with mocked dependencies; test it once through its real entry point;
+  - re-test a child component or shared helper that has its own tests.
 
 ### 7. Data, API, and Contract Standards
 

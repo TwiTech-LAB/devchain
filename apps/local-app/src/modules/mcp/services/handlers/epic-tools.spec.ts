@@ -324,13 +324,6 @@ describe('epic-tools handlers', () => {
   });
 
   describe('handleListEpics', () => {
-    it('returns epics list', async () => {
-      const ctx = makeEpicCtx();
-      const result = await handleListEpics(ctx, { sessionId: SESSION_ID });
-      expect(result.success).toBe(true);
-      expect(dataOf<ListEpicsResponse>(result).epics).toHaveLength(1);
-    });
-
     it('returns description previews instead of descriptions by default', async () => {
       const ctx = makeEpicCtx();
       (ctx.storage.listProjectEpics as jest.Mock).mockResolvedValue({
@@ -395,20 +388,6 @@ describe('epic-tools handlers', () => {
   });
 
   describe('handleListAssignedEpicsTasks', () => {
-    it('returns error when no project associated', async () => {
-      const agentCtx = makeAgentCtx();
-      (agentCtx as unknown as Record<string, unknown>).project = null;
-      const ctx = makeEpicCtx();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({ success: true, data: agentCtx });
-
-      const result = await handleListAssignedEpicsTasks(ctx, {
-        sessionId: SESSION_ID,
-        agentName: AGENT_NAME,
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
-    });
-
     it('keeps full descriptions on assigned task items', async () => {
       const ctx = makeEpicCtx();
       (ctx.storage.listAssignedEpics as jest.Mock).mockResolvedValue({
@@ -681,108 +660,57 @@ describe('epic-tools handlers', () => {
       expect(result.error?.code).toBe('EPIC_NOT_FOUND');
     });
 
-    it('returns a parent summary with the status label and no description by default', async () => {
+    it.each([
+      ['summary', false, true, AGENT_ID],
+      ['description', true, true, null],
+      ['root', false, false, AGENT_ID],
+    ])('returns parent %s', async (_name, includeParentDescription, hasParent, agentId) => {
       const PARENT_ID = '00000000-0000-0000-0000-000000000098';
       const ctx = makeEpicCtx();
-      (ctx.storage.getEpic as jest.Mock)
-        .mockResolvedValueOnce({
-          id: EPIC_ID,
+      if (hasParent) {
+        const fields = {
           projectId: PROJECT_ID,
-          title: 'Child Epic',
-          description: 'child text',
           statusId: STATUS_ID,
-          parentId: PARENT_ID,
-          agentId: AGENT_ID,
+          agentId,
           version: 1,
           tags: [],
           data: null,
           skillsRequired: null,
           createdAt: '2024-01-01T00:00:00Z',
           updatedAt: '2024-01-01T00:00:00Z',
-        })
-        .mockResolvedValueOnce({
-          id: PARENT_ID,
-          projectId: PROJECT_ID,
-          title: 'Parent Epic',
-          description: 'Large phase context',
-          statusId: STATUS_ID,
-          parentId: null,
-          agentId: AGENT_ID,
-          version: 3,
-          tags: [],
-          data: null,
-          skillsRequired: null,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        });
-
-      const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
-
-      expect(result.success).toBe(true);
-      expect(dataOf<GetEpicByIdResponse>(result).parent).toEqual({
-        id: PARENT_ID,
-        title: 'Parent Epic',
-        status: 'New',
-        agentName: AGENT_NAME,
-      });
-      expect(dataOf<GetEpicByIdResponse>(result).parent).not.toHaveProperty('description');
-    });
-
-    it('includes the parent description with includeParentDescription', async () => {
-      const PARENT_ID = '00000000-0000-0000-0000-000000000098';
-      const ctx = makeEpicCtx();
-      (ctx.storage.getEpic as jest.Mock)
-        .mockResolvedValueOnce({
-          id: EPIC_ID,
-          projectId: PROJECT_ID,
-          title: 'Child Epic',
-          description: null,
-          statusId: STATUS_ID,
-          parentId: PARENT_ID,
-          agentId: null,
-          version: 1,
-          tags: [],
-          data: null,
-          skillsRequired: null,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        })
-        .mockResolvedValueOnce({
-          id: PARENT_ID,
-          projectId: PROJECT_ID,
-          title: 'Parent Epic',
-          description: 'Large phase context',
-          statusId: STATUS_ID,
-          parentId: null,
-          agentId: null,
-          version: 3,
-          tags: [],
-          data: null,
-          skillsRequired: null,
-          createdAt: '2024-01-01T00:00:00Z',
-          updatedAt: '2024-01-01T00:00:00Z',
-        });
-
+        };
+        (ctx.storage.getEpic as jest.Mock)
+          .mockResolvedValueOnce({
+            ...fields,
+            id: EPIC_ID,
+            title: 'Child Epic',
+            description: 'child text',
+            parentId: PARENT_ID,
+          })
+          .mockResolvedValueOnce({
+            ...fields,
+            id: PARENT_ID,
+            title: 'Parent Epic',
+            description: 'Large phase context',
+            parentId: null,
+            version: 3,
+          });
+      }
       const result = await handleGetEpicById(ctx, {
         sessionId: SESSION_ID,
         id: EPIC_ID,
-        includeParentDescription: true,
+        ...(includeParentDescription ? { includeParentDescription: true } : {}),
       });
-
       expect(result.success).toBe(true);
-      expect(dataOf<GetEpicByIdResponse>(result).parent).toMatchObject({
-        id: PARENT_ID,
-        description: 'Large phase context',
-      });
-    });
-
-    it('returns no parent key for a root epic', async () => {
-      const ctx = makeEpicCtx();
-
-      const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
-
-      expect(result.success).toBe(true);
-      expect(result.data).not.toHaveProperty('parent');
+      if (hasParent)
+        expect(dataOf<GetEpicByIdResponse>(result).parent).toEqual({
+          id: PARENT_ID,
+          title: 'Parent Epic',
+          status: 'New',
+          agentName: agentId ? AGENT_NAME : null,
+          ...(includeParentDescription ? { description: 'Large phase context' } : {}),
+        });
+      else expect(result.data).not.toHaveProperty('parent');
     });
   });
 
@@ -1495,17 +1423,6 @@ describe('epic-tools handlers', () => {
   });
 
   describe('handleDeleteEpic', () => {
-    it('returns PROJECT_NOT_FOUND when session has no project', async () => {
-      const agentCtx = makeAgentCtx();
-      (agentCtx as unknown as Record<string, unknown>).project = null;
-      const ctx = makeEpicCtx();
-      (ctx.resolveSessionContext as jest.Mock).mockResolvedValue({ success: true, data: agentCtx });
-
-      const result = await handleDeleteEpic(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
-    });
-
     it('resolves short IDs and delegates delete to epicsService with actor context', async () => {
       const ctx = makeEpicCtx();
       resolveEpicIdMock.mockResolvedValueOnce({ success: true, data: { epicId: EPIC_ID } });

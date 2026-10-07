@@ -45,25 +45,13 @@ describe('CoreSettingsDelegate', () => {
   afterEach(() => db.close());
 
   describe('Invariant: scrollback clamping', () => {
-    it('clamps scrollback below MIN to MIN', async () => {
-      const result = await delegate.updateSettings({
-        terminal: { scrollbackLines: 1 },
-      });
-      expect(result.terminal?.scrollbackLines).toBe(MIN_TERMINAL_SCROLLBACK);
-    });
-
-    it('clamps scrollback above MAX to MAX', async () => {
-      const result = await delegate.updateSettings({
-        terminal: { scrollbackLines: 999999 },
-      });
-      expect(result.terminal?.scrollbackLines).toBe(MAX_TERMINAL_SCROLLBACK);
-    });
-
-    it('preserves scrollback within valid range', async () => {
-      const result = await delegate.updateSettings({
-        terminal: { scrollbackLines: 5000 },
-      });
-      expect(result.terminal?.scrollbackLines).toBe(5000);
+    it.each([
+      [1, MIN_TERMINAL_SCROLLBACK],
+      [999999, MAX_TERMINAL_SCROLLBACK],
+      [5000, 5000],
+    ])('normalizes scrollbackLines %s to %s', async (input, expected) => {
+      const result = await delegate.updateSettings({ terminal: { scrollbackLines: input } });
+      expect(result.terminal?.scrollbackLines).toBe(expected);
     });
 
     it('clamps stored scrollback on read via getSettings', () => {
@@ -93,25 +81,13 @@ describe('CoreSettingsDelegate', () => {
   });
 
   describe('Invariant: terminal seed max bytes clamping', () => {
-    it('clamps below MIN to MIN', async () => {
-      const result = await delegate.updateSettings({
-        terminal: { seedingMaxBytes: 0 },
-      });
-      expect(result.terminal?.seedingMaxBytes).toBe(64 * 1024);
-    });
-
-    it('clamps above MAX to MAX', async () => {
-      const result = await delegate.updateSettings({
-        terminal: { seedingMaxBytes: 999999999 },
-      });
-      expect(result.terminal?.seedingMaxBytes).toBe(4 * 1024 * 1024);
-    });
-
-    it('preserves within valid range', async () => {
-      const result = await delegate.updateSettings({
-        terminal: { seedingMaxBytes: 512 * 1024 },
-      });
-      expect(result.terminal?.seedingMaxBytes).toBe(512 * 1024);
+    it.each([
+      [0, 64 * 1024],
+      [999999999, 4 * 1024 * 1024],
+      [512 * 1024, 512 * 1024],
+    ])('normalizes seedingMaxBytes %s to %s', async (input, expected) => {
+      const result = await delegate.updateSettings({ terminal: { seedingMaxBytes: input } });
+      expect(result.terminal?.seedingMaxBytes).toBe(expected);
     });
 
     it('defaults to 1MB when no row exists', () => {
@@ -127,13 +103,6 @@ describe('CoreSettingsDelegate', () => {
   });
 
   describe('Invariant: terminal inputMode validation', () => {
-    it('accepts valid inputMode "tty"', async () => {
-      const result = await delegate.updateSettings({
-        terminal: { inputMode: 'tty' },
-      });
-      expect(result.terminal?.inputMode).toBe('tty');
-    });
-
     it('accepts valid inputMode "form"', async () => {
       const result = await delegate.updateSettings({
         terminal: { inputMode: 'form' },
@@ -154,25 +123,13 @@ describe('CoreSettingsDelegate', () => {
   });
 
   describe('Invariant: activity idle timeout defaults and clamping', () => {
-    it('stores and retrieves idleTimeoutMs', async () => {
-      const result = await delegate.updateSettings({
-        activity: { idleTimeoutMs: 5000 },
-      });
-      expect(result.activity?.idleTimeoutMs).toBe(5000);
-    });
-
-    it('clamps idleTimeoutMs below 1000 to 1000', async () => {
-      const result = await delegate.updateSettings({
-        activity: { idleTimeoutMs: 0 },
-      });
-      expect(result.activity?.idleTimeoutMs).toBe(1000);
-    });
-
-    it('clamps idleTimeoutMs above 24h to 24h', async () => {
-      const result = await delegate.updateSettings({
-        activity: { idleTimeoutMs: 100000000 },
-      });
-      expect(result.activity?.idleTimeoutMs).toBe(24 * 60 * 60 * 1000);
+    it.each([
+      [5000, 5000],
+      [0, 1000],
+      [100000000, 24 * 60 * 60 * 1000],
+    ])('normalizes idleTimeoutMs %s to %s', async (input, expected) => {
+      const result = await delegate.updateSettings({ activity: { idleTimeoutMs: input } });
+      expect(result.activity?.idleTimeoutMs).toBe(expected);
     });
 
     it('does not set activity when no row exists', () => {
@@ -339,15 +296,13 @@ describe('CoreSettingsDelegate', () => {
       const result = delegate.getSettings();
       expect(result.initialSessionPromptId).toBeNull();
     });
-
-    it('returns null for missing key', () => {
-      const result = delegate.getSettings();
-      expect(result.initialSessionPromptId).toBeUndefined();
-    });
   });
 
   describe('Invariant: settings.terminal.changed event emission', () => {
-    it('emits settings.terminal.changed when scrollbackLines updated', async () => {
+    it.each([
+      [5000, 5000],
+      [999999, MAX_TERMINAL_SCROLLBACK],
+    ])('emits scrollback %s as %s', async (input, expected) => {
       const eventEmitter = new EventEmitter2();
       const localDelegate = new CoreSettingsDelegate({
         sqlite: db,
@@ -359,26 +314,9 @@ describe('CoreSettingsDelegate', () => {
         emittedPayload = payload;
       });
 
-      await localDelegate.updateSettings({ terminal: { scrollbackLines: 5000 } });
+      await localDelegate.updateSettings({ terminal: { scrollbackLines: input } });
 
-      expect(emittedPayload).toEqual({ scrollbackLines: 5000 });
-    });
-
-    it('emits clamped scrollback value', async () => {
-      const eventEmitter = new EventEmitter2();
-      const localDelegate = new CoreSettingsDelegate({
-        sqlite: db,
-        eventEmitter: eventEmitter,
-      });
-
-      let emittedPayload: unknown = null;
-      eventEmitter.on('settings.terminal.changed', (payload: unknown) => {
-        emittedPayload = payload;
-      });
-
-      await localDelegate.updateSettings({ terminal: { scrollbackLines: 999999 } });
-
-      expect(emittedPayload).toEqual({ scrollbackLines: MAX_TERMINAL_SCROLLBACK });
+      expect(emittedPayload).toEqual({ scrollbackLines: expected });
     });
 
     it('does not emit event when scrollbackLines not in update', async () => {

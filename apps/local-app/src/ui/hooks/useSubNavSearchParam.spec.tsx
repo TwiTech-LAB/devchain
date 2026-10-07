@@ -12,25 +12,19 @@ function wrapper(initialEntries: string[]) {
 }
 
 describe('useSubNavSearchParam', () => {
-  it('returns defaultKey when param is absent', () => {
+  it.each([
+    { label: 'returns defaultKey when param is absent', path: '/page', expectedKey: 'alpha' },
+    { label: 'returns the param value when valid', path: '/page?tab=beta', expectedKey: 'beta' },
+    {
+      label: 'falls back to defaultKey for invalid param value',
+      path: '/page?tab=bogus',
+      expectedKey: 'alpha',
+    },
+  ] as const)('$label', ({ path, expectedKey }) => {
     const { result } = renderHook(() => useSubNavSearchParam<Key>([...KEYS], 'alpha', 'tab'), {
-      wrapper: wrapper(['/page']),
+      wrapper: wrapper([path]),
     });
-    expect(result.current[0]).toBe('alpha');
-  });
-
-  it('returns the param value when valid', () => {
-    const { result } = renderHook(() => useSubNavSearchParam<Key>([...KEYS], 'alpha', 'tab'), {
-      wrapper: wrapper(['/page?tab=beta']),
-    });
-    expect(result.current[0]).toBe('beta');
-  });
-
-  it('falls back to defaultKey for invalid param value', () => {
-    const { result } = renderHook(() => useSubNavSearchParam<Key>([...KEYS], 'alpha', 'tab'), {
-      wrapper: wrapper(['/page?tab=bogus']),
-    });
-    expect(result.current[0]).toBe('alpha');
+    expect(result.current[0]).toBe(expectedKey);
   });
 
   it('updates URL when setActiveKey is called', () => {

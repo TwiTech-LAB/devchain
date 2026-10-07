@@ -41,42 +41,18 @@ if (!(global as GlobalWithDOMRect).DOMRect) {
 }
 
 describe('AgentContextBar', () => {
-  it('renders null when contextPercent is 0', () => {
-    const { container } = render(
-      <AgentContextBar contextPercent={0} totalContextTokens={0} contextWindowTokens={200_000} />,
-    );
-    expect(container.innerHTML).toBe('');
-  });
-
-  it('renders null when contextWindowTokens is 0', () => {
-    const { container } = render(
-      <AgentContextBar contextPercent={50} totalContextTokens={100_000} contextWindowTokens={0} />,
-    );
-    expect(container.innerHTML).toBe('');
-  });
-
-  it('no spacer div rendered when bar is effectively hidden (no row-height drift)', () => {
-    const { container } = render(
-      <AgentContextBar contextPercent={0} totalContextTokens={0} contextWindowTokens={0} />,
-    );
-    expect(container.firstChild).toBeNull();
-    expect(container.childElementCount).toBe(0);
-  });
-
-  it('renders compact context meter when metrics are present', () => {
-    render(
-      <AgentContextBar
-        contextPercent={30}
-        totalContextTokens={60_000}
-        contextWindowTokens={200_000}
-      />,
-    );
-    const progressbar = screen.getByRole('progressbar');
-    expect(screen.queryByText('Context')).not.toBeInTheDocument();
-    expect(screen.queryByText('30%')).not.toBeInTheDocument();
-    expect(progressbar).toHaveAttribute('data-context-tier', 'healthy');
-    expect(progressbar.querySelector('.block.h-px.w-full')).not.toBeNull();
-  });
+  it.each([
+    [0, 0, 200000],
+    [50, 100000, 0],
+  ])(
+    'hides context percent=%s tokens=%s window=%s',
+    (contextPercent, totalContextTokens, contextWindowTokens) => {
+      const { container } = render(
+        <AgentContextBar {...{ contextPercent, totalContextTokens, contextWindowTokens }} />,
+      );
+      expect(container.innerHTML).toBe('');
+    },
+  );
 
   it.each([
     [30, 'healthy'],
@@ -118,7 +94,7 @@ describe('AgentContextBar', () => {
     jest.useRealTimers();
   });
 
-  it('sets correct aria attributes on progressbar', () => {
+  it('sets correct aria attributes on progressbar', async () => {
     render(
       <AgentContextBar
         contextPercent={50}
@@ -132,19 +108,11 @@ describe('AgentContextBar', () => {
     expect(progressbar).toHaveAttribute('aria-valuemax', '100');
     expect(progressbar).toHaveAttribute('aria-valuetext', 'Context window 50% used');
     expect(progressbar).toHaveAttribute('aria-label', 'Context window usage');
-  });
 
-  it('fill width matches contextPercent and handles clamping in hook layer', () => {
-    // The hook clamps values to 0-100; the component renders the value it receives
-    render(
-      <AgentContextBar
-        contextPercent={75}
-        totalContextTokens={150_000}
-        contextWindowTokens={200_000}
-      />,
-    );
-    const progressbar = screen.getByRole('progressbar');
-    const fill = progressbar.querySelector('[style]') as HTMLElement;
-    expect(fill.style.width).toBe('75%');
+    {
+      const progressbar = screen.getByRole('progressbar');
+      const fill = progressbar.querySelector('[style]') as HTMLElement;
+      expect(fill.style.width).toBe('50%');
+    }
   });
 });

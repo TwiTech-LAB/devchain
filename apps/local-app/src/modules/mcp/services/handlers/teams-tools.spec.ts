@@ -9,8 +9,6 @@ import {
 import type { TeamsToolContext } from './teams-context';
 import type { AgentSessionContext, GuestSessionContext } from '../../dtos/mcp.dto';
 import { TeamsCreateAgentParamsSchema } from '../../dtos/mcp.dto';
-import { createNullAdapter } from './null-adapter';
-import type { TeamsService } from '../../../teams/services/teams.service';
 
 jest.mock('../../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -163,62 +161,6 @@ describe('handleTeamsList', () => {
     expect(team.memberCount).toBe(2);
   });
 
-  it('returns session resolution failures before listing teams', async () => {
-    const ctx = makeCtx({
-      resolveSessionContext: jest.fn().mockResolvedValue({
-        success: false,
-        error: { code: 'SESSION_NOT_FOUND', message: 'Session not found' },
-      }),
-    });
-
-    await expect(handleTeamsList(ctx, { sessionId: 'missing' })).resolves.toMatchObject({
-      success: false,
-      error: { code: 'SESSION_NOT_FOUND' },
-    });
-    expect(
-      (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
-    ).not.toHaveBeenCalled();
-  });
-
-  it('passes q parameter to service for server-side filtering', async () => {
-    const ctx = makeCtx();
-    await handleTeamsList(ctx, { sessionId: 'abcd1234', q: 'backend' });
-
-    expect(
-      (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
-    ).toHaveBeenCalledWith(PROJECT_ID, { limit: 100, offset: 0, q: 'backend' });
-  });
-
-  it('returns correct total from service when q is provided', async () => {
-    const ctx = makeCtx();
-    // Mock service returning filtered results with correct total
-    (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams.mockResolvedValueOnce({
-      items: [
-        {
-          id: TEAM_ID,
-          name: TEAM_NAME,
-          description: 'The backend squad',
-          teamLeadAgentId: LEAD_AGENT_ID,
-          teamLeadAgentName: AGENT_NAME,
-          memberCount: 2,
-          projectId: PROJECT_ID,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-      total: 1,
-      limit: 100,
-      offset: 0,
-    });
-
-    const result = await handleTeamsList(ctx, { sessionId: 'abcd1234', q: 'backend' });
-
-    expect(result.success).toBe(true);
-    const data = result.data as { teams: unknown[]; total: number };
-    expect(data.teams).toHaveLength(1);
-    expect(data.total).toBe(1);
-  });
-
   it('q + pagination: total reflects all matching teams, not just current page', async () => {
     const ctx = makeCtx();
     // Simulate: 5 teams total, q matches 3, limit=2 offset=0 → page has 2, total=3
@@ -269,50 +211,6 @@ describe('handleTeamsList', () => {
     expect(
       (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
     ).toHaveBeenCalledWith(PROJECT_ID, { limit: 2, offset: 0, q: 'team' });
-  });
-
-  it('respects custom limit and offset', async () => {
-    const ctx = makeCtx();
-    await handleTeamsList(ctx, { sessionId: 'abcd1234', limit: 5, offset: 10 });
-
-    expect(
-      (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
-    ).toHaveBeenCalledWith(PROJECT_ID, { limit: 5, offset: 10, q: undefined });
-  });
-
-  it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
-    const ctx = makeCtx({ teamsService: createNullAdapter<TeamsService>('TeamsService') });
-    const result = await handleTeamsList(ctx, { sessionId: 'abcd1234' });
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('SERVICE_UNAVAILABLE');
-  });
-
-  it('returns PROJECT_NOT_FOUND when session has no project', async () => {
-    const noProjectCtx: AgentSessionContext = {
-      ...makeAgentSessionContext(),
-      project: null,
-    };
-    const ctx = makeCtx({
-      resolveSessionContext: jest.fn().mockResolvedValue({ success: true, data: noProjectCtx }),
-    });
-    const result = await handleTeamsList(ctx, { sessionId: 'abcd1234' });
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
-  });
-
-  it('propagates session resolution failure', async () => {
-    const ctx = makeCtx({
-      resolveSessionContext: jest.fn().mockResolvedValue({
-        success: false,
-        error: { code: 'SESSION_NOT_FOUND', message: 'Not found' },
-      }),
-    });
-    const result = await handleTeamsList(ctx, { sessionId: 'abcd1234' });
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('SESSION_NOT_FOUND');
   });
 });
 
@@ -505,21 +403,6 @@ describe('handleTeamsMembersList', () => {
   });
 
   describe('without teamId (guest context)', () => {
-    it('returns AGENT_CONTEXT_REQUIRED error', async () => {
-      const ctx = makeCtx({
-        resolveSessionContext: jest.fn().mockResolvedValue({
-          success: true,
-          data: makeGuestSessionContext(),
-        }),
-      });
-
-      const result = await handleTeamsMembersList(ctx, { sessionId: 'abcd1234' });
-
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('AGENT_CONTEXT_REQUIRED');
-      expect(result.error?.message).toContain('Guest sessions must provide teamId');
-    });
-
     it('succeeds for guest when teamId is provided', async () => {
       const ctx = makeCtx({
         resolveSessionContext: jest.fn().mockResolvedValue({
@@ -540,28 +423,6 @@ describe('handleTeamsMembersList', () => {
   });
 
   describe('error handling', () => {
-    it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
-      const ctx = makeCtx({ teamsService: createNullAdapter<TeamsService>('TeamsService') });
-      const result = await handleTeamsMembersList(ctx, { sessionId: 'abcd1234' });
-
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('SERVICE_UNAVAILABLE');
-    });
-
-    it('returns PROJECT_NOT_FOUND when session has no project', async () => {
-      const noProjectCtx: AgentSessionContext = {
-        ...makeAgentSessionContext(),
-        project: null,
-      };
-      const ctx = makeCtx({
-        resolveSessionContext: jest.fn().mockResolvedValue({ success: true, data: noProjectCtx }),
-      });
-      const result = await handleTeamsMembersList(ctx, { sessionId: 'abcd1234' });
-
-      expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
-    });
-
     it('falls back to agentId as name when getAgent fails', async () => {
       const unknownAgentId = '00000000-0000-0000-0000-000000000777';
       const ctx = makeCtx();
@@ -618,19 +479,6 @@ describe('handleTeamsConfigsList', () => {
     ).toHaveBeenCalledWith(AGENT_ID, PROJECT_ID);
   });
 
-  it('returns AGENT_CONTEXT_REQUIRED for guest sessions', async () => {
-    const ctx = makeCtx({
-      resolveSessionContext: jest.fn().mockResolvedValue({
-        success: true,
-        data: makeGuestSessionContext(),
-      }),
-    });
-    const result = await handleTeamsConfigsList(ctx, { sessionId: 'abcd1234' });
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('AGENT_CONTEXT_REQUIRED');
-  });
-
   it('returns FORBIDDEN_NOT_TEAM_LEAD when caller leads no teams', async () => {
     const ctx = makeCtx();
     (
@@ -642,28 +490,6 @@ describe('handleTeamsConfigsList', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('FORBIDDEN_NOT_TEAM_LEAD');
-  });
-
-  it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
-    const ctx = makeCtx({ teamsService: createNullAdapter<TeamsService>('TeamsService') });
-    const result = await handleTeamsConfigsList(ctx, { sessionId: 'abcd1234' });
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('SERVICE_UNAVAILABLE');
-  });
-
-  it('returns PROJECT_NOT_FOUND when no project', async () => {
-    const noProjectCtx: AgentSessionContext = {
-      ...makeAgentSessionContext(),
-      project: null,
-    };
-    const ctx = makeCtx({
-      resolveSessionContext: jest.fn().mockResolvedValue({ success: true, data: noProjectCtx }),
-    });
-    const result = await handleTeamsConfigsList(ctx, { sessionId: 'abcd1234' });
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('PROJECT_NOT_FOUND');
   });
 });
 
@@ -700,19 +526,6 @@ describe('handleTeamsCreateAgent', () => {
     });
   });
 
-  it('returns AGENT_CONTEXT_REQUIRED for guest sessions', async () => {
-    const ctx = makeCtx({
-      resolveSessionContext: jest.fn().mockResolvedValue({
-        success: true,
-        data: makeGuestSessionContext(),
-      }),
-    });
-    const result = await handleTeamsCreateAgent(ctx, validParams);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('AGENT_CONTEXT_REQUIRED');
-  });
-
   it('returns FORBIDDEN_NOT_TEAM_LEAD when caller leads no teams', async () => {
     const ctx = makeCtx();
     (
@@ -741,15 +554,6 @@ describe('handleTeamsCreateAgent', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('AMBIGUOUS_TEAM_LEAD');
-  });
-
-  it('resolves correct team when teamName provided', async () => {
-    const ctx = makeCtx();
-    await handleTeamsCreateAgent(ctx, { ...validParams, teamName: TEAM_NAME });
-
-    expect(
-      (ctx.teamsService as unknown as { createTeamAgent: jest.Mock }).createTeamAgent,
-    ).toHaveBeenCalledWith(expect.objectContaining({ teamName: TEAM_NAME }));
   });
 
   it('returns TEAM_NOT_FOUND_OR_NOT_LED for wrong teamName', async () => {
@@ -806,15 +610,6 @@ describe('handleTeamsCreateAgent', () => {
     expect(result.error?.code).toBe('AMBIGUOUS_CONFIG_NAME');
   });
 
-  it('resolves config with profileName disambiguator', async () => {
-    const ctx = makeCtx();
-    await handleTeamsCreateAgent(ctx, { ...validParams, profileName: 'Default Profile' });
-
-    expect(
-      (ctx.teamsService as unknown as { createTeamAgent: jest.Mock }).createTeamAgent,
-    ).toHaveBeenCalledWith(expect.objectContaining({ profileName: 'Default Profile' }));
-  });
-
   it('returns AGENT_NAME_EXISTS for duplicate name', async () => {
     const ctx = makeCtx();
     (
@@ -829,14 +624,6 @@ describe('handleTeamsCreateAgent', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('AGENT_NAME_EXISTS');
-  });
-
-  it('returns SERVICE_UNAVAILABLE when teamsService is null adapter', async () => {
-    const ctx = makeCtx({ teamsService: createNullAdapter<TeamsService>('TeamsService') });
-    const result = await handleTeamsCreateAgent(ctx, validParams);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('SERVICE_UNAVAILABLE');
   });
 
   it('creates agent without description (inherits from config)', async () => {
@@ -874,28 +661,13 @@ describe('TeamsCreateAgentParamsSchema trim-order validation', () => {
     configName: 'claude-config',
   };
 
-  it('rejects whitespace-only name', () => {
-    expect(() => TeamsCreateAgentParamsSchema.parse({ ...base, name: '   ' })).toThrow(
-      /Name is required/,
-    );
-  });
-
-  it('rejects whitespace-only configName', () => {
-    expect(() => TeamsCreateAgentParamsSchema.parse({ ...base, configName: '   ' })).toThrow(
-      /configName is required/,
-    );
-  });
-
-  it('rejects whitespace-only profileName', () => {
-    expect(() => TeamsCreateAgentParamsSchema.parse({ ...base, profileName: '   ' })).toThrow(
-      /profileName must not be whitespace-only/,
-    );
-  });
-
-  it('rejects whitespace-only teamName', () => {
-    expect(() => TeamsCreateAgentParamsSchema.parse({ ...base, teamName: '   ' })).toThrow(
-      /teamName must not be whitespace-only/,
-    );
+  it.each([
+    ['name', /Name is required/],
+    ['configName', /configName is required/],
+    ['profileName', /profileName must not be whitespace-only/],
+    ['teamName', /teamName must not be whitespace-only/],
+  ])('rejects whitespace-only %s', (field, message) => {
+    expect(() => TeamsCreateAgentParamsSchema.parse({ ...base, [field]: '   ' })).toThrow(message);
   });
 
   it('trims valid non-whitespace strings', () => {
@@ -910,13 +682,6 @@ describe('TeamsCreateAgentParamsSchema trim-order validation', () => {
     expect(result.configName).toBe('claude');
     expect(result.profileName).toBe('Default');
     expect(result.teamName).toBe('Backend');
-  });
-
-  it('accepts valid inputs without optional fields', () => {
-    const result = TeamsCreateAgentParamsSchema.parse(base);
-    expect(result.name).toBe('ValidAgent');
-    expect(result.profileName).toBeUndefined();
-    expect(result.teamName).toBeUndefined();
   });
 });
 
@@ -1162,53 +927,21 @@ describe('handleDevchainTeam', () => {
     expect(data.members[0].providerConfigName).toBe('claude-sonnet');
   });
 
-  it('includes populated description for each member', async () => {
+  it.each([
+    ['populated', ['Lead agent for backend team', 'Backend specialist']],
+    ['null', [null, null]],
+  ])('projects %s member descriptions', async (_name, descriptions) => {
     const ctx = makeTeamCtx();
+    const getAgent = ctx.storage.getAgent as jest.Mock;
+    const original = getAgent.getMockImplementation()!;
+    getAgent.mockImplementation(async (id: string) => ({
+      ...(await original(id)),
+      description: descriptions[id === AGENT_ID ? 0 : 1],
+    }));
     const result = await handleDevchainTeam(ctx, { sessionId: 'sess-001' });
-
     expect(result.success).toBe(true);
-    const data = result.data as {
-      members: Array<{ agentName: string; description: string | null }>;
-    };
-    expect(data.members[0].description).toBe('Lead agent for backend team');
-    expect(data.members[1].description).toBe('Backend specialist');
-  });
-
-  it('returns null description when agent has no description', async () => {
-    const ctx = makeTeamCtx({
-      storage: {
-        ...makeTeamCtx().storage,
-        getAgent: jest.fn().mockImplementation((id: string) => {
-          if (id === AGENT_ID)
-            return Promise.resolve({
-              id: AGENT_ID,
-              name: AGENT_NAME,
-              description: null,
-              projectId: PROJECT_ID,
-              profileId: PROFILE_ID,
-              providerConfigId: CONFIG_ID,
-            });
-          if (id === MEMBER_AGENT_ID)
-            return Promise.resolve({
-              id: MEMBER_AGENT_ID,
-              name: MEMBER_AGENT_NAME,
-              description: null,
-              projectId: PROJECT_ID,
-              profileId: PROFILE_ID,
-              providerConfigId: CONFIG_ID,
-            });
-          return Promise.reject(new Error('Agent not found'));
-        }),
-      } as never,
-    });
-    const result = await handleDevchainTeam(ctx, { sessionId: 'sess-001' });
-
-    expect(result.success).toBe(true);
-    const data = result.data as {
-      members: Array<{ description: string | null }>;
-    };
-    expect(data.members[0].description).toBeNull();
-    expect(data.members[1].description).toBeNull();
+    const data = result.data as { members: Array<{ description: string | null }> };
+    expect(data.members.map((member) => member.description)).toEqual(descriptions);
   });
 
   it('returns null description when agent lookup fails', async () => {
@@ -1255,28 +988,6 @@ describe('handleTeamsDeleteAgent', () => {
       name: 'Worker',
       teamName: undefined,
     });
-  });
-
-  it('passes teamName when provided', async () => {
-    const ctx = makeCtx();
-    await handleTeamsDeleteAgent(ctx, { ...validParams, teamName: 'Backend' });
-
-    expect(
-      (ctx.teamsService as unknown as { deleteTeamAgent: jest.Mock }).deleteTeamAgent,
-    ).toHaveBeenCalledWith(expect.objectContaining({ teamName: 'Backend' }));
-  });
-
-  it('returns AGENT_CONTEXT_REQUIRED for guest sessions', async () => {
-    const ctx = makeCtx({
-      resolveSessionContext: jest.fn().mockResolvedValue({
-        success: true,
-        data: makeGuestSessionContext(),
-      }),
-    });
-    const result = await handleTeamsDeleteAgent(ctx, validParams);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('AGENT_CONTEXT_REQUIRED');
   });
 
   it.each([

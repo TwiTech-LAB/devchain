@@ -1,9 +1,8 @@
+import { createTestDatabase } from '../../common/test/test-database.helper';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'node:path';
 import { ProjectFrozenError, ProjectRemoteError } from '../../common/errors/error-types';
 import { AllExceptionsFilter } from '../../common/filters/http-exception.filter';
 import { DB_CONNECTION } from '../storage/db/db.provider';
@@ -17,7 +16,6 @@ import { AgentTimeBufferController } from './controllers/agent-time-buffer.contr
 import { EpicTimeService } from './services/epic-time.service';
 import { EpicTimeStore } from './services/epic-time.store';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../drizzle');
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_PROJECT_ID = '99999999-9999-4999-8999-999999999999';
 const WORKSPACE_ID = '0defa017-0000-4000-8000-000000000001';
@@ -49,8 +47,7 @@ describe('Agent time buffer assignment API', () => {
   let foreignStatusId: string;
 
   beforeEach(async () => {
-    sqlite = new Database(':memory:');
-    migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+    sqlite = createTestDatabase().sqlite;
     sqlite.pragma('foreign_keys = ON');
     targetStatusId = seedProject(PROJECT_ID, WORKSPACE_ID);
     foreignStatusId = seedProject(OTHER_PROJECT_ID, '0defa017-0000-4000-8000-000000000002');

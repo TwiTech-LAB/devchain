@@ -129,36 +129,26 @@ describe('CloudSessionManagerService', () => {
       expect(tokenStore.store).not.toHaveBeenCalled();
     });
 
-    it('still resolves success and warns when eventsService.publish throws', async () => {
+    it.each(['publish', 'broadcast'])('stores tokens despite %s failure', async (failing) => {
       const accessToken = await signTestJwt();
-      eventsService.publish.mockRejectedValueOnce(new Error('events bus down'));
-
+      if (failing === 'publish') {
+        eventsService.publish.mockRejectedValueOnce(new Error('events bus down'));
+      } else {
+        broadcaster.broadcastEvent.mockImplementationOnce(() => {
+          throw new Error('broadcast failed');
+        });
+      }
       const result = await service.storeTokens(accessToken, 'refresh');
-
-      expect(result.userId).toBe('user-123');
-      expect(tokenStore.store).toHaveBeenCalledTimes(1);
-      // Publish failure must not skip the broadcast attempt (independent wraps).
-      expect(broadcaster.broadcastEvent).toHaveBeenCalledWith(
-        'cloud',
-        'connected',
-        expect.objectContaining({ userId: 'user-123' }),
-      );
-      expect(mockLogger.warn).toHaveBeenCalled();
-    });
-
-    it('still resolves success and warns when broadcaster.broadcastEvent throws', async () => {
-      const accessToken = await signTestJwt();
-      broadcaster.broadcastEvent.mockImplementationOnce(() => {
-        throw new Error('broadcast failed');
-      });
-
-      const result = await service.storeTokens(accessToken, 'refresh');
-
       expect(result.userId).toBe('user-123');
       expect(tokenStore.store).toHaveBeenCalledTimes(1);
       expect(eventsService.publish).toHaveBeenCalledWith('session.cloud_connected', {
         userId: 'user-123',
       });
+      expect(broadcaster.broadcastEvent).toHaveBeenCalledWith(
+        'cloud',
+        'connected',
+        expect.objectContaining({ userId: 'user-123' }),
+      );
       expect(mockLogger.warn).toHaveBeenCalled();
     });
 
@@ -248,10 +238,9 @@ describe('CloudSessionManagerService', () => {
       expect(service.getAccessToken()).toBe(newAccessToken);
     });
 
-    it('should disconnect on 401 refresh failure', async () => {
+    it.each([401, 503])('handles refresh HTTP %s', async (status) => {
       const accessToken = await signTestJwt();
       await service.storeTokens(accessToken, 'old-refresh');
-
       jest.spyOn(global, 'fetch').mockImplementation(async (input) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('.well-known/jwks.json')) {
@@ -261,49 +250,31 @@ describe('CloudSessionManagerService', () => {
           });
         }
         if (url.includes('/auth/refresh')) {
-          return new Response(JSON.stringify({ error: 'invalid_refresh_token' }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify({
+              error: status === 401 ? 'invalid_refresh_token' : 'temporary_failure',
+            }),
+            {
+              status,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
         }
         return new Response('Not found', { status: 404 });
       });
-
-      await service.refreshAccessToken();
-
-      expect(tokenStore.clear).toHaveBeenCalled();
-      expect(service.getStatus().connected).toBe(false);
-      expect(eventsService.publish).toHaveBeenCalledWith('session.cloud_disconnected', {
-        userId: 'user-123',
-      });
-    });
-
-    it('should keep tokens on transient refresh failure', async () => {
-      const accessToken = await signTestJwt();
-      await service.storeTokens(accessToken, 'old-refresh');
-
-      jest.spyOn(global, 'fetch').mockImplementation(async (input) => {
-        const url = typeof input === 'string' ? input : input.toString();
-        if (url.includes('.well-known/jwks.json')) {
-          return new Response(JSON.stringify({ keys: [publicJwk] }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-        if (url.includes('/auth/refresh')) {
-          return new Response(JSON.stringify({ error: 'temporarily_unavailable' }), {
-            status: 503,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-        return new Response('Not found', { status: 404 });
-      });
-
-      await expect(service.refreshAccessToken()).rejects.toThrow('Refresh failed: 503');
-
-      expect(tokenStore.clear).not.toHaveBeenCalled();
-      expect(service.getStatus().connected).toBe(true);
-      expect(service.getAccessToken()).toBe(accessToken);
+      if (status === 401) {
+        await service.refreshAccessToken();
+        expect(tokenStore.clear).toHaveBeenCalled();
+        expect(service.getStatus().connected).toBe(false);
+        expect(eventsService.publish).toHaveBeenCalledWith('session.cloud_disconnected', {
+          userId: 'user-123',
+        });
+      } else {
+        await expect(service.refreshAccessToken()).rejects.toThrow('Refresh failed: 503');
+        expect(tokenStore.clear).not.toHaveBeenCalled();
+        expect(service.getStatus().connected).toBe(true);
+        expect(service.getAccessToken()).toBe(accessToken);
+      }
     });
   });
 
@@ -324,7 +295,7 @@ describe('CloudSessionManagerService', () => {
       expect(service.getAccessToken()).toBe(accessToken);
     });
 
-    it('should clear expired tokens that cannot be refreshed', async () => {
+    it.each([401, 503])('handles startup refresh HTTP %s', async (status) => {
       const storedTokens: CloudTokens = {
         accessToken: 'expired',
         refreshToken: 'stored-refresh',
@@ -332,40 +303,26 @@ describe('CloudSessionManagerService', () => {
         expiresAt: new Date(Date.now() - 3600_000).toISOString(),
       };
       tokenStore.retrieve.mockReturnValue(storedTokens);
-
-      jest.spyOn(global, 'fetch').mockImplementation(async () => {
-        return new Response(JSON.stringify({ error: 'invalid_refresh_token' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      });
-
+      jest.spyOn(global, 'fetch').mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: status === 401 ? 'invalid_refresh_token' : 'temporary_failure',
+            }),
+            {
+              status,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          ),
+      );
       await service.onModuleInit();
-
-      expect(service.getStatus().connected).toBe(false);
-    });
-
-    it('should keep expired stored tokens when refresh fails transiently on startup', async () => {
-      const storedTokens: CloudTokens = {
-        accessToken: 'expired',
-        refreshToken: 'stored-refresh',
-        userId: 'user-123',
-        expiresAt: new Date(Date.now() - 3600_000).toISOString(),
-      };
-      tokenStore.retrieve.mockReturnValue(storedTokens);
-
-      jest.spyOn(global, 'fetch').mockImplementation(async () => {
-        return new Response(JSON.stringify({ error: 'temporarily_unavailable' }), {
-          status: 503,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      });
-
-      await service.onModuleInit();
-
-      expect(tokenStore.clear).not.toHaveBeenCalled();
-      expect(service.getStatus().connected).toBe(true);
-      expect(service.getAccessToken()).toBe('expired');
+      expect(service.getStatus().connected).toBe(status !== 401);
+      if (status === 401) {
+        expect(tokenStore.clear).toHaveBeenCalled();
+      } else {
+        expect(tokenStore.clear).not.toHaveBeenCalled();
+        expect(service.getAccessToken()).toBe('expired');
+      }
     });
   });
 });

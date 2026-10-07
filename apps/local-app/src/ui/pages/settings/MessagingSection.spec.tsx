@@ -97,24 +97,18 @@ describe('MessagingSection', () => {
       expect(screen.getByText(/Applies to Claude sessions only/)).toBeInTheDocument();
     });
 
-    it('shows the switch on when messaging.followNote is missing', () => {
-      mockSettingsData({ messagePool: storedPool });
-
+    it.each([undefined, false])('renders follow note setting %s', (followNote) => {
+      mockSettingsData(
+        followNote === undefined
+          ? { messagePool: storedPool }
+          : { messagePool: storedPool, messaging: { followNote } },
+      );
       render(<MessagingSection />);
-
-      expect(
-        screen.getByRole('switch', { name: 'Type a follow note after DevChain messages' }),
-      ).toBeChecked();
-    });
-
-    it('shows the switch off for a stored false', () => {
-      mockSettingsData({ messagePool: storedPool, messaging: { followNote: false } });
-
-      render(<MessagingSection />);
-
-      expect(
-        screen.getByRole('switch', { name: 'Type a follow note after DevChain messages' }),
-      ).not.toBeChecked();
+      const toggle = screen.getByRole('switch', {
+        name: 'Type a follow note after DevChain messages',
+      });
+      if (followNote === false) expect(toggle).not.toBeChecked();
+      else expect(toggle).toBeChecked();
     });
 
     it('saves the new value immediately when the switch flips, without Save', () => {

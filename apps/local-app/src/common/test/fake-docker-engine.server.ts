@@ -5,6 +5,13 @@ import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 type Labels = Record<string, string>;
+type FakeImage = {
+  architecture: string;
+  tags: string[];
+  size: number;
+  layers?: string[];
+  metadata?: Record<string, unknown>;
+};
 /** The line that names a single file in a fake archive. */
 export const FILE_ENTRY = 'FILE:';
 export interface FakeMount {
@@ -24,6 +31,8 @@ export interface FakeContainer {
   Mounts: FakeMount[];
   /** Inspect metadata the change check reads; absent unless a test sets it. */
   Created?: string;
+  SizeRw?: number;
+  SizeRootFs?: number;
   State: { Running: boolean; StartedAt?: string };
   /** The raw create body, for assertions on what the VM received. */
   created?: Record<string, unknown>;
@@ -46,11 +55,16 @@ export interface FakeDockerEngineOptions {
 export class FakeDockerEngine {
   readonly containers = new Map<string, FakeContainer>();
   readonly volumes = new Map<string, { labels: Labels; driver: string }>();
-  readonly networks = new Map<string, { labels: Labels; driver: string; internal: boolean }>();
-  readonly images = new Map<
+  readonly networks = new Map<
     string,
-    { architecture: string; tags: string[]; size: number; layers?: string[] }
+    {
+      labels: Labels;
+      driver: string;
+      internal: boolean;
+      ipam?: { Config: Array<{ Subnet: string; Gateway?: string; IPRange?: string }> };
+    }
   >();
+  readonly images = new Map<string, FakeImage>();
   /** Data by volume name or bind path. */
   readonly data = new Map<string, Buffer>();
   readonly calls: string[] = [];
@@ -140,56 +154,78 @@ export class FakeDockerEngine {
         SecurityOptions: [],
       });
     if (path === '/version') return json({ ApiVersion: '1.47', MinAPIVersion: '1.24' });
-    if (path === '/system/df')
+    if (path === '/system/df') {
+      const types = url.searchParams.getAll('type');
+      const includes = (type: string) => !types.length || types.includes(type);
       return json({
-        Containers: [...this.containers.values()].map((c) => ({ Id: c.Id, SizeRw: 7 })),
-        Images: [...this.images].map(([Id, image]) => ({ Id, Size: image.size })),
-        Volumes: [...this.volumes.keys()].map((Name) => ({
-          Name,
-          UsageData: { Size: this.data.get(Name)?.length ?? 0, RefCount: 0 },
-        })),
+        ...(includes('container') && {
+          Containers: [...this.containers.values()].map((c) => ({
+            Id: c.Id,
+            SizeRw: c.SizeRw ?? 7,
+          })),
+        }),
+        ...(includes('image') && {
+          Images: [...this.images].map(([Id, image]) => ({ Id, Size: image.size })),
+        }),
+        ...(includes('volume') && {
+          Volumes: [...this.volumes.keys()].map((Name) => ({
+            Name,
+            UsageData: { Size: this.data.get(Name)?.length ?? 0, RefCount: 0 },
+          })),
+        }),
+        ...(includes('build-cache') && { BuildCache: [] }),
       });
+    }
 
     if (path === '/images/load' && method === 'POST') {
       const text = (await body()).toString('utf8');
-      const match = /^IMAGE:([^\n]+)\n/.exec(text);
-      if (!match) return json({ error: 'bad archive' });
-      const [id, tags = '', layers = ''] = match[1].split('|');
-      const loadedTags = tags ? tags.split(',') : [];
-      // A containerd-store engine keeps the manifest digest as the image ID, so a
-      // loaded image lands under an ID the archive never carried.
-      const registeredId =
-        this.imageStore === 'containerd'
-          ? 'sha256:' + createHash('sha256').update(`manifest:${id}`).digest('hex')
-          : id;
-      // A loaded tag moves to the loaded image, as on a real engine.
-      for (const [otherId, other] of this.images)
-        if (otherId !== registeredId)
-          other.tags = other.tags.filter((tag) => !loadedTags.includes(tag));
-      this.images.set(registeredId, {
-        architecture: 'amd64',
-        tags: loadedTags,
-        layers: layers ? layers.split(',') : [],
-        size: 1,
-      });
+      const matches = [...text.matchAll(/^IMAGE:([^\n]+)\n/gm)];
+      if (!matches.length) return json({ error: 'bad archive' });
       const lines: string[] = [];
-      for (const tag of loadedTags)
-        lines.push(JSON.stringify({ stream: `Loaded image: ${tag}\n` }));
-      if (!loadedTags.length)
-        lines.push(JSON.stringify({ stream: `Loaded image ID: ${registeredId}\n` }));
+      for (const match of matches) {
+        const [id, tags = '', layers = '', metadata = ''] = match[1].split('|');
+        const loadedTags = tags ? tags.split(',') : [];
+        // A containerd-store engine keeps the manifest digest as the image ID, so a
+        // loaded image lands under an ID the archive never carried.
+        const registeredId =
+          this.imageStore === 'containerd'
+            ? 'sha256:' + createHash('sha256').update(`manifest:${id}`).digest('hex')
+            : id;
+        // A loaded tag moves to the loaded image, as on a real engine.
+        for (const [otherId, other] of this.images)
+          if (otherId !== registeredId)
+            other.tags = other.tags.filter((tag) => !loadedTags.includes(tag));
+        this.images.set(registeredId, {
+          architecture: 'amd64',
+          tags: loadedTags,
+          layers: layers ? layers.split(',') : [],
+          size: 1,
+          ...(metadata && {
+            metadata: JSON.parse(Buffer.from(metadata, 'base64').toString('utf8')),
+          }),
+        });
+        for (const tag of loadedTags)
+          lines.push(JSON.stringify({ stream: `Loaded image: ${tag}\n` }));
+        if (!loadedTags.length)
+          lines.push(JSON.stringify({ stream: `Loaded image ID: ${registeredId}\n` }));
+      }
       if (lost()) return;
       res.statusCode = 200;
       return void res.end(lines.join('\n') + '\n');
     }
     if (path === '/images/get') {
       const names = url.searchParams.getAll('names');
-      const entry = [...this.images].find(
+      const entries = [...this.images].filter(
         ([id, image]) => names.includes(id) || image.tags.some((t) => names.includes(t)),
       );
-      if (!entry) return json({}, 404);
-      const [id, image] = entry;
+      if (!entries.length) return json({}, 404);
       return void res.end(
-        `IMAGE:${id}|${image.tags.filter((t) => names.includes(t)).join(',')}|${(image.layers ?? []).join(',')}\n${'x'.repeat(image.size)}`,
+        entries
+          .map(
+            ([id, image]) =>
+              `IMAGE:${id}|${image.tags.filter((t) => names.includes(t)).join(',')}|${(image.layers ?? []).join(',')}|${Buffer.from(JSON.stringify(image.metadata ?? {})).toString('base64')}\n${'x'.repeat(image.size)}`,
+          )
+          .join('\n'),
       );
     }
     const image = path.match(/^\/images\/(.+)\/json$/);
@@ -198,7 +234,12 @@ export class FakeDockerEngine {
       return entry
         ? json({
             Id: entry[0],
+            Os: 'linux',
             Architecture: entry[1].architecture,
+            Variant: '',
+            Created: '2026-01-01T00:00:00Z',
+            Config: {},
+            ...entry[1].metadata,
             RepoTags: entry[1].tags,
             RootFS: { Type: 'layers', Layers: entry[1].layers ?? [] },
           })
@@ -239,12 +280,20 @@ export class FakeDockerEngine {
       });
     }
 
+    if (path === '/networks' && method === 'GET')
+      return json(
+        [...this.networks].map(([Name, network]) => ({
+          Name,
+          IPAM: network.ipam ?? { Config: [] },
+        })),
+      );
     if (path === '/networks/create') {
       const input = JSON.parse((await body()).toString('utf8'));
       this.networks.set(input.Name, {
         labels: input.Labels ?? {},
         driver: input.Driver ?? 'bridge',
         internal: input.Internal === true,
+        ...(input.IPAM ? { ipam: input.IPAM } : {}),
       });
       return json({ Id: input.Name }, 201);
     }
@@ -264,6 +313,15 @@ export class FakeDockerEngine {
         Attachable: false,
         Labels: found.labels,
         Options: {},
+        ...(found.ipam ? { IPAM: found.ipam } : {}),
+        Containers: Object.fromEntries(
+          [...this.containers].flatMap(([id, container]) => {
+            const address = container.NetworkSettings?.Networks?.[network[1]]?.IPAddress;
+            return typeof address === 'string' && address
+              ? [[id, { Name: container.Name, IPv4Address: `${address}/16` }]]
+              : [];
+          }),
+        ),
       });
     }
 
@@ -285,6 +343,7 @@ export class FakeDockerEngine {
       return json(
         list.map((c) => ({
           Id: c.Id,
+          ImageID: c.Image,
           Names: [c.Name],
           Labels: c.Config.Labels ?? {},
           State: c.State.Running ? 'running' : 'created',
@@ -347,8 +406,14 @@ export class FakeDockerEngine {
       if (!found) return json({ message: 'No such container' }, 404);
       const action = container[2];
       if (action === 'json') {
-        const { created: _created, ...inspect } = found;
-        return json(inspect);
+        const { created: _created, SizeRw, SizeRootFs, ...inspect } = found;
+        return json({
+          ...inspect,
+          ...(url.searchParams.get('size') === 'true' && {
+            SizeRw: SizeRw ?? 7,
+            ...(SizeRootFs !== undefined && { SizeRootFs }),
+          }),
+        });
       }
       if (action === 'stop') {
         if (!found.State.Running) return empty(304);
@@ -411,11 +476,7 @@ export class FakeDockerEngine {
     json({ message: 'not found' }, 404);
   }
 
-  private findImage(
-    ref: string,
-  ):
-    | [string, { architecture: string; tags: string[]; size: number; layers?: string[] }]
-    | undefined {
+  private findImage(ref: string): [string, FakeImage] | undefined {
     return [...this.images].find(([id, value]) => id === ref || value.tags.includes(ref));
   }
 

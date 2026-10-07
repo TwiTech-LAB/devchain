@@ -1,23 +1,19 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { ConflictError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../db/schema';
 import type { Project, ProjectWorkspace } from '../models/domain.models';
 import { LocalStorageService } from './local-storage.service';
-
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../drizzle');
 
 describe('LocalStorageService project workspaces', () => {
   let sqlite: Database.Database;
   let service: LocalStorageService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
     service = new LocalStorageService(db);
   });

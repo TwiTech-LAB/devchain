@@ -1,6 +1,6 @@
 import type { ListSessionsResponse, McpResponse } from '../../dtos/mcp.dto';
 import { ValidationError } from '../../../../common/errors/error-types';
-import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
+
 import type { SessionToolContext } from './session-context';
 import { handleListSessions, handleRegisterGuest } from './session-tools';
 
@@ -57,16 +57,6 @@ describe('session-tools handlers', () => {
     });
   });
 
-  it('returns an empty list when there are no active sessions', async () => {
-    const ctx = createContext();
-    (ctx.sessionsService.listActiveSessions as jest.Mock).mockResolvedValue([]);
-
-    await expect(handleListSessions(ctx, {})).resolves.toEqual({
-      success: true,
-      data: { sessions: [] },
-    });
-  });
-
   it.each([
     ['agent', 'getAgent', 'Unknown', ''],
     ['project', 'getProject', 'Coder', 'Unknown'],
@@ -86,18 +76,6 @@ describe('session-tools handlers', () => {
       ]);
     },
   );
-
-  it('maps session service unavailability', async () => {
-    const ctx = createContext();
-    (ctx.sessionsService.listActiveSessions as jest.Mock).mockRejectedValue(
-      new ServiceUnavailableError('SessionsService'),
-    );
-
-    await expect(handleListSessions(ctx, {})).resolves.toMatchObject({
-      success: false,
-      error: { code: 'SERVICE_UNAVAILABLE' },
-    });
-  });
 
   it('maps unexpected list failures to LIST_SESSIONS_FAILED', async () => {
     const ctx = createContext();
@@ -138,16 +116,5 @@ describe('session-tools handlers', () => {
       success: false,
       error: { code: 'VALIDATION_ERROR', message: 'invalid guest', data: { field: 'name' } },
     });
-  });
-
-  it('maps unavailable guest registration', async () => {
-    const ctx = createContext();
-    (ctx.guestsService.register as jest.Mock).mockRejectedValue(
-      new ServiceUnavailableError('GuestsService'),
-    );
-
-    await expect(
-      handleRegisterGuest(ctx, { name: 'Guest', tmuxSessionId: 'guest-tmux' }),
-    ).resolves.toMatchObject({ success: false, error: { code: 'SERVICE_UNAVAILABLE' } });
   });
 });

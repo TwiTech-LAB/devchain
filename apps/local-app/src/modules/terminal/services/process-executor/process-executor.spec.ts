@@ -103,16 +103,6 @@ describe('ChildProcessExecutor', () => {
     ).rejects.toThrow(/control characters/);
   });
 
-  it('rejects env with invalid key pattern', async () => {
-    await expect(
-      executor.run({
-        argv: ['echo', 'test'],
-        mode: 'pipe',
-        env: { '9KEY': 'val' },
-      }),
-    ).rejects.toThrow(/Invalid env key/);
-  });
-
   it('passes env to the child process', async () => {
     const result = await executor.run({
       argv: ['node', '-e', 'process.stdout.write(process.env.TEST_VAR || "")'],

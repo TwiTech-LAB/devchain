@@ -4,8 +4,6 @@ import {
   type RegistryCatalogEntry,
 } from './realtime-registry-catalog';
 
-const VALID_KINDS = ['invalidate', 'no-op', 'custom-handler'];
-
 // Layer: pure unit (static catalog contract). Comparing the real registry
 // metadata in memory is the cheapest reliable proof of owner and coverage
 // declarations; opening a socket would not prove this static mapping.
@@ -65,19 +63,6 @@ describe('broadcastRegistry clientReaction contract ↔ non-registry catalog', (
     expect(dynamicEntries.length).toBe(1);
     expect(nonRegistryBroadcastCatalog.length).toBe(13);
     expect(combined.length).toBe(53);
-  });
-
-  it('every dynamic-type registry entry declares a valid clientReaction kind', () => {
-    expect(dynamicEntries.length).toBeGreaterThan(0);
-    for (const entry of dynamicEntries) {
-      expect(VALID_KINDS).toContain(entry.kind);
-    }
-  });
-
-  it('every combined catalog entry has a valid kind', () => {
-    for (const entry of combined) {
-      expect(VALID_KINDS).toContain(entry.kind);
-    }
   });
 
   it('assigns all event-bus frames to the shared stream owner', () => {

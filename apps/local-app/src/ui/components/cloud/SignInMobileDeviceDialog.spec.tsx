@@ -65,26 +65,6 @@ describe('SignInMobileDeviceDialog', () => {
     });
   });
 
-  it('renders the trigger button', () => {
-    render(<SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" />);
-    expect(screen.getByTestId('sign-in-mobile-device-button')).toBeInTheDocument();
-    expect(screen.getByText('Sign in mobile device')).toBeInTheDocument();
-  });
-
-  it('opens dialog on button click', () => {
-    render(<SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" />);
-    fireEvent.click(screen.getByTestId('sign-in-mobile-device-button'));
-    expect(screen.getByText('Sign in your mobile with this account')).toBeInTheDocument();
-    expect(screen.getByText(/scan from the devchain mobile app/i)).toBeInTheDocument();
-  });
-
-  it('mounts QrDisplayPanel with provision mode when dialog is open', () => {
-    render(<SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" />);
-    fireEvent.click(screen.getByTestId('sign-in-mobile-device-button'));
-    expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'provision', undefined);
-    expect(screen.getByTestId('qr-display-panel')).toBeInTheDocument();
-  });
-
   it('pairs against the given backend when one is passed', () => {
     render(
       <SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" backend="remote-1" />,
@@ -93,7 +73,7 @@ describe('SignInMobileDeviceDialog', () => {
     expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'provision', 'remote-1');
   });
 
-  it('calls start on mount', () => {
+  it('starts mobile provisioning and shows its QR dialog', () => {
     const start = jest.fn();
     mockUseQrAuth.mockReturnValue({
       status: 'idle',
@@ -110,15 +90,34 @@ describe('SignInMobileDeviceDialog', () => {
       retry: jest.fn(),
     });
     render(<SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" />);
-    fireEvent.click(screen.getByTestId('sign-in-mobile-device-button'));
-    expect(start).toHaveBeenCalledTimes(1);
+    {
+      fireEvent.click(screen.getByTestId('sign-in-mobile-device-button'));
+      expect(start).toHaveBeenCalledTimes(1);
+    }
+    {
+      expect(screen.getByTestId('sign-in-mobile-device-button')).toBeInTheDocument();
+      expect(screen.getByText('Sign in mobile device')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('Sign in your mobile with this account')).toBeInTheDocument();
+      expect(screen.getByText(/scan from the devchain mobile app/i)).toBeInTheDocument();
+    }
+    {
+      expect(mockUseQrAuth).toHaveBeenCalledWith('http://localhost:3002', 'provision', undefined);
+      expect(screen.getByTestId('qr-display-panel')).toBeInTheDocument();
+    }
   });
 
-  it('renders with default sm size (existing behaviour preserved)', () => {
-    render(<SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" />);
-    const btn = screen.getByTestId('sign-in-mobile-device-button');
-    // shadcn Button size="sm" uses h-9 in this codebase
-    expect(btn).toHaveClass('h-9');
+  it.each([
+    { size: undefined, expected: 'h-9' },
+    { size: 'default', expected: 'h-10' },
+  ] as const)('renders $size trigger', ({ size, expected }) => {
+    render(
+      <SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" triggerSize={size} />,
+    );
+    const button = screen.getByTestId('sign-in-mobile-device-button');
+    expect(button).toHaveClass(expected);
+    expect(button).not.toHaveClass(expected === 'h-9' ? 'h-10' : 'h-9');
   });
 
   it('applies triggerClassName to the trigger button', () => {
@@ -131,16 +130,6 @@ describe('SignInMobileDeviceDialog', () => {
     const btn = screen.getByTestId('sign-in-mobile-device-button');
     expect(btn).toHaveClass('w-full');
     expect(btn).toHaveClass('custom-class');
-  });
-
-  it('renders a larger button when triggerSize="default"', () => {
-    render(
-      <SignInMobileDeviceDialog identityServiceUrl="http://localhost:3002" triggerSize="default" />,
-    );
-    const btn = screen.getByTestId('sign-in-mobile-device-button');
-    // shadcn Button size="default" uses h-10; size="sm" uses h-9
-    expect(btn).toHaveClass('h-10');
-    expect(btn).not.toHaveClass('h-9');
   });
 
   it('calls cancel and closes dialog on Cancel click', () => {

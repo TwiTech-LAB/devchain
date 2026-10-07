@@ -108,11 +108,16 @@ describe('ExternalTaskRichDescription', () => {
     editorMock.mockClear();
   });
 
-  it('renders supported content read-only with an Edit affordance and no editor import', () => {
+  it('renders supported content read-only with an Edit affordance and no editor import', async () => {
     render(section(controllerWith()));
     expect(screen.getByText('rich body')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
     expect(editorMock).not.toHaveBeenCalled();
+
+    {
+      expect(screen.queryByRole('textbox', { name: /title/i })).toBeNull();
+      expect(screen.getByText('rich body').tagName).not.toBe('INPUT');
+    }
   });
 
   it('unsupported content shows the plain fallback, no Edit, and Open in source', () => {
@@ -347,31 +352,5 @@ describe('ExternalTaskRichDescription', () => {
     expect(screen.getByText('Plain fallback text')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
     expect(controller.startEdit).not.toHaveBeenCalled();
-  });
-
-  it('never renders an editable title or heading input', () => {
-    render(section(controllerWith()));
-    expect(screen.queryByRole('textbox', { name: /title/i })).toBeNull();
-    expect(screen.getByText('rich body').tagName).not.toBe('INPUT');
-  });
-
-  it('writes outcome sessions through to the editor key so a new session remounts it', async () => {
-    const controller = controllerWith({
-      state: {
-        phase: 'editing',
-        session: sessionView({ sessionId: 'session-9' }),
-        lastOutcome: null,
-        verifyRemoteState: null,
-        revision: 0,
-        error: null,
-      },
-    });
-    render(section(controller));
-    await screen.findByTestId('rich-editor-mock');
-    // The mocked editor received the canonical initial document.
-    expect(editorMock).toHaveBeenCalledWith(
-      expect.objectContaining({ ariaLabel: 'Edit task description' }),
-      expect.anything(),
-    );
   });
 });

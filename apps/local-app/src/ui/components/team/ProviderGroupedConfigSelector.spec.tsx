@@ -95,25 +95,19 @@ describe('ProviderGroupedConfigSelector — templateSelections', () => {
     expect(lastCall[0].configKeys).not.toContain('glm');
   });
 
-  it('hides providers that have no configs in the template subset', () => {
+  it('shows only providers and configs in the template subset', () => {
     renderWithTemplate(templateSubset, templateSubset);
-
-    // codex + opencode are not in the template subset → entire provider hidden
-    expect(screen.queryByLabelText('Provider codex')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Provider opencode')).not.toBeInTheDocument();
-    // claude IS in the template → still visible
-    expect(screen.getByLabelText('Provider claude')).toBeInTheDocument();
-  });
-
-  it('hides individual configs that are not in the template subset', () => {
-    renderWithTemplate(templateSubset, templateSubset);
-
-    // sonnet + opus46 are visible (template-selected)
-    expect(screen.getByText('sonnet')).toBeInTheDocument();
-    expect(screen.getByText('opus46')).toBeInTheDocument();
-    // opus + glm are NOT in template subset → hidden entirely
-    expect(screen.queryByText('opus')).not.toBeInTheDocument();
-    expect(screen.queryByText('glm')).not.toBeInTheDocument();
+    {
+      expect(screen.queryByLabelText('Provider codex')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Provider opencode')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('Provider claude')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByText('sonnet')).toBeInTheDocument();
+      expect(screen.getByText('opus46')).toBeInTheDocument();
+      expect(screen.queryByText('opus')).not.toBeInTheDocument();
+      expect(screen.queryByText('glm')).not.toBeInTheDocument();
+    }
   });
 
   it('toggling provider OFF struck-throughs the visible template configs (does not hide them)', () => {

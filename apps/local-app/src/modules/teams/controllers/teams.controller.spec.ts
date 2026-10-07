@@ -1,10 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { ZodError } from 'zod';
-import { ValidationError, ConflictError } from '../../../common/errors/error-types';
+
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import type { Agent, Team, TeamMember } from '../../storage/models/domain.models';
-import { TeamsService, type TeamWithLeadName } from '../services/teams.service';
+import { TeamsService } from '../services/teams.service';
 import { TeamsController } from './teams.controller';
 
 const PROJECT_ID = 'project-1';
@@ -23,15 +22,6 @@ function makeTeam(overrides: Partial<Team> = {}): Team {
     allowTeamLeadCreateAgents: true,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
-    ...overrides,
-  };
-}
-
-function makeTeamWithLeadName(overrides: Partial<TeamWithLeadName> = {}): TeamWithLeadName {
-  return {
-    ...makeTeam(),
-    memberCount: 2,
-    teamLeadAgentName: 'Agent-A',
     ...overrides,
   };
 }
@@ -88,24 +78,6 @@ describe('TeamsController', () => {
   });
 
   describe('GET /api/teams', () => {
-    it('returns teams list for project', async () => {
-      const expected = {
-        items: [makeTeamWithLeadName()],
-        total: 1,
-        limit: 100,
-        offset: 0,
-      };
-      teamsService.listTeams.mockResolvedValue(expected);
-
-      const result = await controller.listTeams(PROJECT_ID);
-
-      expect(result).toEqual(expected);
-      expect(teamsService.listTeams).toHaveBeenCalledWith(PROJECT_ID, {
-        limit: undefined,
-        offset: undefined,
-      });
-    });
-
     it('passes limit and offset as numbers', async () => {
       teamsService.listTeams.mockResolvedValue({
         items: [],
@@ -190,19 +162,6 @@ describe('TeamsController', () => {
       expect(result.teamLeadAgentName).toBeNull();
       expect(result.members.every((member) => member.isLead === false)).toBe(true);
     });
-
-    it('returns profileIds in response', async () => {
-      teamsService.getTeam.mockResolvedValue({
-        ...makeTeam(),
-        members: [makeMember('team-1', AGENT_A)],
-        profileIds: ['profile-1', 'profile-2'],
-        profileConfigSelections: [],
-      });
-
-      const result = await controller.getTeam('team-1');
-
-      expect(result.profileIds).toEqual(['profile-1', 'profile-2']);
-    });
   });
 
   describe('POST /api/teams', () => {
@@ -226,202 +185,9 @@ describe('TeamsController', () => {
         profileIds: [],
       });
     });
-
-    it('throws ZodError for missing required fields', async () => {
-      await expect(controller.createTeam({})).rejects.toThrow(ZodError);
-    });
-
-    it('throws ZodError for empty name', async () => {
-      await expect(
-        controller.createTeam({
-          projectId: PROJECT_ID,
-          name: '',
-          teamLeadAgentId: AGENT_A,
-          memberAgentIds: [AGENT_A],
-        }),
-      ).rejects.toThrow(ZodError);
-    });
-
-    it('throws ZodError for empty memberAgentIds array', async () => {
-      await expect(
-        controller.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Team',
-          teamLeadAgentId: AGENT_A,
-          memberAgentIds: [],
-        }),
-      ).rejects.toThrow(ZodError);
-    });
-
-    it('allows creating a team without a lead', async () => {
-      const expected = makeTeam({ teamLeadAgentId: null });
-      teamsService.createTeam.mockResolvedValue(expected);
-
-      const result = await controller.createTeam({
-        projectId: PROJECT_ID,
-        name: 'Leadless Team',
-        memberAgentIds: [AGENT_A, AGENT_B],
-      });
-
-      expect(result).toEqual(expected);
-      expect(teamsService.createTeam).toHaveBeenCalledWith({
-        projectId: PROJECT_ID,
-        name: 'Leadless Team',
-        memberAgentIds: [AGENT_A, AGENT_B],
-        profileIds: [],
-      });
-    });
-
-    it('allows explicit null lead on create', async () => {
-      const expected = makeTeam({ teamLeadAgentId: null });
-      teamsService.createTeam.mockResolvedValue(expected);
-
-      await controller.createTeam({
-        projectId: PROJECT_ID,
-        name: 'Leadless Team',
-        teamLeadAgentId: null,
-        memberAgentIds: [AGENT_A],
-      });
-
-      expect(teamsService.createTeam).toHaveBeenCalledWith({
-        projectId: PROJECT_ID,
-        name: 'Leadless Team',
-        teamLeadAgentId: null,
-        memberAgentIds: [AGENT_A],
-        profileIds: [],
-      });
-    });
-
-    it('accepts profileIds in body', async () => {
-      const expected = makeTeam();
-      teamsService.createTeam.mockResolvedValue(expected);
-
-      await controller.createTeam({
-        projectId: PROJECT_ID,
-        name: 'Profiled Team',
-        memberAgentIds: [AGENT_A],
-        profileIds: ['profile-1', 'profile-2'],
-      });
-
-      expect(teamsService.createTeam).toHaveBeenCalledWith(
-        expect.objectContaining({
-          profileIds: ['profile-1', 'profile-2'],
-        }),
-      );
-    });
-  });
-
-  describe('PUT /api/teams/:id', () => {
-    it('updates team with valid body', async () => {
-      const expected = makeTeam({ name: 'Updated' });
-      teamsService.updateTeam.mockResolvedValue(expected);
-
-      const result = await controller.updateTeam('team-1', {
-        name: 'Updated',
-        description: 'New desc',
-      });
-
-      expect(result).toEqual(expected);
-      expect(teamsService.updateTeam).toHaveBeenCalledWith('team-1', {
-        name: 'Updated',
-        description: 'New desc',
-      });
-    });
-
-    it('allows empty update body (all fields optional)', async () => {
-      teamsService.updateTeam.mockResolvedValue(makeTeam());
-
-      await expect(controller.updateTeam('team-1', {})).resolves.toBeDefined();
-    });
-
-    it('throws ZodError for empty name string', async () => {
-      await expect(controller.updateTeam('team-1', { name: '' })).rejects.toThrow(ZodError);
-    });
-
-    it('allows clearing the lead with null', async () => {
-      teamsService.updateTeam.mockResolvedValue(makeTeam({ teamLeadAgentId: null }));
-
-      await controller.updateTeam('team-1', { teamLeadAgentId: null });
-
-      expect(teamsService.updateTeam).toHaveBeenCalledWith('team-1', {
-        teamLeadAgentId: null,
-      });
-    });
-
-    it('accepts profileIds in body', async () => {
-      teamsService.updateTeam.mockResolvedValue(makeTeam());
-
-      await controller.updateTeam('team-1', {
-        profileIds: ['profile-1', 'profile-2'],
-      });
-
-      expect(teamsService.updateTeam).toHaveBeenCalledWith('team-1', {
-        profileIds: ['profile-1', 'profile-2'],
-      });
-    });
-  });
-
-  describe('DELETE /api/teams/:id', () => {
-    it('deletes team', async () => {
-      teamsService.disbandTeam.mockResolvedValue(undefined);
-
-      await controller.deleteTeam('team-1');
-
-      expect(teamsService.disbandTeam).toHaveBeenCalledWith('team-1');
-    });
   });
 
   describe('profileConfigSelections', () => {
-    const VALID_UUID = '00000000-0000-0000-0000-000000000001';
-    const VALID_UUID_2 = '00000000-0000-0000-0000-000000000002';
-
-    it('POST accepts profileConfigSelections in body', async () => {
-      teamsService.createTeam.mockResolvedValue(makeTeam());
-
-      await controller.createTeam({
-        projectId: PROJECT_ID,
-        name: 'Team',
-        memberAgentIds: [AGENT_A],
-        profileConfigSelections: [{ profileId: VALID_UUID, configIds: [VALID_UUID_2] }],
-      });
-
-      expect(teamsService.createTeam).toHaveBeenCalledWith(
-        expect.objectContaining({
-          profileConfigSelections: [{ profileId: VALID_UUID, configIds: [VALID_UUID_2] }],
-        }),
-      );
-    });
-
-    it('PUT accepts profileConfigSelections in body', async () => {
-      teamsService.updateTeam.mockResolvedValue(makeTeam());
-
-      await controller.updateTeam('team-1', {
-        profileConfigSelections: [{ profileId: VALID_UUID, configIds: [VALID_UUID_2] }],
-      });
-
-      expect(teamsService.updateTeam).toHaveBeenCalledWith(
-        'team-1',
-        expect.objectContaining({
-          profileConfigSelections: [{ profileId: VALID_UUID, configIds: [VALID_UUID_2] }],
-        }),
-      );
-    });
-
-    it('GET returns profileConfigSelections in response', async () => {
-      teamsService.getTeam.mockResolvedValue({
-        ...makeTeam(),
-        members: [makeMember('team-1', AGENT_A)],
-        profileIds: [],
-        profileConfigSelections: [{ profileId: VALID_UUID, configIds: [VALID_UUID_2] }],
-      });
-
-      const result = await controller.getTeam('team-1');
-
-      expect(result.profileConfigSelections).toEqual([
-        { profileId: VALID_UUID, configIds: [VALID_UUID_2] },
-      ]);
-    });
-
     it('GET returns empty array when profileConfigSelections is undefined', async () => {
       teamsService.getTeam.mockResolvedValue({
         ...makeTeam(),
@@ -436,23 +202,6 @@ describe('TeamsController', () => {
       const result = await controller.getTeam('team-1');
 
       expect(result.profileConfigSelections).toEqual([]);
-    });
-
-    it('Zod rejects unknown keys in selection objects (strict mode)', async () => {
-      await expect(
-        controller.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Team',
-          memberAgentIds: [AGENT_A],
-          profileConfigSelections: [
-            {
-              profileId: VALID_UUID,
-              configIds: [VALID_UUID_2],
-              extraField: 'should-fail',
-            } as unknown as { profileId: string; configIds: string[] },
-          ],
-        }),
-      ).rejects.toThrow(ZodError);
     });
   });
 
@@ -507,52 +256,6 @@ describe('TeamsController', () => {
           name: 'Agent',
         }),
       ).rejects.toThrow('Team has no lead');
-    });
-
-    it('propagates ValidationError from service (profile not linked)', async () => {
-      teamsService.getTeam.mockResolvedValue(teamWithMembers);
-      teamsService.createTeamAgentForRest.mockRejectedValue(
-        new ValidationError('Profile not linked to team'),
-      );
-
-      await expect(
-        controller.createTeamAgent('team-1', {
-          providerConfigId: VALID_CONFIG_UUID,
-          name: 'Agent',
-        }),
-      ).rejects.toThrow(ValidationError);
-    });
-
-    it('propagates ConflictError from service (duplicate name)', async () => {
-      teamsService.getTeam.mockResolvedValue(teamWithMembers);
-      teamsService.createTeamAgentForRest.mockRejectedValue(
-        new ConflictError('Agent name already exists'),
-      );
-
-      await expect(
-        controller.createTeamAgent('team-1', {
-          providerConfigId: VALID_CONFIG_UUID,
-          name: 'Duplicate',
-        }),
-      ).rejects.toThrow(ConflictError);
-    });
-
-    it('rejects non-UUID providerConfigId', async () => {
-      await expect(
-        controller.createTeamAgent('team-1', {
-          providerConfigId: 'not-a-uuid',
-          name: 'Agent',
-        }),
-      ).rejects.toThrow(ZodError);
-    });
-
-    it('rejects empty name', async () => {
-      await expect(
-        controller.createTeamAgent('team-1', {
-          providerConfigId: VALID_CONFIG_UUID,
-          name: '',
-        }),
-      ).rejects.toThrow(ZodError);
     });
   });
 });

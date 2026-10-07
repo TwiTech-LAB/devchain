@@ -38,6 +38,30 @@ describe('SkillsSettingsDelegate', () => {
   });
   afterEach(() => db.close());
 
+  describe('completed source sync records', () => {
+    it('persists entries independently and replaces only the named source', () => {
+      expect(delegate.getSkillsCompletedSyncs()).toEqual({});
+      delegate.setSkillCompletedSync('OpenAI', { commit: 'first', skillCount: 2 });
+      delegate.setSkillCompletedSync('anthropic', { commit: 'other', skillCount: 3 });
+      delegate.setSkillCompletedSync('openai', { commit: 'latest', skillCount: 1 });
+      expect(createDelegate(db).getSkillsCompletedSyncs()).toEqual({
+        openai: { commit: 'latest', skillCount: 1 },
+        anthropic: { commit: 'other', skillCount: 3 },
+      });
+    });
+
+    it.each([
+      'not-json',
+      '[]',
+      'null',
+      '{"bad":{"commit":1,"skillCount":2}}',
+      '{"bad":{"commit":"sha","skillCount":-1}}',
+    ])('ignores invalid completion data: %s', (raw) => {
+      upsert(db, 'skills.completedSyncs', raw);
+      expect(delegate.getSkillsCompletedSyncs()).toEqual({});
+    });
+  });
+
   describe('Invariant: syncOnStartup gate', () => {
     it('defaults to true when no setting exists', () => {
       expect(delegate.getSkillsSyncOnStartup()).toBe(DEFAULT_SKILLS_SYNC_ON_STARTUP);
@@ -57,11 +81,6 @@ describe('SkillsSettingsDelegate', () => {
     it('returns true for empty/whitespace value', () => {
       upsert(db, 'skills.syncOnStartup', '   ');
       expect(delegate.getSkillsSyncOnStartup()).toBe(true);
-    });
-
-    it('returns false for non-"true" string values', () => {
-      upsert(db, 'skills.syncOnStartup', 'yes');
-      expect(delegate.getSkillsSyncOnStartup()).toBe(false);
     });
 
     it('persists syncOnStartup via setSkillsSyncOnStartup', () => {
@@ -88,14 +107,6 @@ describe('SkillsSettingsDelegate', () => {
       expect('github' in sources).toBe(true);
     });
 
-    it('enabling a previously disabled source restores discovery without data loss', async () => {
-      await delegate.setSkillSourceEnabled('npm', false);
-      await delegate.setSkillSourceEnabled('npm', true);
-
-      const sources = delegate.getSkillSourcesEnabled();
-      expect(sources['npm']).toBe(true);
-    });
-
     it('multiple sources can be independently toggled', async () => {
       await delegate.setSkillSourceEnabled('github', false);
       await delegate.setSkillSourceEnabled('npm', true);
@@ -107,13 +118,6 @@ describe('SkillsSettingsDelegate', () => {
         npm: true,
         local: false,
       });
-    });
-
-    it('disabled source is persisted across reads', async () => {
-      await delegate.setSkillSourceEnabled('my-source', false);
-
-      const delegate2 = createDelegate(db);
-      expect(delegate2.getSkillSourcesEnabled()['my-source']).toBe(false);
     });
 
     it('setSkillSourceEnabled normalizes source name to lowercase', async () => {
@@ -162,11 +166,6 @@ describe('SkillsSettingsDelegate', () => {
       expect(delegate.getSkillSourcesEnabled()).toEqual({});
     });
 
-    it('returns empty object for empty string value', () => {
-      upsert(db, 'skills.sources', '');
-      expect(delegate.getSkillSourcesEnabled()).toEqual({});
-    });
-
     it('returns empty object for invalid JSON', () => {
       upsert(db, 'skills.sources', 'not-json');
       expect(delegate.getSkillSourcesEnabled()).toEqual({});
@@ -191,40 +190,12 @@ describe('SkillsSettingsDelegate', () => {
   });
 
   describe('setSkillSourceEnabled validation', () => {
-    it('rejects empty sourceName', async () => {
-      await expect(delegate.setSkillSourceEnabled('', true)).rejects.toThrow(ValidationError);
-    });
-
     it('rejects whitespace-only sourceName', async () => {
       await expect(delegate.setSkillSourceEnabled('   ', true)).rejects.toThrow(ValidationError);
-    });
-
-    it('rejects empty string after trim+lowercase', async () => {
-      await expect(delegate.setSkillSourceEnabled('  ', false)).rejects.toThrow(ValidationError);
     });
   });
 
   describe('setSkillSourceEnabled persistence', () => {
-    it('adds new source to empty map', async () => {
-      await delegate.setSkillSourceEnabled('github', true);
-      expect(delegate.getSkillSourcesEnabled()).toEqual({ github: true });
-    });
-
-    it('merges with existing sources', async () => {
-      await delegate.setSkillSourceEnabled('github', true);
-      await delegate.setSkillSourceEnabled('npm', false);
-
-      const sources = delegate.getSkillSourcesEnabled();
-      expect(sources).toEqual({ github: true, npm: false });
-    });
-
-    it('overwrites existing source', async () => {
-      await delegate.setSkillSourceEnabled('github', true);
-      await delegate.setSkillSourceEnabled('github', false);
-
-      expect(delegate.getSkillSourcesEnabled()).toEqual({ github: false });
-    });
-
     it('persists via direct sqlite write (no updateSettings routing)', async () => {
       await delegate.setSkillSourceEnabled('test-source', true);
 

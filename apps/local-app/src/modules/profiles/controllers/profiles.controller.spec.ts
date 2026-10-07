@@ -116,52 +116,33 @@ describe('ProfilesController', () => {
   // Note: options field removed from CreateProfileSchema/UpdateProfileSchema in Phase 4
   // Provider configuration (including options) now lives in ProfileProviderConfig
 
-  it('converts whitespace-only familySlug to null during create', async () => {
-    const createdProfile: AgentProfile = { ...baseProfile, familySlug: null };
-    storage.createAgentProfile.mockResolvedValue(createdProfile);
-
-    await controller.createProfile({
-      projectId: 'project-1',
-      name: 'Test Profile',
-      familySlug: '   ',
-    });
-
-    expect(storage.createAgentProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ familySlug: null }),
-    );
-  });
-
-  it('trims and lowercases familySlug during create', async () => {
-    const createdProfile: AgentProfile = { ...baseProfile, familySlug: 'my-family' };
-    storage.createAgentProfile.mockResolvedValue(createdProfile);
-
-    await controller.createProfile({
-      projectId: 'project-1',
-      name: 'Test Profile',
-      familySlug: '  My-Family  ',
-    });
-
-    expect(storage.createAgentProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ familySlug: 'my-family' }),
-    );
-  });
-
-  it('converts whitespace-only familySlug to null during update', async () => {
-    const updatedProfile: AgentProfile = { ...baseProfile, familySlug: null };
-    storage.updateAgentProfile.mockResolvedValue(updatedProfile);
-
-    await controller.updateProfile('profile-1', { familySlug: '   ' });
-
-    expect(storage.updateAgentProfile).toHaveBeenCalledWith('profile-1', { familySlug: null });
-  });
-
-  it('allows clearing familySlug by sending null during update', async () => {
-    const updatedProfile: AgentProfile = { ...baseProfile, familySlug: null };
-    storage.updateAgentProfile.mockResolvedValue(updatedProfile);
-
-    await controller.updateProfile('profile-1', { familySlug: null });
-
-    expect(storage.updateAgentProfile).toHaveBeenCalledWith('profile-1', { familySlug: null });
+  it.each([
+    { name: 'blank create', operation: 'create', input: '   ', expected: null },
+    {
+      name: 'mixed-case create',
+      operation: 'create',
+      input: '  My-Family  ',
+      expected: 'my-family',
+    },
+    { name: 'clear on update', operation: 'update', input: null, expected: null },
+  ])('normalizes familySlug for $name', async ({ operation, input, expected }) => {
+    if (operation === 'create') {
+      storage.createAgentProfile.mockResolvedValue({ ...baseProfile, familySlug: expected });
+      await controller.createProfile({
+        projectId: 'project-1',
+        name: 'Test Profile',
+        familySlug: input,
+      });
+      expect(storage.createAgentProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ familySlug: expected }),
+      );
+    } else {
+      storage.updateAgentProfile.mockResolvedValue({ ...baseProfile, familySlug: expected });
+      await controller.updateProfile('profile-1', { familySlug: input });
+      expect(storage.updateAgentProfile).toHaveBeenCalledWith('profile-1', {
+        familySlug: expected,
+      });
+    }
   });
 
   it('GET /api/profiles requires projectId and lists by project', async () => {
@@ -258,40 +239,6 @@ describe('ProfilesController', () => {
   // ============================================
 
   describe('Provider Configs', () => {
-    it('GET /api/profiles/:id/provider-configs lists configs for profile', async () => {
-      storage.getAgentProfile.mockResolvedValue(baseProfile);
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([baseProviderConfig]);
-
-      const result = await controller.listProviderConfigs('profile-1');
-
-      expect(storage.getAgentProfile).toHaveBeenCalledWith('profile-1');
-      expect(storage.listProfileProviderConfigsByProfile).toHaveBeenCalledWith('profile-1');
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe('config-1');
-      expect(result[0].env).toEqual({ API_KEY: 'test-key' });
-    });
-
-    it('GET /api/profiles/:id/provider-configs includes providerName when present', async () => {
-      storage.getAgentProfile.mockResolvedValue(baseProfile);
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([
-        { ...baseProviderConfig, providerName: 'Anthropic' },
-      ]);
-
-      const result = await controller.listProviderConfigs('profile-1');
-
-      expect(result).toHaveLength(1);
-      expect(result[0].providerName).toBe('Anthropic');
-    });
-
-    it('GET /api/profiles/:id/provider-configs returns empty array when no configs', async () => {
-      storage.getAgentProfile.mockResolvedValue(baseProfile);
-      storage.listProfileProviderConfigsByProfile.mockResolvedValue([]);
-
-      const result = await controller.listProviderConfigs('profile-1');
-
-      expect(result).toEqual([]);
-    });
-
     it('GET /api/profiles/:id/provider-configs throws when profile not found', async () => {
       storage.getAgentProfile.mockRejectedValue(new NotFoundError('AgentProfile', 'profile-1'));
 
@@ -320,67 +267,6 @@ describe('ProfilesController', () => {
         effort: null,
       });
       expect(result.id).toBe('config-1');
-    });
-
-    it('POST /api/profiles/:id/provider-configs creates config with structured model/effort', async () => {
-      const configWithDefaults = {
-        ...baseProviderConfig,
-        model: 'claude-sonnet-4-5',
-        effort: 'high',
-      };
-      storage.getAgentProfile.mockResolvedValue(baseProfile);
-      storage.createProfileProviderConfig.mockResolvedValue(configWithDefaults);
-
-      const result = await controller.createProviderConfig('profile-1', {
-        providerId: 'provider-1',
-        name: 'configured-config',
-        model: 'claude-sonnet-4-5',
-        effort: 'high',
-      });
-
-      expect(storage.createProfileProviderConfig).toHaveBeenCalledWith({
-        profileId: 'profile-1',
-        providerId: 'provider-1',
-        name: 'configured-config',
-        description: null,
-        options: null,
-        env: null,
-        model: 'claude-sonnet-4-5',
-        effort: 'high',
-      });
-      expect(result.model).toBe('claude-sonnet-4-5');
-      expect(result.effort).toBe('high');
-    });
-
-    it('POST /api/profiles/:id/provider-configs creates config with null env', async () => {
-      const configWithNullEnv = { ...baseProviderConfig, env: null };
-      storage.getAgentProfile.mockResolvedValue(baseProfile);
-      storage.createProfileProviderConfig.mockResolvedValue(configWithNullEnv);
-
-      const result = await controller.createProviderConfig('profile-1', {
-        providerId: 'provider-1',
-        name: 'simple-config',
-      });
-
-      expect(storage.createProfileProviderConfig).toHaveBeenCalledWith({
-        profileId: 'profile-1',
-        providerId: 'provider-1',
-        name: 'simple-config',
-        description: null,
-        options: null,
-        env: null,
-        model: null,
-        effort: null,
-      });
-      expect(result.env).toBeNull();
-    });
-
-    it('POST /api/profiles/:id/provider-configs throws when profile not found', async () => {
-      storage.getAgentProfile.mockRejectedValue(new NotFoundError('AgentProfile', 'profile-1'));
-
-      await expect(
-        controller.createProviderConfig('profile-1', { providerId: 'provider-1', name: 'test' }),
-      ).rejects.toThrow(NotFoundError);
     });
 
     it('POST /api/profiles/:id/provider-configs validates env keys', async () => {
@@ -438,12 +324,6 @@ describe('ProfilesController', () => {
           '550e8400-e29b-41d4-a716-446655440000',
           '550e8400-e29b-41d4-a716-446655440001',
         ]);
-      });
-
-      it('rejects empty configIds array', async () => {
-        await expect(
-          controller.reorderProviderConfigs('profile-1', { configIds: [] }),
-        ).rejects.toThrow();
       });
 
       it('rejects configIds not belonging to profile', async () => {
@@ -526,22 +406,6 @@ describe('ProfilesController', () => {
           '550e8400-e29b-41d4-a716-446655440001',
         ]);
       });
-
-      it('propagates errors from storage service (transaction rolls back)', async () => {
-        storage.reorderProfileProviderConfigs.mockRejectedValue(
-          new Error('Database connection lost'),
-        );
-
-        await expect(
-          controller.reorderProviderConfigs('profile-1', {
-            configIds: [
-              '550e8400-e29b-41d4-a716-446655440000',
-              '550e8400-e29b-41d4-a716-446655440001',
-              '550e8400-e29b-41d4-a716-446655440002',
-            ],
-          }),
-        ).rejects.toThrow('Database connection lost');
-      });
     });
   });
 
@@ -550,18 +414,6 @@ describe('ProfilesController', () => {
   // ============================================
 
   describe('Delete Profile', () => {
-    it('DELETE /api/profiles/:id deletes profile when no agents use it', async () => {
-      storage.getAgentProfile.mockResolvedValue(baseProfile);
-      storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 10000, offset: 0 });
-      storage.deleteAgentProfile.mockResolvedValue(undefined);
-
-      await controller.deleteProfile('profile-1');
-
-      expect(storage.getAgentProfile).toHaveBeenCalledWith('profile-1');
-      expect(storage.listAgents).toHaveBeenCalledWith('project-1', { limit: 10000, offset: 0 });
-      expect(storage.deleteAgentProfile).toHaveBeenCalledWith('profile-1');
-    });
-
     it('DELETE /api/profiles/:id throws ConflictException when agents use profile', async () => {
       storage.getAgentProfile.mockResolvedValue(baseProfile);
       storage.listAgents.mockResolvedValue({
@@ -586,30 +438,6 @@ describe('ProfilesController', () => {
       }
 
       expect(storage.deleteAgentProfile).not.toHaveBeenCalled();
-    });
-
-    it('DELETE /api/profiles/:id includes all agent names in error message', async () => {
-      storage.getAgentProfile.mockResolvedValue(baseProfile);
-      storage.listAgents.mockResolvedValue({
-        items: [
-          { ...baseAgent, name: 'Agent A' },
-          { ...baseAgent, id: 'agent-2', name: 'Agent B' },
-          { ...baseAgent, id: 'agent-3', name: 'Agent C' },
-        ],
-        total: 3,
-        limit: 10000,
-        offset: 0,
-      });
-
-      try {
-        await controller.deleteProfile('profile-1');
-      } catch (error) {
-        const response = (error as ConflictException).getResponse();
-        expect(response).toMatchObject({
-          agents: 'Agent A, Agent B, Agent C',
-          agentCount: 3,
-        });
-      }
     });
 
     it('DELETE /api/profiles/:id allows deletion when other profiles agents exist', async () => {

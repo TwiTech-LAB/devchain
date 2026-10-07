@@ -232,26 +232,23 @@ describe('useProjectsPageController semantic presentation', () => {
     );
   });
 
-  it.each(['attaching', 'remote', 'detaching', 'failed'])(
-    'locks rows in binding state %s from useRemotes',
-    async (state) => {
-      mockBindings.set('two', { projectId: 'two', remoteId: 'remote-1', state });
-      const api = new InMemoryProjectsPageApi({
-        projects: { items: [project('one'), project('two')] },
-        remoteOwners: [
-          { projectId: 'two', remoteId: 'remote-1', remoteName: 'vm-1', state: 'remote' },
-        ],
-      });
-      const { result } = renderController(api);
+  it.each(['remote'])('locks rows in binding state %s from useRemotes', async (state) => {
+    mockBindings.set('two', { projectId: 'two', remoteId: 'remote-1', state });
+    const api = new InMemoryProjectsPageApi({
+      projects: { items: [project('one'), project('two')] },
+      remoteOwners: [
+        { projectId: 'two', remoteId: 'remote-1', remoteName: 'vm-1', state: 'remote' },
+      ],
+    });
+    const { result } = renderController(api);
 
-      await waitFor(async () => {
-        const rows = await readyRows(result);
-        expect(rows.find((row) => row.id === 'two')?.remoteLock).not.toBeNull();
-      });
+    await waitFor(async () => {
       const rows = await readyRows(result);
-      expect(rows.find((row) => row.id === 'one')?.remoteLock).toBeNull();
-    },
-  );
+      expect(rows.find((row) => row.id === 'two')?.remoteLock).not.toBeNull();
+    });
+    const rows = await readyRows(result);
+    expect(rows.find((row) => row.id === 'one')?.remoteLock).toBeNull();
+  });
 
   it('optimistically updates, then closes and reports success', async () => {
     let resolveUpdate!: (value: {

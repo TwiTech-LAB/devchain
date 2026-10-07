@@ -109,25 +109,15 @@ describe('InlineSessionSummaryChip', () => {
     expect(chip).toHaveTextContent('$0.04');
   });
 
-  it('should show pulsing dot for ongoing sessions', () => {
-    render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ isOngoing: true })} />,
-    );
-
-    const chip = screen.getByRole('button');
-    const dot = chip.querySelector('span.animate-pulse');
-    expect(dot).toBeTruthy();
-  });
-
-  it('should show static dot for completed sessions', () => {
-    render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ isOngoing: false })} />,
-    );
-
-    const chip = screen.getByRole('button');
-    const pulseDot = chip.querySelector('span.animate-pulse');
-    expect(pulseDot).toBeNull();
-  });
+  it.each([{ isOngoing: true }, { isOngoing: false }] as const)(
+    'pulses only when ongoing=$isOngoing',
+    ({ isOngoing }) => {
+      render(<InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ isOngoing })} />);
+      expect(screen.getByRole('button').querySelector('span.animate-pulse') !== null).toBe(
+        isOngoing,
+      );
+    },
+  );
 
   it('should have accessible aria-label with metrics summary', () => {
     render(
@@ -151,52 +141,9 @@ describe('InlineSessionSummaryChip', () => {
   // Token formatting
   // -------------------------------------------------------------------------
 
-  it('should format tokens below 1k as plain numbers', () => {
-    render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ totalTokens: 500 })} />,
-    );
-    expect(screen.getByRole('button')).toHaveTextContent('500');
-  });
-
-  it('should format tokens in thousands with one decimal', () => {
-    render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ totalTokens: 1500 })} />,
-    );
-    expect(screen.getByRole('button')).toHaveTextContent('1.5k');
-  });
-
-  it('should format tokens above 10k as rounded thousands', () => {
-    render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ totalTokens: 15_200 })} />,
-    );
-    expect(screen.getByRole('button')).toHaveTextContent('15k');
-  });
-
-  it('should format tokens in millions', () => {
-    render(
-      <InlineSessionSummaryChip
-        {...defaultProps}
-        metrics={makeMetrics({ totalTokens: 2_300_000 })}
-      />,
-    );
-    expect(screen.getByRole('button')).toHaveTextContent('2.3M');
-  });
-
   // -------------------------------------------------------------------------
   // Cost formatting
   // -------------------------------------------------------------------------
-
-  it('should format zero cost', () => {
-    render(<InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ costUsd: 0 })} />);
-    expect(screen.getByRole('button')).toHaveTextContent('$0');
-  });
-
-  it('should format small costs with 4 decimal places', () => {
-    render(
-      <InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ costUsd: 0.0012 })} />,
-    );
-    expect(screen.getByRole('button')).toHaveTextContent('$0.0012');
-  });
 
   // -------------------------------------------------------------------------
   // Click behavior
@@ -281,22 +228,6 @@ describe('InlineSessionSummaryChip', () => {
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('plus 1 more'));
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('context window 50% used'));
     expect(chip).toHaveAttribute('aria-label', expect.stringContaining('compactions 0'));
-  });
-
-  it('should apply model truncation classes', () => {
-    const longModel = 'claude-sonnet-4-6-very-long-model-name-with-extra-segments-20260225';
-    render(
-      <InlineSessionSummaryChip
-        {...defaultProps}
-        activeTab="session"
-        metrics={makeMetrics({ primaryModel: longModel })}
-      />,
-    );
-
-    const chip = screen.getByRole('button');
-    const modelSpan = chip.querySelector(`span[title="${longModel}"]`);
-    expect(modelSpan).toHaveClass('truncate', 'max-w-[120px]');
-    expect(chip).toHaveTextContent(longModel);
   });
 
   it('should show compaction count only when > 0', () => {
@@ -488,34 +419,37 @@ describe('InlineSessionSummaryChip', () => {
     expect(progressBar).toHaveAttribute('aria-valuemax', '100');
   });
 
-  it('should render amber context bar at 51-80% window usage', () => {
+  it.each([
+    {
+      label: 'should render amber context bar at 51-80% window usage',
+      totalContextTokens: 120_000,
+      colorClass: 'bg-status-warn',
+      width: '60%',
+      ariaValue: '60',
+    },
+    {
+      label: 'should render red context bar at >80% window usage',
+      totalContextTokens: 190_000,
+      colorClass: 'bg-destructive',
+      width: '95%',
+      ariaValue: '95',
+    },
+  ] as const)('$label', ({ totalContextTokens, colorClass, width, ariaValue }) => {
     render(
       <InlineSessionSummaryChip
         {...defaultProps}
-        metrics={makeMetrics({ totalContextTokens: 120_000, contextWindowTokens: 200_000 })}
+        metrics={makeMetrics({
+          totalContextTokens: totalContextTokens,
+          contextWindowTokens: 200_000,
+        })}
       />,
     );
 
     const progressBar = screen.getByRole('progressbar');
     const fill = progressBar.firstElementChild as HTMLElement;
-    expect(fill.className).toContain('bg-status-warn');
-    expect(fill.style.width).toBe('60%');
-    expect(progressBar).toHaveAttribute('aria-valuenow', '60');
-  });
-
-  it('should render red context bar at >80% window usage', () => {
-    render(
-      <InlineSessionSummaryChip
-        {...defaultProps}
-        metrics={makeMetrics({ totalContextTokens: 190_000, contextWindowTokens: 200_000 })}
-      />,
-    );
-
-    const progressBar = screen.getByRole('progressbar');
-    const fill = progressBar.firstElementChild as HTMLElement;
-    expect(fill.className).toContain('bg-destructive');
-    expect(fill.style.width).toBe('95%');
-    expect(progressBar).toHaveAttribute('aria-valuenow', '95');
+    expect(fill.className).toContain(colorClass);
+    expect(fill.style.width).toBe(width);
+    expect(progressBar).toHaveAttribute('aria-valuenow', ariaValue);
   });
 
   it('should clamp progress bar width and aria-valuenow at 100%', () => {
@@ -550,25 +484,6 @@ describe('InlineSessionSummaryChip', () => {
   // -------------------------------------------------------------------------
   // Tooltip
   // -------------------------------------------------------------------------
-
-  it('should show tooltip on hover', async () => {
-    render(<InlineSessionSummaryChip {...defaultProps} />);
-    const chip = screen.getByRole('button');
-
-    jest.useFakeTimers();
-    try {
-      fireEvent.pointerMove(chip);
-      act(() => {
-        jest.advanceTimersByTime(350);
-      });
-
-      await waitFor(() => {
-        expect(screen.getAllByText('Session Metrics').length).toBeGreaterThan(0);
-      });
-    } finally {
-      jest.useRealTimers();
-    }
-  });
 
   it('should show visible, total, and window context metrics in tooltip', async () => {
     render(

@@ -70,37 +70,26 @@ describe('CreateFromRegistryDialog', () => {
     expect(screen.queryByText('Create Project from Template')).not.toBeInTheDocument();
   });
 
-  it('displays dialog title and template info', () => {
+  it('displays dialog title and template info', async () => {
     renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
 
     expect(screen.getByText('Create Project from Template')).toBeInTheDocument();
     expect(screen.getByText(/Test Template/)).toBeInTheDocument();
     expect(screen.getByText(/v1.0.0/)).toBeInTheDocument();
-  });
 
-  it('has project name input', () => {
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
-
-    expect(screen.getByLabelText('Project Name')).toBeInTheDocument();
-  });
-
-  it('has description textarea', () => {
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
-
-    expect(screen.getByLabelText(/Description/)).toBeInTheDocument();
-  });
-
-  it('has root path input', () => {
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
-
-    expect(screen.getByLabelText('Root Path')).toBeInTheDocument();
-  });
-
-  it('has Cancel and Create Project buttons', () => {
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
-
-    expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /create project/i })).toBeInTheDocument();
+    {
+      expect(screen.getByLabelText('Project Name')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByLabelText(/Description/)).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByLabelText('Root Path')).toBeInTheDocument();
+    }
+    {
+      expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /create project/i })).toBeInTheDocument();
+    }
   });
 
   it('submits form with valid data', async () => {
@@ -137,6 +126,11 @@ describe('CreateFromRegistryDialog', () => {
         }),
       );
     });
+    await waitFor(() => {
+      expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Project Created' }));
+      expect(defaultProps.onClose).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith('/projects');
+    });
   });
 
   it('shows loading state during creation', async () => {
@@ -169,39 +163,10 @@ describe('CreateFromRegistryDialog', () => {
     });
 
     // Cleanup
+    expect(screen.getByLabelText('Project Name')).toBeDisabled();
+    expect(screen.getByLabelText('Root Path')).toBeDisabled();
+    expect(screen.getByRole('button', { name: /cancel/i })).toBeDisabled();
     resolvePromise!({});
-  });
-
-  it('shows success toast and navigates on success', async () => {
-    global.fetch = jest.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        project: { id: 'proj-123', name: 'My Project', rootPath: '/tmp/test' },
-        fromRegistry: true,
-        templateSlug: 'test-template',
-        templateVersion: '1.0.0',
-      }),
-    })) as unknown as typeof fetch;
-
-    const onClose = jest.fn();
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} onClose={onClose} />);
-
-    // Fill form
-    fireEvent.change(screen.getByLabelText('Project Name'), { target: { value: 'My Project' } });
-    fireEvent.change(screen.getByLabelText('Root Path'), { target: { value: '/tmp/test' } });
-
-    // Submit
-    fireEvent.click(screen.getByRole('button', { name: /create project/i }));
-
-    await waitFor(() => {
-      expect(mockToast).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: 'Project Created',
-        }),
-      );
-      expect(onClose).toHaveBeenCalled();
-      expect(mockNavigate).toHaveBeenCalledWith('/projects');
-    });
   });
 
   it('shows error message on API failure', async () => {
@@ -234,58 +199,19 @@ describe('CreateFromRegistryDialog', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('disables inputs and buttons during creation', async () => {
-    let resolvePromise: (value: unknown) => void;
-    const pendingPromise = new Promise((resolve) => {
-      resolvePromise = resolve;
-    });
-
-    global.fetch = jest.fn(async () => {
-      await pendingPromise;
-      return {
-        ok: true,
-        json: async () => ({
-          project: { id: 'proj-123', name: 'My Project', rootPath: '/tmp/test' },
-        }),
-      };
-    }) as unknown as typeof fetch;
-
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
-
-    // Fill form
-    fireEvent.change(screen.getByLabelText('Project Name'), { target: { value: 'My Project' } });
-    fireEvent.change(screen.getByLabelText('Root Path'), { target: { value: '/tmp/test' } });
-
-    // Submit
-    fireEvent.click(screen.getByRole('button', { name: /create project/i }));
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('Project Name')).toBeDisabled();
-      expect(screen.getByLabelText('Root Path')).toBeDisabled();
-      expect(screen.getByRole('button', { name: /cancel/i })).toBeDisabled();
-    });
-
-    // Cleanup
-    resolvePromise!({});
-  });
-
-  it('Create button is disabled when required fields are empty', () => {
+  it('Create button is disabled when required fields are empty', async () => {
     renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
 
     const submitButton = screen.getByRole('button', { name: /create project/i });
     expect(submitButton).toBeDisabled();
-  });
 
-  it('Create button is enabled when required fields are filled', async () => {
-    renderWithProviders(<CreateFromRegistryDialog {...defaultProps} />);
-
-    // Fill required fields
-    fireEvent.change(screen.getByLabelText('Project Name'), { target: { value: 'My Project' } });
-    fireEvent.change(screen.getByLabelText('Root Path'), { target: { value: '/tmp/test' } });
-
-    await waitFor(() => {
-      const submitButton = screen.getByRole('button', { name: /create project/i });
-      expect(submitButton).not.toBeDisabled();
-    });
+    {
+      fireEvent.change(screen.getByLabelText('Project Name'), { target: { value: 'My Project' } });
+      fireEvent.change(screen.getByLabelText('Root Path'), { target: { value: '/tmp/test' } });
+      await waitFor(() => {
+        const submitButton = screen.getByRole('button', { name: /create project/i });
+        expect(submitButton).not.toBeDisabled();
+      });
+    }
   });
 });

@@ -3,6 +3,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useHomeSocket } from '@/ui/hooks/useHomeSocket';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import type { WsEnvelope } from '@/ui/lib/socket';
+import type {
+  FileSyncFailedCounts,
+  FileSyncProblem,
+} from '@/modules/remotes/sync/remote-file-sync.dto';
 import {
   HOME_BACKEND,
   apiFetch as explicitApiFetch,
@@ -46,6 +50,8 @@ export interface RemoteProjectBindingRow {
   /** Last live-sync apply error; the project stays routed to the remote. */
   syncError?: string | null;
   fileSyncWarning?: string;
+  fileSyncProblem?: FileSyncProblem | null;
+  fileSyncFailed?: FileSyncFailedCounts;
 }
 
 export function toBindingMap(rows: readonly RemoteProjectBindingRow[] | undefined) {

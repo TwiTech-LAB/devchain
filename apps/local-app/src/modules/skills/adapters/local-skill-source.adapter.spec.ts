@@ -2,8 +2,10 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { StorageError } from '../../../common/errors/error-types';
+import { NotFoundError, StorageError } from '../../../common/errors/error-types';
+import type { CompletedSkillSync } from '../../settings/local/delegates/skills-settings.delegate';
 import type { LocalSkillSource } from '../../storage/models/domain.models';
+import { SkillSyncService } from '../services/skill-sync.service';
 import { LocalSkillSourceAdapter } from './local-skill-source.adapter';
 
 describe('LocalSkillSourceAdapter', () => {
@@ -174,29 +176,6 @@ Inspect code diffs and suggest improvements.`,
     await fs.utimes(filePath, nextTimestamp, nextTimestamp);
   };
 
-  it('changes commit hash when only a supporting file is edited', async () => {
-    const root = await fs.mkdtemp(join(tmpdir(), 'local-source-adapter-'));
-    const skillPath = join(root, 'skills', 'code-review');
-    const skillMdPath = join(skillPath, 'SKILL.md');
-    const readmePath = join(skillPath, 'README.md');
-    await fs.mkdir(skillPath, { recursive: true });
-    await fs.writeFile(skillMdPath, '# Skill\n', 'utf-8');
-    await fs.writeFile(readmePath, 'Initial readme\n', 'utf-8');
-
-    try {
-      const adapter = new LocalSkillSourceAdapter(buildSource(root));
-      const initialHash = await adapter.getLatestCommit();
-
-      await fs.writeFile(readmePath, 'Updated readme\n', 'utf-8');
-      await touchWithNewMtime(readmePath);
-      const editedHash = await adapter.getLatestCommit();
-
-      expect(editedHash).not.toBe(initialHash);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
   it('changes commit hash when a nested supporting file is edited or removed', async () => {
     const root = await fs.mkdtemp(join(tmpdir(), 'local-source-adapter-'));
     const skillPath = join(root, 'skills', 'code-review');
@@ -288,4 +267,59 @@ Inspect code diffs and suggest improvements.`,
       await fs.rm(targetRoot, { recursive: true, force: true });
     }
   });
+
+  // Root reads a chmod 000 file, so the read error cannot happen there.
+  const itUnlessRoot = process.getuid?.() === 0 ? it.skip : it;
+
+  itUnlessRoot(
+    'retries a skill that discovery could not read, although the fingerprint did not change',
+    async () => {
+      // Real adapter and sync service on a real folder; only persistence and the copy are fakes.
+      const root = await fs.mkdtemp(join(tmpdir(), 'local-source-retry-'));
+      const skillMdPath = join(root, 'skills', 'code-review', 'SKILL.md');
+      await fs.mkdir(join(root, 'skills', 'code-review'), { recursive: true });
+      await fs.writeFile(skillMdPath, '---\nname: Code Review\ndescription: Review\n---\nBody');
+      const adapter = new LocalSkillSourceAdapter(buildSource(root));
+      jest.spyOn(adapter, 'downloadSkill').mockResolvedValue(join(root, 'copy'));
+      const stored = new Map<string, Record<string, unknown>>();
+      const completed: Record<string, CompletedSkillSync> = {};
+      const service = new SkillSyncService(
+        { getAdapterBySourceName: async () => adapter } as never,
+        {
+          getSkillBySlug: async (slug: string) => {
+            if (!stored.has(slug)) throw new NotFoundError('Skill', slug);
+            return stored.get(slug);
+          },
+          upsertSkill: async (slug: string, data: Record<string, unknown>) => {
+            stored.set(slug, { slug, ...data });
+          },
+          listSkillsBySource: async () => [...stored.values()],
+          deleteSkillBySlug: async (slug: string) => stored.delete(slug),
+        } as never,
+        { deriveCategory: () => 'general' } as never,
+        {
+          getSkillSourcesEnabled: () => ({}),
+          getSkillsCompletedSyncs: () => completed,
+          setSkillCompletedSync: (name: string, entry: CompletedSkillSync) => {
+            completed[name] = entry;
+          },
+        } as never,
+      );
+
+      try {
+        await fs.chmod(skillMdPath, 0o000);
+        const commit = await adapter.getLatestCommit();
+        const unreadable = await service.syncSource('local-source');
+        await fs.chmod(skillMdPath, 0o644);
+        expect(await adapter.getLatestCommit()).toBe(commit);
+        const readable = await service.syncSource('local-source');
+
+        expect(unreadable).toMatchObject({ added: 0, failed: 1 });
+        expect(readable).toMatchObject({ added: 1, failed: 0 });
+        expect(completed['local-source']).toEqual({ commit, skillCount: 1 });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

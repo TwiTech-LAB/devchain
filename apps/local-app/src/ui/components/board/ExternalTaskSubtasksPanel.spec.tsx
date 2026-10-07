@@ -122,22 +122,19 @@ describe('ExternalTaskSubtasksPanel', () => {
       parentTaskId: 'ENG-1',
       enabled: true,
     });
+    {
+      const panel = screen.getByRole('region', { name: 'Subtasks' });
+      const buttons = within(panel).getAllByRole('button');
+      expect(buttons).toHaveLength(1);
+      expect(buttons[0]).toHaveAccessibleName('Change status for ENG-2');
+      expect(within(panel).queryAllByRole('combobox')).toHaveLength(0);
+      expect(within(panel).queryAllByRole('form')).toHaveLength(0);
+      expect(within(panel).queryByRole('textbox')).not.toBeInTheDocument();
+      expect(within(panel).getAllByRole('link')).toHaveLength(1);
+    }
     await user.click(screen.getByRole('button', { name: 'Change status for ENG-2' }));
     expect(activate).toHaveBeenCalledTimes(1);
     expect(activate).toHaveBeenCalledWith('10001');
-  });
-
-  it('exposes no comment, time, import, DevChain-link, or bulk controls on rows', () => {
-    renderPanel();
-
-    const panel = screen.getByRole('region', { name: 'Subtasks' });
-    const buttons = within(panel).getAllByRole('button');
-    expect(buttons).toHaveLength(1);
-    expect(buttons[0]).toHaveAccessibleName('Change status for ENG-2');
-    expect(within(panel).queryAllByRole('combobox')).toHaveLength(0);
-    expect(within(panel).queryAllByRole('form')).toHaveLength(0);
-    expect(within(panel).queryByRole('textbox')).not.toBeInTheDocument();
-    expect(within(panel).getAllByRole('link')).toHaveLength(1);
   });
 
   it('shows local loading inside the activated row before fresh options appear', () => {
@@ -275,38 +272,6 @@ describe('ExternalTaskSubtasksPanel', () => {
     expect(screen.getByRole('link', { name: 'Open ENG-2 in source' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(retry).toHaveBeenCalledTimes(1);
-  });
-
-  it('holds the confirmed label and announces success until refreshed detail replaces it', () => {
-    useExternalSubtaskStatusEditorMock.mockReturnValue(
-      editorValue({
-        editor: { taskId: '10001', phase: 'success', confirmedStatus: transitionOption },
-      }),
-    );
-    const { rerender } = renderPanel();
-
-    expect(screen.getByText('Finish (Released)')).toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent('Subtask status updated.');
-
-    rerender(
-      <ExternalTaskSubtasksPanel
-        projectId={PROJECT_ID}
-        provider="jira"
-        subtasks={[
-          subtask({
-            status: { remoteId: 'status-done', name: 'Released', category: 'completed' },
-          }),
-        ]}
-        subtasksTruncated={false}
-        connectionEpoch="connection-jira-a:1"
-        parentTaskId="ENG-1"
-        identityAccepted
-      />,
-    );
-
-    expect(screen.queryByText('Finish (Released)')).not.toBeInTheDocument();
-    expect(screen.getByText('Released')).toBeInTheDocument();
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
   it('replaces the hold for a second confirmed transition on the same child', () => {

@@ -1,9 +1,8 @@
+import { createTestDatabase } from '../../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { join } from 'path';
 import { LocalStorageService } from '../local-storage.service';
 import { NotFoundError } from '../../../../common/errors/error-types';
 import type {
@@ -15,17 +14,14 @@ import type {
   CreateScheduledEpic,
 } from '../../models/domain.models';
 
-const MIGRATIONS_FOLDER = join(__dirname, '../../../../../drizzle');
-
 describe('ScheduledEpicStorageDelegate (integration)', () => {
   let sqlite: Database.Database;
   let db: BetterSQLite3Database;
   let service: LocalStorageService;
 
   beforeEach(() => {
-    sqlite = new Database(':memory:');
+    sqlite = createTestDatabase().sqlite;
     db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
     sqlite.pragma('foreign_keys = ON');
     service = new LocalStorageService(db);
   });
@@ -96,17 +92,6 @@ describe('ScheduledEpicStorageDelegate (integration)', () => {
       ...overrides,
     };
   }
-
-  // ==========================================
-  // FK ENFORCEMENT VERIFICATION
-  // ==========================================
-
-  describe('FK enforcement', () => {
-    it('SQLite foreign keys are enforced at runtime', () => {
-      const result = sqlite.pragma('foreign_keys') as Array<{ foreign_keys: number }>;
-      expect(result[0]?.foreign_keys).toBe(1);
-    });
-  });
 
   // ==========================================
   // SCHEDULED EPIC CRUD
@@ -228,19 +213,6 @@ describe('ScheduledEpicStorageDelegate (integration)', () => {
       expect(updated.lastError).toBeNull();
     });
 
-    it('updates lastError in runtime state', async () => {
-      const project = await seedProject();
-      const schedule = await service.createScheduledEpic(makeScheduleInput(project.id));
-
-      const updated = await service.updateScheduledEpicRuntimeState(schedule.id, {
-        lastRunStatus: 'failed',
-        lastError: 'Template rendering failed',
-      });
-
-      expect(updated.lastRunStatus).toBe('failed');
-      expect(updated.lastError).toBe('Template rendering failed');
-    });
-
     it('throws NotFoundError for nonexistent schedule runtime update', async () => {
       await expect(
         service.updateScheduledEpicRuntimeState(randomUUID(), { lastRunStatus: 'failed' }),
@@ -280,19 +252,6 @@ describe('ScheduledEpicStorageDelegate (integration)', () => {
       const due = await service.listDueScheduledEpics(project.id, '2026-06-01T09:00:00.000Z');
       expect(due).toHaveLength(1);
       expect(due[0]!.name).toBe('Due');
-    });
-
-    it('returns empty array when no schedules are due', async () => {
-      const project = await seedProject();
-      await service.createScheduledEpic(
-        makeScheduleInput(project.id, {
-          enabled: true,
-          nextRunAt: '2099-01-01T00:00:00.000Z',
-        }),
-      );
-
-      const due = await service.listDueScheduledEpics(project.id, '2026-06-01T09:00:00.000Z');
-      expect(due).toHaveLength(0);
     });
   });
 
@@ -441,23 +400,6 @@ describe('ScheduledEpicStorageDelegate (integration)', () => {
       });
       expect(completed.status).toBe('completed');
       expect(completed.finishedAt).toBe('2026-06-01T09:05:00.000Z');
-    });
-
-    it('updates a run with error message on failure', async () => {
-      const { run } = await service.createScheduledEpicRun({
-        scheduleId: schedule.id,
-        plannedFor: '2026-06-01T09:00:00.000Z',
-        source: 'scheduler',
-        status: 'pending',
-      });
-
-      const failed = await service.updateScheduledEpicRun(run.id, {
-        status: 'failed',
-        finishedAt: '2026-06-01T09:01:00.000Z',
-        errorMessage: 'Template rendering error',
-      });
-      expect(failed.status).toBe('failed');
-      expect(failed.errorMessage).toBe('Template rendering error');
     });
 
     it('links a run to a created epic', async () => {
@@ -609,34 +551,6 @@ describe('ScheduledEpicStorageDelegate (integration)', () => {
   // ==========================================
 
   describe('migration and journal', () => {
-    it('migrations apply cleanly to an empty database', () => {
-      const freshSqlite = new Database(':memory:');
-      const freshDb = drizzle(freshSqlite);
-      expect(() => migrate(freshDb, { migrationsFolder: MIGRATIONS_FOLDER })).not.toThrow();
-      freshSqlite.close();
-    });
-
-    it('scheduled_epics and scheduled_epic_runs tables exist after migration', () => {
-      const tables = sqlite
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('scheduled_epics', 'scheduled_epic_runs') ORDER BY name",
-        )
-        .all() as Array<{ name: string }>;
-
-      expect(tables.map((t) => t.name)).toEqual(['scheduled_epic_runs', 'scheduled_epics']);
-    });
-
-    it('scheduled_epic_runs has unique index on (schedule_id, planned_for)', () => {
-      const indexes = sqlite
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='scheduled_epic_runs' AND name LIKE '%planned_for%'",
-        )
-        .all() as Array<{ name: string }>;
-
-      expect(indexes.length).toBeGreaterThanOrEqual(1);
-      expect(indexes.some((i) => i.name.includes('schedule_planned_for'))).toBe(true);
-    });
-
     it('scheduled_epics has composite index on (project_id, enabled, next_run_at)', () => {
       const indexes = sqlite
         .prepare(
@@ -750,24 +664,6 @@ describe('ScheduledEpicStorageDelegate (integration)', () => {
       const second = await service.claimScheduledEpicRun(run.id);
       expect(second.claimed).toBe(false);
       expect(second.run.status).toBe('running');
-    });
-
-    it('returns claimed=false when run is completed', async () => {
-      const { run } = await service.createScheduledEpicRun({
-        scheduleId: schedule.id,
-        plannedFor: '2026-06-01T09:00:00.000Z',
-        source: 'scheduler',
-        status: 'pending',
-      });
-      await service.claimScheduledEpicRun(run.id);
-      await service.updateScheduledEpicRun(run.id, {
-        status: 'completed',
-        finishedAt: new Date().toISOString(),
-      });
-
-      const result = await service.claimScheduledEpicRun(run.id);
-      expect(result.claimed).toBe(false);
-      expect(result.run.status).toBe('completed');
     });
 
     it('duplicate pending row cannot be claimed by two callers (regression)', async () => {

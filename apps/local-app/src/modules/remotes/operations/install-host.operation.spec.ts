@@ -133,7 +133,7 @@ describe('InstallHostOperation', () => {
     };
     host = {
       certificateOf: jest.fn().mockResolvedValue(fixtureTls.cert),
-      runtimeAt: jest.fn().mockResolvedValue({ state: 'unclaimed', imageVersion: '1.3.0' }),
+      runtimeAt: jest.fn().mockResolvedValue({ state: 'unclaimed', imageVersion: '1.4.0' }),
     };
     storage = { updateRemoteTlsCertificate: jest.fn(async () => undefined) };
     claim = {

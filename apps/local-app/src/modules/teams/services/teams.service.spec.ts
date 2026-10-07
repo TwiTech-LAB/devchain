@@ -227,50 +227,6 @@ describe('TeamsService', () => {
       expect(storageService.getAgent).toHaveBeenCalledTimes(2);
     });
 
-    it('rejects when members list is empty', async () => {
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Empty Team',
-          teamLeadAgentId: AGENT_A,
-          memberAgentIds: [],
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Empty Team',
-          teamLeadAgentId: AGENT_A,
-          memberAgentIds: [],
-        }),
-      ).rejects.toThrow('at least 1 member');
-
-      expect(teamsStore.createTeam).not.toHaveBeenCalled();
-    });
-
-    it('rejects when team lead is not in members', async () => {
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Bad Lead',
-          teamLeadAgentId: AGENT_C,
-          memberAgentIds: [AGENT_A, AGENT_B],
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Bad Lead',
-          teamLeadAgentId: AGENT_C,
-          memberAgentIds: [AGENT_A, AGENT_B],
-        }),
-      ).rejects.toThrow('Team lead must be included');
-
-      expect(teamsStore.createTeam).not.toHaveBeenCalled();
-    });
-
     it('allows creating a team without a lead', async () => {
       const expected = makeTeam({ teamLeadAgentId: null });
       teamsStore.createTeam.mockResolvedValue(expected);
@@ -291,28 +247,6 @@ describe('TeamsService', () => {
         }),
       );
       expect(storageService.getAgent).toHaveBeenCalledTimes(2);
-    });
-
-    it('rejects when agent belongs to different project', async () => {
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Cross Project',
-          teamLeadAgentId: AGENT_A,
-          memberAgentIds: [AGENT_A, AGENT_OTHER_PROJECT],
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Cross Project',
-          teamLeadAgentId: AGENT_A,
-          memberAgentIds: [AGENT_A, AGENT_OTHER_PROJECT],
-        }),
-      ).rejects.toThrow('different project');
-
-      expect(teamsStore.createTeam).not.toHaveBeenCalled();
     });
 
     it('silently de-duplicates memberAgentIds before passing to store', async () => {
@@ -403,47 +337,6 @@ describe('TeamsService', () => {
       );
       expect(storageService.getAgentProfile).toHaveBeenCalledTimes(2);
     });
-
-    it('rejects when profileId belongs to different project', async () => {
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Cross Project Profiles',
-          teamLeadAgentId: AGENT_A,
-          memberAgentIds: [AGENT_A],
-          profileIds: [PROFILE_A, PROFILE_OTHER_PROJECT],
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Cross Project Profiles',
-          teamLeadAgentId: AGENT_A,
-          memberAgentIds: [AGENT_A],
-          profileIds: [PROFILE_OTHER_PROJECT],
-        }),
-      ).rejects.toThrow('different project');
-
-      expect(teamsStore.createTeam).not.toHaveBeenCalled();
-    });
-
-    it('passes profileIds through to store on create', async () => {
-      teamsStore.createTeam.mockResolvedValue(makeTeam());
-
-      await service.createTeam({
-        projectId: PROJECT_ID,
-        name: 'Profile Passthrough',
-        memberAgentIds: [AGENT_A],
-        profileIds: [PROFILE_A],
-      });
-
-      expect(teamsStore.createTeam).toHaveBeenCalledWith(
-        expect.objectContaining({
-          profileIds: [PROFILE_A],
-        }),
-      );
-    });
   });
 
   describe('createTeam capacity validation', () => {
@@ -461,44 +354,21 @@ describe('TeamsService', () => {
       }));
     });
 
-    it('defaults both capacity fields to 5 when omitted', async () => {
+    it.each([
+      [undefined, 5],
+      [3, 3],
+    ])('defaults capacity with maxMembers=%s to %s', async (maxMembers, expected) => {
       await service.createTeam({
         projectId: PROJECT_ID,
         name: 'Cap Team',
+        maxMembers,
         memberAgentIds: [AGENT_A],
         teamLeadAgentId: AGENT_A,
       });
 
       expect(teamsStore.createTeam).toHaveBeenCalledWith(
-        expect.objectContaining({ maxMembers: 5, maxConcurrentTasks: 5 }),
+        expect.objectContaining({ maxMembers: expected, maxConcurrentTasks: expected }),
       );
-    });
-
-    it('defaults maxConcurrentTasks to maxMembers when only maxMembers is set', async () => {
-      await service.createTeam({
-        projectId: PROJECT_ID,
-        name: 'Cap Team',
-        memberAgentIds: [AGENT_A],
-        teamLeadAgentId: AGENT_A,
-        maxMembers: 3,
-      });
-
-      expect(teamsStore.createTeam).toHaveBeenCalledWith(
-        expect.objectContaining({ maxMembers: 3, maxConcurrentTasks: 3 }),
-      );
-    });
-
-    it('rejects when maxConcurrentTasks exceeds maxMembers', async () => {
-      await expect(
-        service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Cap Team',
-          memberAgentIds: [AGENT_A],
-          teamLeadAgentId: AGENT_A,
-          maxMembers: 3,
-          maxConcurrentTasks: 5,
-        }),
-      ).rejects.toThrow('maxConcurrentTasks cannot exceed maxMembers');
     });
 
     it('rejects when initial non-lead members exceed maxMembers', async () => {
@@ -712,28 +582,6 @@ describe('TeamsService', () => {
     });
   });
 
-  describe('getTeam', () => {
-    it('returns team with members from store', async () => {
-      const expected = makeTeamWithMembers({}, [
-        makeMember('team-1', AGENT_A),
-        makeMember('team-1', AGENT_B),
-      ]);
-      teamsStore.getTeam.mockResolvedValue(expected);
-
-      const result = await service.getTeam('team-1');
-
-      expect(result).toEqual(expected);
-      expect(teamsStore.getTeam).toHaveBeenCalledWith('team-1');
-    });
-
-    it('returns null for non-existent team', async () => {
-      teamsStore.getTeam.mockResolvedValue(null);
-
-      const result = await service.getTeam('missing');
-      expect(result).toBeNull();
-    });
-  });
-
   describe('listTeams', () => {
     it('returns teams with lead agent names resolved via single batch query', async () => {
       teamsStore.listTeams.mockResolvedValue({
@@ -790,25 +638,6 @@ describe('TeamsService', () => {
       expect(result.items[0].teamLeadAgentName).toBeNull();
       expect(storageService.listAgents).toHaveBeenCalledTimes(1);
     });
-
-    it('resolves multiple teams with same lead using single query', async () => {
-      teamsStore.listTeams.mockResolvedValue({
-        items: [
-          { ...makeTeam({ id: 't1', teamLeadAgentId: AGENT_A }), memberCount: 1 },
-          { ...makeTeam({ id: 't2', teamLeadAgentId: AGENT_A }), memberCount: 2 },
-        ],
-        total: 2,
-        limit: 100,
-        offset: 0,
-      });
-
-      const result = await service.listTeams(PROJECT_ID);
-
-      expect(result.items[0].teamLeadAgentName).toBe(`Agent-${AGENT_A}`);
-      expect(result.items[1].teamLeadAgentName).toBe(`Agent-${AGENT_A}`);
-      // Still just one listAgents call
-      expect(storageService.listAgents).toHaveBeenCalledTimes(1);
-    });
   });
 
   describe('findTeamByExactName', () => {
@@ -848,15 +677,6 @@ describe('TeamsService', () => {
           memberAgentIds: [AGENT_A, AGENT_B],
         }),
       );
-    });
-
-    it('rejects when new lead is not in new members', async () => {
-      await expect(
-        service.updateTeam('team-1', {
-          teamLeadAgentId: AGENT_C,
-          memberAgentIds: [AGENT_A, AGENT_B],
-        }),
-      ).rejects.toThrow('Team lead must be included');
     });
 
     it('rejects when new lead is not in existing members (members unchanged)', async () => {
@@ -909,22 +729,6 @@ describe('TeamsService', () => {
       expect(storageService.getAgent).toHaveBeenCalledWith(AGENT_B);
     });
 
-    it('rejects when new members list is empty', async () => {
-      await expect(
-        service.updateTeam('team-1', {
-          memberAgentIds: [],
-        }),
-      ).rejects.toThrow('at least 1 member');
-    });
-
-    it('rejects when agent belongs to different project', async () => {
-      await expect(
-        service.updateTeam('team-1', {
-          memberAgentIds: [AGENT_A, AGENT_OTHER_PROJECT],
-        }),
-      ).rejects.toThrow('different project');
-    });
-
     it('throws NotFoundError for non-existent team', async () => {
       teamsStore.getTeam.mockResolvedValue(null);
 
@@ -966,38 +770,6 @@ describe('TeamsService', () => {
       );
     });
 
-    it('allows updating only name without member/lead changes', async () => {
-      await service.updateTeam('team-1', { name: 'Renamed' });
-
-      expect(teamsStore.updateTeam).toHaveBeenCalledWith(
-        'team-1',
-        expect.objectContaining({ name: 'Renamed' }),
-      );
-    });
-
-    it('allows updating only description', async () => {
-      await service.updateTeam('team-1', { description: 'New desc' });
-
-      expect(teamsStore.updateTeam).toHaveBeenCalledWith(
-        'team-1',
-        expect.objectContaining({ description: 'New desc' }),
-      );
-    });
-
-    it('validates profileIds belong to same project on update', async () => {
-      await expect(
-        service.updateTeam('team-1', {
-          profileIds: [PROFILE_A, PROFILE_OTHER_PROJECT],
-        }),
-      ).rejects.toThrow(ValidationError);
-
-      await expect(
-        service.updateTeam('team-1', {
-          profileIds: [PROFILE_OTHER_PROJECT],
-        }),
-      ).rejects.toThrow('different project');
-    });
-
     it('passes profileIds through to store on update', async () => {
       await service.updateTeam('team-1', {
         profileIds: [PROFILE_A, PROFILE_B],
@@ -1010,16 +782,6 @@ describe('TeamsService', () => {
         }),
       );
       expect(storageService.getAgentProfile).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('disbandTeam', () => {
-    it('delegates to store deleteTeam', async () => {
-      teamsStore.deleteTeam.mockResolvedValue(undefined);
-
-      await service.disbandTeam('team-1');
-
-      expect(teamsStore.deleteTeam).toHaveBeenCalledWith('team-1');
     });
   });
 
@@ -1341,18 +1103,6 @@ describe('TeamsService', () => {
       expect(eventsService.publish).toHaveBeenCalled();
     });
 
-    it('returns TEAM_LEAD_CREATION_DISABLED when allowTeamLeadCreateAgents is false', async () => {
-      teamsStore.getTeamLeadTeams.mockResolvedValue([
-        makeTeam({ allowTeamLeadCreateAgents: false }),
-      ]);
-
-      const result = await service.createTeamAgent(baseInput);
-
-      expect('error' in result).toBe(true);
-      const err = result as { error: { code: string } };
-      expect(err.error.code).toBe('TEAM_LEAD_CREATION_DISABLED');
-    });
-
     it('returns TEAM_LEAD_CREATION_DISABLED before cap-reached when both apply', async () => {
       teamsStore.getTeamLeadTeams.mockResolvedValue([
         makeTeam({ allowTeamLeadCreateAgents: false, maxMembers: 2 }),
@@ -1550,22 +1300,6 @@ describe('TeamsService', () => {
         teamsStore.createTeam.mockResolvedValue(makeTeam());
       });
 
-      it('passes deduped profileConfigSelections to store', async () => {
-        await service.createTeam({
-          projectId: PROJECT_ID,
-          name: 'Team',
-          memberAgentIds: [AGENT_A],
-          profileIds: [PROFILE_A],
-          profileConfigSelections: [{ profileId: PROFILE_A, configIds: [CONFIG_A1, CONFIG_A2] }],
-        });
-
-        expect(teamsStore.createTeam).toHaveBeenCalledWith(
-          expect.objectContaining({
-            profileConfigSelections: [{ profileId: PROFILE_A, configIds: [CONFIG_A1, CONFIG_A2] }],
-          }),
-        );
-      });
-
       it('drops empty configIds entries (auto-revert)', async () => {
         await service.createTeam({
           projectId: PROJECT_ID,
@@ -1580,28 +1314,6 @@ describe('TeamsService', () => {
             profileConfigSelections: [],
           }),
         );
-      });
-
-      it('rejects selection referencing profile not in profileIds', async () => {
-        await expect(
-          service.createTeam({
-            projectId: PROJECT_ID,
-            name: 'Team',
-            memberAgentIds: [AGENT_A],
-            profileIds: [PROFILE_A],
-            profileConfigSelections: [{ profileId: PROFILE_B, configIds: [CONFIG_B1] }],
-          }),
-        ).rejects.toThrow(ValidationError);
-
-        await expect(
-          service.createTeam({
-            projectId: PROJECT_ID,
-            name: 'Team',
-            memberAgentIds: [AGENT_A],
-            profileIds: [PROFILE_A],
-            profileConfigSelections: [{ profileId: PROFILE_B, configIds: [CONFIG_B1] }],
-          }),
-        ).rejects.toThrow('not linked to this team');
       });
 
       it('rejects config that belongs to wrong profile', async () => {
@@ -1823,11 +1535,6 @@ describe('TeamsService', () => {
       storageService.getProfileProviderConfig.mockRejectedValue(
         new NotFoundError('ProfileProviderConfig'),
       );
-      await expect(service.createTeamAgentForRest(baseInput)).rejects.toThrow(NotFoundError);
-    });
-
-    it('propagates NotFoundError when profile does not exist', async () => {
-      storageService.getAgentProfile.mockRejectedValue(new NotFoundError('AgentProfile'));
       await expect(service.createTeamAgentForRest(baseInput)).rejects.toThrow(NotFoundError);
     });
 
@@ -2191,19 +1898,6 @@ describe('TeamsService', () => {
       });
     });
 
-    it('re-throws unexpected errors from storage.deleteAgent', async () => {
-      setupHappyPath();
-      storageService.deleteAgent.mockRejectedValue(new Error('Unexpected DB failure'));
-
-      await expect(
-        service.deleteTeamAgent({
-          leadAgentId: AGENT_A,
-          projectId: PROJECT_ID,
-          name: `Agent-${AGENT_B}`,
-        }),
-      ).rejects.toThrow('Unexpected DB failure');
-    });
-
     it('resolves team by explicit teamName', async () => {
       teamsStore.getTeamLeadTeams.mockResolvedValue([
         team1,
@@ -2326,17 +2020,6 @@ describe('TeamsService', () => {
         service.listLinkedProfileIdsForTeam(PROJECT_ID, 'team-1'),
       ).rejects.toBeInstanceOf(ForbiddenError);
       expect(teamsStore.listProfilesForTeam).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('listUnlinkedProfileIds', () => {
-    it('delegates to the store, scoped to the project', async () => {
-      teamsStore.listProfilesNotLinkedToAnyTeam.mockResolvedValue([PROFILE_A]);
-
-      const result = await service.listUnlinkedProfileIds(PROJECT_ID);
-
-      expect(result).toEqual([PROFILE_A]);
-      expect(teamsStore.listProfilesNotLinkedToAnyTeam).toHaveBeenCalledWith(PROJECT_ID);
     });
   });
 

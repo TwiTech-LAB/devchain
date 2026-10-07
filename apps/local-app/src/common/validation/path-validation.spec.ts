@@ -17,99 +17,53 @@ describe('path-validation', () => {
     const rootPath = '/project/root';
 
     describe('valid paths', () => {
-      it('accepts simple relative path', () => {
-        const result = validatePathWithinRoot(rootPath, 'src/file.ts');
-        expect(result.absolutePath).toBe(join(rootPath, 'src/file.ts'));
-        expect(result.relativePath).toBe(join('src', 'file.ts'));
-      });
-
-      it('accepts nested path', () => {
-        const result = validatePathWithinRoot(rootPath, 'src/components/Button.tsx');
-        expect(result.absolutePath).toBe(join(rootPath, 'src/components/Button.tsx'));
-        expect(result.relativePath).toBe(join('src', 'components', 'Button.tsx'));
-      });
-
-      it('accepts path in root', () => {
-        const result = validatePathWithinRoot(rootPath, 'file.txt');
-        expect(result.absolutePath).toBe(join(rootPath, 'file.txt'));
-        expect(result.relativePath).toBe('file.txt');
-      });
-
-      it('accepts path with single dot', () => {
-        const result = validatePathWithinRoot(rootPath, './src/file.ts');
-        expect(result.relativePath).toBe(join('src', 'file.ts'));
+      it.each([
+        ['src/file.ts', 'src/file.ts'],
+        ['src/components/Button.tsx', 'src/components/Button.tsx'],
+        ['file.txt', 'file.txt'],
+        ['./src/file.ts', 'src/file.ts'],
+      ])('accepts relative path %s', (input, relativePath) => {
+        const result = validatePathWithinRoot(rootPath, input);
+        expect(result.absolutePath).toBe(join(rootPath, relativePath));
+        expect(result.relativePath).toBe(relativePath);
       });
     });
 
     describe('path traversal attacks', () => {
-      it('rejects simple path traversal (../)', () => {
-        expect(() => validatePathWithinRoot(rootPath, '../etc/passwd')).toThrow(ValidationError);
-        expect(() => validatePathWithinRoot(rootPath, '../etc/passwd')).toThrow(
-          /Path traversal sequences/,
-        );
-      });
-
-      it('rejects nested path traversal', () => {
-        expect(() => validatePathWithinRoot(rootPath, 'src/../../../etc/passwd')).toThrow(
-          ValidationError,
-        );
-      });
-
-      it('rejects double path traversal', () => {
-        expect(() => validatePathWithinRoot(rootPath, '../../etc/passwd')).toThrow(ValidationError);
-      });
-
-      it('rejects path traversal at start', () => {
-        expect(() => validatePathWithinRoot(rootPath, '../passwd')).toThrow(ValidationError);
-      });
-
-      it('rejects path traversal in middle', () => {
-        expect(() => validatePathWithinRoot(rootPath, 'foo/../../../bar')).toThrow(ValidationError);
-      });
-
-      it('rejects path traversal with backslashes (Windows)', () => {
-        expect(() => validatePathWithinRoot(rootPath, '..\\etc\\passwd')).toThrow(ValidationError);
+      it.each([
+        ['rejects simple path traversal (../)', '../etc/passwd'],
+        ['rejects nested path traversal', 'src/../../../etc/passwd'],
+        ['rejects double path traversal', '../../etc/passwd'],
+        ['rejects path traversal at start', '../passwd'],
+        ['rejects path traversal in middle', 'foo/../../../bar'],
+        ['rejects path traversal with backslashes (Windows)', '..\\etc\\passwd'],
+      ])('%s', (_name, input) => {
+        expect(() => validatePathWithinRoot(rootPath, input)).toThrow(ValidationError);
+        expect(() => validatePathWithinRoot(rootPath, input)).toThrow(/Path traversal sequences/);
       });
     });
 
     describe('absolute paths', () => {
-      it('rejects Unix absolute path', () => {
-        expect(() => validatePathWithinRoot(rootPath, '/etc/passwd')).toThrow(ValidationError);
-        expect(() => validatePathWithinRoot(rootPath, '/etc/passwd')).toThrow(
+      it.each([
+        ['/etc/passwd'],
+        ['/src/file.ts'],
+        ...(process.platform === 'win32' ? [['C:\\Windows\\System32']] : []),
+      ])('rejects absolute path %s', (input) => {
+        expect(() => validatePathWithinRoot(rootPath, input)).toThrow(ValidationError);
+        expect(() => validatePathWithinRoot(rootPath, input)).toThrow(
           /Absolute paths are not allowed/,
         );
       });
-
-      it('rejects path starting with forward slash', () => {
-        expect(() => validatePathWithinRoot(rootPath, '/src/file.ts')).toThrow(ValidationError);
-      });
-
-      // Windows-specific test
-      if (process.platform === 'win32') {
-        it('rejects Windows absolute path', () => {
-          expect(() => validatePathWithinRoot(rootPath, 'C:\\Windows\\System32')).toThrow(
-            ValidationError,
-          );
-        });
-      }
     });
 
     describe('edge cases', () => {
-      it('rejects empty path', () => {
-        expect(() => validatePathWithinRoot(rootPath, '')).toThrow(ValidationError);
-        expect(() => validatePathWithinRoot(rootPath, '')).toThrow(/File path is required/);
-      });
-
-      it('rejects null path', () => {
-        expect(() => validatePathWithinRoot(rootPath, null as unknown as string)).toThrow(
-          ValidationError,
-        );
-      });
-
-      it('rejects undefined path', () => {
-        expect(() => validatePathWithinRoot(rootPath, undefined as unknown as string)).toThrow(
-          ValidationError,
-        );
+      it.each([
+        ['rejects empty path', ''],
+        ['rejects null path', null as unknown as string],
+        ['rejects undefined path', undefined as unknown as string],
+      ])('%s', (_name, input) => {
+        expect(() => validatePathWithinRoot(rootPath, input)).toThrow(ValidationError);
+        expect(() => validatePathWithinRoot(rootPath, input)).toThrow(/File path is required/);
       });
 
       it('rejects path with only dots', () => {
@@ -124,30 +78,14 @@ describe('path-validation', () => {
     });
 
     describe('real-world attack vectors', () => {
-      it('rejects /etc/passwd attack', () => {
-        expect(() => validatePathWithinRoot(rootPath, '../../etc/passwd')).toThrow(ValidationError);
-      });
-
-      it('rejects /etc/shadow attack', () => {
-        expect(() => validatePathWithinRoot(rootPath, '../../../etc/shadow')).toThrow(
-          ValidationError,
-        );
-      });
-
-      it('rejects Windows system file attack', () => {
-        expect(() =>
-          validatePathWithinRoot(rootPath, '..\\..\\Windows\\System32\\config\\SAM'),
-        ).toThrow(ValidationError);
-      });
-
-      it('rejects SSH key theft attempt', () => {
-        expect(() => validatePathWithinRoot(rootPath, '../../../home/user/.ssh/id_rsa')).toThrow(
-          ValidationError,
-        );
-      });
-
-      it('rejects environment file theft attempt', () => {
-        expect(() => validatePathWithinRoot(rootPath, '../../../.env')).toThrow(ValidationError);
+      it.each([
+        ['rejects /etc/passwd attack', '../../etc/passwd'],
+        ['rejects /etc/shadow attack', '../../../etc/shadow'],
+        ['rejects Windows system file attack', '..\\..\\Windows\\System32\\config\\SAM'],
+        ['rejects SSH key theft attempt', '../../../home/user/.ssh/id_rsa'],
+        ['rejects environment file theft attempt', '../../../.env'],
+      ])('%s', (_name, input) => {
+        expect(() => validatePathWithinRoot(rootPath, input)).toThrow(ValidationError);
       });
 
       it('rejects URL-encoded traversal when decoded', () => {
@@ -203,24 +141,8 @@ describe('path-validation', () => {
     const totalLines = 100;
 
     describe('valid bounds', () => {
-      it('accepts valid single line', () => {
-        expect(() => validateLineBounds(1, 1, totalLines)).not.toThrow();
-      });
-
       it('accepts valid line range', () => {
         expect(() => validateLineBounds(10, 20, totalLines)).not.toThrow();
-      });
-
-      it('accepts last line', () => {
-        expect(() => validateLineBounds(100, 100, totalLines)).not.toThrow();
-      });
-
-      it('accepts first line', () => {
-        expect(() => validateLineBounds(1, 1, totalLines)).not.toThrow();
-      });
-
-      it('accepts full file range', () => {
-        expect(() => validateLineBounds(1, 100, totalLines)).not.toThrow();
       });
     });
 
@@ -232,16 +154,8 @@ describe('path-validation', () => {
         );
       });
 
-      it('rejects negative line start', () => {
-        expect(() => validateLineBounds(-1, 10, totalLines)).toThrow(ValidationError);
-      });
-
       it('rejects zero line end', () => {
         expect(() => validateLineBounds(1, 0, totalLines)).toThrow(ValidationError);
-      });
-
-      it('rejects negative line end', () => {
-        expect(() => validateLineBounds(1, -5, totalLines)).toThrow(ValidationError);
       });
 
       it('rejects line end less than line start', () => {

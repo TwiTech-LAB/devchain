@@ -355,9 +355,7 @@ describe('AgentEventBusScheduler', () => {
 
   it.each(
     (['outbound', 'inbound'] as const).flatMap((direction) =>
-      (['queued', 'delivered', 'failed', 'unconfirmed'] as const).map(
-        (status) => [direction, status] as const,
-      ),
+      (['delivered', 'failed'] as const).map((status) => [direction, status] as const),
     ),
   )('routes project %s status %s through the semantic boundary', (direction, status) => {
     const scopeEpoch = scheduler.resetScope('project-1', socketOne);

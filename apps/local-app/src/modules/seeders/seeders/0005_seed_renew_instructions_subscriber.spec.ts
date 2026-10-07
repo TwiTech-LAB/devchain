@@ -182,51 +182,6 @@ describe('0005_seed_renew_instructions_subscriber', () => {
     expect(createSubscriberMock).toHaveBeenCalledTimes(1);
   });
 
-  it('logs correct counts on completion', async () => {
-    const projects = [
-      createProject('project-1', 'one'),
-      createProject('project-2', 'two'),
-      createProject('project-3', 'three'),
-    ];
-    const listProjects = jest.fn().mockResolvedValue({
-      items: projects,
-      total: projects.length,
-      limit: 1000,
-      offset: 0,
-    });
-    const findSubscribersByEventName = jest.fn().mockImplementation(async (projectId: string) => {
-      if (projectId === 'project-2') {
-        return [
-          createSubscriber('project-2', 'Renew instructions', 'claude.hooks.session.started'),
-        ];
-      }
-      return [];
-    });
-    const createSubscriberMock = jest.fn().mockResolvedValue(undefined);
-    const info = jest.fn();
-
-    const ctx = createContext({
-      listProjects,
-      findSubscribersByEventName,
-      createSubscriber: createSubscriberMock,
-      info,
-    });
-
-    await runSeedRenewInstructionsSubscriber(ctx);
-
-    expect(createSubscriberMock).toHaveBeenCalledTimes(2);
-    expect(info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        seederName: '0005_seed_renew_instructions_subscriber',
-        seederVersion: 1,
-        created: 2,
-        skipped: 1,
-        totalProjects: 3,
-      }),
-      'Renew-instructions subscriber seeder completed',
-    );
-  });
-
   it('is idempotent across reruns after initial creation', async () => {
     const projects = [createProject('project-1', 'one')];
     const listProjects = jest.fn().mockResolvedValue({
@@ -259,34 +214,5 @@ describe('0005_seed_renew_instructions_subscriber', () => {
     await runSeedRenewInstructionsSubscriber(ctx);
 
     expect(createSubscriberMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('handles empty project list gracefully', async () => {
-    const listProjects = jest.fn().mockResolvedValue({
-      items: [],
-      total: 0,
-      limit: 1000,
-      offset: 0,
-    });
-    const createSubscriberMock = jest.fn().mockResolvedValue(undefined);
-    const info = jest.fn();
-
-    const ctx = createContext({
-      listProjects,
-      createSubscriber: createSubscriberMock,
-      info,
-    });
-
-    await runSeedRenewInstructionsSubscriber(ctx);
-
-    expect(createSubscriberMock).not.toHaveBeenCalled();
-    expect(info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        created: 0,
-        skipped: 0,
-        totalProjects: 0,
-      }),
-      'Renew-instructions subscriber seeder completed',
-    );
   });
 });

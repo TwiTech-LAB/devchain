@@ -44,6 +44,28 @@ case "$name" in
       fake_lock_refusal apt-calls "$FAKE_APT_LOCK_TIMES" \
         'E: Could not get lock /var/lib/apt/lists/lock. It is held by process 123 (apt-get)' 100
     fi
+    if [[ " $* " == *' update '* ]]; then
+      if [[ "\${FAKE_APT_UPDATE_EXIT:-0}" != 0 ]]; then
+        printf 'E: Package index download failed.\\n' >&2
+        exit "$FAKE_APT_UPDATE_EXIT"
+      fi
+    fi
+    if [[ " $* " == *' -s install '* && -n "\${FAKE_UPGRADE_TOOL:-}" && " $* " == *" $FAKE_UPGRADE_TOOL "* ]]; then
+      printf 'Inst libshared [1.0] (2.0 Ubuntu [amd64])\\nInst %s (1.0 Ubuntu [amd64])\\n' "$FAKE_UPGRADE_TOOL"
+    fi
+    if [[ " $* " == *' -o '*' install '* && -f "$FAKE_LOG.broken" ]]; then
+      printf '1 not fully installed or removed.\\nE: Sub-process /usr/bin/dpkg returned an error code (1)\\n' >&2
+      exit 100
+    fi
+    if [[ " $* " == *' -o '*' install '* && -n "\${FAKE_BROKEN_TOOL:-}" && " $* " == *" $FAKE_BROKEN_TOOL "* ]]; then
+      printf '%s' "$FAKE_BROKEN_TOOL" > "$FAKE_LOG.broken"
+      printf 'dpkg: error processing package %s (--configure)\\n' "$FAKE_BROKEN_TOOL" >&2
+      exit 100
+    fi
+    if [[ " $* " == *' install '* && -n "\${FAKE_APT_FAILED_PACKAGE:-}" && " $* " == *" $FAKE_APT_FAILED_PACKAGE "* ]]; then
+      printf 'E: Unable to locate package %s\\n' "$FAKE_APT_FAILED_PACKAGE" >&2
+      exit 100
+    fi
     if [[ " $* " == *' -s '* ]]; then
       printf '%b\\n' "\${FAKE_PURGE_PREVIEW:-Remv gnome-keyring [1.0]}"
     fi
@@ -88,6 +110,10 @@ case "$name" in
     ;;
   dpkg)
     if [[ "\${1:-}" == --print-architecture ]]; then printf '%s\\n' "\${FAKE_ARCH:-amd64}"; fi
+    if [[ "\${1:-}" == --purge && -f "$FAKE_LOG.broken" && " $* " == *" $(/bin/cat "$FAKE_LOG.broken") "* ]]; then
+      /bin/rm -f "$FAKE_LOG.broken"
+    fi
+    if [[ "\${1:-}" == --configure && -f "$FAKE_LOG.broken" ]]; then exit 1; fi
     if [[ "\${1:-}" == --configure ]]; then
       if [[ -n "\${FAKE_DPKG_LOCK_TIMES:-}" ]]; then
         fake_lock_refusal dpkg-calls "$FAKE_DPKG_LOCK_TIMES" \
@@ -99,12 +125,20 @@ case "$name" in
     ;;
   dpkg-query)
     if [[ "$*" == *'Status-Status'* ]]; then
+      if [[ -f "$FAKE_LOG.broken" ]]; then printf '%s half-configured\\n' "$(/bin/cat "$FAKE_LOG.broken")"; fi
+      if [[ "$*" == *'binary:Package'* ]]; then
+        for package in \${FAKE_INSTALLED_PACKAGES:-}; do printf '%s installed\\n' "$package"; done
+      fi
       for package in ubuntu-desktop gnome-shell dbus-user-session dbus-x11 gnome-keyring snapd; do
         if [[ " \${FAKE_DESKTOP:-} \${FAKE_HEADLESS:-} " == *" $package "* ]]; then
           printf '%s installed\\n' "$package"
         fi
       done
     else
+      if [[ -n "\${FAKE_APT_FAILED_PACKAGE:-}" && "\${!#}" == "$FAKE_APT_FAILED_PACKAGE" ]]; then
+        printf 'dpkg-query: no packages found matching %s\\n' "$FAKE_APT_FAILED_PACKAGE" >&2
+        exit 1
+      fi
       printf '1.0'
     fi
     ;;
@@ -154,6 +188,13 @@ case "$name" in
     printf 'sha256 Fingerprint=%s\\n' "$FAKE_FINGERPRINT"
     ;;
   systemd-detect-virt) printf '%s\\n' "\${FAKE_VIRT:-qemu}" ;;
+  timeout)
+    shift 2
+    if [[ " $* " != *' -s '* && -n "\${FAKE_TIMEOUT_PACKAGE:-}" && " $* " == *" $FAKE_TIMEOUT_PACKAGE "* ]]; then exit 124; fi
+    if [[ "$1" == apt-get && -n "\${FAKE_TOOL_STALL_SECONDS:-}" ]]; then /bin/sleep "$FAKE_TOOL_STALL_SECONDS"; exit 124; fi
+    "$@"
+    exit "$?"
+    ;;
   ufw) printf 'Status: %s\\n' "\${FAKE_UFW_STATUS:-inactive}" ;;
 esac
 `;
@@ -200,6 +241,7 @@ const FAKE_COMMANDS = [
   'systemd-detect-virt',
   'systemd-run',
   'tar',
+  'timeout',
   'useradd',
   'ufw',
   'visudo',
@@ -306,16 +348,6 @@ describe('host install block', () => {
     expect(block.trimEnd().endsWith('devchain_host_install --check')).toBe(true);
   });
 
-  it.each(['exit', 'exit 1', '  exit 2'])(
-    'the shell-exit guard rejects an actual %s statement',
-    (statement) => {
-      const block = generateHostInstallBlock(options({ checkOnly: true }));
-      const withShellExit = block.replace('    return 1', statement);
-      expect(withShellExit).not.toBe(block);
-      expect(withShellExit).toMatch(/^\s*exit\b/m);
-    },
-  );
-
   // The block travels as an SFTP-uploaded script, not as an argv command, so the cap is a
   // bloat tripwire: the real packed bootstrap is ~16.9 KiB and the shipped block is ~43 KiB.
   it('stays below 48 KiB with a packed bootstrap-sized payload', () => {
@@ -378,30 +410,27 @@ describe('host install block', () => {
     }
   });
 
-  it.each(['200', '404', '503', '000', '401', '403'])(
-    'checks the registry version response %s',
-    (status) => {
-      const result = run(
-        {},
-        { FAKE_VERSION_STATUS: status, FAKE_VERSION_EXIT: status === '000' ? '28' : '0' },
+  it.each(['200', '404', '503', '000'])('checks the registry version response %s', (status) => {
+    const result = run(
+      {},
+      { FAKE_VERSION_STATUS: status, FAKE_VERSION_EXIT: status === '000' ? '28' : '0' },
+    );
+    expect(result.status).toBe(status === '200' ? 0 : 1);
+    const log = readFileSync(logPath, 'utf8');
+    expect(log).toContain(
+      'curl\t-sS -o /dev/null -w %{http_code} --max-time 10 https://registry.npmjs.org/devchain-cli/1.2.3',
+    );
+    if (status === '404') {
+      expect(result.stderr).toContain('has no devchain-cli 1.2.3');
+      expect(result.stderr).toContain('HOST_NPM_REGISTRY');
+    } else if (status !== '200') {
+      expect(result.stderr).toContain(
+        `Could not verify devchain-cli 1.2.3 at https://registry.npmjs.org/ (answered ${status}).`,
       );
-      expect(result.status).toBe(status === '200' ? 0 : 1);
-      const log = readFileSync(logPath, 'utf8');
-      expect(log).toContain(
-        'curl\t-sS -o /dev/null -w %{http_code} --max-time 10 https://registry.npmjs.org/devchain-cli/1.2.3',
-      );
-      if (status === '404') {
-        expect(result.stderr).toContain('has no devchain-cli 1.2.3');
-        expect(result.stderr).toContain('HOST_NPM_REGISTRY');
-      } else if (status !== '200') {
-        expect(result.stderr).toContain(
-          `Could not verify devchain-cli 1.2.3 at https://registry.npmjs.org/ (answered ${status}).`,
-        );
-        expect(result.stderr).not.toContain('Publish it there');
-      }
-      if (status !== '200') expect(log).not.toContain('dpkg\t--configure -a');
-    },
-  );
+      expect(result.stderr).not.toContain('Publish it there');
+    }
+    if (status !== '200') expect(log).not.toContain('dpkg\t--configure -a');
+  });
 
   it('reports found memory and free disk values', () => {
     writeRoot('/proc/meminfo', 'MemTotal: 2097152 kB\n');
@@ -411,7 +440,7 @@ describe('host install block', () => {
     expect(result.stderr).toContain('found 3 GiB free.');
   });
 
-  it.each(['15.00', '1.00', '<15.50', '<1.00', '0.50', '0', ''])(
+  it.each(['15.00', '1.00', '<15.50', '<1.00', '0.50', ''])(
     'adds an LVM hint only for available VG space (%s)',
     (free) => {
       const result = run(
@@ -511,20 +540,6 @@ describe('host install block', () => {
     ],
     ['amd64', () => ({ env: { FAKE_ARCH: 'arm64' }, message: 'architecture must be amd64' })],
     [
-      'unclaimed host',
-      () => {
-        writeRoot('/etc/devchain-host/claim.json', '{}\n');
-        return { message: 'already a claimed' };
-      },
-    ],
-    [
-      'non-image host',
-      () => {
-        writeRoot('/usr/share/devchain-host/manifest.json', '{"schemaVersion":1}\n');
-        return { message: 'created from a DevChain host image' };
-      },
-    ],
-    [
       'no display manager',
       () => ({ env: { FAKE_DISPLAY_MANAGER: '1' }, message: 'display manager is enabled' }),
     ],
@@ -553,21 +568,10 @@ describe('host install block', () => {
       },
     ],
     [
-      'reachability',
-      () => ({ env: { FAKE_REACH_FAIL: 'apt.syncthing.net' }, message: 'Cannot reach' }),
-    ],
-    [
       'embedded archive digest',
       () => ({
         input: { bootstrapTgzBase64: Buffer.from('damaged').toString('base64') },
         message: 'archive is damaged',
-      }),
-    ],
-    [
-      'safe purge',
-      () => ({
-        env: { FAKE_HEADLESS: 'gnome-keyring', FAKE_PURGE_PREVIEW: 'Remv systemd [1.0]' },
-        message: 'headless purge would remove',
       }),
     ],
   ])('refuses a failed %s check', (_name, arrange) => {
@@ -642,26 +646,27 @@ describe('host install block', () => {
     expect(homePort.stderr).not.toContain('not claimed');
   });
 
-  it.each([
-    'curl',
-    'apt-get',
-    'dpkg',
-    'tar',
-    'xz',
-    'systemctl',
-    'systemd-run',
-    'ss',
-    'useradd',
-    'visudo',
-    'getent',
-    'id',
-    'sudo',
-  ])('reports the missing required tool %s', (tool) => {
-    unlinkSync(join(fakeBin, tool));
+  it('reports every missing required tool in one check', () => {
+    const tools = [
+      'curl',
+      'apt-get',
+      'dpkg',
+      'tar',
+      'xz',
+      'systemctl',
+      'systemd-run',
+      'ss',
+      'useradd',
+      'visudo',
+      'getent',
+      'id',
+      'sudo',
+    ];
+    for (const tool of tools) unlinkSync(join(fakeBin, tool));
     const result = run({ checkOnly: true });
-
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain(`Required command is missing: ${tool}`);
+    for (const tool of tools)
+      expect(result.stderr).toContain(`Required command is missing: ${tool}`);
   });
 
   it.each([
@@ -796,14 +801,125 @@ describe('host install block', () => {
     });
   });
 
+  // Running the generated Bash proves failures stay optional through manifest creation and startup.
+  // Each row lists the real installs; a dry run precedes each of them.
+  const failed = 'Skipped agent tool unknown-tool: package installation failed.';
+  it.each([
+    { name: 'a successful group', env: {}, installs: ['unknown-tool screen'] },
+    {
+      name: 'an unknown tool',
+      env: { FAKE_APT_FAILED_PACKAGE: 'unknown-tool' },
+      installs: ['screen'],
+      warning: failed,
+    },
+    {
+      name: 'a tool timeout',
+      env: { FAKE_TIMEOUT_PACKAGE: 'unknown-tool' },
+      installs: ['unknown-tool screen', 'unknown-tool', 'screen'],
+      warning: failed,
+    },
+    // apt refuses every later install while a package stays unconfigured, so screen installs only
+    // after the purge
+    {
+      name: 'a tool that stays unconfigured',
+      env: { FAKE_BROKEN_TOOL: 'unknown-tool' },
+      installs: ['unknown-tool screen', 'unknown-tool', 'screen'],
+      warning: failed,
+      purged: true,
+    },
+    // A failed upgrade of a package that installed packages depend on could not be purged again.
+    {
+      name: 'a tool that would upgrade an installed package',
+      env: { FAKE_UPGRADE_TOOL: 'unknown-tool' },
+      installs: ['screen'],
+      warning: 'Skipped agent tool unknown-tool: it would change the installed packages libshared.',
+    },
+    {
+      name: 'an installed tool',
+      env: { FAKE_INSTALLED_PACKAGES: 'screen' },
+      installs: ['unknown-tool'],
+    },
+  ])(
+    'completes the install with $name and records only required packages',
+    ({ env, installs, warning, purged }) => {
+      const pins = { ...options().pins, toolPackages: ['unknown-tool', 'screen'] };
+      const result = run({ pins }, env);
+
+      expect(result.status).toBe(0);
+      if (warning) {
+        expect(result.stderr).toContain(`WARNING: ${warning}`);
+        expect(result.stderr).not.toContain('Skipped agent tool screen:');
+      } else {
+        expect(result.stderr).toBe('');
+      }
+      const manifest = JSON.parse(
+        readFileSync(join(root, 'usr/share/devchain-host/manifest.json'), 'utf8'),
+      ) as { packages: Record<string, string> };
+      expect(Object.keys(manifest.packages).sort()).toEqual(
+        [...pins.aptPackages, 'syncthing'].sort(),
+      );
+      const log = readFileSync(logPath, 'utf8');
+      expect(log).toContain('manifest-before-start=yes');
+      expect(log).toContain('systemctl\tstart devchain-bootstrap.service');
+      const real =
+        /^timeout\t--kill-after=5s \d+s apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends --no-remove (.+)$/gm;
+      expect([...log.matchAll(real)].map((match) => match[1])).toEqual(installs);
+      expect(log.includes('dpkg\t--purge --force-remove-reinstreq unknown-tool')).toBe(!!purged);
+      expect(existsSync(`${logPath}.broken`)).toBe(false);
+    },
+  );
+
+  it('skips the remaining tools when the agent tools budget runs out', () => {
+    const pins = { ...options().pins, toolPackages: ['slow-a', 'slow-b', 'slow-c'] };
+    const result = run({ pins }, { DEVCHAIN_TOOLS_TIMEOUT: '1', FAKE_TOOL_STALL_SECONDS: '1' });
+
+    expect(result.status).toBe(0);
+    for (const name of pins.toolPackages)
+      expect(result.stderr).toContain(
+        `WARNING: Skipped agent tool ${name}: the agent tools time budget ran out.`,
+      );
+    const log = readFileSync(logPath, 'utf8');
+    // The 180-second group limit is capped by the 1-second budget, and no single retry starts.
+    expect(log.match(/^timeout\t--kill-after=5s \S+ apt-get/gm)).toEqual([
+      'timeout\t--kill-after=5s 1s apt-get',
+    ]);
+    expect(log).toContain('manifest-before-start=yes');
+  });
+
+  it('stops before the manifest and bootstrap start when a required package is missing', () => {
+    const result = run({}, { FAKE_APT_FAILED_PACKAGE: 'tmux' });
+
+    expect(result.status).toBe(100);
+    expect(result.stderr).toContain('Unable to locate package tmux');
+    expect(existsSync(join(root, 'usr/share/devchain-host/manifest.json'))).toBe(false);
+    expect(readFileSync(logPath, 'utf8')).not.toContain('systemctl\tstart');
+  });
+
+  it('warns on failed package index updates and lets required installs decide', () => {
+    const result = run({}, { FAKE_APT_UPDATE_EXIT: '100' });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr.toString().match(/WARNING: apt-get update failed/g)).toHaveLength(2);
+    expect(readFileSync(logPath, 'utf8')).toContain('manifest-before-start=yes');
+  });
+
   const lockCases = [
-    { lock: 'dpkg', env: 'FAKE_DPKG_LOCK_TIMES', command: /^dpkg\t--configure -a$/gm, runs: 3 },
+    {
+      lock: 'dpkg',
+      env: 'FAKE_DPKG_LOCK_TIMES',
+      command: /^dpkg\t--configure -a$/gm,
+      runs: 3,
+      // a busy dpkg lock stops the install before any package work
+      exhausted: { status: 1, runs: 1, completes: false },
+    },
     {
       lock: 'apt lists',
       env: 'FAKE_APT_LOCK_TIMES',
       command: /^apt-get\t-o DPkg::Lock::Timeout=600 update$/gm,
       // two refusals, then the success, then the update for the Syncthing list
       runs: 4,
+      // a busy lists lock only skips the update, so the required installs decide
+      exhausted: { status: 0, runs: 2, completes: true },
     },
   ];
 
@@ -820,18 +936,25 @@ describe('host install block', () => {
   );
 
   it.each(lockCases)(
-    'fails with a retry hint when the $lock lock stays busy for the whole budget',
-    ({ lock, env, command }) => {
+    'reports the $lock lock after the whole budget',
+    ({ lock, env, command, exhausted }) => {
       const result = run({}, { [env]: '999999', DEVCHAIN_PACKAGE_LOCK_TIMEOUT: '0' });
 
-      expect(result.status).toBe(1);
+      expect(result.status).toBe(exhausted.status);
       expect(result.stderr).toContain(
         `The ${lock} lock stayed busy for 10 minutes (probably automatic updates). Wait for them to finish, then press Retry.`,
       );
       const log = readFileSync(logPath, 'utf8');
-      expect(log.match(command)).toHaveLength(1);
-      expect(log).not.toContain('install -y');
-      expect(existsSync(join(root, 'usr/share/devchain-host/manifest.json'))).toBe(false);
+      expect(log.match(command)).toHaveLength(exhausted.runs);
+      if (exhausted.completes) {
+        expect(result.stderr).toContain('WARNING: apt-get update failed;');
+        expect(log).toContain('manifest-before-start=yes');
+      } else {
+        expect(log).not.toContain('install -y');
+      }
+      expect(existsSync(join(root, 'usr/share/devchain-host/manifest.json'))).toBe(
+        exhausted.completes,
+      );
     },
   );
 

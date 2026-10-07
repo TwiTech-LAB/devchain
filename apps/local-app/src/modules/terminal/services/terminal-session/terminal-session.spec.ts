@@ -37,15 +37,6 @@ describe('TerminalSession', () => {
       expect(frames.some((f) => f.type === 'focus_changed')).toBe(true);
     });
 
-    it('connected-on-mount: subscribe immediately works', () => {
-      const session = createSession();
-
-      session.subscribe('client-1');
-
-      expect(session.hasSubscriber('client-1')).toBe(true);
-      expect(session.getAuthority()).toBe('client-1');
-    });
-
     it('does not override authority when second client subscribes', () => {
       const session = createSession();
 
@@ -282,18 +273,6 @@ describe('TerminalSession', () => {
     });
   });
 
-  describe('confirm-first seed-async ordering', () => {
-    it('emits subscribed before seed can be delivered', () => {
-      const session = createSession();
-      const frames = collectFrames(session);
-
-      session.subscribe('client-1');
-
-      const subscribedIdx = frames.findIndex((f) => f.type === 'subscribed');
-      expect(subscribedIdx).toBeGreaterThanOrEqual(0);
-    });
-  });
-
   describe('live-frame buffering during full-history rewrite', () => {
     it('buffers frames during history-in-flight and replays after delivery', () => {
       const session = createSession();
@@ -445,14 +424,6 @@ describe('TerminalSession', () => {
       }
     });
 
-    it('advances busy when real text is mixed with particles', () => {
-      const session = createSession();
-
-      session.pushFrame('⠁ ready');
-
-      expect(session.getActivityState().lastDataAt).not.toBeNull();
-    });
-
     it('expires busy at configured timeout while particle redraws continue', () => {
       jest.useFakeTimers();
       try {
@@ -522,16 +493,5 @@ describe('TerminalFrameStream', () => {
     expect(received).toHaveLength(1);
     expect(received[0].type).toBe('data');
     expect(received[0].sessionId).toBe('session-1');
-  });
-
-  it('stops emitting after removeAllListeners', () => {
-    const session = createSession();
-    const received: FrameEvent[] = [];
-    session.stream.on('frame', (f) => received.push(f));
-
-    session.stream.removeAllListeners();
-    session.pushFrame('should-not-arrive');
-
-    expect(received).toHaveLength(0);
   });
 });

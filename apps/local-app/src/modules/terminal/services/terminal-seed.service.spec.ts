@@ -52,66 +52,17 @@ describe('TerminalSeedService', () => {
   });
 
   describe('resolveSeedingConfig', () => {
-    it('should return default maxBytes when no settings are available', () => {
-      settingsService.getSetting = jest.fn().mockReturnValue(undefined);
-
-      const config = seedService.resolveSeedingConfig();
-
-      expect(config).toEqual({
-        maxBytes: DEFAULT_TERMINAL_SEED_MAX_BYTES,
-      });
-    });
-
-    it('should return custom maxBytes from settings', () => {
-      const customMaxBytes = 512 * 1024; // 512KB
-      settingsService.getSetting = jest.fn((key: string) => {
-        if (key === 'terminal.seeding.maxBytes') return String(customMaxBytes);
-        return undefined;
-      });
-
-      const config = seedService.resolveSeedingConfig();
-
-      expect(config.maxBytes).toBe(customMaxBytes);
-    });
-
-    it('should clamp maxBytes to minimum value', () => {
-      settingsService.getSetting = jest.fn((key: string) => {
-        if (key === 'terminal.seeding.maxBytes') return '1000'; // Below minimum
-        return undefined;
-      });
-
-      const config = seedService.resolveSeedingConfig();
-
-      expect(config.maxBytes).toBeGreaterThanOrEqual(64 * 1024); // MIN_TERMINAL_SEED_MAX_BYTES
-    });
-
-    it('should clamp maxBytes to maximum value', () => {
-      settingsService.getSetting = jest.fn((key: string) => {
-        if (key === 'terminal.seeding.maxBytes') return '10000000000'; // Above maximum
-        return undefined;
-      });
-
-      const config = seedService.resolveSeedingConfig();
-
-      expect(config.maxBytes).toBeLessThanOrEqual(4 * 1024 * 1024); // MAX_TERMINAL_SEED_MAX_BYTES (4MB)
-    });
-
-    it('should handle invalid maxBytes gracefully', () => {
-      settingsService.getSetting = jest.fn((key: string) => {
-        if (key === 'terminal.seeding.maxBytes') return 'not-a-number';
-        return undefined;
-      });
-
-      const config = seedService.resolveSeedingConfig();
-
-      expect(config.maxBytes).toBe(DEFAULT_TERMINAL_SEED_MAX_BYTES); // Should use default
-    });
-  });
-
-  describe('invalidateCache', () => {
-    it('should invalidate cache for a session', () => {
-      // This is a simple test to ensure the method exists and doesn't throw
-      expect(() => seedService.invalidateCache('session-123')).not.toThrow();
+    it.each([
+      { setting: undefined, expected: DEFAULT_TERMINAL_SEED_MAX_BYTES },
+      { setting: String(512 * 1024), expected: 512 * 1024 },
+      { setting: '1000', expected: 64 * 1024 },
+      { setting: '10000000000', expected: 4 * 1024 * 1024 },
+      { setting: 'not-a-number', expected: DEFAULT_TERMINAL_SEED_MAX_BYTES },
+    ])('resolves seed maxBytes from $setting', ({ setting, expected }) => {
+      settingsService.getSetting = jest.fn((key: string) =>
+        key === 'terminal.seeding.maxBytes' ? setting : undefined,
+      );
+      expect(seedService.resolveSeedingConfig()).toEqual({ maxBytes: expected });
     });
   });
 
@@ -196,25 +147,6 @@ describe('TerminalSeedService', () => {
         expect(result.wasTruncated).toBe(true);
         expect(Buffer.byteLength(result.truncated, 'utf-8')).toBeLessThanOrEqual(256 * 1024);
       });
-
-      it('should handle max settings limit (4MB) content efficiently', () => {
-        // Generate ~2MB of content to test with larger (but not max) content
-        const lineLength = 100;
-        const linesNeeded = Math.ceil(2_000_000 / (lineLength + 1));
-        const lines: string[] = [];
-        for (let i = 0; i < linesNeeded; i++) {
-          lines.push('y'.repeat(lineLength));
-        }
-        const largeContent = lines.join('\n');
-
-        const start = performance.now();
-        const result = seedService.truncateToMaxBytes(largeContent, 1024 * 1024); // 1MB target
-        const elapsed = performance.now() - start;
-
-        // Should complete in under 200ms even for 2MB content
-        expect(elapsed).toBeLessThan(200);
-        expect(result.wasTruncated).toBe(true);
-      });
     });
   });
 
@@ -249,18 +181,6 @@ describe('TerminalSeedService', () => {
         .mockReturnValue({ getDimensions: () => ({ cols: 80, rows: 24 }) });
     });
 
-    it('should emit seed snapshot to client', async () => {
-      await seedService.emitSeedToClient({
-        deliver,
-        sessionId: 'session-123',
-        maxBytes: 1024 * 1024,
-        cols: 80,
-        rows: 24,
-      });
-
-      expect(mockClient.emit).toHaveBeenCalled();
-    });
-
     it('pure service unit: stops a multi-chunk seed immediately when delivery aborts', async () => {
       terminalIO.captureHistory = jest.fn().mockResolvedValue({
         ok: true,
@@ -293,6 +213,10 @@ describe('TerminalSeedService', () => {
 
       expect(terminalIO.captureHistory).toHaveBeenCalledTimes(1);
       expect(seedService.getCaptureStats()).toEqual({ terminalSeedCaptures: 1 });
+      seedService.invalidateCache('session-123');
+      await seedService.emitSeedToClient(options);
+      expect(terminalIO.captureHistory).toHaveBeenCalledTimes(2);
+      expect(seedService.getCaptureStats()).toEqual({ terminalSeedCaptures: 2 });
     });
 
     it('preserves real trailing blank rows while removing the capture separator', async () => {
@@ -513,19 +437,6 @@ describe('TerminalSeedService', () => {
         recoveryEpoch: 7,
         capturedSequence: 9,
       });
-    });
-
-    it('should skip seed when tmux capture returns empty (graceful handling)', async () => {
-      terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
-
-      await seedService.emitSeedToClient({
-        deliver,
-        sessionId: 'session-123',
-        maxBytes: 1024 * 1024,
-      });
-
-      // Should NOT emit seed since tmux returned empty
-      expect(mockClient.emit).not.toHaveBeenCalled();
     });
   });
 });

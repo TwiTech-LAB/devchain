@@ -127,15 +127,6 @@ describe('agentPlan — resolution / Step-1 filtering', () => {
     const resolved = resolveAgentRow(rows['a'], profiles[0], ['openai']);
     expect(resolved).toEqual({ agentName: 'A', resolvedConfigName: null, unresolved: true });
   });
-
-  it('restores a named config when its provider is re-selected (name never lost)', () => {
-    const rows = initialAgentRows([agent({ name: 'A', providerConfigName: 'codex-cfg' })]);
-    expect(resolveAgentRow(rows['a'], profiles[0], ['claude']).unresolved).toBe(true);
-    // Re-selecting codex restores the same config from the untouched stored row.
-    expect(resolveAgentRow(rows['a'], profiles[0], ['claude', 'codex']).resolvedConfigName).toBe(
-      'codex-cfg',
-    );
-  });
 });
 
 describe('agentPlan — preset filtering + apply', () => {

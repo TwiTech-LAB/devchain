@@ -194,14 +194,6 @@ describe('AddVmDialog', () => {
       );
     });
 
-    it('installs Docker by default', async () => {
-      const onCreate = renderDialog();
-      expect(screen.getByRole('switch', { name: 'Install Docker' })).toBeChecked();
-      await toReview('docker-vm');
-      await create();
-      expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ installDocker: true }));
-    });
-
     it('sends no Docker install when the switch is off', async () => {
       const onCreate = renderDialog();
       await userEvent.click(screen.getByRole('switch', { name: 'Install Docker' }));
@@ -267,15 +259,6 @@ describe('AddVmDialog', () => {
   });
 
   describe('review', () => {
-    it('explains which git settings the VM receives', async () => {
-      renderDialog();
-      await toReview();
-
-      expect(
-        screen.getByText(/gets this PC's global git settings at setup and at every Connect\./),
-      ).toBeInTheDocument();
-    });
-
     it("shows this PC's identity read-only and sends no user or home", async () => {
       const onCreate = renderDialog();
       await toReview();
@@ -283,8 +266,7 @@ describe('AddVmDialog', () => {
       await waitFor(() =>
         expect(screen.getByLabelText('Linux user')).toHaveTextContent('devchain'),
       );
-      expect(screen.getByLabelText('Home folder')).toHaveTextContent('/home/devchain');
-      expect(screen.queryByRole('textbox', { name: 'Linux user' })).not.toBeInTheDocument();
+
       await create();
 
       const body = onCreate.mock.calls[0][0] as CreateVmRequest & {

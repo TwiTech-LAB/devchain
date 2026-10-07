@@ -278,49 +278,42 @@ it('refreshes the VM list after any successful request', async () => {
   }
 });
 
-it('sends Update VM without a JSON content type or body', async () => {
-  const init = await submitAction(
-    { action: 'updateHost', remoteId: 'r1' },
-    '/api/remotes/r1/update',
-  );
-
-  expect(init).toEqual({ method: 'POST' });
-});
-
-it('sends Retry without provider choices without a JSON content type or body', async () => {
-  const init = await submitAction(
-    { action: 'retry', operationId: 'op-1' },
-    '/api/remotes/operations/op-1/retry',
-  );
-
-  expect(init).toEqual({ method: 'POST' });
-});
-
-it('sends Cancel without a JSON content type or body', async () => {
-  const init = await submitAction(
-    { action: 'cancel', operationId: 'op-1' },
-    '/api/remotes/operations/op-1/cancel',
-  );
-
-  expect(init).toEqual({ method: 'POST' });
-});
-
-it('keeps the JSON content type and body for Attach', async () => {
-  const init = await submitAction(
-    { action: 'attach', remoteId: 'r1', projectId: 'p1' },
-    '/api/remotes/r1/attach',
-  );
-
-  expect(init).toEqual({
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectId: 'p1' }),
-  });
-});
-
-it('starts a host install with SSH credentials and estimate inputs', async () => {
-  const init = await submitAction(
-    {
+it.each([
+  {
+    label: 'Update VM has no JSON',
+    input: { action: 'updateHost', remoteId: 'r1' },
+    url: '/api/remotes/r1/update',
+    expected: { method: 'POST' },
+  },
+  {
+    label: 'Retry has no JSON without provider choices',
+    input: { action: 'retry', operationId: 'op-1' },
+    url: '/api/remotes/operations/op-1/retry',
+    expected: { method: 'POST' },
+  },
+  {
+    label: 'Force sync carries project and selected source',
+    input: { action: 'forceSync', remoteId: 'r1', projectId: 'p1', source: 'vm' },
+    url: '/api/remotes/r1/force-sync',
+    expected: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 'p1', source: 'vm' }),
+    },
+  },
+  {
+    label: 'Attach carries project',
+    input: { action: 'attach', remoteId: 'r1', projectId: 'p1' },
+    url: '/api/remotes/r1/attach',
+    expected: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 'p1' }),
+    },
+  },
+  {
+    label: 'host install carries SSH credentials and estimates',
+    input: {
       action: 'installHost',
       body: {
         address: '192.168.1.20',
@@ -329,38 +322,36 @@ it('starts a host install with SSH credentials and estimate inputs', async () =>
         minDiskGib: 12,
       },
     },
-    '/api/remotes/host-install',
-  );
-
-  expect(init).toEqual({
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      address: '192.168.1.20',
-      ssh: { user: 'ubuntu', password: 'secret' },
-      providerAuth: { codex: 'generate' },
-      minDiskGib: 12,
-    }),
-  });
-});
-
-it('sends SSH credentials in a failed host-install retry', async () => {
-  const init = await submitAction(
-    {
+    url: '/api/remotes/host-install',
+    expected: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        address: '192.168.1.20',
+        ssh: { user: 'ubuntu', password: 'secret' },
+        providerAuth: { codex: 'generate' },
+        minDiskGib: 12,
+      }),
+    },
+  },
+  {
+    label: 'failed install retry carries SSH credentials',
+    input: {
       action: 'retry',
       operationId: 'install-op',
       ssh: { user: 'ubuntu', privateKey: 'PRIVATE KEY', passphrase: 'pass' },
     },
-    '/api/remotes/operations/install-op/retry',
-  );
-
-  expect(init).toEqual({
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ssh: { user: 'ubuntu', privateKey: 'PRIVATE KEY', passphrase: 'pass' },
-    }),
-  });
+    url: '/api/remotes/operations/install-op/retry',
+    expected: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ssh: { user: 'ubuntu', privateKey: 'PRIVATE KEY', passphrase: 'pass' },
+      }),
+    },
+  },
+] as const)('$label', async ({ input, url, expected }) => {
+  expect(await submitAction(input, url)).toEqual(expected);
 });
 
 it.each([

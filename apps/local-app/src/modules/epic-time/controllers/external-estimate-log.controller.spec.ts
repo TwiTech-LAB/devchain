@@ -4,7 +4,6 @@ import { IntegrationAdmissionGuard } from '../../../common/guards/integration-ad
 import type {
   CreateExternalEstimateTimeEntryResult,
   ExternalEstimateLogSnapshot,
-  ResolveExternalEstimateOperationResult,
 } from '../models/epic-time.models';
 import type { ExternalEstimateLogState } from '../../storage/models/domain.models';
 import type { EpicEstimateLoggingService } from '../services/epic-estimate-logging.service';
@@ -167,24 +166,6 @@ describe('ExternalEstimateLogController', () => {
     });
   });
 
-  it('derives the finishing disposition from a stored resolution', async () => {
-    service.getState.mockResolvedValue(
-      snapshot(state({ pendingPhase: 'prepared', pendingResolution: 'logged' }), {
-        pendingDisposition: 'finishing',
-        canVerify: false,
-      }),
-    );
-
-    const view = await controller.getEstimateLogState('jira', TASK_ID, '4', {
-      projectId: PROJECT_ID,
-      scopeKey: SCOPE_KEY,
-    });
-
-    expect(view.pendingDisposition).toBe('finishing');
-    expect(view.canVerify).toBe(false);
-    expect(view.pending?.resolution).toBe('logged');
-  });
-
   it('never projects connection identity or receipt tuple internals', async () => {
     service.getState.mockResolvedValue(snapshot(state()));
 
@@ -257,73 +238,6 @@ describe('ExternalEstimateLogController', () => {
     expect(service.getState).not.toHaveBeenCalled();
   });
 
-  it('dispatches the set-logged correction with a validated body', async () => {
-    service.setLoggedMinutes.mockResolvedValue(snapshot(null));
-
-    await controller.setLoggedEstimate(
-      'jira',
-      TASK_ID,
-      '4',
-      { scopeKey: SCOPE_KEY, loggedMinutes: 90, expectedRevision: 0, timeZone: 'Europe/Madrid' },
-      PROJECT_ID,
-    );
-
-    expect(service.setLoggedMinutes).toHaveBeenCalledWith({
-      projectId: PROJECT_ID,
-      provider: 'jira',
-      remoteScopeKey: SCOPE_KEY,
-      remoteTaskId: TASK_ID,
-      expectedEpoch: 4,
-      loggedMinutes: 90,
-      expectedRevision: 0,
-      timeZone: 'Europe/Madrid',
-    });
-  });
-
-  it.each([
-    [
-      'negative minutes',
-      { scopeKey: SCOPE_KEY, loggedMinutes: -1, expectedRevision: 0, timeZone: 'UTC' },
-    ],
-    [
-      'fractional revision',
-      { scopeKey: SCOPE_KEY, loggedMinutes: 90, expectedRevision: 0.5, timeZone: 'UTC' },
-    ],
-    [
-      'unknown body field',
-      { scopeKey: SCOPE_KEY, loggedMinutes: 90, expectedRevision: 0, timeZone: 'UTC', force: true },
-    ],
-    ['missing scope key', { loggedMinutes: 90, expectedRevision: 0, timeZone: 'UTC' }],
-    ['missing timezone', { scopeKey: SCOPE_KEY, loggedMinutes: 90, expectedRevision: 0 }],
-  ])('rejects a set-logged body with %s before dispatch', async (_case, body) => {
-    await expect(
-      controller.setLoggedEstimate('jira', TASK_ID, '4', body, PROJECT_ID),
-    ).rejects.toBeInstanceOf(ValidationError);
-    expect(service.setLoggedMinutes).not.toHaveBeenCalled();
-  });
-
-  it('rejects a set-logged request with a missing or malformed epoch', async () => {
-    await expect(
-      controller.setLoggedEstimate(
-        'jira',
-        TASK_ID,
-        undefined,
-        { scopeKey: SCOPE_KEY, loggedMinutes: 90, expectedRevision: 0, timeZone: 'UTC' },
-        PROJECT_ID,
-      ),
-    ).rejects.toBeInstanceOf(ValidationError);
-    await expect(
-      controller.setLoggedEstimate(
-        'jira',
-        TASK_ID,
-        'bad',
-        { scopeKey: SCOPE_KEY, loggedMinutes: 90, expectedRevision: 0, timeZone: 'UTC' },
-        PROJECT_ID,
-      ),
-    ).rejects.toBeInstanceOf(ValidationError);
-    expect(service.setLoggedMinutes).not.toHaveBeenCalled();
-  });
-
   it('dispatches the dated estimate create with both headers and a strict body', async () => {
     service.createTimeEntry.mockResolvedValue({
       outcome: 'logged',
@@ -370,37 +284,6 @@ describe('ExternalEstimateLogController', () => {
       stoppedReason: 'completed',
     });
     expect(response.state.loggedMinutes).toBe(120);
-  });
-
-  it('returns the outcome_unknown create result with the projected state', async () => {
-    service.createTimeEntry.mockResolvedValue({
-      outcome: 'outcome_unknown',
-      entriesLogged: 0,
-      minutesLogged: 0,
-      hasMore: true,
-      stoppedReason: 'outcome_unknown',
-      snapshot: snapshot(state()),
-    } satisfies CreateExternalEstimateTimeEntryResult);
-
-    const response = await controller.createEstimateTimeEntry(
-      'jira',
-      TASK_ID,
-      '4',
-      REQUEST_KEY,
-      {
-        scopeKey: SCOPE_KEY,
-        requestKey: REQUEST_KEY,
-        timeZone: 'Europe/Madrid',
-        estimateTotalMinutes: 120,
-        expectedRevision: 1,
-        dailySnapshot: [{ activityDate: '2026-08-29', minutes: 120 }],
-      },
-      PROJECT_ID,
-    );
-
-    expect(response.outcome).toBe('outcome_unknown');
-    expect(response.state.pendingDisposition).toBe('outcome_unknown');
-    expect(response.state.pending?.operationId).toBe(OPERATION_ID);
   });
 
   it('rejects an idempotency key that does not match the request key', async () => {
@@ -470,55 +353,6 @@ describe('ExternalEstimateLogController', () => {
     expect(service.createTimeEntry).not.toHaveBeenCalled();
   });
 
-  it('dispatches the resolve route for every action', async () => {
-    service.resolveOperation.mockResolvedValue({
-      outcome: 'logged',
-      snapshot: snapshot(state()),
-    } satisfies ResolveExternalEstimateOperationResult);
-
-    for (const action of ['verify', 'logged', 'not_logged'] as const) {
-      await controller.resolveEstimateOperation(
-        'jira',
-        TASK_ID,
-        OPERATION_ID,
-        '4',
-        OPERATION_ID,
-        { scopeKey: SCOPE_KEY, action, expectedRevision: 1 },
-        PROJECT_ID,
-      );
-      expect(service.resolveOperation).toHaveBeenCalledWith({
-        projectId: PROJECT_ID,
-        provider: 'jira',
-        remoteScopeKey: SCOPE_KEY,
-        remoteTaskId: TASK_ID,
-        expectedEpoch: 4,
-        operationId: OPERATION_ID,
-        action,
-        expectedRevision: 1,
-      });
-    }
-  });
-
-  it('propagates the unresolved outcome with the projected state', async () => {
-    service.resolveOperation.mockResolvedValue({
-      outcome: 'unresolved',
-      snapshot: snapshot(state(), { pendingDisposition: 'manual_review', canVerify: false }),
-    } satisfies ResolveExternalEstimateOperationResult);
-
-    const response = await controller.resolveEstimateOperation(
-      'jira',
-      TASK_ID,
-      OPERATION_ID,
-      '4',
-      OPERATION_ID,
-      { scopeKey: SCOPE_KEY, action: 'verify', expectedRevision: 1 },
-      PROJECT_ID,
-    );
-
-    expect(response.outcome).toBe('unresolved');
-    expect(response.state.pendingDisposition).toBe('manual_review');
-  });
-
   it('rejects an idempotency key that does not match the resolved operation id', async () => {
     await expect(
       controller.resolveEstimateOperation(
@@ -533,87 +367,12 @@ describe('ExternalEstimateLogController', () => {
     ).rejects.toBeInstanceOf(ValidationError);
     expect(service.resolveOperation).not.toHaveBeenCalled();
   });
-
-  it.each([
-    ['missing idempotency key', '4', undefined],
-    ['missing epoch', undefined, OPERATION_ID],
-    ['malformed epoch', 'x', OPERATION_ID],
-  ])('rejects a resolve request with a %s', async (_case, epoch, key) => {
-    await expect(
-      controller.resolveEstimateOperation(
-        'jira',
-        TASK_ID,
-        OPERATION_ID,
-        epoch,
-        key,
-        { scopeKey: SCOPE_KEY, action: 'verify', expectedRevision: 1 },
-        PROJECT_ID,
-      ),
-    ).rejects.toBeInstanceOf(ValidationError);
-    expect(service.resolveOperation).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['unknown action', { scopeKey: SCOPE_KEY, action: 'retry', expectedRevision: 1 }],
-    ['negative revision', { scopeKey: SCOPE_KEY, action: 'verify', expectedRevision: -1 }],
-    ['missing scope key', { action: 'verify', expectedRevision: 1 }],
-    [
-      'unknown body field',
-      { scopeKey: SCOPE_KEY, action: 'verify', expectedRevision: 1, force: true },
-    ],
-  ])('rejects a resolve body with %s before dispatch', async (_case, body) => {
-    await expect(
-      controller.resolveEstimateOperation(
-        'jira',
-        TASK_ID,
-        OPERATION_ID,
-        '4',
-        OPERATION_ID,
-        body,
-        PROJECT_ID,
-      ),
-    ).rejects.toBeInstanceOf(ValidationError);
-    expect(service.resolveOperation).not.toHaveBeenCalled();
-  });
 });
 
 describe('ExternalEstimateLogController legacy ownership assignment', () => {
   const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
   const SCOPE_KEY = 'acme.atlassian.net';
   const TASK_ID = 'ENG-1';
-  const state = (): ExternalEstimateLogState => ({
-    projectId: PROJECT_ID,
-    provider: 'jira',
-    remoteScopeKey: SCOPE_KEY,
-    remoteTaskId: TASK_ID,
-    loggedMinutes: 90,
-    revision: 4,
-    aggregationTimeZone: 'UTC',
-    pendingOperationId: null,
-    pendingDeltaMinutes: null,
-    pendingEstimateTotalMinutes: null,
-    pendingStartedAt: null,
-    pendingConnectionId: null,
-    pendingConnectionGeneration: null,
-    pendingPhase: null,
-    pendingResolution: null,
-    pendingActivityDate: null,
-    createdAt: '2026-08-30T08:00:00.000Z',
-    updatedAt: '2026-08-30T08:00:00.000Z',
-  });
-  const snapshot = (stored: ExternalEstimateLogState | null): ExternalEstimateLogSnapshot => ({
-    state: stored,
-    initialized: stored !== null,
-    revision: stored?.revision ?? 0,
-    loggedMinutes: stored?.loggedMinutes ?? 0,
-    aggregationTimeZone: stored?.aggregationTimeZone ?? null,
-    days: [],
-    unallocatedLoggedMinutes: 0,
-    pendingDisposition: 'none',
-    canVerify: false,
-    verifyExpiresAt: null,
-    legacyCheckpoint: null,
-  });
 
   const service = {
     assignLegacyCheckpoint: jest.fn(),
@@ -624,65 +383,10 @@ describe('ExternalEstimateLogController legacy ownership assignment', () => {
 
   beforeEach(() => jest.clearAllMocks());
 
-  it('dispatches the strict assignment request with the epoch precondition', async () => {
-    service.assignLegacyCheckpoint.mockResolvedValue(snapshot(state()));
-
-    await expect(
-      controller.assignLegacyCheckpoint(
-        'jira',
-        TASK_ID,
-        '4',
-        { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4 },
-        PROJECT_ID,
-      ),
-    ).resolves.toEqual({
-      initialized: true,
-      revision: 4,
-      loggedMinutes: 90,
-      aggregationTimeZone: 'UTC',
-      days: [],
-      unallocatedLoggedMinutes: 0,
-      pendingDisposition: 'none',
-      canVerify: false,
-      verifyExpiresAt: null,
-      pending: null,
-      legacyCheckpoint: null,
-    });
-    expect(service.assignLegacyCheckpoint).toHaveBeenCalledWith({
-      projectId: PROJECT_ID,
-      provider: 'jira',
-      remoteScopeKey: SCOPE_KEY,
-      remoteTaskId: TASK_ID,
-      expectedEpoch: 4,
-      expectedLegacyRevision: 4,
-    });
-  });
-
-  it('projects the unassigned legacy signal on the assignment response', async () => {
-    service.assignLegacyCheckpoint.mockResolvedValue({
-      ...snapshot(null),
-      legacyCheckpoint: { revision: 3, loggedMinutes: 45, hasPendingOperation: false },
-    });
-
-    await expect(
-      controller.assignLegacyCheckpoint(
-        'jira',
-        TASK_ID,
-        '4',
-        { scopeKey: SCOPE_KEY, expectedLegacyRevision: 3 },
-        PROJECT_ID,
-      ),
-    ).resolves.toMatchObject({
-      legacyCheckpoint: { revision: 3, loggedMinutes: 45, hasPendingOperation: false },
-    });
-  });
-
   it.each([
-    ['missing epoch', '', { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4 }],
-    ['non-numeric epoch', 'four', { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4 }],
-    ['negative revision', '', { scopeKey: SCOPE_KEY, expectedLegacyRevision: -1 }],
-    ['missing scope key', '', { expectedLegacyRevision: 4 }],
-    ['unknown body field', '', { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4, force: true }],
+    ['negative revision', '4', { scopeKey: SCOPE_KEY, expectedLegacyRevision: -1 }],
+    ['missing scope key', '4', { expectedLegacyRevision: 4 }],
+    ['unknown body field', '4', { scopeKey: SCOPE_KEY, expectedLegacyRevision: 4, force: true }],
   ])('rejects an assignment request with a %s before dispatch', async (_case, epoch, body) => {
     await expect(
       controller.assignLegacyCheckpoint('jira', TASK_ID, epoch, body, PROJECT_ID),

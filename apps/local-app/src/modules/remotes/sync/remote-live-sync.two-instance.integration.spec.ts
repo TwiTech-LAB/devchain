@@ -20,7 +20,6 @@ import {
 } from '../../realtime/ports/realtime-broadcaster.port';
 import type { Remote, RemoteOperation } from '../../storage/models/domain.models';
 import { RemoteHostClient } from '../operations/remote-host.client';
-import { REMOTE_HEALTH_PORT, type RemoteHealthPort } from '../ports/remote-health.port';
 import { ProjectReplicaApplier } from '../replica/project-replica.applier';
 import { T, ensureProvider, seedReplicaSource } from '../replica/__fixtures__/replica-seed';
 import { RemoteLiveSyncService } from './remote-live-sync.service';
@@ -126,7 +125,7 @@ describe('live sync between two instances', () => {
     await instances?.close();
   }, 30_000);
 
-  it('mirrors an epic edit, a comment-only change and a relation-only change within two intervals', async () => {
+  it('mirrors host edits within two intervals and removes host-deleted epics on full reconcile', async () => {
     const broadcast = jest.spyOn(
       home.app.get<RealtimeBroadcaster>(REALTIME_BROADCASTER),
       'broadcastEvent',
@@ -168,14 +167,6 @@ describe('live sync between two instances', () => {
       TWO_INTERVALS_MS,
     );
 
-    const topics = broadcast.mock.calls.map(([topic, type]) => `${topic}::${type}`);
-    expect(topics).toContain('project/A/epics::remote-synced');
-    expect(topics).toContain(`workspace/${WORKSPACE}/epic-relations::remote-synced`);
-    expect(homeEpicUpdated).not.toHaveBeenCalled();
-    home.app.get(EventEmitter2).off('epic.updated', homeEpicUpdated);
-  });
-
-  it('removes a host-deleted epic on the next full reconcile and keeps home links of surviving epics', async () => {
     const created = await api<{ id: string }>(host, 'POST', '/api/epics', {
       projectId: 'A',
       title: 'Doomed',
@@ -201,45 +192,12 @@ describe('live sync between two instances', () => {
     expect(homeRow("SELECT epic_id FROM external_task_links WHERE id = 'link-1'")).toEqual({
       epic_id: 'epic-1',
     });
-  });
 
-  it('reconciles fully once after an offline period and never moves the cursor back', async () => {
-    const client = home.app.get(RemoteHostClient);
-    const realChanges = client.changes.bind(client);
-    const calls: { full: boolean; since: string | null }[] = [];
-    jest.spyOn(client, 'changes').mockImplementation(async (remoteId, projectId, options) => {
-      calls.push(options);
-      return realChanges(remoteId, projectId, options);
-    });
-    const health = home.app.get<RemoteHealthPort>(REMOTE_HEALTH_PORT);
-    const realGetState = health.getState.bind(health);
-    const offline = jest
-      .spyOn(health, 'getState')
-      .mockImplementation((remoteId) => ({ ...realGetState(remoteId), online: false }));
-
-    await new Promise((resolve) => setTimeout(resolve, 3 * SYNC_INTERVAL_MS));
-    expect(calls).toEqual([]);
-
-    offline.mockRestore();
-    const edit = await api(host, 'PUT', '/api/epics/epic-1', {
-      title: 'Edited while home was away',
-      version: await hostEpicVersion('epic-1'),
-    });
-    expect(edit.status).toBe(200);
-    await waitForValue(async () => calls.length >= 4, 4_000);
-
-    expect(calls[0].full).toBe(true);
-    expect(calls.slice(1).some((call) => call.full)).toBe(false);
-    const cursors = calls.map((call) => Date.parse(call.since ?? ''));
-    for (let i = 1; i < cursors.length; i++) {
-      expect(cursors[i]).toBeGreaterThanOrEqual(cursors[i - 1]);
-    }
-    await waitForValue(
-      async () =>
-        homeRow<{ title: string }>("SELECT title FROM epics WHERE id = 'epic-1'")?.title ===
-        'Edited while home was away',
-      TWO_INTERVALS_MS,
-    );
+    const topics = broadcast.mock.calls.map(([topic, type]) => `${topic}::${type}`);
+    expect(topics).toContain('project/A/epics::remote-synced');
+    expect(topics).toContain(`workspace/${WORKSPACE}/epic-relations::remote-synced`);
+    expect(homeEpicUpdated).not.toHaveBeenCalled();
+    home.app.get(EventEmitter2).off('epic.updated', homeEpicUpdated);
   });
 
   it('shows a failed apply as syncError while the project stays remote-owned, then heals by re-snapshot', async () => {

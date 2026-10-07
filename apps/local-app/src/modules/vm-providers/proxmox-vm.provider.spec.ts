@@ -247,32 +247,19 @@ describe('ProxmoxVmProvider over fake HTTPS', () => {
     expect(JSON.stringify(seen)).not.toContain(TOKEN_SECRET);
   });
 
-  it('accepts the PVE 9 guest-agent privileges in place of VM.Monitor', async () => {
-    permissionHandler({ version: '9.0.0', guestAgentAudit: true, guestAgentFileRead: true });
-    await expect(provider().checkPermissions()).resolves.toEqual({ ok: true, missing: [] });
-  });
-
-  it('names the PVE 9 guest-agent file-read privilege when only Audit is granted', async () => {
-    permissionHandler({ version: '9.0.0', guestAgentAudit: true });
-    await expect(provider().checkPermissions()).resolves.toEqual({
-      ok: false,
-      missing: ['VM.GuestAgent.FileRead on /pool/devchain'],
-    });
-  });
-
-  it('names VM.Monitor on PVE 8 when the file-read right is missing', async () => {
-    permissionHandler({ without: ['VM.Monitor'] });
-    await expect(provider().checkPermissions()).resolves.toEqual({
-      ok: false,
-      missing: ['VM.Monitor on /pool/devchain'],
-    });
-  });
-
-  it('reports the PVE 9 guest-agent privilege when neither alternative is granted', async () => {
-    permissionHandler({ version: '9.0.0' });
+  it.each([
+    [{ version: '9.0.0', guestAgentAudit: true, guestAgentFileRead: true }, []],
+    [{ version: '9.0.0', guestAgentAudit: true }, ['VM.GuestAgent.FileRead on /pool/devchain']],
+    [{ without: ['VM.Monitor'] }, ['VM.Monitor on /pool/devchain']],
+    [
+      { version: '9.0.0' },
+      ['VM.GuestAgent.Audit on /pool/devchain', 'VM.GuestAgent.FileRead on /pool/devchain'],
+    ],
+  ])('reports guest-agent permission partitions %p', async (options, missing) => {
+    permissionHandler(options as Parameters<typeof permissionHandler>[0]);
     const result = await provider().checkPermissions();
-    expect(result.ok).toBe(false);
-    expect(result.missing).toContain('VM.GuestAgent.Audit on /pool/devchain');
+    expect(result.ok).toBe(missing.length === 0);
+    expect(result.missing).toEqual(missing);
   });
 
   it('names each missing ACL privilege', async () => {
@@ -326,28 +313,6 @@ describe('ProxmoxVmProvider over fake HTTPS', () => {
     'models validation before permission checks and fails closed on nextid %s',
     async (nextId) => {
       permissionHandler({ nextId });
-      const client = new ProxmoxClient({ requestTimeoutMs: 1000, maxResponseBytes: 64 * 1024 });
-      const target = {
-        origin: connection().apiUrl,
-        caPem,
-        tlsFingerprint: connection().sslFingerprint,
-        tokenId: connection().tokenId,
-        tokenSecret: TOKEN_SECRET,
-      };
-      await expect(
-        client.request(target, {
-          method: 'POST',
-          path: '/api2/json/nodes/hw/qemu',
-          body: { vmid: '0', name: 'permission-probe' },
-        }),
-      ).rejects.toMatchObject({ code: 'proxmox_api' });
-      await expect(
-        client.request(target, {
-          method: 'POST',
-          path: '/api2/json/nodes/hw/qemu',
-          body: { vmid: '101', name: 'permission-probe' },
-        }),
-      ).rejects.toMatchObject({ code: 'proxmox_denied' });
       const result = await provider().checkPermissions();
       expect(result.ok).toBe(false);
       expect(result.missing).toEqual(

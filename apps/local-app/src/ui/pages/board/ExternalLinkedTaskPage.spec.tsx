@@ -3,11 +3,7 @@ import { axe } from 'jest-axe';
 import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from 'react-router-dom';
 import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
 import type { IntegrationConnectionState } from '@/ui/hooks/useIntegrationConnections';
-import {
-  boardReturnUrlFromState,
-  hasInAppHistoryBack,
-  parseBoardReturnUrl,
-} from '@/ui/lib/external-board';
+import { parseBoardReturnUrl } from '@/ui/lib/external-board';
 import { ExternalLinkedTaskRoute } from './ExternalLinkedTaskPage';
 
 const mockNavigate = jest.fn();
@@ -284,6 +280,11 @@ describe('ExternalLinkedTaskPage route ownership', () => {
     expect(screen.queryByRole('link', { name: /Settings.*Integrations/ })).not.toBeInTheDocument();
     expect(screen.queryByText('Task dialog')).not.toBeInTheDocument();
     expect(await axe(baseElement)).toHaveNoViolations();
+
+    {
+      expect(screen.getByRole('navigation', { name: 'Task view' })).toBeInTheDocument();
+      expect(screen.queryByText('Task dialog')).not.toBeInTheDocument();
+    }
   });
 
   it('offers an explicit retry when cross-workspace activation fails', () => {
@@ -302,10 +303,6 @@ describe('ExternalLinkedTaskPage route ownership', () => {
     expect(activateProjectMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(activateProjectMock).toHaveBeenCalledWith(owningProject);
-    expect(useIntegrationConnectionsMock).toHaveBeenCalledWith({
-      projectId: null,
-      enabled: false,
-    });
   });
 
   it('reactivates the owner if selection drifts after an earlier confirmation', () => {
@@ -321,10 +318,6 @@ describe('ExternalLinkedTaskPage route ownership', () => {
     renderRoute();
 
     expect(activateProjectMock).toHaveBeenCalledWith(owningProject);
-    expect(useIntegrationConnectionsMock).toHaveBeenCalledWith({
-      projectId: null,
-      enabled: false,
-    });
   });
 
   it('renders ownership errors without any vendor admission and retries', () => {
@@ -342,10 +335,6 @@ describe('ExternalLinkedTaskPage route ownership', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Project read failed.');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(refetch).toHaveBeenCalledTimes(1);
-    expect(useIntegrationConnectionsMock).toHaveBeenCalledWith({
-      projectId: null,
-      enabled: false,
-    });
   });
 
   it('renders the unavailable state without enabling vendor queries', () => {
@@ -396,23 +385,21 @@ describe('ExternalLinkedTaskPage route ownership', () => {
     );
   });
 
-  it('closes with replace to the exact validated native Board URL', () => {
-    renderRoute('jira', 'epic-1', { boardReturnUrl: '/board?st=s1&v=list&pg=2' });
+  it.each([
+    {
+      name: 'validated URL',
+      idx: 0,
+      state: { boardReturnUrl: '/board?st=s1&v=list&pg=2' },
+      path: '/board?st=s1&v=list&pg=2',
+    },
+    { name: 'history', idx: 3, state: undefined, path: null },
+    { name: 'direct', idx: 0, state: undefined, path: '/board' },
+  ])('closes route using $name', ({ idx, state, path }) => {
+    window.history.replaceState({ idx }, '');
+    renderRoute('jira', 'epic-1', state);
     fireEvent.click(screen.getByRole('button', { name: 'Simulate dialog close' }));
-    expect(mockNavigate).toHaveBeenCalledWith('/board?st=s1&v=list&pg=2', { replace: true });
-  });
-
-  it('closes through in-app history back when no validated return URL exists', () => {
-    window.history.replaceState({ idx: 3 }, '');
-    renderRoute();
-    fireEvent.click(screen.getByRole('button', { name: 'Simulate dialog close' }));
-    expect(mockNavigate).toHaveBeenCalledWith(-1);
-  });
-
-  it('closes to /board with replace for a direct deep link without in-app history', () => {
-    renderRoute();
-    fireEvent.click(screen.getByRole('button', { name: 'Simulate dialog close' }));
-    expect(mockNavigate).toHaveBeenCalledWith('/board', { replace: true });
+    if (path === null) expect(mockNavigate).toHaveBeenCalledWith(-1);
+    else expect(mockNavigate).toHaveBeenCalledWith(path, { replace: true });
   });
 
   it('shows the Task view navigation with the provider view active', async () => {
@@ -430,27 +417,11 @@ describe('ExternalLinkedTaskPage route ownership', () => {
     expect(await axe(baseElement)).toHaveNoViolations();
   });
 
-  it('switches to the DevChain view with replace, forwarding validated Board return state', () => {
-    renderRoute('jira', 'epic-1', { boardReturnUrl: '/board?st=s1' });
-    expectDevChainSwitch('/board?st=s1');
-  });
-
   it('forwards no state across the switch when the return URL does not validate', () => {
     renderRoute('jira', 'epic-1', { boardReturnUrl: '/epics/epic-1' });
     fireEvent.click(screen.getByRole('link', { name: 'DevChain' }));
 
     expect(screen.getByTestId('epic-location-state')).toHaveTextContent('null');
-  });
-
-  it('keeps the switcher visible in a fallback state while the route window is closed', () => {
-    useIntegrationConnectionsMock.mockReturnValue({
-      connections: [connection(false)],
-      isLoading: false,
-    });
-    renderRoute();
-
-    expect(screen.getByRole('navigation', { name: 'Task view' })).toBeInTheDocument();
-    expect(screen.queryByText('Task dialog')).not.toBeInTheDocument();
   });
 });
 
@@ -468,51 +439,5 @@ describe('parseBoardReturnUrl', () => {
     expect(parseBoardReturnUrl({ boardReturnUrl: '//host/board' })).toBe('/board');
     expect(parseBoardReturnUrl({ boardReturnUrl: '/board#h' })).toBe('/board');
     expect(parseBoardReturnUrl({ boardReturnUrl: '/board/sub' })).toBe('/board');
-  });
-});
-
-describe('boardReturnUrlFromState', () => {
-  it('returns the validated native /board URL when state carries one', () => {
-    expect(boardReturnUrlFromState({ boardReturnUrl: '/board' })).toBe('/board');
-    expect(boardReturnUrlFromState({ boardReturnUrl: '/board?st=s1' })).toBe('/board?st=s1');
-  });
-
-  it('returns null for missing, non-object, non-string, and off-board values', () => {
-    expect(boardReturnUrlFromState(undefined)).toBeNull();
-    expect(boardReturnUrlFromState(null)).toBeNull();
-    expect(boardReturnUrlFromState('/board')).toBeNull();
-    expect(boardReturnUrlFromState({})).toBeNull();
-    expect(boardReturnUrlFromState({ boardReturnUrl: 7 })).toBeNull();
-    expect(boardReturnUrlFromState({ boardReturnUrl: '//host/board' })).toBeNull();
-    expect(boardReturnUrlFromState({ boardReturnUrl: '/board#h' })).toBeNull();
-    expect(boardReturnUrlFromState({ boardReturnUrl: '/board/sub' })).toBeNull();
-  });
-});
-
-describe('hasInAppHistoryBack', () => {
-  afterEach(() => window.history.replaceState(null, ''));
-
-  it('returns true only for a positive integer history index', () => {
-    window.history.replaceState({ idx: 1 }, '');
-    expect(hasInAppHistoryBack()).toBe(true);
-    window.history.replaceState({ idx: 4 }, '');
-    expect(hasInAppHistoryBack()).toBe(true);
-  });
-
-  it('returns false for missing, null, zero, and malformed idx values', () => {
-    window.history.replaceState(null, '');
-    expect(hasInAppHistoryBack()).toBe(false);
-    window.history.replaceState({ idx: null }, '');
-    expect(hasInAppHistoryBack()).toBe(false);
-    window.history.replaceState({}, '');
-    expect(hasInAppHistoryBack()).toBe(false);
-    window.history.replaceState({ idx: 0 }, '');
-    expect(hasInAppHistoryBack()).toBe(false);
-    window.history.replaceState({ idx: -2 }, '');
-    expect(hasInAppHistoryBack()).toBe(false);
-    window.history.replaceState({ idx: '2' }, '');
-    expect(hasInAppHistoryBack()).toBe(false);
-    window.history.replaceState({ idx: 1.5 }, '');
-    expect(hasInAppHistoryBack()).toBe(false);
   });
 });

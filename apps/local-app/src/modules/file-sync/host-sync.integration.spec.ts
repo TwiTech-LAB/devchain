@@ -4,12 +4,24 @@ import { Test } from '@nestjs/testing';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  symlinkSync,
+} from 'fs';
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs/promises';
 import { createServer, type Server } from 'http';
 import type { AddressInfo } from 'net';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { AllExceptionsFilter } from '../../common/filters/http-exception.filter';
+import { NotFoundError } from '../../common/errors/error-types';
+import { GitService } from '../git/services/git.service';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { STORAGE_SERVICE } from '../storage/interfaces/storage.interface';
 import { RemoteHostClient, RemoteHostRequestError } from '../remotes/operations/remote-host.client';
@@ -20,6 +32,8 @@ import { FileSyncService } from './file-sync.service';
 import { FileSyncModule } from './file-sync.module';
 import { SyncthingManager, type SyncthingConnection } from './syncthing-manager.service';
 import { SyncthingRestClient } from './syncthing-rest.client';
+import { SyncPathInspector } from './sync-path-inspector';
+import { ChildProcessExecutor } from '../terminal/services/process-executor/child-process-executor';
 
 // Backend integration: the host routes' contract is HTTP validation, the REST
 // calls they make and their order, so a real Nest app drives a fake Syncthing
@@ -43,7 +57,93 @@ describe('host sync routes', () => {
   let app: NestFastifyApplication;
   let client: RemoteHostClient;
   let connection: SyncthingConnection | null;
+  const foreignPaths = new Set<string>();
+  let remoteNeedFiles: Array<{ name: string; deleted: boolean; type: string }> = [];
+  let fileErrors: Array<{ path: string; error: string }> = [];
   const projects: Record<string, { id: string; rootPath: string }> = {};
+  const git = {
+    mirroredHead: jest.fn().mockResolvedValue('head1'),
+    getConfigValue: jest.fn().mockResolvedValue(null),
+    getVersion: jest.fn().mockResolvedValue({ major: 2, minor: 43, patch: 0 }),
+    refreshIndexFromHead: jest.fn(),
+  };
+
+  it('inspects only VM-home folders, reports missing roots and refuses link escapes and traversal', async () => {
+    const folder = mkdtempSync(join(homedir(), '.devchain-inspect-test-'));
+    try {
+      const inspect = (path: string, paths: string[] = [], patterns?: string[]) =>
+        app.inject({
+          method: 'POST',
+          url: '/api/host/sync/inspect',
+          payload: { path, scan: true, paths, patterns },
+        });
+      expect((await inspect(root)).statusCode).toBe(403);
+      expect((await inspect(homedir())).statusCode).toBe(403);
+      expect((await inspect(join(folder, 'missing'))).json()).toMatchObject({
+        exists: false,
+        repository: false,
+        entries: [],
+        candidates: [],
+      });
+      symlinkSync(root, join(folder, 'escape'));
+      symlinkSync(folder, join(folder, 'alias'));
+      symlinkSync(join(folder, 'missing'), join(folder, 'dangling'));
+      for (const path of [
+        join(folder, 'escape'),
+        join(folder, 'escape/child'),
+        join(folder, 'alias'),
+        join(folder, 'alias/missing'),
+        join(folder, 'dangling'),
+      ])
+        expect((await inspect(path)).statusCode).toBe(403);
+      expect((await inspect(folder, ['../outside'])).statusCode).toBe(400);
+      for (const [count, statusCode] of [
+        [200, 200],
+        [201, 400],
+      ])
+        expect((await inspect(folder, [], Array(count).fill('cache'))).statusCode).toBe(statusCode);
+      mkdirSync(join(folder, '.git'));
+      expect((await inspect(folder)).json()).toMatchObject({
+        repository: false,
+        gitState: 'error',
+      });
+      writeFileSync(join(folder, '.git/HEAD'), 'ref: refs/heads/main\n');
+      expect((await inspect(folder)).json()).toMatchObject({
+        repository: false,
+        gitState: 'error',
+      });
+      execFileSync('git', ['init', '-q', folder]);
+      writeFileSync(join(folder, '.gitignore'), 'logs/\n');
+      mkdirSync(join(folder, 'logs'));
+      writeFileSync(join(folder, 'logs/file'), 'runtime');
+      foreignPaths.add(join(folder, 'logs/file'));
+      const result = await client.syncInspect('r1', {
+        path: folder,
+        scan: true,
+        paths: [],
+        patterns: ['/.gitignore'],
+      });
+      expect(result).toMatchObject({
+        exists: true,
+        repository: true,
+        gitState: 'repo',
+        candidates: ['logs'],
+        entries: [expect.objectContaining({ path: 'logs', kind: 'folder', ignored: true })],
+        patternChecks: {
+          state: 'checked',
+          results: [
+            {
+              pattern: '/.gitignore',
+              tracked: { count: 0, files: [], complete: true },
+              kept: { count: 1, sample: ['.gitignore'] },
+            },
+          ],
+        },
+      });
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
 
   beforeAll(async () => {
     root = mkdtempSync(join(tmpdir(), 'devchain-host-sync-'));
@@ -63,7 +163,22 @@ describe('host sync routes', () => {
         if (url.includes('gone')) {
           return res.writeHead(404, { 'content-type': 'text/plain' }).end('no such folder');
         }
+        if (url.includes('broken')) return res.writeHead(500).end('database unavailable');
+        if (url.startsWith('/rest/db/remoteneed')) {
+          const query = new URL(url, 'http://localhost').searchParams;
+          const page = Number(query.get('page'));
+          const perpage = Number(query.get('perpage'));
+          return json({
+            files: remoteNeedFiles.slice((page - 1) * perpage, page * perpage),
+            page,
+            perpage,
+          });
+        }
+        if (url.startsWith('/rest/db/localchanged'))
+          return json({ files: [{ name: 'edited.txt' }] });
         if (url === '/rest/config/folders') return json([{ id: 'code:p1' }]);
+        if (url.startsWith('/rest/config/folders/'))
+          return json({ type: 'receiveonly', paused: false, devices: [{ deviceID: HOME_ID }] });
         if (url.startsWith('/rest/system/connections')) {
           return json({ connections: { [HOME_ID]: { connected: true } } });
         }
@@ -78,8 +193,10 @@ describe('host sync routes', () => {
             needBytes: 0,
             receiveOnlyChangedFiles: 1,
             sequence: 7,
+            ...(fileErrors.length && { errors: fileErrors.length }),
           });
         }
+        if (url.startsWith('/rest/folder/errors')) return json({ errors: fileErrors });
         if (url.startsWith('/rest/db/completion')) {
           return json({ completion: 100, needItems: 0, needBytes: 0, remoteState: 'valid' });
         }
@@ -92,10 +209,25 @@ describe('host sync routes', () => {
     sqlite = new Database(':memory:');
     migrate(drizzle(sqlite), { migrationsFolder: join(__dirname, '../../../drizzle') });
     const moduleRef = await Test.createTestingModule({ imports: [FileSyncModule] })
+      .overrideProvider(SyncPathInspector)
+      .useValue(
+        new SyncPathInspector(new ChildProcessExecutor(), {
+          ...fs,
+          lstat: async (path: string) =>
+            Object.assign(await fs.lstat(path), { uid: foreignPaths.has(path) ? 0 : 1000 }),
+        } as typeof fs),
+      )
       .overrideProvider(DB_CONNECTION)
       .useValue(drizzle(sqlite))
       .overrideProvider(STORAGE_SERVICE)
-      .useValue({ getProject: async (id: string) => projects[id] })
+      .useValue({
+        getProject: async (id: string) => {
+          if (!projects[id]) throw new NotFoundError('Project', id);
+          return projects[id];
+        },
+      })
+      .overrideProvider(GitService)
+      .useValue(git)
       .overrideProvider(FILE_SYNC_PATHS)
       .useValue(createProductionFileSyncPaths(join(root, 'home')))
       .overrideProvider(SyncthingManager)
@@ -134,6 +266,10 @@ describe('host sync routes', () => {
 
   beforeEach(() => {
     recorded = [];
+    remoteNeedFiles = [];
+    fileErrors = [];
+    git.refreshIndexFromHead.mockReset();
+    git.mirroredHead.mockReset().mockResolvedValue('head1');
   });
 
   afterAll(async () => {
@@ -145,6 +281,234 @@ describe('host sync routes', () => {
 
   const calls = () => recorded.map((r) => `${r.method} ${r.url}`);
 
+  // HTTP plus the real service proves path ownership, request validation and REST configuration.
+  it.each(['code', 'git'] as const)(
+    'prepares the host %s backup without changing records, then clears force settings on restore',
+    async (kind) => {
+      const request = { projectId: 'p1', kind, forceCopy: { operationId: 'force-1' } };
+      const path = join(root, 'home', '.devchain', 'sync-backups', 'p1', 'force-1', kind);
+      const prepared = await app.inject({
+        method: 'POST',
+        url: '/api/host/sync/force-copy-backup',
+        payload: request,
+      });
+      expect(prepared.statusCode).toBe(200);
+      expect(prepared.json()).toEqual({ path });
+      expect(existsSync(path)).toBe(true);
+      expect(recorded).toEqual([]);
+      expect(await client.syncForceCopyBackup('r1', request)).toEqual({ path });
+      const folder = {
+        ...request,
+        type: 'receiveonly' as const,
+        peerDeviceId: HOME_ID,
+        ignores: [],
+        paused: true,
+      };
+      expect(await client.syncFolders('r1', folder)).toMatchObject({ backupPath: path });
+      expect(recorded[0].body).toMatchObject({
+        maxConflicts: -1,
+        versioning: {
+          type: 'trashcan',
+          fsPath: path,
+          fsType: 'basic',
+          params: { cleanoutDays: '0' },
+        },
+      });
+      recorded = [];
+      const { forceCopy: _forceCopy, ...connected } = folder;
+      await client.syncFolders('r1', connected);
+      expect(recorded[0].body).toMatchObject({
+        maxConflicts: kind === 'git' ? 0 : 10,
+        versioning: { type: '' },
+      });
+      expect(existsSync(path)).toBe(true);
+    },
+  );
+
+  it('refuses force-copy path traversal and source-side versioning before any REST mutation', async () => {
+    const pathOnly = { projectId: 'p1', kind: 'code', forceCopy: { operationId: '../escape' } };
+    const invalidPath = await app.inject({
+      method: 'POST',
+      url: '/api/host/sync/force-copy-backup',
+      payload: pathOnly,
+    });
+    expect(invalidPath.statusCode).toBe(400);
+    const invalidSide = await app.inject({
+      method: 'POST',
+      url: '/api/host/sync/folders',
+      payload: {
+        ...pathOnly,
+        forceCopy: { operationId: 'force-1' },
+        type: 'sendonly',
+        peerDeviceId: HOME_ID,
+        ignores: [],
+      },
+    });
+    expect(invalidSide.statusCode).toBe(400);
+    expect(recorded).toEqual([]);
+  });
+
+  // app.inject verifies route wiring and real hook files; git-version probing is
+  // the only external boundary stubbed, with actual git behavior covered by the guard spec.
+  it('installs and removes the VM git guard using only the host project row, with idempotent removal', async () => {
+    const projectId = 'guard-project';
+    const checkout = join(root, 'guard-checkout');
+    projects[projectId] = { id: projectId, rootPath: checkout };
+    const hooks = join(checkout, '.git', 'hooks');
+    mkdirSync(hooks, { recursive: true });
+    for (const name of ['reference-transaction', 'post-checkout']) {
+      writeFileSync(join(hooks, name), '#!/bin/sh\necho user-hook\n');
+    }
+    const index = join(checkout, '.git', 'index');
+    writeFileSync(index, 'staged-index');
+    const url = `/api/host/projects/${projectId}/git-guard`;
+
+    const installed = await app.inject({
+      method: 'POST',
+      url,
+      payload: { homeName: 'home-pc', reason: 'disconnect' },
+    });
+    expect(installed.statusCode).toBe(200);
+    expect(installed.json()).toEqual({ warning: null });
+    expect(readFileSync(join(hooks, 'reference-transaction'), 'utf8')).toContain(
+      'This project is now on the PC',
+    );
+    expect(readFileSync(join(hooks, 'reference-transaction.devchain-saved'), 'utf8')).toContain(
+      'user-hook',
+    );
+
+    const pcGit = await app.inject({
+      method: 'POST',
+      url,
+      payload: { homeName: 'home-pc', reason: 'pc-git' },
+    });
+    expect(pcGit.statusCode).toBe(200);
+    expect(pcGit.json()).toEqual({ warning: null });
+    expect(readFileSync(join(hooks, 'reference-transaction'), 'utf8')).toContain(
+      'Git for this project is on the PC',
+    );
+
+    const removed = await app.inject({ method: 'DELETE', url });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toEqual({ removed: true, indexRefreshed: null, warning: null });
+    for (const name of ['reference-transaction', 'post-checkout']) {
+      expect(readFileSync(join(hooks, name), 'utf8')).toContain('user-hook');
+    }
+    const absent = await app.inject({ method: 'DELETE', url });
+    expect(absent.statusCode).toBe(200);
+    expect(absent.json()).toEqual({ removed: false, indexRefreshed: null, warning: null });
+    expect(readFileSync(index, 'utf8')).toBe('staged-index');
+    expect(git.refreshIndexFromHead).not.toHaveBeenCalled();
+    expect(await client.removeGitGuard('r1', projectId, { refreshIndex: true })).toEqual({
+      removed: false,
+      indexRefreshed: true,
+      warning: null,
+    });
+    git.refreshIndexFromHead.mockRejectedValueOnce(new Error('index locked'));
+    expect(await client.removeGitGuard('r1', projectId, { refreshIndex: true })).toEqual({
+      removed: false,
+      indexRefreshed: false,
+      warning: 'Git index rebuild failed: index locked',
+    });
+    expect(git.refreshIndexFromHead).toHaveBeenCalledWith(projectId, checkout);
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url,
+      payload: { homeName: 'home-pc', reason: 'disconnect', rootPath: join(root, 'other') },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(readFileSync(join(hooks, 'reference-transaction'), 'utf8')).toContain('user-hook');
+
+    rmSync(join(hooks, 'reference-transaction'));
+    mkdirSync(join(hooks, 'reference-transaction'));
+    const unreadable = await app.inject({ method: 'DELETE', url });
+    expect(unreadable.statusCode).toBe(500);
+    rmSync(join(hooks, 'reference-transaction'), { recursive: true });
+    writeFileSync(join(hooks, 'reference-transaction'), '#!/bin/sh\necho user-hook\n');
+
+    git.getConfigValue.mockResolvedValueOnce('/custom/hooks');
+    const skipped = await app.inject({
+      method: 'POST',
+      url,
+      payload: { homeName: 'home-pc', reason: 'cancelled-connect' },
+    });
+    expect(skipped.statusCode).toBe(200);
+    expect(skipped.json().warning).toContain('core.hooksPath');
+    expect(readFileSync(join(hooks, 'reference-transaction'), 'utf8')).toContain('user-hook');
+
+    delete projects[projectId];
+    for (const method of ['POST', 'DELETE'] as const) {
+      const missing = await app.inject({
+        method,
+        url,
+        ...(method === 'POST' ? { payload: { homeName: 'home-pc', reason: 'disconnect' } } : {}),
+      });
+      expect(missing.statusCode).toBe(404);
+    }
+    expect(recorded).toEqual([]);
+  });
+
+  // HTTP exercises the real controller and typed client; Git execution is the external boundary.
+  it('rebuilds the VM index only after HEAD moved and reports retryable rebuild failures', async () => {
+    const url = '/api/host/projects/p1/git-index';
+    expect(await client.refreshGitIndex('r1', 'p1', 'head1')).toEqual({
+      head: 'head1',
+      refreshed: false,
+      warning: null,
+    });
+    expect(git.refreshIndexFromHead).not.toHaveBeenCalled();
+    git.mirroredHead.mockResolvedValue('head2');
+    expect(await client.refreshGitIndex('r1', 'p1', 'head1')).toEqual({
+      head: 'head2',
+      refreshed: true,
+      warning: null,
+    });
+    expect(git.refreshIndexFromHead).toHaveBeenCalledTimes(1);
+    expect(git.refreshIndexFromHead).toHaveBeenCalledWith('p1', projects.p1.rootPath);
+    git.refreshIndexFromHead.mockRejectedValueOnce(new Error('index locked'));
+    expect(await client.refreshGitIndex('r1', 'p1', 'head1')).toEqual({
+      head: 'head2',
+      refreshed: false,
+      warning: 'VM Git index rebuild failed: index locked',
+    });
+    expect(await client.refreshGitIndex('r1', 'p1', 'head1')).toEqual({
+      head: 'head2',
+      refreshed: true,
+      warning: null,
+    });
+    git.mirroredHead.mockResolvedValue(null);
+    expect(await client.refreshGitIndex('r1', 'p1', 'head2')).toEqual({
+      head: null,
+      refreshed: false,
+      warning: null,
+    });
+    expect(git.refreshIndexFromHead).toHaveBeenCalledTimes(3);
+    expect((await app.inject({ method: 'POST', url, payload: { since: 7 } })).statusCode).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/host/projects/missing/git-index',
+          payload: { since: null },
+        })
+      ).statusCode,
+    ).toBe(404);
+  });
+
+  it('reads the VM folder configuration without changing its direction or pause state', async () => {
+    expect(await client.syncFolderConfiguration('r1', 'git:p1')).toEqual({
+      type: 'receiveonly',
+      paused: false,
+      devices: [{ deviceID: HOME_ID }],
+    });
+    expect(calls()).toEqual(['GET /rest/config/folders/git%3Ap1']);
+    expect(
+      (await app.inject({ method: 'GET', url: '/api/host/sync/folders/git:gone/configuration' }))
+        .statusCode,
+    ).toBe(404);
+  });
+
   it('discovers only real Git directories for initial sync and reads the installed layout thereafter', async () => {
     const sync = app.get(FileSyncService);
     mkdirSync(projects.gone.rootPath, { recursive: true });
@@ -152,6 +516,10 @@ describe('host sync routes', () => {
     writeFileSync(join(projects.gone.rootPath, '.git'), 'gitdir: /other/worktree');
     expect(await sync.initialFolders('gone')).toEqual([{ id: 'code:gone', kind: 'code' }]);
     mkdirSync(join(projects.repo.rootPath, '.git'), { recursive: true });
+    expect(await sync.initialFolders('repo')).toEqual([{ id: 'code:repo', kind: 'code' }]);
+    writeFileSync(join(projects.repo.rootPath, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    for (const folder of ['objects', 'refs'])
+      mkdirSync(join(projects.repo.rootPath, '.git', folder), { recursive: true });
     expect(await sync.initialFolders('repo')).toEqual([
       { id: 'code:repo', kind: 'code' },
       { id: 'git:repo', kind: 'git' },
@@ -297,19 +665,6 @@ describe('host sync routes', () => {
     ]);
   });
 
-  it('refuses transcript shares', async () => {
-    await expect(
-      client.syncFolders('r1', {
-        projectId: 'p1',
-        kind: 'transcript',
-        provider: 'claude',
-        type: 'sendreceive',
-        peerDeviceId: HOME_ID,
-        ignores: [],
-      } as never),
-    ).rejects.toThrow();
-  });
-
   it('sends fsWatcherDelayS with every folder PATCH', async () => {
     await client.syncFolderType('r1', 'code:p1', { type: 'sendonly' });
     await client.syncFolderType('r1', 'code:p1', { paused: true });
@@ -343,16 +698,129 @@ describe('host sync routes', () => {
       'GET /rest/db/status?folder=code%3Ap1',
       `GET /rest/db/completion?folder=code%3Ap1&device=${HOME_ID}`,
     ]);
+    const paused = await app.inject({
+      method: 'GET',
+      url: '/api/host/sync/status?folder=code%3Ap1',
+    });
+    expect(paused.statusCode).toBe(200);
+    expect(await client.syncFolderExists('r1', 'code:p1')).toBe(true);
+    const missing = await app.inject({
+      method: 'GET',
+      url: '/api/host/sync/status?folder=code%3Agone',
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(await client.syncFolderExists('r1', 'code:gone')).toBe(false);
+    const broken = await app.inject({
+      method: 'GET',
+      url: '/api/host/sync/status?folder=code%3Abroken',
+    });
+    expect(broken.statusCode).toBe(502);
+    await expect(client.syncFolderExists('r1', 'code:broken')).rejects.toMatchObject({
+      status: 502,
+    });
   });
 
-  it('scans, reverts and stops sharing a folder; stopping an unknown folder succeeds', async () => {
+  it('returns every error through errors=all while ordinary status retains its sample', async () => {
+    fileErrors = Array.from({ length: 5 }, (_, index) => ({
+      path: `logs/${index}`,
+      error: 'permission denied',
+    }));
+    const sample = await app.inject({
+      method: 'GET',
+      url: '/api/host/sync/status?folder=code%3Ap1',
+    });
+    expect(sample.statusCode).toBe(200);
+    expect(sample.json().fileErrors).toEqual(fileErrors.slice(0, 3));
+    const full = await app.inject({
+      method: 'GET',
+      url: '/api/host/sync/status?folder=code%3Ap1&errors=all',
+    });
+    expect(full.statusCode).toBe(200);
+    expect(full.json().fileErrors).toEqual(fileErrors);
+    expect(
+      (await client.syncStatus('r1', 'code:p1', undefined, { allErrors: true })).fileErrors,
+    ).toEqual(fileErrors);
+    expect(calls()).toContain('GET /rest/folder/errors?folder=code%3Ap1');
+  });
+
+  it('reports every remote-needed file/deletion across pages, with a capped sample and strict route query', async () => {
+    remoteNeedFiles = [
+      { name: 'directory', deleted: false, type: 'FILE_INFO_TYPE_DIRECTORY' },
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        name: index >= 999 ? `file-${index}.sync-conflict-old.txt` : `file-${index}.txt`,
+        deleted: index % 10 === 0,
+        type: 'FILE_INFO_TYPE_FILE',
+      })),
+      { name: 'old-directory', deleted: true, type: 'FILE_INFO_TYPE_DIRECTORY' },
+    ];
+    const url = `/api/host/sync/folders/code%3Ap1/remote-need?device=${HOME_ID}`;
+    const answer = await app.inject({ method: 'GET', url });
+    expect(answer.statusCode).toBe(200);
+    const report = answer.json();
+    expect(report).toMatchObject({ total: 1001, deleted: 101 });
+    expect(report.sample).toHaveLength(20);
+    expect(report.sample[0]).toEqual({ path: 'file-0.txt', deleted: true });
+    expect(report.conflictPaths).toEqual([
+      'file-999.sync-conflict-old.txt',
+      'file-1000.sync-conflict-old.txt',
+    ]);
+    expect(report.conflictsOverCap).toBe(false);
+    expect(calls()).toEqual(
+      [1, 2].map(
+        (page) =>
+          `GET /rest/db/remoteneed?folder=code%3Ap1&device=${HOME_ID}&page=${page}&perpage=1000`,
+      ),
+    );
+    await expect(client.syncRemoteNeed('r1', 'code:p1', HOME_ID)).resolves.toEqual(report);
+    for (const invalid of [
+      url.replace(HOME_ID, 'bad-device'),
+      `${url}&extra=1`,
+      '/api/host/sync/folders/code%3Ap1/remote-need',
+    ]) {
+      expect((await app.inject({ method: 'GET', url: invalid })).statusCode).toBe(400);
+    }
+    expect((await app.inject({ method: 'GET', url: url.replace('p1', 'broken') })).statusCode).toBe(
+      502,
+    );
+    remoteNeedFiles = Array.from({ length: 1000 }, (_, index) => ({
+      name: `${index}.sync-conflict-old.txt`,
+      deleted: false,
+      type: 'FILE_INFO_TYPE_FILE',
+    }));
+    const atCap = (await app.inject({ method: 'GET', url })).json();
+    expect(atCap.conflictsOverCap).toBe(false);
+    expect(atCap.conflictPaths).toHaveLength(1000);
+    remoteNeedFiles.push({
+      name: 'overflow.sync-conflict-old.txt',
+      deleted: false,
+      type: 'FILE_INFO_TYPE_FILE',
+    });
+    const overCap = (await app.inject({ method: 'GET', url })).json();
+    expect(overCap).toMatchObject({ total: 1001, conflictPaths: [], conflictsOverCap: true });
+  });
+
+  it('scans, overrides, lists receive-only changes, reverts and stops sharing a folder', async () => {
     await client.syncScan('r1', 'code:p1');
+    const overridden = await app.inject({
+      method: 'POST',
+      url: '/api/host/sync/folders/code%3Ap1/override',
+    });
+    expect(overridden.statusCode).toBe(204);
+    await client.syncOverride('r1', 'git:p1');
+    expect(await client.syncLocalChanges('r1', 'code:p1')).toEqual({
+      count: 1,
+      sample: ['edited.txt'],
+    });
     await client.syncRevert('r1', 'code:p1');
     await client.syncRemoveFolder('r1', 'code:p1');
     await client.syncRemoveFolder('r1', 'code:gone');
 
     expect(calls()).toEqual([
       'POST /rest/db/scan?folder=code%3Ap1',
+      'POST /rest/db/override?folder=code%3Ap1',
+      'POST /rest/db/override?folder=git%3Ap1',
+      'GET /rest/db/status?folder=code%3Ap1',
+      'GET /rest/db/localchanged?folder=code%3Ap1&page=1&perpage=200',
       'POST /rest/db/revert?folder=code%3Ap1',
       'DELETE /rest/config/folders/code%3Ap1',
       'DELETE /rest/config/folders/code%3Agone',
@@ -401,11 +869,6 @@ describe('host sync routes', () => {
 
   it.each([
     ['a HOME-rooted code folder', { projectId: 'home', kind: 'code' }],
-    [
-      'a provider without file transcripts',
-      { projectId: 'p1', kind: 'transcript', provider: 'opencode' },
-    ],
-    ['a transcript folder without a provider', { projectId: 'p1', kind: 'transcript' }],
     ['an invalid peer device id', { projectId: 'p1', kind: 'code', peerDeviceId: 'nope' }],
   ])('rejects %s with 400 before touching Syncthing', async (_case, fields) => {
     const error: unknown = await client
@@ -436,25 +899,24 @@ describe('host sync routes', () => {
     }
   });
 
-  it('keeps per-project ignore patterns, defaulting to the build directories', async () => {
+  it('reads desired ignores but no longer accepts the store-only PUT', async () => {
     const baseUrl = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;
     const url = `${baseUrl}/api/file-sync/projects/p1/ignores`;
-    const put = (ignores: string[] | null) =>
-      fetch(url, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ignores }),
-      }).then((r) => r.json());
 
     await expect(fetch(url).then((r) => r.json())).resolves.toEqual({
       ignores: [...DEFAULT_FILE_SYNC_IGNORES],
+      revision: 0,
     });
-    await expect(put(['(?d)vendor', '*.log'])).resolves.toEqual({
-      ignores: ['(?d)vendor', '*.log'],
+    const removed = await fetch(url, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ignores: [] }),
     });
+    expect(removed.status).toBe(404);
+    app.get(FileSyncService).setIgnores('p1', ['(?d)vendor', '*.log']);
     await expect(fetch(url).then((r) => r.json())).resolves.toEqual({
       ignores: ['(?d)vendor', '*.log'],
+      revision: 1,
     });
-    await expect(put(null)).resolves.toEqual({ ignores: [...DEFAULT_FILE_SYNC_IGNORES] });
   });
 });

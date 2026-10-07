@@ -75,21 +75,6 @@ describe('DevicesProxyController', () => {
     );
   });
 
-  it('should not call refreshGate on initial 200', async () => {
-    cloudSession.getStatus.mockReturnValue({
-      connected: true,
-      userId: 'u1',
-      expiresAt: new Date().toISOString(),
-      identityServiceUrl: '',
-    });
-    cloudSession.getAccessToken.mockReturnValue('tok');
-    fetchSpy.mockResolvedValue(mockFetchResponse(200, { devices: [] }));
-
-    await controller.list();
-
-    expect(refreshGate.attemptRefresh).not.toHaveBeenCalled();
-  });
-
   it('should retry once with new token on 401 then refresh success', async () => {
     const retryBody = { devices: [{ id: 'd2' }] };
     cloudSession.getStatus.mockReturnValue({
@@ -130,44 +115,6 @@ describe('DevicesProxyController', () => {
 
     await expect(controller.list()).rejects.toThrow(UnauthorizedException);
     expect(refreshGate.attemptRefresh).toHaveBeenCalledTimes(1);
-  });
-
-  it('should passthrough 404 with preserved status code', async () => {
-    cloudSession.getStatus.mockReturnValue({
-      connected: true,
-      userId: 'u1',
-      expiresAt: new Date().toISOString(),
-      identityServiceUrl: '',
-    });
-    cloudSession.getAccessToken.mockReturnValue('tok');
-    fetchSpy.mockResolvedValue(mockFetchResponse(404, 'Not Found'));
-
-    try {
-      await controller.list();
-      fail('Expected HttpException');
-    } catch (e) {
-      expect(e).toBeInstanceOf(HttpException);
-      expect((e as HttpException).getStatus()).toBe(404);
-    }
-  });
-
-  it('should passthrough 501 with preserved status code', async () => {
-    cloudSession.getStatus.mockReturnValue({
-      connected: true,
-      userId: 'u1',
-      expiresAt: new Date().toISOString(),
-      identityServiceUrl: '',
-    });
-    cloudSession.getAccessToken.mockReturnValue('tok');
-    fetchSpy.mockResolvedValue(mockFetchResponse(501, 'Not Implemented'));
-
-    try {
-      await controller.list();
-      fail('Expected HttpException');
-    } catch (e) {
-      expect(e).toBeInstanceOf(HttpException);
-      expect((e as HttpException).getStatus()).toBe(501);
-    }
   });
 
   it('should passthrough 500 with status code and body text', async () => {

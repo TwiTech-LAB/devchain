@@ -20,28 +20,16 @@ describe('useQuietHours', () => {
     fetchSpy.mockRestore();
   });
 
-  it('returns fetched quiet hours', async () => {
-    const qh = { enabled: true, startMinutes: 1320, endMinutes: 420, timezone: 'America/New_York' };
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ quietHours: qh }),
-    } as Response);
-
+  it.each([
+    {
+      label: 'configured hours',
+      qh: { enabled: true, startMinutes: 1320, endMinutes: 420, timezone: 'America/New_York' },
+    },
+    { label: 'no hours', qh: null },
+  ] as const)('returns $label', async ({ qh }) => {
+    fetchSpy.mockResolvedValue({ ok: true, json: async () => ({ quietHours: qh }) } as Response);
     const { result } = renderHook(() => useQuietHours(), { wrapper: makeWrapper() });
-
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.quietHours).toEqual(qh);
-  });
-
-  it('returns null when server returns null quietHours', async () => {
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      json: async () => ({ quietHours: null }),
-    } as Response);
-
-    const { result } = renderHook(() => useQuietHours(), { wrapper: makeWrapper() });
-
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.quietHours).toBeNull();
   });
 });

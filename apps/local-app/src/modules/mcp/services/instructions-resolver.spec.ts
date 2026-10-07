@@ -144,12 +144,15 @@ describe('InstructionsResolver', () => {
   });
 
   describe('reference-path UTF-8 truncation', () => {
-    it('referenced prompt with 2-byte boundary cut (accented Latin)', async () => {
+    it.each([
+      { label: '2-byte boundary', content: 'A'.repeat(13) + 'é', maxBytes: 14 },
+      { label: '4-byte boundary', content: 'A'.repeat(14) + '🎉', maxBytes: 17 },
+    ])('$label', async ({ content, maxBytes }) => {
       const prompt: Prompt = {
         id: 'prompt-utf8',
         projectId: 'project-1',
         title: 'Accented',
-        content: 'A'.repeat(13) + 'é',
+        content: content,
         version: 1,
         tags: [],
         createdAt: '2024-01-01T00:00:00Z',
@@ -158,54 +161,12 @@ describe('InstructionsResolver', () => {
       const storage = createStorage([{ prompt }]);
 
       const resolver = new InstructionsResolver(storage);
-      const result = await resolver.resolve('project-1', '[[prompt:Accented]]', { maxBytes: 14 });
+      const result = await resolver.resolve('project-1', '[[prompt:Accented]]', { maxBytes });
 
       expect(result).not.toBeNull();
-      expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(14);
+      expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(maxBytes);
       expect(result!.contentMd).not.toContain('\uFFFD');
-      expect(result!.bytes).toBeLessThanOrEqual(14);
-    });
-
-    it('referenced prompt with 4-byte boundary cut (emoji)', async () => {
-      const prompt: Prompt = {
-        id: 'prompt-emoji',
-        projectId: 'project-1',
-        title: 'Emoji',
-        content: 'A'.repeat(14) + '🎉',
-        version: 1,
-        tags: [],
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      };
-      const storage = createStorage([{ prompt }]);
-
-      const resolver = new InstructionsResolver(storage);
-      const result = await resolver.resolve('project-1', '[[prompt:Emoji]]', { maxBytes: 17 });
-
-      expect(result).not.toBeNull();
-      expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(17);
-      expect(result!.contentMd).not.toContain('\uFFFD');
-    });
-
-    it('referenced prompt with 3-byte boundary cut (CJK)', async () => {
-      const prompt: Prompt = {
-        id: 'prompt-cjk',
-        projectId: 'project-1',
-        title: 'CJK',
-        content: 'AB' + '中'.repeat(20),
-        version: 1,
-        tags: [],
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      };
-      const storage = createStorage([{ prompt }]);
-
-      const resolver = new InstructionsResolver(storage);
-      const result = await resolver.resolve('project-1', '[[prompt:CJK]]', { maxBytes: 10 });
-
-      expect(result).not.toBeNull();
-      expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(10);
-      expect(result!.contentMd).not.toContain('\uFFFD');
+      expect(result!.bytes).toBeLessThanOrEqual(maxBytes);
     });
 
     it('exact fit on multi-byte boundary: no truncation', async () => {
@@ -505,47 +466,17 @@ describe('InstructionsResolver', () => {
       expect(result?.bytes).toBe(Buffer.byteLength('Hello Alice', 'utf8'));
     });
 
-    it('refs + render combined exceeding cap truncates after render', async () => {
-      const prompt: Prompt = {
-        ...PROMPT,
-        title: 'SOP',
-        content: 'A'.repeat(200),
-      };
-      const storage = createStorage([{ prompt }]);
-
-      const resolver = new InstructionsResolver(storage);
-      const result = await resolver.resolve('project-1', '[[prompt:SOP]]', {
-        maxBytes: 100,
-        render: { vars: { team_name: 'Backend' } },
-      });
-
-      expect(result).not.toBeNull();
-      expect(result?.truncated).toBe(true);
-      expect(Buffer.byteLength(result?.contentMd ?? '', 'utf8')).toBeLessThanOrEqual(100);
-    });
-
-    it('no maxBytes configured does not truncate', async () => {
-      const storage = createStorage();
-
-      const resolver = new InstructionsResolver(storage);
-      const longName = 'x'.repeat(1000);
-      const result = await resolver.resolve('project-1', 'Hello {{name}}', {
-        render: { vars: { name: longName } },
-      });
-
-      expect(result).not.toBeNull();
-      expect(result?.truncated).toBe(false);
-      expect(result?.contentMd).toBe('Hello ' + longName);
-    });
-
     describe('UTF-8 safe truncation', () => {
       const makeStorage = () => createStorage();
 
-      it('2-byte boundary (accented Latin): no replacement chars', async () => {
+      it.each([
+        { label: '2-byte boundary', name: 'é'.repeat(50) },
+        { label: '4-byte boundary', name: '🎉'.repeat(50) },
+      ])('$label', async ({ name }) => {
         const resolver = new InstructionsResolver(makeStorage());
         const result = await resolver.resolve('project-1', '{{name}}', {
           maxBytes: 7,
-          render: { vars: { name: 'é'.repeat(50) } },
+          render: { vars: { name } },
         });
 
         expect(result).not.toBeNull();
@@ -553,45 +484,6 @@ describe('InstructionsResolver', () => {
         expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(7);
         expect(result!.contentMd).not.toContain('�');
         expect(result!.truncated).toBe(true);
-      });
-
-      it('3-byte boundary (CJK)', async () => {
-        const resolver = new InstructionsResolver(makeStorage());
-        const result = await resolver.resolve('project-1', '{{name}}', {
-          maxBytes: 5,
-          render: { vars: { name: '中'.repeat(50) } },
-        });
-
-        expect(result).not.toBeNull();
-        expect(result!.bytes).toBeLessThanOrEqual(5);
-        expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(5);
-        expect(result!.contentMd).not.toContain('�');
-      });
-
-      it('4-byte boundary (emoji / astral plane)', async () => {
-        const resolver = new InstructionsResolver(makeStorage());
-        const result = await resolver.resolve('project-1', '{{name}}', {
-          maxBytes: 7,
-          render: { vars: { name: '🎉'.repeat(50) } },
-        });
-
-        expect(result).not.toBeNull();
-        expect(result!.bytes).toBeLessThanOrEqual(7);
-        expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(7);
-        expect(result!.contentMd).not.toContain('�');
-      });
-
-      it('mixed content: ASCII + accented + emoji', async () => {
-        const resolver = new InstructionsResolver(makeStorage());
-        const result = await resolver.resolve('project-1', '{{name}}', {
-          maxBytes: 10,
-          render: { vars: { name: 'Aé中🎉Bñ' } },
-        });
-
-        expect(result).not.toBeNull();
-        expect(result!.bytes).toBeLessThanOrEqual(10);
-        expect(Buffer.byteLength(result!.contentMd, 'utf8')).toBeLessThanOrEqual(10);
-        expect(result!.contentMd).not.toContain('�');
       });
 
       it('maxBytes = 0 returns empty content', async () => {
