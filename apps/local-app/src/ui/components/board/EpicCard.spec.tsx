@@ -64,6 +64,7 @@ beforeEach(() => {
 });
 
 const status: Status = {
+  mcpHidden: false,
   id: 'todo',
   projectId: 'project-1',
   label: 'Todo',

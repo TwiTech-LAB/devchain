@@ -2,7 +2,7 @@ import { MobileBoardRpcService } from './mobile-board-rpc.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { EpicsService } from '../../epics/services/epics.service';
 import type { Epic } from '../../storage/models/domain.models';
-import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import type { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { NotFoundError } from '../../../common/errors/error-types';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
@@ -38,7 +38,7 @@ function build(
   overrides: {
     storage?: Partial<StorageService>;
     epicsService?: Partial<EpicsService>;
-    admission?: Partial<ProjectWriteAdmissionService>;
+    admission?: Partial<ProjectWriteGate>;
   } = {},
 ) {
   const storage = {
@@ -65,7 +65,7 @@ function build(
     listRemoteOwnedProjectIds: () => [],
     getRemoteOwner: () => null,
     ...overrides.admission,
-  } as unknown as ProjectWriteAdmissionService;
+  } as unknown as ProjectWriteGate;
 
   const service = new MobileBoardRpcService(storage, epicsService, admission);
   return { service, storage, epicsService };
@@ -223,7 +223,7 @@ describe('MobileBoardRpcService', () => {
   // the live project on the host instance. Service unit tests prove the
   // not-found answer and that no mirror read or write happens.
   describe('remote-owned projects', () => {
-    const remoteOwned = (): Partial<ProjectWriteAdmissionService> => ({
+    const remoteOwned = (): Partial<ProjectWriteGate> => ({
       listRemoteOwnedProjectIds: () => [OTHER_PROJECT_ID],
       getRemoteOwner: (projectId: string) =>
         projectId === OTHER_PROJECT_ID

@@ -15,7 +15,16 @@
 import { ExportSchema } from '@devchain/shared';
 import type { PromptTransferCounts, PromptTransferPolicy } from '../../../common/prompt-transfer';
 import type { SettingsService } from '../../settings/services/settings.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type {
+  StorageService,
+  AgentProfileStorage,
+  AgentStorage,
+  ProfileProviderConfigStorage,
+  PromptStorage,
+  ScheduledEpicStorage,
+  StatusStorage,
+  SubscriberStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { SnapshotPromptWriter } from '../../storage/interfaces/snapshot-prompt-writer.interface';
 import type { WatchersService } from '../../watchers/services/watchers.service';
 import type { TeamOverrideEntry } from '../helpers/team-overrides.helpers';
@@ -60,7 +69,22 @@ export interface CodecDeclaration {
 /** Ambient runtime a codec needs to apply a section (not part of the ordering graph). */
 export interface CodecApplyRuntime {
   readonly projectId: string;
-  readonly storage: StorageService;
+  readonly storage: AgentProfileStorage &
+    AgentStorage &
+    ProfileProviderConfigStorage &
+    PromptStorage &
+    ScheduledEpicStorage &
+    StatusStorage &
+    SubscriberStorage &
+    Pick<
+      StorageService,
+      | 'bulkCreateProviderEfforts'
+      | 'bulkCreateProviderModels'
+      | 'listEpics'
+      | 'listProviders'
+      | 'updateEpicsStatus'
+      | 'updateProvider'
+    >;
   /** Closed internal policy; request DTOs never expose this field. */
   readonly promptTransferPolicy?: PromptTransferPolicy;
   /** Recovery-only write capability; absent from public/direct storage. */
@@ -140,7 +164,8 @@ export interface CodecApplyResult {
  * already-loaded export state slices plus storage; each codec reads only what it needs.
  */
 export interface ExportBuildContext {
-  readonly storage: StorageService;
+  readonly storage: PromptStorage &
+    Pick<StorageService, 'listProviderEffortsByProviderIds' | 'listProviderModelsByProviderIds'>;
   readonly promptsRes: { items: ReadonlyArray<{ id: string }> };
   readonly statusesRes: {
     items: ReadonlyArray<{

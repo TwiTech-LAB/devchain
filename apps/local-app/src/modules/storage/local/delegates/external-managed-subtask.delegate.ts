@@ -1,3 +1,4 @@
+import type { IntegrationStorage } from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import {
@@ -22,12 +23,29 @@ import type {
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
-export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
+export class ExternalManagedSubtaskStorageDelegate
+  extends BaseStorageDelegate
+  implements
+    Pick<
+      IntegrationStorage,
+      | 'createExternalManagedSubtaskLink'
+      | 'getExternalManagedSubtaskLink'
+      | 'listExternalManagedSubtaskLinksByProvider'
+      | 'listExternalManagedSubtaskLinksByConnection'
+      | 'listExternalManagedSubtaskLinksForEpicSnapshot'
+      | 'updateExternalManagedSubtaskLink'
+      | 'findRecognizedManagedSubtask'
+      | 'confirmExternalManagedSubtaskLink'
+      | 'removeExternalManagedSubtaskLink'
+    >
+{
   constructor(context: StorageDelegateContext) {
     super(context);
   }
 
-  async create(data: CreateExternalManagedSubtaskLink): Promise<ExternalManagedSubtaskLink> {
+  async createExternalManagedSubtaskLink(
+    data: CreateExternalManagedSubtaskLink,
+  ): Promise<ExternalManagedSubtaskLink> {
     return this.txRunner.runImmediateQueued(() => {
       const normalized = this.validateCreateSync(data);
       const now = new Date().toISOString();
@@ -61,11 +79,13 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  async get(id: string): Promise<ExternalManagedSubtaskLink> {
+  async getExternalManagedSubtaskLink(id: string): Promise<ExternalManagedSubtaskLink> {
     return this.getSync(id);
   }
 
-  async listByProvider(provider: IntegrationProvider): Promise<ExternalManagedSubtaskLink[]> {
+  async listExternalManagedSubtaskLinksByProvider(
+    provider: IntegrationProvider,
+  ): Promise<ExternalManagedSubtaskLink[]> {
     return this.db
       .select()
       .from(externalManagedSubtaskLinks)
@@ -76,7 +96,9 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
       ) as Promise<ExternalManagedSubtaskLink[]>;
   }
 
-  async listByConnection(connectionId: string): Promise<ExternalManagedSubtaskLink[]> {
+  async listExternalManagedSubtaskLinksByConnection(
+    connectionId: string,
+  ): Promise<ExternalManagedSubtaskLink[]> {
     return this.db
       .select()
       .from(externalManagedSubtaskLinks)
@@ -87,7 +109,9 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
       ) as Promise<ExternalManagedSubtaskLink[]>;
   }
 
-  async listForEpicSnapshot(epicIdSnapshot: string): Promise<ExternalManagedSubtaskLink[]> {
+  async listExternalManagedSubtaskLinksForEpicSnapshot(
+    epicIdSnapshot: string,
+  ): Promise<ExternalManagedSubtaskLink[]> {
     return this.db
       .select()
       .from(externalManagedSubtaskLinks)
@@ -98,7 +122,7 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
       ) as Promise<ExternalManagedSubtaskLink[]>;
   }
 
-  async update(
+  async updateExternalManagedSubtaskLink(
     id: string,
     data: UpdateExternalManagedSubtaskLink,
   ): Promise<ExternalManagedSubtaskLink> {
@@ -114,7 +138,7 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  async findRecognition(
+  async findRecognizedManagedSubtask(
     epicId: string,
     provider: IntegrationProvider,
     remoteScopeKey: string,
@@ -148,7 +172,7 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
     return (row?.managed as ExternalManagedSubtaskLink | undefined) ?? null;
   }
 
-  async confirm(
+  async confirmExternalManagedSubtaskLink(
     data: ConfirmExternalManagedSubtaskLink,
   ): Promise<ConfirmExternalManagedSubtaskLinkResult> {
     return this.txRunner.runImmediateQueued(() => {
@@ -252,7 +276,7 @@ export class ExternalManagedSubtaskStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  async remove(id: string): Promise<boolean> {
+  async removeExternalManagedSubtaskLink(id: string): Promise<boolean> {
     return this.txRunner.runImmediateQueued(() => {
       const managed = this.db
         .select()

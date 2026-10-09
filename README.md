@@ -45,7 +45,7 @@ DevChain opens in your browser:
 2. Import the `teams-dev` template: a Planning team (Brainstormer and Architects), a Builders team (Epic Manager and Coders), and a Code Reviewer.
 3. Start the Brainstormer and describe what you want to build.
 
-`devchain start --help` lists the port, host, and foreground options. `devchain stop` stops the server. CI tests DevChain on Linux x64 with Node 24, plus a Node 26 compatibility lane. The install checks that SQLite loads on your platform and stops if it does not; `DEVCHAIN_SKIP_POSTINSTALL=1` skips that check.
+`devchain start --help` lists the port, host, and foreground options. `devchain stop` stops the server. The install checks that SQLite loads on your platform and stops if it does not; `DEVCHAIN_SKIP_POSTINSTALL=1` skips that check.
 
 ## Remote VMs
 
@@ -92,7 +92,7 @@ The Local App serves the web UI and keeps all state in a local SQLite database. 
 
 ## Mobile app
 
-Follow and steer your agent teams from your phone. The app is in open beta on [iOS (TestFlight)](https://testflight.apple.com/join/VSbfE1c6) and [Android (Play Store)](https://play.google.com/apps/testing/com.twitech.devchain.mobile).
+Follow and steer your agent teams from your phone. Get it on the [App Store](https://apps.apple.com/app/devchain/id6778791584) for iPhone or on [Google Play](https://play.google.com/store/apps/details?id=com.twitech.devchain.mobile) for Android.
 
 Chat with agents, answer their questions as they ask, reassign epics, comment on the board, watch a live terminal, and get a push notification when a session stops or needs you. Review and merge stay on the web. Everything between your PC and your phone is end-to-end encrypted.
 

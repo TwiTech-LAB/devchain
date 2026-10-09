@@ -20,12 +20,8 @@ import {
 } from '@/ui/components/ui/select';
 import { BusyStatus } from '@/ui/components/ui/spinner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
-import {
-  useOpencodeLogins,
-  useProviderAuth,
-  type ImportResult,
-  type OpencodeLoginItem,
-} from '@/ui/hooks/useProviderAuth';
+import { useOpencodeLogins, useProviderAuth } from '@/ui/hooks/useProviderAuth';
+import type { ImportResult, OpencodeLoginItem } from './lib/remote-vm-contracts';
 import { GenerateLoginDialog } from './GenerateLoginDialog';
 import { PROVIDER_NAMES } from './login-choices';
 

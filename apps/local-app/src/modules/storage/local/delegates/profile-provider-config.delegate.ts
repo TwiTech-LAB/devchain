@@ -1,3 +1,8 @@
+import type {
+  CreateIfMissingInput,
+  CreateIfMissingResult,
+  ProfileProviderConfigStorage,
+} from '../../interfaces/storage.interface';
 import {
   type CreateProfileProviderConfig,
   type ProfileProviderConfig,
@@ -8,23 +13,16 @@ import { createLogger } from '../../../../common/logging/logger';
 import { isSqliteUniqueConstraint, parseProviderConfigEnv } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
-export type CreateIfMissingResult = {
-  inserted: boolean;
-  reason?:
-    | 'name_exists_same_provider'
-    | 'name_exists_other_provider'
-    | 'position_conflict'
-    | 'unknown_constraint';
-  existingRow?: ProfileProviderConfig;
-};
-
 const logger = createLogger('ProfileProviderConfigStorageDelegate');
 
 export interface ProfileProviderConfigStorageDelegateDependencies {
   getProfileProviderConfig: (id: string) => Promise<ProfileProviderConfig>;
 }
 
-export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
+export class ProfileProviderConfigStorageDelegate
+  extends BaseStorageDelegate
+  implements ProfileProviderConfigStorage
+{
   constructor(
     context: StorageDelegateContext,
     private readonly dependencies: ProfileProviderConfigStorageDelegateDependencies,
@@ -87,16 +85,7 @@ export class ProfileProviderConfigStorageDelegate extends BaseStorageDelegate {
     return config;
   }
 
-  async createIfMissing(input: {
-    profileId: string;
-    providerId: string;
-    name: string;
-    description?: string | null;
-    options?: string | null;
-    env?: Record<string, string>;
-    model?: string | null;
-    effort?: string | null;
-  }): Promise<CreateIfMissingResult> {
+  async createIfMissing(input: CreateIfMissingInput): Promise<CreateIfMissingResult> {
     const { randomUUID } = await import('crypto');
     const { profileProviderConfigs } = await import('../../db/schema');
     const { eq, and, sql } = await import('drizzle-orm');

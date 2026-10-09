@@ -1,5 +1,9 @@
+import type {
+  AgentProfileStorage,
+  ListResult,
+  ProfileListOptions,
+} from '../../interfaces/storage.interface';
 import type { SQL } from 'drizzle-orm';
-import type { ListResult, ProfileListOptions } from '../../interfaces/storage.interface';
 import type {
   AgentProfile,
   CreateAgentProfile,
@@ -13,7 +17,10 @@ export interface AgentProfileStorageDelegateDependencies {
   listAgentProfiles: (options?: ProfileListOptions) => Promise<ListResult<AgentProfile>>;
 }
 
-export class AgentProfileStorageDelegate extends BaseStorageDelegate {
+export class AgentProfileStorageDelegate
+  extends BaseStorageDelegate
+  implements AgentProfileStorage
+{
   constructor(
     context: StorageDelegateContext,
     private readonly dependencies: AgentProfileStorageDelegateDependencies,

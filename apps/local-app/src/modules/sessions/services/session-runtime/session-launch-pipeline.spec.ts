@@ -50,6 +50,11 @@ import {
 } from './__test-utils__/pipeline-harness';
 import { isProjectProvisioningCapable } from '../../../providers/adapters/capabilities';
 import type { SessionDetailDto } from '../../dtos/sessions.dto';
+import { createHash } from 'crypto';
+import { mkdtemp, mkdir, rm, stat, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
 
 const mockIsProjectProvisioningCapable = isProjectProvisioningCapable as unknown as jest.Mock;
 
@@ -85,6 +90,53 @@ describe('SessionLaunchPipeline', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  // Pipeline coverage keeps artifact orchestration and Claude filesystem cleanup real to catch orphan leaks.
+  it('releases orphaned Claude files and launches successfully when Codex cleanup fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'devchain-orphan-cleanup-'));
+    try {
+      const orphanId = 'orphaned-session';
+      const key = createHash('sha256').update(orphanId, 'utf8').digest('hex');
+      const locatorPath = join(root, 'sessions', `${key}.json`);
+      const counterPath = join(root, 'sessions', `${key}.sequence`);
+      const lockPath = join(root, 'sessions', `${key}.lock`);
+      await mkdir(lockPath, { recursive: true });
+      await writeFile(locatorPath, '{}');
+      await writeFile(counterPath, '1');
+      const claudeOwner = new ClaudeLaunchSettingsMaterializerService(root);
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      const stopOrphan = jest.fn();
+      mocks.sqliteMock.prepare.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT') && sql.includes("status = 'running'")) {
+          return {
+            all: jest
+              .fn()
+              .mockReturnValue([{ id: orphanId, tmux_session_id: 'dead-tmux', status: 'running' }]),
+          };
+        }
+        if (sql.includes("SET status = 'stopped'")) return { run: stopOrphan };
+        return { run: jest.fn(), get: jest.fn(), all: jest.fn().mockReturnValue([]) };
+      });
+      mocks.claudeLaunchSettings.cleanupSessionSync.mockImplementation((sessionId: string) => {
+        claudeOwner.cleanupSessionSync(sessionId);
+      });
+      mocks.codexPluginProfiles.cleanupSession.mockRejectedValue(new Error('cleanup failed'));
+
+      const launched = await runWithTimers<SessionDetailDto>(() => pipeline.launch(launchDto));
+
+      expect(launched.status).toBe('running');
+      expect(stopOrphan).toHaveBeenCalledWith(expect.any(String), expect.any(String), orphanId);
+      for (const path of [locatorPath, counterPath, lockPath]) {
+        await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        { sessionId: orphanId, errorCode: 'CODEX_PROFILE_CLEANUP_FAILED' },
+        'Failed to clean Codex profile lifecycle after session termination',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   // Scenario 1: Happy path

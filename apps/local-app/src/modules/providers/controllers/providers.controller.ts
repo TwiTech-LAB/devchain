@@ -71,7 +71,15 @@ const EnsureMcpSchema = z.object({
 @Controller('api/providers')
 export class ProvidersController {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: Pick<
+      StorageService,
+      | 'createProvider'
+      | 'getProvider'
+      | 'listEnvScopesByProviderIds'
+      | 'listProviders'
+      | 'updateProviderMcpMetadata'
+    >,
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly adapterFactory: ProviderAdapterFactory,
     private readonly mcpEnsureService: ProviderMcpEnsureService,

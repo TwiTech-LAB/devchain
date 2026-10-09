@@ -5,11 +5,11 @@ import {
   ValidationError,
 } from '../../../common/errors/error-types';
 import type { EventsService } from '../../events/services/events.service';
-import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import type { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import {
-  createProjectWriteAdmissionStub,
-  type ProjectWriteAdmissionStub,
-} from '../../remotes/admission/testing/project-write-admission.stub';
+  createProjectWriteGateStub,
+  type ProjectWriteGateStub,
+} from '../../storage/write-gate/testing/project-write-gate.stub';
 import type { EpicTimeStore, EpicTimeSummarySegment } from './epic-time.store';
 import { EpicTimeService } from './epic-time.service';
 
@@ -33,7 +33,7 @@ describe('EpicTimeService', () => {
     >
   >;
   let events: { publish: jest.Mock };
-  let admission: ProjectWriteAdmissionStub;
+  let admission: ProjectWriteGateStub;
   let service: EpicTimeService;
 
   beforeEach(() => {
@@ -48,11 +48,11 @@ describe('EpicTimeService', () => {
       resetAgentTimeBuffer: jest.fn(),
     };
     events = { publish: jest.fn().mockResolvedValue(null) };
-    admission = createProjectWriteAdmissionStub();
+    admission = createProjectWriteGateStub();
     service = new EpicTimeService(
       store as unknown as EpicTimeStore,
       events as unknown as EventsService,
-      admission as unknown as ProjectWriteAdmissionService,
+      admission as unknown as ProjectWriteGate,
     );
   });
 

@@ -1,4 +1,4 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Optional } from '@nestjs/common';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 import { MobileChatRpcService } from './mobile-chat-rpc.service';
@@ -26,9 +26,18 @@ import {
   MobileRpcWorkspaceAccessService,
   type MobileRpcWorkspaceAuthorization,
 } from './mobile-rpc-workspace-access.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { CloudSessionManagerService } from '../../cloud/services/cloud-session-manager.service';
+import { E2eeDeviceStoreService } from '../../e2ee/services/e2ee-device-store.service';
+import { E2eePairingService } from '../../e2ee/services/e2ee-pairing.service';
+import {
+  REALTIME_BROADCASTER,
+  type RealtimeBroadcaster,
+} from '../../realtime/ports/realtime-broadcaster.port';
 
 const logger = createLogger('TunnelHandler');
+
+export const E2EE_REQUIRE_SIGNED_ENROLLMENT_POLICY = 'E2EE_REQUIRE_SIGNED_ENROLLMENT_POLICY';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -83,8 +92,15 @@ export class TunnelHandlerService {
     // is NEVER injected here — the facade is the only terminal surface CloudTunnel touches.
     private readonly terminalKeyInput: TerminalKeyInputFacade,
     private readonly activeSessions: ActiveSessionLookup,
+    private readonly cloudSession: CloudSessionManagerService,
+    private readonly e2eeDevices: E2eeDeviceStoreService,
+    private readonly e2eePairing: E2eePairingService,
+    @Inject(REALTIME_BROADCASTER) private readonly broadcaster: RealtimeBroadcaster,
     private readonly workspaceAccess?: MobileRpcWorkspaceAccessService,
-    private readonly admission?: ProjectWriteAdmissionService,
+    private readonly gate?: ProjectWriteGate,
+    @Optional()
+    @Inject(E2EE_REQUIRE_SIGNED_ENROLLMENT_POLICY)
+    private readonly requireSignedEnrollment: boolean = false,
   ) {
     this.handlers = {
       'board.listWorkspaces': (_p, _cryptoCtx, authorization) => this.listWorkspaces(authorization),
@@ -139,19 +155,37 @@ export class TunnelHandlerService {
       // E2EE bootstrap (RE2E1): adopt the mobile device's public key (email-login half of
       // the bidirectional exchange). Plaintext by design; the generated contract owns
       // that crypto-mode decision.
-      'e2ee.adoptDeviceKey': (p) =>
-        Promise.resolve(
-          this.e2eeTrust.adoptPeerKeyTofu(
-            {
-              kid: p['kid'] as string,
-              publicKeyB64: p['publicKeyB64'] as string,
-              ...(p['label'] !== undefined ? { label: p['label'] as string } : {}),
-            },
-            // installId supersede metadata — carried beside the trust record, never a trust
-            // signal; the trust/store layer validates + applies it (TOFU: evictVerified=false).
-            p['installId'] as string | undefined,
-          ),
-        ),
+      'e2ee.adoptDeviceKey': async (p) => {
+        const kid = p['kid'] as string;
+        const outcome = await this.cloudSession.verifyE2eeEnrollment(
+          p['attestation'] as string | undefined,
+          kid,
+        );
+        // Check after asynchronous verification; another adopt may have stored this kid.
+        const known = this.e2eeDevices.get(kid) !== null;
+        const result = this.e2eeTrust.adoptPeerKeyTofu(
+          {
+            kid,
+            publicKeyB64: p['publicKeyB64'] as string,
+            ...(p['label'] !== undefined ? { label: p['label'] as string } : {}),
+          },
+          // installId supersede metadata — carried beside the trust record, never a trust
+          // signal; the trust/store layer validates + applies it (TOFU: evictVerified=false).
+          p['installId'] as string | undefined,
+          { enrollment: outcome.enrollment, requireSignedEnrollment: this.requireSignedEnrollment },
+        );
+        // Only a newly stored kid can raise the notice; a pending QR pairing delivers its
+        // adopt before the MAC-authenticated complete, so it is not a stranger.
+        const record = known ? null : this.e2eeDevices.get(result.kid);
+        if (
+          record?.enrollment === 'unsigned' &&
+          record.verifiedVia !== 'qr' &&
+          !this.e2eePairing.hasPendingPairing()
+        ) {
+          this.noticeUnsignedDevice(record.kid, record.label);
+        }
+        return result;
+      },
       // Dormant paired-device revoke: sealed-only. Identity comes from the trusted crypto
       // context (verified envelope kid), not params; ordinary logout never dispatches it.
       'e2ee.revokeDeviceKey': (_p, cryptoCtx) => Promise.resolve(this.revokeDeviceKey(cryptoCtx)),
@@ -228,6 +262,14 @@ export class TunnelHandlerService {
    * the row is absent, but could remove the same persistent kid after re-adoption; formal replay
    * protection remains backlog `17c7d7bb`.
    */
+  private noticeUnsignedDevice(kid: string, label: string | undefined): void {
+    try {
+      this.broadcaster.broadcastEvent('cloud', 'e2ee_unsigned_device_added', { kid, label });
+    } catch {
+      logger.warn('Failed to broadcast unsigned E2EE enrollment notice');
+    }
+  }
+
   private revokeDeviceKey(cryptoCtx?: RpcCryptoContext): { kid: string; removed: boolean } {
     if (!cryptoCtx?.senderKid) {
       throw new ValidationError('e2ee.revokeDeviceKey requires a sealed sender context');
@@ -327,7 +369,7 @@ export class TunnelHandlerService {
     const real: unknown[] = [];
     const placeholders: unknown[] = [];
     for (const project of this.itemsOf(result)) {
-      const owner = this.admission?.getRemoteOwner(project.id as string) ?? null;
+      const owner = this.gate?.getRemoteOwner(project.id as string) ?? null;
       if (!owner) {
         real.push({ id: project.id, name: project.name, workspaceId: project.workspaceId });
       } else if (includePlaceholders) {
@@ -348,7 +390,7 @@ export class TunnelHandlerService {
    * a missing project, so neither the project nor its mirror data is exposed.
    */
   private assertProjectNotRemoteOwned(projectId: unknown): void {
-    if (typeof projectId === 'string' && this.admission?.getRemoteOwner(projectId)) {
+    if (typeof projectId === 'string' && this.gate?.getRemoteOwner(projectId)) {
       throw new NotFoundError('Project', projectId);
     }
   }

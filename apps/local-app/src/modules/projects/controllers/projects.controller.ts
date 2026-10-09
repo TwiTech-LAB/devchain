@@ -15,7 +15,15 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  StorageService,
+  STORAGE_SERVICE,
+  type AgentProfileStorage,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
+  type StatusStorage,
+} from '../../storage/interfaces/storage.interface';
 import { UpdateProject, Project } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
@@ -40,7 +48,7 @@ import {
 } from '../dtos/template-upgrade.dto';
 import { ProjectRegistryImportService } from '../services/project-registry-import.service';
 import { ProjectTemplateUpgradeService } from '../services/project-template-upgrade.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import type { ProjectPresetsResponse } from '../dtos/project-presets.dto';
 
 const logger = createLogger('ProjectsController');
 const WorkspaceIdSchema = z.string().uuid();
@@ -194,12 +202,17 @@ function parseRequestBody<T>(schema: z.ZodType<T>, body: unknown, message: strin
 @Controller('api/projects')
 export class ProjectsController {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      AgentStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      StatusStorage &
+      Pick<StorageService, 'listEpics'>,
     private readonly projects: ProjectsService,
     private readonly settings: SettingsService,
     private readonly templateUpgrade: ProjectTemplateUpgradeService,
     private readonly registryImport: ProjectRegistryImportService,
-    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   /**
@@ -845,7 +858,7 @@ export class ProjectsController {
    * Returns activePreset with drift validation (null if drifted)
    */
   @Get(':id/presets')
-  async getProjectPresets(@Param('id') id: string) {
+  async getProjectPresets(@Param('id') id: string): Promise<ProjectPresetsResponse> {
     logger.info({ projectId: id }, 'GET /api/projects/:id/presets');
 
     // Verify project exists - let NestJS error filter handle NotFoundException → 404
@@ -939,7 +952,6 @@ export class ProjectsController {
 
     // Verify project exists - let NestJS error filter handle NotFoundError → 404
     await this.storage.getProject(id);
-    this.admission.assertWritable(id);
 
     // Create the preset via SettingsService
     try {
@@ -991,7 +1003,6 @@ export class ProjectsController {
 
     // Verify project exists - let NestJS error filter handle NotFoundError → 404
     await this.storage.getProject(id);
-    this.admission.assertWritable(id);
 
     // Update the preset via SettingsService
     try {
@@ -1051,7 +1062,6 @@ export class ProjectsController {
 
     // Verify project exists - let NestJS error filter handle NotFoundError → 404
     await this.storage.getProject(id);
-    this.admission.assertWritable(id);
 
     // Delete the preset via SettingsService
     try {

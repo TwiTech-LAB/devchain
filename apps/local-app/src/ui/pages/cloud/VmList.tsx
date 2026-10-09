@@ -18,7 +18,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
-import type { VmProviderConnectionView } from '@/ui/hooks/useVmProviderConnections';
+import type { VmProviderConnectionView } from './lib/remote-vm-contracts';
 import { cn } from '@/ui/lib/utils';
 import {
   VM_CONNECTION_LABELS,

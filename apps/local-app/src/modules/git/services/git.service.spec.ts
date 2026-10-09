@@ -97,6 +97,80 @@ describe('GitService', () => {
     });
   });
 
+  // The fake process boundary verifies ref admission and exact argv without running git.
+  describe.each([
+    {
+      name: 'resolveRef',
+      invoke: (ref: string) => service.resolveRef('project-1', ref),
+      argv: (ref: string) => [['git', 'rev-parse', ref]],
+    },
+    {
+      name: 'listCommits',
+      invoke: (ref: string) => service.listCommits('project-1', { ref }),
+      argv: (ref: string) => [
+        ['git', 'log', '--format=%H%x00%s%x00%an%x00%ae%x00%aI', '-n50', ref],
+      ],
+    },
+    {
+      name: 'getDiff base',
+      invoke: (ref: string) => service.getDiff('project-1', ref, 'HEAD'),
+      argv: (ref: string) => [['git', 'diff', ref, 'HEAD']],
+    },
+    {
+      name: 'getDiff head',
+      invoke: (ref: string) => service.getDiff('project-1', 'HEAD', ref),
+      argv: (ref: string) => [['git', 'diff', 'HEAD', ref]],
+    },
+    {
+      name: 'getChangedFiles base',
+      invoke: (ref: string) => service.getChangedFiles('project-1', ref, 'HEAD'),
+      argv: (ref: string) => [
+        ['git', 'diff', '--numstat', ref, 'HEAD'],
+        ['git', 'diff', '--name-status', ref, 'HEAD'],
+      ],
+    },
+    {
+      name: 'getChangedFiles head',
+      invoke: (ref: string) => service.getChangedFiles('project-1', 'HEAD', ref),
+      argv: (ref: string) => [
+        ['git', 'diff', '--numstat', 'HEAD', ref],
+        ['git', 'diff', '--name-status', 'HEAD', ref],
+      ],
+    },
+    {
+      name: 'getFileContent',
+      invoke: (ref: string) => service.getFileContent('project-1', ref, 'src/index.ts'),
+      argv: (ref: string) => [['git', 'show', `${ref}:src/index.ts`]],
+    },
+  ])('$name ref admission', ({ invoke, argv }) => {
+    beforeEach(() => mockExistsSync.mockReturnValue(true));
+
+    it.each(['--output=/tmp/x', '-n1', '-'])(
+      'rejects %s before any git preparation or execution',
+      async (ref) => {
+        await expect(invoke(ref)).rejects.toThrow(ValidationError);
+        expect(mockStorage.getProject).not.toHaveBeenCalled();
+        expect(fakeExecutor.calls).toEqual([]);
+      },
+    );
+
+    it.each(['HEAD', 'main', 'feature/x', 'HEAD~1', `${'a'.repeat(40)}^`, 'a'.repeat(40)])(
+      'preserves argv for %s',
+      async (ref) => {
+        await invoke(ref);
+        expect(fakeExecutor.calls.map((call) => call.argv)).toEqual(argv(ref));
+      },
+    );
+  });
+
+  it('defaults listCommits to HEAD without changing git arguments', async () => {
+    mockExistsSync.mockReturnValue(true);
+    await service.listCommits('project-1');
+    expect(fakeExecutor.calls.map((call) => call.argv)).toEqual([
+      ['git', 'log', '--format=%H%x00%s%x00%an%x00%ae%x00%aI', '-n50', 'HEAD'],
+    ]);
+  });
+
   describe('isGitRepository', () => {
     it('should return true if .git directory exists', async () => {
       mockExistsSync.mockReturnValue(true);

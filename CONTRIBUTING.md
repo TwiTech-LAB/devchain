@@ -1,69 +1,50 @@
-# Contributing to Devchain
+# Contributing to DevChain
 
-Welcome to the Devchain project! This guide will help you set up your development environment and understand the project structure.
+This guide shows how to set up a development checkout, run DevChain from source, and check a change before you share it.
 
-## Prerequisites
+Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
-Before you begin, ensure you have the following installed:
+## Requirements
 
-- **Node.js** >= 24.0.0 (Node 24 LTS is the production floor)
-- **pnpm** >= 8.0.0
-- **tmux** (required for terminal session management on Linux/macOS)
-- At least one AI provider CLI:
-  - `claude` - Claude Code CLI
-  - `codex` - Codex CLI
-  - `opencode` - OpenCode CLI
-  - `agy` - Google Antigravity CLI
-  - `copilot` - GitHub Copilot CLI
+- Node.js and pnpm in the versions that `package.json` sets (`engines` and `packageManager`).
+- tmux for agent terminal sessions.
+- OpenSSL (the `openssl` command): tests generate throwaway TLS certificates with it.
 
-## Getting Started
+## Run from source
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd devchain
-   ```
+Run these commands from the repository root:
 
-2. **Install dependencies**
-   ```bash
-   pnpm install
-   ```
+```bash
+pnpm install
+pnpm dev
+```
 
-3. **Start development**
-   ```bash
-   pnpm dev
-   ```
+`pnpm dev` builds the shared package and starts the launcher with API and UI hot reload. [Local App Development](apps/local-app/DEV.md) describes the runtime modes, ports, commands, and diagnostics.
 
-## Development Scripts
+## Project structure
 
-Use [Common Commands](docs/operations.md#common-commands) for development, build, lint, format, and database tasks, and [Test commands](docs/operations.md#test-commands) for test entry points.
+| Path                                     | Contents                                                            |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| `apps/local-app`                         | The DevChain app: NestJS API, React UI, MCP server, and their tests |
+| `packages/shared`                        | Code and schemas that more than one package uses                    |
+| `packages/proxmox-client`                | Client for Proxmox VM providers                                     |
+| `apps/host-bootstrap`, `apps/host-image` | Installer and image inputs for remote VM hosts                      |
+| `scripts`                                | The `devchain` CLI, build helpers, and template tooling             |
 
-## Project Structure
+## Common commands
 
-Use the [Code Map](docs/code-map.md) to find packages, entry points, and generated outputs.
+| Purpose                      | Command                                                           |
+| ---------------------------- | ----------------------------------------------------------------- |
+| Full build                   | `pnpm build`                                                      |
+| Local App build (API and UI) | `pnpm --filter local-app build`                                   |
+| Lint                         | `pnpm lint`                                                       |
+| Format                       | `pnpm format`                                                     |
+| Tests                        | `pnpm test`                                                       |
+| One test file                | `pnpm --filter local-app test -- --runTestsByPath <path-to-spec>` |
 
-## Architecture
+## Before you share a change
 
-Use [Architecture](docs/architecture.md) for subsystem boundaries and [Local App Development](apps/local-app/DEV.md#runtime-modes) for API/UI ports and runtime modes.
-
-## Development Mode (`pnpm dev`)
-
-The launcher validates prerequisites and starts hot reload. See [CLI startup checks](docs/cli.md) and [Local App Development](apps/local-app/DEV.md) for the exact flow.
-
-## Skipping Validations
-
-Use the bypass options in [Common Commands](docs/operations.md#common-commands) and [Environment variables](docs/operations.md#environment-variables-local-app) when the environment is already configured.
-
-## Environment Variables
-
-Names, defaults, and per-session precedence live in [Operations](docs/operations.md#environment-variables-local-app).
-
-## Building
-
-Use [Common Commands](docs/operations.md#common-commands): the Local App fast build includes both API and UI; `build:ui` is the UI-only target.
-
-## Troubleshooting
-
-Use [Setup](docs/setup.md) for missing prerequisites and [Local App diagnostics](apps/local-app/DEV.md#diagnostics) for ports, blank UI, proxy failures, or missing build output.
-
-Before review, follow [Development Standards](docs/development-standards.md#build-test-and-validation-before-review). Agents start with [AGENTS](docs/AGENTS.md).
+1. Build the Local App.
+2. Run lint.
+3. Run the tests that cover your change.
+4. Add or update tests at the layer where the change lives.

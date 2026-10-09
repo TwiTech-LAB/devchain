@@ -35,6 +35,16 @@ const SETTINGS_KEY = 'cloud.e2ee.devices';
  * PC-side persistence of the shared `E2eeTrustRecord`: QR pairing (Task:4) writes
  * `trust:'verified'`/`verifiedVia:'qr'`; email TOFU (Task:8) writes `'unverified'`.
  */
+export type E2eeEnrollment = 'signed' | 'unsigned';
+
+/** A signed enrollment is never downgraded; anything else resolves to unsigned. */
+function mergeEnrollment(
+  existing: E2eeEnrollment | undefined,
+  incoming: E2eeEnrollment | undefined,
+): E2eeEnrollment {
+  return existing === 'signed' || incoming === 'signed' ? 'signed' : 'unsigned';
+}
+
 export interface E2eePeerDevice {
   /** Key id — SHA-256(peer public key) truncated; the lookup key. */
   kid: string;
@@ -71,10 +81,12 @@ export interface E2eePeerDevice {
    * Absent until the device's first sealed bind. Preserved across key-trust updates.
    */
   notificationRoutingKid?: string;
+  /** Identity-service enrollment signature status; independent of QR/safety-number trust. */
+  enrollment?: E2eeEnrollment;
 }
 
 type StoredE2eeTrustRecord = E2eeTrustRecord &
-  Pick<E2eePeerDevice, 'installId' | 'localAlias' | 'notificationRoutingKid'>;
+  Pick<E2eePeerDevice, 'installId' | 'localAlias' | 'notificationRoutingKid' | 'enrollment'>;
 
 interface StoredDirectory {
   v: number;
@@ -153,6 +165,7 @@ export class E2eeDeviceStoreService {
     const supersededKids = this.transactionRunner.runImmediate(() => {
       const dir = this.load();
       const existing = dir.devices[record.kid];
+      record.enrollment = mergeEnrollment(existing?.enrollment, device.enrollment);
       if (existing?.localAlias !== undefined) record.localAlias = existing.localAlias;
       if (existing?.notificationRoutingKid !== undefined) {
         record.notificationRoutingKid = existing.notificationRoutingKid;
@@ -167,6 +180,7 @@ export class E2eeDeviceStoreService {
         record.installId,
         record.kid,
         opts.evictVerified ?? false,
+        opts.evictVerified === true || device.enrollment === 'signed',
       );
       for (const kid of evicted) this.deleteWorkspaceGrants(kid);
       updateRevokedDeviceKids(this.sqlite, evicted, record.kid);
@@ -192,7 +206,11 @@ export class E2eeDeviceStoreService {
   reconcile(
     incoming: IncomingPeerKey,
     now: string = new Date().toISOString(),
-    opts: { installId?: string; evictVerified?: boolean } = {},
+    opts: {
+      installId?: string;
+      evictVerified?: boolean;
+      enrollment?: E2eeEnrollment;
+    } = {},
   ): E2eePeerDevice {
     const { record, supersededKids } = this.transactionRunner.runImmediate(() => {
       const dir = this.load();
@@ -203,6 +221,7 @@ export class E2eeDeviceStoreService {
         null;
       const reconciled = reconcilePeerKey(prior, incoming, now) as StoredE2eeTrustRecord;
       const next = this.toDevice(reconciled);
+      next.enrollment = mergeEnrollment(existing?.enrollment, opts.enrollment);
       if (isCanonicalUuid(opts.installId)) next.installId = opts.installId;
       if (!existing && readRevokedDeviceKids(this.sqlite).includes(next.kid)) {
         this.deleteWorkspaceGrants(next.kid);
@@ -213,6 +232,7 @@ export class E2eeDeviceStoreService {
         next.installId,
         next.kid,
         opts.evictVerified ?? false,
+        opts.enrollment === 'signed',
       );
       for (const kid of evicted) this.deleteWorkspaceGrants(kid);
       updateRevokedDeviceKids(this.sqlite, evicted, next.kid);
@@ -251,9 +271,8 @@ export class E2eeDeviceStoreService {
 
   /**
    * Project a shared `E2eeTrustRecord` onto the persisted device shape (drop undefineds).
-   * Local-only metadata is carried beside the shared record, so the param is widened to
-   * preserve it: same-key reconcile and verification spread the prior runtime record, and
-   * this projection must not silently drop its install id or alias.
+   * Same-key reconciliation and verification preserve PC-local metadata beside the shared
+   * record; projection must retain it, including the independent enrollment status.
    */
   private toDevice(rec: StoredE2eeTrustRecord): E2eePeerDevice {
     return {
@@ -270,6 +289,7 @@ export class E2eeDeviceStoreService {
       ...(rec.notificationRoutingKid !== undefined
         ? { notificationRoutingKid: rec.notificationRoutingKid }
         : {}),
+      ...(rec.enrollment !== undefined ? { enrollment: rec.enrollment } : {}),
     };
   }
 
@@ -282,11 +302,15 @@ export class E2eeDeviceStoreService {
    * removed in the same transaction.
    *
    * SECURITY INVARIANT (not a style choice): with `evictVerified === false` a
-   * `trust === 'verified'` row is NEVER evicted. `e2ee.adoptDeviceKey` arrives PLAINTEXT
-   * (unauthenticated bridge-position bootstrap) — allowing it to drop a QR-verified device
-   * would be a force-unpair attack. Only the MAC-authenticated QR-complete seam passes
-   * `evictVerified: true`. The guard is written `trust !== 'verified'` (not
-   * `=== 'unverified'`) so any future/unknown trust value also stays protected by default.
+   * `trust === 'verified'` row is NEVER evicted, and with `evictSigned === false` a row
+   * with `enrollment === 'signed'` is NEVER evicted. `e2ee.adoptDeviceKey` arrives
+   * PLAINTEXT (unauthenticated bridge-position bootstrap) — allowing an unsigned adopt to
+   * drop a QR-verified or signed device would be a force-unpair attack. Only the
+   * MAC-authenticated QR-complete seam passes `evictVerified: true`, and that seam may
+   * also evict signed rows. Otherwise, only a request whose own enrollment verified as
+   * signed passes `evictSigned: true`. The guards are written
+   * `!== 'verified'` / `=== 'signed'` checks so any future/unknown trust value
+   * also stays protected by default.
    *
    * The installId is validated canonical BEFORE any eviction; an invalid/absent installId
    * evicts nothing (old-client append behavior). installId values are never logged.
@@ -300,6 +324,7 @@ export class E2eeDeviceStoreService {
     installId: string | undefined,
     keepKid: string,
     evictVerified: boolean,
+    evictSigned: boolean,
   ): string[] {
     if (!isCanonicalUuid(installId)) return [];
     const evicted: string[] = [];
@@ -307,6 +332,8 @@ export class E2eeDeviceStoreService {
       if (kid === keepKid) continue;
       if (device.installId !== installId) continue;
       if (!evictVerified && device.trust === 'verified') continue;
+      // Authority comes from this request, never the retained record's enrollment.
+      if (!evictSigned && device.enrollment === 'signed') continue;
       delete devices[kid];
       evicted.push(kid);
     }

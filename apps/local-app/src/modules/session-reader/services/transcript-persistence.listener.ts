@@ -9,7 +9,13 @@ import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { EventsService } from '../../events/services/events.service';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import {
   ProviderAdapterFactory,
   isHookCapable,
@@ -103,7 +109,11 @@ export class TranscriptPersistenceListener {
     private readonly validator: TranscriptPathValidator,
     private readonly events: EventsService,
     private readonly adapterFactory: SessionReaderAdapterFactory,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      Pick<StorageService, 'getProvider'>,
     private readonly providerAdapterFactory: ProviderAdapterFactory,
   ) {
     this.sqlite = getRawSqliteClient(db);

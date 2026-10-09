@@ -1,6 +1,21 @@
 # Test Helpers
 
-This directory contains utilities for E2E and integration testing.
+This directory contains utilities for UI, E2E and integration testing.
+
+## In-Memory Remote VM API
+
+`in-memory-remote-vm-api.ts` exports `InMemoryRemoteVmApi`, a test-only implementation of
+`RemoteVmApi` for the Remote VM section's page suites.
+
+- Create a fresh instance for each test. Mutable seed fields such as `remotesData`, `bindingsData`,
+  `operationsData` and `providerConnectionsData` provide scenario data.
+- `calls` records typed argument tuples for each API method, with independent request copies.
+- `overrides` accepts a result, promise, error or callback for an individual method. Callbacks can
+  delegate to `defaults` to retain its normal state transitions.
+
+The page harness at `apps/local-app/src/ui/pages/cloud/testing/remote-vm-section.fixture.tsx`
+supplies the API through `RemoteVmApiProvider` and handles router, query-client and socket setup.
+`in-memory-remote-vm-api.spec.ts` checks the fake's own contracts in the UI Jest project.
 
 ## Test Database Utilities
 

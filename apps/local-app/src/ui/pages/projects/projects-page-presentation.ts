@@ -92,7 +92,24 @@ export type ProjectsTableContent =
       readonly searchActive: boolean;
     };
 
+export interface TemplateUpdateNoticeItem {
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly slug: string;
+  readonly currentVersion: string | null;
+  readonly targetVersion: string;
+  readonly update?: () => void;
+  readonly lockMessage: string | null;
+}
+
+export interface TemplateUpdateNoticeModel {
+  readonly items: TemplateUpdateNoticeItem[];
+  readonly closeUntilRestart: () => void;
+  readonly dismissUntilNewItems: () => void;
+}
+
 export interface ProjectsTableModel {
+  readonly notice: TemplateUpdateNoticeModel | null;
   readonly search: string;
   readonly changeSearch: (value: string) => void;
   readonly sortField: ProjectsSortField;

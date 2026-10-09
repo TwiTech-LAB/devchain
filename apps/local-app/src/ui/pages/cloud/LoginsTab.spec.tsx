@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
 import { LoginsTab } from './LoginsTab';
-import { providerAuthKeys } from '@/ui/hooks/useProviderAuth';
+import { providerAuthKeys } from './lib/remote-vm-query-keys';
 
 jest.mock('@/ui/hooks/useHomeSocket', () => ({ useHomeSocket: jest.fn() }));
 const mockToast = jest.fn();

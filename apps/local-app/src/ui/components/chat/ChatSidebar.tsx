@@ -20,11 +20,7 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import { PresetPopover } from './PresetPopover';
 import { AgentRow } from './AgentRow';
 import { restartKeyForMain } from '@/ui/lib/restart-keys';
-import {
-  AgentOverridesDialog,
-  type OverridesConfigOption,
-  type AgentOverridesSavePayload,
-} from './AgentOverridesDialog';
+import { AgentOverridesDialog, type AgentOverridesSavePayload } from './AgentOverridesDialog';
 import { cn } from '@/ui/lib/utils';
 import {
   Circle,
@@ -141,7 +137,6 @@ export interface ChatSidebarSessionController {
     modelOverride?: string | null,
     effortOverride?: string | null,
   ) => Promise<unknown> | void;
-  fetchProviderConfigsForProfile: (profileId: string) => Promise<OverridesConfigOption[]>;
   updatingConfigAgentIds: Record<string, boolean>;
 }
 
@@ -268,7 +263,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     onApplyPreset,
     applyingPreset,
     onSwitchConfig,
-    fetchProviderConfigsForProfile,
     updatingConfigAgentIds,
   } = sessionController;
   const { onCloneAgent, onDeleteAgent, pendingDeleteAgentId, onAddTeamAgent, onEditTeam } =
@@ -1209,7 +1203,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
               agent={agent}
               isOnline={isOnline}
               isSaving={isSaving}
-              fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
               onSave={handleSave}
               triggerEl={triggerEl}
             />

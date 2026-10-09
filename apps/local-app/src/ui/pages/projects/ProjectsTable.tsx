@@ -2,6 +2,7 @@ import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
 import { TONE_CLASSES } from '@/ui/lib/status-tone';
 import { Button } from '@/ui/components/ui/button';
 import { Card } from '@/ui/components/ui/card';
+import { NoticeBanner } from '@/ui/components/notice/NoticeBanner';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,6 +41,7 @@ import type {
   ProjectsTableModel,
   ProjectsTableDragModel,
   ProjectWorkspaceGroupModel,
+  TemplateUpdateNoticeModel,
 } from './projects-page-presentation';
 
 interface ProjectsTableProps {
@@ -447,6 +449,57 @@ function WorkspaceGroup({
   );
 }
 
+function TemplateUpdateNotice({ notice }: { notice: TemplateUpdateNoticeModel }) {
+  return (
+    <div className="mb-4">
+      <NoticeBanner
+        tone="info"
+        icon={<ArrowUp className="h-4 w-4" aria-hidden="true" />}
+        message={
+          notice.items.length === 1
+            ? '1 project uses an older template.'
+            : `${notice.items.length} projects use an older template.`
+        }
+        actions={[
+          {
+            label: "Don't remind until next update",
+            onSelect: notice.dismissUntilNewItems,
+          },
+        ]}
+        onClose={notice.closeUntilRestart}
+        closeLabel="Hide until DevChain restarts"
+        details={
+          <ul className="space-y-2">
+            {notice.items.map((item) => (
+              <li
+                key={item.projectId}
+                className="flex flex-wrap items-center justify-between gap-2"
+              >
+                <div>
+                  <span className="font-medium">{item.projectName}</span>{' '}
+                  <span>
+                    {item.slug} v{item.currentVersion ?? '—'} → v{item.targetVersion}
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={item.update}
+                  disabled={!item.update}
+                  title={item.lockMessage ?? undefined}
+                >
+                  Update
+                </Button>
+              </li>
+            ))}
+          </ul>
+        }
+      />
+    </div>
+  );
+}
+
 function failedDataLabel(failedData: ReadonlyArray<'projects' | 'workspaces'>): string {
   if (failedData.length !== 1) return 'projects and workspaces';
   return failedData[0];
@@ -471,6 +524,8 @@ export function ProjectsTable({ model }: ProjectsTableProps) {
           </Button>
         </div>
       </div>
+
+      {model.notice && <TemplateUpdateNotice notice={model.notice} />}
 
       <Card className="mb-4 p-3">
         <div className="relative">

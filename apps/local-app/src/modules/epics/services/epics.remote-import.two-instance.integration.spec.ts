@@ -5,7 +5,7 @@
  * routes over HTTP, home's mirror pull and home's link write, and the recovery
  * cases need a host that really stops and restarts.
  */
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import {
   startTwoInstances,
   waitForValue,
@@ -101,7 +101,7 @@ describe('external task import into a remote-owned project', () => {
     home.sqlite
       .prepare('UPDATE remote_project_bindings SET state = ? WHERE project_id = ?')
       .run(state, PROJECT);
-    await home.app.get(ProjectWriteAdmissionService).refreshBindings();
+    await home.app.get(ProjectWriteGate).refresh();
   }
 
   async function waitOnline(): Promise<void> {

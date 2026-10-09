@@ -125,6 +125,7 @@ describe('E2eeTrustService (Task:8 — safety-number + TOFU + verify)', () => {
         kid: deviceKid,
         label: 'Pixel',
         trust: 'unverified',
+        enrollment: 'unsigned',
         adoptedVia: 'email-tofu',
         addedAt: '2026-06-20T00:00:00Z',
       });

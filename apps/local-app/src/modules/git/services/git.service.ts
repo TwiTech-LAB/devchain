@@ -1,7 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { existsSync, statSync } from 'fs';
 import { join, resolve, relative, isAbsolute } from 'path';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 import { NotFoundError, ValidationError, IOError } from '../../../common/errors/error-types';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
@@ -87,7 +87,7 @@ export interface WorkingTreeData {
 @Injectable()
 export class GitService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage,
     private readonly executor: ProcessExecutor,
   ) {}
 
@@ -164,10 +164,17 @@ export class GitService {
     return relativePath;
   }
 
+  private validateRef(ref: string): void {
+    if (ref.startsWith('-')) {
+      throw new ValidationError('Git ref must not start with "-"');
+    }
+  }
+
   /**
    * Resolve a ref (branch, tag, or commit) to its SHA.
    */
   async resolveRef(projectId: string, ref: string): Promise<string> {
+    this.validateRef(ref);
     const output = await this.execGit(projectId, ['rev-parse', ref]);
     return output.trim();
   }
@@ -181,6 +188,7 @@ export class GitService {
   ): Promise<Commit[]> {
     const limit = options?.limit ?? 50;
     const ref = options?.ref ?? 'HEAD';
+    this.validateRef(ref);
 
     // Use a custom format for easy parsing
     // %H = full hash, %s = subject, %an = author name, %ae = author email, %aI = ISO date
@@ -258,6 +266,8 @@ export class GitService {
    * Get unified diff between two SHAs.
    */
   async getDiff(projectId: string, baseSha: string, headSha: string): Promise<string> {
+    this.validateRef(baseSha);
+    this.validateRef(headSha);
     const output = await this.execGit(projectId, ['diff', baseSha, headSha]);
     return output;
   }
@@ -270,6 +280,8 @@ export class GitService {
     baseSha: string,
     headSha: string,
   ): Promise<ChangedFile[]> {
+    this.validateRef(baseSha);
+    this.validateRef(headSha);
     // Use --numstat for additions/deletions and --name-status for status
     const [numstatOutput, statusOutput] = await Promise.all([
       this.execGit(projectId, ['diff', '--numstat', baseSha, headSha]),
@@ -339,6 +351,7 @@ export class GitService {
    * Get file content at a specific ref.
    */
   async getFileContent(projectId: string, ref: string, filePath: string): Promise<string> {
+    this.validateRef(ref);
     const project = await this.storage.getProject(projectId);
     const relativePath = this.validatePathWithinProject(project.rootPath, filePath);
 

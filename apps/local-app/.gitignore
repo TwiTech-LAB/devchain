@@ -9,4 +9,5 @@ coverage
 *.sqlite-wal
 .devchain
 test-results/
+playwright-report/
 output/

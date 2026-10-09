@@ -25,6 +25,7 @@ import {
 import { STORAGE_SERVICE, type ProviderStorage } from '../../storage/interfaces/storage.interface';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { HostHelperService } from './host-helper.service';
+import type { HostProviderApplyInput, HostProviderAuthRemoveSpec } from './host-provider-auth.dto';
 
 const logger = createLogger('HostProviderAuthService');
 
@@ -50,16 +51,6 @@ export interface HostProviderVerifyResult {
   summary: string;
   hint: string | null;
 }
-
-/** Logins to take away in the same apply request, before any write runs. */
-export interface HostProviderAuthRemoveSpec {
-  envKeys: string[];
-  files: string[];
-}
-
-export type HostProviderApplyInput = ProviderAuthClaimBundle & {
-  remove?: HostProviderAuthRemoveSpec;
-};
 
 export interface HostProviderApplyResult {
   envKeys: string[];

@@ -18,6 +18,7 @@ jest.mock('../../../common/logging/logger', () => ({
 
 import { eventCatalog } from '../../events/catalog';
 import { TerminalGateway } from '../../terminal/gateways/terminal.gateway';
+import { HumanPromptInputService } from '../../terminal/services/human-prompt-input.service';
 import { TerminalStreamService } from '../../terminal/services/terminal-stream.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { PtyService } from '../../terminal/services/pty.service';
@@ -66,8 +67,7 @@ function createGateway() {
     ptyService,
     seedService,
     terminalIO,
-    humanPromptState,
-    new EventEmitter2(),
+    new HumanPromptInputService(humanPromptState, new EventEmitter2()),
     registry,
     {} as never,
     { setServer: jest.fn(), broadcastEvent: jest.fn() } as never,

@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, ChevronsUpDown } from 'lucide-react';
+import { statusQueries } from '@/ui/lib/statuses';
+import { agentQueries } from '@/ui/lib/agents';
+import type { ListResult } from '@/modules/storage/interfaces/storage.interface';
 import {
   Dialog,
   DialogContent,
@@ -37,7 +40,6 @@ import {
   type CreateScheduledEpicData,
   type UpdateScheduledEpicData,
 } from '@/ui/lib/scheduled-epics';
-import { fetchStatuses, fetchAgents } from '@/ui/pages/board/lib/board-api';
 import type { Status, Agent, Epic } from '@/ui/types';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
@@ -69,6 +71,10 @@ type FormErrors = Partial<Record<keyof FormData, string>>;
 const STATUS_NULL_SENTINEL = '__project_default__';
 const AGENT_NULL_SENTINEL = '__unassigned__';
 const PARENT_NULL_SENTINEL = '__no_parent__';
+
+function selectProfileAgents(data: ListResult<Agent>) {
+  return { items: data.items.filter((agent) => agent.profileId != null) };
+}
 
 function getDefaultFormData(): FormData {
   return {
@@ -387,29 +393,23 @@ export function ScheduleEditorDialog({
     isLoading: statusesLoading,
     isError: statusesError,
   } = useQuery({
-    queryKey: ['schedule-statuses', projectId],
-    queryFn: () => fetchStatuses(projectId, fetchFn),
+    ...statusQueries.list(fetchFn, projectId),
     enabled: open && !!projectId,
     staleTime: 5 * 60 * 1000,
   });
 
   const statuses: Status[] = statusesData?.items ?? [];
 
-  // --- Agents query (isolated key, no guests) ---
+  // --- Agents query ---
   const {
     data: agentsData,
     isLoading: agentsLoading,
     isError: agentsError,
   } = useQuery({
-    queryKey: ['schedule-agents', projectId],
-    queryFn: () => fetchAgents(projectId, fetchFn),
+    ...agentQueries.list(fetchFn, projectId),
     enabled: open && !!projectId,
     staleTime: 5 * 60 * 1000,
-    select: (data) => ({
-      items: data.items.filter(
-        (a: Agent & { type?: string }) => a.profileId != null && a.type !== 'guest',
-      ),
-    }),
+    select: selectProfileAgents,
   });
 
   const agents: Agent[] = agentsData?.items ?? [];

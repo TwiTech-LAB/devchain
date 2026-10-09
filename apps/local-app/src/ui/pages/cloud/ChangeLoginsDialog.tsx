@@ -12,7 +12,8 @@ import {
   DialogTitle,
 } from '@/ui/components/ui/dialog';
 import { useProviderAuth } from '@/ui/hooks/useProviderAuth';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { remoteRunningAgentsQueryKey } from './lib/remote-vm-query-keys';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import {
   LOGIN_PROVIDERS,
   SESSION_REWRITTEN_PROVIDERS,
@@ -32,18 +33,11 @@ import { StartError } from './StartError';
  * PC's proxy; a failed check is null ("unknown") and the server checks again.
  */
 function useRunningAgents(remoteId: string) {
+  const api = useRemoteVmApi();
   const query = useQuery(
     {
-      queryKey: [HOME_BACKEND, 'remote-running-agents', remoteId],
-      queryFn: async ({ signal }) => {
-        const response = await apiFetch('/api/sessions', { signal }, { backend: remoteId });
-        if (!response.ok) throw new Error('session list unavailable');
-        const sessions = (await response.json()) as Array<{
-          status?: string;
-          agentId?: string | null;
-        }>;
-        return sessions.filter((session) => session.status === 'running' && session.agentId).length;
-      },
+      queryKey: remoteRunningAgentsQueryKey(remoteId),
+      queryFn: ({ signal }) => api.countRunningAgents(remoteId, signal),
       staleTime: 15_000,
       retry: false,
     },

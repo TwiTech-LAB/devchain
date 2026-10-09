@@ -1,37 +1,19 @@
 import { useMemo } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import type { ForceSyncSource } from '@/modules/remotes/operations/remote-operation.dto';
-import type { DockerSelection } from '@/modules/remotes/docker/docker-plan.dto';
-import type { DockerCopyBackRequest } from '@/modules/remotes/docker/docker-copy-back.dto';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
-import { REMOTES_LIST_QUERY_KEY, REMOTE_BINDINGS_QUERY_KEY } from '@/ui/lib/backend-provider';
+import { useRemoteVmApi } from '@/ui/pages/cloud/lib/remote-vm-api-context';
+import {
+  REMOTES_LIST_QUERY_KEY,
+  REMOTE_BINDINGS_QUERY_KEY,
+  remoteOperationsKeys,
+} from '@/ui/pages/cloud/lib/remote-vm-query-keys';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useHomeSocket } from './useHomeSocket';
-
-export interface RemoteOperationDto {
-  id: string;
-  kind: string;
-  remoteId: string;
-  projectId: string | null;
-  state: 'running' | 'failed' | 'done' | 'cancelled';
-  steps: {
-    id: string;
-    label: string;
-    state: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
-    startedAt?: string | null;
-    error: { message: string; code: string | null } | null;
-  }[];
-  details: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export const remoteOperationsKeys = {
-  all: [HOME_BACKEND, 'remote-operations'] as const,
-  /** One project's newest operation; under `all`, so any operations refresh reloads it. */
-  newestOfProject: (projectId: string) => [...remoteOperationsKeys.all, 'newest', projectId],
-};
+import type {
+  RemoteOperationDto,
+  SshCredentials,
+  OperationAction,
+} from '@/ui/pages/cloud/lib/remote-vm-contracts';
 
 /** How many finished operations the Activity list shows. */
 const RECENT_FINISHED_LIMIT = 20;
@@ -68,22 +50,6 @@ export function isHostInstallRetryFormCode(code: string | null | undefined): boo
   );
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await apiFetch(path, init, { backend: HOME_BACKEND });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(body?.message ?? `Remote operation request failed (${response.status})`);
-  }
-  return response.json();
-}
-
-const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
-
-function jsonPost(body?: unknown): RequestInit {
-  if (body === undefined) return { method: 'POST' };
-  return { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) };
-}
-
 function scrubSshCredentials(credentials: SshCredentials): SshCredentials {
   return { user: credentials.user };
 }
@@ -96,100 +62,18 @@ function scrubOperationCredentials(input: OperationAction): void {
   }
 }
 
-export interface ClaimRequestBody {
-  remoteId?: string;
-  baseUrl?: string;
-  /** Read on the VM; required with `baseUrl`. */
-  certificateFingerprint?: string;
-  name?: string;
-  port?: number;
-  /** `reuse:<entryId>`, `generate` or `skip`, per provider. */
-  providerAuth: Record<string, string>;
-  installDocker?: boolean;
-  sshPublicKeys?: string[];
-}
-
-export interface SshCredentials {
-  user: string;
-  password?: string;
-  privateKey?: string;
-  keyName?: string;
-  passphrase?: string;
-  sudoPassword?: string;
-}
-
-export interface InstallHostRequestBody {
-  address: string;
-  ssh: SshCredentials;
-  name?: string;
-  providerAuth: Record<string, string>;
-  installDocker?: boolean;
-  sshPublicKeys?: string[];
-  minDiskGib: number;
-}
-
-export interface ResetVmRequestBody {
-  force: boolean;
-  providerAuth: Record<string, string>;
-  installDocker?: boolean;
-  sshPublicKeys?: string[];
-}
-
-/** Change-logins body: only the changed providers, `skip` meaning "remove". */
-export interface UpdateLoginsRequestBody {
-  providerAuth: Record<string, string>;
-  force: boolean;
-}
-
-export type OperationAction =
-  | {
-      action: 'attach' | 'detach';
-      remoteId: string;
-      projectId: string;
-      force?: boolean;
-      /** The Docker items a Connect carries: plan item ids with their chosen modes. */
-      docker?: DockerSelection;
-      /** A Disconnect's "Copy Docker data back to this PC", with its choices. */
-      dockerCopyBack?: DockerCopyBackRequest;
-    }
-  | { action: 'forceSync'; remoteId: string; projectId: string; source: ForceSyncSource }
-  | { action: 'updateHost'; remoteId: string; installDocker?: true }
-  | {
-      action: 'createVm';
-      connectionId: string;
-      body: ClaimRequestBody & { name: string; cores: number; memory: number; disk: number };
-    }
-  | { action: 'installHost'; body: InstallHostRequestBody }
-  | { action: 'resetVm'; remoteId: string; body: ResetVmRequestBody }
-  | { action: 'destroyVm'; remoteId: string; body: { force: boolean } }
-  | { action: 'updateLogins'; remoteId: string; body: UpdateLoginsRequestBody }
-  | { action: 'claim'; body: ClaimRequestBody }
-  | {
-      action: 'retry';
-      operationId: string;
-      providerAuth?: Record<string, string>;
-      ssh?: SshCredentials;
-    }
-  | { action: 'cancel'; operationId: string };
-
 export function useRemoteOperations() {
+  const api = useRemoteVmApi();
   const client = useHomeQueryClient();
   const query = useQuery(
     {
       queryKey: remoteOperationsKeys.all,
       queryFn: async ({ signal }) => {
         const lists = await Promise.all(
-          LIST_LIMITS.map(([state, limit]) =>
-            request<{ items: RemoteOperationDto[] }>(
-              `/api/remotes/operations?state=${state}&limit=${limit}`,
-              { signal },
-            ),
-          ),
+          LIST_LIMITS.map(([state, limit]) => api.listOperations(state, limit, signal)),
         );
         return Array.from(
-          new Map(
-            lists.flatMap((list) => list.items ?? []).map((operation) => [operation.id, operation]),
-          ).values(),
+          new Map(lists.flat().map((operation) => [operation.id, operation])).values(),
         );
       },
       refetchInterval: 10_000,
@@ -252,75 +136,54 @@ export function useRemoteOperations() {
   const action = useMutation(
     {
       mutationFn: (input: OperationAction) => {
-        if (input.action === 'forceSync') {
-          return request<RemoteOperationDto>(
-            `/api/remotes/${input.remoteId}/force-sync`,
-            jsonPost({ projectId: input.projectId, source: input.source }),
-          );
+        switch (input.action) {
+          case 'forceSync':
+            return api.forceSync(input.remoteId, {
+              projectId: input.projectId,
+              source: input.source,
+            });
+          case 'installHost': {
+            const body = { ...input.body, ssh: { ...input.body.ssh } };
+            scrubOperationCredentials(input);
+            return api.installHost(body);
+          }
+          case 'claim':
+            return api.claimHost(input.body);
+          case 'createVm':
+            return api.createVm(input.connectionId, input.body);
+          case 'resetVm':
+            return api.resetVm(input.remoteId, input.body);
+          case 'destroyVm':
+            return api.destroyVm(input.remoteId, input.body);
+          case 'updateLogins':
+            return api.updateLogins(input.remoteId, input.body);
+          case 'retry': {
+            const body = {
+              ...(input.providerAuth ? { providerAuth: input.providerAuth } : {}),
+              ...(input.ssh ? { ssh: { ...input.ssh } } : {}),
+            };
+            scrubOperationCredentials(input);
+            return api.retryOperation(input.operationId, body);
+          }
+          case 'cancel':
+            return api.cancelOperation(input.operationId);
+          case 'attach':
+            return api.attachProject(input.remoteId, {
+              projectId: input.projectId,
+              docker: input.docker,
+            });
+          case 'detach':
+            return api.detachProject(input.remoteId, {
+              projectId: input.projectId,
+              force: input.force,
+              dockerCopyBack: input.dockerCopyBack,
+            });
+          case 'updateHost':
+            return api.updateHost(
+              input.remoteId,
+              input.installDocker ? { installDocker: true } : undefined,
+            );
         }
-        if (input.action === 'installHost') {
-          const init = jsonPost(input.body);
-          scrubOperationCredentials(input);
-          return request<RemoteOperationDto>('/api/remotes/host-install', init);
-        }
-        if (input.action === 'claim') {
-          return request<RemoteOperationDto>('/api/remotes/claim', jsonPost(input.body));
-        }
-        if (input.action === 'createVm') {
-          return request<RemoteOperationDto>(
-            `/api/vm-providers/${input.connectionId}/create-vm`,
-            jsonPost(input.body),
-          );
-        }
-        if (input.action === 'resetVm') {
-          return request<RemoteOperationDto>(
-            `/api/remotes/${input.remoteId}/reset`,
-            jsonPost(input.body),
-          );
-        }
-        if (input.action === 'destroyVm') {
-          return request<RemoteOperationDto>(
-            `/api/remotes/${input.remoteId}/destroy-vm`,
-            jsonPost(input.body),
-          );
-        }
-        if (input.action === 'updateLogins') {
-          return request<RemoteOperationDto>(
-            `/api/remotes/${input.remoteId}/logins`,
-            jsonPost(input.body),
-          );
-        }
-        if ('operationId' in input) {
-          const body = {
-            ...('providerAuth' in input && input.providerAuth
-              ? { providerAuth: input.providerAuth }
-              : {}),
-            ...('ssh' in input && input.ssh ? { ssh: input.ssh } : {}),
-          };
-          const init = jsonPost(Object.keys(body).length > 0 ? body : undefined);
-          scrubOperationCredentials(input);
-          return request<RemoteOperationDto>(
-            `/api/remotes/operations/${input.operationId}/${input.action}`,
-            init,
-          );
-        }
-        const segment = input.action === 'updateHost' ? 'update' : input.action;
-        const body =
-          'projectId' in input
-            ? {
-                projectId: input.projectId,
-                ...(input.action === 'detach' && { force: input.force ?? false }),
-                ...(input.action === 'detach' &&
-                  input.dockerCopyBack && { dockerCopyBack: input.dockerCopyBack }),
-                ...(input.action === 'attach' && input.docker && { docker: input.docker }),
-              }
-            : input.action === 'updateHost' && input.installDocker
-              ? { installDocker: true }
-              : undefined;
-        return request<RemoteOperationDto>(
-          `/api/remotes/${input.remoteId}/${segment}`,
-          jsonPost(body),
-        );
       },
       onSuccess: (operation) => {
         client.setQueryData<RemoteOperationDto[]>(remoteOperationsKeys.all, (current = []) => [

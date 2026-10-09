@@ -21,7 +21,7 @@ export interface DiscoveryResult {
 @Injectable()
 export class ProviderDiscoveryService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: Pick<StorageService, 'listProviders'>,
     private readonly adapterFactory: ProviderAdapterFactory,
     private readonly executor: ProcessExecutor,
   ) {}

@@ -14,7 +14,7 @@ import type { CreateEpicWithExternalTaskLink } from '../../storage/models/domain
 import { IntegrationCredentialCipher } from '../../storage/local/integration-credential-cipher';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { EpicsService } from './epics.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 describe('EpicsService external task import', () => {
   let sqlite: Database.Database;
@@ -49,7 +49,7 @@ describe('EpicsService external task import', () => {
       eventsService as unknown as EventsService,
       { getAutoCleanStatusIds: jest.fn().mockReturnValue([]) } as unknown as SettingsService,
       { emit: jest.fn() } as unknown as EventEmitter2,
-      createProjectWriteAdmissionStub() as never,
+      createProjectWriteGateStub() as never,
       {} as never,
       { pullNow: jest.fn() } as never,
     );

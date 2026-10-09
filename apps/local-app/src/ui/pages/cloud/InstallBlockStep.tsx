@@ -5,11 +5,12 @@ import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
 import { Button } from '@/ui/components/ui/button';
 import { BusyStatus, Spinner } from '@/ui/components/ui/spinner';
 import { Textarea } from '@/ui/components/ui/textarea';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
+import { hostInstallBlockQueryKey } from './lib/remote-vm-query-keys';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { parseCertificateFingerprint } from '@/modules/remotes/dtos/remote.dto';
 import { CertificateFingerprintField } from './CertificateFingerprintField';
-import { INSTALLER_POLL_MS, hostPort, installerUrl, probeAddress } from './own-vm-address';
+import { INSTALLER_POLL_MS, hostPort, installerUrl } from './own-vm-address';
 
 type InstallerResult = Extract<ProbeResultDto, { kind: 'installer' }>;
 
@@ -19,6 +20,7 @@ type InstallerResult = Extract<ProbeResultDto, { kind: 'installer' }>;
  * one answered; unmounting stops the checks.
  */
 function useInstallerWatch(address: string, onInstaller: (result: InstallerResult) => boolean) {
+  const api = useRemoteVmApi();
   const latest = useRef(onInstaller);
   latest.current = onInstaller;
   const url = installerUrl(address);
@@ -28,7 +30,7 @@ function useInstallerWatch(address: string, onInstaller: (result: InstallerResul
     let timer: ReturnType<typeof setTimeout> | undefined;
     const check = async () => {
       try {
-        const result = await probeAddress(url, { checkSsh: false, signal: controller.signal });
+        const result = await api.probeAddress(url, { checkSsh: false, signal: controller.signal });
         if (controller.signal.aborted) return;
         if (result.kind === 'installer' && latest.current(result)) return;
       } catch {
@@ -41,7 +43,7 @@ function useInstallerWatch(address: string, onInstaller: (result: InstallerResul
       controller.abort();
       clearTimeout(timer);
     };
-  }, [url]);
+  }, [api, url]);
   return url;
 }
 
@@ -71,34 +73,13 @@ export function InstallBlockStep({
   onFingerprintChange: (value: string) => void;
   onContinue: () => void;
 }) {
+  const api = useRemoteVmApi();
   const url = useInstallerWatch(address, onInstaller);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const block = useQuery(
     {
-      queryKey: [HOME_BACKEND, 'host-install-block', minDiskGib],
-      queryFn: async ({ signal }) => {
-        const query = new URLSearchParams({ minDiskGib: String(minDiskGib) });
-        const response = await apiFetch(
-          `/api/remotes/host-install/block?${query.toString()}`,
-          { signal },
-          { backend: HOME_BACKEND },
-        );
-        const body = (await response.json().catch(() => null)) as {
-          block?: unknown;
-          message?: unknown;
-        } | null;
-        if (!response.ok) {
-          throw new Error(
-            typeof body?.message === 'string'
-              ? body.message
-              : 'Could not generate the install block.',
-          );
-        }
-        if (typeof body?.block !== 'string' || body.block.length === 0) {
-          throw new Error('The server returned an empty install block.');
-        }
-        return body.block;
-      },
+      queryKey: hostInstallBlockQueryKey(minDiskGib),
+      queryFn: ({ signal }) => api.readHostInstallBlock(minDiskGib, signal),
       staleTime: Infinity,
       retry: false,
     },

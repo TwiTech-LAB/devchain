@@ -46,7 +46,7 @@ import { HumanPromptStateService } from '../terminal/services/human-prompt-state
 import { createMockAgent } from '../../../test/factories/agent';
 import { createMockProject } from '../../../test/factories/project';
 import { ProjectCommunicationService } from './project-communication.service';
-import { createProjectWriteAdmissionStub } from '../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../storage/write-gate/testing/project-write-gate.stub';
 
 const SOURCE_ID = '11111111-1111-4111-8111-111111111111';
 const TARGET_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -222,7 +222,7 @@ describe('project delivery failure redaction workflow', () => {
     projectCommunication = new ProjectCommunicationService(
       storage as never,
       delivery,
-      createProjectWriteAdmissionStub() as never,
+      createProjectWriteGateStub() as never,
     );
   });
 

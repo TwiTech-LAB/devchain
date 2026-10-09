@@ -1,9 +1,10 @@
 import type {
+  SkillSourceStorage,
   CreateSkillSourceOptions,
   ExistingProjectsEnablement,
 } from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, notInArray } from 'drizzle-orm';
 import {
   communitySkillSources,
   localSkillSources,
@@ -34,11 +35,15 @@ import {
   normalizeSourceNameForSourceEnablement,
 } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
+import type { ProjectWriteGate } from '../../write-gate/project-write-gate';
 
 const logger = createLogger('SkillSourceStorageDelegate');
 
-export class SkillSourceStorageDelegate extends BaseStorageDelegate {
-  constructor(context: StorageDelegateContext) {
+export class SkillSourceStorageDelegate extends BaseStorageDelegate implements SkillSourceStorage {
+  constructor(
+    context: StorageDelegateContext,
+    private readonly gate?: ProjectWriteGate,
+  ) {
     super(context);
   }
 
@@ -189,6 +194,7 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
       updatedAt: now,
     };
 
+    this.assertSelectedProjectsWritable(options);
     try {
       await this.txRunner.runImmediateQueued(() => {
         const oppositeKind = this.db
@@ -271,10 +277,7 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
       }
 
       this.db.delete(skills).where(eq(skills.source, existingSource.name)).run();
-      this.db
-        .delete(sourceProjectEnabled)
-        .where(eq(sourceProjectEnabled.sourceName, existingSource.name))
-        .run();
+      this.deleteWritableProjectSwitches(existingSource.name);
       this.db
         .delete(communitySkillSources)
         .where(eq(communitySkillSources.id, existingSource.id))
@@ -338,6 +341,7 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
       updatedAt: now,
     };
 
+    this.assertSelectedProjectsWritable(options);
     try {
       await this.txRunner.runImmediateQueued(() => {
         const oppositeKind = this.db
@@ -419,10 +423,7 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
       }
 
       this.db.delete(skills).where(eq(skills.source, existingSource.name)).run();
-      this.db
-        .delete(sourceProjectEnabled)
-        .where(eq(sourceProjectEnabled.sourceName, existingSource.name))
-        .run();
+      this.deleteWritableProjectSwitches(existingSource.name);
       this.db.delete(localSkillSources).where(eq(localSkillSources.id, existingSource.id)).run();
       return existingSource;
     });
@@ -452,7 +453,8 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
       }
     }
 
-    if (projectRows.length === 0) {
+    const writableRows = projectRows.filter((project) => this.gate?.isWritable(project.id) ?? true);
+    if (writableRows.length === 0) {
       return;
     }
 
@@ -461,7 +463,7 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
     this.db
       .insert(sourceProjectEnabled)
       .values(
-        projectRows.map((project) => ({
+        writableRows.map((project) => ({
           id: randomUUID(),
           projectId: project.id,
           sourceName,
@@ -470,6 +472,26 @@ export class SkillSourceStorageDelegate extends BaseStorageDelegate {
         })),
       )
       .onConflictDoNothing()
+      .run();
+  }
+
+  private assertSelectedProjectsWritable(options: CreateSkillSourceOptions | undefined): void {
+    const choice = options?.existingProjects;
+    if (choice?.mode === 'selected') {
+      for (const projectId of choice.projectIds) this.gate?.assertWritable(projectId);
+    }
+  }
+
+  private deleteWritableProjectSwitches(sourceName: string): void {
+    const blockedProjectIds = this.gate?.listNonWritableProjectIds() ?? [];
+    this.db
+      .delete(sourceProjectEnabled)
+      .where(
+        and(
+          eq(sourceProjectEnabled.sourceName, sourceName),
+          notInArray(sourceProjectEnabled.projectId, blockedProjectIds),
+        ),
+      )
       .run();
   }
 

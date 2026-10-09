@@ -1,15 +1,15 @@
+import type { ProjectHostStorage, FrozenProject } from '../../interfaces/storage.interface';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../db/schema';
 import { PROJECT_REPLICA_SETTING_KEYS } from '@devchain/shared';
 import { ConflictError, NotFoundError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
-import type { FrozenProject } from '../../interfaces/storage.interface';
 import { dropProviderEnvKeysOfProject } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('ProjectHostStorageDelegate');
 
 /** Host-side storage for remote projects: the handoff freeze, release and lookups. */
-export class ProjectHostStorageDelegate extends BaseStorageDelegate {
+export class ProjectHostStorageDelegate extends BaseStorageDelegate implements ProjectHostStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
   }

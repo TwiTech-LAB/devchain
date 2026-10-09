@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { ProjectFrozenError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import {
@@ -6,6 +6,7 @@ import {
   type FrozenProject,
   type ProjectHostStorage,
 } from '../../storage/interfaces/storage.interface';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 const logger = createLogger('ProjectFreezeService');
 
@@ -15,40 +16,32 @@ const logger = createLogger('ProjectFreezeService');
  * a query.
  */
 @Injectable()
-export class ProjectFreezeService implements OnModuleInit {
-  private readonly frozen = new Map<string, string>();
-
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: ProjectHostStorage) {}
-
-  async onModuleInit(): Promise<void> {
-    for (const { projectId, frozenAt } of await this.storage.listFrozenProjects()) {
-      this.frozen.set(projectId, frozenAt);
-    }
-    if (this.frozen.size > 0) {
-      logger.info({ projectIds: [...this.frozen.keys()] }, 'Restored frozen projects');
-    }
-  }
+export class ProjectFreezeService {
+  constructor(
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectHostStorage,
+    private readonly gate: ProjectWriteGate,
+  ) {}
 
   isFrozen(projectId: string): boolean {
-    return this.frozen.has(projectId);
+    return this.gate.isFrozen(projectId);
   }
 
   frozenProjectIds(): string[] {
-    return [...this.frozen.keys()];
+    return this.gate.frozenProjectIds();
   }
 
   /** Throws `ProjectFrozenError` (423 `PROJECT_FROZEN`) while the project is frozen. */
   assertWritable(projectId: string): void {
-    if (this.frozen.has(projectId)) {
+    if (this.gate.isFrozen(projectId)) {
       throw new ProjectFrozenError(projectId);
     }
   }
 
   /** Idempotent: freezing a frozen project keeps its original `frozenAt`. */
   async freeze(projectId: string): Promise<FrozenProject> {
-    const frozenAt = this.frozen.get(projectId) ?? new Date().toISOString();
+    const frozenAt = this.gate.getFrozenAt(projectId) ?? new Date().toISOString();
     await this.storage.setProjectFrozen(projectId, frozenAt);
-    this.frozen.set(projectId, frozenAt);
+    this.gate.markFrozen(projectId, frozenAt);
     logger.info({ projectId }, 'Project frozen');
     return { projectId, frozenAt };
   }
@@ -58,19 +51,19 @@ export class ProjectFreezeService implements OnModuleInit {
    * frozen (an import). Keeps an existing `frozenAt`; returns the one in force.
    */
   hold(projectId: string, frozenAt: string): string {
-    const current = this.frozen.get(projectId) ?? frozenAt;
-    this.frozen.set(projectId, current);
+    const current = this.gate.getFrozenAt(projectId) ?? frozenAt;
+    this.gate.markFrozen(projectId, current);
     return current;
   }
 
   async thaw(projectId: string): Promise<void> {
     await this.storage.setProjectFrozen(projectId, null);
-    this.frozen.delete(projectId);
+    this.gate.markThawed(projectId);
     logger.info({ projectId }, 'Project thawed');
   }
 
   /** Drops the in-memory flag of a project whose row no longer exists. */
   forget(projectId: string): void {
-    this.frozen.delete(projectId);
+    this.gate.markThawed(projectId);
   }
 }

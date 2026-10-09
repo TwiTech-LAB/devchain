@@ -4,9 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { INestApplication } from '@nestjs/common';
 import * as config from '../../../common/config/env.config';
+import { FIXTURE_TLS_DIR, OTHER_TLS_DIR } from '../../../common/test/tls-fixture';
 import { registerHostTls, resolveHostTls } from './host-tls.setup';
-
-const FIXTURES = join(__dirname, '../../../../../host-bootstrap/test/fixtures');
 
 describe('resolveHostTls', () => {
   let root: string;
@@ -31,8 +30,8 @@ describe('resolveHostTls', () => {
     etcDir = join(root, 'etc');
     keyFile = join(root, 'key.pem');
     certFile = join(root, 'cert.pem');
-    copyFileSync(join(FIXTURES, 'tls/key.pem'), keyFile);
-    copyFileSync(join(FIXTURES, 'tls/cert.pem'), certFile);
+    copyFileSync(join(FIXTURE_TLS_DIR, 'key.pem'), keyFile);
+    copyFileSync(join(FIXTURE_TLS_DIR, 'cert.pem'), certFile);
   });
 
   afterEach(() => {
@@ -78,7 +77,7 @@ describe('resolveHostTls', () => {
   });
 
   it('refuses a key and a certificate that are not one pair', () => {
-    copyFileSync(join(FIXTURES, 'tls-other/cert.pem'), certFile);
+    copyFileSync(join(OTHER_TLS_DIR, 'cert.pem'), certFile);
     expect(() => resolve()).toThrow(/not a usable pair/);
   });
 
@@ -127,8 +126,8 @@ describe('registerHostTls', () => {
     const env = config.getEnvConfig();
     jest.spyOn(config, 'getEnvConfig').mockReturnValue({
       ...env,
-      DEVCHAIN_HOST_TLS_KEY_FILE: join(FIXTURES, 'tls/key.pem'),
-      DEVCHAIN_HOST_TLS_CERT_FILE: join(FIXTURES, 'tls/cert.pem'),
+      DEVCHAIN_HOST_TLS_KEY_FILE: join(FIXTURE_TLS_DIR, 'key.pem'),
+      DEVCHAIN_HOST_TLS_CERT_FILE: join(FIXTURE_TLS_DIR, 'cert.pem'),
     });
     const server = createServer();
     const [httpListener] = server.listeners('connection');

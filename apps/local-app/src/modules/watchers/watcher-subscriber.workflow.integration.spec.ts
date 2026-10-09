@@ -14,8 +14,8 @@ import { TeamsService } from '../teams/services/teams.service';
 import { AgentMessageDeliveryService } from '../agent-message-delivery/agent-message-delivery.service';
 import type { Watcher, Subscriber, Agent } from '../storage/models/domain.models';
 import type { SessionDto } from '../sessions/dtos/sessions.dto';
-import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../storage/write-gate/testing/project-write-gate.stub';
 import { createMockAgent as createAgentFixture } from '../../../test/factories';
 
 /**
@@ -199,7 +199,7 @@ describe('Watcher → Subscriber E2E Flow', () => {
     module = await Test.createTestingModule({
       imports: [EventEmitterModule.forRoot({ wildcard: false, maxListeners: 20 })],
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         WatcherRunnerService,
         SubscriberExecutorService,
         AutomationSchedulerService,

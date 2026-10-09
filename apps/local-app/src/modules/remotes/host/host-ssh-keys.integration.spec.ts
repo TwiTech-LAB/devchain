@@ -13,15 +13,16 @@ import { HostHelperService } from './host-helper.service';
 import type { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { AllExceptionsFilter } from '../../../common/filters/http-exception.filter';
+import { generateEd25519PublicKey } from '../../../common/test/ssh-key.fixture';
 
 describe('Host SSH public key API', () => {
   let app: NestFastifyApplication;
   let home: string;
   let etcDir: string;
   let savedEtcDir: string | undefined;
-  const key = utils.generateKeyPairSync('ed25519').public;
+  const key = generateEd25519PublicKey();
   const other = utils.generateKeyPairSync('rsa', { bits: 2048 }).public;
-  const third = utils.generateKeyPairSync('ed25519').public;
+  const third = generateEd25519PublicKey();
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'devchain-host-ssh-'));

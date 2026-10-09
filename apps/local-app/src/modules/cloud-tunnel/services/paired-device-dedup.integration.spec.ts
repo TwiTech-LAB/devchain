@@ -46,6 +46,9 @@ import { E2eePairingService } from '../../e2ee/services/e2ee-pairing.service';
 import { PairedDeviceWorkspaceAccessService } from '../../e2ee/services/paired-device-workspace-access.service';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
 import { NotFoundError } from '../../../common/errors/error-types';
+import { Test } from '@nestjs/testing';
+import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
+import { E2eeTrustController } from '../../e2ee/controllers/e2ee-trust.controller';
 
 const INSTANCE_ID = 'inst-dedup';
 
@@ -133,6 +136,46 @@ describe('Paired-device-dedup convergence matrix (Phase 1 Task:5) — real store
       ...(installId !== undefined ? { installId } : {}),
     });
   }
+
+  it('preserves signed enrollment when QR completion follows a signed adopt', async () => {
+    const phone = await mobileEnvelopeFor(0xe11011);
+    trust.adoptPeerKeyTofu(phone, INSTALL_ID, { enrollment: 'signed' });
+
+    await qrComplete('signed-enrollment-qr', phone.kid, phone.publicKeyB64, INSTALL_ID);
+
+    expect(deviceStore.get(phone.kid)).toMatchObject({
+      enrollment: 'signed',
+      trust: 'verified',
+      verifiedVia: 'qr',
+    });
+  });
+
+  it('returns enrollment in GET /api/e2ee/devices without key material', async () => {
+    const phone = await mobileEnvelopeFor(0xe11012);
+    trust.adoptPeerKeyTofu(phone, INSTALL_ID, { enrollment: 'signed' });
+    const module = await Test.createTestingModule({
+      controllers: [E2eeTrustController],
+      providers: [
+        { provide: E2eeTrustService, useValue: trust },
+        { provide: PairedDeviceWorkspaceAccessService, useValue: access },
+      ],
+    }).compile();
+    const app = module.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
+      logger: false,
+    });
+    try {
+      await app.init();
+      const response = await app.inject({ method: 'GET', url: '/api/e2ee/devices' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual([
+        expect.objectContaining({ kid: phone.kid, enrollment: 'signed' }),
+      ]);
+      expect(response.json()[0]).not.toHaveProperty('publicKeyB64');
+    } finally {
+      await app.close();
+    }
+  });
 
   beforeEach(() => {
     sqlite = new Database(':memory:');

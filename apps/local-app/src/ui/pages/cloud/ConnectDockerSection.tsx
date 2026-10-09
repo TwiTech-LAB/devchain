@@ -27,7 +27,7 @@ import {
   SelectValue,
 } from '@/ui/components/ui/select';
 import { BusyStatus } from '@/ui/components/ui/spinner';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import { cn } from '@/ui/lib/utils';
 import type { DockerPresenceState } from './docker-presence';
 import { formatBytes, formatDuration } from './file-sync-display';
@@ -159,39 +159,6 @@ export function formatCopyRange(minSeconds: number, maxSeconds: number): string 
   return `${formatDuration(minSeconds)}–${formatDuration(maxSeconds)} (approximate)`;
 }
 
-function isPlan(value: unknown): value is DockerPlan {
-  const plan = value as Partial<DockerPlan> | null;
-  return (
-    typeof plan?.canConnect === 'boolean' &&
-    typeof plan?.fit === 'string' &&
-    Array.isArray(plan?.items) &&
-    typeof plan?.availability === 'object' &&
-    plan?.availability !== null
-  );
-}
-
-async function fetchPlan(projectId: string, payload: string, signal: AbortSignal) {
-  const response = await apiFetch(
-    `/api/projects/${encodeURIComponent(projectId)}/docker/plan`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload,
-      signal,
-    },
-    { backend: HOME_BACKEND },
-  );
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(
-      (body as { message?: string } | null)?.message ??
-        `The Docker plan failed (${response.status})`,
-    );
-  }
-  if (!isPlan(body)) throw new Error('The server returned an invalid Docker plan.');
-  return body;
-}
-
 /** The included items with their mode: the chosen one, else the first choice. */
 function selectionOf(
   items: readonly DockerPlanItem[],
@@ -288,6 +255,7 @@ function DockerPlanSection({
   onStateChange,
   managedVm = false,
 }: DockerSectionProps) {
+  const api = useRemoteVmApi();
   const [plan, setPlan] = useState<DockerPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [included, setIncluded] = useState<Record<string, boolean>>({});
@@ -317,7 +285,7 @@ function DockerPlanSection({
       setError(null);
       setPending(true);
       try {
-        const body = await fetchPlan(projectId, JSON.stringify({ remoteId }), signal);
+        const body = await api.readDockerPlan(projectId, { remoteId }, signal);
         if (signal.aborted) return;
         const previous = latest.current;
         const nextIncluded: Record<string, boolean> = {};
@@ -356,7 +324,7 @@ function DockerPlanSection({
         setPlan(body);
         if (previous.plan && body.availability.available) {
           const items = selectionOf(body.items, nextIncluded, nextModes, nextData, nextAcceptance);
-          const refreshed = await fetchPlan(projectId, JSON.stringify({ remoteId, items }), signal);
+          const refreshed = await api.readDockerPlan(projectId, { remoteId, items }, signal);
           if (signal.aborted) return;
           setPlan(refreshed);
           plannedRef.current = JSON.stringify({ remoteId, items });
@@ -373,7 +341,7 @@ function DockerPlanSection({
     };
     void run();
     return () => requestRef.current?.abort();
-  }, [projectId, remoteId]);
+  }, [api, projectId, remoteId]);
 
   const requestPlan = async (items: DockerSelectionItem[]) => {
     const payload = JSON.stringify({ remoteId, items });
@@ -383,7 +351,7 @@ function DockerPlanSection({
     const signal = nextRequest();
     setPending(true);
     try {
-      const body = await fetchPlan(projectId, payload, signal);
+      const body = await api.readDockerPlan(projectId, { remoteId, items }, signal);
       if (signal.aborted) return;
       setPlan(body);
     } catch (cause) {

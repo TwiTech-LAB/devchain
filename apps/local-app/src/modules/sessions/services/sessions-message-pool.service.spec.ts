@@ -167,6 +167,40 @@ describe('SessionsMessagePoolService', () => {
   });
 
   describe('Debounce behavior', () => {
+    // Module-unit: fake timers and a rejected public flush expose rejection handling without terminal I/O.
+    it.each([
+      { timer: 'max-wait', protectedInput: false },
+      { timer: 'debounce', protectedInput: false },
+      { timer: 'max-wait', protectedInput: true },
+      { timer: 'debounce', protectedInput: true },
+    ])(
+      'logs a rejected $timer flush for protectedInput=$protectedInput',
+      async ({ timer, protectedInput }) => {
+        mockSettings.getMessagePoolConfigForProject.mockReturnValue({
+          enabled: true,
+          delayMs: timer === 'debounce' ? 100 : 1000,
+          maxWaitMs: timer === 'max-wait' ? 100 : 1000,
+          maxMessages: 10,
+          separator: '\n---\n',
+        });
+        const error = new Error('flush rejected with provider details');
+        const flush = jest.spyOn(service, 'flushNow').mockRejectedValueOnce(error);
+        await service.enqueue('agent-1', 'Message', {
+          source: 'test',
+          deferWhileHumanTyping: protectedInput,
+          failureDisclosure: protectedInput ? 'project-safe' : 'legacy',
+        });
+
+        await jest.advanceTimersByTimeAsync(100);
+
+        expect(flush).toHaveBeenCalledTimes(1);
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          { agentId: 'agent-1', error: protectedInput ? 'DELIVERY_FAILED' : error },
+          timer === 'max-wait' ? 'Max wait flush failed' : 'Debounce flush failed',
+        );
+      },
+    );
+
     it('should reset timer on each enqueue', async () => {
       await service.enqueue('agent-1', 'Message 1', { source: 'test' });
       await jest.advanceTimersByTimeAsync(5000);
@@ -405,7 +439,6 @@ describe('SessionsMessagePoolService', () => {
       await jest.advanceTimersByTimeAsync(60000);
       await service.flushNow('agent-1');
       await service.flushAll();
-      service.reloadConfig();
       expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
 
       const idleSession = {

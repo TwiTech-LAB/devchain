@@ -1,3 +1,4 @@
+import type { ProjectWorkspaceStorage } from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
 import {
   ConflictError,
@@ -44,7 +45,10 @@ const SELECT_WORKSPACES = `
   FROM project_workspaces workspace
 `;
 
-export class ProjectWorkspaceStorageDelegate extends BaseStorageDelegate {
+export class ProjectWorkspaceStorageDelegate
+  extends BaseStorageDelegate
+  implements ProjectWorkspaceStorage
+{
   constructor(context: StorageDelegateContext) {
     super(context);
   }

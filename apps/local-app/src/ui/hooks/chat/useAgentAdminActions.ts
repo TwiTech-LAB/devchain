@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { chatQueryKeys, type AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import { teamsQueryKeys } from '@/ui/lib/teams';
@@ -60,7 +61,7 @@ export function useAgentAdminActions({
   const { toast, showError } = useToastHelpers();
 
   const invalidateAgentAndTeamCaches = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+    queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) });
     queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
     queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
     if (projectId) {

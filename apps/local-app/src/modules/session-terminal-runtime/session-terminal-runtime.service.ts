@@ -5,6 +5,7 @@ import { ProviderAdapterFactory } from '../providers/adapters/provider-adapter.f
 import { ClaudeLaunchSettingsMaterializerService } from '../runtime-context-capture/claude-launch-settings-materializer.service';
 import { CodexPluginProfileMaterializerService } from '../runtime-context-capture/codex-plugin-profile-materializer.service';
 import { RuntimeContextCaptureService } from '../runtime-context-capture/runtime-context-capture.service';
+import type { ProviderSessionArtifacts } from '../runtime-context-capture/provider-artifacts.types';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { getRawSqliteClient } from '../storage/db/sqlite-raw';
 import type {
@@ -13,6 +14,12 @@ import type {
 } from './session-terminal-runtime.types';
 
 const logger = createLogger('SessionTerminalRuntimeService');
+
+interface SessionArtifactOwner {
+  artifacts: ProviderSessionArtifacts;
+  errorCode: string;
+  cleanupFailureMessage: string;
+}
 
 interface SessionTerminalRow {
   tmux_session_id: string | null;
@@ -23,15 +30,28 @@ interface SessionTerminalRow {
 @Injectable()
 export class SessionTerminalRuntimeService {
   private readonly sqlite: ReturnType<typeof getRawSqliteClient>;
+  private readonly artifactOwners: readonly SessionArtifactOwner[];
 
   constructor(
     @Inject(DB_CONNECTION) db: BetterSQLite3Database,
     private readonly providerAdapterFactory: ProviderAdapterFactory,
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
-    private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
-    private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
+    claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
+    codexPluginProfiles: CodexPluginProfileMaterializerService,
   ) {
     this.sqlite = getRawSqliteClient(db);
+    this.artifactOwners = [
+      {
+        artifacts: claudeLaunchSettings,
+        errorCode: 'CLAUDE_SETTINGS_CLEANUP_FAILED',
+        cleanupFailureMessage: 'Failed to clean Claude launch settings after session termination',
+      },
+      {
+        artifacts: codexPluginProfiles,
+        errorCode: 'CODEX_PROFILE_CLEANUP_FAILED',
+        cleanupFailureMessage: 'Failed to clean Codex profile lifecycle after session termination',
+      },
+    ];
   }
 
   getDescriptor(sessionId: string): SessionTerminalRuntimeDescriptor {
@@ -85,11 +105,7 @@ export class SessionTerminalRuntimeService {
 
   retireConfirmedLoss(sessionId: string, reason: string): void {
     logger.warn({ sessionId, reason }, 'Marking session as failed due to confirmed tmux loss');
-    this.runtimeContextCapture.clear(sessionId);
-    this.claudeLaunchSettings.cleanupSessionSync(sessionId);
-    void this.codexPluginProfiles.cleanupSession(sessionId).catch((error) => {
-      logger.warn({ error, sessionId }, 'Failed to clean Codex profile lifecycle after tmux loss');
-    });
+    void this.releaseProviderArtifacts(sessionId);
 
     const now = new Date().toISOString();
     this.sqlite
@@ -101,8 +117,42 @@ export class SessionTerminalRuntimeService {
       .run(now, now, sessionId);
   }
 
-  async reconcileCodexStartup(nonLiveSessionIds: ReadonlySet<string>): Promise<void> {
-    await this.codexPluginProfiles.reconcileStartup(nonLiveSessionIds);
+  releaseProviderArtifacts(sessionId: string): Promise<void> {
+    this.runtimeContextCapture.clear(sessionId);
+    for (const owner of this.artifactOwners) {
+      void this.attemptCleanup(sessionId, owner, () =>
+        owner.artifacts.cleanupSessionSync?.(sessionId),
+      );
+    }
+
+    return this.cleanupProviderArtifacts(sessionId);
+  }
+
+  async reconcileProviderStartup(nonLiveSessionIds: ReadonlySet<string>): Promise<void> {
+    for (const owner of this.artifactOwners) {
+      await owner.artifacts.reconcileStartup?.(nonLiveSessionIds);
+    }
+  }
+
+  private async cleanupProviderArtifacts(sessionId: string): Promise<void> {
+    for (const owner of this.artifactOwners) {
+      if (!owner.artifacts.cleanupSession) continue;
+      await this.attemptCleanup(sessionId, owner, () =>
+        owner.artifacts.cleanupSession?.(sessionId),
+      );
+    }
+  }
+
+  private async attemptCleanup(
+    sessionId: string,
+    owner: SessionArtifactOwner,
+    cleanup: () => void | Promise<void>,
+  ): Promise<void> {
+    try {
+      await cleanup();
+    } catch {
+      logger.warn({ sessionId, errorCode: owner.errorCode }, owner.cleanupFailureMessage);
+    }
   }
 
   private safeDescriptor(

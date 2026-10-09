@@ -1,0 +1,481 @@
+# Changelog
+
+Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
+
+## 0.24.2
+
+- Remote VMs: smoother and more reliable Connect, Disconnect and file sync, with better Docker support and a new Projects tab
+- Host image 1.4.0: more tools for agents, and the VM user gets the same user ids as this PC, which moving Docker containers needs
+- Dev Template: clearer rules for writing tests, and agents run only the affected tests before review
+- Stability: skill sync no longer fills the temp folder, and queued test runs no longer overload the machine
+
+## 0.24.1
+
+- Mobile app 1.10.2: a more live and responsive chat experience
+- Remote VMs: more control over Connect. You can cancel it, choose which Docker containers to move, and see progress while it runs
+- Remote VMs: more reliable Connect and sign-in
+- Stability: smoother pasting into Claude, and restored agents keep their DevChain tools
+- Teams and templates: teams keep their order after a template update, and the Dev Template has updated defaults
+
+## 0.24.0
+
+- https://devchain.cc/releases/0.24.0/
+- Remote VMs: run a project's agents on your own Proxmox or Ubuntu/Debian VM, from the same app, over an encrypted connection.
+- Stability: smoother terminals and transcripts, and full Codex history
+- Look: Dark is the default theme, and Ocean has higher contrast
+- Dev Template: renamed to DevChain Development Flow
+- Mobile app 1.10.0: one project list across home and your VMs, and the last chat reopens at launch
+
+## 0.23.4
+
+- [New] MCP: agents can patch epic descriptions and add several relations on create
+- [New] Board: remove an epic relation from the Board preview
+- [Fix] Automation: "Coder reset" can wait while epics are in chosen statuses, so it keeps coders other phases still need
+- [Impr] Dev Template: GPT-6 family models, a skill review prompt, and better bundled skills
+- [New] Skills: "Project skill review" suggests which skills to enable or disable, based on usage
+- [Perf] MCP: smaller responses use less agent context; epic lists return description previews by default
+- [Fix] Skills: agents no longer load disabled skills, and edits to any local skill file now sync
+
+## 0.23.3
+
+- [Perf] Sessions: lower CPU and memory use with many agents running
+- [New] Terminal: "Send now" delivers queued messages without waiting
+- [Fix] Terminal: finished agents no longer stay marked busy
+- [Fix] Chat: model and context size no longer disappear while an agent works
+- [New] Integrations: import the same ClickUp or Jira task into several projects
+- [Fix] Integrations: "Reload remote" works again after a remote change
+
+## 0.23.2
+
+- Performance: reduced CPU usage in long-running sessions and smoother live transcript updates in the web UI
+
+## 0.23.1
+
+- Improved time tracking
+- Dev Template: clearer Architect planning instructions with more focused research and review rounds
+
+## 0.23.0
+
+- Integrations: ClickUp and Jira connections, boards, and settings now belong to each project; synced subtasks hide local project paths
+- Epics: link related and blocking work across a workspace, preview relationships on the Board, and switch between an Epic and its linked task
+- Time tracking: assign unlogged agent activity to Epics, include team research and related work, and export only new time on the dates it happened
+- Remote boards: clearer linked-task and unlogged-time indicators, editable time entries, and more reliable ClickUp time confirmation
+- Stability: fewer Claude startup trust prompts, correct context limits for new Claude models, and fixes for model-selection crashes
+- Dev Template: improved code reviews and planning prompts
+- Mobile app 1.9.0: clearer transcript updates when reopening cached chats and fixes for missing-transcript errors
+
+## 0.22.1
+
+- [Impr] Dev Template: tasks now go to a Coder matching the task's tier instead of staying with an overqualified worker
+
+## 0.22.0
+
+- ClickUp and Jira Integration — assigned work appears on the Board, import tasks as Epics, subtasks, time logging
+- Board: Estimated agent time totals for Epics and their sub-epics, more compact cards
+- Terminal: agent messages wait while you have an unsent draft, and Ctrl+C with a selection copies instead of interrupting the agent
+- Notifications: phone alerts now work in multi-workspace mode and follow each device's workspace access
+- Mobile app 1.8.0: unified workspace/project switcher, more stable reconnections
+
+## 0.21.0
+
+- Workspaces: group your projects into workspaces, and give each agent and paired phone access to only the workspaces it needs
+- Dev Template: better task routing to Coders and clearer Coder instructions, with automatic cleanup for sub-agents and automatic compact for the Epic Manager and Code Reviewer
+- Subscribers: new Terminate Session and Delete Agent actions
+- Agents: the Agents page is now configuration-only — launch, restart, and terminate live in Chat
+- Devices: optional local alias for paired devices, messages from a phone say which device sent them, and logging out no longer resets a phone's access
+- Startup: fixed a Linux startup hang and false timeout caused by slow DNS (GitHub #18)
+- Mobile app 1.7.0
+
+## 0.20.3
+
+- [Bug Fix] Plugins: Codex sessions with plugin policy launch again on Codex CLI 0.147 and newer
+
+## 0.20.2
+
+- [Impr] Projects: template upgrades now open the same configuration wizard as imports
+- [Impr] Skills: DevChain's own skills ship as a built-in source that is enabled by default in every project
+- [Impr] Skills: three new built-in skills — Create Commit, Code Simplifier, and Simplified Technical English (ASD-STE100) for agent output
+- [Impr] Chat: the event bus shows the direction of cross-project messages
+- [Bug Fix] Terminal: typing is accepted right after a reconnect instead of being ignored
+
+## 0.20.1
+
+- [Impr] Subscribers: event filters can combine several conditions with AND/OR in one rule
+- [Impr] Teams: adding a member no longer wakes an offline team lead just to deliver the membership notice
+- [Impr] Template updates: Brainstormer ships as Project Owner so cross-project messaging works out of the box, refreshed planning and standards prompts
+- [Bug Fix] Sessions: agents no longer show up as lost or crashed while a session is still starting
+- [Bug Fix] Terminal: after an idle tab, terminals reconnect on their own instead of staying black
+
+## 0.20.0
+
+- Projects: designate an agent as the Project Owner
+- Cross-project messaging: Project Owners can discover other local projects and message each other
+- Plugins: new Plugins page for Claude provider plugins — enable or disable each plugin globally or per project
+- Event bus: persisted event history is pruned after 30 days
+- Subscribers: the "Send Message to Agent" action can target a different agent by name
+
+## 0.19.1
+
+- Template updates
+
+## 0.19.0
+
+- Event bus: watch your team work in realtime — agent messages, session starts, and epic handoffs
+- Chat: stale "Idle" activity badges are gone; agent activity now shows through the event bus instead
+- Notifications: Smart notifications improvements
+- Cloud: event forwarding is enabled by default for new projects
+- Runtime: switched to SQLite's Node-API driver on Node 24
+- Template updates
+
+## 0.18.0
+
+- Custom prompts: build your own and insert them into any agent chat on web with Alt+Shift+P
+- DevChain MCP: extended agent info — provider config, team memberships, live online/busy presence, and open assigned epics
+- Providers: supply your own Claude settings JSON, with one-click restore to the DevChain default
+- Chat: busy agents get an animated halo and clearer status dots in the sidebar
+- Mobile: signing in recovers on its own after a server certificate rotation instead of staying stuck
+- Worktrees: temporarily hidden while the feature is reworked
+- Template updates
+
+## 0.17.2
+
+- Performance: much lower memory usage when reading session transcripts — long-running sessions no longer bloat the app over time
+- Sign-in stability: fixed unexpected logouts on desktop and mobile — temporary network hiccups now retry silently instead of signing you out
+- Security: hardened webhook verification in the cloud bridge
+- Terminal: live history updates restored, smoother scrolling, and more reliable session restore
+- Projects: importing a template no longer overwrites your already-configured providers
+- Template updates
+
+## 0.17.1
+
+- Setup wizard: show the config's effort in the Effort field's Default label
+- Mobile: chat empty-state and preferences fixes
+- Template updates
+
+## 0.17.0
+
+- Setup wizard: multi-step project setup and template import (Providers, Agents, Teams, Review), with provider selection driving preset and per-agent configuration
+- Reasoning effort: per-provider effort levels as a first-class parameter, selectable as provider defaults and overridable per agent from a new chat Overrides dialog
+- Mobile: durable message outbox with transcript cache and app version gate, plus an on-screen key pad for terminal prompts
+- Bug fixes: tmux scrollback duplication on resize, terminal viewport jumps, seed capture timing, and session restore blocked by stale terminal entries
+- Internal refactoring across template export/import, event automation, worktree runtime, mobile hooks, and UI scaffolding
+
+## 0.16.2
+
+- Template fix
+
+## 0.16.1
+
+- Template updates
+
+## 0.16.0
+
+- New provider: Google Antigravity (agy), with backend, MCP, UI, mobile, infra, and docs parity
+- New provider: GitHub Copilot CLI (copilot), with deterministic session binding, UI, mobile, and session-start lifecycle hooks
+- Gemini CLI provider retired; templates now redirect to Antigravity (agy)
+- E2EE hardening: paired-device dedup (supersede-by-install-id, revoke-on-logout) plus a QR-pairing first-start race fix with in-session self-heal
+- Mobile chat: agent busy dots moved into the chat header with an idle state
+- Codex: startup update-check disabled at launch
+
+## 0.15.0
+
+- Details: https://devchain.cc/releases/0.15.0/
+- DevChain mobile app (open beta on iOS TestFlight and Android): chat with agent teams, answer AskUserQuestion prompts, manage agents, session history, live tmux viewport, and board epics with assignment and comments
+- End-to-end encryption between desktop and mobile: RPC, push, and viewport lanes sealed with X25519 + XChaCha20-Poly1305, so the cloud bridge only relays ciphertext it cannot read; paired-devices view with safety numbers, fail-closed receive, and device-bound refresh tokens
+- Mobile push notifications with smart notifications, quiet hours, push categories, and per-project forwarding (iOS via APNs)
+
+## 0.14.1
+
+- Terminal: stabilize seed rendering and viewport alignment
+- Teams: template updates
+- Bug fixes: preset cleanup after agent deletion
+
+## 0.14.0
+
+- Scheduled epics: storage, runner, API events, automation UI, and form portability
+- MCP: epic status returned as label; reduced write response payloads
+- Terminal: normalize Claude line endings
+- Bug fixes: chat thread metadata
+- Bumped worktree provider CLI versions and pricing data
+
+## 0.13.1
+
+- Bug fixes: terminal restore, environment editor, chat teams, team seeding
+
+## 0.13.0
+
+- Module architecture
+- Session Reader: improved UI
+- Previous Sessions UX: pagination, rename, copy session ID, delete
+- Terminal: light theme, extended ANSI palette and app-theme sync, OSC 52 clipboard forwarding (UTF-8), Shift-drag copy, per-provider line-ending normalization
+- Chat sidebar redesign with remembered thread and selected-agent highlight
+- MCP: epic delete tool; agent description exposed in devchain_team members
+- teams-dev flow updates: smarter work distribution, shorter review loops
+- Deprecated: 5-agents-dev template (use teams-dev)
+
+## 0.12.4
+
+- Board: pin a saved filter as the project default
+- Fix dev-mode Ctrl+C child cleanup
+- Fix Gemini runtime readiness in terminals
+
+## 0.12.3
+
+- Remote/VM binding: --host flag for devchain start
+- Gemini: auto-provision trusted-folders and per-project MCP at project lifecycle
+- Fix: Gemini mcp list returned empty under pipe
+- Template updates
+
+## 0.12.2
+
+- Option to restore previous agent sessions
+- Template updates
+
+## 0.12.1
+
+- Fix migration ordering
+
+## 0.12.0
+
+- Details: https://devchain.cc/releases/0.12.0/
+- Agent Teams: group agents into named teams with team leads that do real management (Planning + Builders shipped in the new teams-dev template)
+- Auto-scaling Builders: Epic Manager picks the right model per task, reuses idle workers, and adds Coders as workload grows — within capacity caps
+- Parallel planning: add multiple Architects to the Planning team and the Brainstormer gathers independent framings before drafting the master plan
+- Configure Teams at project creation: per-team provider-config allowlist, plus an autonomous-creation toggle to pause team-lead scaling
+- Team management UI: dedicated /teams page, Chat sidebar grouping with quick add, Edit team modal (capacity + autonomous toggle), agent Clone/Restart/Delete
+- MCP team tools: devchain_team, devchain_teams_list, devchain_teams_members_list, devchain_teams_create_agent, devchain_teams_delete_agent, devchain_teams_configs_list
+- Project import preconfig dialog for team templates with sanitized provider-config selection
+- Handlebars prompt engine with team variables; live updates for agent and team mutations across all chat clients
+- Recommended replacement for 5-agents-dev — both 5-agents-dev and 3-agents-dev remain bundled and supported
+
+## 0.11.5
+
+- Auto-propagate new providers to existing projects with binary rescan
+- Add self-assignment hint to devchain_update_epic MCP response
+- GLM config set to 5.1
+- Template updates
+
+## 0.11.4
+
+- Model-aware auto-compact threshold based on context window size
+- Confirmed terminal message delivery
+
+## 0.11.3
+
+- Claude 1M context support via model alias rewriting (Opus only) with auto-probe on import
+- GPT 5.4 support
+- Fixed code review diff in dark theme
+- Template updates
+- Updated session reader pricing data
+
+## 0.11.2
+
+- Fix worktree project queries and selection gated on runtime resolution
+
+## 0.11.1
+
+- Preserve agent model override through export/import and preset application
+- Worktree creation: copy gitignored files and UX improvements
+- Show provider mismatch warnings after template creation
+- Fix worktree tabs and branch dropdown scoped to wrong project
+- Fix worktree tab double-click-to-switch bug
+- Updated model pricing
+
+## 0.11.0
+
+- Details: https://devchain.cc/releases/0.11.0/
+- Session Reader: full transcript viewer for active sessions with token usage, cost tracking, AI turn grouping, and hotspot detection
+- Context tracking: real-time context window progress bars per agent with token tooltips
+- Provider model override: change provider and model per agent from the context menu
+- OpenCode provider integration with GLM model support
+- Multi-provider transcript support for Claude Code and Codex
+- Inline session summary bar in terminals: model, cost, context %, compactions
+- Major refactoring: decomposed storage, MCP, projects services and UI pages into focused modules
+
+## 0.10.5
+
+- macOS: fix worktree creation without Docker and improve socket detection
+- Fix provider validation and mismatch warnings on template import
+- Fix host preflights skipped when orchestration enabled without Docker
+- Fix auto-created project on fresh start — let user pick template instead
+
+## 0.10.4
+
+- Enable community/local skill sources by default on new projects
+- 5-agents template: assign skills in planning
+
+## 0.10.3
+
+- Templates improvements
+
+## 0.10.2
+
+- Fix Claude auto-compact threshold incorrectly set to 10% (corrected to 85%)
+
+## 0.10.1
+
+- Update README with worktrees, container isolation, and skills documentation
+
+## 0.10.0
+
+- Details: https://devchain.cc/releases/0.10.0/
+- Worktrees: launch isolated agent environments as Docker containers or local processes, each with their own branch, terminal, and chat
+- Container isolation: auto-provision worktree image from GHCR, run agents as non-root with full git identity and Docker CLI access
+- Worktree UI: central chat hub with per-worktree terminals, inline agent chat, preset and provider switching, real-time status updates
+- Claude Code hooks: integrate Claude Code hook events with DevChain automation
+- Auto-compact: moved to non-blocking recommendation with provider-specific thresholds
+- UI: compact collapsible sidebar, persistent section state, board context menu with move-to-worktree action
+- Templates: 5-agents-dev rename and new 3-agents-dev lightweight template
+
+## 0.9.2
+
+- Per-project source controls, local folder sources, and stale skill cleanup
+- Auto-sync skills on new source creation
+
+## 0.9.1
+
+- Community skill sources: add any GitHub repo as a skill source via UI
+
+## 0.9.0
+
+- Details: https://devchain.cc/releases/0.9.0/
+- Skills management module with sync engine and per-project controls
+- Five skill source adapters: Anthropic, OpenAI, Vercel, Trail of Bits, Microsoft
+- Source-level enable/disable with per-skill overrides
+- Skills UI: browsing, search, detail drawer, usage stats
+- MCP tools: devchain_list_skills and devchain_get_skill for agent access
+- DevLoop template v1.0.6: skills integration in SubBSM, Epic Manager, and Coder SOPs
+
+## 0.8.5
+
+- Fix epic re-assignment notification when assigning to same agent
+
+## 0.8.4
+
+- Workaround for claude-cli auto-compact issue https://github.com/anthropics/claude-code/issues/7530
+- Check templates on start
+
+## 0.8.3
+
+- Claude auto-compact guard: blocks sessions when Claude's auto-compact conflicts with Devchain context management
+- Chat page help guide with improved markdown rendering
+
+## 0.8.2
+
+- Updated Dev Loop template
+
+## 0.8.1
+
+- Updated Dev Loop template (v1.0.2)
+
+## 0.8.0
+
+- Preset system in templates: switch your favorite AI teams with presets with a single click
+- Multi-provider support: support GLM models through Claude
+- Tab-independent project selection with hybrid storage
+- Activity signal filtering to prevent spurious agent busy states
+- Session fixes: duplicate agent sessions race condition, nested lock deadlock, timing delays for slower CLI providers
+- Details: https://devchain.cc/releases/0.8.0/
+
+## 0.7.1
+
+- Template updates for Claude Code v2 compatibility
+
+## 0.7.0
+
+- Code Review feature: live pre-commit diff viewer with agent integration, @ mentions, comment threading, resizable panels, and VS Code-style file navigation
+- In-app documentation system with help integration
+- Epic search: global search input in header, sub-epic indicators, parent breadcrumb navigation, UUID prefix matching
+- MCP improvements: auto-configure before agent launch, strict parameter validation with suggestions, guard rails
+- Improved agent prompts in bundled templates
+- Bundle node-pty prebuilds for users without build tools
+- Performance: optimize N+1 queries in epic list methods, improved GitService quality
+
+## 0.6.1
+
+- Fix macOS PTY streaming failure (posix_spawnp error) by updating node-pty to 1.2.0-beta.2
+
+## 0.6.0
+
+- Guest agents support: external tmux sessions can register and participate in messaging
+- Fix tmux session name overflow for projects with longer names
+
+## 0.5.1
+
+- Add upgrade detection and support for bundled templates
+- Fix upgrade validation and semver comparison edge cases
+
+## 0.5.0
+
+- Add Gemini provider support (beta) with per-agent provider configuration
+- Improved template system: enhanced export/import flow, updated bundled templates (v1.1.0), ability to change providers without re-applying templates
+- Bug fixes: minDevchainVersion enforcement in registry, agent notification on epic creation with assignment
+
+## 0.4.6
+
+- Fix version showing as 'unknown' when running from installed npm package
+
+## 0.4.5
+
+- Fix agent description lost when creating projects from templates
+
+## 0.4.4
+
+- Fix bundled templates not found when version is specified
+
+## 0.4.3
+
+- Fix auto-update removing package instead of updating
+
+## 0.4.2
+
+- Fix @devchain/shared module not found when installed globally
+- Fix CLI version command showing incorrect version
+
+## 0.4.1
+
+- Bug fixes and improvements
+
+## 0.4.0
+
+- Template Registry Service with download tracking
+- Message pooling service with activity monitor for agent sessions
+- Terminal improvements: sequence-based history refresh, scrollback settings, performance optimizations
+- Unified templates API with embedded metadata support
+- Collapsible sidebar sections and simplified project upgrade flow
+- Epic events (epic.created, epic.updated) for automation
+
+## 0.3.2
+
+- Create watchers and subscribers in new projects from templates
+- Increase send message length limit
+- Hide activity MCP tool
+- Updated all templates to follow advanced logic
+
+## 0.3.1
+
+- Advanced subscriber automation with terminal watchers
+- Advanced Claude-Codex template
+- Terminal Dock improvements (collapsed bar, session pills, UX shortcuts, API optimizations)
+- Board ListView with URL-based filtering and pagination
+- Export/import automation config
+- Session-based MCP authentication
+- Prompt Reference Autocomplete in Profiles
+
+## 0.2.2
+
+- Update check on startup with prompt to update
+- Import modal with template selector
+- Fix detached mode hanging on Claude bypass prompt
+- Simplify template path resolution
+
+## 0.2.1
+
+- Template updates and improvements
+- Fix test failures across local-app test suites
+
+## 0.2.0
+
+- Status Auto-Clean feature for automatic agent unassignment
+- Agent description field in export/import
+- Session coordinator to prevent duplicate agent sessions

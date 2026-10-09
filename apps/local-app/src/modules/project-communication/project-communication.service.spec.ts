@@ -13,8 +13,8 @@ import { STORAGE_SERVICE, type StorageService } from '../storage/interfaces/stor
 import { createMockAgent } from '../../../test/factories/agent';
 import { createMockProject } from '../../../test/factories/project';
 import { ProjectCommunicationService } from './project-communication.service';
-import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../storage/write-gate/testing/project-write-gate.stub';
 
 const SOURCE_ID = '11111111-1111-4111-8111-111111111111';
 const TARGET_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -94,7 +94,7 @@ describe('ProjectCommunicationService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         ProjectCommunicationService,
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: AgentMessageDeliveryService, useValue: delivery },

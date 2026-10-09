@@ -1,3 +1,4 @@
+import type { ProjectWriteGate } from '../../../storage/write-gate/project-write-gate';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { createLogger } from '../../../../common/logging/logger';
@@ -7,6 +8,7 @@ import { TemplatePresetDto, TemplatePresetSchema } from '../../dtos/settings.dto
 const logger = createLogger('PresetSettingsDelegate');
 
 export interface PresetDelegateContext {
+  gate?: ProjectWriteGate;
   sqlite: Database.Database;
 }
 
@@ -24,9 +26,11 @@ export interface RenameProviderConfigInProjectPresetsInput {
 
 export class PresetSettingsDelegate {
   private readonly sqlite: Database.Database;
+  private readonly gate?: ProjectWriteGate;
 
   constructor(context: PresetDelegateContext) {
     this.sqlite = context.sqlite;
+    this.gate = context.gate;
   }
 
   getProjectPresets(projectId: string): TemplatePresetDto[] {
@@ -75,10 +79,13 @@ export class PresetSettingsDelegate {
 
     this.writeInTransaction(() => {
       const existingPresets = this.readProjectPresetsMap();
-      this.writeProjectPresetsMap({
-        ...existingPresets,
-        [projectId]: validatedPresets,
-      });
+      this.writeProjectPresetsMap(
+        {
+          ...existingPresets,
+          [projectId]: validatedPresets,
+        },
+        projectId,
+      );
     });
 
     logger.info({ projectId, presetCount: validatedPresets.length }, 'Project presets updated');
@@ -89,7 +96,7 @@ export class PresetSettingsDelegate {
       const existingPresets = this.readProjectPresetsMap();
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { [projectId]: _removed, ...remaining } = existingPresets;
-      this.writeProjectPresetsMap(remaining);
+      this.writeProjectPresetsMap(remaining, projectId);
     });
 
     logger.info({ projectId }, 'Project presets cleared');
@@ -184,10 +191,13 @@ export class PresetSettingsDelegate {
       }
 
       const existingPresetsMap = this.readProjectPresetsMap();
-      this.writeProjectPresetsMap({
-        ...existingPresetsMap,
-        [projectId]: updatedPresets,
-      });
+      this.writeProjectPresetsMap(
+        {
+          ...existingPresetsMap,
+          [projectId]: updatedPresets,
+        },
+        projectId,
+      );
 
       logger.info(
         { projectId, profileId: targetProfileId, oldName, newName },
@@ -235,10 +245,13 @@ export class PresetSettingsDelegate {
       }
 
       const existingPresetsMap = this.readProjectPresetsMap();
-      this.writeProjectPresetsMap({
-        ...existingPresetsMap,
-        [projectId]: updatedPresets,
-      });
+      this.writeProjectPresetsMap(
+        {
+          ...existingPresetsMap,
+          [projectId]: updatedPresets,
+        },
+        projectId,
+      );
 
       logger.info(
         { projectId, agentName: trimmedAgentName },
@@ -285,10 +298,13 @@ export class PresetSettingsDelegate {
       }
 
       const existingPresetsMap = this.readProjectPresetsMap();
-      this.writeProjectPresetsMap({
-        ...existingPresetsMap,
-        [projectId]: [...existingPresets, { ...validatedPreset, name: trimmedName }],
-      });
+      this.writeProjectPresetsMap(
+        {
+          ...existingPresetsMap,
+          [projectId]: [...existingPresets, { ...validatedPreset, name: trimmedName }],
+        },
+        projectId,
+      );
     });
 
     logger.info({ projectId, presetName: trimmedName }, 'Preset created');
@@ -419,9 +435,9 @@ export class PresetSettingsDelegate {
         }
       }
 
-      this.writeProjectPresetsMap(updatePayload.projectPresets);
+      this.writeProjectPresetsMap(updatePayload.projectPresets, projectId);
       if (updatePayload.projectActivePresets !== undefined) {
-        this.writeActivePresetsMap(updatePayload.projectActivePresets);
+        this.writeActivePresetsMap(updatePayload.projectActivePresets, projectId);
       }
 
       logger.info({ projectId, presetName: trimmedName }, 'Preset updated');
@@ -473,9 +489,9 @@ export class PresetSettingsDelegate {
         );
       }
 
-      this.writeProjectPresetsMap(updatePayload.projectPresets);
+      this.writeProjectPresetsMap(updatePayload.projectPresets, projectId);
       if (updatePayload.projectActivePresets !== undefined) {
-        this.writeActivePresetsMap(updatePayload.projectActivePresets);
+        this.writeActivePresetsMap(updatePayload.projectActivePresets, projectId);
       }
 
       logger.info({ projectId, presetName: deletedPreset.name }, 'Preset deleted');
@@ -494,13 +510,16 @@ export class PresetSettingsDelegate {
       if (presetName === null) {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { [projectId]: _removed, ...remaining } = existingActivePresets;
-        this.writeActivePresetsMap(remaining);
+        this.writeActivePresetsMap(remaining, projectId);
         logger.info({ projectId }, 'Project active preset cleared');
       } else {
-        this.writeActivePresetsMap({
-          ...existingActivePresets,
-          [projectId]: presetName,
-        });
+        this.writeActivePresetsMap(
+          {
+            ...existingActivePresets,
+            [projectId]: presetName,
+          },
+          projectId,
+        );
         logger.info({ projectId, presetName }, 'Project active preset set');
       }
     });
@@ -551,7 +570,11 @@ export class PresetSettingsDelegate {
     return name.trim().toLowerCase();
   }
 
-  private writeProjectPresetsMap(map: Record<string, TemplatePresetDto[]>): void {
+  private writeProjectPresetsMap(
+    map: Record<string, TemplatePresetDto[]>,
+    projectId: string,
+  ): void {
+    this.gate?.assertWritable(projectId);
     const now = new Date().toISOString();
     const stmt = this.sqlite.prepare(`
       INSERT INTO settings (id, key, value, created_at, updated_at)
@@ -563,7 +586,8 @@ export class PresetSettingsDelegate {
     stmt.run(randomUUID(), 'projectPresets', JSON.stringify(map), now, now);
   }
 
-  private writeActivePresetsMap(map: Record<string, string | null>): void {
+  private writeActivePresetsMap(map: Record<string, string | null>, projectId: string): void {
+    this.gate?.assertWritable(projectId);
     const now = new Date().toISOString();
     const stmt = this.sqlite.prepare(`
       INSERT INTO settings (id, key, value, created_at, updated_at)

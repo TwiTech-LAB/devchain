@@ -174,8 +174,7 @@ export function AppDownloadDialog({ store }: { store: AppDownloadStore }) {
         <DialogHeader>
           <DialogTitle>{store.dialogTitle}</DialogTitle>
           <DialogDescription>
-            Scan the QR code or open the link to install the DevChain mobile app. Currently in open
-            beta.
+            Scan the QR code or open the link to install the DevChain mobile app.
           </DialogDescription>
         </DialogHeader>
         {open && <AppDownloadDialogBody store={store} />}
@@ -209,7 +208,7 @@ export function AppDownloadCard({ className, children }: AppDownloadCardProps) {
           <span className="text-base font-semibold">Get the DevChain mobile app</span>
         </div>
         <p className="text-sm text-muted-foreground">
-          Approve sign-ins and receive notifications on your phone. Currently in open beta.
+          Approve sign-ins and receive notifications on your phone.
         </p>
       </div>
 

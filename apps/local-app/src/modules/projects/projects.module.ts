@@ -15,7 +15,6 @@ import { CoreNormalModule } from '../core/core-normal.module';
 import { ProvidersModule } from '../providers/providers.module';
 import { ScheduledEpicsModule } from '../scheduled-epics/scheduled-epics.module';
 import { EventsCoreModule } from '../events/events-core.module';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
   imports: [
@@ -29,7 +28,6 @@ import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-
     ProvidersModule,
     ScheduledEpicsModule,
     EventsCoreModule,
-    ProjectWriteAdmissionModule,
   ],
   controllers: [ProjectsController],
   providers: [

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { Loader2, Plug, Plus } from 'lucide-react';
+import { providerConfigQueries, type ProfileProviderConfig } from '@/ui/lib/provider-configs';
 import { Button } from '@/ui/components/ui/button';
 import {
   DropdownMenu,
@@ -22,14 +23,6 @@ import {
 import { getProviderIconDataUri } from '@/ui/lib/providers';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
-interface ProviderConfigItem {
-  id: string;
-  name: string;
-  description: string | null;
-  profileId: string;
-  providerName?: string;
-}
-
 export interface QuickAddPayload {
   teamId: string;
   teamName: string;
@@ -50,7 +43,7 @@ interface TeamQuickAddButtonProps {
 }
 
 /** Provider icon (falls back to a plug glyph) + config name — the body of every config row. */
-function ConfigRowContent({ config }: { config: ProviderConfigItem }) {
+function ConfigRowContent({ config }: { config: ProfileProviderConfig }) {
   const icon = getProviderIconDataUri(config.providerName);
   return (
     <>
@@ -101,14 +94,7 @@ export function TeamQuickAddButton({
 
   const configQueries = useQueries({
     queries: profileIds.map((profileId) => ({
-      queryKey: ['profile-provider-configs', '', profileId] as const,
-      queryFn: async () => {
-        const res = await fetchFn(
-          `/api/profiles/${encodeURIComponent(profileId)}/provider-configs`,
-        );
-        if (!res.ok) throw new Error('Failed to fetch configs');
-        return res.json() as Promise<ProviderConfigItem[]>;
-      },
+      ...providerConfigQueries.profile(fetchFn, profileId),
       enabled: open && !disabled,
     })),
   });
@@ -119,12 +105,12 @@ export function TeamQuickAddButton({
   const groupedConfigs: Array<{
     profileId: string;
     profileName: string;
-    configs: ProviderConfigItem[];
+    configs: ProfileProviderConfig[];
   }> = [];
   if (allLoaded) {
     for (let i = 0; i < profileIds.length; i++) {
       const profileId = profileIds[i];
-      const configs = (configQueries[i]?.data ?? []) as ProviderConfigItem[];
+      const configs = configQueries[i]?.data ?? [];
       if (configs.length === 0) continue;
       const profile = profilesById.get(profileId);
       groupedConfigs.push({
@@ -137,7 +123,7 @@ export function TeamQuickAddButton({
 
   const hasNoConfigs = allLoaded && groupedConfigs.length === 0;
 
-  function handleSelectConfig(config: ProviderConfigItem, profileName: string) {
+  function handleSelectConfig(config: ProfileProviderConfig, profileName: string) {
     setOpen(false);
     const computedName = computeAutoName(
       profileName,

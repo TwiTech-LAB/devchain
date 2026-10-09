@@ -1,7 +1,7 @@
 import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
 import type { Provider } from '../../storage/models/domain.models';
 import { createLogger } from '../../../common/logging/logger';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
 import { ProviderAdapterFactory } from '../adapters';
 import {
@@ -24,7 +24,7 @@ export class McpProviderRegistrationService implements OnModuleDestroy {
     private readonly port: McpRegistrationPort,
     private readonly cliAdapter: CliMcpRegistrationAdapter,
     private readonly adapterFactory: ProviderAdapterFactory,
-    @Inject('STORAGE_SERVICE') private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: Pick<StorageService, 'listProviders'>,
   ) {}
 
   async onModuleDestroy(): Promise<void> {

@@ -2,7 +2,8 @@ import { Test } from '@nestjs/testing';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { IncomingMessage } from 'node:http';
-import { HostApiKeyService } from './host-api-key.service';
+import { HostApiKeyService, HOST_API_KEY_REJECTION } from './host-api-key.service';
+import { BROWSER_ORIGIN_REJECTION } from '../../../common/http/browser-request-guard';
 import { createLogger } from '../../../common/logging/logger';
 
 jest.mock('node:fs', () => ({
@@ -29,10 +30,15 @@ const peer = (
 ) =>
   ({
     socket: { remoteAddress: address },
-    headers: { authorization, 'x-forwarded-for': '127.0.0.1' },
+    headers: { host: '127.0.0.1:3000', authorization, 'x-forwarded-for': '127.0.0.1' },
     url,
     method,
   }) as unknown as IncomingMessage;
+
+const failClaimStat = (code: string) =>
+  jest.mocked(fs.statSync).mockImplementation(() => {
+    throw Object.assign(new Error(), { code });
+  });
 
 // Mocked filesystem metadata makes cache and failure branches deterministic without a server.
 describe('HostApiKeyService admission', () => {
@@ -61,47 +67,86 @@ describe('HostApiKeyService admission', () => {
 
   it('requires the correct bearer on HTTP and sockets and ignores forwarded loopback', () => {
     for (const transport of ['http', 'socket'] as const) {
-      expect(service.allows(peer(), transport)).toBe(false);
-      expect(service.allows(peer(undefined, `Bearer ${nextKey}`), transport)).toBe(false);
-      expect(service.allows(peer(undefined, `Bearer ${key}`), transport)).toBe(true);
+      expect(service.allows(peer(), transport)).toEqual(HOST_API_KEY_REJECTION);
+      expect(service.allows(peer(undefined, `Bearer ${nextKey}`), transport)).toEqual(
+        HOST_API_KEY_REJECTION,
+      );
+      expect(service.allows(peer(undefined, `Bearer ${key}`), transport)).toBeNull();
     }
   });
 
   it.each(['127.0.0.1', '127.20.30.40', '::1', '::ffff:127.0.0.1'])(
     'allows raw loopback %s',
     (address) => {
-      expect(service.allows(peer(address), 'http')).toBe(true);
-      expect(service.allows(peer(address), 'socket')).toBe(true);
+      expect(service.allows(peer(address), 'http')).toBeNull();
+      expect(service.allows(peer(address), 'socket')).toBeNull();
     },
   );
 
   it('opens only GET runtime for HTTP', () => {
-    expect(service.allows(peer(undefined, undefined, '/api/runtime?probe=1'), 'http')).toBe(true);
-    expect(service.allows(peer(undefined, undefined, '/api/runtime', 'POST'), 'http')).toBe(false);
-    expect(service.allows(peer(undefined, undefined, '/api/runtime/extra'), 'http')).toBe(false);
-    expect(service.allows(peer(undefined, undefined, '/api/runtime'), 'socket')).toBe(false);
+    expect(service.allows(peer(undefined, undefined, '/api/runtime?probe=1'), 'http')).toBeNull();
+    expect(service.allows(peer(undefined, undefined, '/api/runtime', 'POST'), 'http')).toEqual(
+      HOST_API_KEY_REJECTION,
+    );
+    expect(service.allows(peer(undefined, undefined, '/api/runtime/extra'), 'http')).toEqual(
+      HOST_API_KEY_REJECTION,
+    );
+    expect(service.allows(peer(undefined, undefined, '/api/runtime'), 'socket')).toEqual(
+      HOST_API_KEY_REJECTION,
+    );
   });
 
-  it('leaves home admission unchanged when claim.json is absent', () => {
-    jest.mocked(fs.statSync).mockImplementation(() => {
-      throw Object.assign(new Error(), { code: 'ENOENT' });
-    });
-    expect(service.allows(peer(), 'http')).toBe(true);
-    expect(service.allows(peer(), 'socket')).toBe(true);
+  it('allows non-browser clients when claim.json is absent', () => {
+    failClaimStat('ENOENT');
+    expect(service.allows(peer(), 'http')).toBeNull();
+    expect(service.allows(peer(), 'socket')).toBeNull();
+  });
+
+  it.each(['http', 'socket'] as const)(
+    'guards unclaimed %s requests even from loopback',
+    (transport) => {
+      failClaimStat('ENOENT');
+      const request = peer('127.0.0.1');
+      request.headers.origin = 'https://evil.example';
+      expect(service.allows(request, transport)).toEqual(BROWSER_ORIGIN_REJECTION);
+      expect(rejectionLogger.warn).toHaveBeenLastCalledWith(
+        {
+          peer: '127.0.0.1',
+          method: 'GET',
+          path: '/api/host/stats',
+          origin: 'https://evil.example',
+          host: '127.0.0.1:3000',
+          code: 'BROWSER_ORIGIN_REJECTED',
+        },
+        'Browser origin rejected',
+      );
+      delete request.headers.origin;
+      expect(service.allows(request, transport)).toBeNull();
+    },
+  );
+
+  it('keeps key rotation protected on an unclaimed instance after browser admission', () => {
+    failClaimStat('ENOENT');
+    const request = peer('127.0.0.1');
+    expect(service.allows(request, 'http', true)).toEqual(HOST_API_KEY_REJECTION);
+    request.headers.origin = 'https://evil.example';
+    expect(service.allows(request, 'http', true)).toEqual(BROWSER_ORIGIN_REJECTION);
   });
 
   it.each(['EACCES', 'EIO'])('fails closed when the claim cannot be checked: %s', (code) => {
-    jest.mocked(fs.statSync).mockImplementation(() => {
-      throw Object.assign(new Error(), { code });
-    });
-    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBe(false);
+    failClaimStat(code);
+    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toEqual(
+      HOST_API_KEY_REJECTION,
+    );
   });
 
   it.each(['not-json', '{}', '{"homePath":"relative"}'])(
     'fails closed for malformed claim %s',
     (claim) => {
       jest.mocked(fs.readFileSync).mockReturnValue(claim);
-      expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBe(false);
+      expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toEqual(
+        HOST_API_KEY_REJECTION,
+      );
     },
   );
 
@@ -109,23 +154,27 @@ describe('HostApiKeyService admission', () => {
     'fails closed for malformed key file %p',
     (invalid) => {
       content = invalid;
-      expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBe(false);
+      expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toEqual(
+        HOST_API_KEY_REJECTION,
+      );
     },
   );
 
   it('invalidates a cached key if its file disappears or becomes unreadable', () => {
-    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBe(true);
+    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBeNull();
     jest.mocked(fs.statSync).mockImplementation((path) => {
       if (String(path).endsWith('host-api-key'))
         throw Object.assign(new Error(), { code: 'ENOENT' });
       return {} as fs.Stats;
     });
-    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBe(false);
+    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toEqual(
+      HOST_API_KEY_REJECTION,
+    );
   });
 
   it('stats each check, caches unchanged digests and reloads after an on-disk reset', () => {
-    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBe(true);
-    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBe(true);
+    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBeNull();
+    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBeNull();
     expect(
       jest
         .mocked(fs.readFileSync)
@@ -136,13 +185,15 @@ describe('HostApiKeyService admission', () => {
     ).toHaveLength(2);
     content = `${hash(nextKey)}\n`;
     mtime++;
-    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toBe(false);
-    expect(service.allows(peer(undefined, `Bearer ${nextKey}`), 'socket')).toBe(true);
+    expect(service.allows(peer(undefined, `Bearer ${key}`), 'http')).toEqual(
+      HOST_API_KEY_REJECTION,
+    );
+    expect(service.allows(peer(undefined, `Bearer ${nextKey}`), 'socket')).toBeNull();
   });
 
   it('requires the current key even on loopback for rotation', () => {
-    expect(service.allows(peer('127.0.0.1'), 'http', true)).toBe(false);
-    expect(service.allows(peer('127.0.0.1', `Bearer ${key}`), 'http', true)).toBe(true);
+    expect(service.allows(peer('127.0.0.1'), 'http', true)).toEqual(HOST_API_KEY_REJECTION);
+    expect(service.allows(peer('127.0.0.1', `Bearer ${key}`), 'http', true)).toBeNull();
     expect(() => service.rotate(peer(), hash(nextKey))).toThrow('Host API key rejected');
     expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
@@ -167,11 +218,20 @@ describe('HostApiKeyService admission', () => {
     expect(fs.unlinkSync).toHaveBeenCalled();
   });
 
-  it('logs only peer, method and path without the header or query', () => {
-    service.allows(peer(undefined, `Bearer ${nextKey}`, `/health?key=${nextKey}`), 'http');
+  it('logs refusal metadata without authorization, cookies or query secrets', () => {
+    const request = peer(undefined, `Bearer ${nextKey}`, `/health?key=${nextKey}`);
+    request.headers.cookie = `session=${nextKey}`;
+    service.allows(request, 'http');
     const logger = rejectionLogger;
     expect(logger.warn).toHaveBeenLastCalledWith(
-      { peer: '192.0.2.10', method: 'GET', path: '/health' },
+      {
+        peer: '192.0.2.10',
+        method: 'GET',
+        path: '/health',
+        origin: undefined,
+        host: '127.0.0.1:3000',
+        code: 'HOST_API_KEY_REJECTED',
+      },
       'Host API key rejected',
     );
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(nextKey);

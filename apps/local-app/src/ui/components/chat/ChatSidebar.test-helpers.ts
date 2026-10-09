@@ -67,7 +67,6 @@ export function makeFlatChatSidebarProps(
     onApplyPreset: jest.fn(),
     applyingPreset: false,
     onSwitchConfig: jest.fn(),
-    fetchProviderConfigsForProfile: jest.fn(async () => []),
     updatingConfigAgentIds: {},
     onCloneAgent: jest.fn(),
     onDeleteAgent: jest.fn(),

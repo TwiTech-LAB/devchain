@@ -22,6 +22,7 @@ export interface PairedDevice {
   verifiedVia?: 'qr' | 'email-tofu' | 'safety-number';
   verifiedAt?: string;
   addedAt: string;
+  enrollment?: 'signed' | 'unsigned';
   workspaceIds: string[];
   workspaceAccessExplicit: boolean;
 }

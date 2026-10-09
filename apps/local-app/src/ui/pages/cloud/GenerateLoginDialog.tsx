@@ -15,8 +15,8 @@ import {
   runningGenerationId,
   useProviderAuthGeneration,
   useProviderAuthGenerationActions,
-  type ProviderAuthGenerationView,
 } from '@/ui/hooks/useProviderAuth';
+import type { ProviderAuthGenerationView } from './lib/remote-vm-contracts';
 
 const STATE_TEXT: Record<ProviderAuthGenerationView['state'], string> = {
   waiting: 'Waiting for the login to finish — the CLI prints its URL in the terminal below.',

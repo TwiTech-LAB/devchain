@@ -1,6 +1,7 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { useAgentAdminActions, type UseAgentAdminActionsOptions } from './useAgentAdminActions';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import type { ActiveSession } from '@/ui/lib/sessions';
@@ -14,7 +15,6 @@ jest.mock('@/ui/lib/toast-helpers', () => ({
 
 jest.mock('@/ui/hooks/useChatQueries', () => ({
   chatQueryKeys: {
-    agents: (pid: string) => ['agents', pid],
     agentPresence: (pid: string) => ['agent-presence', pid],
     activeSessions: (pid: string) => ['active-sessions', pid],
   },
@@ -129,7 +129,7 @@ describe('useAgentAdminActions — clone', () => {
       expect.objectContaining({ method: 'POST' }),
     );
     expect(toast).toHaveBeenCalledWith({ title: 'Cloned Coder into Core' });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agents', 'p1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: agentQueryKeys.project('p1') });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['teams', 'detail'] });
   });
 

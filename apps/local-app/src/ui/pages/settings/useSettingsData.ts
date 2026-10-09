@@ -1,61 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { settingsQueries, settingsQueryKeys, type SettingsDto } from '@/ui/lib/settings';
 import { useToast } from '@/ui/hooks/use-toast';
 import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
-// ────────────────────────────────────────────
-// Types
-// ────────────────────────────────────────────
-
-export interface SettingsResponse {
-  claudeBinaryPath?: string;
-  codexBinaryPath?: string;
-  dbPath?: string;
-  initialSessionPromptId?: string | null;
-  initialSessionPromptIds?: Record<string, string | null>;
-  events?: {
-    epicAssigned?: {
-      template?: string | null;
-    };
-  };
-  activity?: {
-    idleTimeoutMs?: number;
-  };
-  terminal?: {
-    scrollbackLines?: number;
-    seedingMaxBytes?: number;
-    inputMode?: 'form' | 'tty';
-    suppressCtrlCWithSelection?: boolean;
-  };
-  messagePool?: {
-    enabled?: boolean;
-    delayMs?: number;
-    maxWaitMs?: number;
-    maxMessages?: number;
-    separator?: string;
-  };
-  messaging?: {
-    followNote?: boolean;
-  };
-  skills?: {
-    syncOnStartup?: boolean;
-  };
-}
-
-// ────────────────────────────────────────────
-// API helpers
-// ────────────────────────────────────────────
-
-async function fetchSettings(fetchFn: FetchFn): Promise<SettingsResponse> {
-  const res = await fetchFn('/api/settings');
-  if (!res.ok) throw new Error('Failed to fetch settings');
-  return res.json();
-}
-
 async function updateSettingsRequest(
   fetchFn: FetchFn,
-  data: Partial<SettingsResponse> & { projectId?: string },
-): Promise<SettingsResponse> {
+  data: Partial<SettingsDto> & { projectId?: string },
+): Promise<SettingsDto> {
   const res = await fetchFn('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -82,7 +34,8 @@ export function useSettingsData() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  const invalidateSettings = () => queryClient.invalidateQueries({ queryKey: ['settings'] });
+  const invalidateSettings = () =>
+    queryClient.invalidateQueries({ queryKey: settingsQueryKeys.all });
 
   const onError = (error: unknown) => {
     toast({ title: 'Update failed', description: errorMessage(error), variant: 'destructive' });
@@ -95,8 +48,7 @@ export function useSettingsData() {
     isLoading,
     error,
   } = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => fetchSettings(fetchFn),
+    ...settingsQueries.get(fetchFn),
     staleTime: 60_000,
   });
 

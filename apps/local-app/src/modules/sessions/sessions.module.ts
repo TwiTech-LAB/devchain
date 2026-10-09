@@ -26,7 +26,7 @@ import { SessionLauncherFacade } from './services/session-launcher-facade.servic
 import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
 import { ProviderRuntimePreparationService } from './services/provider-runtime-preparation';
 import { EpicTimeStoreModule } from '../epic-time/epic-time-store.module';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
+import { SessionTerminalRuntimeModule } from '../session-terminal-runtime/session-terminal-runtime.module';
 
 @Module({
   imports: [
@@ -41,8 +41,8 @@ import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-
     ProviderAdaptersModule,
     forwardRef(() => ProvidersModule),
     RuntimeContextCaptureModule,
+    SessionTerminalRuntimeModule,
     EpicTimeStoreModule,
-    ProjectWriteAdmissionModule,
   ],
   providers: [
     SessionsService,

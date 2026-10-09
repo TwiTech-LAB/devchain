@@ -30,7 +30,8 @@ export class ProviderPluginsService {
   private readonly catalogCache = new Map<string, ProviderCatalogCacheEntry>();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: Pick<StorageService, 'getProvider' | 'listProviders'>,
     private readonly adapterFactory: ProviderAdapterFactory,
     private readonly executor: ProcessExecutor,
   ) {}

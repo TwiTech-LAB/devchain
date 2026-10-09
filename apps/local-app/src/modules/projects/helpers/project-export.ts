@@ -1,7 +1,18 @@
 import type { ManifestData } from '@devchain/shared';
 import { createLogger } from '../../../common/logging/logger';
 import type { SettingsService } from '../../settings/services/settings.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type {
+  StorageService,
+  AgentProfileStorage,
+  AgentStorage,
+  ProfileProviderConfigStorage,
+  ProjectStorage,
+  PromptStorage,
+  ScheduledEpicStorage,
+  StatusStorage,
+  SubscriberStorage,
+  WatcherStorage,
+} from '../../storage/interfaces/storage.interface';
 import { resolveExportPresets } from './profile-mapping.helpers';
 // Export builders colocated with their section codecs (moved out of this file).
 import { loadExportPrompts } from '../template-codec/codecs/prompts.codec';
@@ -38,7 +49,24 @@ export interface ExportProjectOptions {
 }
 
 interface ExportProjectDeps {
-  storage: StorageService;
+  storage: AgentProfileStorage &
+    AgentStorage &
+    ProfileProviderConfigStorage &
+    ProjectStorage &
+    PromptStorage &
+    ScheduledEpicStorage &
+    StatusStorage &
+    SubscriberStorage &
+    WatcherStorage &
+    Pick<
+      StorageService,
+      | 'getEpic'
+      | 'getProvider'
+      | 'listEnvScopesByProviderIds'
+      | 'listProviderEffortsByProviderIds'
+      | 'listProviderModelsByProviderIds'
+      | 'listProvidersByIds'
+    >;
   settings: SettingsService;
   slugify: (name: string) => string;
   teamsService?: {
@@ -243,7 +271,7 @@ export function sanitizeEnvMap(
 
 async function loadProfileExportContext(
   profilesRes: ExportState['profilesRes'],
-  storage: StorageService,
+  storage: ProfileProviderConfigStorage & Pick<StorageService, 'listProvidersByIds'>,
 ) {
   const configIdToInfo = new Map<string, { name: string; profileId: string }>();
   const allConfigsByProfile = new Map<

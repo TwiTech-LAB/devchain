@@ -9,7 +9,12 @@ import { createLogger } from '../../../common/logging/logger';
 import { PROVIDER_AUTH_LOGIN_ADAPTERS } from '../../provider-auth/provider-auth-adapters';
 import { ProviderAuthVaultService } from '../../provider-auth/provider-auth-vault.service';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type AgentStorage,
+  type ProjectStorage,
+  type RemoteStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   Remote,
   RemoteOperation,
@@ -57,7 +62,8 @@ const logger = createLogger('RemoteOperationsService');
 @Injectable()
 export class RemoteOperationsService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage & ProjectStorage & RemoteStorage,
     private readonly runner: RemoteOperationRunner,
     private readonly remotes: RemotesService,
     private readonly vault: ProviderAuthVaultService,

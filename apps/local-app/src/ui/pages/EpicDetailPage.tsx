@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { statusQueries } from '@/ui/lib/statuses';
+import { agentQueries } from '@/ui/lib/agents';
 import { useToast } from '../hooks/use-toast';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
@@ -73,16 +75,6 @@ import {
 // SessionFreeze: flip to true to re-enable the Launch Session UI on epic detail.
 const EPIC_LAUNCH_ENABLED = false;
 
-interface Status {
-  id: string;
-  projectId: string;
-  label: string;
-  color: string;
-  position: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
 interface Epic {
   id: string;
   projectId: string;
@@ -104,22 +96,6 @@ interface EpicComment {
   epicId: string;
   authorName: string;
   content: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface Agent {
-  id: string;
-  projectId: string;
-  profileId: string;
-  name: string;
-  profile?: {
-    name: string;
-    providerId: string;
-    provider?: {
-      name: string;
-    };
-  };
   createdAt: string;
   updatedAt: string;
 }
@@ -155,12 +131,6 @@ async function fetchEpic(id: string, fetchFn: FetchFn): Promise<Epic> {
   return res.json();
 }
 
-async function fetchStatuses(projectId: string, fetchFn: FetchFn): Promise<{ items: Status[] }> {
-  const res = await fetchFn(`/api/statuses?projectId=${projectId}`);
-  if (!res.ok) throw new Error('Failed to fetch statuses');
-  return res.json();
-}
-
 async function fetchSubEpics(parentId: string, fetchFn: FetchFn): Promise<{ items: Epic[] }> {
   const res = await fetchFn(`/api/epics?parentId=${parentId}`);
   if (!res.ok) throw new Error('Failed to fetch sub-epics');
@@ -173,12 +143,6 @@ async function fetchEpicComments(
 ): Promise<{ items: EpicComment[] }> {
   const res = await fetchFn(`/api/epics/${epicId}/comments`);
   if (!res.ok) throw new Error('Failed to fetch comments');
-  return res.json();
-}
-
-async function fetchAgents(projectId: string, fetchFn: FetchFn): Promise<{ items: Agent[] }> {
-  const res = await fetchFn(`/api/agents?projectId=${projectId}`);
-  if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
 
@@ -504,8 +468,7 @@ export function EpicDetailPage() {
   const visibleTags = useMemo(() => epic?.tags ?? [], [epic?.tags]);
 
   const { data: agentsData } = useQuery({
-    queryKey: ['agents', epic?.projectId],
-    queryFn: () => fetchAgents(epic!.projectId, apiFetch),
+    ...agentQueries.list(apiFetch, epic?.projectId),
     enabled: !!epic?.projectId,
   });
 
@@ -516,8 +479,7 @@ export function EpicDetailPage() {
   });
 
   const { data: statusesData } = useQuery({
-    queryKey: ['statuses', epic?.projectId],
-    queryFn: () => fetchStatuses(epic!.projectId, apiFetch),
+    ...statusQueries.list(apiFetch, epic?.projectId),
     enabled: !!epic?.projectId,
   });
 
@@ -1420,11 +1382,6 @@ export function EpicDetailPage() {
                               <div className="flex items-center gap-2">
                                 <Bot className="h-4 w-4" />
                                 {agent.name}
-                                {agent.profile?.provider && (
-                                  <Badge variant="outline" className="ml-2">
-                                    {agent.profile.provider.name}
-                                  </Badge>
-                                )}
                               </div>
                             </SelectItem>
                           ))}

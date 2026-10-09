@@ -55,6 +55,6 @@ export class TerminalRegistryRehydrator implements OnApplicationBootstrap {
         logger.debug({ sessionId: meta.sessionId }, 'Concurrent rehydration; entry already exists');
       }
     }
-    await this.sessionTerminalRuntime.reconcileCodexStartup(nonLiveSessionIds);
+    await this.sessionTerminalRuntime.reconcileProviderStartup(nonLiveSessionIds);
   }
 }

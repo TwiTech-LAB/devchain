@@ -35,6 +35,7 @@ describe('ProjectsPageView', () => {
       openCreateInWorkspace: jest.fn(),
       requestProjectMove: jest.fn(),
       openCreateWorkspace: jest.fn(),
+      notice: null,
       statusMessage: '',
       drag: {
         projectId: null,

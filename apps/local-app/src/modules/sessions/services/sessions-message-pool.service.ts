@@ -220,11 +220,6 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     }
   }
 
-  reloadConfig(): void {
-    this.config = this.loadConfigFromSettings();
-    logger.info({ config: this.config }, 'Message pool configuration reloaded');
-  }
-
   configure(config: Partial<MessagePoolConfig>): void {
     this.config = { ...this.config, ...config };
     logger.info({ config: this.config }, 'Message pool configuration updated');
@@ -265,35 +260,17 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         { agentId, projectId: pool.projectId, elapsed, maxWaitMs: newConfig.maxWaitMs },
         'Max wait already exceeded after config reload, scheduling immediate flush',
       );
-      setTimeout(() => {
-        this.flushNow(agentId).catch((err) => {
-          logger.error(
-            {
-              agentId,
-              error: this.disclosedLogError(getStrictestFailureDisclosure(pool.messages), err),
-            },
-            'Immediate flush after config reload failed',
-          );
-        });
-      }, 0);
+      this.createPoolFlushTimer(agentId, pool, 0, 'Immediate flush after config reload failed');
       return;
     }
 
-    pool.maxWaitTimer = setTimeout(() => {
-      logger.debug(
-        { agentId, projectId: pool.projectId },
-        'Max wait timer triggered (after config reload)',
-      );
-      this.flushNow(agentId).catch((err) => {
-        logger.error(
-          {
-            agentId,
-            error: this.disclosedLogError(getStrictestFailureDisclosure(pool.messages), err),
-          },
-          'Max wait flush failed',
-        );
-      });
-    }, remaining);
+    pool.maxWaitTimer = this.createPoolFlushTimer(
+      agentId,
+      pool,
+      remaining,
+      'Max wait flush failed',
+      'Max wait timer triggered (after config reload)',
+    );
   }
 
   async enqueue(
@@ -316,26 +293,28 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const timestamp = Date.now();
     const deliveryMode = this.resolveDeliveryMode(options);
 
-    if (options.deferWhileHumanTyping || options.humanPromptSubmit || deliveryMode === 'on_idle') {
-      return this.enqueueSerialized({
-        agentId,
-        text,
-        source,
-        submitKeys,
-        preKeys,
-        preDelayMs,
-        senderAgentId,
-        clientMessageId,
-        failureDisclosure,
-        projectId,
-        agentName,
-        logEntryId,
-        timestamp,
-        deliveryMode,
-        deferWhileHumanTyping: options.deferWhileHumanTyping === true,
-        humanPromptSubmit: options.humanPromptSubmit === true,
-        outsideText: options.outsideText === true,
-      });
+    const input: ResolvedEnqueueInput = {
+      agentId,
+      text,
+      source,
+      submitKeys,
+      preKeys,
+      preDelayMs,
+      senderAgentId,
+      clientMessageId,
+      failureDisclosure,
+      projectId,
+      agentName,
+      logEntryId,
+      timestamp,
+      deliveryMode,
+      deferWhileHumanTyping: options.deferWhileHumanTyping === true,
+      humanPromptSubmit: options.humanPromptSubmit === true,
+      outsideText: options.outsideText === true,
+    };
+
+    if (input.deferWhileHumanTyping || input.humanPromptSubmit || deliveryMode === 'on_idle') {
+      return this.enqueueSerialized(input);
     }
 
     const projectConfig = this.getConfigForProject(projectId, failureDisclosure);
@@ -348,116 +327,32 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         'Bypassing pool, delivering immediately',
       );
 
-      const logEntry: MessageLogEntry = {
-        id: logEntryId,
-        timestamp,
-        projectId,
-        agentId,
-        agentName,
-        text,
-        source,
-        senderAgentId,
-        clientMessageId,
-        status: 'queued',
-        immediate: true,
-      };
-      // IDEMPOTENCY INVARIANT: this dedup check and `addEntry` below MUST stay
-      // adjacent with ZERO `await` between them. `findByClientMessageId` and
-      // `addEntry` are both synchronous, so under JS single-threading the
-      // check→return-or-add is atomic: two concurrent same-clientMessageId
-      // enqueues (both suspended at `resolveProjectInfo` above) cannot both miss.
-      // Do NOT hoist this to method entry — that placement is racy (both callers
-      // pass it while suspended, then both add).
-      if (clientMessageId) {
-        const existing = this.messageLog.findByClientMessageId(clientMessageId, agentId, source);
-        if (existing) {
-          logger.debug(
-            { agentId, source, clientMessageId, logEntryId: existing.id },
-            'Duplicate clientMessageId — returning existing entry, skipping re-delivery',
-          );
-          return { status: existing.status, logEntryId: existing.id };
-        }
+      const duplicate = this.findDuplicate(input);
+      if (duplicate) {
+        logger.debug(
+          { agentId, source, clientMessageId, logEntryId: duplicate.logEntryId },
+          'Duplicate clientMessageId — returning existing entry, skipping re-delivery',
+        );
+        return duplicate;
       }
-      this.messageLog.addEntry(logEntry);
-      this.activityStream.broadcastEnqueued(logEntry);
-      this.broadcastPoolsUpdate();
+      this.recordEnqueued(this.createLogEntry(input, true));
 
       try {
-        const {
-          nonce: deliveredNonce,
-          unconfirmed,
-          skipped,
-          retryCount,
-        } = await this.deliverMessage(agentId, text, submitKeys, {
+        const delivery = await this.deliverMessage(agentId, text, submitKeys, {
           skipConfirmation: immediateDelivery,
           preKeys,
           preDelayMs,
-          outsideText: options.outsideText === true,
+          outsideText: input.outsideText,
         });
-        const status = unconfirmed ? 'unconfirmed' : 'delivered';
-        const deliveredAt = Date.now();
-        this.messageLog.update(logEntryId, {
-          status,
-          deliveredAt,
-          nonce: skipped ? undefined : deliveredNonce,
-          confirmedAt: skipped || unconfirmed ? undefined : deliveredAt,
-          retryCount,
-          failureCode: unconfirmed ? 'paste_not_confirmed' : undefined,
-        });
-        const updatedEntry = this.messageLog.getById(logEntryId);
-        if (updatedEntry) {
-          if (unconfirmed) {
-            this.activityStream.broadcastUnconfirmed(logEntryId, [updatedEntry]);
-          } else {
-            this.activityStream.broadcastDelivered(logEntryId, [updatedEntry]);
-          }
-        }
-        return { status, logEntryId };
+        return this.recordImmediateDelivered(logEntryId, delivery);
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        const failure = classifyDeliveryFailure(failureDisclosure, errorMsg, 'tmux_error');
-        logger.error({ agentId, source, error: failure.error }, 'Immediate delivery failed');
-        this.messageLog.update(logEntryId, {
-          status: 'failed',
-          error: failure.error,
-          failureCode: failure.failureCode,
-        });
-        const failedEntry = this.messageLog.getById(logEntryId);
-        if (failedEntry) {
-          this.activityStream.broadcastFailed(failedEntry);
-        }
-        return { status: 'failed', error: failure.error, logEntryId };
+        return this.recordImmediateFailed(input, error);
       }
     }
 
     let pool = this.pools.get(agentId);
     if (!pool) {
-      pool = {
-        messages: [],
-        timer: null,
-        maxWaitTimer: null,
-        firstEnqueueTime: Date.now(),
-        config: projectConfig,
-        projectId,
-      };
-      this.pools.set(agentId, pool);
-      const scheduledPool = pool;
-
-      pool.maxWaitTimer = setTimeout(() => {
-        logger.debug({ agentId, projectId }, 'Max wait timer triggered');
-        this.flushNow(agentId).catch((err) => {
-          logger.error(
-            {
-              agentId,
-              error: this.disclosedLogError(
-                getStrictestFailureDisclosure(scheduledPool.messages),
-                err,
-              ),
-            },
-            'Max wait flush failed',
-          );
-        });
-      }, projectConfig.maxWaitMs);
+      pool = this.createAgentPool(agentId, projectId, projectConfig, 'Max wait timer triggered');
 
       logger.debug(
         { agentId, projectId, config: projectConfig },
@@ -491,35 +386,15 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       }
     }
 
-    const logEntry: MessageLogEntry = {
-      id: logEntryId,
-      timestamp,
-      projectId,
-      agentId,
-      agentName,
-      text,
-      source,
-      senderAgentId,
-      clientMessageId,
-      status: 'queued',
-      immediate: false,
-    };
-    // IDEMPOTENCY INVARIANT (pooled path): same rule as the immediate path above
-    // — dedup check and `addEntry` stay adjacent with ZERO intervening `await`
-    // so the check→return-or-add block is atomic under JS single-threading.
-    if (clientMessageId) {
-      const existing = this.messageLog.findByClientMessageId(clientMessageId, agentId, source);
-      if (existing) {
-        logger.debug(
-          { agentId, source, clientMessageId, logEntryId: existing.id },
-          'Duplicate clientMessageId — returning existing entry, skipping re-enqueue',
-        );
-        return { status: existing.status, logEntryId: existing.id };
-      }
+    const duplicate = this.findDuplicate(input);
+    if (duplicate) {
+      logger.debug(
+        { agentId, source, clientMessageId, logEntryId: duplicate.logEntryId },
+        'Duplicate clientMessageId — returning existing entry, skipping re-enqueue',
+      );
+      return duplicate;
     }
-    this.messageLog.addEntry(logEntry);
-    this.activityStream.broadcastEnqueued(logEntry);
-    this.broadcastPoolsUpdate();
+    this.recordEnqueued(this.createLogEntry(input, false));
 
     const message: PooledMessage = {
       text,
@@ -530,7 +405,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       logEntryId,
       clientMessageId,
       failureDisclosure,
-      outsideText: options.outsideText === true,
+      outsideText: input.outsideText,
     };
     pool.messages.push(message);
 
@@ -551,25 +426,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       return { status: flushResult.outcome === 'unconfirmed' ? 'unconfirmed' : 'delivered' };
     }
 
-    if (pool.timer) {
-      clearTimeout(pool.timer);
-    }
-    const scheduledPool = pool;
-    pool.timer = setTimeout(() => {
-      logger.debug({ agentId, projectId }, 'Debounce timer triggered');
-      this.flushNow(agentId).catch((err) => {
-        logger.error(
-          {
-            agentId,
-            error: this.disclosedLogError(
-              getStrictestFailureDisclosure(scheduledPool.messages),
-              err,
-            ),
-          },
-          'Debounce flush failed',
-        );
-      });
-    }, pool.config.delayMs);
+    this.schedulePoolDebounce(agentId, pool, 'Debounce timer triggered');
 
     return { status: 'queued', poolSize: pool.messages.length, logEntryId };
   }
@@ -652,15 +509,17 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
 
     if (input.humanPromptSubmit || input.deliveryMode === 'immediate' || !projectConfig.enabled) {
       const logEntry = this.createLogEntry(input, true);
-      this.messageLog.addEntry(logEntry);
-      this.activityStream.broadcastEnqueued(logEntry);
-      this.broadcastPoolsUpdate();
+      this.recordEnqueued(logEntry);
       return this.deliverImmediateUnderAgentLock(input, logEntry);
     }
 
     return this.enqueueProtectedPoolUnderAgentLock(input, projectConfig);
   }
 
+  // IDEMPOTENCY INVARIANT: findDuplicate and recordEnqueued MUST have ZERO await
+  // between the check and addEntry. Both helpers are synchronous, so concurrent
+  // same-clientMessageId enqueues suspended at resolveProjectInfo cannot both miss.
+  // Do NOT hoist dedup before that await: both callers could pass before either adds.
   private findDuplicate(input: ResolvedEnqueueInput): EnqueueResult | null {
     if (!input.clientMessageId) return null;
     const existing = this.messageLog.findByClientMessageId(
@@ -669,6 +528,51 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       input.source,
     );
     return existing ? { status: existing.status, logEntryId: existing.id } : null;
+  }
+
+  private recordEnqueued(logEntry: MessageLogEntry): void {
+    this.messageLog.addEntry(logEntry);
+    this.activityStream.broadcastEnqueued(logEntry);
+    this.broadcastPoolsUpdate();
+  }
+
+  private recordImmediateDelivered(
+    logEntryId: string,
+    delivery: Awaited<ReturnType<SessionsMessagePoolService['deliverMessage']>>,
+  ): EnqueueResult {
+    const status = delivery.unconfirmed ? 'unconfirmed' : 'delivered';
+    const deliveredAt = Date.now();
+    this.messageLog.update(logEntryId, {
+      status,
+      deliveredAt,
+      nonce: delivery.skipped ? undefined : delivery.nonce,
+      confirmedAt: delivery.skipped || delivery.unconfirmed ? undefined : deliveredAt,
+      retryCount: delivery.retryCount,
+      failureCode: delivery.unconfirmed ? 'paste_not_confirmed' : undefined,
+    });
+    const updated = this.messageLog.getById(logEntryId);
+    if (updated) {
+      if (delivery.unconfirmed) this.activityStream.broadcastUnconfirmed(logEntryId, [updated]);
+      else this.activityStream.broadcastDelivered(logEntryId, [updated]);
+    }
+    return { status, logEntryId };
+  }
+
+  private recordImmediateFailed(input: ResolvedEnqueueInput, error: unknown): EnqueueResult {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const failure = classifyDeliveryFailure(input.failureDisclosure, errorMsg, 'tmux_error');
+    logger.error(
+      { agentId: input.agentId, source: input.source, error: failure.error },
+      'Immediate delivery failed',
+    );
+    this.messageLog.update(input.logEntryId, {
+      status: 'failed',
+      error: failure.error,
+      failureCode: failure.failureCode,
+    });
+    const failed = this.messageLog.getById(input.logEntryId);
+    if (failed) this.activityStream.broadcastFailed(failed);
+    return { status: 'failed', error: failure.error, logEntryId: input.logEntryId };
   }
 
   private createLogEntry(input: ResolvedEnqueueInput, immediate: boolean): MessageLogEntry {
@@ -724,10 +628,8 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     }
 
     const logEntry = this.createLogEntry(input, false);
-    this.messageLog.addEntry(logEntry);
     pool.messages.push(this.createPooledMessage(input));
-    this.activityStream.broadcastEnqueued(logEntry);
-    this.broadcastPoolsUpdate();
+    this.recordEnqueued(logEntry);
 
     if (pool.messages.length >= pool.config.maxMessages) {
       const result = await this.flushPoolUnderAgentLock(input.agentId);
@@ -798,11 +700,9 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       requiresProviderIdle: input.deliveryMode === 'on_idle',
       heldGeneration,
     });
-    this.messageLog.addEntry(logEntry);
     lane.messages.push(message);
     if (heldGeneration !== undefined) this.rebindLaneGeneration(lane, heldGeneration);
-    this.activityStream.broadcastEnqueued(logEntry);
-    this.broadcastPoolsUpdate();
+    this.recordEnqueued(logEntry);
 
     if (lane.requiredGeneration !== null) {
       this.ensureHumanQuietTimerUnderAgentLock(lane);
@@ -835,6 +735,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     agentId: string,
     projectId: string,
     config: MessagePoolConfig,
+    triggerLog?: string,
   ): AgentPool {
     const pool: AgentPool = {
       messages: [],
@@ -845,17 +746,46 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       projectId,
     };
     this.pools.set(agentId, pool);
-    pool.maxWaitTimer = setTimeout(() => {
-      void this.flushNow(agentId);
-    }, config.maxWaitMs);
+    pool.maxWaitTimer = this.createPoolFlushTimer(
+      agentId,
+      pool,
+      config.maxWaitMs,
+      'Max wait flush failed',
+      triggerLog,
+    );
     return pool;
   }
 
-  private schedulePoolDebounce(agentId: string, pool: AgentPool): void {
+  private schedulePoolDebounce(agentId: string, pool: AgentPool, triggerLog?: string): void {
     if (pool.timer) clearTimeout(pool.timer);
-    pool.timer = setTimeout(() => {
-      void this.flushNow(agentId);
-    }, pool.config.delayMs);
+    pool.timer = this.createPoolFlushTimer(
+      agentId,
+      pool,
+      pool.config.delayMs,
+      'Debounce flush failed',
+      triggerLog,
+    );
+  }
+
+  private createPoolFlushTimer(
+    agentId: string,
+    pool: AgentPool,
+    delayMs: number,
+    failureMessage: string,
+    triggerLog?: string,
+  ): NodeJS.Timeout {
+    return setTimeout(() => {
+      if (triggerLog) logger.debug({ agentId, projectId: pool.projectId }, triggerLog);
+      this.flushNow(agentId).catch((error) => {
+        logger.error(
+          {
+            agentId,
+            error: this.disclosedLogError(getStrictestFailureDisclosure(pool.messages), error),
+          },
+          failureMessage,
+        );
+      });
+    }, delayMs);
   }
 
   async flushNow(agentId: string): Promise<FlushResult> {
@@ -1257,10 +1187,6 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     limit?: number;
   }): MessageLogEntry[] {
     return this.messageLog.query(options);
-  }
-
-  getLogStats(): { entryCount: number; bytesUsed: number; maxEntries: number; maxBytes: number } {
-    return this.messageLog.getStats();
   }
 
   getMessageById(messageId: string): MessageLogEntry | null {
@@ -2088,21 +2014,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           outsideText: input.outsideText,
         },
       );
-      const status = delivery.unconfirmed ? 'unconfirmed' : 'delivered';
-      const deliveredAt = Date.now();
-      this.messageLog.update(logEntry.id, {
-        status,
-        deliveredAt,
-        nonce: delivery.skipped ? undefined : delivery.nonce,
-        confirmedAt: delivery.skipped || delivery.unconfirmed ? undefined : deliveredAt,
-        retryCount: delivery.retryCount,
-        failureCode: delivery.unconfirmed ? 'paste_not_confirmed' : undefined,
-      });
-      const updated = this.messageLog.getById(logEntry.id);
-      if (updated) {
-        if (delivery.unconfirmed) this.activityStream.broadcastUnconfirmed(logEntry.id, [updated]);
-        else this.activityStream.broadcastDelivered(logEntry.id, [updated]);
-      }
+      const result = this.recordImmediateDelivered(logEntry.id, delivery);
 
       if (
         expectedSubmit &&
@@ -2116,22 +2028,9 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           expectedSubmit.generation,
         );
       }
-      return { status, logEntryId: logEntry.id };
+      return result;
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      const failure = classifyDeliveryFailure(input.failureDisclosure, errorMsg, 'tmux_error');
-      logger.error(
-        { agentId: input.agentId, source: input.source, error: failure.error },
-        'Immediate delivery failed',
-      );
-      this.messageLog.update(logEntry.id, {
-        status: 'failed',
-        error: failure.error,
-        failureCode: failure.failureCode,
-      });
-      const failed = this.messageLog.getById(logEntry.id);
-      if (failed) this.activityStream.broadcastFailed(failed);
-      return { status: 'failed', error: failure.error, logEntryId: logEntry.id };
+      return this.recordImmediateFailed(input, error);
     }
   }
 

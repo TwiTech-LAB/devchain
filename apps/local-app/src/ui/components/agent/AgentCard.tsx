@@ -14,17 +14,17 @@ import {
 
 export interface AgentCardProviderConfig {
   id: string;
-  profileId: string;
+  profileId?: string;
   providerId: string;
   name: string;
-  options: string | null;
-  env: Record<string, string> | null;
+  options?: string | null;
+  env?: Record<string, string> | null;
 }
 
 export interface AgentCardProfile {
   id: string;
   name: string;
-  providerId: string;
+  providerId?: string;
   provider?: {
     id: string;
     name: string;
@@ -40,20 +40,20 @@ export interface AgentCardProvider {
 
 export interface AgentCardData {
   id: string;
-  projectId: string;
-  profileId: string;
+  projectId?: string;
+  profileId: string | null;
   providerConfigId?: string | null;
   name: string;
   isProjectOwner: boolean;
   description?: string | null;
   profile?: AgentCardProfile;
-  providerConfig?: AgentCardProviderConfig;
-  createdAt: string;
-  updatedAt: string;
+  providerConfig?: AgentCardProviderConfig | null;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
-export interface AgentCardProps {
-  agent: AgentCardData;
+export interface AgentCardProps<TAgent extends AgentCardData = AgentCardData> {
+  agent: TAgent;
   /** Resolved profile (from agent.profile or profilesById lookup) */
   profile: AgentCardProfile | undefined;
   /** Resolved provider name for display */
@@ -66,15 +66,15 @@ export interface AgentCardProps {
   isDeleting: boolean;
 
   // Callbacks
-  onEdit: (agent: AgentCardData) => void;
-  onDelete: (agent: AgentCardData) => void;
+  onEdit: (agent: TAgent) => void;
+  onDelete: (agent: TAgent) => void;
 }
 
 // ============================================
 // Component
 // ============================================
 
-export function AgentCard({
+export function AgentCard<TAgent extends AgentCardData>({
   agent,
   profile,
   providerName,
@@ -83,7 +83,7 @@ export function AgentCard({
   isDeleting,
   onEdit,
   onDelete,
-}: AgentCardProps) {
+}: AgentCardProps<TAgent>) {
   const avatarSrc = getAgentAvatarDataUri(agent.name);
   const avatarAlt = getAgentAvatarAltText(agent.name);
   const avatarFallback = getAgentInitials(agent.name);
@@ -143,9 +143,11 @@ export function AgentCard({
             {agent.description && (
               <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{agent.description}</p>
             )}
-            <p className="text-xs text-muted-foreground mt-2">
-              Created {new Date(agent.createdAt).toLocaleDateString()}
-            </p>
+            {agent.createdAt && (
+              <p className="text-xs text-muted-foreground mt-2">
+                Created {new Date(agent.createdAt).toLocaleDateString()}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">

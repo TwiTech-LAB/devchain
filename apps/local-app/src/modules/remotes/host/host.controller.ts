@@ -1,11 +1,6 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
-import type {
-  ProjectReplicaChanges,
-  ProjectReplicaImportResult,
-  ProjectReplicaOfScope,
-} from '@devchain/shared';
 import { createLogger } from '../../../common/logging/logger';
-import type { FrozenProject } from '../../storage/interfaces/storage.interface';
+import type { hostRoutes, HostHandlerResponse } from '../contract/host-routes';
 import {
   HostChangesQuerySchema,
   HostIdempotencyKeySchema,
@@ -14,7 +9,6 @@ import {
   HostReplicaQuerySchema,
 } from './host.dto';
 import { HostService } from './host.service';
-import type { ProjectTimeSettlement } from '../time/project-time-settler.service';
 
 const logger = createLogger('HostController');
 
@@ -30,7 +24,7 @@ export class HostController {
   importProject(
     @Query() query: unknown,
     @Body() body: unknown,
-  ): Promise<ProjectReplicaImportResult> {
+  ): Promise<HostHandlerResponse<typeof hostRoutes.importProject, 201>> {
     const { mode } = HostImportQuerySchema.parse(query);
     logger.info({ mode: mode ?? 'new' }, 'POST /api/host/projects/import');
     return this.host.importProject(body, { resnapshot: mode === 'resnapshot' });
@@ -40,7 +34,7 @@ export class HostController {
   exportReplica(
     @Param('id') id: string,
     @Query() query: unknown,
-  ): Promise<ProjectReplicaOfScope<'attach' | 'detach'>> {
+  ): Promise<HostHandlerResponse<typeof hostRoutes.exportReplica, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
     const { scope } = HostReplicaQuerySchema.parse(query);
     logger.info({ projectId, scope }, 'GET /api/host/projects/:id/replica');
@@ -48,7 +42,10 @@ export class HostController {
   }
 
   @Get(':id/changes')
-  changes(@Param('id') id: string, @Query() query: unknown): Promise<ProjectReplicaChanges> {
+  changes(
+    @Param('id') id: string,
+    @Query() query: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.changes, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
     const parsed = HostChangesQuerySchema.parse(query);
     logger.debug({ projectId, since: parsed.since, full: parsed.full }, 'GET changes');
@@ -57,7 +54,7 @@ export class HostController {
 
   @Post(':id/freeze')
   @HttpCode(200)
-  freeze(@Param('id') id: string): Promise<FrozenProject> {
+  freeze(@Param('id') id: string): Promise<HostHandlerResponse<typeof hostRoutes.freeze, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
     logger.info({ projectId }, 'POST /api/host/projects/:id/freeze');
     return this.host.freezeProject(projectId);
@@ -65,7 +62,7 @@ export class HostController {
 
   @Post(':id/thaw')
   @HttpCode(204)
-  async thaw(@Param('id') id: string): Promise<void> {
+  async thaw(@Param('id') id: string): Promise<HostHandlerResponse<typeof hostRoutes.thaw, 204>> {
     const projectId = HostProjectIdSchema.parse(id);
     logger.info({ projectId }, 'POST /api/host/projects/:id/thaw');
     await this.host.thawProject(projectId);
@@ -73,7 +70,9 @@ export class HostController {
 
   @Post(':id/stop-sessions')
   @HttpCode(204)
-  async stopSessions(@Param('id') id: string): Promise<void> {
+  async stopSessions(
+    @Param('id') id: string,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.stopSessions, 204>> {
     const projectId = HostProjectIdSchema.parse(id);
     logger.info({ projectId }, 'POST /api/host/projects/:id/stop-sessions');
     await this.host.stopProjectSessions(projectId);
@@ -82,7 +81,9 @@ export class HostController {
   /** Settles the project's agent time; called after its sessions were stopped. */
   @Post(':id/settle-time')
   @HttpCode(200)
-  settleTime(@Param('id') id: string): Promise<ProjectTimeSettlement> {
+  settleTime(
+    @Param('id') id: string,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.settleTime, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
     logger.info({ projectId }, 'POST /api/host/projects/:id/settle-time');
     return this.host.settleProjectTime(projectId);
@@ -90,7 +91,9 @@ export class HostController {
 
   @Post(':id/release')
   @HttpCode(204)
-  async release(@Param('id') id: string): Promise<void> {
+  async release(
+    @Param('id') id: string,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.release, 204>> {
     const projectId = HostProjectIdSchema.parse(id);
     logger.info({ projectId }, 'POST /api/host/projects/:id/release');
     await this.host.releaseProject(projectId);
@@ -100,7 +103,7 @@ export class HostController {
   findEpicByIdempotencyKey(
     @Param('id') id: string,
     @Param('key') key: string,
-  ): Promise<{ epicId: string }> {
+  ): Promise<HostHandlerResponse<typeof hostRoutes.findEpicByIdempotencyKey, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
     return this.host.findEpicByIdempotencyKey(projectId, HostIdempotencyKeySchema.parse(key));
   }

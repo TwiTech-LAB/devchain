@@ -9,10 +9,14 @@ import {
   type E2eeAdoptionMethod,
   type IncomingPeerKey,
 } from '@devchain/shared';
-import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import { NotFoundError, ValidationError, ForbiddenError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { E2eeKeypairService } from './e2ee-keypair.service';
-import { E2eeDeviceStoreService, type E2eePeerDevice } from './e2ee-device-store.service';
+import {
+  E2eeDeviceStoreService,
+  type E2eeEnrollment,
+  type E2eePeerDevice,
+} from './e2ee-device-store.service';
 import { normalizeDeviceLabel } from './e2ee-device-label';
 
 const logger = createLogger('E2eeTrust');
@@ -43,6 +47,7 @@ export interface PairedDeviceSummary {
   verifiedVia?: E2eeVerificationMethod;
   verifiedAt?: string;
   addedAt: string;
+  enrollment?: E2eeEnrollment;
 }
 
 /**
@@ -163,15 +168,15 @@ export class E2eeTrustService {
   }
 
   /**
-   * Email-TOFU adopt sink / re-pair seam — reconcile a relayed peer key into the store.
-   *
-   * `installId` (M2 `paired-device-dedup`) is carried as a SEPARATE param, never folded into
-   * the shared `IncomingPeerKey` type. It supersedes the phone's prior rows on re-login, but
-   * ONLY non-verified ones (`evictVerified: false`): this adopt arrives PLAINTEXT over the
-   * unauthenticated bootstrap lane, so it must never force-unpair a QR-verified device. The
-   * store validates installId as a canonical UUID before storing/evicting; opaque here.
+   * Reconcile a relayed peer key after deriving its kid. Enrollment status comes from
+   * server-side attestation verification, never caller metadata. Enforced unsigned
+   * re-adoption of a known kid leaves its stored policy and metadata untouched.
    */
-  adoptPeerKeyTofu(incoming: IncomingPeerKey, installId?: string): DeviceTrustResult {
+  adoptPeerKeyTofu(
+    incoming: IncomingPeerKey,
+    installId?: string,
+    opts: { enrollment?: E2eeEnrollment; requireSignedEnrollment?: boolean } = {},
+  ): DeviceTrustResult {
     if (!incoming?.kid || !incoming.publicKeyB64) {
       throw new ValidationError('kid and publicKeyB64 are required');
     }
@@ -202,10 +207,18 @@ export class E2eeTrustService {
       publicKeyB64: incoming.publicKeyB64,
       ...(label !== undefined ? { label } : {}),
     };
-    const record = this.deviceStore.reconcile(normalizedIncoming, undefined, {
-      installId,
-      evictVerified: false,
-    });
+    let record: E2eePeerDevice;
+    if (opts.requireSignedEnrollment && opts.enrollment !== 'signed') {
+      const existing = this.deviceStore.get(incoming.kid);
+      if (!existing) throw new ForbiddenError('E2EE enrollment requires a signed attestation');
+      record = existing;
+    } else {
+      record = this.deviceStore.reconcile(normalizedIncoming, undefined, {
+        installId,
+        evictVerified: false,
+        enrollment: opts.enrollment,
+      });
+    }
     return {
       kid: record.kid,
       trust: record.trust,
@@ -223,6 +236,7 @@ export class E2eeTrustService {
       ...(record.adoptedVia !== undefined ? { adoptedVia: record.adoptedVia } : {}),
       ...(record.verifiedVia !== undefined ? { verifiedVia: record.verifiedVia } : {}),
       ...(record.verifiedAt !== undefined ? { verifiedAt: record.verifiedAt } : {}),
+      ...(record.enrollment !== undefined ? { enrollment: record.enrollment } : {}),
     };
   }
 }

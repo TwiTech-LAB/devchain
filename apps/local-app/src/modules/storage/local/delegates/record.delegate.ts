@@ -1,4 +1,4 @@
-import type { ListOptions, ListResult } from '../../interfaces/storage.interface';
+import type { RecordStorage, ListOptions, ListResult } from '../../interfaces/storage.interface';
 import type {
   CreateEpicRecord,
   CreateTag,
@@ -23,7 +23,7 @@ export interface RecordStorageDelegateDependencies {
   createTag: (data: CreateTag) => Tag;
 }
 
-export class RecordStorageDelegate extends BaseStorageDelegate {
+export class RecordStorageDelegate extends BaseStorageDelegate implements RecordStorage {
   constructor(
     context: StorageDelegateContext,
     private readonly dependencies: RecordStorageDelegateDependencies,

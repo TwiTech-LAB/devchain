@@ -9,7 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/ui/components/ui/dialog';
-import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
+import type { RemoteOperationDto } from './lib/remote-vm-contracts';
 import {
   OperationDetail,
   OperationStateChip,

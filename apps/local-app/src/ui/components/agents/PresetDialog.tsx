@@ -1,5 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { projectPresetQueryKeys } from '@/ui/lib/project-presets';
+import { providerConfigQueries, type ProfileProviderConfig } from '@/ui/lib/provider-configs';
+import {
+  providerEffortQueries,
+  selectProviderEffortOptions,
+  type ProviderEffortOptionsCatalog,
+} from '@/ui/lib/provider-efforts';
 import {
   Dialog,
   DialogContent,
@@ -32,7 +39,7 @@ import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 interface Agent {
   id: string;
   name: string;
-  profileId: string;
+  profileId: string | null;
   providerConfigId?: string | null;
   modelOverride?: string | null;
   effortOverride?: string | null;
@@ -54,28 +61,9 @@ interface PresetDialogProps {
 type CreatePresetResponse = Preset;
 type UpdatePresetResponse = Preset;
 
-interface ProviderConfig {
-  id: string;
-  name: string;
-  profileId: string;
-  providerId: string;
-  model?: string | null;
-}
-
 interface ProviderModelOption {
   id: string;
   name: string;
-}
-
-interface ProviderEffortOption {
-  id: string;
-  name: string;
-}
-
-interface ProviderEffortsCatalog {
-  efforts: ProviderEffortOption[];
-  supportsEffort: boolean;
-  requiresModelForEffort: boolean;
 }
 
 const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
@@ -110,43 +98,6 @@ function parseProviderModels(payload: unknown, providerId: string): ProviderMode
       return { id, name };
     })
     .filter((model): model is ProviderModelOption => Boolean(model));
-}
-
-function parseProviderEfforts(payload: unknown, providerId: string): ProviderEffortsCatalog {
-  const empty: ProviderEffortsCatalog = {
-    efforts: [],
-    supportsEffort: false,
-    requiresModelForEffort: false,
-  };
-
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return empty;
-  }
-
-  const obj = payload as {
-    efforts?: unknown;
-    supportsEffort?: unknown;
-    requiresModelForEffort?: unknown;
-  };
-
-  const efforts = Array.isArray(obj.efforts)
-    ? obj.efforts
-        .map((rawEffort, index) => {
-          const rawName =
-            typeof rawEffort === 'string' ? rawEffort : (rawEffort as { name?: unknown })?.name;
-          if (typeof rawName !== 'string') return null;
-          const name = rawName.trim();
-          if (!name) return null;
-          return { id: `${providerId}:${name}:${index}`, name };
-        })
-        .filter((effort): effort is ProviderEffortOption => Boolean(effort))
-    : [];
-
-  return {
-    efforts,
-    supportsEffort: obj.supportsEffort === true,
-    requiresModelForEffort: obj.requiresModelForEffort === true,
-  };
 }
 
 async function createPreset(projectId: string, preset: Preset): Promise<CreatePresetResponse> {
@@ -247,35 +198,12 @@ export function PresetDialog({
   );
 
   // Fetch provider configs for all agent profiles
-  const { data: configsMap } = useQuery<Map<string, ProviderConfig[]>>({
-    queryKey: [
-      'provider-configs-by-profile',
+  const { data: configsMap } = useQuery({
+    ...providerConfigQueries.byProfiles(
+      fetchFn,
       projectId,
-      agentsWithProfiles.map((a) => a.profileId).sort(),
-    ],
-    queryFn: async () => {
-      const profileIds = new Set(agentsWithProfiles.map((a) => a.profileId));
-      if (profileIds.size === 0) return new Map();
-
-      const results = await Promise.all(
-        Array.from(profileIds).map(async (profileId) => {
-          try {
-            const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
-            if (!res.ok) return { profileId, configs: [] };
-            const configs = await res.json();
-            return { profileId, configs };
-          } catch {
-            return { profileId, configs: [] };
-          }
-        }),
-      );
-
-      const map = new Map<string, ProviderConfig[]>();
-      results.forEach(({ profileId, configs }) => {
-        map.set(profileId, configs);
-      });
-      return map;
-    },
+      agentsWithProfiles.map((agent) => agent.profileId),
+    ),
     enabled: open && agentsWithProfiles.length > 0,
   });
 
@@ -328,30 +256,19 @@ export function PresetDialog({
     return map;
   }, [providerModelQueries, selectedProviderIds]);
 
-  const providerEffortQueries = useQueries({
+  const providerEffortResults = useQueries({
     queries: selectedProviderIds.map((providerId) => ({
-      queryKey: ['provider-efforts', providerId],
-      queryFn: async () => {
-        const res = await fetchFn(`/api/providers/${providerId}/efforts`);
-        if (!res.ok) {
-          return {
-            efforts: [],
-            supportsEffort: false,
-            requiresModelForEffort: false,
-          } as ProviderEffortsCatalog;
-        }
-        const payload = (await res.json().catch(() => null)) as unknown;
-        return parseProviderEfforts(payload, providerId);
-      },
+      ...providerEffortQueries.catalog(fetchFn, providerId),
+      select: selectProviderEffortOptions,
       staleTime: 5 * 60 * 1000,
       enabled: open,
     })),
   });
 
   const providerEffortsByProviderId = useMemo(() => {
-    const map = new Map<string, ProviderEffortsCatalog>();
+    const map = new Map<string, ProviderEffortOptionsCatalog>();
     selectedProviderIds.forEach((providerId, index) => {
-      const query = providerEffortQueries[index];
+      const query = providerEffortResults[index];
       const catalog = query?.data ?? {
         efforts: [],
         supportsEffort: false,
@@ -360,7 +277,7 @@ export function PresetDialog({
       map.set(providerId, catalog);
     });
     return map;
-  }, [providerEffortQueries, selectedProviderIds]);
+  }, [providerEffortResults, selectedProviderIds]);
 
   // Validate name
   const nameError = name.trim()
@@ -427,7 +344,7 @@ export function PresetDialog({
       }
 
       // Refresh the presets list so it appears in the dropdown
-      await queryClient.invalidateQueries({ queryKey: ['project-presets', projectId] });
+      await queryClient.invalidateQueries({ queryKey: projectPresetQueryKeys.project(projectId) });
 
       setName('');
       setDescription('');
@@ -469,7 +386,7 @@ export function PresetDialog({
       const agentConfigName = agent?.providerConfig?.name;
       const profileConfigs = (
         agent?.profileId ? (configsMap?.get(agent.profileId) ?? []) : []
-      ) as ProviderConfig[];
+      ) as ProfileProviderConfig[];
       const configToUse = agentConfigName || profileConfigs[0]?.name;
       if (configToUse) {
         setSelectedAgentConfigs((prev) => [
@@ -602,7 +519,7 @@ export function PresetDialog({
                       isSelected &&
                       selectedConfig &&
                       hasConfigs &&
-                      !configsArray.some((c: ProviderConfig) => c.name === selectedConfig);
+                      !configsArray.some((c: ProfileProviderConfig) => c.name === selectedConfig);
                     // Determine the display value for the Select
                     const displayValue =
                       isSelected && selectedConfig
@@ -611,7 +528,7 @@ export function PresetDialog({
                           ? agentConfigName
                           : '';
                     const selectedConfigOption = configsArray.find(
-                      (config: ProviderConfig) => config.name === displayValue,
+                      (config: ProfileProviderConfig) => config.name === displayValue,
                     );
                     const selectedProviderId = selectedConfigOption?.providerId;
                     const providerModels = selectedProviderId

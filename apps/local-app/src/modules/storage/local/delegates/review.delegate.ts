@@ -1,10 +1,11 @@
-import type { SQL } from 'drizzle-orm';
-import { and as andSync, count as countSync, eq as eqSync } from 'drizzle-orm';
 import type {
+  ReviewStorage,
   ListResult,
   ListReviewCommentsOptions,
   ListReviewsOptions,
 } from '../../interfaces/storage.interface';
+import type { SQL } from 'drizzle-orm';
+import { and as andSync, count as countSync, eq as eqSync } from 'drizzle-orm';
 import type {
   CreateReview,
   CreateReviewComment,
@@ -23,7 +24,7 @@ import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage
 
 const logger = createLogger('ReviewStorageDelegate');
 
-export class ReviewStorageDelegate extends BaseStorageDelegate {
+export class ReviewStorageDelegate extends BaseStorageDelegate implements ReviewStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
   }

@@ -5,7 +5,14 @@ import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { DEFAULT_EPIC_ASSIGNED_TEMPLATE } from '../../settings/services/settings.constants';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type AgentStorage,
+  type GuestStorage,
+  type ProjectStorage,
+  type StatusStorage,
+} from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../../teams/services/teams.service';
 import { renderTemplate } from '../../../common/template/handlebars-renderer';
 import type { EpicUpdatedEventPayload } from '../../events/catalog/epic.updated';
@@ -60,7 +67,12 @@ export class EpicAssignmentNotifierSubscriber {
     private readonly settingsService: SettingsService,
     private readonly messageDelivery: AgentMessageDeliveryService,
     private readonly teamsService: TeamsService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage &
+      GuestStorage &
+      ProjectStorage &
+      StatusStorage &
+      Pick<StorageService, 'getEpic'>,
   ) {}
 
   @OnEvent('epic.created', { async: true })

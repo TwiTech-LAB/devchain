@@ -5,8 +5,8 @@ import { BadRequestException } from '@nestjs/common';
 import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
 import { ProfileProviderConfig } from '../../storage/models/domain.models';
 import { ProviderConfigsService } from '../services/provider-configs.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
@@ -48,7 +48,7 @@ describe('ProviderConfigsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProviderConfigsController],
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         {
           provide: STORAGE_SERVICE,
           useValue: storage,

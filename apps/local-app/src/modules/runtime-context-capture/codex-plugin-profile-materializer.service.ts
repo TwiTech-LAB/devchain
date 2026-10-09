@@ -15,8 +15,23 @@ import {
   writeFile,
 } from 'fs/promises';
 import { isAbsolute, join, resolve } from 'path';
-import { IOError, TimeoutError, ValidationError } from '../../common/errors/error-types';
+import {
+  ConflictError,
+  IOError,
+  TimeoutError,
+  ValidationError,
+} from '../../common/errors/error-types';
+import { buildSessionCommand } from '../sessions/utils/env-builder';
+import { hasCodexProfileSelector } from '../sessions/utils/profile-options';
+import { CONTEXT_WINDOW_ENV_KEY } from './context-window-policy';
 import { getRuntimeContextCaptureRoot } from './runtime-context-capture-files';
+import type {
+  PreparedArtifacts,
+  PrepareProviderLaunchArtifactsInput,
+  ProviderLaunchArtifacts,
+  ProviderPluginPolicyEntry,
+  ProviderSessionArtifacts,
+} from './provider-artifacts.types';
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
@@ -30,16 +45,11 @@ const NONCE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
 export const CODEX_PLUGIN_PROFILE_ROOT = Symbol('CODEX_PLUGIN_PROFILE_ROOT');
 
-export interface CodexPluginPolicyEntry {
-  pluginId: string;
-  enabled: boolean;
-}
-
 export interface PrepareCodexPluginProfileInput {
   projectId: string;
   projectName: string;
   sessionId: string;
-  pluginPolicy: ReadonlyArray<CodexPluginPolicyEntry>;
+  pluginPolicy: ReadonlyArray<ProviderPluginPolicyEntry>;
   attemptNonce: string;
 }
 
@@ -485,8 +495,12 @@ try {
 `;
 
 @Injectable()
-export class CodexPluginProfileMaterializerService {
+export class CodexPluginProfileMaterializerService
+  implements ProviderSessionArtifacts, ProviderLaunchArtifacts
+{
+  readonly providerName = 'codex';
   private readonly rootPath: string;
+  private readonly preparedProfiles = new WeakMap<PreparedArtifacts, PreparedCodexPluginProfile>();
 
   constructor(
     @Optional()
@@ -498,7 +512,56 @@ export class CodexPluginProfileMaterializerService {
     );
   }
 
-  async prepare(input: PrepareCodexPluginProfileInput): Promise<PreparedCodexPluginProfile | null> {
+  assertNoPolicyConflict(profileOptionArgs: readonly string[], policyActive: boolean): void {
+    if (policyActive && hasCodexProfileSelector(profileOptionArgs)) {
+      throw new ConflictError(
+        'Profile-supplied Codex profile selector conflicts with required DevChain plugin policy.',
+        { field: 'profileOptions', flag: '--profile' },
+      );
+    }
+  }
+
+  async prepare(input: PrepareProviderLaunchArtifactsInput): Promise<PreparedArtifacts> {
+    const profile = await this.prepareProfile({
+      projectId: input.projectId,
+      projectName: input.projectName,
+      sessionId: input.sessionId,
+      pluginPolicy: input.pluginPolicy,
+      attemptNonce: randomUUID(),
+    });
+    if (!profile) return { optionArgs: [], runtimeEnv: {} };
+
+    const attempt = { projectId: input.projectId, attemptNonce: profile.attemptNonce };
+    const handle: PreparedArtifacts = {
+      optionArgs: [...profile.providerOptionArgs],
+      runtimeEnv: {},
+      wrapCommand: (command) => {
+        const helperArgv = this.buildHelperArgv(
+          profile,
+          input.providerBinPath,
+          command.argv,
+          attempt,
+        );
+        return buildSessionCommand(command.env, helperArgv[0], helperArgv.slice(1), [
+          ...new Set([...input.launchUnsetEnv, CONTEXT_WINDOW_ENV_KEY]),
+        ]);
+      },
+      afterCommand: async () => {
+        await this.awaitAcknowledgement(profile, attempt);
+      },
+    };
+    this.preparedProfiles.set(handle, profile);
+    return handle;
+  }
+
+  async cleanupPrepared(handle: PreparedArtifacts, _sessionId: string): Promise<void> {
+    const profile = this.preparedProfiles.get(handle);
+    if (profile) await this.cleanupProfile(profile);
+  }
+
+  async prepareProfile(
+    input: PrepareCodexPluginProfileInput,
+  ): Promise<PreparedCodexPluginProfile | null> {
     if (input.pluginPolicy.length === 0) return null;
     this.validateIdentity(input);
 
@@ -650,7 +713,7 @@ export class CodexPluginProfileMaterializerService {
     });
   }
 
-  async cleanupPrepared(prepared: PreparedCodexPluginProfile): Promise<void> {
+  async cleanupProfile(prepared: PreparedCodexPluginProfile): Promise<void> {
     const locator = await this.readJsonFile<CodexProfileLocator>(prepared.locatorPath);
     if (!locator) {
       return;
@@ -666,7 +729,7 @@ export class CodexPluginProfileMaterializerService {
     await this.cleanupLifecycleLocators((locator) => nonLiveSessionIds.has(locator.sessionId));
   }
 
-  serializePolicy(policy: ReadonlyArray<CodexPluginPolicyEntry>): string {
+  serializePolicy(policy: ReadonlyArray<ProviderPluginPolicyEntry>): string {
     const byPluginId = new Map<string, boolean>();
     for (const entry of policy) {
       this.validatePolicyEntry(entry);
@@ -907,7 +970,7 @@ export class CodexPluginProfileMaterializerService {
     }
   }
 
-  private validatePolicyEntry(entry: CodexPluginPolicyEntry): void {
+  private validatePolicyEntry(entry: ProviderPluginPolicyEntry): void {
     const characterCount =
       typeof entry.pluginId === 'string' ? Array.from(entry.pluginId).length : 0;
     if (

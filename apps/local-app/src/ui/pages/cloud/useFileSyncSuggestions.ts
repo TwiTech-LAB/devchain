@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ProjectExclusionSuggestions } from '@/modules/file-sync/sync-path-inspection.dto';
-import { apiFetch, HOME_BACKEND } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
 
 export function useFileSyncSuggestions(
   projectId: string,
@@ -8,6 +8,7 @@ export function useFileSyncSuggestions(
   onPending: (pending: boolean) => void,
   refreshKey: number,
 ) {
+  const api = useRemoteVmApi();
   const [result, setResult] = useState<ProjectExclusionSuggestions | null>(null);
   const [failed, setFailed] = useState(false);
   const [pending, setPending] = useState(true);
@@ -30,19 +31,7 @@ export function useFileSyncSuggestions(
     }, 15_000);
     const scan = async () => {
       try {
-        const response = await apiFetch(
-          `/api/projects/${encodeURIComponent(projectId)}/file-sync/suggestions`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ remoteId }),
-            signal: controller.signal,
-          },
-          { backend: HOME_BACKEND },
-        );
-        if (!response.ok) throw new Error('Scan failed');
-        const body = (await response.json()) as ProjectExclusionSuggestions;
-        if (!Array.isArray(body.groups)) throw new Error('No suggestions');
+        const body = await api.readFileSyncSuggestions(projectId, remoteId, controller.signal);
         if (!active) return;
         clearTimeout(timeout);
         setResult({ ...body });
@@ -62,7 +51,7 @@ export function useFileSyncSuggestions(
       clearTimeout(timeout);
       onPending(false);
     };
-  }, [projectId, remoteId, onPending, refreshKey]);
+  }, [api, projectId, remoteId, onPending, refreshKey]);
 
   return { result, failed, pending };
 }

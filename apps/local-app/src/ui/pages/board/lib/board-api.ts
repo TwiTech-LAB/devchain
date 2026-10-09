@@ -1,4 +1,5 @@
-import type { Agent, Epic } from '@/ui/types';
+import type { Epic } from '@/ui/types';
+import type { FetchFn } from '@/ui/lib/api-transport';
 
 export type BoardArchivedFilter = 'active' | 'archived' | 'all';
 
@@ -6,14 +7,6 @@ export type BulkUpdateEpicsPayload = {
   parentId?: string | null;
   updates: Array<{ id: string; statusId?: string; agentId?: string | null; version: number }>;
 };
-
-type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-export async function fetchStatuses(projectId: string, fetchFn: FetchFn) {
-  const res = await fetchFn(`/api/statuses?projectId=${projectId}`);
-  if (!res.ok) throw new Error('Failed to fetch statuses');
-  return res.json();
-}
 
 export async function fetchEpics(
   projectId: string,
@@ -38,15 +31,6 @@ export async function fetchSubEpicCounts(
 ): Promise<Record<string, number>> {
   const res = await fetchFn(`/api/epics/${epicId}/sub-epics/counts`);
   if (!res.ok) throw new Error('Failed to fetch sub-epic counts');
-  return res.json();
-}
-
-export async function fetchAgents(
-  projectId: string,
-  fetchFn: FetchFn,
-): Promise<{ items: Agent[] }> {
-  const res = await fetchFn(`/api/agents?projectId=${projectId}`);
-  if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
 

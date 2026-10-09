@@ -23,7 +23,11 @@ import {
   type RemappableTeam,
   type TeamOverrideEntry,
 } from '../../helpers/team-overrides.helpers';
-import type { StorageService } from '../../../storage/interfaces/storage.interface';
+import type {
+  AgentProfileStorage,
+  AgentStorage,
+  ProfileProviderConfigStorage,
+} from '../../../storage/interfaces/storage.interface';
 import type { ImportContext } from '../import-context';
 import type {
   CodecApplyResult,
@@ -69,7 +73,7 @@ export interface TeamsExportService {
 export async function buildExportTeams(
   project: { id: string },
   teamsService: TeamsExportService,
-  storage: StorageService,
+  storage: AgentProfileStorage & AgentStorage & ProfileProviderConfigStorage,
 ) {
   const { items: teamList } = await teamsService.listTeams(project.id, { limit: 10000 });
   const result: Array<{

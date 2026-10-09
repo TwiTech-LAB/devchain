@@ -1,9 +1,9 @@
-import type { ListOptions, ListResult } from '../../interfaces/storage.interface';
+import type { StatusStorage, ListOptions, ListResult } from '../../interfaces/storage.interface';
 import type { CreateStatus, Status, UpdateStatus } from '../../models/domain.models';
 import { NotFoundError } from '../../../../common/errors/error-types';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
-export class StatusStorageDelegate extends BaseStorageDelegate {
+export class StatusStorageDelegate extends BaseStorageDelegate implements StatusStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
   }

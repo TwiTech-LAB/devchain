@@ -4,13 +4,13 @@ import type { RemoteOperationStepRun } from './remote-operation.types';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { utils } from 'ssh2';
 import { HostSshKeysService } from '../host/host-ssh-keys.service';
+import { generateEd25519PublicKey } from '../../../common/test/ssh-key.fixture';
 
 // Layer: filesystem-backed unit. The real merge proves a lost reply followed by
 // a claim-step retry cannot duplicate the key; the transport alone is stubbed.
 describe('ClaimOperation ssh_keys', () => {
-  const key = utils.generateKeyPairSync('ed25519').public;
+  const key = generateEd25519PublicKey();
   // The apply stub stands in for the VM's own claimed DevChain, so its claim check passes.
   const claimedHost = { assertClaimedHost: () => undefined } as never;
   let home: string;

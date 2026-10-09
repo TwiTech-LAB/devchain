@@ -232,6 +232,9 @@ export function createLaunchPipelineHarness() {
   const runtimeContextCapture = {
     clear: jest.fn(),
   };
+  const claudeLaunchSettings = {
+    cleanupSessionSync: jest.fn(),
+  };
   const codexPluginProfiles = {
     cleanupSession: jest.fn().mockResolvedValue(undefined),
   };
@@ -256,6 +259,15 @@ export function createLaunchPipelineHarness() {
   // Constructor order matches the @Injectable constructor parameter order.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { SessionLaunchPipeline } = require('../session-launch-pipeline.service');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const runtimeServices = require('../../../../session-terminal-runtime/session-terminal-runtime.service');
+  const sessionTerminalRuntime = new runtimeServices.SessionTerminalRuntimeService(
+    sqliteMock.db,
+    providerAdapterFactory,
+    runtimeContextCapture,
+    claudeLaunchSettings,
+    codexPluginProfiles,
+  );
   const pipeline = new SessionLaunchPipeline(
     sqliteMock.db, // @Inject(DB_CONNECTION)
     storage, // @Inject(STORAGE_SERVICE)
@@ -270,8 +282,7 @@ export function createLaunchPipelineHarness() {
     mcpEnsureService, // ProviderMcpEnsureService
     eventsService, // EventsService
     teamsService, // TeamsService
-    runtimeContextCapture, // RuntimeContextCaptureService
-    codexPluginProfiles, // CodexPluginProfileMaterializerService
+    sessionTerminalRuntime, // SessionTerminalRuntimeService
     providerRuntimePreparation, // ProviderRuntimePreparationService
   );
 
@@ -293,7 +304,9 @@ export function createLaunchPipelineHarness() {
       eventsService,
       teamsService,
       runtimeContextCapture,
+      claudeLaunchSettings,
       codexPluginProfiles,
+      sessionTerminalRuntime,
       providerRuntimePlan,
       preparedProviderRuntime,
       providerRuntimePreparation,

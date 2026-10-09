@@ -1,3 +1,4 @@
+import type { ProviderAuthStorage } from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
 import { ConflictError, NotFoundError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
@@ -36,7 +37,10 @@ const SELECT_ENTRY =
  * keeps it inside this storage layer's callers' claim path; list/get return
  * the ciphertext column so the service can drop it, never the plaintext.
  */
-export class ProviderAuthStorageDelegate extends BaseStorageDelegate {
+export class ProviderAuthStorageDelegate
+  extends BaseStorageDelegate
+  implements ProviderAuthStorage
+{
   constructor(
     context: StorageDelegateContext,
     private readonly cipher: IntegrationCredentialCipher,

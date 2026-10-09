@@ -55,7 +55,8 @@ VM:
 #   files: [scripts/remote-proofs/docker-import-target.ts], outDir: <build>
 npx tsc -p <that tsconfig>
 rsync -a --delete <build>/ user@vm:/tmp/dc-import-target/app/
-rsync -a ../host-bootstrap/test/fixtures/tls/ user@vm:/tmp/dc-import-target/tls/
+# the test certificate pair that src/common/test/tls-fixture.ts generates
+rsync -a "${TMPDIR:-/tmp}/devchain-test-tls-$(id -u)-v1/tls/" user@vm:/tmp/dc-import-target/tls/
 # VM
 cd /tmp/dc-import-target && mkdir -p data
 NODE_PATH=/opt/devchain-host/current/lib/node_modules/devchain-cli/node_modules \
@@ -65,7 +66,7 @@ NODE_PATH=/opt/devchain-host/current/lib/node_modules/devchain-cli/node_modules 
 ```
 
 Home needs the `postgres:17-alpine` image cached; the VM needs no images.
-The spec pins the shared test fixture certificate served by the harness. The
+The spec pins the test certificate that `src/common/test/tls-fixture.ts` generates on home, and the harness serves the same pair. Any Local App test that loads that fixture creates the pair, so run one, such as `src/modules/remotes/host/host-tls.setup.spec.ts`, before the copy step. The
 harness uses the product's TLS front and accepts plaintext only from loopback.
 
 ## Run

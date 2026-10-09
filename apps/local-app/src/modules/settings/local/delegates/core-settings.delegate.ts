@@ -1,3 +1,4 @@
+import type { ProjectWriteGate } from '../../../storage/write-gate/project-write-gate';
 import type Database from 'better-sqlite3';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
@@ -32,16 +33,19 @@ import { settingsTerminalChangedEvent } from '../../../events/catalog';
 const logger = createLogger('CoreSettingsDelegate');
 
 export interface CoreDelegateContext {
+  gate?: ProjectWriteGate;
   sqlite: Database.Database;
   eventEmitter: EventEmitter2;
 }
 
 export class CoreSettingsDelegate {
   private readonly sqlite: Database.Database;
+  private readonly gate?: ProjectWriteGate;
   private readonly eventEmitter: EventEmitter2;
 
   constructor(context: CoreDelegateContext) {
     this.sqlite = context.sqlite;
+    this.gate = context.gate;
     this.eventEmitter = context.eventEmitter;
   }
 
@@ -321,6 +325,7 @@ export class CoreSettingsDelegate {
     `);
 
     this.sqlite.transaction(() => {
+      this.assertProjectSlicesWritable(settings);
       if (settings.claudeBinaryPath !== undefined) {
         const normalizedPath =
           settings.claudeBinaryPath === '' ? '' : resolve(settings.claudeBinaryPath);
@@ -563,6 +568,33 @@ export class CoreSettingsDelegate {
     }
 
     return this.getSettings();
+  }
+
+  private assertProjectSlicesWritable(update: SettingsDto): void {
+    if (!this.gate) return;
+    const blockedProjectIds = this.gate.listNonWritableProjectIds();
+    if (blockedProjectIds.length === 0) return;
+    if (update.initialSessionPromptId !== undefined && update.projectId) {
+      this.gate.assertWritable(update.projectId);
+    }
+    const current = this.getSettings();
+    const maps: Array<[Record<string, unknown> | undefined, Record<string, unknown> | undefined]> =
+      [
+        [update.initialSessionPromptIds, current.initialSessionPromptIds],
+        [update.autoClean?.statusIds, current.autoClean?.statusIds],
+        [update.messagePool?.projects, current.messagePool?.projects],
+        [update.registryTemplates, current.registryTemplates],
+        [update.projectPresets, current.projectPresets],
+        [update.projectActivePresets, current.projectActivePresets],
+      ];
+    for (const [next, stored] of maps) {
+      if (next === undefined) continue;
+      for (const projectId of blockedProjectIds) {
+        if (JSON.stringify(next[projectId]) !== JSON.stringify(stored?.[projectId])) {
+          this.gate.assertWritable(projectId);
+        }
+      }
+    }
   }
 
   getScrollbackLines(): number {

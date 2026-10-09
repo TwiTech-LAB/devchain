@@ -4,7 +4,8 @@ import { createLogger } from '../../common/logging/logger';
 import { GitService } from '../git/services/git.service';
 import { HostProjectIdSchema } from '../remotes/host/host.dto';
 import { FileSyncService } from './file-sync.service';
-import { GitIndexRequestSchema, type GitIndexResult } from './git-guard.dto';
+import { hostRoutes } from '../remotes/contract/host-routes';
+import type { HostHandlerResponse } from '../remotes/contract/host-routes';
 
 const logger = createLogger('HostGitIndex');
 
@@ -20,9 +21,12 @@ export class HostGitIndexController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Rebuild the VM Git index when mirrored HEAD changed' })
   @ApiOkResponse({ description: 'Mirrored HEAD, whether the index was rebuilt and any warning' })
-  async refresh(@Param('id') id: string, @Body() body: unknown): Promise<GitIndexResult> {
+  async refresh(
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.refreshGitIndex, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
-    const { since } = GitIndexRequestSchema.parse(body);
+    const { since } = hostRoutes.refreshGitIndex.body.parse(body);
     const root = await this.files.folderPath(projectId);
     const head = await this.git.mirroredHead(projectId, root);
     if (head === null || head === since) return { head, refreshed: false, warning: null };

@@ -1,6 +1,11 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { AlertTriangle, Plug, Users } from 'lucide-react';
+import {
+  providerEffortQueries,
+  selectProviderEffortNames,
+  type ProviderEffortNamesCatalog,
+} from '@/ui/lib/provider-efforts';
 import { Alert, AlertDescription } from '@/ui/components/ui/alert';
 import { Badge } from '@/ui/components/ui/badge';
 import { Label } from '@/ui/components/ui/label';
@@ -35,18 +40,12 @@ const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
 const DEFAULT_EFFORT_OVERRIDE = '__default_effort_override__';
 const NO_PRESET = '__no_preset__';
 
-interface ProviderEffortsCatalog {
-  efforts: string[];
-  supportsEffort: boolean;
-  requiresModelForEffort: boolean;
-}
-
 interface ProviderModelCatalogOption {
   id: string;
   name: string;
 }
 
-const EMPTY_EFFORTS: ProviderEffortsCatalog = {
+const EMPTY_EFFORTS: ProviderEffortNamesCatalog = {
   efforts: [],
   supportsEffort: false,
   requiresModelForEffort: false,
@@ -70,27 +69,6 @@ function parseModelOptions(payload: unknown, providerId: string): ProviderModelC
       return { id, name };
     })
     .filter((item): item is ProviderModelCatalogOption => item !== null);
-}
-
-/** Parse the `/api/providers/:id/efforts` payload (mirrors PresetDialog's shape, defensively). */
-function parseEfforts(payload: unknown): ProviderEffortsCatalog {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return EMPTY_EFFORTS;
-  const obj = payload as {
-    efforts?: unknown;
-    supportsEffort?: unknown;
-    requiresModelForEffort?: unknown;
-  };
-  const efforts = Array.isArray(obj.efforts)
-    ? obj.efforts
-        .map((raw) => (typeof raw === 'string' ? raw : (raw as { name?: unknown })?.name))
-        .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
-        .map((name) => name.trim())
-    : [];
-  return {
-    efforts,
-    supportsEffort: obj.supportsEffort === true,
-    requiresModelForEffort: obj.requiresModelForEffort === true,
-  };
 }
 
 /** Dedupe while preserving first-seen order (case-insensitive). */
@@ -194,12 +172,8 @@ export function Step2Agents({
 
   const effortQueries = useQueries({
     queries: selectedProviderIds.map((providerId) => ({
-      queryKey: ['provider-efforts', providerId],
-      queryFn: async () => {
-        const res = await fetchFn(`/api/providers/${providerId}/efforts`);
-        if (!res.ok) return EMPTY_EFFORTS;
-        return parseEfforts((await res.json().catch(() => null)) as unknown);
-      },
+      ...providerEffortQueries.catalog(fetchFn, providerId),
+      select: selectProviderEffortNames,
       staleTime: 5 * 60 * 1000,
     })),
   });
@@ -220,7 +194,7 @@ export function Step2Agents({
   }, [selectedProviderIds, idToName, modelQueries]);
 
   const localEffortsByProvider = useMemo(() => {
-    const map = new Map<string, ProviderEffortsCatalog>();
+    const map = new Map<string, ProviderEffortNamesCatalog>();
     selectedProviderIds.forEach((id, index) => {
       const name = idToName.get(id);
       if (name) map.set(name, effortQueries[index]?.data ?? EMPTY_EFFORTS);
@@ -348,7 +322,7 @@ interface AgentConfigRowProps {
   profile: TemplateProfile | undefined;
   selectedProviderNames: string[];
   localModelsByProvider: Map<string, string[]>;
-  localEffortsByProvider: Map<string, ProviderEffortsCatalog>;
+  localEffortsByProvider: Map<string, ProviderEffortNamesCatalog>;
   templateModelsByProvider: Map<string, string[]>;
   templateEffortsByProvider: Map<string, string[]>;
   emphasizeLead: boolean;

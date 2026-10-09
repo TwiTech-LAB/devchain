@@ -30,7 +30,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
-import { isLessThan } from '@devchain/shared';
+import { healthQueries, selectAppVersion, isVersionCompatible } from '@/ui/lib/health';
 import { VersionList } from './VersionList';
 import { CreateFromRegistryDialog } from './CreateFromRegistryDialog';
 import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
@@ -94,30 +94,6 @@ async function fetchProjectsUsingTemplate(slug: string): Promise<ProjectsUsingTe
   return res.json();
 }
 
-async function fetchAppVersion(): Promise<string | null> {
-  const res = await apiFetch('/health', undefined, { backend: 'home' });
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data?.version || null;
-}
-
-/**
- * Check if a template version is compatible with the current Devchain version.
- * Returns true if compatible, false if incompatible.
- */
-function isVersionCompatible(
-  minDevchainVersion: string | null,
-  currentVersion: string | null,
-): boolean {
-  if (!minDevchainVersion || !currentVersion) return true;
-  try {
-    return !isLessThan(currentVersion, minDevchainVersion);
-  } catch {
-    // If version comparison fails, assume compatible
-    return true;
-  }
-}
-
 interface TemplateDetailDrawerProps {
   slug: string | undefined;
   onClose: () => void;
@@ -145,9 +121,8 @@ export function TemplateDetailDrawer({ slug, onClose }: TemplateDetailDrawerProp
 
   // Get current Devchain version for compatibility checks
   const { data: currentVersion } = useQuery({
-    queryKey: ['health'],
-    queryFn: fetchAppVersion,
-    staleTime: Infinity, // Version doesn't change during runtime
+    ...healthQueries.check(),
+    select: selectAppVersion,
   });
 
   const template = data?.template;

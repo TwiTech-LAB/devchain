@@ -1,3 +1,9 @@
+import type {
+  ProjectReplicaStorage,
+  ApplyProjectReplicaStorageOptions,
+  ProjectReplicaApplyMode,
+  ProjectReplicaApplySummary,
+} from '../../interfaces/storage.interface';
 import { mergeSourceSwitches } from '../helpers/skill-source-switches';
 import { SkillsSettingsDelegate } from '../../../settings/local/delegates/skills-settings.delegate';
 import { randomUUID } from 'node:crypto';
@@ -16,11 +22,6 @@ import { ConflictError, ReplicaApplyError } from '../../../../common/errors/erro
 import { createLogger } from '../../../../common/logging/logger';
 import { normalizeEnvForStorage } from '../helpers/storage-helpers';
 import type { PreparedEvent } from '../../../events/services/durable-event-registry.service';
-import type {
-  ApplyProjectReplicaStorageOptions,
-  ProjectReplicaApplyMode,
-  ProjectReplicaApplySummary,
-} from '../../interfaces/storage.interface';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('ProjectReplicaStorageDelegate');
@@ -41,7 +42,10 @@ type Tables = ProjectReplicaLiveTables &
  * (`project_id NULL`) and home-only history (sessions, open or batch segments)
  * are never deleted.
  */
-export class ProjectReplicaStorageDelegate extends BaseStorageDelegate {
+export class ProjectReplicaStorageDelegate
+  extends BaseStorageDelegate
+  implements Pick<ProjectReplicaStorage, 'applyProjectReplica'>
+{
   constructor(
     context: StorageDelegateContext,
     private readonly dependencies: ProjectReplicaStorageDelegateDependencies,

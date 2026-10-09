@@ -7,6 +7,7 @@ import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
 import {
   CANONICAL_DEVCHAIN_STATUS_LINE_COMMAND,
   ClaudeLaunchSettingsMaterializerService,
+  type PrepareClaudeLaunchSettingsInput,
 } from './claude-launch-settings-materializer.service';
 import { writeRuntimeContextEndpointDiscovery } from './runtime-context-capture-files';
 import { StatusLineHookSchema } from '../hooks/dtos/hook-event.dto';
@@ -47,12 +48,8 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     await rm(tempRoot, { recursive: true, force: true });
   });
 
-  function prepare(
-    overrides: Partial<Parameters<ClaudeLaunchSettingsMaterializerService['prepare']>[0]> = {},
-    target = service,
-  ) {
-    return target.prepare({
-      providerName: 'claude',
+  function prepare(overrides: Partial<PrepareClaudeLaunchSettingsInput> = {}, target = service) {
+    const input: PrepareClaudeLaunchSettingsInput = {
       settingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
       profileOptionArgs: ['--model', 'sonnet'],
       providerEnv: null,
@@ -61,6 +58,20 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
       epoch: 'epoch-1',
       projectRootPath: projectRoot,
       ...overrides,
+    };
+    return target.prepare({
+      provider: { name: 'claude', claudeLaunchSettingsJson: input.settingsJson },
+      providerBinPath: '/usr/bin/claude',
+      profileOptionArgs: input.profileOptionArgs,
+      providerEnv: input.providerEnv,
+      configEnv: input.configEnv,
+      sessionId: input.sessionId,
+      epoch: input.epoch,
+      projectId: 'project-1',
+      projectName: 'Project One',
+      projectRootPath: input.projectRootPath,
+      pluginPolicy: input.pluginPolicy ?? [],
+      launchUnsetEnv: [],
     });
   }
 
@@ -121,7 +132,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     const custom = ' \n{\n  "unknownFutureSetting": true\n}\n ';
     const result = await prepare({ settingsJson: custom });
 
-    expect(result.captureEnabled).toBe(false);
     expect(result.optionArgs[0]).toBe('--settings');
     expect(await readFile(result.optionArgs[1], 'utf8')).toBe(custom);
     expect((await stat(result.optionArgs[1])).mode & 0o777).toBe(0o600);
@@ -136,7 +146,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     const scriptPath = join(projectRoot, '.claude', 'hooks', 'devchain-statusline.sh');
     const locatorPath = result.runtimeEnv.DEVCHAIN_STATUSLINE_LOCATOR;
 
-    expect(result.captureEnabled).toBe(true);
     expect(locatorPath).toBeTruthy();
     expect((await stat(scriptPath)).mode & 0o777).toBe(0o755);
     expect((await stat(locatorPath)).mode & 0o777).toBe(0o600);
@@ -152,12 +161,10 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
       },
     });
     const customResult = await prepare({ settingsJson: nearMatch });
-    expect(customResult.captureEnabled).toBe(false);
     expect(customResult.runtimeEnv).toEqual({});
   });
 
   it.each([
-    ['non-Claude provider', { providerName: 'codex' }],
     ['provider alternate endpoint', { providerEnv: { ANTHROPIC_BASE_URL: 'https://glm.test' } }],
     ['config alternate endpoint', { configEnv: { ANTHROPIC_BASE_URL: 'https://custom.test' } }],
     ['two-token profile settings', { profileOptionArgs: ['--settings', 'user.json'] }],
@@ -169,7 +176,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     await expect(prepare(overrides)).resolves.toEqual({
       optionArgs: [],
       runtimeEnv: {},
-      captureEnabled: false,
     });
   });
 
@@ -180,7 +186,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     await expect(prepare({ projectRootPath: projectFile })).resolves.toEqual({
       optionArgs: [],
       runtimeEnv: {},
-      captureEnabled: false,
     });
   });
 
@@ -204,14 +209,13 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
         { pluginId: 'overridden@marketplace', enabled: true },
         { pluginId: 'removed-plugin@old-marketplace', enabled: false },
       ],
-      policyRequired: true,
     });
     const materialized = JSON.parse(await readFile(result.optionArgs[1], 'utf8')) as Record<
       string,
       unknown
     >;
 
-    expect(result.captureEnabled).toBe(true);
+    expect(result.runtimeEnv.DEVCHAIN_STATUSLINE_LOCATOR).toEqual(expect.any(String));
     expect(materialized).toEqual({
       tui: 'default',
       statusLine: {
@@ -231,7 +235,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
         { pluginId: 'overridden@marketplace', enabled: true },
         { pluginId: 'removed-plugin@old-marketplace', enabled: false },
       ],
-      policyRequired: true,
     });
     expect(repeated.optionArgs[1]).toBe(result.optionArgs[1]);
   });
@@ -243,12 +246,11 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     const result = await prepare({
       ...overrides,
       pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: true }],
-      policyRequired: true,
     });
     const materialized = JSON.parse(await readFile(result.optionArgs[1], 'utf8'));
 
     expect(materialized).toEqual({ enabledPlugins: { 'plugin@marketplace': true } });
-    expect(result).toMatchObject({ runtimeEnv: {}, captureEnabled: false });
+    expect(result.runtimeEnv).toEqual({});
   });
 
   it.each([[['--settings', 'user.json']], [['--settings=user.json']], [['--settings']]])(
@@ -258,7 +260,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
         prepare({
           profileOptionArgs,
           pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: true }],
-          policyRequired: true,
         }),
       ).rejects.toBeInstanceOf(ConflictError);
     },
@@ -269,7 +270,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
       prepare({
         settingsJson: '[]',
         pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: true }],
-        policyRequired: true,
       }),
     ).rejects.toBeInstanceOf(ValidationError);
 
@@ -278,7 +278,7 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
       enabled: true,
     }));
     await expect(
-      prepare({ settingsJson: '{}', pluginPolicy: oversizedPolicy, policyRequired: true }),
+      prepare({ settingsJson: '{}', pluginPolicy: oversizedPolicy }),
     ).rejects.toBeInstanceOf(ValidationError);
 
     const blockedRoot = join(tempRoot, 'blocked-runtime-root');
@@ -289,7 +289,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
         {
           settingsJson: null,
           pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: true }],
-          policyRequired: true,
         },
         blockedService,
       ),
@@ -303,13 +302,12 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     const result = await prepare({
       projectRootPath: projectFile,
       pluginPolicy: [{ pluginId: 'plugin@marketplace', enabled: false }],
-      policyRequired: true,
     });
     const materialized = JSON.parse(await readFile(result.optionArgs[1], 'utf8')) as {
       enabledPlugins: Record<string, boolean>;
     };
 
-    expect(result).toMatchObject({ runtimeEnv: {}, captureEnabled: false });
+    expect(result.runtimeEnv).toEqual({});
     expect(result.optionArgs[0]).toBe('--settings');
     expect(materialized.enabledPlugins).toEqual({ 'plugin@marketplace': false });
   });
@@ -322,7 +320,6 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     await expect(prepare({}, blockedService)).resolves.toEqual({
       optionArgs: [],
       runtimeEnv: {},
-      captureEnabled: false,
     });
   });
 
@@ -402,10 +399,41 @@ describe('ClaudeLaunchSettingsMaterializerService', () => {
     await Promise.all([runScript(scriptPath, locatorPath), runScript(scriptPath, locatorPath)]);
     expect(bodies).toHaveLength(2);
 
-    await service.cleanupSession(SESSION_ID);
+    await service.cleanupPrepared(result, SESSION_ID);
     await expect(stat(locatorPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(locator.counterPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(locator.lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  // Owner coverage uses real files because callback-only assertions cannot prove stale artifact removal.
+  it('reconciles non-live session files while preserving live session files and reusable settings', async () => {
+    const dead = await prepare();
+    const live = await prepare({ sessionId: 'live-session' });
+    const deadLocatorPath = dead.runtimeEnv.DEVCHAIN_STATUSLINE_LOCATOR;
+    const liveLocatorPath = live.runtimeEnv.DEVCHAIN_STATUSLINE_LOCATOR;
+    const deadLocator = JSON.parse(await readFile(deadLocatorPath, 'utf8')) as {
+      counterPath: string;
+      lockPath: string;
+    };
+    const liveLocator = JSON.parse(await readFile(liveLocatorPath, 'utf8')) as {
+      counterPath: string;
+      lockPath: string;
+    };
+    await writeFile(deadLocator.counterPath, '1');
+    await mkdir(deadLocator.lockPath);
+    await writeFile(liveLocator.counterPath, '2');
+    await mkdir(liveLocator.lockPath);
+
+    service.reconcileStartup(new Set([SESSION_ID, 'missing-session']));
+    service.reconcileStartup(new Set([SESSION_ID]));
+
+    for (const path of [deadLocatorPath, deadLocator.counterPath, deadLocator.lockPath]) {
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    expect(await readFile(liveLocator.counterPath, 'utf8')).toBe('2');
+    expect((await stat(liveLocatorPath)).isFile()).toBe(true);
+    expect((await stat(liveLocator.lockPath)).isDirectory()).toBe(true);
+    expect((await stat(dead.optionArgs[1])).isFile()).toBe(true);
   });
 
   it('forwards cancellation to the single-flight worker and releases its lock', async () => {

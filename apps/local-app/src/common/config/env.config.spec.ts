@@ -75,4 +75,16 @@ describe('env.config', () => {
 
     expect(config.DEVCHAIN_MODE).toBeUndefined();
   });
+
+  // Parsing the env list here verifies our comma/whitespace contract without a server.
+  it.each([
+    [undefined, []],
+    ['', []],
+    [' , ', []],
+    ['myhost.lan, alias.lan,, ', ['myhost.lan', 'alias.lan']],
+  ])('parses ALLOWED_HOSTS=%p', (value, expected) => {
+    if (value === undefined) delete process.env.ALLOWED_HOSTS;
+    else process.env.ALLOWED_HOSTS = value;
+    expect(getEnvConfig().ALLOWED_HOSTS).toEqual(expected);
+  });
 });

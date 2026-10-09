@@ -29,7 +29,7 @@ import { RemotesService } from '../services/remotes.service';
 import { ClaimOperation } from './claim.operation';
 import { HostSshKeysService } from '../host/host-ssh-keys.service';
 import { readFile } from 'node:fs/promises';
-import { utils } from 'ssh2';
+import { generateEd25519PublicKey } from '../../../common/test/ssh-key.fixture';
 
 const SHA = 'a'.repeat(64);
 const FAMILY_ID = '0f9982da-7b3c-4d23-a338-e304b128fd1b';
@@ -600,7 +600,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
   // Layer: storage/runner integration. Real persisted details and the real SSH merge
   // expose omissions when Change logins becomes Reset's most recent setup record.
   it('preserves and reapplies the SSH key through create, Change logins, and Reset', async () => {
-    const key = utils.generateKeyPairSync('ed25519').public;
+    const key = generateEd25519PublicKey();
     const created = await settle(
       await vmOperations.create(connectionId, { ...input(), sshPublicKeys: [key] }),
     );

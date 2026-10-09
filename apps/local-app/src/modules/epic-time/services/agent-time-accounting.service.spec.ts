@@ -1,5 +1,5 @@
 import type { EventsService } from '../../events/services/events.service';
-import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import type { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import {
   AgentTimeAccountingService,
   EPIC_TIME_DELIVERY_KEY,
@@ -58,7 +58,7 @@ describe('AgentTimeAccountingService', () => {
     service = new AgentTimeAccountingService(
       store as unknown as EpicTimeStore,
       events as unknown as EventsService,
-      { listRemoteOwnedProjectIds: () => remoteOwned } as unknown as ProjectWriteAdmissionService,
+      { listRemoteOwnedProjectIds: () => remoteOwned } as unknown as ProjectWriteGate,
     );
   });
 

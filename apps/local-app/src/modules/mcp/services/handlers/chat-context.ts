@@ -4,7 +4,7 @@ import type { AgentMessageDeliveryService } from '../../../agent-message-deliver
 import type { SettingsService } from '../../../settings/services/settings.service';
 import type { McpResponse } from '../../dtos/mcp.dto';
 import type { ProjectCommunicationService } from '../../../project-communication/project-communication.service';
-import type { ProjectWriteAdmissionService } from '../../../remotes/admission/project-write-admission.service';
+import type { ProjectWriteGate } from '../../../storage/write-gate/project-write-gate';
 
 export type ChatToolStorage = AgentStorage & GuestStorage;
 
@@ -15,6 +15,6 @@ export interface ChatToolContext {
   settingsService: SettingsService;
   projectCommunicationService: ProjectCommunicationService;
   /** Absent in standalone MCP mode, which has no project writes to refuse. */
-  projectWriteAdmission?: Pick<ProjectWriteAdmissionService, 'assertWritable'>;
+  projectWriteGate?: Pick<ProjectWriteGate, 'assertWritable'>;
   resolveSessionContext: (sessionId: string) => Promise<McpResponse>;
 }

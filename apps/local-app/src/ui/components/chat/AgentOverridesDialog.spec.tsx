@@ -1,11 +1,8 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import {
-  AgentOverridesDialog,
-  type OverridesConfigOption,
-  type AgentOverridesSavePayload,
-} from './AgentOverridesDialog';
+import { AgentOverridesDialog, type AgentOverridesSavePayload } from './AgentOverridesDialog';
+import type { ProfileProviderConfig } from '@/ui/lib/provider-configs';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 
@@ -88,9 +85,33 @@ const baseAgent: AgentOrGuest = {
   isProjectOwner: false,
 };
 
-const CONFIGS: OverridesConfigOption[] = [
-  { id: 'config-1', name: 'Config A', providerId: 'provider-1', model: null, effort: null },
-  { id: 'config-2', name: 'Config B', providerId: 'provider-2', model: null, effort: null },
+const configDefaults = {
+  profileId: 'profile-1',
+  description: null,
+  options: null,
+  env: null,
+  position: 0,
+  createdAt: '2026-10-08T00:00:00.000Z',
+  updatedAt: '2026-10-08T00:00:00.000Z',
+};
+
+const CONFIGS: ProfileProviderConfig[] = [
+  {
+    ...configDefaults,
+    id: 'config-1',
+    name: 'Config A',
+    providerId: 'provider-1',
+    model: null,
+    effort: null,
+  },
+  {
+    ...configDefaults,
+    id: 'config-2',
+    name: 'Config B',
+    providerId: 'provider-2',
+    model: null,
+    effort: null,
+  },
 ];
 
 interface FetchOptions {
@@ -126,12 +147,23 @@ function installFetch(options: FetchOptions = {}) {
       const providerId = decodeURIComponent(effortsMatch[1]);
       return {
         ok: true,
-        json: async () =>
-          effortsByProvider[providerId] ?? {
+        json: async () => {
+          const catalog = effortsByProvider[providerId] ?? {
             efforts: [],
             supportsEffort: false,
             requiresModelForEffort: false,
-          },
+          };
+          return {
+            ...catalog,
+            efforts: catalog.efforts.map((effort, index) => ({
+              ...effort,
+              providerId,
+              position: index,
+              createdAt: '2026-10-08T00:00:00.000Z',
+              updatedAt: '2026-10-08T00:00:00.000Z',
+            })),
+          };
+        },
       } as Response;
     }
     return { ok: true, json: async () => ({}) } as Response;
@@ -140,13 +172,18 @@ function installFetch(options: FetchOptions = {}) {
 
 function renderDialog(
   props: Partial<React.ComponentProps<typeof AgentOverridesDialog>> = {},
-  configs: OverridesConfigOption[] = CONFIGS,
+  configs: ProfileProviderConfig[] = CONFIGS,
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) {
   const onSave = props.onSave ?? jest.fn();
   const onOpenChange = props.onOpenChange ?? jest.fn();
-  const fetchProviderConfigsForProfile =
-    props.fetchProviderConfigsForProfile ?? jest.fn(async () => configs);
+  const catalogFetch = global.fetch;
+  global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/provider-configs')) {
+      return { ok: true, json: async () => configs } as Response;
+    }
+    return catalogFetch(input, init);
+  });
 
   const utils = render(
     <QueryClientProvider client={queryClient}>
@@ -156,13 +193,12 @@ function renderDialog(
         agent={baseAgent}
         isOnline={false}
         isSaving={false}
-        fetchProviderConfigsForProfile={fetchProviderConfigsForProfile}
         onSave={onSave}
         {...props}
       />
     </QueryClientProvider>,
   );
-  return { ...utils, onSave, onOpenChange, fetchProviderConfigsForProfile };
+  return { ...utils, onSave, onOpenChange };
 }
 
 const originalFetch = global.fetch;
@@ -174,9 +210,11 @@ afterEach(() => {
 describe('AgentOverridesDialog', () => {
   it('lazily loads configs on open and labels the selects', async () => {
     installFetch();
-    const { fetchProviderConfigsForProfile } = renderDialog();
+    renderDialog();
 
-    await waitFor(() => expect(fetchProviderConfigsForProfile).toHaveBeenCalledWith('profile-1'));
+    await waitFor(() =>
+      expect(global.fetch).toHaveBeenCalledWith('/api/profiles/profile-1/provider-configs', {}),
+    );
     expect(await screen.findByLabelText('Provider Config')).toBeInTheDocument();
     expect(screen.getByLabelText('Model')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText('Reasoning Effort')).toBeInTheDocument());
@@ -191,6 +229,7 @@ describe('AgentOverridesDialog', () => {
     installFetch();
     renderDialog({}, [
       {
+        ...configDefaults,
         id: 'config-1',
         name: 'Config A',
         providerId: 'provider-1',

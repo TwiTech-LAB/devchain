@@ -1,9 +1,6 @@
 import { Body, Controller, HttpCode, Post } from '@nestjs/common';
-import { z } from 'zod';
-import { SshPublicKeysSchema } from '../../../common/validation/ssh-public-key';
 import { HostSshKeysService } from './host-ssh-keys.service';
-
-const ApplySchema = z.object({ keys: SshPublicKeysSchema }).strict();
+import { hostRoutes } from '../contract/host-routes';
 
 @Controller('api/host/ssh-keys')
 export class HostSshKeysController {
@@ -11,7 +8,8 @@ export class HostSshKeysController {
 
   @Post()
   @HttpCode(200)
+  // The client ignores this body (contract status 'none'); add a schema when a caller reads it.
   apply(@Body() body: unknown): Promise<{ added: number }> {
-    return this.sshKeys.apply(ApplySchema.parse(body).keys);
+    return this.sshKeys.apply(hostRoutes.applySshKeys.body.parse(body).keys);
   }
 }

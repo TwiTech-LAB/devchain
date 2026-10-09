@@ -1,11 +1,11 @@
-import type { ListOptions, ListResult } from '../../interfaces/storage.interface';
+import type { TagStorage, ListOptions, ListResult } from '../../interfaces/storage.interface';
 import type { CreateTag, Tag, UpdateTag } from '../../models/domain.models';
 import { randomUUID } from 'crypto';
 import { NotFoundError } from '../../../../common/errors/error-types';
 import { tags as tagsTable } from '../../db/schema';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
-export class TagStorageDelegate extends BaseStorageDelegate {
+export class TagStorageDelegate extends BaseStorageDelegate implements TagStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
   }

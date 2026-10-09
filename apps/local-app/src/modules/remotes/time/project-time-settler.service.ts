@@ -1,24 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import { z } from 'zod';
 import { getEnvConfig } from '../../../common/config/env.config';
 import { createLogger } from '../../../common/logging/logger';
 import { EPIC_TIME_DELIVERY_KEY } from '../../epic-time/services/agent-time-accounting.service';
 import { EpicTimeStore } from '../../epic-time/services/epic-time.store';
+import type { ProjectTimeSettlement } from './project-time-settler.dto';
+
+export type { ProjectTimeSettlement } from './project-time-settler.dto';
 
 const logger = createLogger('ProjectTimeSettler');
 
 const SETTLE_POLL_MS = 100;
-
-export const ProjectTimeSettlementSchema = z.object({
-  /** `forced`: the wait hit its bound and the remaining batches were finalized or cancelled. */
-  outcome: z.enum(['settled', 'forced']),
-  waitedMs: z.number().int().nonnegative(),
-  closedSegments: z.number().int().nonnegative(),
-  finalizedBatchIds: z.array(z.string()),
-  cancelledBatchIds: z.array(z.string()),
-});
-
-export type ProjectTimeSettlement = z.infer<typeof ProjectTimeSettlementSchema>;
 
 /**
  * Brings one project's agent time to rest before another instance takes it

@@ -41,6 +41,7 @@ jest.mock('@/ui/components/shared/EpicPreview', () => ({
 }));
 
 const status: Status = {
+  mcpHidden: false,
   id: 'todo',
   projectId: 'project-1',
   label: 'Todo',

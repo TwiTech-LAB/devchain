@@ -2,7 +2,7 @@ import { PROVIDER_CLI_NAMES } from '@devchain/shared';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
 import { HOST_LIFECYCLE_KINDS } from '@/modules/remotes/operations/remote-operation.types';
 import { isStuckFileSyncProblem } from '@/modules/remotes/sync/remote-file-sync.dto';
-import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
+import type { RemoteOperationDto } from './lib/remote-vm-contracts';
 import type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
 import type { StatusTone } from '@/ui/lib/status-tone';
 import { providerName } from './login-choices';

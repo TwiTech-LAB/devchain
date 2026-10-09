@@ -12,7 +12,13 @@ import {
   BadRequestException,
   Optional,
 } from '@nestjs/common';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  StorageService,
+  STORAGE_SERVICE,
+  type AgentStorage,
+  type GuestStorage,
+  type ProfileProviderConfigStorage,
+} from '../../storage/interfaces/storage.interface';
 import { CreateAgent, UpdateAgent, Agent } from '../../storage/models/domain.models';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
@@ -22,7 +28,7 @@ import { EventsService } from '../../events/services/events.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 const logger = createLogger('AgentsController');
 
@@ -105,12 +111,16 @@ const UpdateAgentSchema = z.object({
 @Controller('api/agents')
 export class AgentsController {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage &
+      GuestStorage &
+      ProfileProviderConfigStorage &
+      Pick<StorageService, 'getProvider' | 'listProvidersByIds'>,
     private readonly sessionsService: SessionsService,
     private readonly sessionCoordinator: SessionCoordinatorService,
     private readonly sessionRuntime: SessionRuntime,
     private readonly settingsService: SettingsService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
     @Optional() private readonly eventsService?: EventsService,
   ) {}
 
@@ -270,7 +280,6 @@ export class AgentsController {
   async createAgent(@Body() body: unknown): Promise<Agent> {
     logger.info('POST /api/agents');
     const data = CreateAgentSchema.parse(body);
-    this.admission.assertWritable(data.projectId);
 
     // Validate providerConfigId belongs to the selected profile
     await this.validateConfigOwnership(data.providerConfigId, data.profileId);
@@ -298,7 +307,6 @@ export class AgentsController {
   async updateAgent(@Param('id') id: string, @Body() body: unknown): Promise<Agent> {
     logger.info({ id }, 'PUT /api/agents/:id');
     const data = UpdateAgentSchema.parse(body);
-    this.admission.assertWritable((await this.storage.getAgent(id)).projectId);
 
     // Validate providerConfigId belongs to the correct profile (if being updated)
     if (data.providerConfigId !== undefined) {
@@ -314,7 +322,6 @@ export class AgentsController {
   async patchAgent(@Param('id') id: string, @Body() body: unknown): Promise<Agent> {
     logger.info({ id }, 'PATCH /api/agents/:id');
     const data = UpdateAgentSchema.parse(body);
-    this.admission.assertWritable((await this.storage.getAgent(id)).projectId);
 
     // Validate providerConfigId belongs to the correct profile (if being updated)
     if (data.providerConfigId !== undefined) {
@@ -329,7 +336,6 @@ export class AgentsController {
   async deleteAgent(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/agents/:id');
     const agent = await this.storage.getAgent(id);
-    this.admission.assertWritable(agent.projectId);
     await this.storage.deleteAgent(id);
     try {
       await this.settingsService.removeAgentFromProjectPresets(agent.projectId, agent.name);
@@ -381,7 +387,7 @@ export class AgentsController {
       throw new BadRequestException(`Agent ${agentId} does not belong to project ${projectId}`);
     }
     // Refuse before the terminate so a refused launch never leaves the agent stopped.
-    this.admission.assertWritable(projectId);
+    this.gate.assertWritable(projectId);
 
     // Terminate and launch each acquire the per-agent lock internally and in
     // sequence. Never wrap this restart in an outer/composite lock: the

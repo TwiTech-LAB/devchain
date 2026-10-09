@@ -2,9 +2,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { restartKeyForMain } from '@/ui/lib/restart-keys';
-import type { OverridesConfigOption } from '@/ui/components/chat/AgentOverridesDialog';
-
-type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+import { agentQueryKeys } from '@/ui/lib/agents';
+import type { FetchFn } from '@/ui/lib/api-transport';
 
 interface ConfigUpdateVars {
   providerConfigId: string;
@@ -42,14 +41,12 @@ export interface UseAgentConfigSwitchResult {
     modelOverride?: string | null,
     effortOverride?: string | null,
   ) => Promise<unknown>;
-  fetchProviderConfigsForProfile: (profileId: string) => Promise<OverridesConfigOption[]>;
   updatingConfigAgentIds: Record<string, boolean>;
 }
 
 /**
- * Provider-config / overrides switching for local agents, extracted from
- * ChatPage. Marks online agents for restart, invalidates the
- * `['agents', projectId]` query, and surfaces pending state for row spinners.
+ * Marks online agents for restart after a config switch and refreshes both
+ * agent list variants. Pending state drives the per-row spinners.
  */
 export function useAgentConfigSwitch({
   apiFetch,
@@ -90,7 +87,7 @@ export function useAgentConfigSwitch({
         markAgentsForRestart([restartKeyForMain(agentId)]);
       }
 
-      queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
+      queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) });
       showSuccess({
         title: isOverrideUpdate ? 'Overrides updated' : 'Config updated',
         description: isOnline ? 'Restart to apply changes.' : 'Will apply on next launch.',
@@ -125,16 +122,6 @@ export function useAgentConfigSwitch({
     [updateAgentConfigMutation],
   );
 
-  // Helper to fetch provider configs for a profile (used by ChatSidebar)
-  const fetchProviderConfigsForProfile = useCallback(
-    async (profileId: string): Promise<OverridesConfigOption[]> => {
-      const res = await apiFetch(`/api/profiles/${profileId}/provider-configs`);
-      if (!res.ok) throw new Error('Failed to fetch provider configs');
-      return res.json();
-    },
-    [apiFetch],
-  );
-
   // Build updating config agent IDs record for ChatSidebar
   const updatingConfigAgentIds: Record<string, boolean> = useMemo(
     () => (updatingConfigAgentId ? { [updatingConfigAgentId]: true } : {}),
@@ -143,7 +130,6 @@ export function useAgentConfigSwitch({
 
   return {
     handleSwitchConfig,
-    fetchProviderConfigsForProfile,
     updatingConfigAgentIds,
   };
 }

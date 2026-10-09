@@ -1,4 +1,6 @@
 import { useQuery, type QueryObserverResult } from '@tanstack/react-query';
+import { profileQueries, type ProfileListItem } from '@/ui/lib/profiles';
+import { agentQueries, type AgentOrGuestItem as AgentOrGuest } from '@/ui/lib/agents';
 import {
   fetchAgentPresence,
   fetchActiveSessions,
@@ -14,29 +16,7 @@ import { compareCanonicalAgents } from '@/ui/lib/agent-ordering';
 // Types
 // ============================================
 
-export type AgentOrGuest = {
-  id: string;
-  name: string;
-  isProjectOwner: boolean;
-  profileId?: string | null;
-  description?: string | null;
-  type?: 'agent' | 'guest';
-  tmuxSessionId?: string;
-  // Provider info enriched from providerConfig by backend
-  providerConfigId?: string | null;
-  modelOverride?: string | null;
-  effortOverride?: string | null;
-  providerConfig?: {
-    id: string;
-    name: string;
-    providerId: string;
-    providerName?: string;
-    options?: string | null;
-    /** Structured default model/effort from the selected config (dialog effective defaults) */
-    model?: string | null;
-    effort?: string | null;
-  } | null;
-};
+export type { AgentOrGuestItem as AgentOrGuest } from '@/ui/lib/agents';
 
 export interface PendingLaunchAgent {
   agentId: string;
@@ -68,7 +48,7 @@ export interface UseChatQueriesResult {
   agentsQuerySuccess: boolean;
 
   // Profiles and providers
-  profiles: Array<{ id: string; name: string; providerId: string }>;
+  profiles: ProfileListItem[];
   providers: Array<{ id: string; name: string }>;
 
   // Provider lookups
@@ -89,8 +69,6 @@ export interface UseChatQueriesResult {
 export const chatQueryKeys = {
   agentPresence: (projectId: string | null) => ['agent-presence', projectId] as const,
   activeSessions: (projectId: string | null) => ['active-sessions', projectId] as const,
-  agents: (projectId: string | null) => ['agents', projectId] as const,
-  profiles: (projectId: string | null) => ['profiles', projectId] as const,
   providers: () => providersQueryKeys.list(),
   preflight: (rootPath?: string) => ['preflight', 'chat-page', rootPath ?? 'global'] as const,
 };
@@ -124,32 +102,18 @@ export function useChatQueries({
 
   // Agents query
   const {
-    data: agentsResponse = [],
+    data: agentsResponse,
     isLoading: agentsLoading,
     isError: agentsError,
     isSuccess: agentsQuerySuccess,
   } = useQuery({
-    queryKey: chatQueryKeys.agents(projectId),
-    queryFn: async () => {
-      const response = await apiFetch(`/api/agents?projectId=${projectId}&includeGuests=true`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch agents');
-      }
-      return response.json();
-    },
+    ...agentQueries.withGuests(apiFetch, projectId),
     enabled: hasSelectedProject,
   });
 
   // Profiles query
   const { data: profilesResponse = [] } = useQuery({
-    queryKey: chatQueryKeys.profiles(projectId),
-    queryFn: async () => {
-      const response = await apiFetch(`/api/profiles?projectId=${encodeURIComponent(projectId!)}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch profiles');
-      }
-      return response.json();
-    },
+    ...profileQueries.list(apiFetch, projectId),
     enabled: hasSelectedProject,
   });
 
@@ -177,22 +141,7 @@ export function useChatQueries({
   // Derived Data
   // ============================================
 
-  // Normalize agents response
-  const allAgentsAndGuests: AgentOrGuest[] = (() => {
-    if (Array.isArray(agentsResponse)) {
-      return (agentsResponse as AgentOrGuest[]).map((item) => ({
-        ...item,
-        isProjectOwner: item.isProjectOwner === true,
-      }));
-    }
-    if (agentsResponse && Array.isArray((agentsResponse as { items?: unknown[] }).items)) {
-      return (agentsResponse as { items: AgentOrGuest[] }).items.map((item) => ({
-        ...item,
-        isProjectOwner: item.isProjectOwner === true,
-      }));
-    }
-    return [];
-  })();
+  const allAgentsAndGuests = agentsResponse?.items ?? [];
 
   const agents = allAgentsAndGuests
     .filter((item) => item.type !== 'guest')
@@ -201,18 +150,9 @@ export function useChatQueries({
     .filter((item) => item.type === 'guest')
     .sort(compareCanonicalAgents);
 
-  // Normalize profiles response
-  const profiles: Array<{ id: string; name: string; providerId: string }> = (() => {
-    if (Array.isArray(profilesResponse)) {
-      return profilesResponse as Array<{ id: string; name: string; providerId: string }>;
-    }
-    if (profilesResponse && Array.isArray((profilesResponse as { items?: unknown[] }).items)) {
-      return (
-        profilesResponse as { items: Array<{ id: string; name: string; providerId: string }> }
-      ).items;
-    }
-    return [];
-  })();
+  const profiles: ProfileListItem[] = Array.isArray(profilesResponse)
+    ? profilesResponse
+    : (profilesResponse?.items ?? []);
 
   // Normalize providers response
   const providers: Array<{ id: string; name: string }> = (() => {
@@ -229,14 +169,10 @@ export function useChatQueries({
   // Uses agent.providerConfig.providerId first (from providerConfigId), falls back to profile.providerId
   const agentToProviderMap = new Map<string, string>();
   const agentToProviderIdMap = new Map<string, string>();
-  const profileMap = new Map(profiles.map((p) => [p.id, p.providerId]));
+  const profileMap = new Map(profiles.map((profile) => [profile.id, profile.provider?.id]));
   const providerMap = new Map(providers.map((p) => [p.id, p.name]));
 
-  for (const agent of agents as Array<{
-    id: string;
-    profileId?: string;
-    providerConfig?: { providerId: string } | null;
-  }>) {
+  for (const agent of agents) {
     // Try providerConfig.providerId first (new model)
     let providerId = agent.providerConfig?.providerId;
 

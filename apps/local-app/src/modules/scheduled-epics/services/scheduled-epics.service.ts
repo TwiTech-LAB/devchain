@@ -14,7 +14,6 @@ import type {
 import type { ClaimRunResult } from '../../storage/interfaces/storage.interface';
 import { ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import { getNextRunAt } from '../helpers/cron-helpers';
 import {
   CreateScheduledEpicDtoSchema,
@@ -35,7 +34,6 @@ const logger = createLogger('ScheduledEpicsService');
 export class ScheduledEpicsService {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: ScheduledEpicStorage,
-    private readonly admission: ProjectWriteAdmissionService,
     @Optional()
     @Inject(SCHEDULED_EPIC_RUNNER_REFRESH)
     private readonly runnerRefresh?: ScheduledEpicRunnerRefresh,
@@ -43,7 +41,6 @@ export class ScheduledEpicsService {
 
   async create(dto: CreateScheduledEpicDto): Promise<ScheduledEpic> {
     const parsed = CreateScheduledEpicDtoSchema.parse(dto);
-    this.admission.assertWritable(parsed.projectId);
 
     const nextRunAt = this.computeNextRunAt(parsed.cronExpression, parsed.timezone);
 
@@ -92,7 +89,6 @@ export class ScheduledEpicsService {
     }
 
     const current = await this.storage.getScheduledEpic(id);
-    this.admission.assertWritable(current.projectId);
 
     const configUpdate: UpdateScheduledEpic = { ...parsed };
     const cronOrTzChanged = parsed.cronExpression !== undefined || parsed.timezone !== undefined;
@@ -118,7 +114,7 @@ export class ScheduledEpicsService {
   }
 
   async delete(id: string): Promise<void> {
-    this.admission.assertWritable((await this.storage.getScheduledEpic(id)).projectId);
+    await this.assertScheduleExists(id);
     await this.storage.deleteScheduledEpic(id);
 
     logger.info({ scheduleId: id }, 'Scheduled epic deleted');
@@ -127,7 +123,6 @@ export class ScheduledEpicsService {
 
   async toggle(id: string, enabled: boolean, configVersion: number): Promise<ScheduledEpic> {
     const current = await this.storage.getScheduledEpic(id);
-    this.admission.assertWritable(current.projectId);
     const derivedRuntimeState =
       enabled && !current.nextRunAt
         ? {
@@ -149,7 +144,7 @@ export class ScheduledEpicsService {
   }
 
   async runNow(id: string): Promise<ClaimRunResult> {
-    this.admission.assertWritable((await this.storage.getScheduledEpic(id)).projectId);
+    await this.assertScheduleExists(id);
 
     const plannedFor = new Date().toISOString();
     const result = await this.storage.createScheduledEpicRun({
@@ -173,6 +168,11 @@ export class ScheduledEpicsService {
   ): Promise<ListResult<ScheduledEpicRun>> {
     await this.storage.getScheduledEpic(scheduleId);
     return this.storage.listScheduledEpicRuns(scheduleId, options);
+  }
+
+  /** The delete and the run insert do not read the schedule; this read answers 404. */
+  private async assertScheduleExists(id: string): Promise<void> {
+    await this.storage.getScheduledEpic(id);
   }
 
   private computeNextRunAt(cronExpression: string, timezone: string): Date | null {

@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from '@/ui/components/ui/select';
 import { Textarea } from '@/ui/components/ui/textarea';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import type { AvailableSshPublicKey } from '@/modules/remotes/host-install/ssh-key.service';
 
 export function validSshPublicKeyDraft(value: string): boolean {
@@ -33,28 +33,21 @@ export function SshPublicKeyField({
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
+  const api = useRemoteVmApi();
   const [keys, setKeys] = useState<AvailableSshPublicKey[]>([]);
   const [selection, setSelection] = useState('none');
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
       try {
-        const response = await apiFetch(
-          '/api/remotes/host-install/ssh-public-keys',
-          { signal: controller.signal },
-          { backend: HOME_BACKEND },
-        );
-        const result = response.ok
-          ? ((await response.json()) as { available?: boolean; keys?: AvailableSshPublicKey[] })
-          : null;
-        if (!controller.signal.aborted)
-          setKeys(result?.available === true && Array.isArray(result.keys) ? result.keys : []);
+        const available = await api.listSshPublicKeys(controller.signal);
+        if (!controller.signal.aborted) setKeys(available);
       } catch {
         if (!controller.signal.aborted) setKeys([]);
       }
     })();
     return () => controller.abort();
-  }, []);
+  }, [api]);
 
   const selected = keys.find((key) => key.content === value);
   const method = selected ? selected.name : value ? 'paste' : selection;

@@ -175,6 +175,10 @@ describe('TunnelRpcCryptoService', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
 
     const resp = await svc.handle(
@@ -289,6 +293,10 @@ describe('TunnelRpcCryptoService', () => {
     const handler = new TunnelHandlerService(
       {},
       mobileChat as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

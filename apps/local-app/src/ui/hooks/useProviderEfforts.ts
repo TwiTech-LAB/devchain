@@ -1,69 +1,12 @@
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { providerEffortQueryKeys } from '@/ui/lib/provider-effort-query-keys';
+import {
+  providerEffortQueries,
+  selectProviderEffortOptions,
+  type ProviderEffortOption,
+} from '@/ui/lib/provider-efforts';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { sameCatalogName } from '@/ui/hooks/useProviderModels';
-
-export interface ProviderEffortOption {
-  id: string;
-  name: string;
-}
-
-export interface ProviderEffortsCatalog {
-  efforts: ProviderEffortOption[];
-  supportsEffort: boolean;
-  requiresModelForEffort: boolean;
-}
-
-function parseProviderEffortName(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  const name = raw.trim();
-  return name || null;
-}
-
-/**
- * Tolerant parser for `GET /api/providers/:id/efforts` →
- * `{ efforts, supportsEffort, requiresModelForEffort }`. Effort entries are
- * either strings or `{ name }` objects; ids are synthesized as
- * `providerId:name:index`. Behavior must stay byte-identical to the inline
- * parser this replaced (AgentFormDialog).
- */
-export function parseProviderEfforts(payload: unknown, providerId: string): ProviderEffortsCatalog {
-  const empty: ProviderEffortsCatalog = {
-    efforts: [],
-    supportsEffort: false,
-    requiresModelForEffort: false,
-  };
-
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return empty;
-  }
-
-  const obj = payload as {
-    efforts?: unknown;
-    supportsEffort?: unknown;
-    requiresModelForEffort?: unknown;
-  };
-
-  const efforts = Array.isArray(obj.efforts)
-    ? obj.efforts
-        .map((rawEffort, index) => {
-          const name =
-            typeof rawEffort === 'string'
-              ? parseProviderEffortName(rawEffort)
-              : parseProviderEffortName((rawEffort as { name?: unknown })?.name);
-          if (!name) return null;
-          return { id: `${providerId}:${name}:${index}`, name };
-        })
-        .filter((effort): effort is ProviderEffortOption => Boolean(effort))
-    : [];
-
-  return {
-    efforts,
-    supportsEffort: obj.supportsEffort === true,
-    requiresModelForEffort: obj.requiresModelForEffort === true,
-  };
-}
 
 export interface UseProviderEffortsOptions {
   providerId: string | null;
@@ -94,18 +37,8 @@ export function useProviderEfforts(options: UseProviderEffortsOptions): UseProvi
   const { providerId, effortOverride, onStaleSelection } = options;
 
   const { data: catalog } = useQuery({
-    queryKey: providerEffortQueryKeys.main(providerId ?? 'none'),
-    queryFn: async (): Promise<ProviderEffortsCatalog> => {
-      if (!providerId) {
-        return { efforts: [], supportsEffort: false, requiresModelForEffort: false };
-      }
-      const res = await fetchFn(`/api/providers/${providerId}/efforts`);
-      if (!res.ok) {
-        return { efforts: [], supportsEffort: false, requiresModelForEffort: false };
-      }
-      const payload = (await res.json().catch(() => null)) as unknown;
-      return parseProviderEfforts(payload, providerId);
-    },
+    ...providerEffortQueries.catalog(fetchFn, providerId),
+    select: selectProviderEffortOptions,
     enabled: !!providerId,
     staleTime: 5 * 60 * 1000,
   });

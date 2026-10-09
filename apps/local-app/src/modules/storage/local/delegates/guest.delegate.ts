@@ -1,3 +1,4 @@
+import type { GuestStorage } from '../../interfaces/storage.interface';
 import type { CreateGuest, Guest } from '../../models/domain.models';
 import { ConflictError, NotFoundError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
@@ -5,7 +6,7 @@ import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage
 
 const logger = createLogger('GuestStorageDelegate');
 
-export class GuestStorageDelegate extends BaseStorageDelegate {
+export class GuestStorageDelegate extends BaseStorageDelegate implements GuestStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
   }

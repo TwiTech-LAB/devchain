@@ -2,7 +2,7 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { parseProviderModels, useProviderModels } from './useProviderModels';
-import { parseProviderEfforts, useProviderEfforts } from './useProviderEfforts';
+import { useProviderEfforts } from './useProviderEfforts';
 
 function makeWrapper() {
   const queryClient = new QueryClient({
@@ -23,7 +23,7 @@ function mockFetch(map: Record<string, unknown>) {
   return fetchMock;
 }
 
-describe('provider model/effort parsers', () => {
+describe('provider model parser', () => {
   describe('parseProviderModels', () => {
     it('parses entries with a name and synthesizes a stable id when missing', () => {
       const result = parseProviderModels(
@@ -39,30 +39,6 @@ describe('provider model/effort parsers', () => {
     it('rejects non-array payloads and entries without a usable name', () => {
       expect(parseProviderModels(null, 'p1')).toEqual([]);
       expect(parseProviderModels([{ name: '   ' }, { id: 'x' }, 5, null], 'p1')).toEqual([]);
-    });
-  });
-
-  describe('parseProviderEfforts', () => {
-    it('accepts string or {name} entries and reads the capability flags', () => {
-      const result = parseProviderEfforts(
-        { efforts: ['low', { name: 'high' }], supportsEffort: true, requiresModelForEffort: true },
-        'p1',
-      );
-      expect(result).toEqual({
-        efforts: [
-          { id: 'p1:low:0', name: 'low' },
-          { id: 'p1:high:1', name: 'high' },
-        ],
-        supportsEffort: true,
-        requiresModelForEffort: true,
-      });
-    });
-
-    it('returns the disabled-empty baseline for non-object payloads', () => {
-      const empty = { efforts: [], supportsEffort: false, requiresModelForEffort: false };
-      expect(parseProviderEfforts(null, 'p1')).toEqual(empty);
-      expect(parseProviderEfforts([], 'p1')).toEqual(empty);
-      expect(parseProviderEfforts({ efforts: 'nope' }, 'p1')).toEqual(empty);
     });
   });
 });
@@ -131,10 +107,19 @@ describe('useProviderEfforts (gating matrix + stale-clear)', () => {
     {
       label: 'model required',
       id: 'opencode',
-      payload: { efforts: [{ name: 'high' }], supportsEffort: true, requiresModelForEffort: true },
+      payload: {
+        efforts: [{ providerId: 'opencode', name: 'high' }],
+        supportsEffort: true,
+        requiresModelForEffort: true,
+      },
     },
   ] as const)('$label', async ({ id, payload }) => {
-    const fetchMock = mockFetch({ [`/api/providers/${id}/efforts`]: payload });
+    const fetchMock = mockFetch({
+      [`/api/providers/${id}/efforts`]: {
+        ...payload,
+        efforts: payload.efforts.map((effort) => ({ ...effort, providerId: id })),
+      },
+    });
     const { result } = renderHook(
       () =>
         useProviderEfforts({ providerId: id, effortOverride: null, onStaleSelection: jest.fn() }),
@@ -152,10 +137,13 @@ describe('useProviderEfforts (gating matrix + stale-clear)', () => {
 
   it('clears a stale effort-override selection not present in the catalog', async () => {
     mockFetch({
-      '/api/providers/p1/efforts': { efforts: [{ name: 'high' }], supportsEffort: true },
+      '/api/providers/p1/efforts': {
+        efforts: [{ providerId: 'p1', name: 'high' }],
+        supportsEffort: true,
+      },
     });
     const onStale = jest.fn();
-    renderHook(
+    const { rerender } = renderHook(
       () =>
         useProviderEfforts({
           providerId: 'p1',
@@ -165,11 +153,16 @@ describe('useProviderEfforts (gating matrix + stale-clear)', () => {
       { wrapper: makeWrapper() },
     );
     await waitFor(() => expect(onStale).toHaveBeenCalledWith(null));
+    rerender();
+    expect(onStale).toHaveBeenCalledTimes(1);
   });
 
   it('keeps an effort selection whose catalog row differs only in case', async () => {
     mockFetch({
-      '/api/providers/p1/efforts': { efforts: [{ name: 'high' }], supportsEffort: true },
+      '/api/providers/p1/efforts': {
+        efforts: [{ providerId: 'p1', name: 'high' }],
+        supportsEffort: true,
+      },
     });
     const onStale = jest.fn();
     const { result } = renderHook(

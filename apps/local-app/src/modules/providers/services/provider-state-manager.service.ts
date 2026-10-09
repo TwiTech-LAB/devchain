@@ -3,7 +3,13 @@ import { Injectable, Inject } from '@nestjs/common';
 import { access, stat } from 'fs/promises';
 import { constants } from 'fs';
 import { isAbsolute, resolve } from 'path';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  StorageService,
+  STORAGE_SERVICE,
+  type AgentProfileStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import { EnvScopesMap, Provider, UpdateProvider } from '../../storage/models/domain.models';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { ProviderProjectSyncService, type SyncResult } from './provider-project-sync.service';
@@ -45,7 +51,14 @@ export type UpdateProviderRequest = {
 @Injectable()
 export class ProviderStateManager {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      Pick<
+        StorageService,
+        'createProvider' | 'deleteProvider' | 'getProvider' | 'updateProviderWithScopes'
+      >,
     private readonly providerProjectSync: ProviderProjectSyncService,
     private readonly executor: ProcessExecutor,
     private readonly effortSeeding: ProviderEffortSeedingService,

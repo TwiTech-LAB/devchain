@@ -1,5 +1,11 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  StorageService,
+  STORAGE_SERVICE,
+  type AgentProfileStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import { ProviderMcpEnsureService } from '../../providers/services/provider-mcp-ensure.service';
 import { createLogger } from '../../../common/logging/logger';
 
@@ -17,7 +23,11 @@ export type ProvisioningWarning = {
 @Injectable()
 export class ProjectProviderProvisioningService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      Pick<StorageService, 'getProvider'>,
     private readonly mcpEnsureService: ProviderMcpEnsureService,
   ) {}
 

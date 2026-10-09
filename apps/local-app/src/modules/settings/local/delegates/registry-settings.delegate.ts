@@ -1,3 +1,4 @@
+import type { ProjectWriteGate } from '../../../storage/write-gate/project-write-gate';
 import { createLogger } from '../../../../common/logging/logger';
 import type {
   SettingsDto,
@@ -10,6 +11,7 @@ const logger = createLogger('RegistrySettingsDelegate');
 const DEFAULT_REGISTRY_URL = 'https://a1-devchain.twitechlab.com';
 
 export interface RegistryDelegateContext {
+  gate?: ProjectWriteGate;
   getSettings: () => SettingsDto;
   updateSettings: (settings: SettingsDto) => Promise<SettingsDto>;
 }
@@ -53,6 +55,7 @@ export class RegistrySettingsDelegate {
     projectId: string,
     metadata: RegistryTemplateMetadataDto,
   ): Promise<void> {
+    this.context.gate?.assertWritable(projectId);
     const currentSettings = this.context.getSettings();
     const existingTemplates = currentSettings.registryTemplates ?? {};
 
@@ -70,6 +73,7 @@ export class RegistrySettingsDelegate {
   }
 
   async clearProjectTemplateMetadata(projectId: string): Promise<void> {
+    this.context.gate?.assertWritable(projectId);
     const currentSettings = this.context.getSettings();
     const existingTemplates = currentSettings.registryTemplates ?? {};
 

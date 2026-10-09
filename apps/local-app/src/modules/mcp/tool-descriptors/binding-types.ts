@@ -10,10 +10,21 @@ import type { SessionsService } from '../../sessions/services/sessions.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { SkillsService } from '../../skills/services/skills.service';
 import type { SkillSourceLifecycleService } from '../../skills/services/skill-source-lifecycle.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type {
+  AgentProfileStorage,
+  AgentStorage,
+  EpicStorage,
+  GuestStorage,
+  ProfileProviderConfigStorage,
+  ProjectStorage,
+  PromptStorage,
+  RecordStorage,
+  ReviewStorage,
+  StatusStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { TeamsService } from '../../teams/services/teams.service';
 import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
-import type { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import type { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import type { InstructionsResolver } from '../services/instructions-resolver';
 
 export type ContextualMcpToolHandler<TContext> = (
@@ -24,7 +35,16 @@ export type ContextualMcpToolHandler<TContext> = (
 export type BoundMcpToolHandler = (params: unknown) => Promise<McpResponse>;
 
 export interface McpBindingRuntime {
-  readonly storage: StorageService;
+  readonly storage: AgentProfileStorage &
+    AgentStorage &
+    EpicStorage &
+    GuestStorage &
+    ProfileProviderConfigStorage &
+    ProjectStorage &
+    PromptStorage &
+    RecordStorage &
+    ReviewStorage &
+    StatusStorage;
   readonly sessionsService?: SessionsService;
   readonly epicsService?: EpicsService;
   readonly epicRelationsService?: EpicRelationsService;
@@ -38,7 +58,7 @@ export interface McpBindingRuntime {
   readonly terminalIO?: TerminalIOService;
   readonly agentMessageDelivery?: AgentMessageDeliveryService;
   readonly projectCommunicationService?: ProjectCommunicationService;
-  readonly projectWriteAdmission?: ProjectWriteAdmissionService;
+  readonly projectWriteGate?: ProjectWriteGate;
   readonly instructionsResolver: InstructionsResolver;
   readonly defaultInlineMaxBytes: number;
   readonly resolveSessionContext: (sessionId: string) => Promise<McpResponse>;

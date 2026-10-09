@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { join } from 'path';
 import { getDbConfig } from './db.config';
+import { restrictDatabaseFilePermissions } from './db-file-permissions';
 import { createLogger } from '../../../common/logging/logger';
 
 const logger = createLogger('Migrate');
@@ -13,6 +14,7 @@ export async function runMigrations(): Promise<void> {
   logger.info({ dbPath: config.dbPath }, 'Running database migrations');
 
   const sqlite = new Database(config.dbPath);
+  restrictDatabaseFilePermissions(config.dbPath);
   const db = drizzle(sqlite);
 
   // Use absolute path to migrations folder

@@ -1,4 +1,5 @@
-import type { ListOptions, ListResult } from '../../interfaces/storage.interface';
+import { readProviderScopeChanges } from '../../write-gate/storage-write-scope';
+import type { ProviderStorage, ListOptions, ListResult } from '../../interfaces/storage.interface';
 import type {
   CreateProvider,
   EnvScopesMap,
@@ -70,7 +71,24 @@ export interface ProviderStorageDelegateDependencies {
   updateProvider: (id: string, data: UpdateProvider) => Promise<Provider>;
 }
 
-export class ProviderStorageDelegate extends BaseStorageDelegate {
+export class ProviderStorageDelegate
+  extends BaseStorageDelegate
+  implements
+    Pick<
+      ProviderStorage,
+      | 'createProvider'
+      | 'getProvider'
+      | 'listProviders'
+      | 'listProvidersByIds'
+      | 'updateProvider'
+      | 'deleteProvider'
+      | 'getProviderEnvForProject'
+      | 'listEnvScopesByProviderIds'
+      | 'updateProviderWithScopes'
+      | 'getProviderMcpMetadata'
+      | 'updateProviderMcpMetadata'
+    >
+{
   constructor(
     context: StorageDelegateContext,
     private readonly dependencies: ProviderStorageDelegateDependencies,
@@ -317,12 +335,12 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
     return Object.keys(filtered).length > 0 ? filtered : null;
   }
 
-  updateProviderWithScopes(
+  async updateProviderWithScopes(
     id: string,
     data: UpdateProvider,
     envScopes: EnvScopesMap | undefined,
     currentEnvKeys: string[],
-  ): Provider {
+  ): Promise<Provider> {
     return this.txRunner.runImmediate(() => {
       const now = new Date().toISOString();
       const existing = this.rawClient
@@ -354,30 +372,15 @@ export class ProviderStorageDelegate extends BaseStorageDelegate {
 
       this.db.update(providersTable).set(updateData).where(eq(providersTable.id, id)).run();
 
-      if (envScopes !== undefined) {
-        this.rawClient.prepare('DELETE FROM provider_env_scopes WHERE provider_id = ?').run(id);
-
-        const insert = this.rawClient.prepare(
-          'INSERT INTO provider_env_scopes (provider_id, env_key, project_id, created_at) VALUES (?, ?, ?, ?)',
-        );
-        for (const [envKey, projectIds] of Object.entries(envScopes)) {
-          if (!currentEnvKeys.includes(envKey)) continue;
-          for (const projectId of projectIds) {
-            insert.run(id, envKey, projectId, now);
-          }
-        }
-      } else {
-        if (currentEnvKeys.length > 0) {
-          const placeholders = currentEnvKeys.map(() => '?').join(', ');
-          this.rawClient
-            .prepare(
-              `DELETE FROM provider_env_scopes WHERE provider_id = ? AND env_key NOT IN (${placeholders})`,
-            )
-            .run(id, ...currentEnvKeys);
-        } else {
-          this.rawClient.prepare('DELETE FROM provider_env_scopes WHERE provider_id = ?').run(id);
-        }
-      }
+      const scopeChanges = readProviderScopeChanges(this.rawClient, id, envScopes, currentEnvKeys);
+      const remove = this.rawClient.prepare(
+        'DELETE FROM provider_env_scopes WHERE provider_id = ? AND env_key = ? AND project_id = ?',
+      );
+      for (const row of scopeChanges.removed) remove.run(id, row.envKey, row.projectId);
+      const insert = this.rawClient.prepare(
+        'INSERT INTO provider_env_scopes (provider_id, env_key, project_id, created_at) VALUES (?, ?, ?, ?)',
+      );
+      for (const row of scopeChanges.added) insert.run(id, row.envKey, row.projectId, now);
 
       const row = this.rawClient.prepare('SELECT * FROM providers WHERE id = ?').get(id) as
         | RawProviderRow

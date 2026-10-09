@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
+import type { RemoteOperationDto } from './lib/remote-vm-contracts';
 import { ActivityDialog, useActivityView, type ActivityView } from './ActivityDialog';
 import type { ActivityActions } from './OperationDetail';
 

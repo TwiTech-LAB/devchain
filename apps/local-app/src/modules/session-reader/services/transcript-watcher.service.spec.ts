@@ -1,6 +1,8 @@
 import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { TranscriptWatcherService } from './transcript-watcher.service';
+import { ClaudeSessionReaderAdapter } from '../adapters/claude-session-reader.adapter';
+import { CodexSessionReaderAdapter } from '../adapters/codex-session-reader.adapter';
 import type { SessionCacheService, GetOrParseResult } from './session-cache.service';
 import type { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import type { EventsService } from '../../events/services/events.service';
@@ -137,6 +139,7 @@ function createMockAdapter(): SessionReaderAdapter {
   return {
     providerName: 'claude',
     incrementalMode: 'delta',
+    turnState: ClaudeSessionReaderAdapter.prototype.turnState,
     allowedRoots: [],
     discoverSessionFile: jest.fn(),
     parseSessionFile: jest.fn(),
@@ -149,6 +152,16 @@ function createMockAdapter(): SessionReaderAdapter {
 
 function createMocks() {
   const mockAdapter = createMockAdapter();
+  const codexAdapter: SessionReaderAdapter = {
+    ...mockAdapter,
+    providerName: 'codex',
+    turnState: CodexSessionReaderAdapter.prototype.turnState,
+  };
+  const outputAdapter: SessionReaderAdapter = {
+    ...mockAdapter,
+    providerName: 'opencode',
+    turnState: undefined,
+  };
   const getOrParse = jest.fn().mockResolvedValue(makeSession());
   const getOrParseWithMeta = jest.fn(async (...args: unknown[]) => ({
     session: await getOrParse(...args),
@@ -180,7 +193,11 @@ function createMocks() {
   } as unknown as jest.Mocked<SessionCacheService>;
 
   const mockAdapterFactory = {
-    getAdapter: jest.fn().mockReturnValue(mockAdapter),
+    getAdapter: jest.fn().mockImplementation((name: string) => {
+      if (name === 'claude') return mockAdapter;
+      if (name === 'codex') return codexAdapter;
+      return outputAdapter;
+    }),
     registerAdapter: jest.fn(),
     getSupportedProviders: jest.fn(),
   } as unknown as jest.Mocked<SessionReaderAdapterFactory>;
@@ -1120,6 +1137,7 @@ describe('TranscriptWatcherService', () => {
         });
 
         it('reports a Codex task_complete appended to the transcript, also when it adds no message', async () => {
+          adapter = mockAdapterFactory.getAdapter('codex') as typeof adapter;
           adapter.getSummary = jest.fn().mockResolvedValue(laneSeed());
           adapter.parseIncremental = jest.fn().mockResolvedValue(appendedSlice(false));
           const fsWatcher = createMockFsWatcher();

@@ -1,7 +1,6 @@
 import type { INestApplicationContext } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import type { Server, ServerOptions } from 'socket.io';
-import { HOST_API_KEY_REJECTED } from '../host-api-key';
 import { HostApiKeyService } from './host-api-key.service';
 
 export class HostApiKeyIoAdapter extends IoAdapter {
@@ -16,8 +15,9 @@ export class HostApiKeyIoAdapter extends IoAdapter {
     return super.createIOServer(port, {
       ...options,
       allowRequest: (request, callback) => {
-        if (!this.keys.allows(request, 'socket')) {
-          callback(HOST_API_KEY_REJECTED, false);
+        const refusal = this.keys.allows(request, 'socket');
+        if (refusal) {
+          callback(refusal.code, false);
         } else if (options?.allowRequest) {
           options.allowRequest(request, callback);
         } else {

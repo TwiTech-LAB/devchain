@@ -1,21 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  fetchPrompts,
+  type Prompt,
+  type PromptSummary,
+  type PromptsResponse,
+} from '@/ui/lib/prompts';
 import { getPromptType, PROMPT_TYPE } from '@/common/prompt-type';
-
-export interface CustomPromptSummary {
-  id: string;
-  projectId: string | null;
-  title: string;
-  tags: string[];
-}
-
-export interface CustomPromptDetail extends CustomPromptSummary {
-  content: string;
-}
-
-interface PromptListResponse {
-  items: CustomPromptSummary[];
-  total?: number;
-}
 
 export type PromptFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -25,21 +15,13 @@ export interface CustomPromptApiTarget {
 }
 
 interface UseCustomPromptsResult {
-  prompts: CustomPromptSummary[];
+  prompts: PromptSummary[];
   isLoading: boolean;
   error: string | null;
+  removePrompt: (promptId: string) => void;
 }
 
 const PROMPT_PAGE_LIMIT = 10_000;
-
-function promptListUrl(target: CustomPromptApiTarget, offset: number): string {
-  const params = new URLSearchParams({
-    projectId: target.projectId,
-    limit: String(PROMPT_PAGE_LIMIT),
-    offset: String(offset),
-  });
-  return `/api/prompts?${params.toString()}`;
-}
 
 function promptDetailUrl(_target: CustomPromptApiTarget, promptId: string): string {
   return `/api/prompts/${encodeURIComponent(promptId)}`;
@@ -56,9 +38,13 @@ async function fetchPromptPage(
   target: CustomPromptApiTarget,
   offset: number,
   signal?: AbortSignal,
-): Promise<PromptListResponse> {
-  const response = await target.fetchFn(promptListUrl(target, offset), { signal });
-  const page = await readJson<PromptListResponse>(response, 'Failed to load custom prompts.');
+): Promise<PromptsResponse> {
+  const page = await fetchPrompts(
+    target.fetchFn,
+    target.projectId,
+    { limit: PROMPT_PAGE_LIMIT, offset },
+    signal,
+  );
   if (!Array.isArray(page.items)) {
     throw new Error('The custom prompt list response is invalid.');
   }
@@ -68,7 +54,7 @@ async function fetchPromptPage(
 export async function fetchCustomPrompts(
   target: CustomPromptApiTarget,
   signal?: AbortSignal,
-): Promise<CustomPromptSummary[]> {
+): Promise<PromptSummary[]> {
   const firstPage = await fetchPromptPage(target, 0, signal);
   let allPrompts = firstPage.items;
 
@@ -96,12 +82,9 @@ export async function fetchValidatedCustomPrompt(
   target: CustomPromptApiTarget,
   promptId: string,
   signal?: AbortSignal,
-): Promise<CustomPromptDetail> {
+): Promise<Prompt> {
   const response = await target.fetchFn(promptDetailUrl(target, promptId), { signal });
-  const prompt = await readJson<CustomPromptDetail>(
-    response,
-    'Failed to load the selected custom prompt.',
-  );
+  const prompt = await readJson<Prompt>(response, 'Failed to load the selected custom prompt.');
 
   if (prompt.id !== promptId) {
     throw new Error('The selected prompt response does not match the requested prompt.');
@@ -119,11 +102,21 @@ export async function fetchValidatedCustomPrompt(
   return prompt;
 }
 
+export async function deleteCustomPrompt(
+  target: CustomPromptApiTarget,
+  promptId: string,
+): Promise<void> {
+  const response = await target.fetchFn(promptDetailUrl(target, promptId), { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error('Failed to delete the custom prompt.');
+  }
+}
+
 export function useCustomPrompts(
   open: boolean,
   target: CustomPromptApiTarget,
 ): UseCustomPromptsResult {
-  const [prompts, setPrompts] = useState<CustomPromptSummary[]>([]);
+  const [prompts, setPrompts] = useState<PromptSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -156,5 +149,9 @@ export function useCustomPrompts(
     return () => controller.abort();
   }, [open, target]);
 
-  return { prompts, isLoading, error };
+  const removePrompt = useCallback((promptId: string) => {
+    setPrompts((current) => current.filter((prompt) => prompt.id !== promptId));
+  }, []);
+
+  return { prompts, isLoading, error, removePrompt };
 }

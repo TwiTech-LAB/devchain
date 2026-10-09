@@ -33,7 +33,7 @@ The schema source is `src/modules/storage/db/schema.ts`; committed migrations an
 | `test-health-report.ts` | Render test-health evidence from generated Jest output |
 | `terminal-window-heap-evidence.mjs` | Focused terminal heap evidence |
 | `xterm6-browser-smoke.mjs` | Browser smoke contract for xterm compatibility |
-| `memory-soak/` | Protected memory-soak harness and evidence runbooks |
+| `memory-soak/` | Opt-in memory-soak harness and its runbook |
 
 ## Historical repair scripts
 
@@ -41,4 +41,4 @@ The schema source is `src/modules/storage/db/schema.ts`; committed migrations an
 
 ## Memory soak
 
-The opt-in harness is documented in [Memory Soak](memory-soak/README.md). Its artifact hashes, fixtures, evidence language, and comparison authority are correctness-bearing; do not simplify that runbook as ordinary conceptual documentation.
+The opt-in harness is documented in `memory-soak/README.md`. Its artifact hashes, fixtures, evidence language, and comparison authority are correctness-bearing; do not simplify that runbook as ordinary conceptual documentation.

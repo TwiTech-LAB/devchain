@@ -9,7 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/car
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { BusyStatus } from '@/ui/components/ui/spinner';
-import { useProviderAuth, type ProviderAuthEntryItem } from '@/ui/hooks/useProviderAuth';
+import { useProviderAuth } from '@/ui/hooks/useProviderAuth';
+import type { ProviderAuthEntryItem } from './lib/remote-vm-contracts';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { AddLoginDialog, type AddLoginProvider } from './AddLoginDialog';
 import { PROVIDER_NAMES } from './login-choices';

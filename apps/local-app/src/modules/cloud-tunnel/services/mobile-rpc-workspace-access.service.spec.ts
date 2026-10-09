@@ -246,6 +246,10 @@ describe('TunnelHandlerService workspace pre-dispatch integration', () => {
       {} as never,
       terminalKey as never,
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
       workspaceAccess as never,
     );
     return { handler, mobileChat, viewport, terminalKey };
@@ -273,6 +277,10 @@ describe('TunnelHandlerService workspace pre-dispatch integration', () => {
       const handler = new TunnelHandlerService(
         {},
         { listAgents: jest.fn() } as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
         {} as never,
         {} as never,
         {} as never,

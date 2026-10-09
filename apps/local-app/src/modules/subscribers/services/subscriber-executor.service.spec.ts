@@ -30,8 +30,8 @@ import type { ActionContext, ActionDefinition, ActionResult } from '../actions/a
 import * as eventFieldsCatalog from '../events/event-fields-catalog';
 import * as eventsService from '../../events/services/events.service';
 import { TeamsService } from '../../teams/services/teams.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 describe('SubscriberExecutorService', () => {
   let service: SubscriberExecutorService;
@@ -169,7 +169,7 @@ describe('SubscriberExecutorService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         SubscriberExecutorService,
         {
           provide: STORAGE_SERVICE,
@@ -1421,7 +1421,7 @@ describe('SubscriberExecutorService', () => {
         realScheduler,
         mockTeamsService as unknown as TeamsService,
         mockModuleRef as unknown as ModuleRef,
-        createProjectWriteAdmissionStub() as never,
+        createProjectWriteGateStub() as never,
       );
 
       const mockExecute = jest.fn().mockResolvedValue({ success: true });
@@ -1926,7 +1926,7 @@ describe('EventEmitter2 onAny eventName capture (integration)', () => {
         // teamsService
         nullModuleRef as unknown as never,
         // moduleRef,
-        createProjectWriteAdmissionStub() as never,
+        createProjectWriteGateStub() as never,
       );
 
       expect(() =>

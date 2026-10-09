@@ -12,7 +12,7 @@ import type {
   ProjectExclusionSuggestions,
   SyncPathInspection,
 } from '../../file-sync/sync-path-inspection.dto';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
 import { RemoteHostClient } from '../operations/remote-host.client';
 
 const logger = createLogger('FileSyncSuggestionsService');
@@ -20,7 +20,7 @@ const logger = createLogger('FileSyncSuggestionsService');
 @Injectable()
 export class FileSyncSuggestionsService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage,
     private readonly inspector: SyncPathInspector,
     private readonly host: RemoteHostClient,
     private readonly files: FileSyncService,

@@ -7,8 +7,7 @@ import type {
   SessionsMessagePoolService,
   MessageLogEntry,
 } from '../services/sessions-message-pool.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 // Valid UUIDs for testing
 const VALID_PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
@@ -28,7 +27,6 @@ describe('SessionsController', () => {
       | 'forceDeferredDelivery'
     >
   >;
-  let mockStorage: { getAgent: jest.Mock };
 
   const createMockLogEntry = (overrides: Partial<MessageLogEntry> = {}): MessageLogEntry => ({
     id: 'msg-1',
@@ -63,16 +61,11 @@ describe('SessionsController', () => {
         .mockResolvedValue({ status: 'delivered', deliveredCount: 1 }),
     };
 
-    mockStorage = {
-      getAgent: jest.fn(),
-    };
-
     controller = new SessionsController(
       mockSessionsService as SessionsService,
       mockMessagePoolService as unknown as SessionsMessagePoolService,
       mockSessionRuntime as SessionRuntime,
-      mockStorage as unknown as StorageService,
-      createProjectWriteAdmissionStub() as never,
+      createProjectWriteGateStub() as never,
     );
   });
 

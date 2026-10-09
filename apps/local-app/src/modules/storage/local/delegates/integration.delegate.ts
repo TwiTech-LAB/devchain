@@ -1,3 +1,8 @@
+import type {
+  FactualEventFactory,
+  IntegrationStorage,
+  VerifyIntegrationCredentials,
+} from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
@@ -23,9 +28,6 @@ import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { IntegrationCredentialCipher } from '../integration-credential-cipher';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 import type { PreparedEvent } from '../../../events/services/durable-event-registry.service';
-import type { FactualEventFactory } from '../../interfaces/storage.interface';
-
-export type VerifyIntegrationCredentials = (credentials: IntegrationCredentials) => Promise<void>;
 
 const CONNECTION_STATE_COLUMNS = {
   id: integrationConnections.id,
@@ -40,7 +42,7 @@ const CONNECTION_STATE_COLUMNS = {
 };
 
 export interface IntegrationStorageDelegateDependencies {
-  createEpicInCurrentTransaction: (data: CreateEpicWithExternalTaskLink['epic']) => Promise<Epic>;
+  createEpicWithinTransaction: (data: CreateEpicWithExternalTaskLink['epic']) => Promise<Epic>;
   getEpic: (id: string) => Promise<Epic>;
   appendEvent: (event: PreparedEvent) => void;
   handleConnectionMutation: (
@@ -50,7 +52,33 @@ export interface IntegrationStorageDelegateDependencies {
   ) => void;
 }
 
-export class IntegrationStorageDelegate extends BaseStorageDelegate {
+export class IntegrationStorageDelegate
+  extends BaseStorageDelegate
+  implements
+    Pick<
+      IntegrationStorage,
+      | 'replaceIntegrationConnection'
+      | 'getIntegrationConnection'
+      | 'getIntegrationConnectionById'
+      | 'assignUnassignedIntegrationConnection'
+      | 'listIntegrationConnectionsByLegacySourceConnectionId'
+      | 'listIntegrationConnections'
+      | 'getIntegrationConnectionCredentials'
+      | 'getIntegrationConnectionCredentialsById'
+      | 'disconnectIntegrationConnection'
+      | 'disconnectIntegrationConnectionById'
+      | 'disconnectUnassignedIntegrationConnection'
+      | 'updateIntegrationConnectionSyncSetting'
+      | 'updateIntegrationConnectionSyncSettingById'
+      | 'createExternalTaskLink'
+      | 'createEpicWithExternalTaskLink'
+      | 'findExternalTaskLink'
+      | 'listExternalTaskLinksByRemoteScope'
+      | 'listExternalTaskLinksByRemoteTask'
+      | 'listExternalTaskLinksForEpic'
+      | 'listExternalTaskLinksForEpics'
+    >
+{
   constructor(
     context: StorageDelegateContext,
     private readonly credentialCipher: IntegrationCredentialCipher,
@@ -458,7 +486,7 @@ export class IntegrationStorageDelegate extends BaseStorageDelegate {
     let uniquenessConflict: ConflictError | null = null;
     try {
       return await this.txRunner.runImmediateAsync(async () => {
-        const epic = await this.dependencies.createEpicInCurrentTransaction(data.epic);
+        const epic = await this.dependencies.createEpicWithinTransaction(data.epic);
         const externalTaskLink = await this.createExternalTaskLink({
           ...data.externalTaskLink,
           epicId: epic.id,

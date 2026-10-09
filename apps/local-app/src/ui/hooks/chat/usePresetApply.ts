@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import {
   validatePresetAvailability,
@@ -63,12 +64,9 @@ export interface UsePresetApplyResult {
 }
 
 /**
- * Preset-apply domain flow, extracted from ChatPage. Owns availability sorting,
- * the apply mutation (affected-agent detection + restart marking), and the
- * active-session confirmation gate. Toast copy and the `['agents', projectId]`
- * invalidation are preserved verbatim. Query data (`presets`, `configsMap`,
- * `agentsWithProfiles`) stays owned by ChatPage and is injected, since it is
- * shared with rendering.
+ * Checks preset availability and active sessions before applying a preset,
+ * marks affected agents for restart, and refreshes both agent list variants.
+ * Query data is supplied by ChatPage because rendering shares those queries.
  */
 export function usePresetApply({
   projectId,
@@ -123,7 +121,7 @@ export function usePresetApply({
         markAgentsForRestart(onlineAgentIds.map(restartKeyForMain));
       }
 
-      queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
+      queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) });
 
       showSuccess({
         title: 'Preset applied',

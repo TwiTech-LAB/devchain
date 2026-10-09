@@ -1,5 +1,15 @@
 import { useRef, useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { promptQueries, type PromptSummary } from '@/ui/lib/prompts';
+import { projectPresetQueryKeys } from '@/ui/lib/project-presets';
+import { profileQueries, type ProfileListItem, profileQueryKeys } from '@/ui/lib/profiles';
+import {
+  providerConfigQueries,
+  type ProfileProviderConfig,
+  providerConfigQueryKeys,
+  providerConfigQueryPredicates,
+} from '@/ui/lib/provider-configs';
+import { providerEffortQueries } from '@/ui/lib/provider-efforts';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
@@ -29,7 +39,6 @@ import {
   X,
   ArrowUp,
   ArrowDown,
-  Users,
   Settings2,
   Trash2,
   ChevronDown,
@@ -45,60 +54,10 @@ import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
-interface Prompt {
-  id: string;
-  title: string;
-  content: string;
-}
-
-interface ProfilePrompt {
-  promptId: string;
-  order: number;
-  prompt: Prompt;
-}
-
 interface Provider {
   id: string;
   name: string;
   binPath: string | null;
-}
-
-interface AgentProfile {
-  id: string;
-  name: string;
-  familySlug?: string | null;
-  provider?: Provider; // Enriched from provider configs
-  instructions?: string | null;
-  prompts?: ProfilePrompt[];
-  agentCount?: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface ProviderConfig {
-  id: string;
-  profileId: string;
-  providerId: string;
-  name: string;
-  description: string | null;
-  options: string | null;
-  env: Record<string, string> | null;
-  model: string | null;
-  effort: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-async function fetchProfiles(fetchFn: FetchFn, projectId: string) {
-  const res = await fetchFn(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch profiles');
-  return res.json();
-}
-
-async function fetchPrompts(fetchFn: FetchFn, projectId: string) {
-  const res = await fetchFn(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch prompts');
-  return res.json();
 }
 
 async function fetchProviders(fetchFn: FetchFn) {
@@ -163,15 +122,6 @@ async function deleteProfile(fetchFn: FetchFn, id: string) {
 }
 
 // Provider Config API functions
-async function fetchProviderConfigs(
-  fetchFn: FetchFn,
-  profileId: string,
-): Promise<ProviderConfig[]> {
-  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
-  if (!res.ok) throw new Error('Failed to fetch provider configs');
-  return res.json();
-}
-
 async function createProviderConfig(
   fetchFn: FetchFn,
   profileId: string,
@@ -184,7 +134,7 @@ async function createProviderConfig(
     model?: string | null;
     effort?: string | null;
   },
-): Promise<ProviderConfig> {
+): Promise<ProfileProviderConfig> {
   const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -208,7 +158,7 @@ async function updateProviderConfig(
     model?: string | null;
     effort?: string | null;
   },
-): Promise<ProviderConfig> {
+): Promise<ProfileProviderConfig> {
   const res = await fetchFn(`/api/provider-configs/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -233,27 +183,12 @@ interface ProviderCatalogModel {
   name: string;
 }
 
-interface ProviderEffortsCatalog {
-  efforts: Array<{ name: string }>;
-  supportsEffort: boolean;
-  requiresModelForEffort: boolean;
-}
-
 async function fetchProviderModels(
   fetchFn: FetchFn,
   providerId: string,
 ): Promise<ProviderCatalogModel[]> {
   const res = await fetchFn(`/api/providers/${encodeURIComponent(providerId)}/models`);
   if (!res.ok) throw new Error('Failed to fetch provider models');
-  return res.json();
-}
-
-async function fetchProviderEfforts(
-  fetchFn: FetchFn,
-  providerId: string,
-): Promise<ProviderEffortsCatalog> {
-  const res = await fetchFn(`/api/providers/${encodeURIComponent(providerId)}/efforts`);
-  if (!res.ok) throw new Error('Failed to fetch provider efforts');
   return res.json();
 }
 
@@ -297,8 +232,7 @@ export function ProviderConfigDefaultsFields({
   });
 
   const { data: effortsCatalog } = useQuery({
-    queryKey: ['provider-efforts', providerId],
-    queryFn: () => fetchProviderEfforts(fetchFn, providerId),
+    ...providerEffortQueries.catalog(fetchFn, providerId),
     enabled: !!providerId,
   });
 
@@ -377,7 +311,7 @@ function PromptOrderList({
   orderedPromptIds,
   onReorder,
 }: {
-  prompts: Prompt[];
+  prompts: PromptSummary[];
   orderedPromptIds: string[];
   onReorder: (ids: string[]) => void;
 }) {
@@ -386,7 +320,7 @@ function PromptOrderList({
 
   const orderedPrompts = orderedPromptIds
     .map((id) => prompts.find((p) => p.id === id))
-    .filter((p): p is Prompt => p !== undefined);
+    .filter((p): p is PromptSummary => p !== undefined);
 
   const handleDragStart = (index: number) => {
     setDraggedIndex(index);
@@ -515,7 +449,9 @@ function ProviderConfigsSection({
   const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
   const [localConfigIds, setLocalConfigIds] = useState<string[]>([]);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const [pendingDeleteConfig, setPendingDeleteConfig] = useState<ProviderConfig | null>(null);
+  const [pendingDeleteConfig, setPendingDeleteConfig] = useState<ProfileProviderConfig | null>(
+    null,
+  );
   const createEnvEditorRef = useRef<EnvEditorHandle>(null);
   const editEnvEditorRef = useRef<EnvEditorHandle>(null);
   const [formData, setFormData] = useState({
@@ -529,8 +465,7 @@ function ProviderConfigsSection({
   });
 
   const { data: configs, isLoading } = useQuery({
-    queryKey: ['provider-configs', profileId],
-    queryFn: () => fetchProviderConfigs(fetchFn, profileId),
+    ...providerConfigQueries.profile(fetchFn, profileId),
     enabled: !!profileId,
   });
 
@@ -552,7 +487,7 @@ function ProviderConfigsSection({
       effort?: string | null;
     }) => createProviderConfig(fetchFn, profileId, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
+      queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.profile(profileId) });
       setShowAddForm(false);
       resetForm();
       showSuccess({ title: 'Success', description: 'Provider configuration created' });
@@ -583,20 +518,13 @@ function ProviderConfigsSection({
       };
     }) => updateProviderConfig(fetchFn, id, data),
     onSuccess: (updatedConfig, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
+      queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.profile(profileId) });
       if (variables.oldName.trim() !== updatedConfig.name.trim()) {
         queryClient.invalidateQueries({
-          predicate: (query) => query.queryKey[0] === 'project-presets',
+          queryKey: projectPresetQueryKeys.all,
         });
         queryClient.invalidateQueries({
-          predicate: (query) => {
-            const [key, , profileIds] = query.queryKey;
-            return (
-              key === 'provider-configs-by-profile' &&
-              Array.isArray(profileIds) &&
-              profileIds.includes(profileId)
-            );
-          },
+          predicate: providerConfigQueryPredicates.aggregatesForProfile(profileId),
         });
       }
       setEditingConfigId(null);
@@ -615,7 +543,7 @@ function ProviderConfigsSection({
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteProviderConfig(fetchFn, id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
+      queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.profile(profileId) });
       showSuccess({ title: 'Success', description: 'Provider configuration deleted' });
       onConfigChange?.();
     },
@@ -641,7 +569,7 @@ function ProviderConfigsSection({
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['provider-configs', profileId] });
+      queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.profile(profileId) });
       showSuccess({ title: 'Success', description: 'Provider configurations reordered' });
       onConfigChange?.();
     },
@@ -700,7 +628,7 @@ function ProviderConfigsSection({
     });
   };
 
-  const handleUpdate = (config: ProviderConfig) => {
+  const handleUpdate = (config: ProfileProviderConfig) => {
     // Check for name conflict (excluding the current config being edited)
     const trimmedName = formData.name.trim();
     if (trimmedName && configs?.some((c) => c.id !== config.id && c.name === trimmedName)) {
@@ -730,7 +658,7 @@ function ProviderConfigsSection({
     });
   };
 
-  const handleDelete = (config: ProviderConfig) => {
+  const handleDelete = (config: ProfileProviderConfig) => {
     setPendingDeleteConfig(config);
   };
 
@@ -740,7 +668,7 @@ function ProviderConfigsSection({
     }
   };
 
-  const handleEdit = (config: ProviderConfig) => {
+  const handleEdit = (config: ProfileProviderConfig) => {
     setEditingConfigId(config.id);
     setFormData({
       providerId: config.providerId,
@@ -801,7 +729,7 @@ function ProviderConfigsSection({
   // Get ordered configs
   const orderedConfigs = localConfigIds
     .map((id) => configs?.find((c) => c.id === id))
-    .filter((c): c is ProviderConfig => c !== undefined);
+    .filter((c): c is ProfileProviderConfig => c !== undefined);
 
   // All providers are available (multiple configs per provider allowed since Phase 5)
   const availableProviders = providers;
@@ -1135,8 +1063,8 @@ export function ProfilesPage() {
   const queryClient = useQueryClient();
   const { showError, showSuccess } = useToastHelpers();
   const { selectedProjectId } = useSelectedProject();
-  const formDialog = useFormDialog<AgentProfile>();
-  const deleteDialog = useConfirmDialog<AgentProfile>();
+  const formDialog = useFormDialog<ProfileListItem>();
+  const deleteDialog = useConfirmDialog<ProfileListItem>();
   const editingProfile = formDialog.isEdit ? formDialog.entity : null;
   const pendingDeleteProfile = deleteDialog.target;
   // Note: providerId and options removed in Phase 4
@@ -1149,14 +1077,12 @@ export function ProfilesPage() {
   });
 
   const { data: profilesData, isLoading: profilesLoading } = useQuery({
-    queryKey: ['profiles', selectedProjectId],
-    queryFn: () => fetchProfiles(fetchFn, selectedProjectId as string),
+    ...profileQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 
   const { data: promptsData } = useQuery({
-    queryKey: ['prompts', selectedProjectId],
-    queryFn: () => fetchPrompts(fetchFn, selectedProjectId as string),
+    ...promptQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 
@@ -1175,10 +1101,14 @@ export function ProfilesPage() {
     return map;
   }, [providersData]);
 
-  const profilesKey = ['profiles', selectedProjectId] as const;
-  type ProfilesList = ListContainer<AgentProfile>;
+  const profilesKey = profileQueryKeys.project(selectedProjectId);
+  type ProfilesList = ListContainer<ProfileListItem>;
 
-  const createMutation = useCrudMutation<AgentProfile, Parameters<typeof createProfile>[1], void>({
+  const createMutation = useCrudMutation<
+    ProfileListItem,
+    Parameters<typeof createProfile>[1],
+    void
+  >({
     mutationFn: (data) => createProfile(fetchFn, data),
     optimistic: {
       queryKey: profilesKey,
@@ -1186,13 +1116,12 @@ export function ProfilesPage() {
       project: (previous, newProfile) => {
         const list = previous as ProfilesList | undefined;
         if (!list) return previous;
-        const optimistic: AgentProfile = {
+        const optimistic: ProfileListItem = {
           id: `temp-${Date.now()}`,
           name: newProfile.name,
           familySlug: newProfile.familySlug ?? null,
           instructions: newProfile.instructions ?? null,
           prompts: [],
-          agentCount: 0,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
@@ -1220,7 +1149,7 @@ export function ProfilesPage() {
           description: getErrorMessage(e, 'Failed to persist prompt ordering'),
         });
       } finally {
-        queryClient.invalidateQueries({ queryKey: ['profiles', selectedProjectId] });
+        queryClient.invalidateQueries({ queryKey: profileQueryKeys.project(selectedProjectId) });
         formDialog.close();
         resetForm();
         showSuccess({
@@ -1251,7 +1180,7 @@ export function ProfilesPage() {
       project: (previous, { id, data }) => {
         const list = previous as ProfilesList | undefined;
         if (!list) return previous;
-        return optimisticMergeById(list, id, (p: AgentProfile) => ({
+        return optimisticMergeById(list, id, (p: ProfileListItem) => ({
           ...p,
           name: data.name ?? p.name,
           instructions:
@@ -1278,7 +1207,7 @@ export function ProfilesPage() {
           description: getErrorMessage(e, 'Failed to persist prompt ordering'),
         });
       } finally {
-        queryClient.invalidateQueries({ queryKey: ['profiles', selectedProjectId] });
+        queryClient.invalidateQueries({ queryKey: profileQueryKeys.project(selectedProjectId) });
         formDialog.close();
         resetForm();
         showSuccess({
@@ -1355,7 +1284,7 @@ export function ProfilesPage() {
     }
   };
 
-  const handleEdit = (profile: AgentProfile) => {
+  const handleEdit = (profile: ProfileListItem) => {
     formDialog.openEdit(profile);
     setFormData({
       name: profile.name,
@@ -1367,15 +1296,7 @@ export function ProfilesPage() {
     });
   };
 
-  const handleDelete = (profile: AgentProfile) => {
-    const agentCount = profile.agentCount || 0;
-    if (agentCount > 0) {
-      showError({
-        title: 'Cannot delete',
-        description: `This profile is used by ${agentCount} agent(s). Remove agent assignments first.`,
-      });
-      return;
-    }
+  const handleDelete = (profile: ProfileListItem) => {
     deleteDialog.open(profile);
   };
 
@@ -1390,7 +1311,7 @@ export function ProfilesPage() {
   }, [promptsData]);
 
   const unassignedPrompts = useMemo(() => {
-    return availablePrompts.filter((p: Prompt) => !formData.orderedPromptIds.includes(p.id));
+    return availablePrompts.filter((p: PromptSummary) => !formData.orderedPromptIds.includes(p.id));
   }, [availablePrompts, formData.orderedPromptIds]);
 
   return (
@@ -1412,7 +1333,7 @@ export function ProfilesPage() {
 
       {selectedProjectId && profilesData && (
         <div className="grid gap-4">
-          {profilesData.items.map((profile: AgentProfile) => (
+          {profilesData.items.map((profile: ProfileListItem) => (
             <div key={profile.id} className="border rounded-lg p-4 bg-card">
               <div className="flex justify-between items-start mb-3">
                 <div className="flex-1">
@@ -1434,12 +1355,6 @@ export function ProfilesPage() {
                       </OpaqueBadge>
                     )}
                     {/* Options are now managed via ProviderConfigsSection, not shown here */}
-                    {profile.agentCount && profile.agentCount > 0 && (
-                      <Badge variant="outline" className="gap-1">
-                        <Users className="h-3 w-3" />
-                        {profile.agentCount} agent{profile.agentCount !== 1 ? 's' : ''}
-                      </Badge>
-                    )}
                   </div>
                   <p className="text-sm text-muted-foreground">
                     {(profile.prompts || []).length} prompt
@@ -1536,7 +1451,9 @@ export function ProfilesPage() {
                     providers={providersData?.items || []}
                     providersById={providersById}
                     onConfigChange={() => {
-                      queryClient.invalidateQueries({ queryKey: ['profiles', selectedProjectId] });
+                      queryClient.invalidateQueries({
+                        queryKey: profileQueryKeys.project(selectedProjectId),
+                      });
                     }}
                   />
                 )}
@@ -1557,7 +1474,7 @@ export function ProfilesPage() {
                   <div>
                     <Label>Add Prompts</Label>
                     <div className="grid grid-cols-2 gap-2 mt-2">
-                      {unassignedPrompts.map((prompt: Prompt) => (
+                      {unassignedPrompts.map((prompt: PromptSummary) => (
                         <button
                           key={prompt.id}
                           type="button"

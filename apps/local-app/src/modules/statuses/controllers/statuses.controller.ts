@@ -14,7 +14,7 @@ import { StatusStorage, STORAGE_SERVICE } from '../../storage/interfaces/storage
 import { CreateStatus, UpdateStatus, Status } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 const logger = createLogger('StatusesController');
 
@@ -40,7 +40,7 @@ const UpdateStatusSchema = z.object({
 export class StatusesController {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: StatusStorage,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   @Get()
@@ -62,7 +62,6 @@ export class StatusesController {
   async createStatus(@Body() body: unknown): Promise<Status> {
     logger.info('POST /api/statuses');
     const data = CreateStatusSchema.parse(body) as CreateStatus;
-    this.admission.assertWritable(data.projectId);
     return this.storage.createStatus(data);
   }
 
@@ -70,21 +69,22 @@ export class StatusesController {
   async updateStatus(@Param('id') id: string, @Body() body: unknown): Promise<Status> {
     logger.info({ id }, 'PUT /api/statuses/:id');
     const data = UpdateStatusSchema.parse(body) as UpdateStatus;
-    await this.assertStatusWritable(id);
     return this.storage.updateStatus(id, data);
   }
 
   @Delete(':id')
   async deleteStatus(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/statuses/:id');
-    await this.assertStatusWritable(id);
+    // The delete is a no-op for an unknown id; this read answers 404.
+    await this.storage.getStatus(id);
     await this.storage.deleteStatus(id);
   }
 
   @Post('reorder')
   async reorderStatuses(@Body() body: { projectId: string; statusIds: string[] }) {
     logger.info({ projectId: body.projectId }, 'POST /api/statuses/reorder');
-    this.admission.assertWritable(body.projectId);
+    // Admit the project and every status owner before the first status-position write.
+    this.gate.assertWritable(body.projectId);
     for (const statusId of body.statusIds) {
       await this.assertStatusWritable(statusId);
     }
@@ -104,6 +104,6 @@ export class StatusesController {
   }
 
   private async assertStatusWritable(id: string): Promise<void> {
-    this.admission.assertWritable((await this.storage.getStatus(id)).projectId);
+    this.gate.assertWritable((await this.storage.getStatus(id)).projectId);
   }
 }

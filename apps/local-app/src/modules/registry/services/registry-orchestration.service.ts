@@ -1,4 +1,6 @@
-import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap, Optional } from '@nestjs/common';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { ProjectRemoteError, ProjectFrozenError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { RegistryClientService } from './registry-client.service';
 import { TemplateCacheService, type CachedTemplate } from './template-cache.service';
@@ -42,6 +44,7 @@ export class RegistryOrchestrationService implements OnApplicationBootstrap {
     private readonly registryClient: RegistryClientService,
     private readonly cacheService: TemplateCacheService,
     private readonly settingsService: SettingsService,
+    @Optional() private readonly gate?: ProjectWriteGate,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -119,6 +122,8 @@ export class RegistryOrchestrationService implements OnApplicationBootstrap {
     }
 
     try {
+      // Admit before the registry network request.
+      this.gate?.assertWritable(projectId);
       const template = await this.registryClient.getTemplate(metadata.templateSlug);
       if (!template) {
         return null;
@@ -143,6 +148,7 @@ export class RegistryOrchestrationService implements OnApplicationBootstrap {
         latestVersion: latestVersion.version,
       };
     } catch (error) {
+      if (error instanceof ProjectRemoteError || error instanceof ProjectFrozenError) throw error;
       logger.warn(
         { projectId, templateSlug: metadata.templateSlug, error },
         'Failed to check for updates',

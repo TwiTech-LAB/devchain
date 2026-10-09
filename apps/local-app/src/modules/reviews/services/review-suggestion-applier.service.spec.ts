@@ -8,8 +8,8 @@ import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/s
 import type { Review, ReviewComment } from '../../storage/models/domain.models';
 import { NotFoundError, OptimisticLockError } from '../../../common/errors/error-types';
 import * as fs from 'fs/promises';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 jest.mock('fs/promises', () => ({
   readFile: jest.fn(),
@@ -44,7 +44,7 @@ describe('ReviewSuggestionApplier', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         ReviewSuggestionApplier,
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: ReviewsService, useValue: reviewsService },

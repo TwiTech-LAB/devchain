@@ -17,7 +17,6 @@ export interface ProjectProvisioningContext {
 }
 
 export interface ProjectProvisioningCapability {
-  readonly requiresProjectProvisioning: true;
   provisionProjectPath(
     projectPath: string,
     context?: ProjectProvisioningContext,

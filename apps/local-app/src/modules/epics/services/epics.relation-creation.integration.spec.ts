@@ -16,7 +16,7 @@ import type { SettingsService } from '../../settings/services/settings.service';
 import type { Agent, Epic, Project } from '../../storage/models/domain.models';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { EpicsService } from './epics.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 jest.mock('node:crypto', () => {
   const actual = jest.requireActual<typeof import('node:crypto')>('node:crypto');
@@ -66,7 +66,7 @@ describe('EpicsService atomic relation creation', () => {
       events as unknown as EventsService,
       { getAutoCleanStatusIds: jest.fn().mockReturnValue([]) } as unknown as SettingsService,
       { emit: jest.fn() } as unknown as EventEmitter2,
-      createProjectWriteAdmissionStub() as never,
+      createProjectWriteGateStub() as never,
       {} as never,
       { pullNow: jest.fn() } as never,
     );

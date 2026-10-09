@@ -1,5 +1,5 @@
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
-import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
+import type { RemoteOperationDto } from './lib/remote-vm-contracts';
 import type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
 import {
   POWER_ON_GRACE_MS,

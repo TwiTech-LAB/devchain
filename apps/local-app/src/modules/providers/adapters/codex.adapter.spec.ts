@@ -184,13 +184,6 @@ describe('CodexAdapter', () => {
     });
   });
 
-  describe('binaryCheck', () => {
-    it('builds check command with alias', () => {
-      const args = adapter.binaryCheck('devchain');
-      expect(args).toEqual(['mcp', 'check', 'devchain']);
-    });
-  });
-
   describe('buildLaunchArgs', () => {
     const LAUNCH_OVERRIDES = [
       '-c',

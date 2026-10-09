@@ -4,7 +4,7 @@ import { RegistryClientService } from '../services/registry-client.service';
 import { TemplateCacheService } from '../services/template-cache.service';
 import { RegistryOrchestrationService } from '../services/registry-orchestration.service';
 import { SettingsService } from '../../settings/services/settings.service';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
 import {
   TemplateListResponse,
   TemplateDetailResponse,
@@ -19,7 +19,7 @@ export class RegistryController {
     private readonly cacheService: TemplateCacheService,
     private readonly orchestrationService: RegistryOrchestrationService,
     private readonly settingsService: SettingsService,
-    @Inject(STORAGE_SERVICE) private readonly storageService: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storageService: ProjectStorage,
   ) {}
 
   @Get('status')

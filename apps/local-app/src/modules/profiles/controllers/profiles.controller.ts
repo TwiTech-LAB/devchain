@@ -11,7 +11,12 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type AgentProfileStorage,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+} from '../../storage/interfaces/storage.interface';
 import {
   CreateAgentProfile,
   UpdateAgentProfile,
@@ -20,13 +25,14 @@ import {
 } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import {
   AgentProfileWithPrompts,
   AgentProfileWithPromptsSchema,
   CreateProviderConfigSchema,
   ProfileProviderConfigSchema,
   ReorderProviderConfigsSchema,
+  type ProfilesResponse,
 } from '../dto';
 import { ValidationError } from '../../../common/errors/error-types';
 
@@ -65,12 +71,13 @@ const ReplacePromptsSchema = z.object({
 @Controller('api/profiles')
 export class ProfilesController {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
-    private readonly admission: ProjectWriteAdmissionService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage & AgentStorage & ProfileProviderConfigStorage,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   @Get()
-  async listProfiles(@Query('projectId') projectId?: string) {
+  async listProfiles(@Query('projectId') projectId?: string): Promise<ProfilesResponse> {
     logger.info({ projectId }, 'GET /api/profiles');
 
     // Zod-validated query parsing for parity with standards
@@ -110,7 +117,6 @@ export class ProfilesController {
   async createProfile(@Body() body: unknown): Promise<AgentProfile> {
     logger.info('POST /api/profiles');
     const data = CreateProfileSchema.parse(body) as CreateAgentProfile;
-    this.admission.assertWritable(data.projectId);
     return this.storage.createAgentProfile(data);
   }
 
@@ -120,7 +126,6 @@ export class ProfilesController {
     const parsed = UpdateProfileSchema.parse(body) as UpdateAgentProfile & {
       projectId?: string | null;
     };
-    await this.assertProfileWritable(id);
 
     // Disallow moving profiles across projects
     if (parsed.projectId !== undefined) {
@@ -150,7 +155,6 @@ export class ProfilesController {
   }> {
     logger.info({ id }, 'PUT /api/profiles/:id/prompts');
     const { promptIds } = ReplacePromptsSchema.parse(body) as { promptIds: string[] };
-    await this.assertProfileWritable(id);
 
     // Idempotent: de-dupe while preserving order of first appearance
     const seen = new Set<string>();
@@ -187,7 +191,8 @@ export class ProfilesController {
 
     // Check if any agents are using this profile
     const profile = await this.storage.getAgentProfile(id);
-    this.admission.assertWritable(profile.projectId);
+    // Admit before returning the profile-in-use conflict.
+    this.gate.assertWritable(profile.projectId);
     if (profile.projectId) {
       const agents = await this.storage.listAgents(profile.projectId, {
         limit: 10000,
@@ -229,7 +234,7 @@ export class ProfilesController {
   ): Promise<ProfileProviderConfig> {
     logger.info({ profileId }, 'POST /api/profiles/:id/provider-configs');
 
-    await this.assertProfileWritable(profileId);
+    await this.assertProfileExists(profileId);
 
     const data = CreateProviderConfigSchema.parse(body);
 
@@ -254,7 +259,7 @@ export class ProfilesController {
   ): Promise<{ success: boolean }> {
     logger.info({ profileId }, 'PUT /api/profiles/:id/provider-configs/order');
 
-    await this.assertProfileWritable(profileId);
+    await this.assertProfileExists(profileId);
 
     // Validate request body
     const data = ReorderProviderConfigsSchema.parse(body);
@@ -301,8 +306,8 @@ export class ProfilesController {
     return { success: true };
   }
 
-  /** Also verifies that the profile exists. */
-  private async assertProfileWritable(profileId: string): Promise<void> {
-    this.admission.assertWritable((await this.storage.getAgentProfile(profileId)).projectId);
+  /** The config writes do not read the profile; this read answers 404 for an unknown id. */
+  private async assertProfileExists(profileId: string): Promise<void> {
+    await this.storage.getAgentProfile(profileId);
   }
 }

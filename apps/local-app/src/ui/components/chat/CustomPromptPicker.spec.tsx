@@ -1,5 +1,8 @@
-import { useState } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { promptQueryKeys } from '@/ui/lib/prompts';
 import { CustomPromptPicker, type CustomPromptPickerTarget } from './CustomPromptPicker';
 
 function jsonResponse(body: unknown): Response {
@@ -7,6 +10,14 @@ function jsonResponse(body: unknown): Response {
     ok: true,
     json: async () => body,
   } as Response;
+}
+
+function renderWithQueryClient(ui: ReactElement, queryClient = new QueryClient()) {
+  return render(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
 }
 
 function createTarget(
@@ -73,7 +84,7 @@ describe('CustomPromptPicker', () => {
       );
     const target = createTarget(fetchFn, insertPromptText);
 
-    render(<PickerHarness target={target} />);
+    renderWithQueryClient(<PickerHarness target={target} />);
 
     const duplicateButtons = await screen.findAllByRole('button', { name: /Deploy Prompt ID/ });
     expect(duplicateButtons).toHaveLength(2);
@@ -114,7 +125,7 @@ describe('CustomPromptPicker', () => {
       .mockReturnValueOnce(detailPromise);
     const insertPromptText = jest.fn().mockResolvedValue(undefined);
 
-    render(<PickerHarness target={createTarget(fetchFn, insertPromptText)} />);
+    renderWithQueryClient(<PickerHarness target={createTarget(fetchFn, insertPromptText)} />);
     const button = await screen.findByRole('button', { name: /Draft Prompt ID prompt-1/ });
     fireEvent.click(button);
     fireEvent.click(button);
@@ -160,7 +171,7 @@ describe('CustomPromptPicker', () => {
         }),
       );
 
-    render(<PickerHarness target={createTarget(fetchFn)} />);
+    renderWithQueryClient(<PickerHarness target={createTarget(fetchFn)} />);
     fireEvent.click(await screen.findByRole('button', { name: /Changed Prompt ID prompt-1/ }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -193,7 +204,7 @@ describe('CustomPromptPicker', () => {
     const insertPromptText = jest.fn().mockResolvedValue(undefined);
     const target = createTarget(fetchFn, insertPromptText);
 
-    render(<PickerHarness target={target} />);
+    renderWithQueryClient(<PickerHarness target={target} />);
     fireEvent.click(await screen.findByRole('button', { name: /Deferred Prompt ID prompt-1/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -267,7 +278,7 @@ describe('CustomPromptPicker', () => {
     };
     const onOpenChange = jest.fn();
 
-    const { rerender } = render(
+    const { rerender } = renderWithQueryClient(
       <CustomPromptPicker open={true} target={oldTarget} onOpenChange={onOpenChange} />,
     );
     fireEvent.click(await screen.findByRole('button', { name: /Old target Prompt ID old-prompt/ }));
@@ -299,5 +310,82 @@ describe('CustomPromptPicker', () => {
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(newPrompt).toBeEnabled();
     expect(screen.getByRole('dialog', { name: /Insert custom prompt/i })).toBeInTheDocument();
+  });
+
+  // Component layer: the preview reuses the list response, so no server is needed.
+  it('shows the content preview when a prompt row is hovered', async () => {
+    const fetchFn = jest.fn().mockResolvedValueOnce(
+      jsonResponse({
+        items: [
+          {
+            id: 'prompt-1',
+            projectId: 'project-1',
+            title: 'Review',
+            contentPreview: 'Review the open pull request',
+            tags: ['type:custom'],
+          },
+        ],
+        total: 1,
+      }),
+    );
+    const user = userEvent.setup();
+
+    renderWithQueryClient(<PickerHarness target={createTarget(fetchFn)} />);
+    await user.hover(await screen.findByRole('button', { name: /Review Prompt ID prompt-1/ }));
+
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Review the open pull request');
+  });
+
+  // Component layer: the DELETE request and the prompt cache are the picker's contract.
+  it('deletes a prompt after confirmation and keeps the picker open', async () => {
+    const fetchFn = jest
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          items: [
+            { id: 'prompt-1', projectId: 'project-1', title: 'Old', tags: ['type:custom'] },
+            { id: 'prompt-2', projectId: 'project-1', title: 'Kept', tags: ['type:custom'] },
+          ],
+          total: 2,
+        }),
+      )
+      .mockResolvedValueOnce({ ok: true } as Response);
+    const target = createTarget(fetchFn);
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(promptQueryKeys.list('project-1'), { items: [], total: 0 });
+
+    renderWithQueryClient(<PickerHarness target={target} />, queryClient);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete prompt Old' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /Old Prompt ID/ })).not.toBeInTheDocument(),
+    );
+    expect(fetchFn).toHaveBeenNthCalledWith(2, '/api/prompts/prompt-1', { method: 'DELETE' });
+    expect(screen.getByRole('button', { name: /Kept Prompt ID prompt-2/ })).toBeEnabled();
+    expect(screen.getByRole('dialog', { name: /Insert custom prompt/i })).toBeInTheDocument();
+    expect(target.terminalHandle.insertPromptText).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(promptQueryKeys.list('project-1'))?.isInvalidated).toBe(true);
+  });
+
+  it('keeps the prompt and announces the error when deletion fails', async () => {
+    const fetchFn = jest
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          items: [{ id: 'prompt-1', projectId: 'project-1', title: 'Old', tags: ['type:custom'] }],
+          total: 1,
+        }),
+      )
+      .mockResolvedValueOnce({ ok: false } as Response);
+
+    renderWithQueryClient(<PickerHarness target={createTarget(fetchFn)} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete prompt Old' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to delete the custom prompt.',
+    );
+    expect(screen.getByRole('button', { name: /Old Prompt ID prompt-1/ })).toBeEnabled();
   });
 });

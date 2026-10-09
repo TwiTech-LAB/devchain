@@ -1,8 +1,9 @@
+import type { SubscriberStorage } from '../../interfaces/storage.interface';
 import type { CreateSubscriber, Subscriber, UpdateSubscriber } from '../../models/domain.models';
 import { NotFoundError } from '../../../../common/errors/error-types';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
-export class SubscriberStorageDelegate extends BaseStorageDelegate {
+export class SubscriberStorageDelegate extends BaseStorageDelegate implements SubscriberStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
   }

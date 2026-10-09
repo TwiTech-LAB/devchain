@@ -11,7 +11,8 @@ import type {
   TranscriptCandidateMetadata,
 } from './session-reader-adapter.interface';
 import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
-import type { UnifiedSession } from '../dtos/unified-session.types';
+import type { UnifiedMetrics, UnifiedSession } from '../dtos/unified-session.types';
+import type { TranscriptTurnState } from '../../terminal/services/session-turn-signals';
 import { parseCodexJsonl, type TokenSnapshot } from '../parsers/codex-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
 import { isSyncthingMarker } from '../../../common/constants/syncthing-markers';
@@ -91,6 +92,10 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
   constructor(@Inject(PRICING_SERVICE) private readonly pricingService: PricingServiceInterface) {
     this.homeDir = os.homedir();
     this.allowedRoots = [path.join(this.homeDir, CODEX_ROOT)];
+  }
+
+  turnState(metrics: UnifiedMetrics): TranscriptTurnState {
+    return { open: metrics.isOngoing, atMs: null };
   }
 
   /**

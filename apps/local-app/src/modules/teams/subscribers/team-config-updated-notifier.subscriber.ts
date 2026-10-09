@@ -3,7 +3,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../services/teams.service';
 import type { TeamConfigUpdatedEventPayload } from '../../events/catalog/team.config.updated';
 
@@ -38,7 +38,7 @@ export class TeamConfigUpdatedNotifierSubscriber {
     private readonly eventLogService: EventLogService,
     private readonly messageDelivery: AgentMessageDeliveryService,
     private readonly teamsService: TeamsService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
   ) {}
 
   @OnEvent('team.config.updated', { async: true })

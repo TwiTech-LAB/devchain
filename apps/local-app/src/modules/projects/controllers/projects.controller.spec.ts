@@ -10,8 +10,8 @@ import { ConflictException, HttpStatus, NotFoundException } from '@nestjs/common
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 const SECOND_WORKSPACE_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -136,7 +136,7 @@ describe('ProjectsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProjectsController],
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         {
           provide: STORAGE_SERVICE,
           useValue: storage,

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { projectPresetQueries } from '@/ui/lib/project-presets';
+import { profileQueries, type ProfileListItem } from '@/ui/lib/profiles';
+import { agentQueries, agentQueryKeys, type Agent, type AgentOrGuestItem } from '@/ui/lib/agents';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import type { Socket } from 'socket.io-client';
@@ -29,49 +32,12 @@ import { useAgentsPagePresence } from '@/ui/hooks/useAgentsPagePresence';
 import { AgentFormDialog } from '@/ui/components/agent/AgentFormDialog';
 import type { AgentFormSubmitData } from '@/ui/components/agent/AgentFormDialog';
 import { AgentCard } from '@/ui/components/agent/AgentCard';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 import type { FetchFn } from '@/ui/lib/api-transport';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Types
 // ============================================
-
-interface Agent {
-  id: string;
-  projectId: string;
-  profileId: string;
-  providerConfigId?: string | null;
-  modelOverride?: string | null;
-  effortOverride?: string | null;
-  name: string;
-  isProjectOwner: boolean;
-  description?: string | null;
-  profile?: AgentProfile;
-  providerConfig?: ProviderConfig;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface ProviderConfig {
-  id: string;
-  profileId: string;
-  providerId: string;
-  name: string;
-  options: string | null;
-  env: Record<string, string> | null;
-}
-
-interface AgentProfile {
-  id: string;
-  name: string;
-  providerId: string;
-  provider?: {
-    id: string;
-    name: string;
-  };
-  promptCount?: number;
-}
 
 interface Provider {
   id: string;
@@ -83,21 +49,9 @@ interface Provider {
 // Fetch functions
 // ============================================
 
-async function fetchProfiles(fetchFn: FetchFn, projectId: string) {
-  const res = await fetchFn(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch profiles');
-  return res.json();
-}
-
 async function fetchProviders(fetchFn: FetchFn) {
   const res = await fetchFn('/api/providers');
   if (!res.ok) throw new Error('Failed to fetch providers');
-  return res.json();
-}
-
-async function fetchAgents(fetchFn: FetchFn, projectId: string) {
-  const res = await fetchFn(`/api/agents?projectId=${projectId}&includeGuests=true`);
-  if (!res.ok) throw new Error('Failed to fetch agents');
   return res.json();
 }
 
@@ -159,50 +113,31 @@ async function updateAgentRequest(
 }
 
 // ============================================
-// Query key factory
-// ============================================
-
-export const agentsPageQueryKeys = {
-  agents: (projectId: string) => ['agents', projectId] as const,
-  profiles: (projectId: string) => ['profiles', projectId] as const,
-  providers: () => providersQueryKeys.list(),
-  presets: (projectId: string) => ['project-presets', projectId] as const,
-};
-
-// ============================================
 // Component
 // ============================================
 
 export function AgentsPage() {
   const fetchFn = useFetchFactory();
+  const homeFetch = useHomeFetch();
   const queryClient = useQueryClient();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
 
   // ---- Data queries ----
   const { data: profilesData } = useQuery({
-    queryKey: agentsPageQueryKeys.profiles(selectedProjectId as string),
-    queryFn: () => fetchProfiles(fetchFn, selectedProjectId as string),
+    ...profileQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
   const { data: providersData } = useQuery({
-    queryKey: agentsPageQueryKeys.providers(),
+    queryKey: providersQueryKeys.list(),
     queryFn: () => fetchProviders(fetchFn),
   });
   const { data: agentsData, isLoading } = useQuery({
-    queryKey: agentsPageQueryKeys.agents(selectedProjectId as string),
-    queryFn: () => fetchAgents(fetchFn, selectedProjectId as string),
+    ...agentQueries.withGuests(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 
-  const { data: presetsData } = useQuery<{ presets: { name: string }[] }>({
-    queryKey: agentsPageQueryKeys.presets(selectedProjectId as string),
-    queryFn: async () => {
-      const res = await apiFetch(`/api/projects/${selectedProjectId}/presets`, undefined, {
-        backend: HOME_BACKEND,
-      });
-      if (!res.ok) throw new Error('Failed to fetch presets');
-      return res.json();
-    },
+  const { data: presetsData } = useQuery({
+    ...projectPresetQueries.list(homeFetch, selectedProjectId),
     enabled: !!selectedProjectId,
   });
   const existingPresetNames = (presetsData?.presets ?? []).map((p) => p.name);
@@ -225,7 +160,7 @@ export function AgentsPage() {
           selectedProjectId
       ) {
         queryClient.invalidateQueries({
-          queryKey: agentsPageQueryKeys.agents(selectedProjectId!),
+          queryKey: agentQueryKeys.project(selectedProjectId!),
         });
       }
     },
@@ -262,13 +197,10 @@ export function AgentsPage() {
   }, [providersData]);
 
   const profilesById = useMemo(() => {
-    const map = new Map<string, AgentProfile>();
+    const map = new Map<string, ProfileListItem>();
     if (profilesData?.items) {
-      profilesData.items.forEach((profile: AgentProfile) => {
-        map.set(profile.id, {
-          ...profile,
-          provider: profile.provider,
-        });
+      profilesData.items.forEach((profile) => {
+        map.set(profile.id, profile);
       });
     }
     return map;
@@ -283,8 +215,8 @@ export function AgentsPage() {
 
   // ---- Dialog state ----
   const [showDialog, setShowDialog] = useState(false);
-  const [editAgent, setEditAgent] = useState<Agent | null>(null);
-  const deleteDialog = useConfirmDialog<Agent>();
+  const [editAgent, setEditAgent] = useState<AgentOrGuestItem | null>(null);
+  const deleteDialog = useConfirmDialog<AgentOrGuestItem>();
   const deleteConfirm = deleteDialog.target;
   const [updatingAgentId, setUpdatingAgentId] = useState<string | null>(null);
 
@@ -313,32 +245,33 @@ export function AgentsPage() {
   };
 
   // ---- Create mutation ----
-  const agentsKey = agentsPageQueryKeys.agents(selectedProjectId as string);
-  type AgentsList = ListContainer<Agent>;
+  const agentsKey = agentQueryKeys.withGuests(selectedProjectId);
+  const agentsProjectKey = agentQueryKeys.project(selectedProjectId);
+  type AgentsList = ListContainer<AgentOrGuestItem>;
 
   const createMutation = useCrudMutation<Agent, Parameters<typeof createAgent>[1], void>({
     mutationFn: (data) => createAgent(fetchFn, data),
     optimistic: {
       queryKey: agentsKey,
-      // temp-id prepend; profile resolved from the loaded profile maps.
       project: (previous, newAgent) => {
         const list = previous as AgentsList | undefined;
         if (!list) return previous;
-        const profile =
-          profilesById.get(newAgent.profileId) ||
-          profilesData?.items.find((p: AgentProfile) => p.id === newAgent.profileId);
-        const optimistic: Agent = {
+        const optimistic: AgentOrGuestItem = {
           id: `temp-${Date.now()}`,
-          ...newAgent,
+          name: newAgent.name,
+          profileId: newAgent.profileId,
+          providerConfigId: newAgent.providerConfigId,
+          modelOverride: newAgent.modelOverride ?? null,
+          effortOverride: newAgent.effortOverride ?? null,
+          description: newAgent.description,
           isProjectOwner: false,
-          profile,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          type: 'agent',
+          providerConfig: null,
         };
         return optimisticAdd(list, optimistic);
       },
     },
-    invalidateKeys: [agentsKey],
+    invalidateKeys: [agentsProjectKey],
     toast: {
       success: () => ({ title: 'Success', description: 'Agent created successfully' }),
       error: (error) => ({
@@ -361,7 +294,7 @@ export function AgentsPage() {
         return optimisticRemoveById(list, id);
       },
     },
-    invalidateKeys: [agentsKey],
+    invalidateKeys: [agentsProjectKey],
     toast: {
       success: () => ({ title: 'Success', description: 'Agent deleted successfully' }),
       error: (error) => ({
@@ -399,7 +332,6 @@ export function AgentsPage() {
       }),
     optimistic: {
       queryKey: agentsKey,
-      // in-place merge with the same per-field precedence + profile rebind.
       project: (previous, vars) => {
         const list = previous as AgentsList | undefined;
         if (!list) return previous;
@@ -418,18 +350,13 @@ export function AgentsPage() {
               modelOverride: vars.modelOverride,
               effortOverride: vars.effortOverride,
               description: vars.description,
-              profile:
-                profilesById.get(vars.profileId) ||
-                profilesData?.items.find((p: AgentProfile) => p.id === vars.profileId) ||
-                agent.profile,
-              updatedAt: new Date().toISOString(),
               isProjectOwner: vars.isProjectOwner,
-            };
+            } satisfies AgentOrGuestItem;
           }),
         };
       },
     },
-    invalidateKeys: [agentsKey],
+    invalidateKeys: [agentsProjectKey],
     toast: {
       success: () => ({ title: 'Agent updated', description: 'Agent updated successfully.' }),
       error: (error) => ({
@@ -437,23 +364,12 @@ export function AgentsPage() {
         description: getErrorMessage(error, 'Failed to update agent'),
       }),
     },
-    // Replace the optimistic row with the authoritative server response, close
-    // the edit dialog, and release the per-row spinner. The invalidate (error
-    // path too, matching the prior onSettled) + spinner clear happen in the
-    // error side effect.
-    onSuccessSideEffects: (updatedAgent) => {
-      queryClient.setQueryData(agentsKey, (old: AgentsList | undefined) => {
-        if (!old) return old;
-        return {
-          ...old,
-          items: old.items.map((agent) => (agent.id === updatedAgent.id ? updatedAgent : agent)),
-        };
-      });
+    onSuccessSideEffects: () => {
       setEditAgent(null);
       setUpdatingAgentId(null);
     },
     onErrorSideEffects: () => {
-      queryClient.invalidateQueries({ queryKey: agentsKey });
+      queryClient.invalidateQueries({ queryKey: agentsProjectKey });
       setUpdatingAgentId(null);
     },
   });
@@ -488,7 +404,7 @@ export function AgentsPage() {
   };
 
   // ---- Delete handlers ----
-  const handleDelete = (agent: Agent) => {
+  const handleDelete = (agent: AgentOrGuestItem) => {
     deleteDialog.open(agent);
   };
 
@@ -502,7 +418,7 @@ export function AgentsPage() {
   const editInitialValues = editAgent
     ? {
         name: editAgent.name,
-        profileId: editAgent.profileId,
+        profileId: editAgent.profileId ?? '',
         providerConfigId: editAgent.providerConfigId ?? '',
         modelOverride: editAgent.modelOverride ?? null,
         effortOverride: editAgent.effortOverride ?? null,
@@ -511,8 +427,8 @@ export function AgentsPage() {
       }
     : undefined;
 
-  const editInitialProfile = editAgent
-    ? editAgent.profile || profilesById.get(editAgent.profileId)
+  const editInitialProfile = editAgent?.profileId
+    ? profilesById.get(editAgent.profileId)
     : undefined;
 
   return (
@@ -542,7 +458,7 @@ export function AgentsPage() {
               agentPresence={agentPresence}
               onAgentsRefresh={() =>
                 queryClient.invalidateQueries({
-                  queryKey: agentsPageQueryKeys.agents(selectedProjectId),
+                  queryKey: agentQueryKeys.project(selectedProjectId),
                 })
               }
               onEditPreset={handleEditPreset}
@@ -590,8 +506,8 @@ export function AgentsPage() {
                 </div>
               )}
 
-              {agentsData.items.map((agent: Agent) => {
-                const profile = agent.profile || profilesById.get(agent.profileId);
+              {agentsData.items.map((agent) => {
+                const profile = agent.profileId ? profilesById.get(agent.profileId) : undefined;
                 const providerName =
                   (agent.providerConfig
                     ? providersById.get(agent.providerConfig.providerId)?.name

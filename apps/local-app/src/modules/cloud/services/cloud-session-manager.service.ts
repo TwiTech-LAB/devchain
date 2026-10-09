@@ -15,11 +15,22 @@ const DEFAULT_REFRESH_BUFFER_MS = 60_000;
 const REFRESH_RETRY_DELAY_MS = 30_000;
 const IDENTITY_SERVICE_URL = process.env.IDENTITY_SERVICE_URL || 'https://auth.devchain.cc';
 
+export type UnsignedEnrollmentReason = 'missing' | 'invalid' | 'unverifiable';
+
+export type E2eeEnrollmentVerification =
+  | { enrollment: 'signed' }
+  | { enrollment: 'unsigned'; reason: UnsignedEnrollmentReason };
+
+/** The JWKS could not be fetched, so the attestation cannot be judged either way. */
+class JwksUnavailableError extends Error {}
+
 @Injectable()
 export class CloudSessionManagerService implements OnModuleInit, OnModuleDestroy {
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private currentTokens: CloudTokens | null = null;
   private jwksCache: { keys: jose.JSONWebKeySet; expiresAt: number } | null = null;
+  private jwksInFlight: Promise<jose.JSONWebKeySet> | null = null;
+  private jwksAttemptAt: number | null = null;
 
   constructor(
     private readonly tokenStore: EncryptedTokenStoreService,
@@ -110,6 +121,63 @@ export class CloudSessionManagerService implements OnModuleInit, OnModuleDestroy
     return this.currentTokens?.accessToken ?? null;
   }
 
+  async verifyE2eeEnrollment(
+    attestation: string | undefined,
+    deviceKid: string,
+  ): Promise<E2eeEnrollmentVerification> {
+    if (attestation === undefined) return this.unsignedEnrollment('missing');
+    const userId = this.getStatus().userId;
+    if (!userId) return this.unsignedEnrollment('unverifiable');
+
+    let payload: jose.JWTPayload;
+    try {
+      payload = await this.verifyEnrollmentToken(attestation);
+    } catch (error) {
+      return this.unsignedEnrollment(
+        error instanceof JwksUnavailableError ? 'unverifiable' : 'invalid',
+      );
+    }
+
+    // The account can change while JWKS retrieval or signature verification is in flight.
+    if (this.getStatus().userId !== userId) return this.unsignedEnrollment('unverifiable');
+    if (
+      payload.type !== 'e2ee_enrollment' ||
+      payload.sub !== userId ||
+      payload.e2ee_kid !== deviceKid
+    ) {
+      return this.unsignedEnrollment('invalid');
+    }
+    return { enrollment: 'signed' };
+  }
+
+  /** Verifies with the cached JWKS, refetching once when the signing kid is unknown. */
+  private async verifyEnrollmentToken(attestation: string): Promise<jose.JWTPayload> {
+    const verify = async (forceRefresh: boolean) => {
+      const keys = await this.getJwks(forceRefresh).catch(() => {
+        throw new JwksUnavailableError();
+      });
+      const { payload } = await jose.jwtVerify(attestation, jose.createLocalJWKSet(keys), {
+        algorithms: ['RS256'],
+        issuer: 'devchain-identity',
+        audience: 'devchain-e2ee-enrollment',
+        requiredClaims: ['exp'],
+        clockTolerance: 60,
+      });
+      return payload;
+    };
+    try {
+      return await verify(false);
+    } catch (error) {
+      if (!(error instanceof jose.errors.JWKSNoMatchingKey)) throw error;
+      return verify(true);
+    }
+  }
+
+  private unsignedEnrollment(reason: UnsignedEnrollmentReason): E2eeEnrollmentVerification {
+    logger.warn({ reason }, 'E2EE enrollment attestation could not be verified');
+    return { enrollment: 'unsigned', reason };
+  }
+
   async disconnect(): Promise<void> {
     const userId = this.currentTokens?.userId ?? null;
     this.clearRefreshTimer();
@@ -196,19 +264,37 @@ export class CloudSessionManagerService implements OnModuleInit, OnModuleDestroy
     return payload as jose.JWTPayload & { sub: string; exp: number };
   }
 
-  private async getJwks(): Promise<jose.JSONWebKeySet> {
-    if (this.jwksCache && this.jwksCache.expiresAt > Date.now()) {
+  private async getJwks(forceRefresh = false): Promise<jose.JSONWebKeySet> {
+    const now = Date.now();
+    if (!forceRefresh && this.jwksCache && this.jwksCache.expiresAt > now) {
       return this.jwksCache.keys;
     }
 
-    const response = await fetch(`${IDENTITY_SERVICE_URL}/.well-known/jwks.json`);
-    if (!response.ok) {
-      throw new Error(`JWKS fetch failed: ${response.status}`);
+    if (this.jwksInFlight) {
+      return this.jwksInFlight;
     }
 
-    const keys = (await response.json()) as jose.JSONWebKeySet;
-    this.jwksCache = { keys, expiresAt: Date.now() + 600_000 };
-    return keys;
+    if (this.jwksAttemptAt !== null && now - this.jwksAttemptAt < 30_000) {
+      if (this.jwksCache) return this.jwksCache.keys;
+      throw new Error('JWKS fetch cooling down');
+    }
+
+    this.jwksAttemptAt = now;
+    this.jwksInFlight = (async () => {
+      const response = await fetch(`${IDENTITY_SERVICE_URL}/.well-known/jwks.json`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) {
+        throw new Error(`JWKS fetch failed: ${response.status}`);
+      }
+
+      const keys = (await response.json()) as jose.JSONWebKeySet;
+      this.jwksCache = { keys, expiresAt: Date.now() + 600_000 };
+      return keys;
+    })().finally(() => {
+      this.jwksInFlight = null;
+    });
+    return this.jwksInFlight;
   }
 
   private scheduleRefresh(): void {

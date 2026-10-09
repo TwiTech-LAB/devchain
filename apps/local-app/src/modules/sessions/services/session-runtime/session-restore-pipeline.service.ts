@@ -6,6 +6,10 @@ import { getRawSqliteClient } from '../../../storage/db/sqlite-raw';
 import {
   STORAGE_SERVICE,
   type StorageService,
+  type AgentProfileStorage,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
 } from '../../../storage/interfaces/storage.interface';
 import {
   ValidationError,
@@ -52,7 +56,12 @@ export class SessionRestorePipeline {
 
   constructor(
     @Inject(DB_CONNECTION) db: BetterSQLite3Database,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      AgentStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      Pick<StorageService, 'getEpic' | 'getProvider' | 'getProviderEnvForProject'>,
     private readonly sessionCoordinator: SessionCoordinatorService,
     private readonly providerAdapterFactory: ProviderAdapterFactory,
     private readonly terminalIO: TerminalIOService,

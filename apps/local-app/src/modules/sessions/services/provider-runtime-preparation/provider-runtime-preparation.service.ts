@@ -1,32 +1,23 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { randomUUID } from 'crypto';
 import { HostResolver } from '@devchain/shared';
 import { getEnvConfig } from '../../../../common/config/env.config';
-import { ConflictError, ValidationError } from '../../../../common/errors/error-types';
+import { ValidationError } from '../../../../common/errors/error-types';
 import { isHookCapable } from '../../../providers/adapters/capabilities';
 import { ProviderPluginPolicyService } from '../../../providers/services/provider-plugin-policy.service';
-import {
-  ClaudeLaunchSettingsMaterializerService,
-  type PreparedClaudeLaunchSettings,
-} from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
-import { CONTEXT_WINDOW_ENV_KEY } from '../../../runtime-context-capture/context-window-policy';
-import {
-  CodexPluginProfileMaterializerService,
-  type PreparedCodexPluginProfile,
-} from '../../../runtime-context-capture/codex-plugin-profile-materializer.service';
+import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
+import { CodexPluginProfileMaterializerService } from '../../../runtime-context-capture/codex-plugin-profile-materializer.service';
+import type {
+  PreparedArtifacts,
+  ProviderLaunchArtifacts,
+  ProviderPluginPolicyEntry,
+} from '../../../runtime-context-capture/provider-artifacts.types';
 import { RuntimeContextCaptureService } from '../../../runtime-context-capture/runtime-context-capture.service';
 import type { RuntimeContextCaptureSnapshot } from '../../../runtime-context-capture/runtime-context-capture.types';
 import {
   STORAGE_SERVICE,
   type StorageService,
 } from '../../../storage/interfaces/storage.interface';
-import { buildSessionCommand } from '../../utils/env-builder';
-import {
-  extractModelFromArgs,
-  hasCodexProfileSelector,
-  hasFlagOccurrence,
-  parseProfileOptions,
-} from '../../utils/profile-options';
+import { extractModelFromArgs, parseProfileOptions } from '../../utils/profile-options';
 import {
   resolve as resolveLaunchConfig,
   type LaunchConfig,
@@ -38,8 +29,6 @@ import type {
 } from './provider-runtime-preparation.types';
 import { ProviderRuntimePlan } from './provider-runtime-preparation.types';
 
-const NOOP_AFTER_COMMAND = async (): Promise<void> => undefined;
-
 interface ProviderRuntimePlanState {
   readonly mode: ProviderRuntimePlanInput['mode'];
   readonly provider: ProviderRuntimePlanInput['provider'];
@@ -50,10 +39,7 @@ interface ProviderRuntimePlanState {
   readonly sessionId: string;
   readonly providerSessionId: string | null;
   readonly profileOptionArgs: readonly string[];
-  readonly pluginPolicy: ReadonlyArray<{
-    readonly pluginId: string;
-    readonly enabled: boolean;
-  }>;
+  readonly pluginPolicy: ReadonlyArray<ProviderPluginPolicyEntry>;
   readonly baseInput: Readonly<LaunchConfigInput>;
   readonly baseConfig: LaunchConfig;
 }
@@ -70,19 +56,28 @@ interface RollbackState {
   readonly sessionId: string;
   readonly priorCapture: RuntimeContextCaptureSnapshot | null;
   readonly captureStarted: boolean;
-  readonly claudePrepared: boolean;
-  readonly preparedCodex: PreparedCodexPluginProfile | null;
+  readonly preparedArtifacts: readonly PreparedOwner[];
+}
+
+interface PreparedOwner {
+  readonly owner: ProviderLaunchArtifacts;
+  readonly handle: PreparedArtifacts;
 }
 
 @Injectable()
 export class ProviderRuntimePreparationService {
+  private readonly artifactOwners: readonly ProviderLaunchArtifacts[];
+
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: Pick<StorageService, 'getProviderEnvForProject'>,
     private readonly providerPluginPolicy: ProviderPluginPolicyService,
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
-    private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
-    private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
-  ) {}
+    claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
+    codexPluginProfiles: CodexPluginProfileMaterializerService,
+  ) {
+    this.artifactOwners = [claudeLaunchSettings, codexPluginProfiles];
+  }
 
   async createPlan(input: ProviderRuntimePlanInput): Promise<ProviderRuntimePlan> {
     const profileOptionArgs = Object.freeze(parseProfileOptions(input.profileOptions));
@@ -100,7 +95,9 @@ export class ProviderRuntimePreparationService {
       env: input.provider.env ? Object.freeze({ ...input.provider.env }) : null,
     });
 
-    this.assertNoPolicyConflict(providerName, [...profileOptionArgs], pluginPolicy.length > 0);
+    for (const owner of this.ownersFor(providerName)) {
+      owner.assertNoPolicyConflict(profileOptionArgs, pluginPolicy.length > 0);
+    }
 
     const environment = getEnvConfig();
     const baseInput: Readonly<LaunchConfigInput> = Object.freeze({
@@ -163,8 +160,14 @@ export class ProviderRuntimePreparationService {
     const priorCapture =
       state.mode === 'restore' ? this.runtimeContextCapture.snapshot(state.sessionId) : null;
     let captureStarted = false;
-    let claudePrepared = false;
-    let preparedCodex: PreparedCodexPluginProfile | null = null;
+    const preparedArtifacts: PreparedOwner[] = [];
+    const rollbackState = (): RollbackState => ({
+      mode: state.mode,
+      sessionId: state.sessionId,
+      priorCapture,
+      captureStarted,
+      preparedArtifacts,
+    });
 
     try {
       const epoch = this.runtimeContextCapture.rotateEpoch(
@@ -173,35 +176,28 @@ export class ProviderRuntimePreparationService {
       );
       captureStarted = true;
 
-      const preparedSettings = await this.claudeLaunchSettings.prepare({
-        providerName: state.providerName,
-        settingsJson: state.provider.claudeLaunchSettingsJson,
-        profileOptionArgs: [...state.profileOptionArgs],
-        providerEnv: state.baseInput.providerEnv,
-        configEnv: state.baseInput.configEnv,
-        sessionId: state.sessionId,
-        epoch,
-        projectRootPath: state.projectRootPath,
-        pluginPolicy: state.providerName === 'claude' ? state.pluginPolicy : [],
-        policyRequired: state.providerName === 'claude' && state.pluginPolicy.length > 0,
-      });
-      claudePrepared = true;
+      for (const owner of this.ownersFor(state.providerName)) {
+        const handle = await owner.prepare({
+          provider: state.provider,
+          providerBinPath: state.baseInput.providerBinPath,
+          profileOptionArgs: state.profileOptionArgs,
+          providerEnv: state.baseInput.providerEnv,
+          configEnv: state.baseInput.configEnv,
+          sessionId: state.sessionId,
+          epoch,
+          projectId: state.projectId,
+          projectName: state.projectName,
+          projectRootPath: state.projectRootPath,
+          pluginPolicy: state.pluginPolicy,
+          launchUnsetEnv: state.baseInput.adapter.launchUnsetEnv ?? [],
+        });
+        preparedArtifacts.push({ owner, handle });
+      }
 
-      preparedCodex =
-        state.providerName === 'codex'
-          ? await this.codexPluginProfiles.prepare({
-              projectId: state.projectId,
-              projectName: state.projectName,
-              sessionId: state.sessionId,
-              pluginPolicy: state.pluginPolicy,
-              attemptNonce: randomUUID(),
-            })
-          : null;
-
-      const config = this.applyManagedOverlay(state, preparedSettings, preparedCodex);
+      let config = this.applyManagedOverlay(state, preparedArtifacts);
       if (
         state.mode === 'restore' &&
-        preparedSettings.optionArgs.length + (preparedCodex?.providerOptionArgs.length ?? 0) > 0
+        preparedArtifacts.some(({ handle }) => handle.optionArgs.length > 0)
       ) {
         this.assertRestoreIdentity(
           config,
@@ -210,72 +206,30 @@ export class ProviderRuntimePreparationService {
         );
       }
 
-      const finalConfig = this.freezeConfig(
-        preparedCodex ? this.wrapCodexCommand(state, config, preparedCodex) : config,
-      );
-      const acknowledgement = preparedCodex;
-      const rollbackState = (): RollbackState => ({
-        mode: state.mode,
-        sessionId: state.sessionId,
-        priorCapture,
-        captureStarted,
-        claudePrepared,
-        preparedCodex,
-      });
+      for (const { handle } of preparedArtifacts) {
+        if (handle.wrapCommand) {
+          config = { ...config, commandArgs: handle.wrapCommand(config) };
+        }
+      }
+      const finalConfig = this.freezeConfig(config);
 
       return Object.freeze({
         config: finalConfig,
-        afterCommand: acknowledgement
-          ? async () => {
-              await this.codexPluginProfiles.awaitAcknowledgement(acknowledgement, {
-                projectId: state.projectId,
-                attemptNonce: acknowledgement.attemptNonce,
-              });
-            }
-          : NOOP_AFTER_COMMAND,
+        afterCommand: async () => {
+          for (const { handle } of preparedArtifacts) {
+            await handle.afterCommand?.();
+          }
+        },
         rollback: async () => this.rollbackPrepared(rollbackState(), false),
       });
     } catch (error) {
-      await this.rollbackPrepared(
-        {
-          mode: state.mode,
-          sessionId: state.sessionId,
-          priorCapture,
-          captureStarted,
-          claudePrepared,
-          preparedCodex,
-        },
-        true,
-      );
+      await this.rollbackPrepared(rollbackState(), true);
       throw error;
     }
   }
 
-  private assertNoPolicyConflict(
-    providerName: string,
-    profileOptionArgs: readonly string[],
-    policyActive: boolean,
-  ): void {
-    if (
-      policyActive &&
-      providerName === 'claude' &&
-      hasFlagOccurrence([...profileOptionArgs], '--settings')
-    ) {
-      throw new ConflictError(
-        'Profile-supplied --settings conflicts with required DevChain Claude plugin policy.',
-        { field: 'profileOptions', flag: '--settings' },
-      );
-    }
-    if (
-      policyActive &&
-      providerName === 'codex' &&
-      hasCodexProfileSelector([...profileOptionArgs])
-    ) {
-      throw new ConflictError(
-        'Profile-supplied Codex profile selector conflicts with required DevChain plugin policy.',
-        { field: 'profileOptions', flag: '--profile' },
-      );
-    }
+  private ownersFor(providerName: string): ProviderLaunchArtifacts[] {
+    return this.artifactOwners.filter((owner) => owner.providerName === providerName);
   }
 
   private assertRestoreIdentity(
@@ -293,41 +247,22 @@ export class ProviderRuntimePreparationService {
 
   private applyManagedOverlay(
     state: ProviderRuntimePlanState,
-    preparedSettings: PreparedClaudeLaunchSettings,
-    preparedCodex: PreparedCodexPluginProfile | null,
+    preparedArtifacts: readonly PreparedOwner[],
   ): LaunchConfig {
-    const providerOptionArgs = [
-      ...preparedSettings.optionArgs,
-      ...(preparedCodex?.providerOptionArgs ?? []),
-    ];
-    if (providerOptionArgs.length === 0) return state.baseConfig;
+    const providerOptionArgs = preparedArtifacts.flatMap(({ handle }) => handle.optionArgs);
+    const runtimeEnv: Record<string, string> = {};
+    for (const { handle } of preparedArtifacts) Object.assign(runtimeEnv, handle.runtimeEnv);
+    if (providerOptionArgs.length === 0 && Object.keys(runtimeEnv).length === 0) {
+      return state.baseConfig;
+    }
 
     return this.freezeConfig(
       resolveLaunchConfig({
         ...state.baseInput,
         providerOptionArgs,
-        runtimeEnv: preparedSettings.runtimeEnv,
+        runtimeEnv,
       }),
     );
-  }
-
-  private wrapCodexCommand(
-    state: ProviderRuntimePlanState,
-    config: LaunchConfig,
-    preparedCodex: PreparedCodexPluginProfile,
-  ): LaunchConfig {
-    const helperArgv = this.codexPluginProfiles.buildHelperArgv(
-      preparedCodex,
-      state.baseInput.providerBinPath,
-      config.argv,
-      { projectId: state.projectId, attemptNonce: preparedCodex.attemptNonce },
-    );
-    return {
-      ...config,
-      commandArgs: buildSessionCommand(config.env, helperArgv[0], helperArgv.slice(1), [
-        ...new Set([...(state.baseInput.adapter.launchUnsetEnv ?? []), CONTEXT_WINDOW_ENV_KEY]),
-      ]),
-    };
   }
 
   private async rollbackPrepared(state: RollbackState, suppressError: boolean): Promise<void> {
@@ -340,12 +275,8 @@ export class ProviderRuntimePreparationService {
       }
     };
 
-    if (state.preparedCodex) {
-      const preparedCodex = state.preparedCodex;
-      await attempt(() => this.codexPluginProfiles.cleanupPrepared(preparedCodex));
-    }
-    if (state.claudePrepared) {
-      await attempt(() => this.claudeLaunchSettings.cleanupSession(state.sessionId));
+    for (const { owner, handle } of [...state.preparedArtifacts].reverse()) {
+      await attempt(() => owner.cleanupPrepared(handle, state.sessionId));
     }
     if (state.captureStarted) {
       await attempt(() => {

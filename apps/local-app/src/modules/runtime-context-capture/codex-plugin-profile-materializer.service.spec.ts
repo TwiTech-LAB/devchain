@@ -55,7 +55,7 @@ describe('CodexPluginProfileMaterializerService (unit)', () => {
 
   it('returns no artifacts when no explicit policy exists', async () => {
     await expect(
-      service.prepare({
+      service.prepareProfile({
         projectId: PROJECT_ID,
         projectName: 'No Policy',
         sessionId: SESSION_ID,
@@ -252,7 +252,7 @@ describe('CodexPluginProfileMaterializerService (unit)', () => {
       service.awaitAcknowledgement(prepared, { projectId: PROJECT_ID, attemptNonce }),
     ).resolves.toBe(canonicalTargetPath);
 
-    await service.cleanupPrepared(prepared);
+    await service.cleanupProfile(prepared);
     for (const attemptPath of [
       prepared.referencePath,
       prepared.locatorPath,
@@ -347,9 +347,9 @@ describe('CodexPluginProfileMaterializerService (unit)', () => {
     expect(await readFile(target, 'utf8')).toBe(await readFile(second.sourceRevisionPath, 'utf8'));
 
     const secondLocator = JSON.parse(await readFile(second.locatorPath, 'utf8'));
-    await service.cleanupPrepared(first);
+    await service.cleanupProfile(first);
     await writeFile(target, 'model = "provider-mutated"\n');
-    await service.cleanupPrepared(second);
+    await service.cleanupProfile(second);
     await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(secondLocator.markerPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -371,7 +371,7 @@ describe('CodexPluginProfileMaterializerService (unit)', () => {
     });
     await runHelper(firstArgv, codexHome);
 
-    await Promise.all([runHelper(secondArgv, codexHome), service.cleanupPrepared(first)]);
+    await Promise.all([runHelper(secondArgv, codexHome), service.cleanupProfile(first)]);
 
     const target = join(codexHome, first.profileName + '.config.toml');
     await expect(stat(target)).resolves.toBeDefined();
@@ -525,7 +525,7 @@ async function prepare(
     sessionId?: string;
   } = {},
 ): Promise<PreparedCodexPluginProfile> {
-  const prepared = await service.prepare({
+  const prepared = await service.prepareProfile({
     projectId: overrides.projectId ?? PROJECT_ID,
     projectName: overrides.projectName ?? 'DevChain Project',
     sessionId: overrides.sessionId ?? SESSION_ID,

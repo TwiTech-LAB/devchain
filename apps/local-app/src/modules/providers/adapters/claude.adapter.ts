@@ -1,5 +1,6 @@
 import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
+import { CLAUDE_TRAITS } from './claude.traits';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import type {
@@ -73,6 +74,7 @@ export class ClaudeAdapter
     ProviderPluginCapability
 {
   readonly providerName = 'claude';
+  readonly traits = CLAUDE_TRAITS;
   // DevChain runs Claude as a line-streaming provider (alt-screen stripped, LF
   // normalized), so every launch forces the classic renderer. Claude checks this
   // env before the `tui` setting, CLAUDE_CODE_NO_FLICKER=1, and its fresh-install
@@ -82,12 +84,6 @@ export class ClaudeAdapter
     ...getProviderCliNoUpdateOptions(this.providerName).env,
     CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',
   };
-
-  // Claude's workspace trust lives in ~/.claude.json
-  // (projects[path].hasTrustDialogAccepted), separate from
-  // --dangerously-skip-permissions; without a pre-write the CLI stops at its
-  // trust dialog before accepting the first prompt.
-  readonly requiresProjectProvisioning = true as const;
 
   // Effort (`--effort <value>`): Claude's CLI accepts these and falls back
   // gracefully on unsupported values, so `max` is still seeded even though it is
@@ -117,7 +113,6 @@ export class ClaudeAdapter
   readonly transcriptContentSearchMaxBytes = 16_384;
 
   readonly hooksEnabled = true as const;
-  readonly hooksEventName = 'claude.hooks.session.started';
   readonly hooksProvideTranscriptPath = true;
 
   listProviderPlugins(): string[] {
@@ -264,7 +259,8 @@ export class ClaudeAdapter
    * Claude skips its trust dialog. Trust-only by design: no MCP discovery,
    * registration, or `.claude/settings.local.json` writes happen here. Never
    * throws: a trust failure is surfaced as a fixed-code provisioning warning
-   * and Claude's own trust dialog remains the fallback.
+   * and Claude's own trust dialog remains the fallback. Workspace trust is
+   * separate from launch permission flags; the CLI needs it before the first prompt.
    */
   async provisionProjectPath(projectPath: string): Promise<ProvisioningResult> {
     try {
@@ -299,10 +295,6 @@ export class ClaudeAdapter
 
   removeMcpServer(alias: string): string[] {
     return ['mcp', 'remove', alias];
-  }
-
-  binaryCheck(alias: string): string[] {
-    return ['mcp', 'check', alias];
   }
 
   buildLaunchArgs({ mode, providerSessionId, profileOptionArgs }: BuildLaunchArgsInput): {

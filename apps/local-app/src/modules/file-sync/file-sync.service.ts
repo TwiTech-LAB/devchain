@@ -7,6 +7,7 @@ import { AppError } from '../../common/errors/error-types';
 import { STORAGE_SERVICE, type ProjectStorage } from '../storage/interfaces/storage.interface';
 import { FILE_SYNC_PATHS, assertShareableFolder, type FileSyncPaths } from './file-sync-paths';
 import {
+  SCAN_TIMEOUT_MS,
   FILE_SYNC_REPORT_SAMPLE,
   CONFLICT_BASELINE_MAX,
   ForceCopyBackupRequestSchema,
@@ -40,11 +41,6 @@ import { captureFileSyncConflictBaseline, scanFileSyncConflicts } from './file-s
 export const FOLDER_WATCHER_DELAY_S = 1;
 const RESCAN_INTERVAL_S = 3600;
 const COMPLETION_POLL_MS = 500;
-/**
- * Syncthing answers POST /rest/db/scan only when the scan ends, and a folder's first
- * scan hashes every file, so a large project takes far longer than a normal REST call.
- */
-export const SCAN_TIMEOUT_MS = 10 * 60_000;
 /** How many failed files a folder status names; `errors` counts all of them. */
 const FILE_ERROR_SAMPLE = 3;
 const REMOTE_NEED_PAGE_SIZE = 1000;

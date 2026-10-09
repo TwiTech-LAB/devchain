@@ -65,9 +65,7 @@ describe('session termination unlogged-time reset', () => {
       { getAdapter: jest.fn() } as never,
       eventsService as never,
       { dispose: jest.fn() } as never,
-      { clear: jest.fn() } as never,
-      { cleanupSessionSync: jest.fn() } as never,
-      { cleanupSession: jest.fn().mockResolvedValue(undefined) } as never,
+      { releaseProviderArtifacts: jest.fn().mockResolvedValue(undefined) } as never,
       store,
       { listRemoteOwnedProjectIds: () => [] } as never,
     );

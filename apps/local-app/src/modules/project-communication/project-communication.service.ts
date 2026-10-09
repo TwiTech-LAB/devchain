@@ -1,8 +1,12 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { NotFoundError } from '../../common/errors/error-types';
 import { AgentMessageDeliveryService } from '../agent-message-delivery/agent-message-delivery.service';
-import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
-import { STORAGE_SERVICE, type StorageService } from '../storage/interfaces/storage.interface';
+import { ProjectWriteGate } from '../storage/write-gate/project-write-gate';
+import {
+  STORAGE_SERVICE,
+  type AgentStorage,
+  type ProjectStorage,
+} from '../storage/interfaces/storage.interface';
 import type { Agent, Project } from '../storage/models/domain.models';
 import type {
   ProjectCommunicationError,
@@ -23,9 +27,9 @@ export class ProjectCommunicationService {
   private readonly logger = new Logger(ProjectCommunicationService.name);
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage & ProjectStorage,
     private readonly delivery: AgentMessageDeliveryService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   async listTargets(
@@ -48,7 +52,7 @@ export class ProjectCommunicationService {
           this.sameId(project.workspaceId, sourceWorkspaceId) &&
           !project.isTemplate &&
           !this.sameId(project.id, authorized.context.sourceProject.id) &&
-          this.admission.getRemoteOwner(project.id) === null,
+          this.gate.getRemoteOwner(project.id) === null,
       );
       const owners = await this.storage.listProjectOwners(candidates.map(({ id }) => id));
       const ownerProjectIds = new Set(
@@ -219,7 +223,8 @@ export class ProjectCommunicationService {
   private checkTargetWritable(
     projectId: string,
   ): { readonly error: ProjectCommunicationError } | null {
-    const remote = this.admission.getRemoteOwner(projectId);
+    // Refuse blocked targets before cross-project message routing.
+    const remote = this.gate.getRemoteOwner(projectId);
     if (remote) {
       return this.failure(
         'PROJECT_REMOTE',
@@ -227,7 +232,7 @@ export class ProjectCommunicationService {
         { projectId, remoteId: remote.remoteId, remoteName: remote.remoteName },
       );
     }
-    if (!this.admission.isWritable(projectId)) {
+    if (!this.gate.isWritable(projectId)) {
       return this.failure(
         'PROJECT_FROZEN',
         'The target project is frozen for a remote handoff; try again later',

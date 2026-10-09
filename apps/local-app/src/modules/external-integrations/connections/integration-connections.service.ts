@@ -1,6 +1,11 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ConflictError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type IntegrationStorage,
+  type ProjectStorage,
+  type ProjectWorkspaceStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   IntegrationConnection,
   IntegrationCredentials,
@@ -62,7 +67,8 @@ export type ReplaceConnectionInput =
 @Injectable()
 export class IntegrationConnectionsService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: IntegrationStorage & ProjectStorage & ProjectWorkspaceStorage,
     private readonly providers: ExternalTaskProviderRegistry,
     private readonly operationGate: ProviderOperationGate,
     private readonly editSessions: ExternalEditSessionStore,

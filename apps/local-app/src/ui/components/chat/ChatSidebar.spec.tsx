@@ -93,6 +93,9 @@ if (!(global as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObs
 }
 
 const agent: AgentOrGuest = {
+  type: 'agent',
+  modelOverride: null,
+  effortOverride: null,
   id: 'agent-1',
   name: 'Alpha',
   profileId: 'profile-1',
@@ -134,7 +137,6 @@ function renderSidebar(overrides: Partial<FlatChatSidebarProps> = {}) {
     onApplyPreset: jest.fn(),
     applyingPreset: false,
     onSwitchConfig: jest.fn(),
-    fetchProviderConfigsForProfile: jest.fn(async () => []),
     updatingConfigAgentIds: {},
     onCloneAgent: jest.fn(),
     onDeleteAgent: jest.fn(),
@@ -417,9 +419,33 @@ describe('ChatSidebar canonical agent rendering', () => {
   it('renders Project Owner first, then name and stable ID order, with agent identity selected', async () => {
     const onSelectAgent = jest.fn();
     const unorderedAgents: AgentOrGuest[] = [
-      { id: 'agent-z', name: 'Alpha', type: 'agent', isProjectOwner: false },
-      { id: 'agent-owner', name: 'Zulu', type: 'agent', isProjectOwner: true },
-      { id: 'agent-a', name: 'Alpha', type: 'agent', isProjectOwner: false },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-z',
+        name: 'Alpha',
+        type: 'agent',
+        isProjectOwner: false,
+      },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-owner',
+        name: 'Zulu',
+        type: 'agent',
+        isProjectOwner: true,
+      },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-a',
+        name: 'Alpha',
+        type: 'agent',
+        isProjectOwner: false,
+      },
     ];
 
     renderSidebar({
@@ -553,6 +579,9 @@ describe('ChatSidebar team lead-as-header rendering', () => {
   const TEAM_GROUPS_KEY = 'devchain:chatSidebar:teamGroups';
 
   const agentLead: AgentOrGuest = {
+    type: 'agent',
+    modelOverride: null,
+    effortOverride: null,
     id: 'agent-lead',
     name: 'Lead Agent',
     profileId: 'profile-1',
@@ -560,6 +589,9 @@ describe('ChatSidebar team lead-as-header rendering', () => {
   };
 
   const agentMember: AgentOrGuest = {
+    type: 'agent',
+    modelOverride: null,
+    effortOverride: null,
     id: 'agent-member',
     name: 'Member Agent',
     profileId: 'profile-1',
@@ -567,6 +599,9 @@ describe('ChatSidebar team lead-as-header rendering', () => {
   };
 
   const agentIndependent: AgentOrGuest = {
+    type: 'agent',
+    modelOverride: null,
+    effortOverride: null,
     id: 'agent-independent',
     name: 'Independent Agent',
     profileId: 'profile-1',
@@ -574,6 +609,9 @@ describe('ChatSidebar team lead-as-header rendering', () => {
   };
 
   const guestAgent: AgentOrGuest = {
+    type: 'agent',
+    modelOverride: null,
+    effortOverride: null,
     id: 'guest-1',
     name: 'Guest Agent',
     profileId: 'profile-guest',
@@ -788,9 +826,33 @@ describe('ChatSidebar team lead-as-header rendering', () => {
 
   it('preserves the team bucket while sorting its agent collection canonically', async () => {
     const teamAgents: AgentOrGuest[] = [
-      { id: 'agent-z', name: 'Alpha', type: 'agent', isProjectOwner: false },
-      { id: 'agent-owner', name: 'Zulu', type: 'agent', isProjectOwner: true },
-      { id: 'agent-a', name: 'Alpha', type: 'agent', isProjectOwner: false },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-z',
+        name: 'Alpha',
+        type: 'agent',
+        isProjectOwner: false,
+      },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-owner',
+        name: 'Zulu',
+        type: 'agent',
+        isProjectOwner: true,
+      },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-a',
+        name: 'Alpha',
+        type: 'agent',
+        isProjectOwner: false,
+      },
     ];
     global.fetch = mockTeamFetch({
       teamLeadAgentId: null,
@@ -965,6 +1027,9 @@ describe('ChatSidebar human-held message badges', () => {
   const originalFetch = global.fetch;
 
   const mainAgent: AgentOrGuest = {
+    type: 'agent',
+    modelOverride: null,
+    effortOverride: null,
     id: 'agent-1',
     name: 'Alpha',
     profileId: 'profile-1',
@@ -1015,6 +1080,8 @@ describe('ChatSidebar guest compatibility', () => {
   const originalFetch = global.fetch;
 
   const guestAgent: AgentOrGuest = {
+    modelOverride: null,
+    effortOverride: null,
     id: 'guest-1',
     name: 'Guest Agent',
     profileId: null,
@@ -1064,6 +1131,8 @@ describe('ChatSidebar guest compatibility', () => {
 describe('ChatSidebar unlogged time markers', () => {
   const originalFetch = global.fetch;
   const guestAgent: AgentOrGuest = {
+    modelOverride: null,
+    effortOverride: null,
     id: 'guest-1',
     name: 'Guest Agent',
     profileId: null,

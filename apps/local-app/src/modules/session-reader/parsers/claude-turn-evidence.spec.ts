@@ -7,7 +7,6 @@ import { claudeTurnFromMessages, readClaudeContinuation } from './claude-turn-ev
 import { ClaudeSessionReaderAdapter } from '../adapters/claude-session-reader.adapter';
 import { SessionCacheService } from '../services/session-cache.service';
 import { serializeMessage } from '../services/transcript-serialization';
-import { transcriptTurnState } from '../services/transcript-turn-state';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import { TerminalActivityService } from '../../terminal/services/terminal-activity.service';
 import { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
@@ -257,7 +256,7 @@ describe('Claude turn evidence', () => {
       activity.handleTranscriptTurn({
         sessionId: 'c1',
         providerName: 'claude',
-        turn: transcriptTurnState('claude', result.session.metrics, result.continuationState),
+        turn: adapter.turnState(result.session.metrics, result.continuationState),
         grew: true,
       });
       return result;

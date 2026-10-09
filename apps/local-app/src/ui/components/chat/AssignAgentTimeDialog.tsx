@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, Search } from 'lucide-react';
+import { statusQueries, type Status } from '@/ui/lib/statuses';
+import type { ListResult } from '@/modules/storage/interfaces/storage.interface';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import {
@@ -41,10 +43,10 @@ interface EpicRowDto {
   statusId: string;
 }
 
-interface StatusDto {
-  id: string;
-  label: string;
-  color: string | null;
+type StatusRow = Pick<Status, 'id' | 'label' | 'color'>;
+
+function selectStatusRows(data: ListResult<Status>): StatusRow[] {
+  return data.items.map(({ id, label, color }) => ({ id, label, color }));
 }
 
 export interface AssignAgentTimeDialogProps {
@@ -142,32 +144,13 @@ export function AssignAgentTimeDialog({
   });
 
   const statusesQuery = useQuery({
-    queryKey: ['assign-agent-time-statuses', projectId ?? ''],
-    queryFn: async ({ signal }): Promise<StatusDto[]> => {
-      const response = await apiFetch(
-        `/api/statuses?projectId=${encodeURIComponent(projectId as string)}`,
-        { signal },
-      );
-      if (!response.ok) throw new Error('Statuses could not be loaded.');
-      const payload = (await response.json()) as { items?: unknown };
-      const statuses: StatusDto[] = [];
-      for (const entry of Array.isArray(payload.items) ? payload.items : []) {
-        const record = entry as Record<string, unknown>;
-        if (typeof record.id === 'string' && typeof record.label === 'string') {
-          statuses.push({
-            id: record.id,
-            label: record.label,
-            color: typeof record.color === 'string' ? record.color : null,
-          });
-        }
-      }
-      return statuses;
-    },
+    ...statusQueries.list(apiFetch, projectId),
+    select: selectStatusRows,
     enabled: open && projectId !== null,
   });
 
   const statusesById = useMemo(() => {
-    const map = new Map<string, StatusDto>();
+    const map = new Map<string, StatusRow>();
     for (const status of statusesQuery.data ?? []) {
       map.set(status.id, status);
     }

@@ -11,7 +11,11 @@ import type { HomePushedSkillSource } from '../../settings/local/delegates/skill
 import { LOCAL_SOURCE_CONTENT_HASH_FILE } from '../../skills/adapters/local-skill-source.adapter';
 import { SkillSourceLifecycleService } from '../../skills/services/skill-source-lifecycle.service';
 import type { LocalSkillSource } from '../../storage/models/domain.models';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type ProjectStorage,
+  type SkillSourceStorage,
+} from '../../storage/interfaces/storage.interface';
 import { unpackHomeSkillContent, swapHomeSkillContent } from './host-skill-content';
 
 const logger = createLogger('HostSkillSettingsService');
@@ -37,7 +41,7 @@ export class HostSkillSettingsService {
   private work: Promise<unknown> = Promise.resolve();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage & SkillSourceStorage,
     private readonly settings: SettingsService,
     private readonly lifecycle: SkillSourceLifecycleService,
   ) {}

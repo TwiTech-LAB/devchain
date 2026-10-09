@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
 import { E2eeDeviceStoreService } from '../../e2ee/services/e2ee-device-store.service';
 import {
   PairedDeviceWorkspaceAccessService,
@@ -22,7 +22,7 @@ import {
 @Injectable()
 export class NotificationRecipientResolverService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage,
     private readonly deviceStore: E2eeDeviceStoreService,
     private readonly deviceAccess: PairedDeviceWorkspaceAccessService,
   ) {}

@@ -1,16 +1,16 @@
 import { useCallback, useState } from 'react';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
-import { REMOTES_LIST_QUERY_KEY } from '@/ui/lib/backend-provider';
+import { useRemoteVmApi } from '@/ui/pages/cloud/lib/remote-vm-api-context';
+import { REMOTES_LIST_QUERY_KEY } from '@/ui/pages/cloud/lib/remote-vm-query-keys';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
-import { readErrorMessage } from './useRemotes';
 
 /**
  * Powers on stopped Proxmox VMs. Remembers, for this page only, when each one
  * was started, so a VM that does not answer yet reads "Starting" for a while.
  */
 export function useVmPowerOn() {
+  const api = useRemoteVmApi();
   const client = useHomeQueryClient();
   const { showError } = useToastHelpers();
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
@@ -20,13 +20,7 @@ export function useVmPowerOn() {
     async (remote: Pick<RemoteListItemDto, 'id' | 'name'>) => {
       setPending((current) => new Set(current).add(remote.id));
       try {
-        const res = await apiFetch(
-          `/api/remotes/${remote.id}/power-on`,
-          { method: 'POST' },
-          { backend: HOME_BACKEND },
-        );
-        if (!res.ok)
-          throw new Error(await readErrorMessage(res, `Power on failed (${res.status})`));
+        await api.powerOn(remote.id);
         setPoweredOnAt((current) => new Map(current).set(remote.id, Date.now()));
         // The server answered that the VM runs; health catches up once DevChain boots.
         client.setQueryData<RemoteListItemDto[]>(REMOTES_LIST_QUERY_KEY, (current) =>
@@ -47,7 +41,7 @@ export function useVmPowerOn() {
         });
       }
     },
-    [client, showError],
+    [api, client, showError],
   );
 
   return { powerOn, pending, poweredOnAt };

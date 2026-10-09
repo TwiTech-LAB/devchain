@@ -81,6 +81,11 @@ export class E2eePairingService {
     private readonly deviceStore: E2eeDeviceStoreService,
   ) {}
 
+  hasPendingPairing(): boolean {
+    this.evictExpired();
+    return this.pending.size > 0;
+  }
+
   /**
    * Start a QR pairing: return the PC public key + a fresh pairing secret to embed in
    * the QR. The secret is retained in memory (never logged, never sent to the relay)

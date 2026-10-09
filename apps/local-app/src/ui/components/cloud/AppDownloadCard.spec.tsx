@@ -35,8 +35,8 @@ jest.mock('@/ui/hooks/use-toast', () => ({
   useToast: () => ({ toast: toastSpy }),
 }));
 
-const IOS_LABEL = 'Download from the App Store (TestFlight beta)';
-const ANDROID_LABEL = 'Download from Google Play (open beta)';
+const IOS_LABEL = 'Download from the App Store';
+const ANDROID_LABEL = 'Download from Google Play';
 
 function setClipboard(impl: { writeText?: jest.Mock } | undefined) {
   Object.defineProperty(navigator, 'clipboard', {
@@ -56,7 +56,9 @@ describe('AppDownloadCard', () => {
     render(<AppDownloadCard />);
     {
       expect(screen.getByText('Get the DevChain mobile app')).toBeInTheDocument();
-      expect(screen.getByText(/currently in open beta/i)).toBeInTheDocument();
+      expect(
+        screen.getByText('Approve sign-ins and receive notifications on your phone.'),
+      ).toBeInTheDocument();
       expect(screen.getByRole('button', { name: IOS_LABEL })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: ANDROID_LABEL })).toBeInTheDocument();
     }

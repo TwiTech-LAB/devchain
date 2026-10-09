@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { projectPresetQueries, projectPresetQueryKeys } from '@/ui/lib/project-presets';
+import { providerConfigQueries } from '@/ui/lib/provider-configs';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import {
   Select,
   SelectContent,
@@ -24,29 +27,10 @@ import { useToast } from '@/ui/hooks/use-toast';
 import { useActiveSessionConfirm } from '@/ui/hooks/useActiveSessionConfirm';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { Loader2, CheckCircle2, AlertCircle, MoreVertical, Pencil, Trash2 } from 'lucide-react';
-import { validatePresetAvailability, type Preset } from '@/ui/lib/preset-validation';
+import { validatePresetAvailability, type Agent, type Preset } from '@/ui/lib/preset-validation';
 import type { AgentPresenceMap } from '@/ui/lib/sessions';
 import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
-import type { FetchFn } from '@/ui/lib/api-transport';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-
-interface Agent {
-  id: string;
-  name: string;
-  profileId: string;
-}
-
-interface ProviderConfig {
-  id: string;
-  name: string;
-  profileId: string;
-  providerId: string;
-}
-
-interface PresetsResponse {
-  presets: Preset[];
-  activePreset: string | null;
-}
+import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
 
 interface ApplyPresetResponse {
   applied: number;
@@ -61,23 +45,6 @@ interface PresetSelectorProps {
   onAgentsRefresh?: () => void;
   onEditPreset?: (preset: Preset) => void;
   onDeletePreset?: (preset: Preset) => void;
-}
-
-async function fetchPresets(projectId: string): Promise<PresetsResponse> {
-  const res = await apiFetch(`/api/projects/${projectId}/presets`, undefined, {
-    backend: HOME_BACKEND,
-  });
-  if (!res.ok) throw new Error('Failed to fetch presets');
-  return res.json();
-}
-
-async function fetchProviderConfigs(
-  fetchFn: FetchFn,
-  profileId: string,
-): Promise<ProviderConfig[]> {
-  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
-  if (!res.ok) throw new Error('Failed to fetch provider configs');
-  return res.json();
 }
 
 async function applyPreset(projectId: string, presetName: string): Promise<ApplyPresetResponse> {
@@ -103,6 +70,7 @@ export function PresetSelector({
   onDeletePreset,
 }: PresetSelectorProps) {
   const fetchFn = useFetchFactory();
+  const homeFetch = useHomeFetch();
   const { toast } = useToast();
   const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
     useActiveSessionConfirm();
@@ -113,35 +81,17 @@ export function PresetSelector({
 
   // Fetch presets
   const { data: presetsData, isLoading: presetsLoading } = useQuery({
-    queryKey: ['project-presets', projectId],
-    queryFn: () => fetchPresets(projectId),
+    ...projectPresetQueries.list(homeFetch, projectId),
     enabled: !!projectId,
   });
 
   // Fetch provider configs for all unique profileIds used by agents
-  const { data: configsMap, isLoading: configsLoading } = useQuery<Map<string, ProviderConfig[]>>({
-    queryKey: ['provider-configs-by-profile', projectId, agents.map((a) => a.profileId)],
-    queryFn: async () => {
-      const profileIds = new Set(agents.map((a) => a.profileId).filter(Boolean));
-      if (profileIds.size === 0) return new Map();
-
-      const results = await Promise.all(
-        Array.from(profileIds).map(async (profileId) => {
-          try {
-            const configs = await fetchProviderConfigs(fetchFn, profileId);
-            return { profileId, configs };
-          } catch {
-            return { profileId, configs: [] };
-          }
-        }),
-      );
-
-      const map = new Map<string, ProviderConfig[]>();
-      results.forEach(({ profileId, configs }) => {
-        map.set(profileId, configs);
-      });
-      return map;
-    },
+  const { data: configsMap, isLoading: configsLoading } = useQuery({
+    ...providerConfigQueries.byProfiles(
+      fetchFn,
+      projectId,
+      agents.map((agent) => agent.profileId),
+    ),
     enabled: !!projectId && agents.length > 0,
   });
 
@@ -212,8 +162,8 @@ export function PresetSelector({
       });
 
       // Refresh agents list and presets (to update activePreset indicator)
-      await queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
-      await queryClient.invalidateQueries({ queryKey: ['project-presets', projectId] });
+      await queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) });
+      await queryClient.invalidateQueries({ queryKey: projectPresetQueryKeys.project(projectId) });
       onAgentsRefresh?.();
     } catch (error) {
       toast({

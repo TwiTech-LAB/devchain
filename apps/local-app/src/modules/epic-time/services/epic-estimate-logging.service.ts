@@ -11,7 +11,11 @@ import { ExternalTimeMutationService } from '../../external-integrations/my-work
 import { MAX_TIME_ENTRY_DURATION_MS } from '../../external-integrations/models/external-provider.models';
 import type { ExternalTimeOperationInspection } from '../../external-integrations/models/external-time-mutation.models';
 import { timeEntryNoteFingerprint } from '../../external-integrations/sessions/external-time-mutation.store';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type ExternalEstimateLogStorage,
+} from '../../storage/interfaces/storage.interface';
 import {
   REMOTE_MIRROR_SYNC_PORT,
   type RemoteMirrorSyncPort,
@@ -92,7 +96,9 @@ function isOperationInProgress(phase: ExternalTimeOperationInspection['phase']):
 @Injectable()
 export class EpicEstimateLoggingService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ExternalEstimateLogStorage &
+      Pick<StorageService, 'findExternalTaskLink' | 'getEpic' | 'getIntegrationConnection'>,
     private readonly epicTime: EpicTimeService,
     private readonly timeMutations: ExternalTimeMutationService,
     @Inject(REMOTE_MIRROR_SYNC_PORT) private readonly mirrorSync: RemoteMirrorSyncPort,

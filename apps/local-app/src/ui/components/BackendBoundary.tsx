@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { AlertTriangle, Server } from 'lucide-react';
 import { Button } from '@/ui/components/ui/button';
 import { HOME_BACKEND } from '@/ui/lib/api-transport';
@@ -70,15 +70,32 @@ export function BackendBoundary({ children }: { children: ReactNode }) {
   );
 }
 
-function unusableReason(remote: ActiveRemote): string | null {
+// The Remote VMs page on its VMs tab, where a version-mismatched VM shows its Update button.
+const REMOTE_VMS_HREF = '/cloud?section=remote-vm&tab=vms';
+
+interface UnusableRemote {
+  reason: string;
+  needsUpdate: boolean;
+}
+
+function unusableRemote(remote: ActiveRemote): UnusableRemote | null {
   if (!remote.online) {
-    return `Remote "${remote.name}" is offline. Pages for this project load when it is reachable again.`;
+    return {
+      reason: `Remote "${remote.name}" is offline. Pages for this project load when it is reachable again.`,
+      needsUpdate: false,
+    };
   }
   if (remote.apiKeyRejected) {
-    return `Remote "${remote.name}" rejected this PC's API key. Use Enter API key in Remote VMs to open this project.`;
+    return {
+      reason: `Remote "${remote.name}" rejected this PC's API key. Use Enter API key in Remote VMs to open this project.`,
+      needsUpdate: false,
+    };
   }
   if (!remote.versionMatches) {
-    return `Remote "${remote.name}" needs update: it runs ${remote.version ?? 'an unknown version'}, this DevChain runs a different version. Update the remote to open this project.`;
+    return {
+      reason: `Remote "${remote.name}" needs update: it runs ${remote.version ?? 'an unknown version'}, this DevChain runs a different version. Update the remote to open this project.`,
+      needsUpdate: true,
+    };
   }
   return null;
 }
@@ -135,12 +152,12 @@ export function ProjectGate({
     );
   }
 
-  const reason = backend.activeRemote ? unusableReason(backend.activeRemote) : null;
-  if (!reason) {
+  const unusable = backend.activeRemote ? unusableRemote(backend.activeRemote) : null;
+  if (!unusable) {
     return <>{children}</>;
   }
   if (fallback) {
-    return <>{fallback(reason)}</>;
+    return <>{fallback(unusable.reason)}</>;
   }
   return (
     <div
@@ -149,7 +166,14 @@ export function ProjectGate({
       className="m-4 flex items-start gap-3 rounded-md border border-status-warn/40 bg-status-warn/10 p-4 text-sm"
     >
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warn" aria-hidden="true" />
-      <p>{reason}</p>
+      <div className="flex flex-col items-start gap-3">
+        <p>{unusable.reason}</p>
+        {unusable.needsUpdate && (
+          <Button asChild size="sm" variant="outline">
+            <Link to={REMOTE_VMS_HREF}>Open Remote VMs</Link>
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

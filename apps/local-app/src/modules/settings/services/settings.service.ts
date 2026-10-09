@@ -1,5 +1,6 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { createLogger } from '../../../common/logging/logger';
 import type {
   SettingsDto,
@@ -66,10 +67,11 @@ export class SettingsService {
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
     private readonly eventEmitter: EventEmitter2,
+    @Optional() gate?: ProjectWriteGate,
   ) {
     const sqlite = getRawSqliteClient(this.db);
-    this.coreDelegate = new CoreSettingsDelegate({ sqlite, eventEmitter });
-    this.presetDelegate = new PresetSettingsDelegate({ sqlite });
+    this.coreDelegate = new CoreSettingsDelegate({ sqlite, eventEmitter, gate });
+    this.presetDelegate = new PresetSettingsDelegate({ sqlite, gate });
     this.skillsDelegate = new SkillsSettingsDelegate({ sqlite });
     this.providerCliDelegate = new ProviderCliSettingsDelegate({ sqlite });
     this.messagePoolDelegate = new MessagePoolSettingsDelegate({
@@ -77,6 +79,7 @@ export class SettingsService {
       updateSettings: (s) => this.updateSettings(s),
     });
     this.registryDelegate = new RegistrySettingsDelegate({
+      gate,
       getSettings: () => this.getSettings(),
       updateSettings: (s) => this.updateSettings(s),
     });

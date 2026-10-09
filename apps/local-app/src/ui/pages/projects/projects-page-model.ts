@@ -13,6 +13,8 @@ import type {
   ProjectsSortOrder,
   ProjectsTableContent,
   ProjectsTableModel,
+  TemplateUpdateNoticeItem,
+  TemplateUpdateNoticeModel,
 } from './projects-page-presentation';
 import { projectActionsButtonId } from './projects-page-presentation';
 import { getWorkspaceIdentity } from '@/ui/lib/workspace-identity';
@@ -44,6 +46,7 @@ export interface ProjectsTableActions {
 }
 
 export interface BuildProjectsTableModelInput {
+  notice?: TemplateUpdateNoticeModel | null;
   data: ProjectsQueryData | undefined;
   isLoading: boolean;
   search: string;
@@ -78,6 +81,57 @@ export function getProjectUpgradeVersion(
   );
   if (!template?.latestVersion) return null;
   return isLessThan(metadata.version, template.latestVersion) ? template.latestVersion : null;
+}
+
+export function buildTemplateUpdateNoticeItems(
+  projects: ProjectWithStats[],
+  templates: ProjectTemplate[] | undefined,
+  remoteOwners: ReadonlyMap<string, ProjectRemoteOwner>,
+  actions: Pick<ProjectsTableActions, 'upgradeProject'>,
+): TemplateUpdateNoticeItem[] {
+  return projects.flatMap((project) => {
+    const metadata = project.templateMetadata;
+    const { upgradeVersion, remoteLock, upgrade } = getProjectUpgradeIntent(
+      project,
+      templates,
+      actions,
+      remoteOwners.get(project.id),
+    );
+    if (!upgradeVersion || !metadata) return [];
+    return [
+      {
+        projectId: project.id,
+        projectName: project.name,
+        slug: metadata.slug,
+        currentVersion: metadata.version,
+        targetVersion: upgradeVersion,
+        update: upgrade,
+        lockMessage: remoteLock?.message ?? null,
+      },
+    ];
+  });
+}
+
+/** The one upgrade rule shared by the row Upgrade button and the template-update notice. */
+function getProjectUpgradeIntent(
+  project: ProjectWithStats,
+  templates: ProjectTemplate[] | undefined,
+  actions: Pick<ProjectsTableActions, 'upgradeProject'>,
+  remoteOwner?: ProjectRemoteOwner,
+) {
+  const upgradeVersion = getProjectUpgradeVersion(project, templates);
+  const remoteLock = remoteOwner ? { message: describeRemoteLock(remoteOwner) } : null;
+  const upgrade =
+    upgradeVersion && !remoteLock
+      ? () => actions.upgradeProject(project, upgradeVersion)
+      : undefined;
+  return { upgradeVersion, remoteLock, upgrade };
+}
+
+export function getTemplateUpdateNoticeItemKeys(
+  items: readonly TemplateUpdateNoticeItem[],
+): string[] {
+  return [...new Set(items.map((item) => `${item.slug}@${item.targetVersion}`))];
 }
 
 export function filterAndSortProjects(
@@ -118,12 +172,14 @@ export function buildProjectsTableModel(input: BuildProjectsTableModelInput): Pr
     projectDrag = { projectId: null, sourceWorkspaceId: null, targetWorkspaceId: null },
     statusMessage = '',
     remoteOwners = new Map<string, ProjectRemoteOwner>(),
+    notice = null,
   } = input;
   const failedData = new Set(unavailableData);
   if (!isLoading && !data) failedData.add('projects');
   if (!isLoading && !workspaces) failedData.add('workspaces');
 
   return {
+    notice,
     search,
     changeSearch: actions.changeSearch,
     sortField,
@@ -261,8 +317,12 @@ function buildRow(
   actions: ProjectsTableActions,
   remoteOwner?: ProjectRemoteOwner,
 ): ProjectTableRowModel {
-  const upgradeVersion = getProjectUpgradeVersion(project, templates);
-  const remoteLock = remoteOwner ? { message: describeRemoteLock(remoteOwner) } : null;
+  const { upgradeVersion, remoteLock, upgrade } = getProjectUpgradeIntent(
+    project,
+    templates,
+    actions,
+    remoteOwner,
+  );
 
   return {
     id: project.id,
@@ -289,10 +349,7 @@ function buildRow(
     startImport: () => actions.startImport(project),
     export: () => actions.exportProject(project),
     configure: project.isConfigurable ? () => actions.configureProject(project) : undefined,
-    upgrade:
-      upgradeVersion && !remoteLock
-        ? () => actions.upgradeProject(project, upgradeVersion)
-        : undefined,
+    upgrade,
     actionsButtonId: projectActionsButtonId(project.id),
     remoteLock,
     moveTargets: workspaces

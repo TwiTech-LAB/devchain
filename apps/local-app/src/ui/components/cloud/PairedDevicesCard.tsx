@@ -125,6 +125,17 @@ function trustBadge(device: PairedDevice): {
     : { text: 'Trusted on first use', variant: 'secondary' };
 }
 
+function enrollmentBadge(device: PairedDevice): string | null {
+  if (
+    device.adoptedVia !== 'email-tofu' ||
+    device.enrollment === 'signed' ||
+    (device.trust === 'verified' && device.verifiedVia === 'qr')
+  ) {
+    return null;
+  }
+  return device.enrollment === 'unsigned' ? 'Unsigned' : 'Paired before signed enrollment';
+}
+
 function formatPairedDate(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
@@ -214,6 +225,7 @@ function DeviceRow({
   }, [shown, safetyNumber, device.kid, fetchSafetyNumber]);
 
   const badge = trustBadge(device);
+  const enrollmentLabel = enrollmentBadge(device);
   const name = displayName(device);
 
   const toggleWorkspace = useCallback(
@@ -239,7 +251,7 @@ function DeviceRow({
     <div className="py-4 space-y-2" data-testid={`paired-device-${device.kid}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {editingAlias ? (
               <div className="flex min-w-0 items-center gap-2">
                 <input
@@ -286,6 +298,7 @@ function DeviceRow({
               </button>
             )}
             <Badge variant={badge.variant}>{badge.text}</Badge>
+            {enrollmentLabel && <Badge variant="secondary">{enrollmentLabel}</Badge>}
           </div>
           {device.localAlias !== undefined && device.label !== undefined && (
             <p className="truncate text-xs text-muted-foreground">Reported name: {device.label}</p>

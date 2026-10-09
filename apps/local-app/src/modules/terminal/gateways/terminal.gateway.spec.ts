@@ -47,6 +47,7 @@ import {
 } from '../services/terminal-send-scheduler.service';
 import { TerminalSocketDrainAdapter } from '../services/terminal-socket-drain.adapter';
 import { HumanPromptStateService } from '../services/human-prompt-state.service';
+import { HumanPromptInputService } from '../services/human-prompt-input.service';
 import { sessionHumanPromptStateChangedEvent } from '../../events/catalog/session.human-prompt-state-changed';
 
 /** The stable sequence-domain epoch the mock stream service reports for every session. */
@@ -344,14 +345,14 @@ const createGateway = (options?: {
     }),
     dispose: jest.fn(),
   };
+  const humanPromptInput = new HumanPromptInputService(humanPromptState, eventEmitter);
   const gateway = new TerminalGateway(
     streamService as TerminalStreamService,
     settingsService as SettingsService,
     ptyService as PtyService,
     seedService as TerminalSeedService,
     terminalIO as TerminalIOService,
-    humanPromptState,
-    eventEmitter,
+    humanPromptInput,
     registry,
     sessionTerminalRuntime as SessionTerminalRuntimeService,
     mockRealtimeBroadcast as never,
@@ -382,6 +383,7 @@ const createGateway = (options?: {
     seedService,
     terminalIO,
     humanPromptState,
+    humanPromptInput,
     eventEmitter,
     sessionTerminalRuntime,
     registry,
@@ -2906,43 +2908,6 @@ describe('TerminalGateway.handleInput authority guard', () => {
     expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
   });
 
-  it('activates printable TTY text and awaits promotion before joining the pane FIFO', async () => {
-    const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
-    const client = createMockSocket('authority-client-tty-barrier');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'tty-barrier',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'tty-barrier' });
-
-    let release!: () => void;
-    const promotion = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
-
-    const input = gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'tty-barrier',
-      data: ' ',
-      ttyMode: true,
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(humanPromptState.getState('tmux_tty-barrier').phase).toBe('draft_active');
-    expect(terminalIO.sendControl).not.toHaveBeenCalled();
-
-    release();
-    await input;
-    expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_tty-barrier' }, [
-      '-l',
-      '--',
-      ' ',
-    ]);
-  });
-
   it('keeps Backspace behind blocked text and clears the draft after both writes', async () => {
     const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
     const client = createMockSocket('authority-client-pending-text-backspace');
@@ -2986,43 +2951,6 @@ describe('TerminalGateway.handleInput authority guard', () => {
     expect(humanPromptState.getState('tmux_pending-text-backspace').phase).toBe(
       'awaiting_stable_idle',
     );
-  });
-
-  it('keeps newer TTY text active when an earlier Enter completes late', async () => {
-    const { gateway, terminalIO, humanPromptState } = createGateway();
-    const client = createMockSocket('authority-client-enter-race');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'enter-race',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'enter-race' });
-    humanPromptState.recordPromptText('tmux_enter-race');
-
-    let releaseEnter!: () => void;
-    (terminalIO.sendControl as jest.Mock).mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          releaseEnter = resolve;
-        }),
-    );
-    const enter = gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'enter-race',
-      data: '\r',
-      ttyMode: true,
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Other input paths can activate a newer generation outside the gateway FIFO.
-    humanPromptState.recordPromptText('tmux_enter-race');
-    const newer = humanPromptState.getState('tmux_enter-race');
-    expect(newer).toEqual(expect.objectContaining({ phase: 'draft_active', generation: 2 }));
-
-    releaseEnter();
-    await enter;
-    expect(humanPromptState.getState('tmux_enter-race')).toEqual(newer);
   });
 
   it('captures the Enter generation before delayed liveness so newer text keeps its draft', async () => {
@@ -3098,205 +3026,69 @@ describe('TerminalGateway.handleInput authority guard', () => {
     expect(humanPromptState.getState('tmux_enter-dead').phase).toBe('inactive');
   });
 
-  it('leaves the observed draft unchanged when the Enter write fails', async () => {
-    const { gateway, terminalIO, humanPromptState } = createGateway();
-    const client = createMockSocket('authority-client-enter-write-failure');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'enter-write-failure',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'enter-write-failure' });
-    const draft = humanPromptState.recordPromptText('tmux_enter-write-failure');
-    (terminalIO.sendControl as jest.Mock).mockRejectedValueOnce(new Error('send failed'));
-
-    await expect(
-      gateway.handleInput(client as unknown as Socket, {
-        sessionId: 'enter-write-failure',
-        data: '\r',
-        ttyMode: true,
-      }),
-    ).rejects.toThrow('send failed');
-
-    expect(humanPromptState.getState('tmux_enter-write-failure')).toEqual(
-      expect.objectContaining({ phase: 'draft_active', generation: draft.generation }),
-    );
-  });
-
-  it('keeps a draft held after one Escape and a non-Codex Ctrl+C', async () => {
-    const { gateway, humanPromptState } = createGateway();
-    const client = createMockSocket('authority-client-cancel-keys');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'cancel-keys',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'cancel-keys' });
-    humanPromptState.recordPromptText('tmux_cancel-keys', 4);
-
-    await gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'cancel-keys',
-      data: '\x1b',
+  // Module-unit: the gateway is the cheapest layer for translating socket input into the shared interface.
+  it.each([
+    {
+      data: '\r',
       ttyMode: true,
-    });
-    await gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'cancel-keys',
+      input: {
+        kind: 'control',
+        tmuxKey: 'Enter',
+        expectedGeneration: 1,
+        providerName: null,
+      },
+    },
+    {
       data: '\x03',
       ttyMode: true,
-    });
-
-    expect(humanPromptState.getState('tmux_cancel-keys')).toEqual(
-      expect.objectContaining({ phase: 'draft_active', generation: 3 }),
-    );
-  });
-
-  it('clears a tracked draft after double Escape', async () => {
-    const { gateway, humanPromptState } = createGateway();
-    const client = createMockSocket('authority-client-double-escape');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'double-escape',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'double-escape' });
-    humanPromptState.recordPromptText('tmux_double-escape', 4);
-
-    for (let index = 0; index < 2; index += 1) {
-      await gateway.handleInput(client as unknown as Socket, {
-        sessionId: 'double-escape',
-        data: '\x1b',
-        ttyMode: true,
-      });
-    }
-
-    expect(humanPromptState.getState('tmux_double-escape').phase).toBe('awaiting_stable_idle');
-  });
-
-  it('clears a Codex draft after Ctrl+C', async () => {
-    const { gateway, humanPromptState, sessionTerminalRuntime } = createGateway();
-    (sessionTerminalRuntime.getProviderNameAtLaunch as jest.Mock).mockReturnValue('codex');
-    const client = createMockSocket('authority-client-codex-cancel');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'codex-cancel',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'codex-cancel' });
-    humanPromptState.recordPromptText('tmux_codex-cancel', 4);
-
-    await gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'codex-cancel',
-      data: '\x03',
+      input: {
+        kind: 'control',
+        tmuxKey: 'C-c',
+        expectedGeneration: 1,
+        providerName: 'codex',
+      },
+    },
+    { data: 'abc', ttyMode: true, input: { kind: 'text', characterCount: 3 } },
+    {
+      data: '\x1b[999~',
       ttyMode: true,
-    });
-
-    expect(humanPromptState.getState('tmux_codex-cancel').phase).toBe('awaiting_stable_idle');
-  });
-
-  it('clears exact typed text after the matching number of Backspaces', async () => {
-    const { gateway, humanPromptState } = createGateway();
-    const client = createMockSocket('authority-client-balanced-backspace');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'balanced-backspace',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'balanced-backspace' });
-
-    await gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'balanced-backspace',
-      data: 'abc',
-      ttyMode: true,
-    });
-    for (let index = 0; index < 3; index += 1) {
-      await gateway.handleInput(client as unknown as Socket, {
-        sessionId: 'balanced-backspace',
-        data: '\x7f',
-        ttyMode: true,
+      input: {
+        kind: 'control',
+        tmuxKey: 'Unknown',
+        expectedGeneration: 1,
+        providerName: null,
+      },
+    },
+    { data: 'form prompt', ttyMode: false, input: { kind: 'submit-text' } },
+  ])(
+    'routes socket input $data through the prompt-input interface',
+    async ({ data, ttyMode, input }) => {
+      const { gateway, humanPromptInput, humanPromptState, sessionTerminalRuntime, registry } =
+        createGateway();
+      (sessionTerminalRuntime.getProviderNameAtLaunch as jest.Mock).mockReturnValue('codex');
+      const client = createMockSocket('authority-client-input-routing');
+      gateway.handleConnection(client as unknown as Socket);
+      await gateway.handleSubscribe(client as unknown as Socket, {
+        sessionId: 'input-routing',
+        rows: 24,
+        cols: 80,
       });
-    }
+      gateway.handleFocus(client as unknown as Socket, { sessionId: 'input-routing' });
+      humanPromptState.recordPromptText('tmux_input-routing');
+      const run = jest.spyOn(humanPromptInput, 'run');
 
-    expect(humanPromptState.getState('tmux_balanced-backspace').phase).toBe('awaiting_stable_idle');
-  });
+      await gateway.handleInput(client as unknown as Socket, {
+        sessionId: 'input-routing',
+        data,
+        ttyMode,
+      });
 
-  it('transitions a successful form submit to awaiting stable idle', async () => {
-    const { gateway, terminalIO, humanPromptState, eventEmitter } = createGateway();
-    const client = createMockSocket('authority-client-form');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'form-submit',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'form-submit' });
+      expect(run).toHaveBeenCalledWith(registry.get('input-routing'), input, expect.any(Function));
+    },
+  );
 
-    let release!: () => void;
-    const promotion = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
-    const submit = gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'form-submit',
-      data: 'submitted prompt',
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
-    release();
-    await submit;
-
-    expect(humanPromptState.getState('tmux_form-submit')).toEqual(
-      expect.objectContaining({ phase: 'awaiting_stable_idle', generation: 2 }),
-    );
-  });
-
-  it('does not let a late form completion clear newer TTY text', async () => {
-    const { gateway, terminalIO, humanPromptState } = createGateway();
-    const client = createMockSocket('authority-client-form-race');
-    gateway.handleConnection(client as unknown as Socket);
-    await gateway.handleSubscribe(client as unknown as Socket, {
-      sessionId: 'form-race',
-      rows: 24,
-      cols: 80,
-    });
-    gateway.handleFocus(client as unknown as Socket, { sessionId: 'form-race' });
-
-    let releaseForm!: () => void;
-    let formStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      formStarted = resolve;
-    });
-    (terminalIO.deliverImmediate as jest.Mock).mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          releaseForm = resolve;
-          formStarted();
-        }),
-    );
-    const form = gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'form-race',
-      data: 'form prompt',
-    });
-    await started;
-
-    // Other input paths can activate a newer generation outside the gateway FIFO.
-    humanPromptState.recordPromptText('tmux_form-race');
-    const newer = humanPromptState.getState('tmux_form-race');
-    releaseForm();
-    await form;
-
-    expect(humanPromptState.getState('tmux_form-race')).toEqual(newer);
-    expect(newer.phase).toBe('draft_active');
-  });
-
-  it('leaves a failed form write in its blocking draft state', async () => {
-    const { gateway, terminalIO, humanPromptState } = createGateway();
+  it('handles a failed form write without rejecting the socket input', async () => {
+    const { gateway, terminalIO } = createGateway();
     const client = createMockSocket('authority-client-form-failure');
     gateway.handleConnection(client as unknown as Socket);
     await gateway.handleSubscribe(client as unknown as Socket, {
@@ -3307,12 +3099,13 @@ describe('TerminalGateway.handleInput authority guard', () => {
     gateway.handleFocus(client as unknown as Socket, { sessionId: 'form-failure' });
     (terminalIO.deliverImmediate as jest.Mock).mockRejectedValueOnce(new Error('write failed'));
 
-    await gateway.handleInput(client as unknown as Socket, {
-      sessionId: 'form-failure',
-      data: 'unsafe to release',
-    });
-
-    expect(humanPromptState.getState('tmux_form-failure').phase).toBe('draft_active');
+    await expect(
+      gateway.handleInput(client as unknown as Socket, {
+        sessionId: 'form-failure',
+        data: 'unsafe to release',
+      }),
+    ).resolves.toBeUndefined();
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
   });
 
   it.each(['\r', 'x'])('rejects unauthorized subscriber input %j', async (data) => {
@@ -3450,7 +3243,7 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
   });
 
   it('caches a delivery-stage failure because tmux may already have pasted', async () => {
-    const { gateway, client, terminalIO, humanPromptState } =
+    const { gateway, client, terminalIO } =
       await createAuthorizedPromptClient('prompt-delivery-error');
     (terminalIO.deliverImmediate as jest.Mock).mockRejectedValueOnce(new Error('paste uncertain'));
     const payload = promptPastePayload('prompt-delivery-error');
@@ -3465,29 +3258,54 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
     });
     expect(replay).toEqual(first);
     expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
-    expect(humanPromptState.getState('tmux_prompt-delivery-error').phase).toBe('draft_active');
   });
 
-  it('activates and awaits promotion before prompt-paste liveness admission', async () => {
+  // Module-unit: real events plus fake terminal I/O expose admission without a tmux daemon.
+  it('prompt-paste to a dead tmux returns TMUX_UNAVAILABLE without activating', async () => {
     const { gateway, client, terminalIO, humanPromptState, eventEmitter } =
       await createAuthorizedPromptClient('prompt-barrier');
-    (terminalIO.sessionExists as jest.Mock).mockClear();
+    const payload = promptPastePayload('prompt-barrier');
+    (terminalIO.sessionExists as jest.Mock).mockClear().mockResolvedValue(false);
+    const publish = jest.fn();
+    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, publish);
+
+    await expect(gateway.handleInput(client, payload)).resolves.toEqual({
+      ok: false,
+      code: 'TMUX_UNAVAILABLE',
+      requestId: payload.requestId,
+    });
+    expect(publish).not.toHaveBeenCalled();
+    expect(humanPromptState.getState('tmux_prompt-barrier').phase).toBe('inactive');
+    expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
+  });
+
+  // Module-unit: real events plus fake terminal I/O expose admission without a tmux daemon.
+  it('prompt-paste to a live tmux awaits promotion before writing', async () => {
+    const { gateway, client, terminalIO, humanPromptState, eventEmitter } =
+      await createAuthorizedPromptClient('prompt-barrier');
+    const payload = promptPastePayload('prompt-barrier');
+    (terminalIO.sessionExists as jest.Mock).mockClear().mockResolvedValue(true);
     let release!: () => void;
+    let activated!: () => void;
+    const started = new Promise<void>((resolve) => {
+      activated = resolve;
+    });
     const promotion = new Promise<void>((resolve) => {
       release = resolve;
     });
-    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => promotion);
+    eventEmitter.on(sessionHumanPromptStateChangedEvent.name, () => {
+      activated();
+      return promotion;
+    });
 
-    const result = gateway.handleInput(client, promptPastePayload('prompt-barrier'));
-    await Promise.resolve();
-    await Promise.resolve();
-
+    const result = gateway.handleInput(client, payload);
+    await started;
+    expect(terminalIO.sessionExists).toHaveBeenCalledTimes(1);
     expect(humanPromptState.getState('tmux_prompt-barrier').phase).toBe('draft_active');
-    expect(terminalIO.sessionExists).not.toHaveBeenCalled();
     expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
-
     release();
-    await expect(result).resolves.toMatchObject({ ok: true, code: 'OK' });
+    await expect(result).resolves.toEqual({ ok: true, code: 'OK', requestId: payload.requestId });
+    expect(terminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
   });
 
   it('revalidates authority before replaying a completed request', async () => {

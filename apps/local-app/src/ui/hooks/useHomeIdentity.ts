@@ -1,29 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
-
-export interface HomeIdentity {
-  user: string;
-  homePath: string;
-}
+import { useRemoteVmApi } from '@/ui/pages/cloud/lib/remote-vm-api-context';
+import { homeIdentityQueryKey } from '@/ui/pages/cloud/lib/remote-vm-query-keys';
+import type { HomeIdentity } from '@/ui/pages/cloud/lib/remote-vm-contracts';
 
 /**
  * This PC's OS user and home folder from the identity endpoint. The values are
  * read-only everywhere: the VM always receives exactly this identity.
  */
 export function useHomeIdentity(): HomeIdentity | undefined {
+  const api = useRemoteVmApi();
   const query = useQuery(
     {
-      queryKey: [HOME_BACKEND, 'host-install-identity'],
-      queryFn: async ({ signal }) => {
-        const response = await apiFetch(
-          '/api/remotes/host-install/identity',
-          { signal },
-          { backend: HOME_BACKEND },
-        );
-        if (!response.ok) throw new Error('identity unavailable');
-        return (await response.json()) as HomeIdentity;
-      },
+      queryKey: homeIdentityQueryKey,
+      queryFn: ({ signal }) => api.readHomeIdentity(signal),
       staleTime: 60_000,
     },
     useHomeQueryClient(),

@@ -5,13 +5,64 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const { installClis } = require("../lib/clis");
 const { createSystem } = require("../lib/system");
 const defaultPins = require("../../../scripts/host-cli-pins.json");
 
-/** Test-only EC P-256 pairs, made with the same openssl command as lib/tls.js. */
-const FIXTURE_TLS = path.join(__dirname, "fixtures/tls");
-const OTHER_TLS = path.join(__dirname, "fixtures/tls-other");
+/**
+ * Makes two unrelated test-only EC P-256 pairs with the same openssl command as
+ * lib/tls.js, so no private key is committed. The pairs are cached per OS user in
+ * the temp directory; the Local App tests use the same cache
+ * (apps/local-app/src/common/test/tls-fixture.ts). Concurrent test processes race
+ * safely: each builds in its own staging directory, and the first rename wins.
+ */
+function testTlsRoot() {
+  const uid = process.getuid ? process.getuid() : "user";
+  const root = path.join(os.tmpdir(), `devchain-test-tls-${uid}-v1`);
+  const complete = () =>
+    fs.existsSync(path.join(root, "tls-other", "cert.pem"));
+  if (complete()) return root;
+  const staging = fs.mkdtempSync(`${root}.tmp-`);
+  try {
+    for (const pair of ["tls", "tls-other"]) {
+      fs.mkdirSync(path.join(staging, pair));
+      execFileSync(
+        "openssl",
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "ec",
+          "-pkeyopt",
+          "ec_paramgen_curve:prime256v1",
+          "-nodes",
+          "-sha256",
+          "-days",
+          "3650",
+          "-subj",
+          "/CN=devchain-host",
+          "-addext",
+          "subjectAltName=DNS:devchain-host",
+          "-keyout",
+          path.join(staging, pair, "key.pem"),
+          "-out",
+          path.join(staging, pair, "cert.pem"),
+        ],
+        { stdio: "ignore" },
+      );
+    }
+    fs.renameSync(staging, root);
+  } catch (error) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    if (!complete()) throw error;
+  }
+  return root;
+}
+
+const TLS_ROOT = testTlsRoot();
+const FIXTURE_TLS = path.join(TLS_ROOT, "tls");
+const OTHER_TLS = path.join(TLS_ROOT, "tls-other");
 const fixtureTls = {
   key: fs.readFileSync(path.join(FIXTURE_TLS, "key.pem")),
   cert: fs.readFileSync(path.join(FIXTURE_TLS, "cert.pem")),

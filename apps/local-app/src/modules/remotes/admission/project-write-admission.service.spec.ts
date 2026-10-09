@@ -4,7 +4,7 @@ import {
   ProjectRemoteError,
 } from '../../../common/errors/error-types';
 import type { RemoteProjectBinding, RemoteBindingState } from '../../storage/models/domain.models';
-import type { ProjectFreezeService } from '../host/project-freeze.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { ProjectWriteAdmissionService } from './project-write-admission.service';
 
 function binding(
@@ -26,26 +26,21 @@ function binding(
 
 describe('ProjectWriteAdmissionService', () => {
   let bindings: RemoteProjectBinding[];
-  let frozen: Set<string>;
+  let frozen: { add(projectId: string): void };
   let storage: { listRemoteProjectBindings: jest.Mock; getRemote: jest.Mock };
   let service: ProjectWriteAdmissionService;
 
   beforeEach(async () => {
     bindings = [];
-    frozen = new Set();
     storage = {
       listRemoteProjectBindings: jest.fn(async () => bindings),
       getRemote: jest.fn(async (id: string) => ({ id, name: `vm-${id}` })),
     };
-    const freeze = {
-      isFrozen: (projectId: string) => frozen.has(projectId),
-      frozenProjectIds: () => [...frozen],
-      assertWritable: (projectId: string) => {
-        if (frozen.has(projectId)) throw new ProjectFrozenError(projectId);
-      },
-    } as unknown as ProjectFreezeService;
-    service = new ProjectWriteAdmissionService(storage as never, freeze);
-    await service.onModuleInit();
+    const gate = new ProjectWriteGate();
+    gate.bindStorage({ ...storage, listFrozenProjects: jest.fn().mockResolvedValue([]) });
+    frozen = { add: (projectId) => gate.markFrozen(projectId, '2026-09-22T00:00:00.000Z') };
+    service = new ProjectWriteAdmissionService(gate);
+    await gate.onModuleInit();
   });
 
   it('admits writes to unbound projects and global rows', () => {

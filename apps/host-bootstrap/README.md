@@ -84,8 +84,7 @@ Each VM has one TLS identity: an EC P-256 self-signed certificate for
   cannot set these keys or write these files (`lib/validate.js`).
 - Home pins this certificate for every call to the VM. For the setup paths
   that need a pasted fingerprint, print it on the VM with
-  `openssl x509 -in /etc/devchain-host/tls/cert.pem -noout -fingerprint -sha256`
-  ([The VM certificate](../../docs/remote-projects.md#the-vm-certificate)).
+  `openssl x509 -in /etc/devchain-host/tls/cert.pem -noout -fingerprint -sha256`.
 
 ## HTTPS contract of the unclaimed VM (port 3000)
 

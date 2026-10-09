@@ -70,7 +70,11 @@ export class ProviderCliInstallerService implements OnModuleInit, OnModuleDestro
     private readonly state: ProviderCliInstallStateService,
     private readonly settings: SettingsService,
     private readonly executor: ProcessExecutor,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: Pick<
+      StorageService,
+      'createProvider' | 'listProviders' | 'updateProvider'
+    >,
     private readonly sessions: ActiveSessionLookup,
     private readonly effortSeeding: ProviderEffortSeedingService,
     private readonly projectSync: ProviderProjectSyncService,

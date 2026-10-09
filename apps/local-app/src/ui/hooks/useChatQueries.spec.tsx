@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { useChatQueries } from './useChatQueries';
 
 jest.mock('@/ui/lib/sessions', () => ({
+  ...jest.requireActual('@/ui/lib/sessions'),
   fetchAgentPresence: jest.fn().mockResolvedValue({}),
   fetchActiveSessions: jest.fn().mockResolvedValue([]),
 }));

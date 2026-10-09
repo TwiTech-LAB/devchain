@@ -6,7 +6,11 @@ import {
   findSkippedTemplatePromptReferences,
 } from '../../../common/prompt-references';
 import { PROMPT_TRANSFER_POLICY, type PromptTransferCounts } from '../../../common/prompt-transfer';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type {
+  StorageService,
+  ProjectStorage,
+  WatcherStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import {
@@ -24,6 +28,7 @@ import type { TeamsService } from '../../teams/services/teams.service';
 import type { WatchersService } from '../../watchers/services/watchers.service';
 import { ImportContext } from '../template-codec/import-context';
 import { TemplatePipeline } from '../template-codec/template-pipeline';
+import type { CodecApplyRuntime } from '../template-codec/template-section-codec';
 
 const logger = createLogger('TemplateLoader');
 
@@ -72,7 +77,7 @@ export interface CreateFromTemplateInputLike {
 type ParsedTemplatePayload = ReturnType<typeof ExportSchema.parse>;
 
 interface CreateFromTemplateDeps {
-  storage: StorageService;
+  storage: CodecApplyRuntime['storage'] & ProjectStorage & WatcherStorage;
   settings: SettingsService;
   unifiedTemplateService: UnifiedTemplateService;
   deriveSlugFromPath: (templatePath: string) => string;

@@ -16,7 +16,7 @@ import type {
 } from '../models/epic-time.models';
 import { canonicalizeEpicTimeZone } from '../models/epic-time-local-day';
 import { EventsService } from '../../events/services/events.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { EpicTimeStore, type EpicTimeScope, type EpicTimeSummarySegment } from './epic-time.store';
 
 const MILLIS_PER_MINUTE = 60_000;
@@ -63,7 +63,7 @@ export class EpicTimeService {
   constructor(
     private readonly store: EpicTimeStore,
     private readonly eventsService: EventsService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   /** Pass-through of the one project-scoped storage read; the projection is safe by construction. */
@@ -83,7 +83,8 @@ export class EpicTimeService {
   async assignAgentTimeBuffer(
     input: AgentTimeBufferAssignmentInput,
   ): Promise<AgentTimeBufferAssignmentResult> {
-    this.admission.assertWritable(input.projectId);
+    // Admit before the manual time-buffer SQL write.
+    this.gate.assertWritable(input.projectId);
     const result = await this.store.assignAgentTimeBuffer(input);
     await this.eventsService.publish('epic.time.scope.invalidated', {
       workspaceId: result.workspaceId,
@@ -100,7 +101,8 @@ export class EpicTimeService {
   async resetAgentTimeBuffer(
     input: AgentTimeBufferResetInput,
   ): Promise<AgentTimeBufferResetResult> {
-    this.admission.assertWritable(input.projectId);
+    // Admit before the manual time-buffer SQL reset.
+    this.gate.assertWritable(input.projectId);
     const result = await this.store.resetAgentTimeBuffer(input);
     await this.eventsService.publish('epic.time.scope.invalidated', {
       workspaceId: result.workspaceId,

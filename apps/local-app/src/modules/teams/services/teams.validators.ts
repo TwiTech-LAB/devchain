@@ -1,5 +1,9 @@
 import { ValidationError } from '../../../common/errors/error-types';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type {
+  AgentStorage,
+  AgentProfileStorage,
+  ProfileProviderConfigStorage,
+} from '../../storage/interfaces/storage.interface';
 
 /**
  * The single set of team validation rules shared by createTeam and updateTeam.
@@ -86,7 +90,7 @@ export function validateSelectionsAgainstProfiles(
 }
 
 export async function validateAgentsInProject(
-  storage: StorageService,
+  storage: AgentStorage,
   projectId: string,
   agentIds: string[],
 ): Promise<void> {
@@ -103,7 +107,7 @@ export async function validateAgentsInProject(
 }
 
 export async function validateProfilesInProject(
-  storage: StorageService,
+  storage: AgentProfileStorage,
   projectId: string,
   profileIds: string[],
 ): Promise<void> {
@@ -121,7 +125,7 @@ export async function validateProfilesInProject(
 }
 
 export async function validateConfigProfileConsistency(
-  storage: StorageService,
+  storage: ProfileProviderConfigStorage,
   selections: ProfileConfigSelection[],
 ): Promise<void> {
   for (const sel of selections) {

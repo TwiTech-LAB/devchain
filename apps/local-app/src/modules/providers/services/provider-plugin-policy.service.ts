@@ -1,6 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ValidationError } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type ProviderPluginPolicyStorage,
+} from '../../storage/interfaces/storage.interface';
 
 const MAX_PLUGIN_ID_LENGTH = 512;
 const ASCII_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
@@ -16,7 +19,7 @@ export interface EffectiveProviderPluginPolicy {
 
 @Injectable()
 export class ProviderPluginPolicyService {
-  constructor(@Inject(STORAGE_SERVICE) private readonly storage: StorageService) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: ProviderPluginPolicyStorage) {}
 
   async setDefault(
     providerId: string,

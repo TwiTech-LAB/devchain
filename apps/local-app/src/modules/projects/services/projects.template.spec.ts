@@ -25,8 +25,8 @@ jest.mock('../../../common/config/env.config');
 const mockEnvConfig = envConfig as jest.Mocked<typeof envConfig>;
 
 import { createMockProject } from '../../../../test/factories';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 describe('ProjectsService', () => {
   let service: ProjectsService;
@@ -191,7 +191,7 @@ describe('ProjectsService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         ProjectsService,
         {
           provide: STORAGE_SERVICE,

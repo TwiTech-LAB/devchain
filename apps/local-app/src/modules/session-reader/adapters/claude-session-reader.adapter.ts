@@ -10,7 +10,8 @@ import type {
   IncrementalResult,
 } from './session-reader-adapter.interface';
 import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
-import type { UnifiedSession } from '../dtos/unified-session.types';
+import type { UnifiedMetrics, UnifiedSession } from '../dtos/unified-session.types';
+import type { TranscriptTurnState } from '../../terminal/services/session-turn-signals';
 import { parseClaudeJsonl } from '../parsers/claude-jsonl.parser';
 import {
   claudeTurnFromMessages,
@@ -150,6 +151,10 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
   /** The turn evidence of a full parse, so the next incremental parse resumes from it. */
   continuationFromSession(session: UnifiedSession): ClaudeContinuationState {
     return { turn: claudeTurnFromMessages(session.messages) };
+  }
+
+  turnState(_metrics: UnifiedMetrics, continuationState: unknown): TranscriptTurnState | null {
+    return readClaudeContinuation(continuationState)?.turn ?? null;
   }
 
   /**

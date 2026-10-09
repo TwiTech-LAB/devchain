@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, eq, sql, inArray } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import {
@@ -22,6 +22,7 @@ import { TransactionRunner } from '../../storage/db/transaction-runner';
 import { isSqliteUniqueConstraint } from '../../storage/local/helpers/storage-helpers';
 import type { ListOptions, ListResult } from '../../storage/interfaces/storage.interface';
 import type { Team, TeamMember, CreateTeam, UpdateTeam } from '../../storage/models/domain.models';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 export interface TeamsListOptions extends ListOptions {
   q?: string;
@@ -38,7 +39,10 @@ export class TeamsStore {
   private readonly txRunner: TransactionRunner;
   private readonly sqlite: ReturnType<typeof getRawSqliteClient>;
 
-  constructor(@Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database) {
+  constructor(
+    @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
+    @Optional() private readonly gate?: ProjectWriteGate,
+  ) {
     const sqlite = getRawSqliteClient(this.db);
     if (!sqlite || typeof sqlite.exec !== 'function') {
       throw new StorageError('Unable to access underlying SQLite client for transaction control');
@@ -48,6 +52,7 @@ export class TeamsStore {
   }
 
   async createTeam(data: CreateTeam): Promise<Team> {
+    this.gate?.assertWritable(data.projectId);
     const id = randomUUID();
 
     try {
@@ -259,6 +264,7 @@ export class TeamsStore {
   }
 
   async updateTeam(id: string, data: UpdateTeam): Promise<Team> {
+    this.assertTeamWritable(id);
     const now = new Date().toISOString();
 
     try {
@@ -352,6 +358,7 @@ export class TeamsStore {
   }
 
   async deleteTeam(id: string): Promise<void> {
+    this.assertTeamWritable(id);
     // Members cascade via FK on delete
     await this.db.delete(teams).where(eq(teams.id, id));
   }
@@ -371,6 +378,7 @@ export class TeamsStore {
   }
 
   async deleteTeamsByProject(projectId: string): Promise<void> {
+    this.gate?.assertWritable(projectId);
     const projectTeams = await this.db
       .select({ id: teams.id })
       .from(teams)
@@ -388,6 +396,7 @@ export class TeamsStore {
 
   async deleteTeamsByIds(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
+    for (const id of ids) this.assertTeamWritable(id);
 
     await this.txRunner.runImmediateAsync(async () => {
       await this.db.delete(teamProfileConfigs).where(inArray(teamProfileConfigs.teamId, ids));
@@ -491,6 +500,7 @@ export class TeamsStore {
     teamLeadAgentId: string | null;
     createAgentFn: () => Promise<import('../../storage/models/domain.models').Agent>;
   }): Promise<import('../../storage/models/domain.models').Agent> {
+    this.assertTeamWritable(opts.teamId);
     return await this.txRunner.runImmediateAsync(async () => {
       const countResult = this.sqlite
         .prepare(
@@ -536,6 +546,7 @@ export class TeamsStore {
     teamId: string,
     selections: Array<{ profileId: string; configIds: string[] }>,
   ): Promise<void> {
+    this.assertTeamWritable(teamId);
     await this.txRunner.runImmediateAsync(async () => {
       await this.writeTeamProfileConfigs(teamId, selections);
     });
@@ -601,6 +612,14 @@ export class TeamsStore {
     if (rows.length > 0) {
       await this.db.insert(teamProfileConfigs).values(rows);
     }
+  }
+
+  private assertTeamWritable(id: string): void {
+    if (!this.gate) return;
+    const row = this.sqlite.prepare('SELECT project_id FROM teams WHERE id = ?').get(id) as
+      | { project_id: string }
+      | undefined;
+    this.gate.assertWritable(row?.project_id);
   }
 
   private toTeam = (row: typeof teams.$inferSelect): Team => ({

@@ -1,4 +1,6 @@
+import type { SnapshotPromptWriter } from '../../interfaces/snapshot-prompt-writer.interface';
 import type {
+  PromptStorage,
   ListResult,
   PromptListFilters,
   PromptSummary,
@@ -33,7 +35,10 @@ export interface PromptStorageDelegateDependencies {
   createTag: (data: CreateTag) => Tag;
 }
 
-export class PromptStorageDelegate extends BaseStorageDelegate {
+export class PromptStorageDelegate
+  extends BaseStorageDelegate
+  implements PromptStorage, SnapshotPromptWriter
+{
   constructor(
     context: StorageDelegateContext,
     private readonly dependencies: PromptStorageDelegateDependencies,

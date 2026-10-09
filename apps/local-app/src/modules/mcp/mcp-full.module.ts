@@ -18,7 +18,6 @@ import { McpSdkController } from './controllers/mcp-sdk.controller';
 import { McpTestController } from './controllers/mcp-test.controller';
 import { ProjectCommunicationModule } from '../project-communication/project-communication.module';
 import { McpToolBindingRegistry } from './services/mcp-tool-binding.registry';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
   imports: [
@@ -34,7 +33,6 @@ import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-
     forwardRef(() => TeamsModule),
     forwardRef(() => AgentMessageDeliveryModule),
     ProjectCommunicationModule,
-    ProjectWriteAdmissionModule,
   ],
   controllers: [McpHttpController, McpSdkController, McpTestController],
   providers: [McpToolBindingRegistry, McpService, McpServerService, McpGateway],

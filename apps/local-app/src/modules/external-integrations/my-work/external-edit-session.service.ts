@@ -1,6 +1,10 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { BusyError, ValidationError } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   IntegrationConnection,
   IntegrationCredentials,
@@ -88,7 +92,9 @@ type GatePhase =
 @Injectable()
 export class ExternalEditSessionService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ProjectStorage &
+      Pick<StorageService, 'getIntegrationConnection' | 'getIntegrationConnectionCredentials'>,
     private readonly providers: ExternalTaskProviderRegistry,
     private readonly gate: ProviderOperationGate,
     private readonly store: ExternalEditSessionStore,

@@ -63,11 +63,8 @@ describe('CopilotAdapter', () => {
   });
 
   describe('HookCapability (2nd adopter; P3 lifecycle hooks)', () => {
-    it('enables hooks and reuses the legacy provider-neutral event name (decision: option b)', () => {
+    it('enables hooks', () => {
       expect(adapter.hooksEnabled).toBe(true);
-      // Same internal devchain event as Claude → 0005 renew-instructions seeder +
-      // event-fields catalog fire for Copilot with ZERO seeder churn.
-      expect(adapter.hooksEventName).toBe('claude.hooks.session.started');
     });
 
     it('declares hooksProvideTranscriptPath=false (Copilot sessionStart carries no path)', () => {
@@ -254,10 +251,6 @@ describe('CopilotAdapter', () => {
 
     it('removes a server by alias', () => {
       expect(adapter.removeMcpServer('devchain')).toEqual(['mcp', 'remove', 'devchain']);
-    });
-
-    it('probes a server via mcp get <alias>', () => {
-      expect(adapter.binaryCheck('devchain')).toEqual(['mcp', 'get', 'devchain']);
     });
   });
 

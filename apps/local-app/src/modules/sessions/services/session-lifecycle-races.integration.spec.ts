@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { SessionsService } from './sessions.service';
+import { SessionTerminalRuntimeService } from '../../session-terminal-runtime/session-terminal-runtime.service';
 import { SessionLaunchPipeline } from './session-runtime/session-launch-pipeline.service';
 import { SessionRestorePipeline } from './session-runtime/session-restore-pipeline.service';
 import { SessionRuntime } from './session-runtime';
@@ -18,7 +19,7 @@ import {
   fakeProject,
   fakeProvider,
 } from './session-runtime/__test-utils__/pipeline-harness';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
@@ -91,7 +92,6 @@ describe('session lifecycle race serialization', () => {
   };
   let claudeLaunchSettings: {
     prepare: jest.Mock;
-    cleanupSession: jest.Mock;
     cleanupSessionSync: jest.Mock;
   };
   let codexPluginProfiles: {
@@ -161,9 +161,7 @@ describe('session lifecycle race serialization', () => {
       prepare: jest.fn().mockResolvedValue({
         optionArgs: [],
         runtimeEnv: {},
-        captureEnabled: false,
       }),
-      cleanupSession: jest.fn().mockResolvedValue(undefined),
       cleanupSessionSync: jest.fn(),
     };
     codexPluginProfiles = {
@@ -232,6 +230,13 @@ describe('session lifecycle race serialization', () => {
       })),
     };
 
+    const sessionTerminalRuntime = new SessionTerminalRuntimeService(
+      db,
+      providerAdapterFactory as never,
+      runtimeContextCapture as never,
+      claudeLaunchSettings as never,
+      codexPluginProfiles as never,
+    );
     const launchPipeline = new SessionLaunchPipeline(
       db,
       storage as never,
@@ -246,8 +251,7 @@ describe('session lifecycle race serialization', () => {
       mcpEnsureService as never,
       eventsService as never,
       teamsStore as never,
-      runtimeContextCapture as never,
-      codexPluginProfiles as never,
+      sessionTerminalRuntime,
       providerRuntimePreparation as never,
     );
     const restorePipeline = new SessionRestorePipeline(
@@ -267,7 +271,7 @@ describe('session lifecycle race serialization', () => {
     sessionRuntime = new SessionRuntime(
       launchPipeline,
       restorePipeline,
-      createProjectWriteAdmissionStub() as never,
+      createProjectWriteGateStub() as never,
     );
     sessionsService = new SessionsService(
       db,
@@ -281,16 +285,14 @@ describe('session lifecycle race serialization', () => {
       providerAdapterFactory as never,
       eventsService as never,
       terminalSessionRegistry as never,
-      runtimeContextCapture as never,
-      claudeLaunchSettings as never,
-      codexPluginProfiles as never,
+      sessionTerminalRuntime,
       store,
       { listRemoteOwnedProjectIds: () => [] } as never,
     );
     facade = new SessionLifecycleFacade(
       sessionRuntime,
       sessionsService,
-      createProjectWriteAdmissionStub() as never,
+      createProjectWriteGateStub() as never,
     );
     seedAgentFixtures();
   });

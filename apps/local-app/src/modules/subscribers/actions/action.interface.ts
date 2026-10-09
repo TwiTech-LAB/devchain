@@ -15,7 +15,12 @@ import type { SessionsService } from '../../sessions/services/sessions.service';
 import type { SessionRuntime } from '../../sessions/services/session-runtime';
 import type { SessionCoordinatorService } from '../../sessions/services/session-coordinator.service';
 import type { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type {
+  StorageService,
+  AgentProfileStorage,
+  AgentStorage,
+  StatusStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { TeamsService } from '../../teams/services/teams.service';
 
 // ============================================
@@ -149,7 +154,10 @@ export interface ActionContext {
   amd: AgentMessageDeliveryService;
 
   /** Storage service for data access (e.g., agent resolution) */
-  storage: StorageService;
+  storage: AgentProfileStorage &
+    AgentStorage &
+    StatusStorage &
+    Pick<StorageService, 'listProjectEpics'>;
 
   /** Teams facade for team-aware operations */
   teamsService: TeamsService;

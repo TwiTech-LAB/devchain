@@ -10,7 +10,6 @@ import { SubscribersService } from './services/subscribers.service';
 import { SubscriberExecutorService } from './services/subscriber-executor.service';
 import { AutomationSchedulerService } from './services/automation-scheduler.service';
 import { TeamsModule } from '../teams/teams.module';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
   imports: [
@@ -20,7 +19,6 @@ import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-
     EventsCoreModule,
     AgentMessageDeliveryModule,
     TeamsModule,
-    ProjectWriteAdmissionModule,
   ],
   controllers: [SubscribersController, ActionsController],
   providers: [SubscribersService, SubscriberExecutorService, AutomationSchedulerService],

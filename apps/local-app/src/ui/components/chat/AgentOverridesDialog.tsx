@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Loader2 } from 'lucide-react';
+import { providerConfigQueries, type ProfileProviderConfig } from '@/ui/lib/provider-configs';
+import { providerEffortQueries, selectProviderEffortOptions } from '@/ui/lib/provider-efforts';
 import {
   Dialog,
   DialogContent,
@@ -26,20 +28,6 @@ import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 // ============================================
 // Types
 // ============================================
-
-/**
- * Provider config option surfaced in the Overrides dialog. Mirrors the shape
- * returned by `GET /api/profiles/:id/provider-configs` (with the provider name
- * resolved via JOIN and the structured model/effort defaults).
- */
-export interface OverridesConfigOption {
-  id: string;
-  name: string;
-  providerId: string;
-  providerName?: string;
-  model: string | null;
-  effort: string | null;
-}
 
 interface CatalogOption {
   id: string;
@@ -67,7 +55,6 @@ interface AgentOverridesDialogProps {
   /** Whether the agent currently has an online session (drives the restart warning). */
   isOnline: boolean;
   isSaving: boolean;
-  fetchProviderConfigsForProfile: (profileId: string) => Promise<OverridesConfigOption[]>;
   onSave: (payload: AgentOverridesSavePayload) => Promise<unknown> | void;
   /** Element to restore focus to when the dialog closes (context-menu trigger). */
   triggerEl?: HTMLElement | null;
@@ -114,11 +101,11 @@ function parseCatalogOptions(payload: unknown, providerId: string): CatalogOptio
 // ============================================
 
 interface OverridesController {
-  configs: OverridesConfigOption[];
+  configs: ProfileProviderConfig[];
   configsLoading: boolean;
   configsError: boolean;
   selectedConfigId: string;
-  selectedConfig: OverridesConfigOption | undefined;
+  selectedConfig: ProfileProviderConfig | undefined;
   modelValue: string;
   effortValue: string;
   models: CatalogOption[];
@@ -138,7 +125,6 @@ function useOverridesController(
   agent: AgentOrGuest,
   open: boolean,
   isOnline: boolean,
-  fetchProviderConfigsForProfile: (profileId: string) => Promise<OverridesConfigOption[]>,
 ): OverridesController {
   const fetchFn = useFetchFactory();
   const currentConfigId = agent.providerConfigId ?? '';
@@ -154,8 +140,7 @@ function useOverridesController(
     isLoading: configsLoading,
     isError: configsError,
   } = useQuery({
-    queryKey: ['profile-provider-configs', 'main', agent.profileId],
-    queryFn: () => fetchProviderConfigsForProfile(agent.profileId!),
+    ...providerConfigQueries.profile(fetchFn, agent.profileId),
     enabled: open && Boolean(agent.profileId),
     staleTime: 5 * 60 * 1000,
   });
@@ -187,23 +172,8 @@ function useOverridesController(
     isLoading: effortsLoading,
     isError: effortsError,
   } = useQuery({
-    queryKey: ['provider-efforts', 'main', providerId ?? 'none'],
-    queryFn: async () => {
-      const res = await fetchFn(`/api/providers/${providerId}/efforts`);
-      if (!res.ok) {
-        return { efforts: [], supportsEffort: false, requiresModelForEffort: false };
-      }
-      const payload = (await res.json().catch(() => null)) as {
-        efforts?: unknown;
-        supportsEffort?: unknown;
-        requiresModelForEffort?: unknown;
-      } | null;
-      return {
-        efforts: parseCatalogOptions(payload?.efforts, providerId!),
-        supportsEffort: payload?.supportsEffort === true,
-        requiresModelForEffort: payload?.requiresModelForEffort === true,
-      };
-    },
+    ...providerEffortQueries.catalog(fetchFn, providerId),
+    select: selectProviderEffortOptions,
     enabled: open && Boolean(providerId),
     staleTime: 5 * 60 * 1000,
   });
@@ -295,11 +265,10 @@ export function AgentOverridesDialog({
   agent,
   isOnline,
   isSaving,
-  fetchProviderConfigsForProfile,
   onSave,
   triggerEl,
 }: AgentOverridesDialogProps) {
-  const controller = useOverridesController(agent, open, isOnline, fetchProviderConfigsForProfile);
+  const controller = useOverridesController(agent, open, isOnline);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {

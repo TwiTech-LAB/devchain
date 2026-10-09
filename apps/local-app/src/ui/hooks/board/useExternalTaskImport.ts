@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { statusQueries } from '@/ui/lib/statuses';
 import type {
   ExternalTaskImportResponse,
   ExternalTaskDetail,
@@ -16,16 +17,7 @@ import {
   type IntegrationPresentationScope,
 } from '@/ui/lib/integration-project-scope';
 import { fetchJsonOrThrow, type FetchFn } from '@/ui/lib/sessions';
-import { fetchStatuses } from '@/ui/pages/board/lib/board-api';
 import { boardCacheKeys } from '@/ui/lib/board-cache';
-
-export interface ExternalImportStatus {
-  id: string;
-  projectId: string;
-  label: string;
-  color: string;
-  position: number;
-}
 
 export interface ExternalTaskImportForm {
   statusId: string;
@@ -101,9 +93,7 @@ export function useExternalTaskImport(
     [],
   );
   const statuses = useQuery({
-    queryKey: ['statuses', scopedProjectId],
-    queryFn: (): Promise<{ items: ExternalImportStatus[] }> =>
-      fetchStatuses(scopedProjectId!, apiFetch),
+    ...statusQueries.list(apiFetch, scopedProjectId),
     enabled: enabled && scopedProjectId !== null,
   });
 

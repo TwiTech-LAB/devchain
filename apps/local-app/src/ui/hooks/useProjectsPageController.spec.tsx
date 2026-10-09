@@ -12,6 +12,7 @@ import type {
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
 import { InMemoryProjectsPageApi } from '../../../test/helpers/in-memory-projects-page-api';
 import { useProjectsPageController } from './useProjectsPageController';
+import { RuntimeProvider, runtimeInfoQueryKey } from './useRuntime';
 
 const mockToast = jest.fn();
 const mockNavigate = jest.fn();
@@ -45,6 +46,12 @@ const project = (id: string, rootPath = `/work/${id}`): ProjectWithStats => ({
   rootPath,
   createdAt: '2025-01-01T00:00:00.000Z',
   updatedAt: '2025-01-01T00:00:00.000Z',
+});
+
+const outdatedProject = (target = '2.0.0', slug = 'starter'): ProjectWithStats => ({
+  ...project('one'),
+  bundledUpgradeAvailable: target,
+  templateMetadata: { slug, source: 'bundled', version: '1.0.0' },
 });
 
 const template = {
@@ -169,9 +176,12 @@ function renderController(api: InMemoryProjectsPageApi, options: { initialEntry?
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
+  queryClient.setQueryData(runtimeInfoQueryKey, { bootId: 'test-boot', version: '1' });
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <MemoryRouter initialEntries={[options.initialEntry ?? '/projects']}>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <RuntimeProvider>{children}</RuntimeProvider>
+      </QueryClientProvider>
     </MemoryRouter>
   );
   return { ...renderHook(() => useProjectsPageController(api), { wrapper }), queryClient };
@@ -181,6 +191,20 @@ async function readyRows(result: ReturnType<typeof renderController>['result']) 
   await waitFor(() => expect(result.current.table.content.kind).toBe('ready'));
   if (result.current.table.content.kind !== 'ready') throw new Error('expected ready projects');
   return result.current.table.content.groups.flatMap((group) => group.rows);
+}
+
+function noticeProjectIds(result: ReturnType<typeof renderController>['result']) {
+  return result.current.table.notice?.items.map((item) => item.projectId);
+}
+
+async function advanceWizard(
+  getController: () => { goNext: () => void; currentIndex: number },
+  steps: number,
+) {
+  for (let index = 1; index < steps; index += 1) {
+    act(() => getController().goNext());
+    await waitFor(() => expect(getController().currentIndex).toBe(index));
+  }
 }
 
 async function submitCreate(
@@ -198,12 +222,7 @@ async function submitCreate(
   act(() => result.current.dialogs.create.source.submit());
   await waitFor(() => expect(result.current.dialogs.create.wizard.isLoading).toBe(false));
   expect(result.current.dialogs.create.wizard.open).toBe(true);
-  for (let index = 1; index < expectedSteps; index += 1) {
-    act(() => result.current.dialogs.create.wizard.controller.goNext());
-    await waitFor(() =>
-      expect(result.current.dialogs.create.wizard.controller.currentIndex).toBe(index),
-    );
-  }
+  await advanceWizard(() => result.current.dialogs.create.wizard.controller, expectedSteps);
   act(() => result.current.dialogs.create.wizard.controller.submit());
 }
 
@@ -689,6 +708,104 @@ describe('useProjectsPageController semantic presentation', () => {
       await waitFor(() => expect(result.current.dialogs.upgrade.wizard.open).toBe(false));
     },
   );
+
+  // The controller with the in-memory API exercises query readiness and wizard invalidation without HTTP.
+  it.each([
+    ['projects', projectsQueryKeys.templatesForUpgrade()],
+    ['templates', projectsQueryKeys.list()],
+  ] as const)('waits for %s before showing the template notice', async (pending, settledKey) => {
+    const outdated = outdatedProject();
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const api = new InMemoryProjectsPageApi({
+      projects: { items: [outdated] },
+      templates: [template],
+      overrides:
+        pending === 'projects'
+          ? { listProjects: gate.then(() => ({ items: [outdated] })) }
+          : { listTemplates: gate.then(() => [template]) },
+    });
+    const { result, queryClient } = renderController(api);
+    await waitFor(() => expect(queryClient.getQueryState(settledKey)?.status).toBe('success'));
+    expect(result.current.table.notice).toBeNull();
+    await act(async () => {
+      finish();
+      await gate;
+    });
+    await waitFor(() => expect(noticeProjectIds(result)).toEqual(['one']));
+  });
+
+  it('keeps the notice independent of search and removes it after the last successful upgrade', async () => {
+    const outdated = outdatedProject();
+    let listed = outdated;
+    const api = new InMemoryProjectsPageApi({
+      upgradePreview: emptyPreview(),
+      importDryRunResult: {
+        dryRun: true,
+        readiness: { ready: true, issues: [] },
+        missingProviders: [],
+        counts: { toImport: {}, toDelete: {} },
+      },
+      overrides: {
+        listProjects: () => ({ items: [listed] }),
+        commitUpgrade: () => {
+          listed = {
+            ...outdated,
+            bundledUpgradeAvailable: null,
+            templateMetadata: { slug: 'starter', source: 'bundled', version: '2.0.0' },
+          };
+          return { success: true, newVersion: '2.0.0' };
+        },
+      },
+    });
+    const { result } = renderController(api);
+    await waitFor(() => expect(noticeProjectIds(result)).toEqual(['one']));
+    act(() => result.current.table.changeSearch('no matches'));
+    expect(await readyRows(result)).toHaveLength(0);
+    expect(noticeProjectIds(result)).toEqual(['one']);
+    act(() => result.current.table.notice!.items[0].update!());
+    await waitFor(() => expect(result.current.dialogs.upgrade.wizard.isLoading).toBe(false));
+    expect(result.current.dialogs.upgrade.wizard.open).toBe(true);
+    expect(api.calls.loadUpgradePreview).toEqual([['one', '2.0.0']]);
+    await advanceWizard(
+      () => result.current.dialogs.upgrade.wizard.controller,
+      result.current.dialogs.upgrade.wizard.controller.totalSteps,
+    );
+    await waitFor(() =>
+      expect(result.current.dialogs.upgrade.wizard.controller.canProceed).toBe(true),
+    );
+    act(() => result.current.dialogs.upgrade.wizard.controller.submit());
+    await waitFor(() =>
+      expect(result.current.dialogs.upgrade.result?.result).toEqual({
+        success: true,
+        newVersion: '2.0.0',
+      }),
+    );
+    await waitFor(() => expect(result.current.table.notice).toBeNull());
+    expect(api.calls.commitUpgrade).toEqual([
+      ['one', expect.objectContaining({ targetVersion: '2.0.0' })],
+    ]);
+  });
+
+  // The runtime cache is the controller's real boot signal; useRuntime.spec owns socket-to-runtime.
+  // Notice stores live for the page (module) lifetime, so this test dismisses its own slug only.
+  it('refetches upgrade targets on a new boot so a dismissed notice returns for the next target', async () => {
+    let target = '2.0.0';
+    const api = new InMemoryProjectsPageApi({
+      overrides: { listProjects: () => ({ items: [outdatedProject(target, 'restart-starter')] }) },
+    });
+    const { result, queryClient } = renderController(api);
+    await waitFor(() => expect(result.current.table.notice?.items[0].targetVersion).toBe('2.0.0'));
+    act(() => result.current.table.notice!.dismissUntilNewItems());
+    expect(result.current.table.notice).toBeNull();
+    target = '3.0.0';
+    act(() => {
+      queryClient.setQueryData(runtimeInfoQueryKey, { bootId: 'next-boot', version: '1' });
+    });
+    await waitFor(() => expect(result.current.table.notice?.items[0].targetVersion).toBe('3.0.0'));
+  });
 
   it('honors an HTTP-success path result whose exists field is false', async () => {
     const api = new InMemoryProjectsPageApi({

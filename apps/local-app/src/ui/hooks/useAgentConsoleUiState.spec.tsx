@@ -8,8 +8,24 @@ import type { AgentOrGuest } from './useChatQueries';
 // Test layer: hook-level React Testing Library coverage is the cheapest reliable layer for URL selection and query-state effects; no rendered page or browser is needed.
 
 const AGENTS: AgentOrGuest[] = [
-  { id: 'agent-1', name: 'Alpha', type: 'agent', isProjectOwner: false },
-  { id: 'agent-2', name: 'Zulu', type: 'agent', isProjectOwner: true },
+  {
+    profileId: null,
+    modelOverride: null,
+    effortOverride: null,
+    id: 'agent-1',
+    name: 'Alpha',
+    type: 'agent',
+    isProjectOwner: false,
+  },
+  {
+    profileId: null,
+    modelOverride: null,
+    effortOverride: null,
+    id: 'agent-2',
+    name: 'Zulu',
+    type: 'agent',
+    isProjectOwner: true,
+  },
 ];
 const PRESENCE: AgentPresenceMap = {
   'agent-1': { online: true, sessionId: 'session-1' },
@@ -68,9 +84,33 @@ describe('useAgentConsoleUiState', () => {
 
   it('uses deterministic name then ID ordering when no Project Owner exists', async () => {
     const agents: AgentOrGuest[] = [
-      { id: 'agent-z', name: 'Zulu', type: 'agent', isProjectOwner: false },
-      { id: 'agent-2', name: 'Alpha', type: 'agent', isProjectOwner: false },
-      { id: 'agent-1', name: 'Alpha', type: 'agent', isProjectOwner: false },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-z',
+        name: 'Zulu',
+        type: 'agent',
+        isProjectOwner: false,
+      },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-2',
+        name: 'Alpha',
+        type: 'agent',
+        isProjectOwner: false,
+      },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-1',
+        name: 'Alpha',
+        type: 'agent',
+        isProjectOwner: false,
+      },
     ];
     const { result } = renderHook(() => useSubject({ agents }), {
       wrapper: buildWrapper('/chat'),
@@ -82,8 +122,24 @@ describe('useAgentConsoleUiState', () => {
 
   it('revalidates the URL selection when switching projects', async () => {
     const nextProjectAgents: AgentOrGuest[] = [
-      { id: 'agent-next', name: 'Next', type: 'agent', isProjectOwner: false },
-      { id: 'agent-other', name: 'Other', type: 'agent', isProjectOwner: false },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-next',
+        name: 'Next',
+        type: 'agent',
+        isProjectOwner: false,
+      },
+      {
+        profileId: null,
+        modelOverride: null,
+        effortOverride: null,
+        id: 'agent-other',
+        name: 'Other',
+        type: 'agent',
+        isProjectOwner: false,
+      },
     ];
     const { result, rerender } = renderHook(
       ({ projectId, agents }: { projectId: string; agents: AgentOrGuest[] }) =>

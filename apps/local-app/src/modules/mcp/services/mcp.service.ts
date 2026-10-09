@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ZodError } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type PromptStorage } from '../../storage/interfaces/storage.interface';
 import type { McpResponse } from '../dtos/mcp.dto';
 import { suggestNestedPath } from '../utils/param-suggestion';
 import { McpToolBindingRegistry } from './mcp-tool-binding.registry';
@@ -16,7 +16,7 @@ export class McpService {
   private readonly resourceResolver: ResourceResolver;
 
   constructor(
-    @Inject(STORAGE_SERVICE) storage: StorageService,
+    @Inject(STORAGE_SERVICE) storage: PromptStorage,
     private readonly bindingRegistry: McpToolBindingRegistry,
   ) {
     logger.info('McpService initialized');

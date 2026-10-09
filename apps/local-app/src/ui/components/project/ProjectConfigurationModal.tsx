@@ -1,6 +1,13 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import { projectPresetQueries } from '@/ui/lib/project-presets';
+import { profileQueries, type ProfileListItem } from '@/ui/lib/profiles';
+import {
+  fetchProviderConfigsByProfiles,
+  type ProfileProviderConfig,
+} from '@/ui/lib/provider-configs';
+import { agentQueries, agentQueryKeys, type Agent } from '@/ui/lib/agents';
 import {
   Dialog,
   DialogContent,
@@ -39,43 +46,12 @@ import { Label } from '@/ui/components/ui/label';
 import { Loader2, AlertTriangle, Settings, Info, AlertCircle } from 'lucide-react';
 import { fetchAgentPresence, type AgentPresenceMap } from '@/ui/lib/sessions';
 import { cn } from '@/ui/lib/utils';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
 import { validatePresetAvailability } from '@/ui/lib/preset-validation';
 import type { Preset } from '@/ui/lib/preset-types';
 import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import { HOME_BACKEND, apiFetch as apiFetchTransport } from '@/ui/lib/api-transport';
 import type { FetchFn } from '@/ui/lib/api-transport';
-
-interface Agent {
-  id: string;
-  projectId: string;
-  profileId: string;
-  providerConfigId?: string | null;
-  name: string;
-  description?: string | null;
-  profile?: AgentProfile;
-  providerConfig?: ProviderConfig;
-}
-
-interface AgentProfile {
-  id: string;
-  name: string;
-  providerId: string;
-  familySlug?: string | null;
-  provider?: {
-    id: string;
-    name: string;
-  };
-}
-
-interface ProviderConfig {
-  id: string;
-  profileId: string;
-  providerId: string;
-  name: string;
-  options: string | null;
-  env: Record<string, string> | null;
-}
 
 interface ProjectConfigurationModalProps {
   projectId: string;
@@ -83,38 +59,9 @@ interface ProjectConfigurationModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
-async function fetchAgents(fetchFn: FetchFn, projectId: string) {
-  const res = await fetchFn(`/api/agents?projectId=${projectId}`);
-  if (!res.ok) throw new Error('Failed to fetch agents');
-  return res.json();
-}
-
-async function fetchProfiles(fetchFn: FetchFn, projectId: string) {
-  const res = await fetchFn(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch profiles');
-  return res.json();
-}
-
 async function fetchProviders(fetchFn: FetchFn) {
   const res = await fetchFn('/api/providers');
   if (!res.ok) throw new Error('Failed to fetch providers');
-  return res.json();
-}
-
-async function fetchProviderConfigs(
-  fetchFn: FetchFn,
-  profileId: string,
-): Promise<ProviderConfig[]> {
-  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
-  if (!res.ok) throw new Error('Failed to fetch provider configs');
-  return res.json();
-}
-
-async function fetchPresets(projectId: string): Promise<{ presets: Preset[] }> {
-  const res = await apiFetchTransport(`/api/projects/${projectId}/presets`, undefined, {
-    backend: HOME_BACKEND,
-  });
-  if (!res.ok) throw new Error('Failed to fetch presets');
   return res.json();
 }
 
@@ -141,6 +88,7 @@ export function ProjectConfigurationModal({
   onOpenChange,
 }: ProjectConfigurationModalProps) {
   const fetchFn = useFetchFactory();
+  const homeFetch = useHomeFetch();
   const { toast } = useToast();
   const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
     useActiveSessionConfirm();
@@ -153,22 +101,20 @@ export function ProjectConfigurationModal({
   const [presetToApply, setPresetToApply] = useState<string>('');
 
   // Store fetched configs per profileId
-  const [configsByProfile, setConfigsByProfile] = useState<Map<string, ProviderConfig[]>>(
+  const [configsByProfile, setConfigsByProfile] = useState<Map<string, ProfileProviderConfig[]>>(
     new Map(),
   );
   const [configsLoading, setConfigsLoading] = useState(false);
 
   // Fetch agents
   const { data: agentsData, isLoading: agentsLoading } = useQuery({
-    queryKey: ['agents', projectId],
-    queryFn: () => fetchAgents(fetchFn, projectId),
+    ...agentQueries.list(fetchFn, projectId),
     enabled: open && !!projectId,
   });
 
   // Fetch profiles
   const { data: profilesData, isLoading: profilesLoading } = useQuery({
-    queryKey: ['profiles', projectId],
-    queryFn: () => fetchProfiles(fetchFn, projectId),
+    ...profileQueries.list(fetchFn, projectId),
     enabled: open && !!projectId,
   });
 
@@ -180,9 +126,8 @@ export function ProjectConfigurationModal({
   });
 
   // Fetch presets
-  const { data: presetsData, isLoading: presetsLoading } = useQuery<{ presets: Preset[] }>({
-    queryKey: ['project-presets', projectId],
-    queryFn: () => fetchPresets(projectId),
+  const { data: presetsData, isLoading: presetsLoading } = useQuery({
+    ...projectPresetQueries.list(homeFetch, projectId),
     enabled: open && !!projectId,
   });
 
@@ -203,23 +148,8 @@ export function ProjectConfigurationModal({
     if (profileIds.size === 0) return;
 
     setConfigsLoading(true);
-    Promise.all(
-      Array.from(profileIds).map(async (profileId) => {
-        try {
-          const configs = await fetchProviderConfigs(fetchFn, profileId);
-          return { profileId, configs };
-        } catch {
-          return { profileId, configs: [] };
-        }
-      }),
-    )
-      .then((results) => {
-        const newMap = new Map<string, ProviderConfig[]>();
-        results.forEach(({ profileId, configs }) => {
-          newMap.set(profileId, configs);
-        });
-        setConfigsByProfile(newMap);
-      })
+    fetchProviderConfigsByProfiles(fetchFn, Array.from(profileIds))
+      .then(setConfigsByProfile)
       .finally(() => setConfigsLoading(false));
   }, [open, agentsData, fetchFn]);
 
@@ -233,12 +163,12 @@ export function ProjectConfigurationModal({
 
   // Build profiles map
   const profilesById = useMemo(() => {
-    const profiles: AgentProfile[] = profilesData?.items || [];
+    const profiles: ProfileListItem[] = profilesData?.items || [];
     return new Map(profiles.map((p) => [p.id, p]));
   }, [profilesData]);
 
   // Get available configs for an agent
-  const getAvailableConfigs = (agent: Agent): ProviderConfig[] => {
+  const getAvailableConfigs = (agent: Agent): ProfileProviderConfig[] => {
     return configsByProfile.get(agent.profileId) || [];
   };
 
@@ -248,12 +178,12 @@ export function ProjectConfigurationModal({
   };
 
   // Get current profile for an agent
-  const getCurrentProfile = (agent: Agent): AgentProfile | undefined => {
+  const getCurrentProfile = (agent: Agent): ProfileListItem | undefined => {
     return profilesById.get(agent.profileId);
   };
 
   // Get current config object
-  const getCurrentConfig = (agent: Agent): ProviderConfig | undefined => {
+  const getCurrentConfig = (agent: Agent): ProfileProviderConfig | undefined => {
     if (!agent.providerConfigId) return undefined;
     const configs = getAvailableConfigs(agent);
     return configs.find((c) => c.id === agent.providerConfigId);
@@ -307,7 +237,7 @@ export function ProjectConfigurationModal({
       });
 
       // Refresh agents and presence
-      await queryClient.invalidateQueries({ queryKey: ['agents', projectId] });
+      await queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) });
       fetchAgentPresence(projectId, apiFetch).then(setPresence).catch(console.error);
 
       // Reset selection

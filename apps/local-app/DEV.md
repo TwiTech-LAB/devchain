@@ -1,6 +1,6 @@
 # Local App Development Guide
 
-This runbook covers Local App development modes and app-specific diagnostics. Repository-wide commands and architectural contracts live in root `docs/`.
+This runbook covers Local App development modes and app-specific diagnostics. Repository-wide setup and commands live in the root [Contributing](../../CONTRIBUTING.md) guide.
 
 ## Runtime modes
 
@@ -26,7 +26,7 @@ Nest compiles the backend into `dist/`; Vite writes the SPA to `dist/ui`; templa
 
 ## Loopback security
 
-The default `HOST` is `127.0.0.1`. Keep it for single-machine use. Binding to `0.0.0.0`, `::`, or a LAN address exposes the API, MCP, WebSocket, and terminal surfaces; follow [root Setup](../../docs/setup.md#remote-access) and [Risks](../../docs/risks.md) before doing so.
+The default `HOST` is `127.0.0.1`. Keep it for single-machine use. Binding to `0.0.0.0`, `::`, or a LAN address exposes the API, MCP, WebSocket, and terminal surfaces to everyone who can reach that address. A hand-started instance has no caller authentication, so prefer an SSH tunnel or a VPN.
 
 ## Commands
 
@@ -43,7 +43,7 @@ The default `HOST` is `127.0.0.1`. Keep it for single-machine use. Binding to `0
 | Dependency cycles | `pnpm --filter local-app madge:check` |
 | Migration journal | `pnpm --filter local-app check:journal` |
 
-The manifest is canonical for the complete command set. Use [root Testing](../../docs/testing.md) for suite selection and traps.
+The manifest is canonical for the complete command set.
 
 ## Configuration
 
@@ -59,6 +59,5 @@ The manifest is canonical for the complete command set. Use [root Testing](../..
 ## Read next
 
 - [Local App README](README.md)
-- [Root Operations](../../docs/operations.md)
-- [Root Architecture](../../docs/architecture.md)
+- [Contributing](../../CONTRIBUTING.md)
 - [Migration scripts](scripts/README.md)

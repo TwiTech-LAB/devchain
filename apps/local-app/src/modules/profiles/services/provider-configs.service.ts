@@ -1,7 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 import {
   AgentProfileStorage,
   AgentStorage,
@@ -24,7 +23,6 @@ export class ProviderConfigsService {
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: ProviderConfigsStorage,
     private readonly settings: SettingsService,
-    private readonly admission: ProjectWriteAdmissionService,
   ) {}
 
   async updateProviderConfig(
@@ -32,7 +30,6 @@ export class ProviderConfigsService {
     data: UpdateProfileProviderConfig,
   ): Promise<ProfileProviderConfig> {
     const oldConfig = await this.storage.getProfileProviderConfig(id);
-    await this.assertProfileWritable(oldConfig.profileId);
     const updatedConfig = await this.storage.updateProfileProviderConfig(id, data);
 
     if (oldConfig.name.trim() !== updatedConfig.name.trim()) {
@@ -43,13 +40,9 @@ export class ProviderConfigsService {
   }
 
   async deleteProviderConfig(id: string): Promise<void> {
-    const config = await this.storage.getProfileProviderConfig(id);
-    await this.assertProfileWritable(config.profileId);
+    // The delete is a no-op for an unknown id; this read answers 404.
+    await this.storage.getProfileProviderConfig(id);
     await this.storage.deleteProfileProviderConfig(id);
-  }
-
-  private async assertProfileWritable(profileId: string): Promise<void> {
-    this.admission.assertWritable((await this.storage.getAgentProfile(profileId)).projectId);
   }
 
   private async cascadeProviderConfigRename(

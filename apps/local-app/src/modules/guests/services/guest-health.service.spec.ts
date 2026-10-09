@@ -4,12 +4,14 @@ import { StorageService } from '../../storage/interfaces/storage.interface';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import { Guest } from '../../storage/models/domain.models';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 // Mock timers
 jest.useFakeTimers();
 
 describe('GuestHealthService', () => {
   let healthService: GuestHealthService;
+  let gate: ProjectWriteGate;
   let mockStorage: jest.Mocked<Pick<StorageService, 'listAllGuests'>>;
   let mockTerminalIO: jest.Mocked<Pick<TerminalIOService, 'sessionExists'>>;
   let mockEventsService: jest.Mocked<Pick<EventsService, 'publish'>>;
@@ -32,6 +34,7 @@ describe('GuestHealthService', () => {
   };
 
   beforeEach(() => {
+    gate = new ProjectWriteGate();
     mockStorage = {
       listAllGuests: jest.fn(),
     };
@@ -56,12 +59,78 @@ describe('GuestHealthService', () => {
       mockTerminalIO as unknown as TerminalIOService,
       mockEventsService as unknown as EventsService,
       mockGuestsService as unknown as GuestsService,
+      gate,
     );
   });
 
   afterEach(() => {
     jest.clearAllTimers();
     jest.clearAllMocks();
+  });
+
+  async function markRemoteOwned(): Promise<void> {
+    gate.bindStorage({
+      listRemoteProjectBindings: jest
+        .fn()
+        .mockResolvedValue([
+          { projectId: mockGuest.projectId, remoteId: 'remote-1', state: 'remote' },
+        ]),
+      getRemote: jest.fn().mockResolvedValue({ id: 'remote-1', name: 'VM' }),
+      listFrozenProjects: jest.fn().mockResolvedValue([]),
+    });
+    await gate.onModuleInit();
+    expect(gate.getRemoteOwner(mockGuest.projectId)?.state).toBe('remote');
+  }
+
+  it('defers remote-owned startup guests and probes them once the project is writable', async () => {
+    await markRemoteOwned();
+    mockStorage.listAllGuests.mockResolvedValue([mockGuest]);
+    mockTerminalIO.sessionExists.mockResolvedValue(false);
+
+    await healthService.onModuleInit();
+    await jest.advanceTimersByTimeAsync(30000);
+
+    expect(mockTerminalIO.sessionExists).not.toHaveBeenCalled();
+    expect(mockGuestsService.updateGuestLastSeen).not.toHaveBeenCalled();
+    expect(mockGuestsService.deleteGuest).not.toHaveBeenCalled();
+    expect(mockEventsService.publish).not.toHaveBeenCalled();
+
+    gate.bindStorage({
+      listRemoteProjectBindings: jest.fn().mockResolvedValue([]),
+      getRemote: jest.fn(),
+      listFrozenProjects: jest.fn().mockResolvedValue([]),
+    });
+    await gate.refresh();
+    await jest.advanceTimersByTimeAsync(30000);
+
+    expect(mockTerminalIO.sessionExists).toHaveBeenCalledWith({ name: mockGuest.tmuxSessionId });
+    expect(mockGuestsService.deleteGuest).toHaveBeenCalledWith(mockGuest.id);
+  });
+
+  it('skips an interval after its guest project becomes remote-owned', async () => {
+    healthService.startMonitoring(mockGuest);
+    await markRemoteOwned();
+
+    await jest.advanceTimersByTimeAsync(30000);
+
+    expect(mockTerminalIO.sessionExists).not.toHaveBeenCalled();
+    expect(mockGuestsService.updateGuestLastSeen).not.toHaveBeenCalled();
+    expect(mockGuestsService.deleteGuest).not.toHaveBeenCalled();
+    expect(mockEventsService.publish).not.toHaveBeenCalled();
+  });
+
+  it('skips death handling when ownership changes during the terminal probe', async () => {
+    healthService.startMonitoring(mockGuest);
+    mockTerminalIO.sessionExists.mockImplementationOnce(async () => {
+      await markRemoteOwned();
+      return false;
+    });
+
+    await jest.advanceTimersByTimeAsync(30000);
+
+    expect(mockTerminalIO.sessionExists).toHaveBeenCalledTimes(1);
+    expect(mockGuestsService.deleteGuest).not.toHaveBeenCalled();
+    expect(mockEventsService.publish).not.toHaveBeenCalled();
   });
 
   describe('onModuleInit', () => {

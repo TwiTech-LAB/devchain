@@ -1,10 +1,9 @@
 import { Module } from '@nestjs/common';
 import { StatusesController } from './controllers/statuses.controller';
 import { StorageModule } from '../storage/storage.module';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
-  imports: [StorageModule, ProjectWriteAdmissionModule],
+  imports: [StorageModule],
   controllers: [StatusesController],
 })
 export class StatusesModule {}

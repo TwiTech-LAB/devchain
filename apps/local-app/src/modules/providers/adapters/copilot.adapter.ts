@@ -1,5 +1,6 @@
 import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
+import { COPILOT_TRAITS } from './copilot.traits';
 import type {
   ProviderAdapter,
   AddMcpServerOptions,
@@ -69,17 +70,12 @@ export class CopilotAdapter
     HookCapability
 {
   readonly providerName = 'copilot';
+  readonly traits = COPILOT_TRAITS;
   readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
 
   // Effort (`--effort=<value>`, alias `--reasoning-effort`). Static seed/endpoint
   // metadata — model, effort, and context tier all flow through profileOptionArgs.
   readonly defaultEffortValues = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-
-  // Copilot = ProjectProvisioningCapability adopter #3. Spike S1 proved the
-  // untrusted-folder `-i` TUI HARD-BLOCKS on a trust modal that NO launch flag
-  // bypasses, so the project path must be pre-written into copilot's
-  // `trustedFolders[]` before launch (mirrors gemini/agy trust provisioning).
-  readonly requiresProjectProvisioning = true as const;
 
   // R4 (two sources, two mechanisms): a relocated store (COPILOT_HOME) would pass
   // launch then fail read-time transcript-path validation (PROVIDER_ROOTS is
@@ -121,15 +117,6 @@ export class CopilotAdapter
   // precision feature, NOT discovery — Phase-1 already binds the transcript via
   // `--session-id`. The hook listener is therefore an idempotent confirmation.
   readonly hooksEnabled = true as const;
-
-  // The internal devchain event the relay publishes to. We deliberately REUSE
-  // Claude's `claude.hooks.session.started` (event-name decision: option b) so the
-  // existing `0005_seed_renew_instructions_subscriber` + event-fields catalog fire
-  // for Copilot unchanged (the seeder's `source: resume|clear|compact` matcher
-  // already lights up on Copilot `resume` and no-ops on `new` — spike P3-S1).
-  // This is distinct from the provider HOOK KEYS the relay registers
-  // (`SessionStart`/`Stop`, PascalCase per the spike — owned by the P3 config writer).
-  readonly hooksEventName = 'claude.hooks.session.started';
 
   // Copilot's `sessionStart` payload carries NO transcriptPath (the path is
   // derived deterministically by the reader); only `agentStop` carries it. The
@@ -209,11 +196,6 @@ export class CopilotAdapter
     return ['mcp', 'remove', alias];
   }
 
-  binaryCheck(alias: string): string[] {
-    // Copilot exposes `mcp get <name>` (no `mcp check`); used to probe a server.
-    return ['mcp', 'get', alias];
-  }
-
   parseListOutput(stdout: string, _stderr?: string): McpServerEntry[] {
     // `copilot mcp list --json` shape:
     // { "mcpServers": { "<alias>": { "type": "http", "url": "…", "source": … } } }
@@ -244,7 +226,8 @@ export class CopilotAdapter
    * full-screen TUI launches without blocking on the trust modal (S1, Branch B).
    * Delegates to the dedicated `CopilotTrustedFoldersService` (atomic, serialized,
    * malformed-safe). Never throws: a trust hiccup is surfaced as a provisioning
-   * warning so it doesn't fail the whole project lifecycle op.
+   * warning so it doesn't fail the whole project lifecycle op. Trust prompts
+   * ignore launch permission flags, so the folder must already be trusted.
    */
   async provisionProjectPath(projectPath: string): Promise<ProvisioningResult> {
     try {

@@ -1,27 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
 import type { DockerPresence } from '@/modules/remotes/docker/docker-plan.dto';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
-import { readErrorMessage } from '@/ui/hooks/useRemotes';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
+import { dockerPresenceQueryKey } from './lib/remote-vm-query-keys';
 
 /** What the Connect dialog knows about a project's Docker work. */
 export type DockerPresenceState = DockerPresence['state'] | 'loading';
 
 /** The project's Docker work: loading while any read runs, unknown when the read fails. */
 export function useDockerPresence(projectId: string | null): DockerPresenceState {
+  const api = useRemoteVmApi();
   const query = useQuery(
     {
-      queryKey: [HOME_BACKEND, 'docker-presence', projectId],
-      queryFn: async ({ signal }): Promise<DockerPresence> => {
-        const response = await apiFetch(
-          `/api/projects/${encodeURIComponent(projectId!)}/docker/presence`,
-          { signal },
-          { backend: HOME_BACKEND },
-        );
-        if (!response.ok)
-          throw new Error(await readErrorMessage(response, 'Could not read Docker presence.'));
-        return (await response.json()) as DockerPresence;
-      },
+      queryKey: dockerPresenceQueryKey(projectId),
+      queryFn: ({ signal }) => api.readDockerPresence(projectId!, signal),
       enabled: projectId !== null,
       retry: false,
       staleTime: 0,

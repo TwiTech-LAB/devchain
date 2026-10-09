@@ -19,7 +19,7 @@ function createChatContext(runtime: McpBindingRuntime): ChatToolContext {
     projectCommunicationService:
       runtime.projectCommunicationService ??
       createNullAdapter<ProjectCommunicationService>('ProjectCommunicationService'),
-    projectWriteAdmission: runtime.projectWriteAdmission,
+    projectWriteGate: runtime.projectWriteGate,
     resolveSessionContext: runtime.resolveSessionContext,
   };
 }

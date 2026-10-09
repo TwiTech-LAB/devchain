@@ -23,6 +23,12 @@ export interface RegistryCatalogEntry {
 
 export const nonRegistryBroadcastCatalog: RegistryCatalogEntry[] = [
   // ── Cloud ──
+  {
+    topicPattern: 'cloud',
+    type: 'e2ee_unsigned_device_added',
+    kind: 'custom-handler',
+    owner: 'useUnsignedDeviceNotice',
+  },
   { topicPattern: 'cloud', type: 'connected', kind: 'invalidate', owner: 'useCloudConnection' },
   { topicPattern: 'cloud', type: 'disconnected', kind: 'invalidate', owner: 'useCloudConnection' },
   {

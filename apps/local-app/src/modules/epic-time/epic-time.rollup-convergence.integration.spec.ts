@@ -3,8 +3,8 @@ import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { ValidationError } from '../../common/errors/error-types';
 import { EventsService } from '../events/services/events.service';
-import type { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../remotes/admission/testing/project-write-admission.stub';
+import type { ProjectWriteGate } from '../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../storage/write-gate/testing/project-write-gate.stub';
 import { EpicTimeService } from './services/epic-time.service';
 import { EpicTimeStore } from './services/epic-time.store';
 import { LocalStorageService } from '../storage/local/local-storage.service';
@@ -32,7 +32,7 @@ describe('related-time rollup convergence', () => {
       // The convergence lane never assigns buffers; a fail-loud publish stub
       // keeps any accidental event publication visible.
       { publish: async () => null } as unknown as EventsService,
-      createProjectWriteAdmissionStub() as unknown as ProjectWriteAdmissionService,
+      createProjectWriteGateStub() as unknown as ProjectWriteGate,
     );
     project = await storage.createProject({
       name: 'Convergence',

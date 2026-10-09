@@ -9,7 +9,6 @@ import type {
   CreateSubscriber,
   UpdateSubscriber,
 } from '../../storage/models/domain.models';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 /**
  * SubscribersService
@@ -21,10 +20,7 @@ import { ProjectWriteAdmissionService } from '../../remotes/admission/project-wr
 export class SubscribersService {
   private readonly logger = createLogger('SubscribersService');
 
-  constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: SubscriberStorage,
-    private readonly admission: ProjectWriteAdmissionService,
-  ) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: SubscriberStorage) {}
 
   /**
    * List all subscribers for a project.
@@ -61,7 +57,6 @@ export class SubscribersService {
    */
   async createSubscriber(data: CreateSubscriber): Promise<Subscriber> {
     this.logger.debug({ name: data.name, projectId: data.projectId }, 'Creating subscriber');
-    this.admission.assertWritable(data.projectId);
     const subscriber = await this.storage.createSubscriber(data);
     this.logger.info({ id: subscriber.id, name: subscriber.name }, 'Subscriber created');
     return subscriber;
@@ -78,8 +73,6 @@ export class SubscribersService {
   async updateSubscriber(id: string, data: UpdateSubscriber): Promise<Subscriber> {
     this.logger.debug({ id }, 'Updating subscriber');
 
-    this.admission.assertWritable((await this.getSubscriber(id)).projectId);
-
     const subscriber = await this.storage.updateSubscriber(id, data);
     this.logger.info({ id: subscriber.id, name: subscriber.name }, 'Subscriber updated');
     return subscriber;
@@ -95,7 +88,6 @@ export class SubscribersService {
     this.logger.debug({ id }, 'Deleting subscriber');
 
     const subscriber = await this.getSubscriber(id);
-    this.admission.assertWritable(subscriber.projectId);
 
     await this.storage.deleteSubscriber(id);
     this.logger.info({ id, name: subscriber.name }, 'Subscriber deleted');

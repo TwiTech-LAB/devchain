@@ -37,7 +37,7 @@ describe('SessionTerminalRuntimeService', () => {
   let service: SessionTerminalRuntimeService;
   let providerAdapterFactory: { getAdapter: jest.Mock };
   let runtimeContextCapture: { clear: jest.Mock };
-  let claudeLaunchSettings: { cleanupSessionSync: jest.Mock };
+  let claudeLaunchSettings: { cleanupSessionSync: jest.Mock; reconcileStartup: jest.Mock };
   let codexPluginProfiles: { cleanupSession: jest.Mock; reconcileStartup: jest.Mock };
 
   beforeEach(async () => {
@@ -58,7 +58,7 @@ describe('SessionTerminalRuntimeService', () => {
 
     providerAdapterFactory = { getAdapter: jest.fn() };
     runtimeContextCapture = { clear: jest.fn() };
-    claudeLaunchSettings = { cleanupSessionSync: jest.fn() };
+    claudeLaunchSettings = { cleanupSessionSync: jest.fn(), reconcileStartup: jest.fn() };
     codexPluginProfiles = {
       cleanupSession: jest.fn().mockResolvedValue(undefined),
       reconcileStartup: jest.fn().mockResolvedValue(undefined),
@@ -206,6 +206,82 @@ describe('SessionTerminalRuntimeService', () => {
     expect(Object.isFrozen(catalog[0])).toBe(true);
   });
 
+  describe('releaseProviderArtifacts', () => {
+    // Unit coverage observes owner callbacks at the artifact boundary without tmux or filesystem IO.
+    it('clears capture and runs synchronous cleanup before starting asynchronous cleanup, then awaits it', async () => {
+      const order: string[] = [];
+      let finishCodexCleanup!: () => void;
+      runtimeContextCapture.clear.mockImplementation(() => order.push('capture'));
+      claudeLaunchSettings.cleanupSessionSync.mockImplementation(() => order.push('claude-sync'));
+      codexPluginProfiles.cleanupSession.mockImplementation(() => {
+        order.push('codex-async');
+        return new Promise<void>((resolve) => {
+          finishCodexCleanup = () => {
+            order.push('codex-settled');
+            resolve();
+          };
+        });
+      });
+
+      const released = service.releaseProviderArtifacts('release');
+      expect(order).toEqual(['capture', 'claude-sync', 'codex-async']);
+
+      finishCodexCleanup();
+      await released;
+
+      expect(order).toEqual(['capture', 'claude-sync', 'codex-async', 'codex-settled']);
+    });
+
+    // Unit coverage injects owner failures and checks the surviving owner plus the public warning.
+    it.each([
+      [
+        'synchronous',
+        'CLAUDE_SETTINGS_CLEANUP_FAILED',
+        'Failed to clean Claude launch settings after session termination',
+      ],
+      [
+        'asynchronous',
+        'CODEX_PROFILE_CLEANUP_FAILED',
+        'Failed to clean Codex profile lifecycle after session termination',
+      ],
+    ] as const)(
+      'continues cleanup after a %s owner failure without exposing error details',
+      async (phase, errorCode, message) => {
+        const cleanupError = new Error('/private/provider/artifact');
+        if (phase === 'synchronous') {
+          claudeLaunchSettings.cleanupSessionSync.mockImplementation(() => {
+            throw cleanupError;
+          });
+        } else {
+          codexPluginProfiles.cleanupSession.mockRejectedValue(cleanupError);
+        }
+
+        await service.releaseProviderArtifacts('owner-failure');
+
+        expect(claudeLaunchSettings.cleanupSessionSync).toHaveBeenCalledWith('owner-failure');
+        expect(codexPluginProfiles.cleanupSession).toHaveBeenCalledWith('owner-failure');
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          { sessionId: 'owner-failure', errorCode },
+          message,
+        );
+        expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain(cleanupError.message);
+      },
+    );
+  });
+
+  // Unit coverage is sufficient for the startup contract: each owner receives the same proven-dead set.
+  it('reconciles all artifact owners at startup in list order', async () => {
+    const nonLiveSessionIds = new Set(['dead']);
+
+    await service.reconcileProviderStartup(nonLiveSessionIds);
+
+    expect(claudeLaunchSettings.reconcileStartup).toHaveBeenCalledWith(nonLiveSessionIds);
+    expect(codexPluginProfiles.reconcileStartup).toHaveBeenCalledWith(nonLiveSessionIds);
+    expect(claudeLaunchSettings.reconcileStartup.mock.invocationCallOrder[0]).toBeLessThan(
+      codexPluginProfiles.reconcileStartup.mock.invocationCallOrder[0],
+    );
+  });
+
   describe('retireConfirmedLoss', () => {
     it('cleans in order before a guarded failed update using one timestamp', () => {
       jest.useFakeTimers().setSystemTime(new Date('2026-08-11T10:30:00.123Z'));
@@ -268,8 +344,8 @@ describe('SessionTerminalRuntimeService', () => {
       await Promise.resolve();
 
       expect(mockLogger.warn).toHaveBeenCalledWith(
-        { error: cleanupError, sessionId: 'async-cleanup' },
-        'Failed to clean Codex profile lifecycle after tmux loss',
+        { sessionId: 'async-cleanup', errorCode: 'CODEX_PROFILE_CLEANUP_FAILED' },
+        'Failed to clean Codex profile lifecycle after session termination',
       );
     });
   });

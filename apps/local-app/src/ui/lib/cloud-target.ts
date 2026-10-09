@@ -6,6 +6,7 @@ import { HOME_BACKEND, apiFetch, type BackendId } from './api-transport';
  * are different windows that must agree on where the callback hands its tokens.
  */
 export const CLOUD_TARGET_STORAGE_KEY = 'devchain.cloud.target';
+export const CLOUD_TARGET_CHANGED_EVENT = 'devchain:cloud-target:changed';
 
 export interface PersistedCloudTarget {
   backend: BackendId;
@@ -35,6 +36,10 @@ export function persistCloudTarget(target: PersistedCloudTarget): void {
     window.localStorage.setItem(CLOUD_TARGET_STORAGE_KEY, JSON.stringify(target));
   } catch {
     // Storage may be unavailable; the in-memory selection still applies this session.
+  }
+  // Account may already be mounted when a notice selects this PC.
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(CLOUD_TARGET_CHANGED_EVENT, { detail: target }));
   }
 }
 

@@ -157,6 +157,11 @@ try {
   execFileSync("tar", ["-xzf", archive, "-C", isolated]);
 
   const packageRoot = join(isolated, "package");
+  const runtimeEntry = join(packageRoot, "dist", "server", "main.js");
+  assert.ok(
+    existsSync(runtimeEntry),
+    "packed CLI is missing dist/server/main.js; check the Local App build output layout",
+  );
   verifyHostInstall(packageRoot);
 
   // An npm prefix such as ~/src/npm-global must not stop the packed server from
@@ -222,7 +227,6 @@ try {
     "packed CLI requires packages missing from root package.json dependencies",
   );
 
-  const runtimeEntry = join(packageRoot, "dist", "server", "main.js");
   const check = `
     const assert = require('node:assert/strict');
     const { createRequire } = require('node:module');

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { providerTraits } from '../../providers/adapters/provider-traits';
 
 interface HumanPromptStateBase {
   readonly generation: number;
@@ -129,12 +130,12 @@ export class HumanPromptStateService {
       tracking.lastEscapeGeneration === current.generation &&
       tracking.lastEscapeAt !== null &&
       now - tracking.lastEscapeAt <= DOUBLE_ESCAPE_CLEAR_WINDOW_MS;
-    const isCodexClear = tmuxKey === 'C-c' && providerName?.toLowerCase() === 'codex';
+    const isProviderClear = providerTraits(providerName).draftClearKeys.includes(tmuxKey);
 
     if (
       !tracking.inputWritePending &&
       (isDoubleEscape ||
-        isCodexClear ||
+        isProviderClear ||
         (tmuxKey === 'BSpace' && tracking.exactCharacterCount === 1))
     ) {
       const next = this.moveToAwaiting(key, current);

@@ -10,12 +10,17 @@ export type IntegrationAdmission =
   | { allowed: true; reason: null }
   | { allowed: false; reason: IntegrationAdmissionReason };
 
-export function isLoopbackHost(host: string): boolean {
-  const normalized = host
+/** Lowercases a hostname and strips IPv6 brackets and a trailing root dot. */
+export function normalizeHost(host: string): string {
+  return host
     .trim()
     .toLowerCase()
     .replace(/^\[|\]$/g, '')
     .replace(/\.$/, '');
+}
+
+export function isLoopbackHost(host: string): boolean {
+  const normalized = normalizeHost(host);
 
   if (normalized === 'localhost' || normalized === '::1') {
     return true;

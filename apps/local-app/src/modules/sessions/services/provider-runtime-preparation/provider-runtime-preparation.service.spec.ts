@@ -122,6 +122,21 @@ function makePreparedCodex(overrides: Partial<PreparedCodexPluginProfile> = {}) 
   } satisfies PreparedCodexPluginProfile;
 }
 
+function createCodexOwnerMock() {
+  const owner = new CodexPluginProfileMaterializerService();
+  return {
+    owner,
+    prepare: jest.spyOn(owner, 'prepare'),
+    prepareProfile: jest.spyOn(owner, 'prepareProfile').mockResolvedValue(null),
+    buildHelperArgv: jest.spyOn(owner, 'buildHelperArgv'),
+    awaitAcknowledgement: jest
+      .spyOn(owner, 'awaitAcknowledgement')
+      .mockResolvedValue('/private/target'),
+    cleanupPrepared: jest.spyOn(owner, 'cleanupPrepared'),
+    cleanupProfile: jest.spyOn(owner, 'cleanupProfile').mockResolvedValue(undefined),
+  };
+}
+
 describe('ProviderRuntimePreparationService', () => {
   let module: TestingModule;
   let service: ProviderRuntimePreparationService;
@@ -133,13 +148,13 @@ describe('ProviderRuntimePreparationService', () => {
     restoreSnapshot: jest.Mock;
     clear: jest.Mock;
   };
-  let claude: { prepare: jest.Mock; cleanupSession: jest.Mock };
-  let codex: {
+  let claude: {
+    providerName: string;
+    assertNoPolicyConflict: ClaudeLaunchSettingsMaterializerService['assertNoPolicyConflict'];
     prepare: jest.Mock;
-    buildHelperArgv: jest.Mock;
-    awaitAcknowledgement: jest.Mock;
     cleanupPrepared: jest.Mock;
   };
+  let codex: ReturnType<typeof createCodexOwnerMock>;
 
   beforeEach(async () => {
     storage = { getProviderEnvForProject: jest.fn().mockReturnValue(null) };
@@ -151,19 +166,16 @@ describe('ProviderRuntimePreparationService', () => {
       clear: jest.fn(),
     };
     claude = {
+      providerName: 'claude',
+      assertNoPolicyConflict:
+        ClaudeLaunchSettingsMaterializerService.prototype.assertNoPolicyConflict,
       prepare: jest.fn().mockResolvedValue({
         optionArgs: [],
         runtimeEnv: {},
-        captureEnabled: false,
       }),
-      cleanupSession: jest.fn().mockResolvedValue(undefined),
-    };
-    codex = {
-      prepare: jest.fn().mockResolvedValue(null),
-      buildHelperArgv: jest.fn(),
-      awaitAcknowledgement: jest.fn().mockResolvedValue('/private/target'),
       cleanupPrepared: jest.fn().mockResolvedValue(undefined),
     };
+    codex = createCodexOwnerMock();
 
     module = await Test.createTestingModule({
       providers: [
@@ -172,7 +184,7 @@ describe('ProviderRuntimePreparationService', () => {
         { provide: ProviderPluginPolicyService, useValue: policy },
         { provide: RuntimeContextCaptureService, useValue: capture },
         { provide: ClaudeLaunchSettingsMaterializerService, useValue: claude },
-        { provide: CodexPluginProfileMaterializerService, useValue: codex },
+        { provide: CodexPluginProfileMaterializerService, useValue: codex.owner },
       ],
     }).compile();
     service = module.get(ProviderRuntimePreparationService);
@@ -192,7 +204,6 @@ describe('ProviderRuntimePreparationService', () => {
       const adapter: TestAdapter & HookCapability & EffortCapability = {
         ...makeAdapter('claude'),
         hooksEnabled: true,
-        hooksEventName: 'Notification',
         hooksProvideTranscriptPath: true,
         buildHookEnv,
         defaultEffortValues: [],
@@ -296,14 +307,13 @@ describe('ProviderRuntimePreparationService', () => {
 
       expect(adapter.buildLaunchArgs).toHaveBeenCalledTimes(1);
       expect(prepared.config.argv).toEqual(['--model', 'raw-model']);
-      expect(capture.rotateEpoch.mock.invocationCallOrder[0]).toBeLessThan(
-        claude.prepare.mock.invocationCallOrder[0],
-      );
+      expect(claude.prepare).not.toHaveBeenCalled();
+      expect(codex.prepare).not.toHaveBeenCalled();
       await expect(prepared.afterCommand()).resolves.toBeUndefined();
       expect(codex.awaitAcknowledgement).not.toHaveBeenCalled();
 
       await prepared.rollback();
-      expect(claude.cleanupSession).toHaveBeenCalledWith('session-1');
+      expect(claude.cleanupPrepared).not.toHaveBeenCalled();
       expect(capture.clear).toHaveBeenCalledWith('session-1');
       expect(capture.restoreSnapshot).not.toHaveBeenCalled();
     });
@@ -338,7 +348,6 @@ describe('ProviderRuntimePreparationService', () => {
       claude.prepare.mockResolvedValue({
         optionArgs: ['--settings', '/private/settings.json'],
         runtimeEnv: { SHARED: 'runtime', RUNTIME: 'yes' },
-        captureEnabled: true,
       });
       const input = makeNewInput(adapter, {
         provider: {
@@ -357,6 +366,9 @@ describe('ProviderRuntimePreparationService', () => {
 
       const prepared = await service.materialize(plan);
 
+      expect(capture.rotateEpoch.mock.invocationCallOrder[0]).toBeLessThan(
+        claude.prepare.mock.invocationCallOrder[0],
+      );
       expect(adapter.buildLaunchArgs).toHaveBeenCalledTimes(2);
       expect(prepared.config.argv).toEqual([
         '--settings',
@@ -376,11 +388,9 @@ describe('ProviderRuntimePreparationService', () => {
       expect(Object.isFrozen(prepared.config.argv)).toBe(true);
       expect(claude.prepare).toHaveBeenCalledWith(
         expect.objectContaining({
-          providerName: 'claude',
-          settingsJson: '{}',
+          provider: expect.objectContaining({ name: 'claude', claudeLaunchSettingsJson: '{}' }),
           profileOptionArgs: ['--model', 'opus', '--verbose'],
           pluginPolicy: [],
-          policyRequired: false,
         }),
       );
     });
@@ -389,15 +399,14 @@ describe('ProviderRuntimePreparationService', () => {
       const adapter = makeAdapter('codex');
       const preparedCodex = makePreparedCodex();
       policy.resolveAll.mockResolvedValue([{ pluginId: 'plugin-a', enabled: true }]);
-      codex.prepare.mockResolvedValue(preparedCodex);
-      codex.buildHelperArgv.mockReturnValue([
-        '/private/helper',
+      codex.prepareProfile.mockResolvedValue(preparedCodex);
+      codex.buildHelperArgv.mockImplementation((profile, binary, argv) => [
+        profile.helperPath,
         '--nonce',
-        preparedCodex.attemptNonce,
+        profile.attemptNonce,
         '--',
-        '/usr/bin/codex',
-        '--profile',
-        'devchain-profile',
+        binary,
+        ...argv,
       ]);
       const plan = await service.createPlan(
         makeNewInput(adapter, {
@@ -412,12 +421,73 @@ describe('ProviderRuntimePreparationService', () => {
       expect(prepared.config.commandArgs).toEqual(
         expect.arrayContaining(['/private/helper', '--nonce', preparedCodex.attemptNonce]),
       );
+      expect(claude.prepare).not.toHaveBeenCalled();
+
+      const laterProfile = makePreparedCodex({
+        sessionId: 'session-2',
+        attemptNonce: 'nonce-abcdefghijklmnop',
+      });
+      codex.prepareProfile.mockResolvedValue(laterProfile);
+      const later = await service.materialize(
+        await service.createPlan(
+          makeNewInput(adapter, {
+            provider: { ...provider, name: 'codex', binPath: '/usr/bin/codex' },
+            providerBinPath: '/usr/bin/codex',
+            sessionId: 'session-2',
+          }),
+        ),
+      );
 
       await prepared.afterCommand();
       expect(codex.awaitAcknowledgement).toHaveBeenCalledWith(preparedCodex, {
         projectId: 'project-1',
         attemptNonce: preparedCodex.attemptNonce,
       });
+      await later.afterCommand();
+      expect(codex.awaitAcknowledgement).toHaveBeenNthCalledWith(2, laterProfile, {
+        projectId: 'project-1',
+        attemptNonce: laterProfile.attemptNonce,
+      });
+      await prepared.rollback();
+      expect(codex.cleanupProfile).toHaveBeenNthCalledWith(1, preparedCodex);
+      await later.rollback();
+      expect(codex.cleanupProfile).toHaveBeenNthCalledWith(2, laterProfile);
+    });
+
+    // Unit coverage observes composed owner callbacks and errors without launching provider processes.
+    it('composes owner acknowledgements in order and propagates rejection before explicit rollback', async () => {
+      claude.providerName = 'codex';
+      const order: string[] = [];
+      const acknowledgementError = new Error('foreign acknowledgement');
+      claude.prepare.mockResolvedValue({
+        optionArgs: [],
+        runtimeEnv: {},
+        afterCommand: async () => {
+          order.push('first');
+        },
+      });
+      codex.prepare.mockResolvedValue({
+        optionArgs: [],
+        runtimeEnv: {},
+        afterCommand: async () => {
+          order.push('second');
+          throw acknowledgementError;
+        },
+      });
+      const prepared = await service.materialize(
+        await service.createPlan(
+          makeNewInput(makeAdapter('codex'), { provider: { ...provider, name: 'codex' } }),
+        ),
+      );
+
+      await expect(prepared.afterCommand()).rejects.toBe(acknowledgementError);
+
+      expect(order).toEqual(['first', 'second']);
+      expect(claude.cleanupPrepared).not.toHaveBeenCalled();
+      expect(codex.cleanupPrepared).not.toHaveBeenCalled();
+      expect(capture.clear).not.toHaveBeenCalled();
+      await prepared.rollback();
+      expect(capture.clear).toHaveBeenCalledWith('session-1');
     });
 
     it('rejects an active restore overlay that loses provider identity', async () => {
@@ -430,7 +500,6 @@ describe('ProviderRuntimePreparationService', () => {
       claude.prepare.mockResolvedValue({
         optionArgs: ['--settings', '/private/settings.json'],
         runtimeEnv: {},
-        captureEnabled: false,
       });
       const plan = await service.createPlan(
         makeRestoreInput(adapter, { provider: { ...provider, name: 'claude' } }),
@@ -439,22 +508,27 @@ describe('ProviderRuntimePreparationService', () => {
       await expect(service.materialize(plan)).rejects.toThrow(
         'Restore argv does not include provider session ID — adapter contract violation',
       );
-      expect(claude.cleanupSession).toHaveBeenCalledWith('session-1');
+      expect(claude.cleanupPrepared).toHaveBeenCalledWith(
+        await claude.prepare.mock.results[0].value,
+        'session-1',
+      );
       expect(capture.restoreSnapshot).toHaveBeenCalledWith('session-1', null);
     });
 
-    it('attempts Codex, Claude, and capture rollback in order after individual failures', async () => {
+    // Unit coverage uses two owners for one provider to verify the reverse-order compensation contract.
+    it('attempts prepared owners in reverse order, then capture, after individual failures', async () => {
       const order: string[] = [];
+      claude.providerName = 'codex';
       const preparedCodex = makePreparedCodex();
       policy.resolveAll.mockResolvedValue([{ pluginId: 'plugin-a', enabled: true }]);
-      codex.prepare.mockResolvedValue(preparedCodex);
+      codex.prepareProfile.mockResolvedValue(preparedCodex);
       codex.buildHelperArgv.mockReturnValue(['/private/helper', '--', '/usr/bin/codex']);
       const cleanupError = new Error('codex cleanup failed');
       codex.cleanupPrepared.mockImplementation(async () => {
         order.push('codex');
         throw cleanupError;
       });
-      claude.cleanupSession.mockImplementation(async () => {
+      claude.cleanupPrepared.mockImplementation(async () => {
         order.push('claude');
         throw new Error('claude cleanup failed');
       });
@@ -474,14 +548,16 @@ describe('ProviderRuntimePreparationService', () => {
       expect(order).toEqual(['codex', 'claude', 'capture']);
     });
 
-    it('compensates Claude and capture after a later materialization failure and rethrows the original', async () => {
+    // Unit coverage injects a later owner failure without filesystem or process setup.
+    it('compensates prepared owners and capture after a later materialization failure and rethrows the original', async () => {
       const materializationError = new Error('codex preparation failed');
       const order: string[] = [];
-      codex.prepare.mockImplementation(async () => {
+      claude.providerName = 'codex';
+      codex.prepareProfile.mockImplementation(async () => {
         order.push('codex-prepare');
         throw materializationError;
       });
-      claude.cleanupSession.mockImplementation(async () => {
+      claude.cleanupPrepared.mockImplementation(async () => {
         order.push('claude-cleanup');
       });
       capture.clear.mockImplementation(() => {

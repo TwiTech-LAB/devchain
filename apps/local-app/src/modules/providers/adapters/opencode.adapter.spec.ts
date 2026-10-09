@@ -123,19 +123,14 @@ describe('OpencodeAdapter', () => {
     });
   });
 
-  describe('binaryCheck', () => {
-    it.each(['binary', 'add', 'remove'] as const)(
-      'uses the safe version fallback for %s',
-      (operation) => {
-        const result =
-          operation === 'binary'
-            ? adapter.binaryCheck('devchain')
-            : operation === 'add'
-              ? adapter.addMcpServer({ endpoint: 'http://127.0.0.1:3000/mcp' })
-              : adapter.removeMcpServer('devchain');
-        expect(result).toEqual(['--version']);
-      },
-    );
+  describe('config-file MCP command fallbacks', () => {
+    it.each(['add', 'remove'] as const)('uses the safe version fallback for %s', (operation) => {
+      const result =
+        operation === 'add'
+          ? adapter.addMcpServer({ endpoint: 'http://127.0.0.1:3000/mcp' })
+          : adapter.removeMcpServer('devchain');
+      expect(result).toEqual(['--version']);
+    });
   });
 
   describe('listMcpServers', () => {

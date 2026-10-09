@@ -1,10 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { NotFoundError } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type AgentProfileStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import { SettingsService } from '../../settings/services/settings.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 const logger = createLogger('ProviderProjectSyncService');
 
@@ -47,10 +53,14 @@ interface TemplateProfile {
 @Injectable()
 export class ProviderProjectSyncService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      Pick<StorageService, 'getProvider'>,
     private readonly settings: SettingsService,
     private readonly unifiedTemplateService: UnifiedTemplateService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   async syncProviderToAllProjects(providerId: string): Promise<SyncResult> {
@@ -73,7 +83,7 @@ export class ProviderProjectSyncService {
 
     for (const project of projects) {
       // A remote-owned or frozen project gets the provider from its writer.
-      if (!this.admission.isWritable(project.id)) continue;
+      if (!this.gate.isWritable(project.id)) continue;
       const templateProfiles = await this.getTemplateProfilesForProject(project.id);
       const { items: profiles } = await this.storage.listAgentProfiles({
         projectId: project.id,

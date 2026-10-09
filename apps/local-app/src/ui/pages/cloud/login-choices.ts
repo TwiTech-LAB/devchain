@@ -1,4 +1,4 @@
-import type { ProviderAuthEntryItem } from '@/ui/hooks/useProviderAuth';
+import type { ProviderAuthEntryItem } from './lib/remote-vm-contracts';
 
 /** Every provider a VM gets a login choice for, in display order. */
 export const LOGIN_PROVIDERS = ['claude', 'copilot', 'codex', 'agy', 'opencode'] as const;

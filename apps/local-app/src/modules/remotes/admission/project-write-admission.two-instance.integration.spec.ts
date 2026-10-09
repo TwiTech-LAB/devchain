@@ -8,12 +8,20 @@ import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import {
   startTwoInstances,
+  waitForValue,
   type TestInstance,
   type TwoInstances,
 } from '../../../common/test/two-instance.fixture';
 import { McpService } from '../../mcp/services/mcp.service';
 import { ScheduledEpicRunnerService } from '../../scheduled-epics/services/scheduled-epic-runner.service';
 import { ProjectFreezeService } from '../host/project-freeze.service';
+import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import { SkillSourceRegistryService } from '../../skills/services/skill-source-registry.service';
+import { RegistryClientService } from '../../registry/services/registry-client.service';
+import { RegistryOrchestrationService } from '../../registry/services/registry-orchestration.service';
+import { SettingsService } from '../../settings/services/settings.service';
+import { TeamsStore } from '../../teams/storage/teams.store';
+import { ProjectFrozenError, ProjectRemoteError } from '../../../common/errors/error-types';
 import { T, ensureProvider, replicaSeeder, stamps } from '../replica/__fixtures__/replica-seed';
 import type { Remote } from '../../storage/models/domain.models';
 
@@ -42,7 +50,30 @@ const ids = {
   stoppedSession: randomUUID(),
   agentSession: randomUUID(),
   peerSession: randomUUID(),
+  record: randomUUID(),
+  recordTag: randomUUID(),
+  disabledSkill: randomUUID(),
+  enabledSkill: randomUUID(),
 };
+
+const DIRECT_WRITES = [
+  [
+    'teams store',
+    (instance: TestInstance) => instance.app.get(TeamsStore).deleteTeamsByIds([ids.team]),
+  ],
+  [
+    'core settings delegate',
+    (instance: TestInstance) =>
+      instance.app.get(SettingsService).updateSettings({
+        initialSessionPromptIds: { [ids.project]: ids.prompt },
+      }),
+  ],
+  [
+    'preset settings delegate',
+    (instance: TestInstance) =>
+      instance.app.get(SettingsService).setProjectPresets(ids.project, []),
+  ],
+] as const;
 
 /** The seeded project and a peer in the same workspace whose owner can message it. */
 function seedProjects(sqlite: Database.Database, options: { scheduleDue: boolean }): void {
@@ -138,6 +169,67 @@ function seedProjects(sqlite: Database.Database, options: { scheduleDue: boolean
     epic_id: ids.epic,
     author_name: 'User',
     content: 'hello',
+    ...stamps,
+  });
+  insert('records', {
+    id: ids.record,
+    epic_id: ids.epic,
+    type: 'note',
+    data: '{}',
+    version: 1,
+    ...stamps,
+  });
+  insert('tags', { id: ids.recordTag, project_id: ids.project, name: 'kept-tag', ...stamps });
+  insert('record_tags', { record_id: ids.record, tag_id: ids.recordTag, created_at: T });
+  for (const [id, name] of [
+    [ids.disabledSkill, 'disabled'],
+    [ids.enabledSkill, 'enabled'],
+  ]) {
+    insert('skills', {
+      id,
+      slug: `gate-source/${name}`,
+      name,
+      display_name: name,
+      source: 'gate-source',
+      ...stamps,
+    });
+  }
+  insert('skill_project_disabled', {
+    id: randomUUID(),
+    project_id: ids.project,
+    skill_id: ids.disabledSkill,
+    created_at: T,
+  });
+  insert('source_project_enabled', {
+    id: randomUUID(),
+    project_id: ids.project,
+    source_name: 'gate-source',
+    enabled: 1,
+    created_at: T,
+  });
+  const templates = Object.fromEntries(
+    [ids.project, ids.peerProject].map((projectId) => [
+      projectId,
+      {
+        templateSlug: 'gate-template',
+        installedVersion: '1.0.0',
+        registryUrl: 'https://example.test/registry',
+        installedAt: T,
+        lastUpdateCheckAt: T,
+        source: 'registry',
+      },
+    ]),
+  );
+  sqlite
+    .prepare(
+      'INSERT INTO settings (id, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    )
+    .run(randomUUID(), 'registryTemplates', JSON.stringify(templates), T, T);
+  insert('project_provider_plugin_overrides', {
+    project_id: ids.project,
+    provider_id: provider,
+    plugin_id: 'gate-plugin',
+    enabled: 1,
     ...stamps,
   });
   insert('teams', {
@@ -255,6 +347,63 @@ interface WriteRoute {
 }
 
 const WRITE_ROUTES: readonly WriteRoute[] = [
+  {
+    name: 'enable a project skill',
+    method: 'POST',
+    path: `/api/skills/${ids.disabledSkill}/enable`,
+    body: { projectId: ids.project },
+  },
+  {
+    name: 'disable a project skill',
+    method: 'POST',
+    path: `/api/skills/${ids.enabledSkill}/disable`,
+    body: { projectId: ids.project },
+  },
+  {
+    name: 'enable all project skills',
+    method: 'POST',
+    path: '/api/skills/enable-all',
+    body: { projectId: ids.project },
+  },
+  {
+    name: 'disable all project skills',
+    method: 'POST',
+    path: '/api/skills/disable-all',
+    body: { projectId: ids.project },
+  },
+  {
+    name: 'enable a project skill source',
+    method: 'POST',
+    path: '/api/skills/sources/gate-source/enable-project',
+    body: { projectId: ids.project },
+  },
+  {
+    name: 'disable a project skill source',
+    method: 'POST',
+    path: '/api/skills/sources/gate-source/disable-project',
+    body: { projectId: ids.project },
+  },
+  {
+    name: 'check linked registry updates',
+    method: 'POST',
+    path: `/api/registry/check-updates/${ids.project}`,
+  },
+  {
+    name: 'set project provider plugin policy',
+    method: 'PUT',
+    path: '/api/provider-plugins/policy/project',
+    body: {
+      projectId: ids.project,
+      providerId: 'replaced-provider-id',
+      pluginId: 'gate-plugin',
+      enabled: false,
+    },
+  },
+  {
+    name: 'reset project provider plugin policy',
+    method: 'DELETE',
+    path: `/api/provider-plugins/policy/project?projectId=${ids.project}&providerId=replaced-provider-id&pluginId=gate-plugin`,
+  },
   {
     name: 'create epic',
     method: 'POST',
@@ -592,15 +741,49 @@ const PROTECTED_TABLES = [
   'reviews',
   'review_comments',
   'sessions',
+  'records',
+  'record_tags',
+  'tags',
+  'guests',
+  'project_provider_plugin_overrides',
+  'skill_project_disabled',
+  'source_project_enabled',
 ];
 
+const STORAGE_MCP_WRITES = [
+  [
+    'devchain_skills_set_enabled',
+    { sessionId: ids.agentSession, slugs: ['gate-source/enabled'], enabled: false },
+  ],
+  [
+    'devchain_skills_set_source_enabled',
+    { sessionId: ids.agentSession, sourceName: 'gate-source', enabled: false },
+  ],
+  [
+    'devchain_create_record',
+    { epicId: ids.epic, type: 'note', data: { changed: true }, tags: ['new-tag'] },
+  ],
+  ['devchain_update_record', { id: ids.record, version: 1, data: { changed: true } }],
+  ['devchain_add_tags', { id: ids.record, tags: ['new-tag'] }],
+  ['devchain_remove_tags', { id: ids.record, tags: ['kept-tag'] }],
+  ['devchain_register_guest', { name: 'Gate guest', tmuxSessionId: 'gate-guest-session' }],
+] as const;
+
 function snapshot(sqlite: Database.Database): Record<string, unknown[]> {
-  return Object.fromEntries(
-    PROTECTED_TABLES.map((table) => [
+  return Object.fromEntries([
+    ...PROTECTED_TABLES.map((table) => [
       table,
       sqlite.prepare(`SELECT * FROM ${table} ORDER BY 1`).all(),
     ]),
-  );
+    [
+      'project_settings',
+      sqlite
+        .prepare(
+          "SELECT * FROM settings WHERE key IN ('registryTemplates', 'initialSessionPromptIds', 'autoClean.statusIds', 'messagePool.projects', 'projectPresets', 'projectActivePresets') ORDER BY key",
+        )
+        .all(),
+    ],
+  ]);
 }
 
 describe('project write admission between two instances', () => {
@@ -609,10 +792,35 @@ describe('project write admission between two instances', () => {
 
   beforeAll(async () => {
     instances = await startTwoInstances();
+    await Promise.all(
+      [instances.home, instances.host].map((instance) =>
+        waitForValue(
+          async () =>
+            instance.app.get(RegistryOrchestrationService).getUpdateStatus().state !== 'pending',
+          15_000,
+        ),
+      ),
+    );
     seedProjects(instances.home.sqlite, { scheduleDue: false });
     seedProjects(instances.host.sqlite, { scheduleDue: false });
     remote = await instances.registerRemote('vm-1');
     await instances.bindProject(ids.project, remote.id, 'remote');
+    for (const instance of [instances.home, instances.host]) {
+      const registry = instance.app.get(SkillSourceRegistryService);
+      const sources = await registry.listRegisteredSources();
+      jest
+        .spyOn(registry, 'listRegisteredSources')
+        .mockResolvedValue([
+          ...sources,
+          { name: 'gate-source', kind: 'builtin', repoUrl: 'https://example.test/gate-source' },
+        ]);
+      Object.assign(instance.app.get(RegistryClientService), {
+        getTemplate: jest.fn().mockResolvedValue({
+          template: { slug: 'gate-template' },
+          versions: [{ version: '2.0.0', isLatest: true }],
+        }),
+      });
+    }
     instances.home.sqlite
       .prepare('UPDATE scheduled_epics SET enabled = 1, next_run_at = ? WHERE id = ?')
       .run('2020-01-01T00:00:00.000Z', ids.schedule);
@@ -631,10 +839,40 @@ describe('project write admission between two instances', () => {
       route.body === undefined
         ? undefined
         : JSON.stringify(route.body).replaceAll('replaced-in-test', defaultWorkspaceId);
-    return fetch(`${instance.url}${route.path}`, {
+    const { provider_id: providerId } = instance.sqlite
+      .prepare('SELECT provider_id FROM profile_provider_configs WHERE id = ?')
+      .get(ids.config) as { provider_id: string };
+    return fetch(`${instance.url}${route.path.replaceAll('replaced-provider-id', providerId)}`, {
       method: route.method,
-      ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body }),
+      ...(body === undefined
+        ? {}
+        : {
+            headers: { 'content-type': 'application/json' },
+            body: body.replaceAll('replaced-provider-id', providerId),
+          }),
     });
+  }
+
+  async function assertStorageMcpAdmission(
+    instance: TestInstance,
+    tool: (typeof STORAGE_MCP_WRITES)[number][0],
+    params: (typeof STORAGE_MCP_WRITES)[number][1],
+    code: 'PROJECT_REMOTE' | 'PROJECT_FROZEN',
+  ): Promise<void> {
+    if (tool === 'devchain_register_guest') {
+      const terminalIO = instance.app.get(TerminalIOService);
+      jest.spyOn(terminalIO, 'sessionExists').mockResolvedValueOnce(true);
+      Object.assign(terminalIO, {
+        getSessionCwd: jest.fn().mockResolvedValue(`/tmp/${ids.project}`),
+      });
+    }
+    const before = snapshot(instance.sqlite);
+    const response = await instance.app.get(McpService).handleToolCall(tool, params);
+    expect(response).toMatchObject({
+      success: false,
+      error: { code, data: { projectId: ids.project } },
+    });
+    expect(snapshot(instance.sqlite)).toEqual(before);
   }
 
   describe('at home while a remote owns the project', () => {
@@ -659,10 +897,21 @@ describe('project write admission between two instances', () => {
           remoteId: remote.id,
           remoteName: 'vm-1',
         });
+        if (route.name === 'check linked registry updates') {
+          expect(instances.home.app.get(RegistryClientService).getTemplate).not.toHaveBeenCalled();
+        }
       },
     );
 
     it('left every protected row unchanged', () => {
+      expect(snapshot(instances.home.sqlite)).toEqual(before);
+    });
+
+    it.each(DIRECT_WRITES)('%s receives the shared gate through Nest DI', async (_name, write) => {
+      const before = snapshot(instances.home.sqlite);
+
+      await expect(write(instances.home)).rejects.toThrow(ProjectRemoteError);
+
       expect(snapshot(instances.home.sqlite)).toEqual(before);
     });
 
@@ -738,6 +987,13 @@ describe('project write admission between two instances', () => {
         expect(projects.map((project) => project.id)).not.toContain(ids.project);
       });
 
+      it.each(STORAGE_MCP_WRITES)(
+        '%s refuses writes and preserves rows at home',
+        async (tool, params) => {
+          await assertStorageMcpAdmission(instances.home, tool, params, 'PROJECT_REMOTE');
+        },
+      );
+
       it('refuses a cross-project devchain_send_message with PROJECT_REMOTE', async () => {
         const response = await mcp.handleToolCall('devchain_send_message', {
           sessionId: ids.peerSession,
@@ -776,10 +1032,21 @@ describe('project write admission between two instances', () => {
           code: 'PROJECT_FROZEN',
         });
         expect(body.details).toEqual({ projectId: ids.project });
+        if (route.name === 'check linked registry updates') {
+          expect(instances.host.app.get(RegistryClientService).getTemplate).not.toHaveBeenCalled();
+        }
       },
     );
 
     it('left every protected row unchanged', () => {
+      expect(snapshot(instances.host.sqlite)).toEqual(before);
+    });
+
+    it.each(DIRECT_WRITES)('%s receives the shared gate through Nest DI', async (_name, write) => {
+      const before = snapshot(instances.host.sqlite);
+
+      await expect(write(instances.host)).rejects.toThrow(ProjectFrozenError);
+
       expect(snapshot(instances.host.sqlite)).toEqual(before);
     });
 
@@ -797,5 +1064,41 @@ describe('project write admission between two instances', () => {
         await instances.host.app.get(ProjectFreezeService).freeze(ids.project);
       }
     });
+
+    describe('MCP storage writers', () => {
+      beforeAll(() => seedRunningSessions(instances.host.sqlite));
+      it.each(STORAGE_MCP_WRITES)(
+        '%s refuses writes and preserves rows on a frozen host',
+        async (tool, params) => {
+          await assertStorageMcpAdmission(instances.host, tool, params, 'PROJECT_FROZEN');
+        },
+      );
+    });
+  });
+
+  it('checks a writable tracked project against a successful registry response and persists its timestamp', async () => {
+    const response = await fetch(
+      `${instances.home.url}/api/registry/check-updates/${ids.peerProject}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      linked: true,
+      hasUpdate: true,
+      currentVersion: '1.0.0',
+      latestVersion: '2.0.0',
+    });
+    expect(instances.home.app.get(RegistryClientService).getTemplate).toHaveBeenCalledWith(
+      'gate-template',
+    );
+    expect(
+      instances.home.app.get(SettingsService).getProjectTemplateMetadata(ids.peerProject)
+        ?.lastUpdateCheckAt,
+    ).not.toBe(T);
+    expect(
+      instances.home.app.get(SettingsService).getProjectTemplateMetadata(ids.project)
+        ?.lastUpdateCheckAt,
+    ).toBe(T);
   });
 });

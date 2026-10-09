@@ -1,5 +1,12 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  promptQueries,
+  promptQueryKeys,
+  type PromptSummary,
+  type Prompt,
+  type PromptsResponse,
+} from '@/ui/lib/prompts';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
@@ -34,26 +41,8 @@ import {
 import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
-interface PromptSummary {
-  id: string;
-  projectId: string | null;
-  title: string;
-  contentPreview: string;
-  version: number;
-  tags: string[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface PromptDetail extends PromptSummary {
-  content: string;
-}
-
-interface PromptsQueryData {
-  items: PromptSummary[];
-  total?: number;
-  limit?: number;
-  offset?: number;
+function promptContentPreview(content: string): string {
+  return content.length > 200 ? content.slice(0, 200) + '…' : content;
 }
 
 const PROMPT_VARIABLES = [
@@ -70,12 +59,6 @@ const PROMPT_TYPE_LABEL = {
   [PROMPT_TYPE.System]: 'System',
   [PROMPT_TYPE.Custom]: 'Custom',
 } as const satisfies Record<PromptType, string>;
-
-async function fetchPrompts(fetchFn: FetchFn, projectId: string) {
-  const res = await fetchFn(`/api/prompts?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch prompts');
-  return res.json();
-}
 
 async function createPrompt(
   fetchFn: FetchFn,
@@ -95,7 +78,7 @@ async function createPrompt(
   return res.json();
 }
 
-async function updatePrompt(fetchFn: FetchFn, id: string, data: Partial<PromptDetail>) {
+async function updatePrompt(fetchFn: FetchFn, id: string, data: Partial<Prompt>) {
   const res = await fetchFn(`/api/prompts/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -276,7 +259,7 @@ export function PromptsPage() {
   const { toast } = useToast();
   const { selectedProjectId } = useSelectedProject();
   const [showDialog, setShowDialog] = useState(false);
-  const [editingPrompt, setEditingPrompt] = useState<PromptDetail | null>(null);
+  const [editingPrompt, setEditingPrompt] = useState<Prompt | null>(null);
   const [formData, setFormData] = useState({ title: '', content: '', tags: [] as string[] });
   const [promptType, setPromptType] = useState<PromptType>(PROMPT_TYPE.Custom);
   const [filterTag, setFilterTag] = useState('');
@@ -285,8 +268,7 @@ export function PromptsPage() {
   const [pendingDeletePromptId, setPendingDeletePromptId] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['prompts', selectedProjectId],
-    queryFn: () => fetchPrompts(fetchFn, selectedProjectId as string),
+    ...promptQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 
@@ -295,30 +277,34 @@ export function PromptsPage() {
       createPrompt(fetchFn, data),
     onMutate: async (newPrompt) => {
       // Optimistic update
-      await queryClient.cancelQueries({ queryKey: ['prompts', selectedProjectId] });
-      const previousData = queryClient.getQueryData(['prompts', selectedProjectId]);
+      await queryClient.cancelQueries({ queryKey: promptQueryKeys.project(selectedProjectId) });
+      const previousData = queryClient.getQueryData(promptQueryKeys.list(selectedProjectId));
 
       queryClient.setQueryData(
-        ['prompts', selectedProjectId],
-        (old: PromptsQueryData | undefined) => ({
-          ...old,
-          items: [
-            {
-              id: 'temp-' + Date.now(),
-              ...newPrompt,
-              version: 1,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            },
-            ...(old?.items || []),
-          ],
-        }),
+        promptQueryKeys.list(selectedProjectId),
+        (old: PromptsResponse | undefined) =>
+          old && {
+            ...old,
+            items: [
+              {
+                id: 'temp-' + Date.now(),
+                projectId: newPrompt.projectId,
+                title: newPrompt.title,
+                contentPreview: promptContentPreview(newPrompt.content),
+                tags: newPrompt.tags ?? [],
+                version: 1,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              },
+              ...old.items,
+            ],
+          },
       );
 
       return { previousData };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['prompts', selectedProjectId] });
+      queryClient.invalidateQueries({ queryKey: promptQueryKeys.project(selectedProjectId) });
       setShowDialog(false);
       resetForm();
       toast({
@@ -328,7 +314,7 @@ export function PromptsPage() {
     },
     onError: (error, variables, context) => {
       if (context?.previousData) {
-        queryClient.setQueryData(['prompts', selectedProjectId], context.previousData);
+        queryClient.setQueryData(promptQueryKeys.list(selectedProjectId), context.previousData);
       }
       toast({
         title: 'Error',
@@ -339,26 +325,39 @@ export function PromptsPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<PromptDetail> }) =>
+    mutationFn: ({ id, data }: { id: string; data: Partial<Prompt> }) =>
       updatePrompt(fetchFn, id, data),
     onMutate: async ({ id, data }) => {
-      await queryClient.cancelQueries({ queryKey: ['prompts', selectedProjectId] });
-      const previousData = queryClient.getQueryData(['prompts', selectedProjectId]);
+      await queryClient.cancelQueries({ queryKey: promptQueryKeys.project(selectedProjectId) });
+      const previousData = queryClient.getQueryData(promptQueryKeys.list(selectedProjectId));
 
       queryClient.setQueryData(
-        ['prompts', selectedProjectId],
-        (old: PromptsQueryData | undefined) => ({
-          ...old,
-          items: old?.items.map((p: PromptSummary) =>
-            p.id === id ? { ...p, ...data, updatedAt: new Date().toISOString() } : p,
-          ),
-        }),
+        promptQueryKeys.list(selectedProjectId),
+        (old: PromptsResponse | undefined) => {
+          if (!old) return old;
+          const { content, ...summaryUpdates } = data;
+          return {
+            ...old,
+            items: old.items.map((p) =>
+              p.id === id
+                ? {
+                    ...p,
+                    ...summaryUpdates,
+                    ...(content === undefined
+                      ? {}
+                      : { contentPreview: promptContentPreview(content) }),
+                    updatedAt: new Date().toISOString(),
+                  }
+                : p,
+            ),
+          };
+        },
       );
 
       return { previousData };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['prompts', selectedProjectId] });
+      queryClient.invalidateQueries({ queryKey: promptQueryKeys.project(selectedProjectId) });
       setShowDialog(false);
       setEditingPrompt(null);
       resetForm();
@@ -369,7 +368,7 @@ export function PromptsPage() {
     },
     onError: (error, variables, context) => {
       if (context?.previousData) {
-        queryClient.setQueryData(['prompts', selectedProjectId], context.previousData);
+        queryClient.setQueryData(promptQueryKeys.list(selectedProjectId), context.previousData);
       }
       toast({
         title: 'Error',
@@ -382,21 +381,22 @@ export function PromptsPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deletePrompt(fetchFn, id),
     onMutate: async (id) => {
-      await queryClient.cancelQueries({ queryKey: ['prompts', selectedProjectId] });
-      const previousData = queryClient.getQueryData(['prompts', selectedProjectId]);
+      await queryClient.cancelQueries({ queryKey: promptQueryKeys.project(selectedProjectId) });
+      const previousData = queryClient.getQueryData(promptQueryKeys.list(selectedProjectId));
 
       queryClient.setQueryData(
-        ['prompts', selectedProjectId],
-        (old: PromptsQueryData | undefined) => ({
-          ...old,
-          items: old?.items.filter((p: PromptSummary) => p.id !== id),
-        }),
+        promptQueryKeys.list(selectedProjectId),
+        (old: PromptsResponse | undefined) =>
+          old && {
+            ...old,
+            items: old.items.filter((p) => p.id !== id),
+          },
       );
 
       return { previousData };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['prompts', selectedProjectId] });
+      queryClient.invalidateQueries({ queryKey: promptQueryKeys.project(selectedProjectId) });
       toast({
         title: 'Success',
         description: 'Prompt deleted successfully',
@@ -404,7 +404,7 @@ export function PromptsPage() {
     },
     onError: (error, variables, context) => {
       if (context?.previousData) {
-        queryClient.setQueryData(['prompts', selectedProjectId], context.previousData);
+        queryClient.setQueryData(promptQueryKeys.list(selectedProjectId), context.previousData);
       }
       toast({
         title: 'Error',
@@ -469,7 +469,7 @@ export function PromptsPage() {
       if (!response.ok) {
         throw new Error('Failed to fetch prompt');
       }
-      const fullPrompt: PromptDetail = await response.json();
+      const fullPrompt: Prompt = await response.json();
       setEditingPrompt(fullPrompt);
       setFormData({
         title: fullPrompt.title,

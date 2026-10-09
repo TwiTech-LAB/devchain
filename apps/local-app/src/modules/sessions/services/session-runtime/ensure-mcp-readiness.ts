@@ -6,7 +6,7 @@ import type { Provider } from '../../../storage/models/domain.models';
 import type { ProjectProvisioningContext } from '../../../providers/adapters';
 
 export interface McpReadinessInput {
-  storage: StorageService;
+  storage: Pick<StorageService, 'getProviderEnvForProject'>;
   preflightService: PreflightService;
   mcpEnsureService: ProviderMcpEnsureService;
   provider: Provider;

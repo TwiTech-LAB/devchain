@@ -7,11 +7,11 @@ import { ProjectFrozenError, ProjectRemoteError } from '../../common/errors/erro
 import { AllExceptionsFilter } from '../../common/filters/http-exception.filter';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { EventsService } from '../events/services/events.service';
-import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../storage/write-gate/project-write-gate';
 import {
-  createProjectWriteAdmissionStub,
-  type ProjectWriteAdmissionStub,
-} from '../remotes/admission/testing/project-write-admission.stub';
+  createProjectWriteGateStub,
+  type ProjectWriteGateStub,
+} from '../storage/write-gate/testing/project-write-gate.stub';
 import { AgentTimeBufferController } from './controllers/agent-time-buffer.controller';
 import { EpicTimeService } from './services/epic-time.service';
 import { EpicTimeStore } from './services/epic-time.store';
@@ -42,7 +42,7 @@ describe('Agent time buffer assignment API', () => {
   let app: NestFastifyApplication;
   let moduleRef: TestingModule;
   let events: { publish: jest.Mock };
-  let admission: ProjectWriteAdmissionStub;
+  let admission: ProjectWriteGateStub;
   let targetStatusId: string;
   let foreignStatusId: string;
 
@@ -78,7 +78,7 @@ describe('Agent time buffer assignment API', () => {
     );
 
     events = { publish: jest.fn().mockResolvedValue(null) };
-    admission = createProjectWriteAdmissionStub();
+    admission = createProjectWriteGateStub();
     moduleRef = await Test.createTestingModule({
       controllers: [AgentTimeBufferController],
       providers: [
@@ -86,7 +86,7 @@ describe('Agent time buffer assignment API', () => {
         EpicTimeService,
         { provide: DB_CONNECTION, useValue: drizzle(sqlite) },
         { provide: EventsService, useValue: events },
-        { provide: ProjectWriteAdmissionService, useValue: admission },
+        { provide: ProjectWriteGate, useValue: admission },
       ],
     }).compile();
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());

@@ -7,10 +7,8 @@
  * the provider sub-resources) and `teamsQueryKeys` (the list-factory precedent).
  *
  * Scope: the global provider list and the providers-page preflight subtree.
- * Per-profile provider-config queries (`['provider-configs', profileId]`,
- * `['profile-provider-configs', ...]`, etc.) are a separate domain and stay
- * raw — they are fanned out by `invalidateProviderConfigQueries`' predicate,
- * not addressed by a single factory key.
+ * Profile provider-config reads and their invalidation predicates are owned
+ * by `provider-configs.ts`, including single-profile and aggregate keys.
  */
 export const providersQueryKeys = {
   /** Global provider list. No project scoping — providers are top-level resources. */

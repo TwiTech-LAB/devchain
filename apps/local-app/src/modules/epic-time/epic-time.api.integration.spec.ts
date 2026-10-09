@@ -5,8 +5,8 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { AllExceptionsFilter } from '../../common/filters/http-exception.filter';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { EventsService } from '../events/services/events.service';
-import { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../storage/write-gate/testing/project-write-gate.stub';
 import { EpicTimeController } from './controllers/epic-time.controller';
 import { EpicTimeService } from './services/epic-time.service';
 import { EpicTimeStore } from './services/epic-time.store';
@@ -80,7 +80,7 @@ describe('Epic time summary API', () => {
         EpicTimeService,
         { provide: DB_CONNECTION, useValue: drizzle(sqlite) },
         { provide: EventsService, useValue: { publish: jest.fn().mockResolvedValue(null) } },
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
       ],
     }).compile();
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());

@@ -4,11 +4,11 @@ import { WatchersService } from './watchers.service';
 import { WatcherRunnerService } from './watcher-runner.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import type { Watcher, CreateWatcher, UpdateWatcher } from '../../storage/models/domain.models';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 describe('WatchersService', () => {
-  let admission: ReturnType<typeof createProjectWriteAdmissionStub>;
+  let admission: ReturnType<typeof createProjectWriteGateStub>;
   let service: WatchersService;
   let mockStorage: {
     listWatchers: jest.Mock;
@@ -46,7 +46,7 @@ describe('WatchersService', () => {
   });
 
   beforeEach(async () => {
-    admission = createProjectWriteAdmissionStub();
+    admission = createProjectWriteGateStub();
     mockStorage = {
       listWatchers: jest.fn().mockResolvedValue([]),
       getWatcher: jest.fn().mockResolvedValue(null),
@@ -65,7 +65,7 @@ describe('WatchersService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: admission },
+        { provide: ProjectWriteGate, useValue: admission },
         WatchersService,
         {
           provide: STORAGE_SERVICE,
@@ -265,14 +265,19 @@ describe('WatchersService', () => {
     });
   });
 
-  // Service tests cover admission before writes without the cost of HTTP or storage integration.
   it.each(['create', 'update', 'delete'] as const)(
-    'rejects %s writes to a read-only project before side effects',
+    'propagates %s admission refusals without runner side effects',
     async (operation) => {
       const refusal = new Error('Project is read-only');
-      admission.assertWritable.mockImplementation(() => {
-        throw refusal;
-      });
+      if (operation === 'delete') {
+        admission.assertWritable.mockImplementation(() => {
+          throw refusal;
+        });
+      } else if (operation === 'create') {
+        mockStorage.createWatcher.mockRejectedValue(refusal);
+      } else {
+        mockStorage.updateWatcher.mockRejectedValue(refusal);
+      }
       const existing = createMockWatcher();
       mockStorage.getWatcher.mockResolvedValue(existing);
       mockWatcherRunner.isWatcherRunning.mockReturnValue(true);
@@ -283,9 +288,13 @@ describe('WatchersService', () => {
             ? service.updateWatcher(existing.id, { enabled: false })
             : service.deleteWatcher(existing.id);
       await expect(write).rejects.toBe(refusal);
-      expect(admission.assertWritable).toHaveBeenCalledWith(existing.projectId);
-      expect(mockStorage.createWatcher).not.toHaveBeenCalled();
-      expect(mockStorage.updateWatcher).not.toHaveBeenCalled();
+      if (operation === 'delete') {
+        expect(admission.assertWritable).toHaveBeenCalledWith(existing.projectId);
+      } else {
+        expect(admission.assertWritable).not.toHaveBeenCalled();
+      }
+      expect(mockStorage.createWatcher).toHaveBeenCalledTimes(operation === 'create' ? 1 : 0);
+      expect(mockStorage.updateWatcher).toHaveBeenCalledTimes(operation === 'update' ? 1 : 0);
       expect(mockStorage.deleteWatcher).not.toHaveBeenCalled();
       expect(mockWatcherRunner.startWatcher).not.toHaveBeenCalled();
       expect(mockWatcherRunner.stopWatcher).not.toHaveBeenCalled();

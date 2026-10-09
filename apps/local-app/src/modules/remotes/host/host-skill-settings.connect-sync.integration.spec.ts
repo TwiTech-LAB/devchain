@@ -17,6 +17,7 @@ import type { HostSkillSettings } from '@devchain/shared';
 import { createReplicaDb, seedReplicaSource } from '../replica/__fixtures__/replica-seed';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { SettingsService } from '../../settings/services/settings.service';
 import { SkillSourceLifecycleService } from '../../skills/services/skill-source-lifecycle.service';
@@ -84,6 +85,7 @@ describe('Host skill settings Connect enablement', () => {
         HostSkillSettingsService,
         HostService,
         ProjectFreezeService,
+        ProjectWriteGate,
         SettingsService,
         SkillSourceLifecycleService,
         SkillSourceRegistryService,
@@ -118,6 +120,7 @@ describe('Host skill settings Connect enablement', () => {
         { provide: ProjectTimeSettler, useValue: { settle: async () => undefined } },
       ],
     }).compile();
+    module.get(ProjectWriteGate).bindStorage(storage);
     service = module.get(HostSkillSettingsService);
     host = module.get(HostService);
     builder = module.get(ProjectReplicaBuilder);

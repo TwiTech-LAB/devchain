@@ -1,8 +1,10 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import {
   STORAGE_SERVICE,
-  type StorageService,
   type ListResult,
+  type AgentStorage,
+  type ProjectStorage,
+  type ReviewStorage,
 } from '../../storage/interfaces/storage.interface';
 import type {
   Review,
@@ -15,7 +17,7 @@ import type {
 import { EventsService } from '../../events/services/events.service';
 import { GitService } from '../../git/services/git.service';
 import { ValidationError, NotFoundError, ForbiddenError } from '../../../common/errors/error-types';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 export interface CreateReviewInput {
   projectId: string;
@@ -94,10 +96,11 @@ export class ReviewsService {
   private readonly logger = new Logger(ReviewsService.name);
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage & ProjectStorage & ReviewStorage,
     private readonly eventsService: EventsService,
     private readonly gitService: GitService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   /**
@@ -108,7 +111,8 @@ export class ReviewsService {
   async createReview(input: CreateReviewInput): Promise<Review> {
     // Validate project exists
     const project = await this.storage.getProject(input.projectId);
-    this.admission.assertWritable(project.id);
+    // Admit before starting Git ref-resolution processes.
+    this.gate.assertWritable(project.id);
 
     const mode = input.mode ?? 'working_tree';
 
@@ -249,7 +253,6 @@ export class ReviewsService {
     expectedVersion: number,
   ): Promise<Review> {
     const before = await this.storage.getReview(reviewId);
-    this.admission.assertWritable(before.projectId);
 
     const updated = await this.storage.updateReview(
       reviewId,
@@ -428,7 +431,8 @@ export class ReviewsService {
    * Delete a review.
    */
   async deleteReview(reviewId: string): Promise<void> {
-    this.admission.assertWritable((await this.storage.getReview(reviewId)).projectId);
+    // The delete is a no-op for an unknown id; this read answers 404.
+    await this.storage.getReview(reviewId);
     await this.storage.deleteReview(reviewId);
   }
 
@@ -444,7 +448,6 @@ export class ReviewsService {
    */
   async createComment(reviewId: string, input: CreateCommentInput): Promise<ReviewComment> {
     const review = await this.storage.getReview(reviewId);
-    this.admission.assertWritable(review.projectId);
 
     // For replies, inherit file context from parent to maintain file association
     let filePath = input.filePath ?? null;
@@ -647,7 +650,6 @@ export class ReviewsService {
     this.verifyUserAuthored(before);
 
     const review = await this.storage.getReview(reviewId);
-    this.admission.assertWritable(review.projectId);
 
     const updated = await this.storage.updateReviewComment(commentId, input, expectedVersion);
 
@@ -701,7 +703,6 @@ export class ReviewsService {
     // SECURITY: Verify comment belongs to review before resolve
     const comment = await this.verifyCommentOwnership(commentId, reviewId);
     const review = await this.storage.getReview(comment.reviewId);
-    this.admission.assertWritable(review.projectId);
 
     const updated = await this.storage.updateReviewComment(commentId, { status }, expectedVersion);
 
@@ -747,7 +748,6 @@ export class ReviewsService {
     this.verifyUserAuthored(comment);
 
     const review = await this.storage.getReview(reviewId);
-    this.admission.assertWritable(review.projectId);
 
     await this.storage.deleteReviewComment(commentId);
 

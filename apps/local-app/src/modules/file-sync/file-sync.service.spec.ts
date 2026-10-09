@@ -1,10 +1,9 @@
 import { assertShareableFolder } from './file-sync-paths';
-import { FolderSyncStatusSchema, type FolderSyncStatus } from './file-sync.dto';
+import { FolderSyncStatusSchema, SCAN_TIMEOUT_MS, type FolderSyncStatus } from './file-sync.dto';
 import {
   FileSyncService,
   FileSyncTimeoutError,
   FileSyncUnavailableError,
-  SCAN_TIMEOUT_MS,
   codeFolderId,
   evaluateCompletion,
   evaluateSymmetricCompletion,

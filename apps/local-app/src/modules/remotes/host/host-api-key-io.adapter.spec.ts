@@ -3,7 +3,7 @@ import type { INestApplicationContext } from '@nestjs/common';
 import type { IncomingMessage } from 'node:http';
 import type { ServerOptions } from 'socket.io';
 import { HostApiKeyIoAdapter } from './host-api-key-io.adapter';
-import type { HostApiKeyService } from './host-api-key.service';
+import { HOST_API_KEY_REJECTION, type HostApiKeyService } from './host-api-key.service';
 
 // Capturing the options at the base adapter isolates option preservation and callback composition.
 describe('HostApiKeyIoAdapter', () => {
@@ -11,7 +11,7 @@ describe('HostApiKeyIoAdapter', () => {
 
   it('preserves server options and applies admission before an existing allowRequest', () => {
     const base = jest.spyOn(IoAdapter.prototype, 'createIOServer').mockReturnValue({});
-    const allows = jest.fn().mockReturnValue(false);
+    const allows = jest.fn().mockReturnValue(HOST_API_KEY_REJECTION);
     const existing = jest.fn();
     const adapter = new HostApiKeyIoAdapter(
       {} as INestApplicationContext,
@@ -34,7 +34,7 @@ describe('HostApiKeyIoAdapter', () => {
     options.allowRequest!(request, callback);
     expect(callback).toHaveBeenCalledWith('HOST_API_KEY_REJECTED', false);
     expect(existing).not.toHaveBeenCalled();
-    allows.mockReturnValue(true);
+    allows.mockReturnValue(null);
     options.allowRequest!(request, callback);
     expect(existing).toHaveBeenCalledWith(request, callback);
   });

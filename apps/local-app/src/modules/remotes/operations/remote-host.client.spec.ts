@@ -1,14 +1,13 @@
+import { Readable } from 'node:stream';
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 /**
  * The freeze answer is the host-issued cursor, so the client must parse it as
  * a typed response. Test layer: service unit — a stubbed fetch proves parsing
- * and the error shape without a second instance; the sync methods' unreachable
- * case uses a real closed loopback port.
+ * and the error shape without a second instance.
  */
 import { ConflictError } from '../../../common/errors/error-types';
 import { fixtureTls } from '../../../common/test/tls-fixture';
 import type { Remote } from '../../storage/models/domain.models';
-import { SCAN_TIMEOUT_MS } from '../../file-sync/file-sync.service';
 import { RemoteHostClient, RemoteHostRequestError, dialAddress } from './remote-host.client';
 
 const mockPinnedTo: string[] = [];
@@ -46,6 +45,13 @@ function makeClient(): RemoteHostClient {
   );
 }
 
+/** Answers every request of the client with one JSON body. */
+function stubHost(status: number, body: unknown): void {
+  global.fetch = jest.fn(
+    async () => new Response(JSON.stringify(body), { status }),
+  ) as typeof fetch;
+}
+
 afterEach(() => {
   global.fetch = originalFetch;
   mockPinnedTo.length = 0;
@@ -60,14 +66,12 @@ it.each(['ubuntu', null])('parses the runtime claim identity with holder %p', as
     primaryGroup: 'dialout',
     uidConflict: { requestedUid: 501, holder },
   };
-  global.fetch = jest.fn(async () => new Response(JSON.stringify(body))) as typeof fetch;
+  stubHost(200, body);
   await expect(makeClient().runtimeAt(REMOTE.baseUrl!, fixtureTls.cert)).resolves.toEqual(body);
 });
 
 it('accepts runtime reports without claim identity from older hosts', async () => {
-  global.fetch = jest.fn(
-    async () => new Response(JSON.stringify({ uid: 1000, gid: 1000 })),
-  ) as typeof fetch;
+  stubHost(200, { uid: 1000, gid: 1000 });
   await expect(makeClient().runtimeAt(REMOTE.baseUrl!, fixtureTls.cert)).resolves.toEqual({
     uid: 1000,
     gid: 1000,
@@ -87,31 +91,6 @@ it('posts public keys to the claimed host with its VM API key', async () => {
     headers: { 'content-type': 'application/json', authorization: 'Bearer vm-api-key' },
     body: JSON.stringify({ keys: ['public-key'] }),
     signal: expect.any(AbortSignal),
-  });
-});
-
-describe('RemoteHostClient.syncScan', () => {
-  afterEach(() => jest.useRealTimers());
-
-  it('waits for the host scan past the 15 s control limit', async () => {
-    jest.useFakeTimers();
-    let signal: AbortSignal | undefined;
-    let answer: (() => void) | undefined;
-    global.fetch = jest.fn((_url: string, init: RequestInit) => {
-      signal = init.signal ?? undefined;
-      return new Promise((resolve) => {
-        answer = () => resolve({ status: 204, body: null } as unknown as Response);
-      });
-    }) as unknown as typeof fetch;
-
-    const scan = makeClient().syncScan('remote-1', 'code:p1');
-    await jest.advanceTimersByTimeAsync(60_000);
-    expect(signal?.aborted).toBe(false);
-
-    await jest.advanceTimersByTimeAsync(SCAN_TIMEOUT_MS);
-    expect(signal?.aborted).toBe(true);
-    answer?.();
-    await scan;
   });
 });
 
@@ -319,17 +298,6 @@ describe('RemoteHostClient epic methods', () => {
       hostCode: 'PROJECT_FROZEN',
     });
   });
-
-  it('rejects with RemoteHostRequestError for any other status', async () => {
-    global.fetch = jest.fn(async () => ({
-      status: 400,
-      json: async () => ({ code: 'validation' }),
-    })) as unknown as typeof fetch;
-
-    await expect(makeClient().createEpic('remote-1', epic)).rejects.toBeInstanceOf(
-      RemoteHostRequestError,
-    );
-  });
 });
 
 describe('RemoteHostClient sync methods', () => {
@@ -360,48 +328,6 @@ describe('RemoteHostClient sync methods', () => {
       code: 'REMOTE_HOST_REQUEST_FAILED',
       status: 200,
     });
-  });
-
-  async function closedPort(): Promise<number> {
-    const { createServer } = await import('net');
-    const server = createServer();
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const { port } = server.address() as { port: number };
-    await new Promise((resolve) => server.close(resolve));
-    return port;
-  }
-
-  it('maps an unreachable host to RemoteHostRequestError with status null', async () => {
-    const baseUrl = `https://127.0.0.1:${await closedPort()}`;
-    const client = new RemoteHostClient(
-      {
-        getRemote: async () => ({ ...REMOTE, baseUrl }),
-      } as never,
-      { get: async () => null, headers: async () => ({}) } as never,
-    );
-
-    const calls: Array<() => Promise<unknown>> = [
-      () => client.syncDevice('remote-1'),
-      () => client.syncPeer('remote-1', { deviceId: HOME_ID, address: 'tcp://127.0.0.1:1' }),
-      () =>
-        client.syncFolders('remote-1', {
-          projectId: 'A',
-          kind: 'code',
-          type: 'receiveonly',
-          peerDeviceId: HOME_ID,
-          ignores: [],
-        }),
-      () => client.syncFolderType('remote-1', 'code:A', { type: 'sendonly' }),
-      () => client.syncStatus('remote-1', 'code:A', HOME_ID),
-      () => client.syncFolderExists('remote-1', 'code:A'),
-      () => client.syncRemoteNeed('remote-1', 'code:A', HOME_ID),
-      () => client.syncInspect('remote-1', { path: '/home/alice/project', scan: true, paths: [] }),
-    ];
-    for (const call of calls) {
-      const error: unknown = await call().catch((e: unknown) => e);
-      expect(error).toBeInstanceOf(RemoteHostRequestError);
-      expect((error as RemoteHostRequestError).status).toBeNull();
-    }
   });
 });
 
@@ -547,5 +473,114 @@ describe('RemoteHostClient VM certificate', () => {
       });
     }
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// Client units are the cheapest layer for request-dependent echoes: transport schemas only check shape.
+describe('RemoteHostClient settings echoes', () => {
+  const methods = ['putProviderCliSettings', 'putSkillSettings'] as const;
+
+  it.each(methods)('accepts the requested revision for %s', async (method) => {
+    stubHost(202, { revision: 'requested-revision' });
+    await expect(
+      makeClient()[method](REMOTE.id, { revision: 'requested-revision' } as never),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(methods)('rejects another revision for %s', async (method) => {
+    stubHost(202, { revision: 'another-revision' });
+    await expect(
+      makeClient()[method](REMOTE.id, { revision: 'requested-revision' } as never),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('Host returned an invalid answer to'),
+      details: { remoteId: REMOTE.id, status: 202, hostCode: null },
+    });
+  });
+
+  // Only the client knows the requested source identity; its unit also observes stream cleanup.
+  function uploadEchoedAs(echo: { name: string; contentHash: string }) {
+    const stream = Readable.from(['archive']);
+    stubHost(200, echo);
+    const request = makeClient().uploadSkillSourceContent(REMOTE.id, 'source', 'hash', stream);
+    return { request, stream };
+  }
+
+  it('accepts a source upload the host echoes back', async () => {
+    const { request, stream } = uploadEchoedAs({ name: 'source', contentHash: 'hash' });
+    await expect(request).resolves.toBeUndefined();
+    expect(stream.destroyed).toBe(true);
+  });
+
+  it.each([
+    { name: 'other', contentHash: 'hash' },
+    { name: 'source', contentHash: 'other' },
+  ])('rejects a source upload echoed as $name/$contentHash', async (echo) => {
+    const { request, stream } = uploadEchoedAs(echo);
+    await expect(request).rejects.toMatchObject({
+      message:
+        'Host returned an invalid answer to /api/host/skill-settings/local-sources/source/content.',
+      details: { remoteId: REMOTE.id, status: 200, hostCode: null },
+    });
+    expect(stream.destroyed).toBe(true);
+  });
+});
+
+// Client units isolate claim/update outcomes from the shared HTTP status decoding.
+describe('RemoteHostClient claim outcomes', () => {
+  const claim = () => makeClient().claim('https://bootstrap', fixtureTls.cert, {} as never);
+
+  it.each([
+    { status: 200, code: null, outcome: 'claimed' },
+    { status: 409, code: 'ALREADY_CLAIMED', outcome: 'already_claimed' },
+    { status: 504, code: 'TIMEOUT', outcome: 'starting' },
+  ])('maps a claim response of $status/$code to $outcome', async ({ status, code, outcome }) => {
+    stubHost(status, { details: { code } });
+    await expect(claim()).resolves.toBe(outcome);
+  });
+
+  it('refuses a claim answered 409/NOT_A_HOST', async () => {
+    stubHost(409, { details: { code: 'NOT_A_HOST' } });
+    await expect(claim()).rejects.toMatchObject({
+      message: 'The VM refused the claim (NOT_A_HOST).',
+      details: { remoteId: 'https://bootstrap', status: 409, hostCode: 'NOT_A_HOST' },
+    });
+  });
+});
+
+// The client owns the import conflict outcome; no second instance is required for this mapping.
+describe('RemoteHostClient import conflicts', () => {
+  it('reports an existing project as not imported', async () => {
+    stubHost(409, { details: { code: 'PROJECT_EXISTS' } });
+    await expect(makeClient().importProject(REMOTE.id, {} as never)).resolves.toEqual({
+      imported: false,
+      reason: 'PROJECT_EXISTS',
+    });
+  });
+
+  it.each(['OTHER_CONFLICT', null])('refuses import conflict %p', async (code) => {
+    stubHost(409, { details: { code } });
+    await expect(makeClient().importProject(REMOTE.id, {} as never)).rejects.toMatchObject({
+      message: 'Host refused the project import.',
+      details: { remoteId: REMOTE.id, status: 409, hostCode: code },
+    });
+  });
+});
+
+// Client unit responses cover update interpretation; transport tests cover code extraction.
+describe('RemoteHostClient update outcomes', () => {
+  it.each([
+    { status: 202, code: null, outcome: 'started' },
+    { status: 409, code: 'UPDATE_IN_PROGRESS', outcome: 'in_progress' },
+  ])('maps an update response of $status/$code to $outcome', async ({ status, code, outcome }) => {
+    stubHost(status, { details: { code } });
+    await expect(makeClient().requestHostUpdate(REMOTE.id, '1.0.0')).resolves.toBe(outcome);
+  });
+
+  it('refuses an update answered 409/OTHER_CONFLICT', async () => {
+    stubHost(409, { details: { code: 'OTHER_CONFLICT' } });
+    await expect(makeClient().requestHostUpdate(REMOTE.id, '1.0.0')).rejects.toMatchObject({
+      message: 'The host refused the update (OTHER_CONFLICT).',
+      details: { remoteId: REMOTE.id, status: 409, hostCode: 'OTHER_CONFLICT' },
+    });
   });
 });

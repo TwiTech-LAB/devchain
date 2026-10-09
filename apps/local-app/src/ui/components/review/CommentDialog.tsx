@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import DOMPurify from 'dompurify';
+import { agentQueries, type Agent } from '@/ui/lib/agents';
 import {
   Dialog,
   DialogContent,
@@ -37,7 +38,6 @@ import { cn } from '@/ui/lib/utils';
 import { useMentionAutocomplete } from '@/ui/hooks/useMentionAutocomplete';
 import { parseMentions } from '@/ui/lib/mentions';
 import type { CommentType } from '@/ui/lib/reviews';
-import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /**
@@ -87,11 +87,6 @@ function renderMarkdown(text: string): string {
   });
 }
 
-export interface Agent {
-  id: string;
-  name: string;
-}
-
 export interface CommentDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -121,12 +116,6 @@ const COMMENT_TYPES: { value: CommentType; label: string; icon: React.ElementTyp
   { value: 'approval', label: 'Approval', icon: CheckCircle2 },
 ];
 
-async function fetchAgents(fetchFn: FetchFn, projectId: string): Promise<{ items: Agent[] }> {
-  const res = await fetchFn(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch agents');
-  return res.json();
-}
-
 export function CommentDialog({
   open,
   onOpenChange,
@@ -150,8 +139,7 @@ export function CommentDialog({
 
   // Fetch agents for the project
   const { data: agentsData } = useQuery({
-    queryKey: ['agents', projectId],
-    queryFn: () => fetchAgents(fetchFn, projectId),
+    ...agentQueries.list(fetchFn, projectId),
     enabled: open && !!projectId,
   });
 
@@ -176,7 +164,7 @@ export function CommentDialog({
   }, [agents, mentionQuery]);
 
   // Handle selecting an agent from autocomplete
-  const handleMentionSelect = (agent: Agent) => {
+  const handleMentionSelect = (agent: Pick<Agent, 'id' | 'name'>) => {
     const newContent = insertMention(agent, content);
     setContent(newContent);
     // Also add to selected agents (pills)

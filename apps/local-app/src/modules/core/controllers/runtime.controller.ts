@@ -17,6 +17,7 @@ import {
 import { readBuildInfo } from './build-info';
 import { readHostCliVersions } from './host-cli-versions';
 import { readHostUserIdentity } from './host-user-identity';
+import type { HostRuntimeResponse } from '../../remotes/contract/host-routes';
 
 @ApiTags('runtime')
 @Controller('api/runtime')
@@ -32,7 +33,7 @@ export class RuntimeController {
   @Get()
   @ApiOperation({ summary: 'Get app runtime metadata' })
   @ApiResponse({ status: 200, description: 'Runtime metadata' })
-  async getRuntime() {
+  async getRuntime(): Promise<HostRuntimeResponse> {
     const env = getEnvConfig();
     const runtimeToken =
       typeof env.RUNTIME_TOKEN === 'string' && env.RUNTIME_TOKEN.trim().length > 0

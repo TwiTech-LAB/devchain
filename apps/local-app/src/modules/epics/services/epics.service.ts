@@ -7,6 +7,11 @@ import {
   type CreateEpicForProjectInput,
   type ListOptions,
   type ListResult,
+  type AgentStorage,
+  type EpicStorage,
+  type GuestStorage,
+  type ProjectStorage,
+  type StatusStorage,
 } from '../../storage/interfaces/storage.interface';
 import type {
   Epic,
@@ -40,7 +45,7 @@ import { normalizeExternalTaskSourceUrl } from '../../external-integrations/mode
 import type { ExternalTaskSourceSummary } from '../../external-integrations/models/external-provider.models';
 import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
 import { resolveEpicRelationTarget } from './epic-relation-target-resolver';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { RemoteHostClient } from '../../remotes/operations/remote-host.client';
 import {
   REMOTE_MIRROR_SYNC_PORT,
@@ -171,17 +176,32 @@ export class EpicsService {
   private readonly hostImports = new Map<string, Promise<unknown>>();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage &
+      EpicStorage &
+      GuestStorage &
+      ProjectStorage &
+      StatusStorage &
+      Pick<
+        StorageService,
+        | 'createEpicWithExternalTaskLink'
+        | 'createExternalTaskLink'
+        | 'findExternalTaskLink'
+        | 'getIntegrationConnection'
+        | 'listExternalTaskLinksForEpic'
+        | 'listExternalTaskLinksForEpics'
+      >,
     private readonly eventsService: EventsService,
     private readonly settingsService: SettingsService,
     private readonly eventEmitter: EventEmitter2,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
     private readonly hostClient: RemoteHostClient,
     @Inject(REMOTE_MIRROR_SYNC_PORT) private readonly mirrorSync: RemoteMirrorSyncPort,
   ) {}
 
   async createEpic(data: CreateEpic, context?: EpicOperationContext): Promise<Epic> {
-    this.admission.assertWritable(data.projectId);
+    // Admit before emitting epic name-enrichment warnings.
+    this.gate.assertWritable(data.projectId);
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(data.projectId, data.statusId, data);
     const createData = { ...data, createdBy: this.deriveCreatedBy(context) };
@@ -202,7 +222,8 @@ export class EpicsService {
     data: CreateEpicWithExternalTaskLink,
     context?: EpicOperationContext,
   ): Promise<CreateEpicWithExternalTaskLinkResult> {
-    this.admission.assertWritable(data.epic.projectId);
+    // Admit before emitting epic name-enrichment warnings.
+    this.gate.assertWritable(data.epic.projectId);
     const epic = { ...data.epic };
     this.applyAutoCleanIfNeeded(epic.projectId, epic.statusId, epic);
     const createData = { ...epic, createdBy: this.deriveCreatedBy(context) };
@@ -240,12 +261,13 @@ export class EpicsService {
     input: ImportExternalTaskInput,
     context?: EpicOperationContext,
   ): Promise<CreateEpicWithExternalTaskLinkResult> {
-    const owner = this.admission.getRemoteOwner(input.projectId);
+    const owner = this.gate.getRemoteOwner(input.projectId);
     // Only a settled binding goes through the host: while attaching the host
     // is not thawed yet, and while detaching it is frozen.
     const remoteId = owner?.state === 'remote' ? owner.remoteId : null;
     if (!remoteId) {
-      this.admission.assertWritable(input.projectId);
+      // Admit before integration lookups and host import calls.
+      this.gate.assertWritable(input.projectId);
     }
     const [project, status, connection] = await Promise.all([
       this.storage.getProject(input.projectId),
@@ -479,7 +501,8 @@ export class EpicsService {
     input: CreateEpicForProjectOperationInput,
     context?: EpicOperationContext,
   ): Promise<Epic> {
-    this.admission.assertWritable(projectId);
+    // Admit before emitting status/name lookup warnings.
+    this.gate.assertWritable(projectId);
     const { relation, relations, ...epicInput } = input;
     const relationList: EpicRelationInputOperation[] = relations ?? (relation ? [relation] : []);
     // Clear agentId if creating in an auto-clean status
@@ -682,7 +705,8 @@ export class EpicsService {
     context?: EpicOperationContext,
   ): Promise<{ epic: Epic; descriptionEdit?: EpicDescriptionEditOutcome }> {
     const before = await this.storage.getEpic(id);
-    this.admission.assertWritable(before.projectId);
+    // Admit before emitting epic change-name lookup warnings.
+    this.gate.assertWritable(before.projectId);
 
     const { descriptionEdits, appendDescription, ...updateData } = data;
     let descriptionEdit: EpicDescriptionEditOutcome | undefined;
@@ -896,7 +920,6 @@ export class EpicsService {
   }
 
   async deleteEpic(id: string, context?: EpicOperationContext): Promise<void> {
-    this.admission.assertWritable((await this.storage.getEpic(id)).projectId);
     const prepared: Array<PreparedEvent<'epic.deleted'>> = [];
     let workspaceId: string | null = null;
     await this.storage.deleteEpic(id, (deleted, currentWorkspaceId) => {
@@ -937,7 +960,6 @@ export class EpicsService {
     authorType: 'agent' | 'guest',
   ): Promise<EpicComment> {
     const epic = await this.storage.getEpic(epicId);
-    this.admission.assertWritable(epic.projectId);
 
     if (epic.projectId !== projectId) {
       throw new ValidationError(`Epic ${epicId} does not belong to project ${projectId}.`, {
@@ -1056,7 +1078,6 @@ export class EpicsService {
     content: string,
   ): Promise<EpicComment> {
     const epic = await this.storage.getEpic(epicId);
-    this.admission.assertWritable(epic.projectId);
     const comment = await this.storage.createEpicComment({
       epicId,
       authorName,
@@ -1106,7 +1127,6 @@ export class EpicsService {
     if (epic.projectId !== projectId) {
       throw new NotFoundError('Epic', epicId);
     }
-    this.admission.assertWritable(projectId);
 
     const deleted = await this.storage.deleteEpicCommentScoped(epicId, commentId);
     if (!deleted) {
@@ -1116,9 +1136,6 @@ export class EpicsService {
 
   /** Deletes a comment by its ID alone; an unknown comment is a no-op. */
   async deleteEpicCommentById(commentId: string): Promise<void> {
-    const epicId = await this.storage.findEpicCommentEpicId(commentId);
-    if (!epicId) return;
-    this.admission.assertWritable((await this.storage.getEpic(epicId)).projectId);
     await this.storage.deleteEpicComment(commentId);
   }
 

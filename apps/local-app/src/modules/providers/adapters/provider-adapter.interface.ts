@@ -1,3 +1,5 @@
+import type { ProviderTraits } from '../provider-traits.types';
+
 export interface McpServerEntry {
   alias: string;
   endpoint: string;
@@ -74,6 +76,7 @@ export interface BuildLaunchArgsInput {
 
 export interface ProviderAdapter {
   readonly providerName: string;
+  readonly traits?: ProviderTraits;
   readonly launchInitialPromptBehavior?: LaunchInitialPromptBehavior;
   readonly runtimePromptBehavior?: RuntimePromptBehavior;
   readonly terminalOutputBehavior?: TerminalOutputBehavior;

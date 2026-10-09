@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { projectPresetQueryKeys } from '@/ui/lib/project-presets';
 import {
   Dialog,
   DialogContent,
@@ -60,7 +61,7 @@ export function DeletePresetDialog({
       });
 
       // Refresh the presets list
-      await queryClient.invalidateQueries({ queryKey: ['project-presets', projectId] });
+      await queryClient.invalidateQueries({ queryKey: projectPresetQueryKeys.project(projectId) });
 
       onOpenChange(false);
     } catch (error) {

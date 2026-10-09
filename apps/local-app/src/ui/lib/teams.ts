@@ -1,4 +1,7 @@
 import { fetchJsonOrThrow, fetchOrThrow, type FetchFn } from '@/ui/lib/sessions';
+import type { ListResult } from '@/modules/storage/interfaces/storage.interface';
+
+export type { ListResult };
 
 export interface TeamListItem {
   id: string;
@@ -37,13 +40,6 @@ export interface TeamDetail {
   profileConfigSelections: Array<{ profileId: string; configIds: string[] }>;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface ListResult<T> {
-  items: T[];
-  total: number;
-  limit: number;
-  offset: number;
 }
 
 export interface CreateTeamPayload {

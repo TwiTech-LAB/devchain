@@ -1,5 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  StorageService,
+  STORAGE_SERVICE,
+  type AgentProfileStorage,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type PromptStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { Agent } from '../../storage/models/domain.models';
 import {
   AppError,
@@ -222,7 +229,12 @@ function lifecycleErrorMessage(err: unknown): string {
 @Injectable()
 export class MobileChatRpcService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      AgentStorage &
+      ProfileProviderConfigStorage &
+      PromptStorage &
+      Pick<StorageService, 'listProvidersByIds'>,
     private readonly activeSessions: ActiveSessionLookup,
     private readonly sessionReader: SessionReaderService,
     private readonly transcriptWatcher: TranscriptWatcherService,

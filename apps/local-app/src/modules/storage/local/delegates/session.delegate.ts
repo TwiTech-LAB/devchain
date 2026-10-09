@@ -1,9 +1,10 @@
+import type { SessionStorage } from '../../interfaces/storage.interface';
 import { createLogger } from '../../../../common/logging/logger';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('SessionStorageDelegate');
 
-export class SessionStorageDelegate extends BaseStorageDelegate {
+export class SessionStorageDelegate extends BaseStorageDelegate implements SessionStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
   }

@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { chatQueryKeys } from '@/ui/hooks/useChatQueries';
 import { teamsQueryKeys, updateTeam } from '@/ui/lib/teams';
@@ -78,7 +79,7 @@ export function useTeamQuickEdit({
       setQuickEditTeam(null);
       toast({ title: `Team '${teamName}' updated` });
       if (projectId) {
-        queryClient.invalidateQueries({ queryKey: chatQueryKeys.agents(projectId) });
+        queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
         queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) });

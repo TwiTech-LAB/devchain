@@ -55,6 +55,9 @@ if (!(global as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObs
 }
 
 const agent: AgentOrGuest = {
+  type: 'agent',
+  modelOverride: null,
+  effortOverride: null,
   id: 'agent-1',
   name: 'Alpha',
   profileId: 'profile-1',

@@ -1,5 +1,6 @@
 import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
+import { ANTIGRAVITY_TRAITS } from './antigravity.traits';
 import type {
   ProviderAdapter,
   AddMcpServerOptions,
@@ -51,12 +52,8 @@ export class AntigravityAdapter
     ProjectProvisioningCapability
 {
   readonly providerName = 'agy';
+  readonly traits = ANTIGRAVITY_TRAITS;
   readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
-
-  // agy = ProjectProvisioningCapability adopter #2. Workspace trust must be
-  // pre-written (spike (c): --dangerously-skip-permissions does NOT cover trust),
-  // otherwise the full-screen TUI blocks on a trust prompt at launch.
-  readonly requiresProjectProvisioning = true as const;
 
   constructor(private readonly trustedWorkspaces: AntigravityTrustedWorkspacesService) {}
 
@@ -99,6 +96,7 @@ export class AntigravityAdapter
    * prompt). Delegates to the dedicated `AntigravityTrustedWorkspacesService`
    * (both trust stores). Never throws: failures are surfaced as provisioning
    * warnings so a trust hiccup doesn't fail the whole project lifecycle op.
+   * Launch permission flags do not bypass the TUI's workspace trust prompt.
    */
   async provisionProjectPath(projectPath: string): Promise<ProvisioningResult> {
     try {

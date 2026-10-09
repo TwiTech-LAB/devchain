@@ -1,22 +1,17 @@
 import { useMemo, useState } from 'react';
 import { Button } from '@/ui/components/ui/button';
 import { Checkbox } from '@/ui/components/ui/checkbox';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { formatBytes } from './file-sync-display';
 import { ProjectList, type ProjectListData } from './ProjectList';
+import type { EstimatedProject } from './lib/remote-vm-contracts';
 
 const GIB = 1024 ** 3;
 /** The OS releases the installer accepts (`host-install-block.ts`). */
 export const SUPPORTED_VM_OS = 'Ubuntu 22.04+ or Debian 12+, amd64';
 /** The VM's free disk without any project. */
 const BASE_DISK_GIB = 8;
-
-interface EstimatedProject {
-  id: string;
-  bytes: number | null;
-  approximate: boolean;
-}
 
 function requiredDiskGib(projects: EstimatedProject[]): number {
   const knownBytes = projects.reduce((total, project) => total + (project.bytes ?? 0), 0);
@@ -29,6 +24,7 @@ function requiredDiskGib(projects: EstimatedProject[]): number {
  * selected project is measured.
  */
 export function useDiskEstimate(projectIds: readonly string[]) {
+  const api = useRemoteVmApi();
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [estimated, setEstimated] = useState<Record<string, EstimatedProject>>({});
   const [measured, setMeasured] = useState<{ key: string; requiredDiskGib: number } | null>(null);
@@ -62,31 +58,10 @@ export function useDiskEstimate(projectIds: readonly string[]) {
     setPending(true);
     setError(null);
     try {
-      const response = await apiFetch(
-        '/api/remotes/host-install/estimate',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projectIds: selectedIds }),
-        },
-        { backend: HOME_BACKEND },
-      );
-      const body = (await response.json().catch(() => null)) as {
-        message?: unknown;
-        projects?: EstimatedProject[];
-        requiredDiskGib?: number;
-      } | null;
-      if (!response.ok) {
-        throw new Error(
-          typeof body?.message === 'string' ? body.message : 'Could not measure project sizes.',
-        );
-      }
-      if (!Array.isArray(body?.projects) || typeof body.requiredDiskGib !== 'number') {
-        throw new Error('The server returned an invalid project estimate.');
-      }
+      const body = await api.estimateProjectDisk(selectedIds);
       setEstimated((current) => ({
         ...current,
-        ...Object.fromEntries(body.projects!.map((project) => [project.id, project])),
+        ...Object.fromEntries(body.projects.map((project) => [project.id, project])),
       }));
       setMeasured({ key: selectionKey, requiredDiskGib: body.requiredDiskGib });
     } catch (cause) {

@@ -6,7 +6,12 @@ import { OpencodeAdapter } from './opencode.adapter';
 import { AntigravityAdapter } from './antigravity.adapter';
 import { CopilotAdapter } from './copilot.adapter';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+} from '../../storage/interfaces/storage.interface';
 
 /**
  * Factory for resolving ProviderAdapter instances by provider name
@@ -19,7 +24,10 @@ export class ProviderAdapterFactory {
   private readonly adapters: Map<string, ProviderAdapter>;
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage &
+      ProfileProviderConfigStorage &
+      Pick<StorageService, 'getProvider'>,
     claudeAdapter: ClaudeAdapter,
     codexAdapter: CodexAdapter,
     opencodeAdapter: OpencodeAdapter,

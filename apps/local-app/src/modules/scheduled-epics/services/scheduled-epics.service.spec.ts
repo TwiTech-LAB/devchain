@@ -5,7 +5,6 @@ import type {
 } from '../../storage/interfaces/storage.interface';
 import type { ScheduledEpic } from '../../storage/models/domain.models';
 import type { ScheduledEpicRunnerRefresh } from './scheduled-epics.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
 
 function makeSchedule(overrides: Partial<ScheduledEpic> = {}): ScheduledEpic {
   return {
@@ -59,11 +58,7 @@ describe('ScheduledEpicsService', () => {
   beforeEach(() => {
     storage = createMockStorage();
     runnerRefresh = { refreshScheduleWindow: jest.fn() };
-    service = new ScheduledEpicsService(
-      storage,
-      createProjectWriteAdmissionStub() as never,
-      runnerRefresh,
-    );
+    service = new ScheduledEpicsService(storage, runnerRefresh);
   });
 
   describe('runNow', () => {
@@ -270,10 +265,7 @@ describe('ScheduledEpicsService', () => {
     });
 
     it('works without a runner injected', async () => {
-      const serviceNoRunner = new ScheduledEpicsService(
-        storage,
-        createProjectWriteAdmissionStub() as never,
-      );
+      const serviceNoRunner = new ScheduledEpicsService(storage);
       storage.getScheduledEpic.mockResolvedValue(makeSchedule());
       storage.deleteScheduledEpic.mockResolvedValue();
 

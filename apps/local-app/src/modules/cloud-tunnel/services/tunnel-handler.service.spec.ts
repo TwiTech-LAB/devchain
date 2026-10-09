@@ -5,8 +5,11 @@ import { ViewportStreamerService } from './viewport-streamer.service';
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
 import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
 import { TerminalKeyInputFacade } from '../../terminal/services/terminal-key-input/terminal-key-input.facade';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { NotFoundError } from '../../../common/errors/error-types';
+import { CloudSessionManagerService } from '../../cloud/services/cloud-session-manager.service';
+import { E2eeDeviceStoreService } from '../../e2ee/services/e2ee-device-store.service';
+import { E2eePairingService } from '../../e2ee/services/e2ee-pairing.service';
 
 jest.mock('../../../common/logging/logger', () => {
   const testLogger = {
@@ -34,6 +37,12 @@ describe('TunnelHandlerService', () => {
   // Only the terminal.sendKey tests reach these collaborators; they build their own handler.
   const terminalKeyInputStub = {} as TerminalKeyInputFacade;
   const activeSessionsStub = {} as ActiveSessionLookup;
+  const cloudSessionStub = {
+    verifyE2eeEnrollment: async () => ({ enrollment: 'unsigned', reason: 'missing' }),
+  } as unknown as CloudSessionManagerService;
+  const deviceStoreStub = { get: () => null } as unknown as E2eeDeviceStoreService;
+  const pairingStub = {} as E2eePairingService;
+  const broadcasterStub = { broadcastEvent: jest.fn() };
   const buildHandler = (
     storage: object = {},
     {
@@ -56,6 +65,10 @@ describe('TunnelHandlerService', () => {
       e2eeTrust,
       terminalKeyInputStub,
       activeSessionsStub,
+      cloudSessionStub,
+      deviceStoreStub,
+      pairingStub,
+      broadcasterStub,
     );
   const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
   const STATUS_ID = '22222222-2222-4222-8222-222222222222';
@@ -419,7 +432,7 @@ describe('TunnelHandlerService', () => {
         projectId === BOUND_PROJECT_ID
           ? { projectId, remoteId: 'r1', remoteName: 'lab-vm', state: 'remote' }
           : null,
-    } as unknown as ProjectWriteAdmissionService;
+    } as unknown as ProjectWriteGate;
 
     function makeService(storage: Record<string, jest.Mock>): TunnelHandlerService {
       return new TunnelHandlerService(
@@ -430,6 +443,10 @@ describe('TunnelHandlerService', () => {
         {} as E2eeTrustService,
         terminalKeyInputStub,
         activeSessionsStub,
+        cloudSessionStub,
+        deviceStoreStub,
+        pairingStub,
+        broadcasterStub,
         undefined,
         admission,
       );
@@ -1318,6 +1335,10 @@ describe('TunnelHandlerService', () => {
         {} as E2eeTrustService,
         terminalKeyInput as TerminalKeyInputFacade,
         activeSessions as ActiveSessionLookup,
+        cloudSessionStub,
+        deviceStoreStub,
+        pairingStub,
+        broadcasterStub,
       );
 
     it('delegates a named key to the facade after the scope check passes', async () => {
@@ -1432,7 +1453,10 @@ describe('TunnelHandlerService', () => {
           params: { kid: KID, publicKeyB64: PUB, installId: INSTALL },
         }),
       ).resolves.toMatchObject({ result: { kid: KID, trust: 'unverified' } });
-      expect(adopt).toHaveBeenCalledWith({ kid: KID, publicKeyB64: PUB }, INSTALL);
+      expect(adopt).toHaveBeenCalledWith({ kid: KID, publicKeyB64: PUB }, INSTALL, {
+        enrollment: 'unsigned',
+        requireSignedEnrollment: false,
+      });
     });
 
     it('threads the bounded reported label into IncomingPeerKey', async () => {
@@ -1449,6 +1473,7 @@ describe('TunnelHandlerService', () => {
       expect(adopt).toHaveBeenCalledWith(
         { kid: KID, publicKeyB64: PUB, label: 'Pixel' },
         undefined,
+        { enrollment: 'unsigned', requireSignedEnrollment: false },
       );
     });
   });

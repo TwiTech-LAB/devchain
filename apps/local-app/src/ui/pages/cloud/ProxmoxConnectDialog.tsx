@@ -19,53 +19,14 @@ import {
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { Textarea } from '@/ui/components/ui/textarea';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
-import type { ConnectProxmoxPlacement } from '@/modules/vm-providers/vm-providers.service';
-import {
-  vmProviderConnectionQueryKey,
-  type VmProviderConnectionView,
-} from '@/ui/hooks/useVmProviderConnections';
-
-interface SetupBlockFields {
-  node: string;
-  address: string;
-  pool: string;
-  storage: string;
-  imageStorage: string;
-  bridge: string;
-}
-
-interface FingerprintPreview {
-  confirmationRequired: true;
-  fingerprint: string;
-  placement: ConnectProxmoxPlacement;
-}
-
-const PLACEMENT_FIELDS = [
-  'apiUrl',
-  'node',
-  'pool',
-  'storage',
-  'imageStorage',
-  'bridge',
-] as const satisfies readonly (keyof ConnectProxmoxPlacement)[];
-
-function isPlacementPreview(value: unknown): value is ConnectProxmoxPlacement {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return PLACEMENT_FIELDS.every((field) => typeof candidate[field] === 'string');
-}
-
-interface ConnectedResult {
-  confirmationRequired: false;
-  connection: VmProviderConnectionView;
-  permissions: { ok: boolean; missing: string[] };
-}
-
-async function responseError(response: Response, fallback: string): Promise<Error> {
-  const body = (await response.json().catch(() => null)) as { message?: unknown } | null;
-  return new Error(typeof body?.message === 'string' ? body.message : fallback);
-}
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
+import { vmProviderConnectionQueryKey } from './lib/remote-vm-query-keys';
+import type {
+  ProxmoxConnectedResult,
+  ProxmoxFingerprintPreview,
+  ProxmoxSetupBlockFields,
+  VmProviderConnectionView,
+} from './lib/remote-vm-contracts';
 
 type Step = 'block' | 'string' | 'confirm';
 const STEPS: Step[] = ['block', 'string', 'confirm'];
@@ -87,9 +48,10 @@ export function ProxmoxConnectDialog({
   onClose: () => void;
   onAddVm: (connection: VmProviderConnectionView) => void;
 }) {
+  const api = useRemoteVmApi();
   const [step, setStep] = useState<Step>('block');
   const queryClient = useHomeQueryClient();
-  const [fields, setFields] = useState<SetupBlockFields>({
+  const [fields, setFields] = useState<ProxmoxSetupBlockFields>({
     node: '',
     address: '',
     pool: 'devchain',
@@ -99,14 +61,14 @@ export function ProxmoxConnectDialog({
   });
   const [block, setBlock] = useState('');
   const [connectionString, setConnectionString] = useState('');
-  const [preview, setPreview] = useState<FingerprintPreview | null>(null);
+  const [preview, setPreview] = useState<ProxmoxFingerprintPreview | null>(null);
   const [confirmed, setConfirmed] = useState(false);
-  const [connected, setConnected] = useState<ConnectedResult | null>(null);
+  const [connected, setConnected] = useState<ProxmoxConnectedResult | null>(null);
   const [pending, setPending] = useState<'block' | 'preview' | 'connect' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState('');
 
-  const updateField = (key: keyof SetupBlockFields, value: string) => {
+  const updateField = (key: keyof ProxmoxSetupBlockFields, value: string) => {
     setFields((current) => ({ ...current, [key]: value }));
     setBlock('');
     setError(null);
@@ -117,25 +79,7 @@ export function ProxmoxConnectDialog({
     setError(null);
     setCopyStatus('');
     try {
-      const query = new URLSearchParams(
-        Object.entries(fields)
-          // An empty address or pool is left out, so the server uses its default.
-          .filter(
-            ([key, value]) => (key !== 'address' && key !== 'pool') || value.trim().length > 0,
-          )
-          .map(([key, value]) => [key, value.trim()]),
-      );
-      const response = await apiFetch(
-        `/api/vm-providers/proxmox/setup-block?${query.toString()}`,
-        {},
-        { backend: HOME_BACKEND },
-      );
-      if (!response.ok) throw await responseError(response, 'Could not generate the setup block.');
-      const result = (await response.json()) as { block?: unknown };
-      if (typeof result.block !== 'string' || result.block.length === 0) {
-        throw new Error('The server returned an empty setup block.');
-      }
-      setBlock(result.block);
+      setBlock(await api.readProxmoxSetupBlock(fields));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not generate the setup block.');
     } finally {
@@ -160,25 +104,7 @@ export function ProxmoxConnectDialog({
     setConnected(null);
     setConfirmed(false);
     try {
-      const response = await apiFetch(
-        '/api/vm-providers/proxmox/connect',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ connectionString: connectionString.trim() }),
-        },
-        { backend: HOME_BACKEND },
-      );
-      if (!response.ok)
-        throw await responseError(response, 'Could not read the connection string.');
-      const result = (await response.json()) as FingerprintPreview;
-      if (
-        result.confirmationRequired !== true ||
-        typeof result.fingerprint !== 'string' ||
-        !isPlacementPreview(result.placement)
-      ) {
-        throw new Error('The server returned an unexpected fingerprint response.');
-      }
+      const result = await api.previewProxmoxConnection(connectionString);
       setPreview(result);
       setStep('confirm');
     } catch (cause) {
@@ -194,23 +120,7 @@ export function ProxmoxConnectDialog({
     setPending('connect');
     setError(null);
     try {
-      const response = await apiFetch(
-        '/api/vm-providers/proxmox/connect',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            connectionString: connectionString.trim(),
-            confirmFingerprint: true,
-          }),
-        },
-        { backend: HOME_BACKEND },
-      );
-      if (!response.ok) throw await responseError(response, 'Could not connect Proxmox.');
-      const result = (await response.json()) as ConnectedResult;
-      if (result.confirmationRequired !== false || !result.connection?.id || !result.permissions) {
-        throw new Error('The server returned an unexpected connection response.');
-      }
+      const result = await api.connectProxmox(connectionString);
       setConnected(result);
       setConnectionString('');
       setPreview(null);

@@ -1,4 +1,12 @@
 import type {
+  ScheduledEpicStorage,
+  ListResult,
+  ListScheduledEpicsOptions,
+  ListScheduledEpicRunsOptions,
+  ClaimRunResult,
+  UpdateScheduledEpicOptions,
+} from '../../interfaces/storage.interface';
+import type {
   ScheduledEpic,
   CreateScheduledEpic,
   UpdateScheduledEpic,
@@ -7,13 +15,6 @@ import type {
   CreateScheduledEpicRun,
   UpdateScheduledEpicRun,
 } from '../../models/domain.models';
-import type {
-  ListResult,
-  ListScheduledEpicsOptions,
-  ListScheduledEpicRunsOptions,
-  ClaimRunResult,
-  UpdateScheduledEpicOptions,
-} from '../../interfaces/storage.interface';
 import { and as andSync, eq as eqSync } from 'drizzle-orm';
 import {
   NotFoundError,
@@ -24,7 +25,10 @@ import { scheduledEpics as scheduledEpicsTable } from '../../db/schema';
 import { normalizeListOptions } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
-export class ScheduledEpicStorageDelegate extends BaseStorageDelegate {
+export class ScheduledEpicStorageDelegate
+  extends BaseStorageDelegate
+  implements ScheduledEpicStorage
+{
   constructor(context: StorageDelegateContext) {
     super(context);
   }

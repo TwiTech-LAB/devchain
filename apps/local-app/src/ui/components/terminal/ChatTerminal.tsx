@@ -10,6 +10,7 @@ import {
 import { flushSync } from 'react-dom';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { fetchSettings } from '@/ui/lib/settings';
 import { cn } from '@/ui/lib/utils';
 import { Textarea } from '@/ui/components/ui/textarea';
 import { Button } from '@/ui/components/ui/button';
@@ -137,8 +138,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
 
   // Fetch terminal settings BEFORE mounting terminal
   useEffect(() => {
-    fetchFn('/api/settings')
-      .then((res) => res.json())
+    fetchSettings(fetchFn)
       .then((json) => {
         const mode = json?.terminal?.inputMode;
         const suppressCtrlCWithSelection = json?.terminal?.suppressCtrlCWithSelection;

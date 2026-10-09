@@ -27,7 +27,8 @@ export interface EffortSeedResult {
 export class ProviderEffortSeedingService {
   constructor(
     private readonly adapterFactory: ProviderAdapterFactory,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: Pick<StorageService, 'bulkCreateProviderEfforts' | 'listProviders'>,
   ) {}
 
   /**

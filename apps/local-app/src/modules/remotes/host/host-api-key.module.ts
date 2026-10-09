@@ -1,7 +1,7 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
 import type { FastifyInstance } from 'fastify';
-import { HostApiKeyService, HOST_API_KEY_REJECTION } from './host-api-key.service';
+import { HostApiKeyService } from './host-api-key.service';
 import { HostApiKeyController } from './host-api-key.controller';
 
 @Module({
@@ -23,8 +23,9 @@ export class HostApiKeyModule implements OnModuleInit {
     adapter.getInstance<FastifyInstance>().addHook('onRequest', async (request, reply) => {
       const rotation =
         request.method === 'POST' && request.url.split('?', 1)[0] === '/api/host/api-key';
-      if (!this.keys.allows(request.raw, 'http', rotation)) {
-        return reply.code(401).send(HOST_API_KEY_REJECTION);
+      const refusal = this.keys.allows(request.raw, 'http', rotation);
+      if (refusal) {
+        return reply.code(refusal.statusCode).send(refusal);
       }
     });
     this.registered = true;

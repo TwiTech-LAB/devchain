@@ -42,7 +42,6 @@ import {
   SESSION_TRANSCRIPT_TURN_SIGNAL,
   type SessionTranscriptTurnSignal,
 } from '../../terminal/services/session-turn-signals';
-import { hasTranscriptTurns, transcriptTurnState } from './transcript-turn-state';
 
 /** Debounce window for coalescing rapid JSONL appends */
 const DEBOUNCE_MS = 100;
@@ -337,9 +336,21 @@ export class TranscriptWatcherService implements OnModuleDestroy {
           );
           if (!this.isCurrent(state)) return;
           this.applyBodyResultToState(state, adapter, result, stat);
-          this.emitTranscriptTurn(state, result.session.metrics, result.continuationState, false);
+          this.emitTranscriptTurn(
+            state,
+            adapter,
+            result.session.metrics,
+            result.continuationState,
+            false,
+          );
         } else if (state.lane) {
-          this.emitTranscriptTurn(state, state.lane.metrics, state.lane.continuationState, false);
+          this.emitTranscriptTurn(
+            state,
+            adapter,
+            state.lane.metrics,
+            state.lane.continuationState,
+            false,
+          );
         }
         if (sourceRef && adapter.getFreshnessToken) {
           const token = await adapter.getFreshnessToken(sourceRef);
@@ -1000,7 +1011,13 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     this.markStatConsumed(state, stat);
     this.applyLaneToState(state);
     if (!ending && state.lane) {
-      this.emitTranscriptTurn(state, state.lane.metrics, state.lane.continuationState, true);
+      this.emitTranscriptTurn(
+        state,
+        adapter,
+        state.lane.metrics,
+        state.lane.continuationState,
+        true,
+      );
     }
 
     // The final stop pass (ending) refreshes the reported metrics only; it never publishes a live
@@ -1068,15 +1085,16 @@ export class TranscriptWatcherService implements OnModuleDestroy {
    */
   private emitTranscriptTurn(
     state: WatcherState,
+    adapter: SessionReaderAdapter,
     metrics: UnifiedMetrics,
     continuationState: unknown,
     grew: boolean,
   ): void {
-    if (!this.eventEmitter || !hasTranscriptTurns(state.providerName)) return;
+    if (!this.eventEmitter || !adapter.turnState) return;
     const signal: SessionTranscriptTurnSignal = {
       sessionId: state.sessionId,
       providerName: state.providerName,
-      turn: transcriptTurnState(state.providerName, metrics, continuationState),
+      turn: adapter.turnState(metrics, continuationState),
       grew,
     };
     this.eventEmitter.emit(SESSION_TRANSCRIPT_TURN_SIGNAL, signal);
@@ -1151,7 +1169,7 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     const deltaMessages = truncatedDeltaMessages.map(serializeMessageToWire);
 
     this.markStatConsumed(state, stat);
-    this.emitTranscriptTurn(state, session.metrics, result.continuationState, grew);
+    this.emitTranscriptTurn(state, adapter, session.metrics, result.continuationState, grew);
     state.lastSourceVersion = sourceVersion;
     state.lastCursorProof = cursorProof;
     state.lastMessageCount = session.metrics.messageCount;

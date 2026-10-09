@@ -1,5 +1,5 @@
+import type { RemoteStorage, ListOptions, ListResult } from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
-import type { ListOptions, ListResult } from '../../interfaces/storage.interface';
 import {
   ConflictError,
   NotFoundError,
@@ -98,7 +98,7 @@ const SELECT_OPERATION_COLUMNS =
 const SELECT_REMOTE_COLUMNS =
   'id, name, base_url, kind, vm_provider_connection_id, vm_identity, vm_spec_json, tls_certificate, created_at, updated_at FROM remotes';
 
-export class RemoteStorageDelegate extends BaseStorageDelegate {
+export class RemoteStorageDelegate extends BaseStorageDelegate implements RemoteStorage {
   constructor(
     context: StorageDelegateContext,
     private readonly cipher: IntegrationCredentialCipher,

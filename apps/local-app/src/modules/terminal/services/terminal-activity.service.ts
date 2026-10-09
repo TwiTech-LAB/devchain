@@ -14,6 +14,7 @@ import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { SettingsService } from '../../settings/services/settings.service';
 import { DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS } from '../../settings/services/settings.constants';
 import { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
+import { providerTraits } from '../../providers/adapters/provider-traits';
 import { TerminalSessionRegistry } from './terminal-session/terminal-session-registry';
 import type { FrameEvent } from './terminal-session/terminal-frame-stream';
 import { createMeaningfulOutputPredicate } from '../utils/terminal-activity';
@@ -34,16 +35,6 @@ export const TURN_FALLBACK_IDLE_MS = 10 * 60 * 1000;
 /** Copilot repaints its screen right after `Stop`; that output does not start a new turn. */
 export const POST_STOP_OUTPUT_GRACE_MS = 2000;
 
-/**
- * Which evidence drives busy and idle for a provider:
- * - `claude`: `UserPromptSubmit` / `Stop` hooks and transcript turn evidence. Output never
- *   starts busy once any evidence arrived.
- * - `codex`: transcript turn evidence (open / complete), plus output.
- * - `copilot`: output, and the `Stop` hook ends the turn.
- * - `output`: output only; idle is inferred from silence.
- */
-type ActivityPolicy = 'claude' | 'codex' | 'copilot' | 'output';
-
 /** What keeps a busy session busy: recent output, or an open turn. */
 type BusyHold = 'output' | 'turn';
 
@@ -63,22 +54,6 @@ interface SessionRow {
   status: string;
   activity_state: string | null;
   provider_name_at_launch: string | null;
-}
-
-/** Policies whose transcript watcher reports turns (`SESSION_TRANSCRIPT_TURN_SIGNAL`). */
-const TRANSCRIPT_TURN_POLICIES: ReadonlySet<ActivityPolicy> = new Set(['claude', 'codex']);
-
-function policyFor(providerName: string | null | undefined): ActivityPolicy {
-  switch (providerName?.toLowerCase()) {
-    case 'claude':
-      return 'claude';
-    case 'codex':
-      return 'codex';
-    case 'copilot':
-      return 'copilot';
-    default:
-      return 'output';
-  }
 }
 
 @Injectable()
@@ -124,10 +99,10 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
       )
       .all() as Array<{ id: string; provider_name_at_launch: string | null }>;
     for (const row of rows) {
-      const policy = policyFor(row.provider_name_at_launch);
+      const traits = providerTraits(row.provider_name_at_launch);
       const turn = this.turnRecord(row.id);
       if (turn.hold !== null) continue;
-      if (TRANSCRIPT_TURN_POLICIES.has(policy)) {
+      if (traits.transcriptTurns) {
         turn.hold = 'turn';
         this.armFallback(row.id);
       } else {
@@ -280,8 +255,8 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
     const busy = row.activity_state === 'busy';
     const now = Date.now();
 
-    switch (policyFor(row.provider_name_at_launch)) {
-      case 'claude':
+    switch (providerTraits(row.provider_name_at_launch).activity) {
+      case 'hook-and-transcript':
         // With turn evidence, output inside a turn only proves it is alive, and output after
         // the turn (the input box, a repaint) is not a turn.
         if (turn.hasTurnEvidence) {
@@ -289,13 +264,13 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
           return;
         }
         break;
-      case 'codex':
+      case 'transcript':
         if (turn.transcriptOpen === true) {
           this.holdByTurn(sessionId, busy);
           return;
         }
         break;
-      case 'copilot':
+      case 'stop-hook':
         if (now < turn.outputIgnoredUntil) return;
         break;
       case 'output':
@@ -318,11 +293,11 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
     const row = this.readSession(signal.sessionId);
     if (row?.status !== 'running') return;
     const turn = this.turnRecord(signal.sessionId);
-    const policy = policyFor(row.provider_name_at_launch);
-    if (policy === 'claude') {
+    const policy = providerTraits(row.provider_name_at_launch).activity;
+    if (policy === 'hook-and-transcript') {
       // A Stop from before the latest prompt ended the previous turn, not this one.
       if (!this.closeClaudeTurn(turn, signal.firedAtMs)) return;
-    } else if (policy === 'copilot') {
+    } else if (policy === 'stop-hook') {
       turn.outputIgnoredUntil = Date.now() + POST_STOP_OUTPUT_GRACE_MS;
     }
     this.endTurn(signal.sessionId, row.activity_state === 'busy');
@@ -331,8 +306,8 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
   private transcriptTurn(signal: SessionTranscriptTurnSignal): void {
     const row = this.readSession(signal.sessionId);
     if (row?.status !== 'running') return;
-    const policy = policyFor(row.provider_name_at_launch);
-    if (!TRANSCRIPT_TURN_POLICIES.has(policy)) return;
+    const traits = providerTraits(row.provider_name_at_launch);
+    if (!traits.transcriptTurns) return;
     const turn = this.turnRecord(signal.sessionId);
     const busy = row.activity_state === 'busy';
     const state = signal.turn;
@@ -343,7 +318,7 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
     }
     turn.transcriptOpen = state.open;
 
-    if (policy === 'codex') {
+    if (traits.activity === 'transcript') {
       if (state.open) this.holdByTurn(signal.sessionId, busy, signal.grew);
       else this.endTurn(signal.sessionId, busy);
       return;

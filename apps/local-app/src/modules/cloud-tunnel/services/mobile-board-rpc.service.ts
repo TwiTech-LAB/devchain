@@ -1,11 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type AgentStorage,
+  type StatusStorage,
+} from '../../storage/interfaces/storage.interface';
 import { EpicsService } from '../../epics/services/epics.service';
 import { NotFoundError } from '../../../common/errors/error-types';
 import type { Epic, EpicComment } from '../../storage/models/domain.models';
 import type { ListResult } from '../../storage/interfaces/storage.interface';
 import { toEpicDto, toStatusMap } from './epic-dto.util';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 /**
  * Single composition point for the mobile `board.*` MUTATION + comment RPCs
@@ -27,9 +32,12 @@ import { ProjectWriteAdmissionService } from '../../remotes/admission/project-wr
 @Injectable()
 export class MobileBoardRpcService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage &
+      StatusStorage &
+      Pick<StorageService, 'getEpic' | 'listEpicComments'>,
     private readonly epicsService: EpicsService,
-    private readonly admission?: ProjectWriteAdmissionService,
+    private readonly gate?: ProjectWriteGate,
   ) {}
 
   /**
@@ -132,7 +140,7 @@ export class MobileBoardRpcService {
    * not-found as a missing project, before any epic existence is checked.
    */
   private assertProjectNotRemoteOwned(projectId: string): void {
-    if (this.admission?.getRemoteOwner(projectId)) {
+    if (this.gate?.getRemoteOwner(projectId)) {
       throw new NotFoundError('Project', projectId);
     }
   }

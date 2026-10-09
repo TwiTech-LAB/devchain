@@ -115,8 +115,12 @@ describe('context-window resolution lifecycle', () => {
       freshBase.contextWindowOverride,
     );
     const freshSettings = await materializer.prepare({
-      providerName: 'claude',
-      settingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+      provider: { name: 'claude', claudeLaunchSettingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON },
+      providerBinPath: '/usr/bin/claude',
+      projectId: 'project-1',
+      projectName: 'Context Lifecycle',
+      pluginPolicy: [],
+      launchUnsetEnv: adapter.launchUnsetEnv ?? [],
       profileOptionArgs,
       providerEnv: null,
       configEnv,
@@ -138,7 +142,7 @@ describe('context-window resolution lifecycle', () => {
       runtimeEnv: freshSettings.runtimeEnv,
     });
 
-    expect(freshSettings.captureEnabled).toBe(true);
+    expect(freshSettings.runtimeEnv.DEVCHAIN_STATUSLINE_LOCATOR).toEqual(expect.any(String));
     expect(freshLaunch.argv).toEqual([
       '--settings',
       freshSettings.optionArgs[1],
@@ -193,8 +197,12 @@ describe('context-window resolution lifecycle', () => {
     const preRestoreSnapshot = firstRuntime.capture.snapshot(SESSION_ID);
     const restoreEpoch = firstRuntime.capture.rotateEpoch(SESSION_ID, null);
     const restoreSettings = await materializer.prepare({
-      providerName: 'claude',
-      settingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+      provider: { name: 'claude', claudeLaunchSettingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON },
+      providerBinPath: '/usr/bin/claude',
+      projectId: 'project-1',
+      projectName: 'Context Lifecycle',
+      pluginPolicy: [],
+      launchUnsetEnv: adapter.launchUnsetEnv ?? [],
       profileOptionArgs,
       providerEnv: null,
       configEnv: null,
@@ -228,8 +236,12 @@ describe('context-window resolution lifecycle', () => {
     firstRuntime.capture.rotateEpoch(SESSION_ID, null);
     const liveRestoreEpoch = firstRuntime.capture.getEpoch(SESSION_ID)!;
     const liveRestoreSettings = await materializer.prepare({
-      providerName: 'claude',
-      settingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+      provider: { name: 'claude', claudeLaunchSettingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON },
+      providerBinPath: '/usr/bin/claude',
+      projectId: 'project-1',
+      projectName: 'Context Lifecycle',
+      pluginPolicy: [],
+      launchUnsetEnv: adapter.launchUnsetEnv ?? [],
       profileOptionArgs,
       providerEnv: null,
       configEnv: null,

@@ -648,8 +648,6 @@ export interface EpicStorage {
     eventFactory?: FactualEventFactory<EpicComment, Epic>,
   ): Promise<EpicComment>;
   deleteEpicComment(id: string): Promise<void>;
-  /** The epic that owns the comment, or null when no such comment exists. */
-  findEpicCommentEpicId(commentId: string): Promise<string | null>;
   /**
    * Delete a comment scoped to its owning epic (`WHERE id = ? AND epic_id = ?`).
    * Returns true when a row was deleted, false when none matched (comment from a

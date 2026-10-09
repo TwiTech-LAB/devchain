@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../services/teams.service';
 
 const logger = createLogger('TeamsController');
@@ -91,7 +91,7 @@ export interface TeamDetailResponse {
 export class TeamsController {
   constructor(
     private readonly teamsService: TeamsService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
   ) {}
 
   @Get()

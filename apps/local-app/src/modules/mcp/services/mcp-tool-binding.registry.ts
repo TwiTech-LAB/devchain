@@ -11,10 +11,10 @@ import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { SkillsService } from '../../skills/services/skills.service';
 import { SkillSourceLifecycleService } from '../../skills/services/skill-source-lifecycle.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../../teams/services/teams.service';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { allMetadata } from '../tool-descriptors';
 import type { BoundMcpToolHandler, McpBindingRuntime } from '../tool-descriptors/binding-types';
 import { allBindingDefinitions } from '../tool-descriptors/runtime-bindings';
@@ -31,7 +31,8 @@ export class McpToolBindingRegistry {
   private readonly bindings: ReadonlyMap<string, ResolvedMcpToolBinding>;
 
   constructor(
-    @Inject(STORAGE_SERVICE) storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    storage: McpBindingRuntime['storage'],
     @Optional()
     @Inject(forwardRef(() => SessionsService))
     sessionsService?: SessionsService,
@@ -67,7 +68,7 @@ export class McpToolBindingRegistry {
     @Inject(forwardRef(() => AgentMessageDeliveryService))
     agentMessageDelivery?: AgentMessageDeliveryService,
     @Optional() projectCommunicationService?: ProjectCommunicationService,
-    @Optional() projectWriteAdmission?: ProjectWriteAdmissionService,
+    @Optional() projectWriteGate?: ProjectWriteGate,
   ) {
     const instructionsResolver = new InstructionsResolver(storage);
     const sessionContextResolver = new SessionContextResolver(
@@ -91,7 +92,7 @@ export class McpToolBindingRegistry {
       terminalIO,
       agentMessageDelivery,
       projectCommunicationService,
-      projectWriteAdmission,
+      projectWriteGate,
       instructionsResolver,
       defaultInlineMaxBytes: 64 * 1024,
       resolveSessionContext: (sessionId: string) => sessionContextResolver.resolve(sessionId),

@@ -11,7 +11,7 @@ import {
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
 import { Download, Check, Loader2, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
-import { isLessThan } from '@devchain/shared';
+import { healthQueries, selectAppVersion, isVersionCompatible } from '@/ui/lib/health';
 import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 interface TemplateVersion {
@@ -48,30 +48,6 @@ async function downloadTemplateVersion(slug: string, version: string) {
   return res.json();
 }
 
-async function fetchAppVersion(): Promise<string | null> {
-  const res = await apiFetch('/health', undefined, { backend: 'home' });
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data?.version || null;
-}
-
-/**
- * Check if a template version is compatible with the current Devchain version.
- * Returns true if compatible, false if incompatible.
- */
-function isVersionCompatible(
-  minDevchainVersion: string | null,
-  currentVersion: string | null,
-): boolean {
-  if (!minDevchainVersion || !currentVersion) return true;
-  try {
-    return !isLessThan(currentVersion, minDevchainVersion);
-  } catch {
-    // If version comparison fails, assume compatible
-    return true;
-  }
-}
-
 export function VersionList({ versions, slug }: VersionListProps) {
   const queryClient = useQueryClient();
   const [showOlderVersions, setShowOlderVersions] = useState(false);
@@ -85,9 +61,8 @@ export function VersionList({ versions, slug }: VersionListProps) {
 
   // Get current Devchain version for compatibility checks
   const { data: currentVersion } = useQuery({
-    queryKey: ['health'],
-    queryFn: fetchAppVersion,
-    staleTime: Infinity, // Version doesn't change during runtime
+    ...healthQueries.check(),
+    select: selectAppVersion,
   });
 
   const cachedVersions = new Set<string>(cacheData?.versions || []);

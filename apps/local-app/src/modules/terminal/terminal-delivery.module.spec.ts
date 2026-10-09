@@ -13,6 +13,7 @@ import { TerminalIOService } from './services/terminal-io/terminal-io.service';
 import { TerminalDeliveryModule } from './terminal-delivery.module';
 import { TerminalModule } from './terminal.module';
 import { HumanPromptStateService } from './services/human-prompt-state.service';
+import { HumanPromptInputService } from './services/human-prompt-input.service';
 
 describe('Terminal delivery wrappers', () => {
   let moduleRef: TestingModule;
@@ -127,6 +128,7 @@ describe('TerminalDeliveryModule shape', () => {
 
     expect(moduleRef.get(TerminalIOService)).toBeInstanceOf(TerminalIOService);
     expect(moduleRef.get(HumanPromptStateService)).toBeInstanceOf(HumanPromptStateService);
+    expect(moduleRef.get(HumanPromptInputService)).toBeInstanceOf(HumanPromptInputService);
     expect(moduleRef.get(GuestDeliveryService)).toBeInstanceOf(GuestDeliveryService);
     expect(moduleRef.get(TerminalDeliveryFacade)).toBeInstanceOf(TerminalDeliveryFacade);
 
@@ -157,6 +159,7 @@ describe('TerminalDeliveryModule shape', () => {
     }).compile();
 
     expect(moduleRef.get(TerminalIOService)).toBeInstanceOf(TerminalIOService);
+    expect(moduleRef.get(HumanPromptInputService)).toBeInstanceOf(HumanPromptInputService);
     expect(moduleRef.get(GuestDeliveryService)).toBeInstanceOf(GuestDeliveryService);
     expect(moduleRef.get(TerminalDeliveryFacade)).toBeInstanceOf(TerminalDeliveryFacade);
 

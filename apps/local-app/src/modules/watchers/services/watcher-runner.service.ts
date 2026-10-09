@@ -1,6 +1,11 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type WatcherStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { Watcher, TriggerCondition } from '../../storage/models/domain.models';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
@@ -43,7 +48,8 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
   private readonly triggerState = new WatcherTriggerState();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage & ProfileProviderConfigStorage & WatcherStorage,
     @Inject(forwardRef(() => SessionsService)) private readonly sessionsService: SessionsService,
     @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
     @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,

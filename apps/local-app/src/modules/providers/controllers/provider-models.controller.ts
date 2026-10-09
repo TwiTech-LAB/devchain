@@ -46,7 +46,15 @@ const ProviderModelCreateRequestSchema = z.union([
 @Controller('api/providers/:id/models')
 export class ProviderModelsController {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: Pick<
+      StorageService,
+      | 'bulkCreateProviderModels'
+      | 'createProviderModel'
+      | 'deleteProviderModel'
+      | 'getProvider'
+      | 'listProviderModelsByProvider'
+    >,
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly executor: ProcessExecutor,
   ) {}

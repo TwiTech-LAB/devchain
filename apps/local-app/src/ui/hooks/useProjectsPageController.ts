@@ -40,7 +40,13 @@ import type {
 import { projectsHttpApi } from '@/ui/pages/projects/lib/projects-http-api';
 import type { ProjectsPageApi } from '@/ui/pages/projects/lib/projects-page-api';
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
-import { buildProjectsTableModel } from '@/ui/pages/projects/projects-page-model';
+import {
+  buildProjectsTableModel,
+  buildTemplateUpdateNoticeItems,
+  getTemplateUpdateNoticeItemKeys,
+} from '@/ui/pages/projects/projects-page-model';
+import { useDismissibleNotice } from './useDismissibleNotice';
+import { useRuntime } from './useRuntime';
 import type {
   EditProjectFormData,
   ProjectPathValidation,
@@ -198,7 +204,7 @@ export function useProjectsPageController(
   );
   const [providerWarnings, setProviderWarnings] = useState<ProviderMismatchWarning[]>([]);
 
-  const { data: allTemplates } = useQuery({
+  const { data: allTemplates, isSuccess: templatesForUpgradeReady } = useQuery({
     queryKey: projectsQueryKeys.templatesForUpgrade(),
     queryFn: () => api.listTemplates(),
     staleTime: 60000,
@@ -645,11 +651,15 @@ export function useProjectsPageController(
   const [importResult, setImportResult] = useState<ImportProjectSuccess | null>(null);
   const importWizard = useImportProjectWizard({ onImported: setImportResult, toast, api });
 
-  const closeUpgradeTarget = useCallback(() => {
-    setUpgradeTarget(null);
+  const invalidateUpgradeSources = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: projectsQueryKeys.list() });
     void queryClient.invalidateQueries({ queryKey: projectsQueryKeys.templatesForUpgrade() });
   }, [queryClient]);
+
+  const closeUpgradeTarget = useCallback(() => {
+    setUpgradeTarget(null);
+    invalidateUpgradeSources();
+  }, [invalidateUpgradeSources]);
 
   const upgradeActionName =
     upgradeTarget?.project.templateMetadata?.source === 'bundled' ? 'Update' : 'Upgrade';
@@ -732,6 +742,44 @@ export function useProjectsPageController(
     setUpgradeResult(null);
     setUpgradeTarget({ project, targetVersion });
   }, []);
+
+  const noticeItems = useMemo(
+    () =>
+      projectsQuery.isSuccess && templatesForUpgradeReady
+        ? buildTemplateUpdateNoticeItems(projectsQuery.data.items, allTemplates, remoteOwners, {
+            upgradeProject: openUpgrade,
+          })
+        : [],
+    [
+      projectsQuery.isSuccess,
+      projectsQuery.data,
+      templatesForUpgradeReady,
+      allTemplates,
+      remoteOwners,
+      openUpgrade,
+    ],
+  );
+  // A restart can ship new bundled templates, and the server computes bundled upgrades per
+  // request: refetch both upgrade sources when the boot changes so the notice sees new targets.
+  const bootId = useRuntime().runtimeInfo?.bootId;
+  const seenBootIdRef = useRef(bootId);
+  useEffect(() => {
+    if (!bootId) return;
+    const previousBootId = seenBootIdRef.current;
+    seenBootIdRef.current = bootId;
+    if (!previousBootId || previousBootId === bootId) return;
+    invalidateUpgradeSources();
+  }, [bootId, invalidateUpgradeSources]);
+
+  const noticeItemKeys = useMemo(() => getTemplateUpdateNoticeItemKeys(noticeItems), [noticeItems]);
+  const {
+    visible: noticeVisible,
+    closeUntilRestart,
+    dismissUntilNewItems,
+  } = useDismissibleNotice({
+    noticeId: 'template-updates',
+    itemKeys: noticeItemKeys,
+  });
 
   const closeUpgradeResult = useCallback(() => {
     setUpgradeResult(null);
@@ -827,6 +875,7 @@ export function useProjectsPageController(
   }, [templateForm.resetTemplateForm]);
 
   const table = buildProjectsTableModel({
+    notice: noticeVisible ? { items: noticeItems, closeUntilRestart, dismissUntilNewItems } : null,
     data: projectsQuery.data,
     isLoading: projectsQuery.isLoading || workspacesQuery.isLoading,
     search,

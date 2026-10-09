@@ -7,7 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
-import type { ProviderAuthEntryItem } from '@/ui/hooks/useProviderAuth';
+import type { ProviderAuthEntryItem } from './lib/remote-vm-contracts';
 import { AddLoginDialog } from './AddLoginDialog';
 import {
   LOGIN_PROVIDERS,

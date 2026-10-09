@@ -1,5 +1,6 @@
 import { createEvent, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import userEvent from '@testing-library/user-event';
 import type {
   ProjectTableRowModel,
   ProjectsTableModel,
@@ -96,6 +97,7 @@ function model(content: ProjectsTableModel['content']): ProjectsTableModel {
     openCreateInWorkspace: jest.fn(),
     requestProjectMove: jest.fn(),
     openCreateWorkspace: jest.fn(),
+    notice: null,
     statusMessage: '',
     drag: {
       projectId: null,
@@ -116,6 +118,37 @@ function ready(groups: ProjectWorkspaceGroupModel[], searchActive = false): Proj
 }
 
 describe('ProjectsTable', () => {
+  // Only the Projects-specific lock adaptation belongs here; disclosure behavior is owned by NoticeBanner.
+  it('disables the notice Update action and supplies the remote lock reason', async () => {
+    const table = ready([]);
+    const reason = 'Connected to remote "VM"; change this project there.';
+    render(
+      <ProjectsTable
+        model={{
+          ...table,
+          notice: {
+            items: [
+              {
+                projectId: 'locked',
+                projectName: 'Locked',
+                slug: 'starter',
+                currentVersion: '1.0.0',
+                targetVersion: '2.0.0',
+                lockMessage: reason,
+              },
+            ],
+            closeUntilRestart: jest.fn(),
+            dismissUntilNewItems: jest.fn(),
+          },
+        }}
+      />,
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Show' }));
+    const update = screen.getByRole('button', { name: 'Update' });
+    expect(update).toBeDisabled();
+    expect(update).toHaveAttribute('title', reason);
+  });
+
   it('renders loading, shared unavailable, and no-workspaces states', () => {
     const retry = jest.fn();
     const { rerender } = render(<ProjectsTable model={model({ kind: 'loading' })} />);

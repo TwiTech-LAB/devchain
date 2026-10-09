@@ -8,6 +8,11 @@ import { getRawSqliteClient } from '../../../storage/db/sqlite-raw';
 import {
   STORAGE_SERVICE,
   type StorageService,
+  type AgentProfileStorage,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
+  type PromptStorage,
 } from '../../../storage/interfaces/storage.interface';
 import type {
   Agent,
@@ -46,8 +51,7 @@ import { buildPromptRenderContext } from '../../../../common/template/prompt-ren
 import { CleanupStack } from './cleanup-stack';
 import { ensureMcpReadiness } from './ensure-mcp-readiness';
 import type { LaunchSessionDto, SessionDetailDto } from '../../dtos/sessions.dto';
-import { RuntimeContextCaptureService } from '../../../runtime-context-capture/runtime-context-capture.service';
-import { CodexPluginProfileMaterializerService } from '../../../runtime-context-capture/codex-plugin-profile-materializer.service';
+import { SessionTerminalRuntimeService } from '../../../session-terminal-runtime/session-terminal-runtime.service';
 import { ProviderRuntimePreparationService } from '../provider-runtime-preparation';
 
 const logger = createLogger('SessionLaunchPipeline');
@@ -58,7 +62,13 @@ export class SessionLaunchPipeline {
 
   constructor(
     @Inject(DB_CONNECTION) db: BetterSQLite3Database,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      AgentStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      PromptStorage &
+      Pick<StorageService, 'getEpic' | 'getProvider' | 'getProviderEnvForProject'>,
     private readonly sessionCoordinator: SessionCoordinatorService,
     private readonly providerAdapterFactory: ProviderAdapterFactory,
     private readonly terminalIO: TerminalIOService,
@@ -70,8 +80,7 @@ export class SessionLaunchPipeline {
     private readonly mcpEnsureService: ProviderMcpEnsureService,
     private readonly eventsService: EventsService,
     private readonly teamsStore: TeamsStore,
-    private readonly runtimeContextCapture: RuntimeContextCaptureService,
-    private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
+    private readonly sessionTerminalRuntime: SessionTerminalRuntimeService,
     private readonly providerRuntimePreparation: ProviderRuntimePreparationService,
   ) {
     this.sqlite = getRawSqliteClient(db);
@@ -339,8 +348,7 @@ export class SessionLaunchPipeline {
     this.sqlite
       .prepare(`UPDATE sessions SET status = 'stopped', ended_at = ?, updated_at = ? WHERE id = ?`)
       .run(new Date().toISOString(), new Date().toISOString(), row.id);
-    this.runtimeContextCapture.clear(row.id as string);
-    await this.codexPluginProfiles.cleanupSession(row.id as string);
+    await this.sessionTerminalRuntime.releaseProviderArtifacts(row.id as string);
 
     return null;
   }

@@ -1,4 +1,12 @@
-import { Injectable, Inject, OnModuleInit, OnModuleDestroy, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  OnModuleInit,
+  OnModuleDestroy,
+  forwardRef,
+  Optional,
+} from '@nestjs/common';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { createLogger } from '../../../common/logging/logger';
 import { STORAGE_SERVICE, GuestStorage } from '../../storage/interfaces/storage.interface';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
@@ -18,6 +26,7 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
     @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
     @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
     @Inject(forwardRef(() => GuestsService)) private readonly guestsService: GuestsService,
+    @Optional() private readonly gate?: ProjectWriteGate,
   ) {
     logger.info('GuestHealthService initialized');
   }
@@ -65,6 +74,11 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
       logger.info({ count: guests.length }, 'Resuming health monitoring for existing guests');
 
       for (const guest of guests) {
+        // A blocked project keeps its interval; the ticks probe again once it is writable.
+        if (this.gate && !this.gate.isWritable(guest.projectId)) {
+          this.startMonitoring(guest);
+          continue;
+        }
         // First check if the tmux session still exists
         const sessionExists = await this.terminalIO.sessionExists({ name: guest.tmuxSessionId });
         if (!sessionExists) {
@@ -116,6 +130,7 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
    * Check health of a single guest
    */
   private async checkGuestHealth(guest: Guest): Promise<void> {
+    if (this.gate && !this.gate.isWritable(guest.projectId)) return;
     try {
       const sessionExists = await this.terminalIO.sessionExists({ name: guest.tmuxSessionId });
 
@@ -138,6 +153,7 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
    * Handle guest death - delete guest and publish event
    */
   private async handleGuestDeath(guest: Guest): Promise<void> {
+    if (this.gate && !this.gate.isWritable(guest.projectId)) return;
     // Stop monitoring first
     this.stopMonitoring(guest.id);
 

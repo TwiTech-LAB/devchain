@@ -8,10 +8,9 @@ import {
 } from './services/scheduled-epics.service';
 import { ScheduledEpicRunnerService } from './services/scheduled-epic-runner.service';
 import { ScheduledEpicsController } from './controllers/scheduled-epics.controller';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
-  imports: [StorageModule, EpicsModule, EventsCoreModule, ProjectWriteAdmissionModule],
+  imports: [StorageModule, EpicsModule, EventsCoreModule],
   controllers: [ScheduledEpicsController],
   providers: [
     ScheduledEpicsService,

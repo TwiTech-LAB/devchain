@@ -28,9 +28,10 @@ import {
 import { useToast } from '../hooks/use-toast';
 import { AutoCompactEnableModal } from './shared/AutoCompactEnableModal';
 import { BreadcrumbsProvider, useBreadcrumbs } from '../hooks/useBreadcrumbs';
-import { useRuntime } from '../hooks/useRuntime';
+import { useRuntime, useRuntimeSync } from '../hooks/useRuntime';
 import { useEpicRelationsSync } from '../hooks/useEpicRelationsSync';
 import { useEpicTimeScopeSync } from '../hooks/useEpicTimeScopeSync';
+import { useUnsignedDeviceNotice } from '../hooks/useUnsignedDeviceNotice';
 import { CloudStatusIndicator } from './cloud/CloudStatusIndicator';
 import { RemoteMetricsStrip } from './remote-metrics/RemoteMetricsStrip';
 import { useOptionalBackend } from '../lib/backend-context';
@@ -38,6 +39,7 @@ import { cn } from '../lib/utils';
 import { TONE_CLASSES } from '../lib/status-tone';
 import { fetchPreflightChecks } from '../lib/preflight';
 import { HOME_BACKEND, apiFetch } from '../lib/api-transport';
+import { healthQueries } from '../lib/health';
 import { fetchActiveSessions, type ActiveSession } from '../lib/sessions';
 import type { WsEnvelope } from '../lib/socket';
 import {
@@ -305,6 +307,8 @@ function LayoutShell({
   } = useSelectedProject();
   useEpicRelationsSync(selectedWorkspaceId);
   useEpicTimeScopeSync(selectedWorkspaceId);
+  useRuntimeSync();
+  useUnsignedDeviceNotice();
   useProjectActivityReporter(selectedProjectId);
   const { toast } = useToast();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -834,15 +838,7 @@ function LayoutShell({
   });
 
   // Fetch app version from health endpoint
-  const { data: healthData } = useQuery({
-    queryKey: ['health'],
-    queryFn: async () => {
-      const res = await apiFetch('/health', undefined, { backend: 'home' });
-      if (!res.ok) return null;
-      return res.json();
-    },
-    staleTime: Infinity, // Version doesn't change during runtime
-  });
+  const { data: healthData } = useQuery(healthQueries.check());
   const appVersion = healthData?.version;
 
   const preflightStatus = preflightResult?.overall;

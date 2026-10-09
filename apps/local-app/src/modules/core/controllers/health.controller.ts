@@ -5,6 +5,13 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { HealthService } from '../services/health.service';
 
+export interface HealthResponse {
+  status: 'ok';
+  timestamp: string;
+  environment: string;
+  version: string;
+}
+
 // Try to read version from root package.json (devchain-cli)
 function getVersion(): string {
   try {
@@ -41,7 +48,7 @@ export class HealthController {
   @Get()
   @ApiOperation({ summary: 'Health check endpoint' })
   @ApiResponse({ status: 200, description: 'Service is healthy' })
-  check() {
+  check(): HealthResponse {
     const config = getEnvConfig();
     return {
       status: 'ok',

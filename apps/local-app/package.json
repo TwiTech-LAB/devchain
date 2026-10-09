@@ -39,8 +39,6 @@
     "test:health-report": "pnpm test:health-report:generate && pnpm test:health-report:render",
     "test:health-report:generate": "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers --coverage --json --outputFile=reports/.jest-results.json --coverageReporters=json-summary",
     "test:health-report:render": "ts-node --compiler-options '{\"module\":\"commonjs\"}' scripts/test-health-report.ts --results reports/.jest-results.json --coverage coverage/coverage-summary.json",
-    "memory-soak": "node scripts/memory-soak/index.js",
-    "memory-soak:test": "node --test scripts/memory-soak/*.test.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

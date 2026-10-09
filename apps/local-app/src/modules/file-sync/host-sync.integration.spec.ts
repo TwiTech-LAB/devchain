@@ -221,6 +221,8 @@ describe('host sync routes', () => {
       .useValue(drizzle(sqlite))
       .overrideProvider(STORAGE_SERVICE)
       .useValue({
+        listRemoteProjectBindings: async () => [],
+        listFrozenProjects: async () => [],
         getProject: async (id: string) => {
           if (!projects[id]) throw new NotFoundError('Project', id);
           return projects[id];

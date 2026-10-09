@@ -19,9 +19,16 @@ import {
   type TestRemote,
   finishConnect,
 } from './testing/remote-vm-section.fixture';
-import { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
+import { RemoteOperationDto } from './lib/remote-vm-contracts';
 import { exclusion, fileSyncFailures } from './testing/file-sync-failures.fixture';
 import { POWER_ON_GRACE_MS } from './remote-status';
+const mockUseAllProjects = jest.fn();
+const mockUseWorkspaces = jest.fn();
+jest.mock('@/ui/hooks/useAllProjects', () => ({
+  useAllProjects: () => mockUseAllProjects(),
+  useWorkspaces: () => mockUseWorkspaces(),
+}));
+
 const mockUseSelectedProject = jest.fn();
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => mockUseSelectedProject(),
@@ -33,7 +40,12 @@ const toastSpy = jest.fn();
 jest.mock('@/ui/hooks/use-toast', () => ({ useToast: () => ({ toast: toastSpy }) }));
 
 beforeEach(() =>
-  resetRemoteVmFixture({ useSelectedProject: mockUseSelectedProject, toast: toastSpy }),
+  resetRemoteVmFixture({
+    useSelectedProject: mockUseSelectedProject,
+    useAllProjects: mockUseAllProjects,
+    useWorkspaces: mockUseWorkspaces,
+    toast: toastSpy,
+  }),
 );
 
 describe('RemoteVmSection', () => {
@@ -126,20 +138,18 @@ describe('RemoteVmSection', () => {
       await userEvent.click(within(flow).getByRole('button', { name: 'Next' }));
       await userEvent.click(within(flow).getByRole('button', { name: 'Connect' }));
       await screen.findByRole('dialog', { name: 'Connect · Project One' });
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/remotes/r1/attach',
+      expect(fx.calls.attachProject).toContainEqual([
+        'r1',
         expect.objectContaining({
-          body: JSON.stringify({
-            projectId: 'p1',
-            docker: {
-              items: [
-                { id: 'web', mode: 'container-and-data' },
-                { id: 'gpu', mode: 'data-only' },
-              ],
-            },
-          }),
+          projectId: 'p1',
+          docker: {
+            items: [
+              { id: 'web', mode: 'container-and-data' },
+              { id: 'gpu', mode: 'data-only' },
+            ],
+          },
         }),
-      );
+      ]);
     });
 
     it('shows a retryable file sync warning independently of database mirror errors', async () => {
@@ -166,10 +176,7 @@ describe('RemoteVmSection', () => {
       );
 
       expect(await screen.findByText('VM file changes are not synced back.')).toBeInTheDocument();
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/file-sync/projects/p1/status',
-        expect.anything(),
-      );
+      expect(fx.calls.readFileSyncStatus).toContainEqual(['p1', expect.any(AbortSignal)]);
     });
 
     it.each([['No VM is ready', [{ ...REMOTE }]]])(
@@ -232,10 +239,7 @@ describe('RemoteVmSection', () => {
 
       expect(await vmRow('new-vm')).toBeInTheDocument();
       expect(screen.queryByRole('dialog', { name: 'Add your own VM' })).not.toBeInTheDocument();
-      const create = fx.mockFetch.mock.calls.find(
-        ([url, init]) => url === '/api/remotes' && init?.method === 'POST',
-      );
-      expect(JSON.parse(create![1].body)).toEqual({
+      expect(fx.calls.createRemote[0][0]).toEqual({
         name: 'new-vm',
         baseUrl: 'http://10.0.0.9:4000',
         apiKey: `dck_${'a'.repeat(43)}`,
@@ -256,16 +260,7 @@ describe('RemoteVmSection', () => {
         homePathMatches: true,
         remoteId: null,
       };
-      const serve = fx.mockFetch.getMockImplementation()!;
-      fx.mockFetch.mockImplementation(async (url: string, init?: RequestInit) =>
-        url === '/api/remotes' && init?.method === 'POST'
-          ? ({
-              ok: false,
-              status: 409,
-              json: async () => ({ statusCode: 409, message: MISMATCH }),
-            } as Response)
-          : serve(url, init),
-      );
+      fx.overrides.createRemote = new Error(MISMATCH);
       renderSection();
       await addOwnVm();
       const flow = screen.getByRole('dialog', { name: 'Add your own VM' });
@@ -401,10 +396,7 @@ describe('RemoteVmSection', () => {
         within(dialog).getByRole('list', { name: 'Projects connected to this VM' }),
       ).toHaveTextContent('Project OneProject Two');
       expect(within(dialog).getByRole('button', { name: 'Destroy VM' })).toBeDisabled();
-      expect(fx.mockFetch).not.toHaveBeenCalledWith(
-        '/api/remotes/r1/destroy-vm',
-        expect.anything(),
-      );
+      expect(fx.calls.destroyVm).toHaveLength(0);
     });
 
     it.each([
@@ -434,10 +426,7 @@ describe('RemoteVmSection', () => {
       );
       await userEvent.click(destroyButton);
 
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/remotes/r1/destroy-vm',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ force: true }) }),
-      );
+      expect(fx.calls.destroyVm).toContainEqual(['r1', expect.objectContaining({ force: true })]);
     });
 
     it('offers guarded destroy after a failed create even when no VM identity was saved', async () => {
@@ -481,10 +470,7 @@ describe('RemoteVmSection', () => {
         }),
       );
       await userEvent.click(within(dialog).getByRole('button', { name: 'Destroy VM' }));
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/remotes/r1/destroy-vm',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ force: true }) }),
-      );
+      expect(fx.calls.destroyVm).toContainEqual(['r1', expect.objectContaining({ force: true })]);
     });
 
     it('offers registration-only deletion after a failed reset and says the VM remains', async () => {
@@ -523,11 +509,8 @@ describe('RemoteVmSection', () => {
       expect(within(dialog).getByRole('checkbox', { name: 'Destroy VM too' })).toBeEnabled();
       await userEvent.click(within(dialog).getByRole('button', { name: 'Delete registration' }));
       await waitFor(() => expect(screen.queryByText('lab-vm')).not.toBeInTheDocument());
-      expect(fx.mockFetch).toHaveBeenCalledWith('/api/remotes/r1', { method: 'DELETE' });
-      expect(fx.mockFetch).not.toHaveBeenCalledWith(
-        '/api/remotes/r1/destroy-vm',
-        expect.anything(),
-      );
+      expect(fx.calls.deleteRemote).toContainEqual(['r1']);
+      expect(fx.calls.destroyVm).toHaveLength(0);
     });
 
     it('shows VM destroyed with the shared Remove action for a completed addressless destroy', async () => {
@@ -556,7 +539,7 @@ describe('RemoteVmSection', () => {
       expect(within(dialog).getByText(/already destroyed/i)).toBeInTheDocument();
       await userEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
       await waitFor(() => expect(screen.queryByText('lab-vm')).not.toBeInTheDocument());
-      expect(fx.mockFetch).toHaveBeenCalledWith('/api/remotes/r1', { method: 'DELETE' });
+      expect(fx.calls.deleteRemote).toContainEqual(['r1']);
     });
 
     describe('Change logins', () => {
@@ -611,10 +594,7 @@ describe('RemoteVmSection', () => {
           providerAuth: { claude: 'skip', codex: 'skip' },
           force: false,
         });
-        expect(fx.mockFetch).toHaveBeenCalledWith(
-          '/api/remotes/r1/logins',
-          expect.objectContaining({ method: 'POST' }),
-        );
+        expect(fx.calls.updateLogins.map(([remoteId]) => remoteId)).toContain('r1');
       });
     });
   });
@@ -796,8 +776,7 @@ describe('RemoteVmSection.shell', () => {
         expect(connect).toBeDisabled();
         expect(within(checklist).getByText('Available once a VM is ready.')).toBeInTheDocument();
 
-        const readinessCalls = () =>
-          fx.mockFetch.mock.calls.filter(([url]) => url === '/api/remotes/readiness').length;
+        const readinessCalls = () => fx.calls.readReadiness.length;
         const before = readinessCalls();
         await userEvent.click(within(checklist).getByRole('button', { name: 'Check again' }));
         await waitFor(() => expect(readinessCalls()).toBe(before + 1));
@@ -884,10 +863,7 @@ describe('RemoteVmSection.shell', () => {
         expect(fx.search).toContain('vm=r1');
         const drawer = await screen.findByRole('dialog', { name: 'lab-vm' });
         expect(within(drawer).getByRole('button', { name: 'Update' })).toBeInTheDocument();
-        expect(fx.mockFetch).not.toHaveBeenCalledWith(
-          '/api/remotes/r1/update',
-          expect.objectContaining({ method: 'POST' }),
-        );
+        expect(fx.calls.updateHost).toHaveLength(0);
       });
 
       it('shows View for a stopped VM that holds projects, without powering it on', async () => {
@@ -900,9 +876,7 @@ describe('RemoteVmSection.shell', () => {
         expect(fx.search).toContain('tab=vms');
         const drawer = await screen.findByRole('dialog', { name: 'lab-vm' });
         expect(within(drawer).getByRole('button', { name: 'Power on' })).toBeInTheDocument();
-        expect(fx.mockFetch).not.toHaveBeenCalledWith('/api/remotes/r1/power-on', {
-          method: 'POST',
-        });
+        expect(fx.calls.powerOn).not.toContainEqual(['r1']);
       });
     });
 
@@ -945,15 +919,18 @@ describe('RemoteVmSection.shell', () => {
 
       it('renders no summary while the VM list or the bindings still load', async () => {
         fx.bindingsData = [{ projectId: 'p1', remoteId: 'r1', state: 'remote' }];
-        const serve = fx.mockFetch.getMockImplementation()!;
         let release!: () => void;
         const gate = new Promise<void>((resolve) => {
           release = resolve;
         });
-        fx.mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-          if (url === '/api/remotes' || url === '/api/remotes/bindings') await gate;
-          return serve(url, init);
-        });
+        fx.overrides.listRemotes = async (signal) => {
+          await gate;
+          return fx.defaults.listRemotes(signal);
+        };
+        fx.overrides.listBindings = async (signal) => {
+          await gate;
+          return fx.defaults.listBindings(signal);
+        };
         renderSection();
 
         expect(screen.queryByRole('button', { name: 'Manage VMs' })).not.toBeInTheDocument();
@@ -1202,13 +1179,7 @@ describe('RemoteVmSection.shell', () => {
         await userEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
 
         expect(await vmRow('renamed-vm')).toBeInTheDocument();
-        expect(fx.mockFetch).toHaveBeenCalledWith(
-          '/api/remotes/r1',
-          expect.objectContaining({
-            method: 'PATCH',
-            body: JSON.stringify({ name: 'renamed-vm' }),
-          }),
-        );
+        expect(fx.calls.renameRemote).toContainEqual(['r1', 'renamed-vm']);
         expect(toastSpy).toHaveBeenCalledWith(
           expect.objectContaining({ title: 'VM renamed', description: 'It is now renamed-vm.' }),
         );
@@ -1217,17 +1188,11 @@ describe('RemoteVmSection.shell', () => {
       it('shows a refused rename once in the dialog, and the next submit replaces the message', async () => {
         fx.remotesData = [READY];
         renderSection();
-        const serve = fx.mockFetch.getMockImplementation()!;
         let refusal = 'A VM named build-vm exists.';
-        fx.mockFetch.mockImplementation(async (url: string, init?: RequestInit) =>
-          init?.method === 'PATCH' && refusal
-            ? ({
-                ok: false,
-                status: 409,
-                json: async () => ({ statusCode: 409, message: refusal }),
-              } as Response)
-            : serve(url, init),
-        );
+        fx.overrides.renameRemote = (remoteId, name) => {
+          if (refusal) throw new Error(refusal);
+          return fx.defaults.renameRemote(remoteId, name);
+        };
         await pickVmMenu('lab-vm', 'Rename');
         const dialog = await screen.findByRole('dialog', { name: 'Rename lab-vm' });
         const name = within(dialog).getByLabelText('Name');
@@ -1271,7 +1236,7 @@ describe('RemoteVmSection.shell', () => {
         const row = await vmRow('lab-vm');
         await user.click(await within(row).findByRole('button', { name: 'Power on' }));
         expect(within(row).getByRole('button', { name: 'Starting…' })).toBeDisabled();
-        expect(fx.mockFetch).toHaveBeenCalledWith('/api/remotes/r1/power-on', { method: 'POST' });
+        expect(fx.calls.powerOn).toContainEqual(['r1']);
 
         await act(async () => release());
         await waitFor(() =>
@@ -1366,25 +1331,13 @@ describe('RemoteVmSection.drawer', () => {
       await userEvent.click(within(panel).getByRole('button', { name: 'Save' }));
 
       expect(await screen.findByRole('dialog', { name: 'build-vm' })).toBeInTheDocument();
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/remotes/r1',
-        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ name: 'build-vm' }) }),
-      );
+      expect(fx.calls.renameRemote).toContainEqual(['r1', 'build-vm']);
     });
 
     it('shows a refused rename under the name', async () => {
       fx.remotesData = [READY];
       renderSection('/?vm=r1');
-      const serve = fx.mockFetch.getMockImplementation()!;
-      fx.mockFetch.mockImplementation(async (url: string, init?: RequestInit) =>
-        init?.method === 'PATCH'
-          ? ({
-              ok: false,
-              status: 409,
-              json: async () => ({ statusCode: 409, message: 'A VM named build-vm exists.' }),
-            } as Response)
-          : serve(url, init),
-      );
+      fx.overrides.renameRemote = new Error('A VM named build-vm exists.');
 
       const panel = await drawer();
       await userEvent.click(within(panel).getByRole('button', { name: 'Rename' }));
@@ -1817,36 +1770,56 @@ describe('RemoteVmSection.intent', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
 
-    it.each([
-      ['remotes', (url: string) => url === '/api/remotes'],
-      ['bindings', (url: string) => url === '/api/remotes/bindings'],
-      ['projects', (url: string) => url.startsWith('/api/projects?limit=')],
-      ['operations', (url: string) => url.startsWith('/api/remotes/operations?state=')],
-    ])('waits for the %s to load', async (_name, gated) => {
-      fx.remotesData = [READY];
-      let release!: () => void;
-      const gate = new Promise<void>((resolve) => (release = resolve));
-      const answer = fx.mockFetch.getMockImplementation()!;
-      fx.mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-        if (gated(url)) await gate;
-        return answer(url, init);
-      });
-      renderSection('/?section=remote-vm&projectAction=p1&connectVm=r1');
+    it.each(['remotes', 'bindings', 'projects', 'operations'] as const)(
+      'waits for the %s to load',
+      async (name) => {
+        fx.remotesData = [READY];
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        const methods = {
+          remotes: 'listRemotes',
+          bindings: 'listBindings',
+          operations: 'listOperations',
+        } as const;
+        if (name === 'projects') fx.projectsReadGate = gate;
+        else if (name === 'remotes')
+          fx.overrides.listRemotes = async (signal) => {
+            await gate;
+            return fx.defaults.listRemotes(signal);
+          };
+        else if (name === 'bindings')
+          fx.overrides.listBindings = async (signal) => {
+            await gate;
+            return fx.defaults.listBindings(signal);
+          };
+        else
+          fx.overrides.listOperations = async (state, limit, signal) => {
+            await gate;
+            return fx.defaults.listOperations(state, limit, signal);
+          };
+        renderSection('/?section=remote-vm&projectAction=p1&connectVm=r1');
 
-      await waitFor(() => expect(fx.mockFetch.mock.calls.some(([url]) => gated(url))).toBe(true));
-      // Every other request has answered by now; only the gated one holds the intent.
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      });
-      expect(screen.queryByRole('dialog', { name: 'Connect Project One' })).not.toBeInTheDocument();
-      expect(params().get('projectAction')).toBe('p1');
+        await waitFor(() =>
+          expect(
+            name === 'projects' ? fx.projectReadCount : fx.calls[methods[name]].length,
+          ).toBeGreaterThan(0),
+        );
+        // Every other request has answered by now; only the gated one holds the intent.
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        });
+        expect(
+          screen.queryByRole('dialog', { name: 'Connect Project One' }),
+        ).not.toBeInTheDocument();
+        expect(params().get('projectAction')).toBe('p1');
 
-      release();
-      expect(
-        await screen.findByRole('dialog', { name: 'Connect Project One' }),
-      ).toBeInTheDocument();
-      await expectIntentConsumed();
-    });
+        release();
+        expect(
+          await screen.findByRole('dialog', { name: 'Connect Project One' }),
+        ).toBeInTheDocument();
+        await expectIntentConsumed();
+      },
+    );
 
     it('runs an intent that arrives while the page is already open', async () => {
       fx.remotesData = [READY];
@@ -1880,10 +1853,8 @@ describe('RemoteVmSection.intent', () => {
 describe('RemoteVmSection.projects', () => {
   const READY = { ...REMOTE, online: true, versionMatches: true, logins: {} };
 
-  function projectRequests(): string[] {
-    return fx.mockFetch.mock.calls
-      .map(([url]) => String(url))
-      .filter((url) => url.startsWith('/api/projects'));
+  function projectReads(): number {
+    return fx.projectReadCount;
   }
 
   // UI integration: the project rows join the all-workspace list, the bindings,
@@ -1928,13 +1899,12 @@ describe('RemoteVmSection.projects', () => {
 
     it('keeps a saved pattern on the next save while a list read is still held', async () => {
       fx.ignores.p1 = ['/old'];
-      const serve = fx.mockFetch.getMockImplementation()!;
       let release!: () => void;
       const held = new Promise<void>((resolve) => (release = resolve));
-      fx.mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-        if (url === '/api/file-sync/projects/p1/ignores' && fx.ignorePuts.length > 0) await held;
-        return serve(url, init);
-      });
+      fx.overrides.readProjectIgnores = async (projectId, signal) => {
+        if (projectId === 'p1' && fx.ignorePuts.length > 0) await held;
+        return fx.defaults.readProjectIgnores(projectId, signal);
+      };
       try {
         renderSection('/?tab=projects');
         const dialog = await openFileSyncSettings('Project One');
@@ -2018,7 +1988,7 @@ describe('RemoteVmSection.projects', () => {
 
       expect(await projectRow('Project Three')).toHaveTextContent('Side');
       expect(await projectRow('Project One')).toHaveTextContent('Main');
-      expect(projectRequests()).toEqual(['/api/projects?limit=1000']);
+      expect(projectReads()).toBe(1);
       expect(screen.queryByText('Showing the first 1,000 projects.')).not.toBeInTheDocument();
     });
 
@@ -2057,10 +2027,7 @@ describe('RemoteVmSection.projects', () => {
           'Connect cancelled. The copy on lab-vm was not removed.The VM refused to release the copy.',
         ),
       );
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/remotes/operations?projectId=p1&limit=1',
-        expect.anything(),
-      );
+      expect(fx.calls.readNewestOperation).toContainEqual(['p1', expect.any(AbortSignal)]);
       expect(within(row).getByRole('button', { name: 'Connect' })).toBeEnabled();
       await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
       expect(
@@ -2133,10 +2100,10 @@ describe('RemoteVmSection.projects', () => {
       expect(
         await screen.findByRole('dialog', { name: 'Connect · Project Three' }),
       ).toBeInTheDocument();
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/remotes/r1/attach',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ projectId: 'p3' }) }),
-      );
+      expect(fx.calls.attachProject).toContainEqual([
+        'r1',
+        expect.objectContaining({ projectId: 'p3' }),
+      ]);
     });
 
     it("opens from the drawer's Connect a project", async () => {
@@ -2343,13 +2310,10 @@ describe('RemoteVmSection Force sync', () => {
       renderSection('/?tab=projects');
       const dialog = await openConfirmation(source);
       await userEvent.click(within(dialog).getByRole('button', { name: 'Force sync' }));
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/remotes/r1/force-sync',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ projectId: 'p1', source }),
-        }),
-      );
+      expect(fx.calls.forceSync).toContainEqual([
+        'r1',
+        expect.objectContaining({ projectId: 'p1', source }),
+      ]);
       const activity = await screen.findByRole('dialog', { name: 'Force sync · Project One' });
       await within(activity).findByRole('progressbar');
       expect(within(activity).queryByRole('radio')).not.toBeInTheDocument();
@@ -2361,17 +2325,11 @@ describe('RemoteVmSection Force sync', () => {
     },
   );
   it('keeps server 409 refusals in the confirmation and allows a new start', async () => {
-    const base = fx.mockFetch.getMockImplementation()!;
     let refuse = true;
-    fx.mockFetch.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith('/force-sync') && refuse)
-        return {
-          ok: false,
-          status: 409,
-          json: async () => ({ message: 'Another operation is open for this project.' }),
-        } as Response;
-      return base(...args);
-    });
+    fx.overrides.forceSync = (remoteId, input) => {
+      if (refuse) throw new Error('Another operation is open for this project.');
+      return fx.defaults.forceSync(remoteId, input);
+    };
     renderSection('/?tab=projects');
     const dialog = await openConfirmation('home');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Force sync' }));

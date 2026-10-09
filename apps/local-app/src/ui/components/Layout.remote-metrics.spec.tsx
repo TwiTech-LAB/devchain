@@ -140,6 +140,7 @@ jest.mock('../hooks/useBreadcrumbs', () => ({
 }));
 
 jest.mock('../hooks/useRuntime', () => ({
+  useRuntimeSync: jest.fn(),
   useRuntime: () => ({ cloudUiEnabled: true }),
 }));
 

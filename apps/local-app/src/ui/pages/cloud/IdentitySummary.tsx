@@ -1,7 +1,9 @@
 import { useId } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
-import { useHomeIdentity, type HomeIdentity } from '@/ui/hooks/useHomeIdentity';
+import { useHomeIdentity } from '@/ui/hooks/useHomeIdentity';
+import type { HomeIdentity } from './lib/remote-vm-contracts';
+import { runtimeInfoQueryKey } from '@/ui/hooks/useRuntime';
 import { fetchRuntimeInfo } from '@/ui/lib/runtime';
 
 const CLAIM_USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
@@ -70,7 +72,7 @@ export function IdentitySummary() {
   const identity = useHomeIdentity();
   // The page reads the same entry, so the version is usually cached already.
   const runtime = useQuery(
-    { queryKey: ['runtime-info'], queryFn: fetchRuntimeInfo, staleTime: Infinity },
+    { queryKey: runtimeInfoQueryKey, queryFn: fetchRuntimeInfo, staleTime: Infinity },
     useHomeQueryClient(),
   );
   const port = typeof window !== 'undefined' ? window.location.port || '3000' : '3000';

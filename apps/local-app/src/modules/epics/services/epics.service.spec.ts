@@ -11,7 +11,7 @@ import {
   ValidationError,
   DescriptionEditNotFoundError,
 } from '../../../common/errors/error-types';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 describe('EpicsService', () => {
   let storage: {
@@ -40,7 +40,7 @@ describe('EpicsService', () => {
     findExternalTaskLink: jest.Mock;
     createExternalTaskLink: jest.Mock;
   };
-  let admission: ReturnType<typeof createProjectWriteAdmissionStub>;
+  let admission: ReturnType<typeof createProjectWriteGateStub>;
   let hostClient: { findEpicByIdempotencyKey: jest.Mock; createEpic: jest.Mock };
   let mirrorSync: { pullNow: jest.Mock };
   let eventsService: {
@@ -96,7 +96,7 @@ describe('EpicsService', () => {
       findExternalTaskLink: jest.fn().mockResolvedValue(null),
       createExternalTaskLink: jest.fn(),
     };
-    admission = createProjectWriteAdmissionStub();
+    admission = createProjectWriteGateStub();
     hostClient = { findEpicByIdempotencyKey: jest.fn(), createEpic: jest.fn() };
     mirrorSync = { pullNow: jest.fn().mockResolvedValue(undefined) };
     eventsService = {
@@ -198,7 +198,7 @@ describe('EpicsService', () => {
         return current;
       },
       deleteEpic: async (id, eventFactory) => {
-        const deleted = observedEpics.get(id);
+        const deleted = observedEpics.get(id) ?? (await storage.getEpic(id));
         const tracked = trackCallback(eventFactory);
         await storage.deleteEpic(id, tracked.callback);
         if (eventFactory && !tracked.wasCalled()) {

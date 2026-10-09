@@ -5,6 +5,8 @@ import {
   parseContextWindowEnv,
 } from '../runtime-context-capture/context-window-policy';
 import { MAX_RUNTIME_CONTEXT_WINDOW_TOKENS } from '../runtime-context-capture/runtime-context-capture.types';
+import type { ListResult } from '../storage/interfaces/storage.interface';
+import type { AgentProfile } from '../storage/models/domain.models';
 
 export { EnvVarsSchema };
 
@@ -40,6 +42,13 @@ export const AgentProfileWithPromptsSchema = z.object({
 });
 
 export type AgentProfileWithPrompts = z.infer<typeof AgentProfileWithPromptsSchema>;
+
+export interface ProfileListItem extends AgentProfile {
+  provider?: { id: string; name: string };
+  prompts: Array<{ promptId: string; order: number; prompt: { id: string; title: string } }>;
+}
+
+export type ProfilesResponse = ListResult<ProfileListItem>;
 
 // ============================================
 // PROFILE PROVIDER CONFIGS

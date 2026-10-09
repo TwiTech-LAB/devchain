@@ -1,5 +1,8 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { settingsQueries, settingsQueryKeys } from '@/ui/lib/settings';
+import { statusQueries, statusQueryKeys, type Status } from '@/ui/lib/statuses';
+import type { ListResult } from '@/modules/storage/interfaces/storage.interface';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
@@ -40,24 +43,6 @@ import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 /** Check if a status is an Archive status (label contains 'archiv', case-insensitive) */
 function isArchiveStatus(label: string): boolean {
   return label.toLowerCase().includes('archiv');
-}
-
-interface Status {
-  id: string;
-  projectId: string;
-  label: string;
-  color: string;
-  position: number;
-  mcpHidden: boolean;
-  epicCount?: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-async function fetchStatuses(fetchFn: FetchFn, projectId: string) {
-  const res = await fetchFn(`/api/statuses?projectId=${projectId}`);
-  if (!res.ok) throw new Error('Failed to fetch statuses');
-  return res.json();
 }
 
 async function createStatus(
@@ -116,23 +101,11 @@ async function reorderStatuses(fetchFn: FetchFn, projectId: string, statusIds: s
   return res.json();
 }
 
-interface Settings {
-  autoClean?: {
-    statusIds?: Record<string, string[]>;
-  };
-}
-
-async function fetchSettings(fetchFn: FetchFn): Promise<Settings> {
-  const res = await fetchFn('/api/settings');
-  if (!res.ok) throw new Error('Failed to fetch settings');
-  return res.json();
-}
-
 async function updateAutoCleanStatusIds(
   fetchFn: FetchFn,
   projectId: string,
   statusIds: string[],
-): Promise<Settings> {
+): Promise<{ statusIds: string[] }> {
   const res = await fetchFn(`/api/settings/autoclean/${projectId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -235,11 +208,6 @@ function StatusList({
                   />
                   <span className="font-medium">{status.label}</span>
                   <Badge variant="outline">{index + 1}</Badge>
-                  {status.epicCount !== undefined && status.epicCount > 0 && (
-                    <Badge variant="secondary">
-                      {status.epicCount} epic{status.epicCount !== 1 ? 's' : ''}
-                    </Badge>
-                  )}
                   {isAutoClean && (
                     <OpaqueBadge variant="outline" className={TONE_CLASSES.warn}>
                       <Sparkles className="h-3 w-3 mr-1" />
@@ -342,15 +310,11 @@ export function StatusesPage() {
   const reorderTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const { data: statusesData, isLoading } = useQuery({
-    queryKey: ['statuses', selectedProjectId],
-    queryFn: () => fetchStatuses(fetchFn, selectedProjectId as string),
+    ...statusQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 
-  const { data: settingsData } = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => fetchSettings(fetchFn),
-  });
+  const { data: settingsData } = useQuery(settingsQueries.get(fetchFn));
 
   const autoCleanStatusIds = useMemo(() => {
     if (!selectedProjectId || !settingsData?.autoClean?.statusIds) return [];
@@ -361,7 +325,7 @@ export function StatusesPage() {
     mutationFn: ({ projectId, statusIds }: { projectId: string; statusIds: string[] }) =>
       updateAutoCleanStatusIds(fetchFn, projectId, statusIds),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: settingsQueryKeys.all });
     },
     onError: (error) => {
       toast({
@@ -382,7 +346,7 @@ export function StatusesPage() {
       mcpHidden?: boolean;
     }) => createStatus(fetchFn, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['statuses', selectedProjectId] });
+      queryClient.invalidateQueries({ queryKey: statusQueryKeys.project(selectedProjectId) });
       setShowDialog(false);
       setFormData({ label: '', color: '#6c757d', autoClean: false, mcpHidden: false });
       toast({
@@ -403,7 +367,7 @@ export function StatusesPage() {
     mutationFn: ({ id, data }: { id: string; data: Partial<Status> }) =>
       updateStatus(fetchFn, id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['statuses', selectedProjectId] });
+      queryClient.invalidateQueries({ queryKey: statusQueryKeys.project(selectedProjectId) });
       setShowDialog(false);
       setEditingStatus(null);
       setFormData({ label: '', color: '#6c757d', autoClean: false, mcpHidden: false });
@@ -424,7 +388,7 @@ export function StatusesPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteStatus(fetchFn, id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['statuses', selectedProjectId] });
+      queryClient.invalidateQueries({ queryKey: statusQueryKeys.project(selectedProjectId) });
       setDeleteConfirm(null);
       toast({
         title: 'Success',
@@ -445,7 +409,7 @@ export function StatusesPage() {
     mutationFn: ({ projectId, statusIds }: { projectId: string; statusIds: string[] }) =>
       reorderStatuses(fetchFn, projectId, statusIds),
     onError: (error) => {
-      queryClient.invalidateQueries({ queryKey: ['statuses', selectedProjectId] });
+      queryClient.invalidateQueries({ queryKey: statusQueryKeys.project(selectedProjectId) });
       toast({
         title: 'Error',
         description: error instanceof Error ? error.message : 'Failed to reorder statuses',
@@ -477,9 +441,16 @@ export function StatusesPage() {
         return;
       }
       // Update UI immediately
-      queryClient.setQueryData(['statuses', selectedProjectId], {
-        items: newStatuses.map((s, idx) => ({ ...s, position: idx })),
-      });
+      queryClient.setQueryData<ListResult<Status>>(
+        statusQueryKeys.project(selectedProjectId),
+        (previous) =>
+          previous
+            ? {
+                ...previous,
+                items: newStatuses.map((status, position) => ({ ...status, position })),
+              }
+            : previous,
+      );
 
       // Debounce API call
       if (reorderTimeoutRef.current) {
@@ -553,14 +524,6 @@ export function StatusesPage() {
   };
 
   const handleDelete = (status: Status) => {
-    if (status.epicCount && status.epicCount > 0) {
-      toast({
-        title: 'Cannot delete',
-        description: `This status has ${status.epicCount} epic(s). Move or delete them first.`,
-        variant: 'destructive',
-      });
-      return;
-    }
     setDeleteConfirm(status);
   };
 

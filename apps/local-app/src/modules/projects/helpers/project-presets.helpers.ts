@@ -1,7 +1,11 @@
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import type { SettingsService } from '../../settings/services/settings.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type {
+  AgentProfileStorage,
+  AgentStorage,
+  ProfileProviderConfigStorage,
+} from '../../storage/interfaces/storage.interface';
 import { buildProviderConfigLookupKey } from './profile-mapping.helpers';
 
 const logger = createLogger('ProjectsService');
@@ -25,7 +29,7 @@ export interface ApplyPresetNameMaps {
 }
 
 interface PresetDeps {
-  storage: StorageService;
+  storage: AgentProfileStorage & AgentStorage & ProfileProviderConfigStorage;
   settings: SettingsService;
 }
 
@@ -218,7 +222,7 @@ function buildAgentNameToIdMap(agents: Array<{ id: string; name: string }>): Map
 
 async function buildProjectConfigLookupMap(
   projectId: string,
-  storage: StorageService,
+  storage: AgentProfileStorage & ProfileProviderConfigStorage,
 ): Promise<Map<string, string>> {
   const configLookupMap = new Map<string, string>();
 

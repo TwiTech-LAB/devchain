@@ -12,8 +12,8 @@ import { TeamsService } from './teams.service';
 import { EventsService } from '../../events/services/events.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 const PROJECT_ID = 'project-1';
 const AGENT_A = 'agent-a';
@@ -184,7 +184,7 @@ describe('TeamsService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: createProjectWriteAdmissionStub() },
+        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         TeamsService,
         { provide: TeamsStore, useValue: teamsStore },
         { provide: STORAGE_SERVICE, useValue: storageService },

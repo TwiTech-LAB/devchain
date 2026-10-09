@@ -33,7 +33,6 @@ import {
 } from './services/provider-cli-npm-lookup.service';
 import { ProviderCliVersionsService } from './services/provider-cli-versions.service';
 import { NPM_PUBLIC_REGISTRY_URL } from '@devchain/shared';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
   imports: [
@@ -45,7 +44,6 @@ import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-
     RegistryModule,
     ProcessExecutorModule,
     ProviderEffortSeedingModule,
-    ProjectWriteAdmissionModule,
   ],
   controllers: [
     ProvidersController,

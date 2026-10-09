@@ -30,6 +30,15 @@ const envSchema = z.object({
     .refine((v) => !/[\x00-\x1f\x7f]/.test(v), {
       message: 'HOST must not contain control characters',
     }),
+  ALLOWED_HOSTS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((host) => host.trim())
+        .filter(Boolean),
+    ),
   LOG_LEVEL: z.enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   DATABASE_URL: z.string().optional(),
   RUNTIME_TOKEN: z.string().optional(),

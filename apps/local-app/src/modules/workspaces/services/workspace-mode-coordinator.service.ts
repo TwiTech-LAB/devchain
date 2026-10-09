@@ -2,7 +2,10 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type ProjectWorkspaceStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   DeleteProjectWorkspaceResult,
   ProjectWorkspace,
@@ -26,7 +29,7 @@ export class WorkspaceModeCoordinatorService {
   private readonly cleanupHooks = new Map<string, WorkspaceModeCleanupHook>();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectWorkspaceStorage,
     @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 

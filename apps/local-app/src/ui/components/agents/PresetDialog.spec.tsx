@@ -71,12 +71,24 @@ const mockProfileConfigs = (
         const providerId = match[1];
         return Promise.resolve({
           ok: true,
-          json: async () =>
-            providerEfforts[providerId] || {
+          json: async () => {
+            const catalog = providerEfforts[providerId] || {
               efforts: [],
               supportsEffort: false,
               requiresModelForEffort: false,
-            },
+            };
+            return {
+              ...catalog,
+              efforts: catalog.efforts.map((effort, index) => ({
+                id: `effort-${index}`,
+                providerId,
+                position: index,
+                createdAt: '2026-10-08T00:00:00.000Z',
+                updatedAt: '2026-10-08T00:00:00.000Z',
+                ...effort,
+              })),
+            };
+          },
         });
       }
       return Promise.resolve({

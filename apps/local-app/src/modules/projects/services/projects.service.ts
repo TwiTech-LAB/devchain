@@ -3,7 +3,21 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ExportSchema, type ExportData, type ManifestData } from '@devchain/shared';
 import { ValidationError } from '../../../common/errors/error-types';
 import type { PromptTransferPolicy } from '../../../common/prompt-transfer';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import {
+  StorageService,
+  STORAGE_SERVICE,
+  type AgentProfileStorage,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
+  type PromptStorage,
+  type ProviderStorage,
+  type ScheduledEpicStorage,
+  type SessionStorage,
+  type StatusStorage,
+  type SubscriberStorage,
+  type WatcherStorage,
+} from '../../storage/interfaces/storage.interface';
 import {
   SNAPSHOT_PROMPT_WRITER,
   type SnapshotPromptWriter,
@@ -66,7 +80,7 @@ import {
   type ProjectWorkspaceChangedEvent,
 } from '../events/project-workspace-changed.events';
 import { EventsService } from '../../events/services/events.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 export interface TemplateInfo {
   id: string;
@@ -130,7 +144,22 @@ export interface ImportProjectInput {
 @Injectable()
 export class ProjectsService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      AgentStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      PromptStorage &
+      ProviderStorage &
+      ScheduledEpicStorage &
+      SessionStorage &
+      StatusStorage &
+      SubscriberStorage &
+      WatcherStorage &
+      Pick<
+        StorageService,
+        'countEpicsByStatus' | 'getEpic' | 'listEpics' | 'updateEpic' | 'updateEpicsStatus'
+      >,
     private readonly sessions: SessionsService,
     private readonly settings: SettingsService,
     private readonly watchersService: WatchersService,
@@ -138,7 +167,7 @@ export class ProjectsService {
     private readonly unifiedTemplateService: UnifiedTemplateService,
     private readonly teamsService: TeamsService,
     private readonly provisioning: ProjectProviderProvisioningService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
     @Optional() private readonly eventEmitter?: EventEmitter2,
     @Optional()
     private readonly templatePipeline?: TemplatePipeline,
@@ -238,7 +267,8 @@ export class ProjectsService {
       configLookupMap: Map<string, string>;
     },
   ): Promise<{ applied: number; warnings: string[] }> {
-    this.admission.assertWritable(projectId);
+    // Admit before the preset lookup answers NotFound or a validation error.
+    this.gate.assertWritable(projectId);
     return applyPresetWithHelper(
       projectId,
       presetName,
@@ -249,7 +279,8 @@ export class ProjectsService {
 
   async importProject(input: ImportProjectInput) {
     if (!input.dryRun) {
-      this.admission.assertWritable(input.projectId);
+      // Admit before the import preflight answers validation errors or readiness failures.
+      this.gate.assertWritable(input.projectId);
     }
     const result = await importProjectWithHelper(input, {
       storage: this.storage,
@@ -304,7 +335,6 @@ export class ProjectsService {
     data: UpdateProject,
   ): Promise<{ project: Project; provisioningWarnings: ProvisioningWarning[] }> {
     const before = await this.storage.getProject(id);
-    this.admission.assertWritable(id);
     const project = await this.storage.updateProject(id, data);
 
     if (before && before.workspaceId !== project.workspaceId) {
@@ -327,7 +357,6 @@ export class ProjectsService {
 
   async deleteProject(id: string): Promise<void> {
     const project = await this.storage.getProject(id);
-    this.admission.assertWritable(id);
     await this.storage.deleteProject(id);
     if (this.eventsService) {
       await this.eventsService.publish('epic.relations.invalidated', {

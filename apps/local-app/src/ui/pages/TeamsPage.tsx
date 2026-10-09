@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { AlertCircle, Crown, Loader2, Pencil, Plus, Trash2, Users, UsersRound } from 'lucide-react';
+import { profileQueries, type ProfileListItem } from '@/ui/lib/profiles';
+import { providerConfigQueries } from '@/ui/lib/provider-configs';
+import { agentQueries, type Agent } from '@/ui/lib/agents';
 
 import { ConfirmDialog, EmptyState, PageHeader } from '@/ui/components/shared';
 import { Avatar, AvatarFallback, AvatarImage } from '@/ui/components/ui/avatar';
@@ -39,13 +42,11 @@ import {
   fetchTeams,
   teamsQueryKeys,
   type CreateTeamPayload,
-  type ListResult,
   type TeamDetail,
   type TeamListItem,
   type UpdateTeamPayload,
   updateTeam,
 } from '@/ui/lib/teams';
-import { fetchJsonOrThrow, type FetchFn } from '@/ui/lib/sessions';
 import {
   type ProfileSelection,
   type ConfigItem,
@@ -54,16 +55,6 @@ import { ProviderConfigGranularSelector } from '@/ui/components/team/ProviderCon
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ── Types ────────────────────────────────────────────────
-
-interface AgentListItem {
-  id: string;
-  name: string;
-}
-
-interface ProfileListItem {
-  id: string;
-  name: string;
-}
 
 interface TeamFormData {
   name: string;
@@ -77,30 +68,6 @@ interface TeamFormData {
   profileConfigSelections: Array<{ profileId: string; configIds: string[] }>;
 }
 
-async function fetchProjectAgents(
-  projectId: string,
-  fetchFn: FetchFn,
-): Promise<ListResult<AgentListItem>> {
-  return fetchJsonOrThrow<ListResult<AgentListItem>>(
-    `/api/agents?projectId=${encodeURIComponent(projectId)}`,
-    {},
-    undefined,
-    fetchFn,
-  );
-}
-
-async function fetchProjectProfiles(
-  projectId: string,
-  fetchFn: FetchFn,
-): Promise<ListResult<ProfileListItem>> {
-  return fetchJsonOrThrow<ListResult<ProfileListItem>>(
-    `/api/profiles?projectId=${encodeURIComponent(projectId)}`,
-    {},
-    undefined,
-    fetchFn,
-  );
-}
-
 // ── Team Form Dialog ─────────────────────────────────────
 
 const NATIVE_SELECT_CLASS =
@@ -112,7 +79,7 @@ interface TeamFormDialogProps {
   onOpenChange: (open: boolean) => void;
   onSubmit: (data: TeamFormData) => void;
   isSubmitting: boolean;
-  agents: AgentListItem[];
+  agents: Agent[];
   agentsReady: boolean;
   profiles: ProfileListItem[];
   existingTeamNames: string[];
@@ -483,14 +450,6 @@ interface ConfigureTeamConfigsModalProps {
   }) => void;
 }
 
-interface ProviderConfigItem {
-  id: string;
-  name: string;
-  description: string | null;
-  options: string | null;
-  providerName?: string;
-}
-
 function ConfigureTeamConfigsModal({
   open,
   onOpenChange,
@@ -529,14 +488,7 @@ function ConfigureTeamConfigsModal({
     isError: configsError,
     refetch: configsRefetch,
   } = useQuery({
-    queryKey: ['profileConfigs', focusedProfileId] as const,
-    queryFn: () =>
-      fetchJsonOrThrow<ProviderConfigItem[]>(
-        `/api/profiles/${encodeURIComponent(focusedProfileId!)}/provider-configs`,
-        {},
-        undefined,
-        fetchFn,
-      ),
+    ...providerConfigQueries.profile(fetchFn, focusedProfileId),
     enabled: !!focusedProfileId,
   });
 
@@ -757,14 +709,12 @@ export function TeamsPage() {
   });
 
   const { data: agentsData } = useQuery({
-    queryKey: ['teams-page-agents', selectedProjectId ?? ''] as const,
-    queryFn: () => fetchProjectAgents(selectedProjectId!, fetchFn),
+    ...agentQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 
   const { data: profilesData } = useQuery({
-    queryKey: ['teams-page-profiles', selectedProjectId ?? ''] as const,
-    queryFn: () => fetchProjectProfiles(selectedProjectId!, fetchFn),
+    ...profileQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 
@@ -775,7 +725,7 @@ export function TeamsPage() {
   });
 
   const teams = data?.items ?? [];
-  const agents: AgentListItem[] = agentsData?.items ?? [];
+  const agents: Agent[] = agentsData?.items ?? [];
   const profiles: ProfileListItem[] = profilesData?.items ?? [];
   const existingTeamNames = teams.map((t) => t.name);
 

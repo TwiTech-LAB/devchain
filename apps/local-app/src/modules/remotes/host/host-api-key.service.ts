@@ -5,6 +5,10 @@ import { isAbsolute, join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import { getEnvConfig } from '../../../common/config/env.config';
 import { isLoopbackHost } from '../../../common/config/integration-admission';
+import {
+  guardBrowserRequest,
+  type BrowserRequestRefusal,
+} from '../../../common/http/browser-request-guard';
 import { AppError, IOError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import {
@@ -19,7 +23,9 @@ export const HOST_API_KEY_REJECTION = {
   statusCode: 401,
   code: HOST_API_KEY_REJECTED,
   message: 'Host API key rejected',
-};
+} as const;
+
+export type HostAdmissionRefusal = BrowserRequestRefusal | typeof HOST_API_KEY_REJECTION;
 
 type ClaimedWithKey = { claimed: true; keyPath: string };
 type Claim = { claimed: false } | { claimed: true; keyPath: string | null };
@@ -29,29 +35,46 @@ type CachedKey = { path: string; mtime: number; size: number; ino: number; diges
 export class HostApiKeyService {
   private cachedKey?: CachedKey;
 
-  allows(request: IncomingMessage, transport: 'http' | 'socket', requireKey = false): boolean {
+  allows(
+    request: IncomingMessage,
+    transport: 'http' | 'socket',
+    requireKey = false,
+  ): HostAdmissionRefusal | null {
     const claim = this.readClaim();
+    if (!claim.claimed) {
+      // A wildcard HOST is an IP literal, which the guard admits anyway.
+      const env = getEnvConfig();
+      const refusal = guardBrowserRequest(request.headers, request.url ?? '', request.method, [
+        ...env.ALLOWED_HOSTS,
+        env.HOST,
+      ]);
+      if (refusal) {
+        this.logRejection(request, refusal);
+        return refusal;
+      }
+    }
     if (!requireKey) {
-      if (!claim.claimed) return true;
-      if (isLoopbackHost(request.socket.remoteAddress ?? '')) return true;
+      if (!claim.claimed) return null;
+      if (isLoopbackHost(request.socket.remoteAddress ?? '')) return null;
       if (
         transport === 'http' &&
         request.method === 'GET' &&
         this.path(request) === '/api/runtime'
       ) {
-        return true;
+        return null;
       }
     }
-    if (this.holdsKey(claim, request)) return true;
-    this.logRejection(request);
-    return false;
+    if (this.holdsKey(claim, request)) return null;
+    this.logRejection(request, HOST_API_KEY_REJECTION);
+    return HOST_API_KEY_REJECTION;
   }
 
   rotate(request: IncomingMessage, sha256: string): void {
     const claim = this.readClaim();
     if (!this.holdsKey(claim, request)) {
-      this.logRejection(request);
-      throw new AppError('Host API key rejected', HOST_API_KEY_REJECTED, 401);
+      this.logRejection(request, HOST_API_KEY_REJECTION);
+      const { message, code, statusCode } = HOST_API_KEY_REJECTION;
+      throw new AppError(message, code, statusCode);
     }
     const { keyPath } = claim;
     const temp = `${keyPath}.${randomUUID()}.tmp`;
@@ -78,10 +101,17 @@ export class HostApiKeyService {
     );
   }
 
-  private logRejection(request: IncomingMessage): void {
+  private logRejection(request: IncomingMessage, refusal: HostAdmissionRefusal): void {
     logger.warn(
-      { peer: request.socket.remoteAddress, method: request.method, path: this.path(request) },
-      'Host API key rejected',
+      {
+        peer: request.socket.remoteAddress,
+        method: request.method,
+        path: this.path(request),
+        origin: request.headers.origin,
+        host: request.headers.host,
+        code: refusal.code,
+      },
+      refusal.message,
     );
   }
 

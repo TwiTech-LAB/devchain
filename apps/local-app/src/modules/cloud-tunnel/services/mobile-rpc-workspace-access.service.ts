@@ -6,7 +6,12 @@ import {
   canAccessWorkspace,
 } from '../../e2ee/services/paired-device-workspace-access.service';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type ProjectStorage,
+  type StatusStorage,
+} from '../../storage/interfaces/storage.interface';
 import { WorkspaceModeCoordinatorService } from '../../workspaces/services/workspace-mode-coordinator.service';
 import type { MobileRpcMethod } from './mobile-rpc-contract.generated';
 import type { RpcCryptoContext } from './tunnel-rpc-crypto.service';
@@ -80,7 +85,8 @@ const UNRESTRICTED_AUTHORIZATION: MobileRpcWorkspaceAuthorization = {
 @Injectable()
 export class MobileRpcWorkspaceAccessService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ProjectStorage & StatusStorage & Pick<StorageService, 'getEpic'>,
     private readonly workspaceMode: WorkspaceModeCoordinatorService,
     private readonly deviceAccess: PairedDeviceWorkspaceAccessService,
     private readonly keypair: E2eeKeypairService,

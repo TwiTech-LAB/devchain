@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Circle, Loader2, Minus, X } from 'lucide-react';
 import { Button } from '@/ui/components/ui/button';
 import { cn } from '@/ui/lib/utils';
-import {
-  isHostInstallRetryFormCode,
-  type RemoteOperationDto,
-  type SshCredentials,
-} from '@/ui/hooks/useRemoteOperations';
-import type { ProviderAuthGenerationView } from '@/ui/hooks/useProviderAuth';
+import { isHostInstallRetryFormCode } from '@/ui/hooks/useRemoteOperations';
+import type {
+  FolderNeed,
+  ProviderAuthGenerationView,
+  RemoteOperationDto,
+  SshCredentials,
+} from './lib/remote-vm-contracts';
 import type { ForceSyncOperationDetails } from '@/modules/remotes/operations/force-sync.operation';
 import type { DockerTransferDetails } from '@/modules/remotes/docker/docker-plan.dto';
 import type { DockerCopyBackResult } from '@/modules/remotes/docker/docker-copy-back.dto';
@@ -32,7 +33,6 @@ import {
   formatBytes,
   formatDuration,
   readFolderProgress,
-  type FolderNeed,
 } from './file-sync-display';
 import { HostInstallRetryForm } from './SshCredentialForms';
 import { providerName } from './login-choices';

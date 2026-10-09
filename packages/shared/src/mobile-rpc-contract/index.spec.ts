@@ -468,13 +468,28 @@ describe('mobile RPC catalog', () => {
     ]);
   });
 
-  it('accepts an optional bounded adopt-device label', () => {
+  it.each([
+    { name: 'omitted metadata', metadata: {}, accepted: true },
+    { name: 'label at the limit', metadata: { label: 'x'.repeat(120) }, accepted: true },
+    { name: 'label above the limit', metadata: { label: 'x'.repeat(121) }, accepted: false },
+    { name: 'empty attestation', metadata: { attestation: '' }, accepted: true },
+    {
+      name: 'attestation at the limit',
+      metadata: { attestation: 'x'.repeat(4096) },
+      accepted: true,
+    },
+    {
+      name: 'attestation above the limit',
+      metadata: { attestation: 'x'.repeat(4097) },
+      accepted: false,
+    },
+    { name: 'numeric attestation', metadata: { attestation: 42 }, accepted: false },
+    { name: 'null attestation', metadata: { attestation: null }, accepted: false },
+  ])('validates optional adopt-device metadata: $name', ({ metadata, accepted }) => {
     const schema = getMobileRpcParamsSchema('e2ee.adoptDeviceKey');
     const base = { kid: 'kid', publicKeyB64: 'public-key' };
 
-    expect(schema.safeParse(base).success).toBe(true);
-    expect(schema.safeParse({ ...base, label: 'x'.repeat(120) }).success).toBe(true);
-    expect(schema.safeParse({ ...base, label: 'x'.repeat(121) }).success).toBe(false);
+    expect(schema.safeParse({ ...base, ...metadata }).success).toBe(accepted);
   });
 
   it('accepts a representative producer-wire fixture for every result schema', () => {
@@ -675,6 +690,9 @@ describe('mobile RPC catalog', () => {
     expect(isMobileRpcMethod('chat.unknown')).toBe(false);
     expect(isMobileRpcMethod(null)).toBe(false);
 
+    expectTypeOf<MobileRpcParams<'e2ee.adoptDeviceKey'>['attestation']>().toEqualTypeOf<
+      string | undefined
+    >();
     expectTypeOf<MobileRpcParams<'terminal.sendKey'>['key']>().toEqualTypeOf<
       | 'Up'
       | 'Down'

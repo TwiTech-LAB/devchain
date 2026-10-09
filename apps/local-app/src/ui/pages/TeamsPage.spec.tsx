@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { TeamsPage } from './TeamsPage';
 import { ProviderGroupedConfigSelector } from '@/ui/components/team/ProviderGroupedConfigSelector';
 import type { TeamDetail, TeamListItem } from '@/ui/lib/teams';
@@ -712,7 +713,7 @@ describe('TeamsPage', () => {
 
       // Stands in for a VM status update, which re-renders the whole page.
       await act(async () => {
-        queryClient.setQueryData(['teams-page-agents', 'project-1'], {
+        queryClient.setQueryData(agentQueryKeys.list('project-1'), {
           items: [...mockAgents, { id: 'agent-5', name: 'Agent Epsilon' }],
           total: mockAgents.length + 1,
           limit: 100,
@@ -1417,7 +1418,7 @@ describe('TeamsPage', () => {
       expect(nameInput.value).toBe('Renamed Squad');
 
       await act(async () => {
-        queryClient.setQueryData(['teams-page-agents', 'project-1'], {
+        queryClient.setQueryData(agentQueryKeys.list('project-1'), {
           items: mockAgents,
           total: mockAgents.length,
           limit: 100,

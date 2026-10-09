@@ -2,7 +2,7 @@ import { SessionLifecycleFacade } from './session-lifecycle-facade.service';
 import { ConflictError } from '../../../common/errors/error-types';
 import type { SessionRuntime } from './session-runtime';
 import type { SessionsService } from './sessions.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 function build() {
   const sessionRuntime = {
@@ -35,7 +35,7 @@ function build() {
   const facade = new SessionLifecycleFacade(
     sessionRuntime as unknown as SessionRuntime,
     sessionsService as unknown as SessionsService,
-    createProjectWriteAdmissionStub() as never,
+    createProjectWriteGateStub() as never,
   );
   return { facade, sessionRuntime, sessionsService };
 }

@@ -1,11 +1,12 @@
+import type {
+  ProjectReplicaStorage,
+  ProjectReplicaSource,
+  ReadProjectReplicaSourceOptions,
+} from '../../interfaces/storage.interface';
 import { effectiveSourceSwitches, registeredSourceNames } from '../helpers/skill-source-switches';
 import { isAlwaysEnabledSkillSource } from '../../../../common/constants/built-in-skill-sources';
 import { PROJECT_REPLICA_SETTING_KEYS } from '@devchain/shared';
 import type { ReplicaInstanceSettings } from '@devchain/shared';
-import type {
-  ProjectReplicaSource,
-  ReadProjectReplicaSourceOptions,
-} from '../../interfaces/storage.interface';
 import {
   DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS,
   DEFAULT_EPIC_ASSIGNED_TEMPLATE,
@@ -43,7 +44,10 @@ const ID_CHUNK_SIZE = 500;
 const PROJECT_COLUMNS =
   'id, workspace_id, name, description, root_path, is_template, is_private, owner_user_id, created_at, updated_at';
 
-export class ProjectReplicaReadStorageDelegate extends BaseStorageDelegate {
+export class ProjectReplicaReadStorageDelegate
+  extends BaseStorageDelegate
+  implements Pick<ProjectReplicaStorage, 'readProjectReplicaSource'>
+{
   constructor(context: StorageDelegateContext) {
     super(context);
   }

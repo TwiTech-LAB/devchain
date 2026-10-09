@@ -1,15 +1,4 @@
-export interface PresetAgentConfig {
-  agentName: string;
-  providerConfigName: string;
-  modelOverride?: string | null;
-  effortOverride?: string | null;
-}
-
-export interface Preset {
-  name: string;
-  description?: string | null;
-  agentConfigs: PresetAgentConfig[];
-}
+export type { Preset, PresetAgentConfig } from './project-presets';
 
 export interface RenameProviderConfigPresetAgentContext {
   name: string;

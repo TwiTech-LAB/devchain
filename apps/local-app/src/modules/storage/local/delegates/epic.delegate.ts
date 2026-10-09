@@ -13,6 +13,7 @@ import {
   type ListResult,
   type ListSubEpicsForParentsOptions,
   type FactualEventFactory,
+  type EpicStorage,
 } from '../../interfaces/storage.interface';
 import {
   type Agent,
@@ -88,7 +89,7 @@ export interface EpicStorageDelegateDependencies {
   appendEvent: (event: PreparedEvent) => void;
 }
 
-export class EpicStorageDelegate extends BaseStorageDelegate {
+export class EpicStorageDelegate extends BaseStorageDelegate implements EpicStorage {
   constructor(
     context: StorageDelegateContext,
     private readonly dependencies: EpicStorageDelegateDependencies,
@@ -103,7 +104,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
     return this.txRunner.runImmediateQueued(() => this.insertEpic(data, eventFactory));
   }
 
-  async createEpicInCurrentTransaction(
+  async createEpicWithinTransaction(
     data: CreateEpic,
     eventFactory?: (epic: Epic) => PreparedEvent | null,
     beforeEventAppend?: (epic: Epic) => Promise<void>,
@@ -975,13 +976,6 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
     await this.db.delete(epicComments).where(eq(epicComments.id, id));
   }
 
-  async findEpicCommentEpicId(commentId: string): Promise<string | null> {
-    const row = this.rawClient
-      .prepare('SELECT epic_id FROM epic_comments WHERE id = ?')
-      .get(commentId) as { epic_id: string } | undefined;
-    return row?.epic_id ?? null;
-  }
-
   async deleteEpicCommentScoped(epicId: string, commentId: string): Promise<boolean> {
     const { epicComments } = await import('../../db/schema');
     const { eq, and } = await import('drizzle-orm');
@@ -1011,7 +1005,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
 
   async setEpicRelation(
     data: SetEpicRelation,
-    context: EpicRelationWriteContext,
+    context: EpicRelationWriteContext = { trustedLocalHuman: true },
   ): Promise<SetEpicRelationResult> {
     return this.txRunner.runImmediateQueuedOrJoin(() => {
       const [focal, related] = this.validateRelationPairSync(data.epicId, data.relatedEpicId);
@@ -1160,7 +1154,7 @@ export class EpicStorageDelegate extends BaseStorageDelegate {
   async deleteEpicRelation(
     epicId: string,
     relatedEpicId: string,
-    context: EpicRelationWriteContext,
+    context: EpicRelationWriteContext = { trustedLocalHuman: true },
   ): Promise<DeleteEpicRelationResult> {
     return this.txRunner.runImmediateQueuedOrJoin(() => {
       const [focal, related] = this.validateRelationPairSync(epicId, relatedEpicId);

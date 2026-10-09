@@ -1,9 +1,9 @@
 /** @jest-environment jsdom */
 
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import type { Socket } from 'socket.io-client';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
@@ -256,6 +256,37 @@ describe('BackendBoundary', () => {
     act(() => homeHandler.forEach((handler) => handler({ topic: 'remotes', type: 'state' })));
 
     await waitFor(() => expect(screen.getByTestId('providers').textContent).toBe('remote'));
+    expect(screen.queryByTestId('remote-unavailable-banner')).toBeNull();
+  });
+
+  // Component layer: the gate decides the banner; a memory router shows where its link goes.
+  it('links a version-mismatched remote to the VMs tab of Remote VMs', async () => {
+    remotes = [
+      { id: REMOTE_ID, name: 'lab-vm', online: true, version: '0.9.0', versionMatches: false },
+    ];
+    mockSelectedProjectId = BOUND_PROJECT;
+    function LocationProbe() {
+      const { pathname, search } = useLocation();
+      return <div data-testid="location">{`${pathname}${search}`}</div>;
+    }
+
+    render(
+      <MemoryRouter initialEntries={['/board']}>
+        <QueryClientProvider client={newHomeClient()}>
+          <BackendProvider>
+            <BackendBoundary>
+              <LocationProbe />
+              <ProjectGate scope="page">
+                <ProjectPage />
+              </ProjectGate>
+            </BackendBoundary>
+          </BackendProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole('link', { name: 'Open Remote VMs' }));
+
+    expect(screen.getByTestId('location').textContent).toBe('/cloud?section=remote-vm&tab=vms');
     expect(screen.queryByTestId('remote-unavailable-banner')).toBeNull();
   });
 

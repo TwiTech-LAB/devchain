@@ -91,7 +91,8 @@ export async function handleSendMessage(
         },
       };
     }
-    ctx.projectWriteAdmission?.assertWritable(project.id);
+    // Admit before routing chat messages.
+    ctx.projectWriteGate?.assertWritable(project.id);
 
     const senderId = sender.id;
     const senderName = sender.name;

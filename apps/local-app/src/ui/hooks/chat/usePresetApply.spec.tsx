@@ -1,6 +1,7 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { usePresetApply, type UsePresetApplyOptions } from './usePresetApply';
 
 const toast = jest.fn();
@@ -138,7 +139,7 @@ describe('usePresetApply', () => {
     );
     await waitFor(() => expect(showSuccess).toHaveBeenCalled());
     expect(markAgentsForRestart).toHaveBeenCalledWith(['main:a1']);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agents', 'p1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: agentQueryKeys.project('p1') });
     expect(showSuccess).toHaveBeenCalledWith({
       title: 'Preset applied',
       description: '1 agent(s) updated. Restart sessions to apply.',

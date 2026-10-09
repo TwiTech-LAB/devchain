@@ -1,176 +1,117 @@
-import { RemoteApiKeyService, remoteAuthorization } from '../auth/remote-api-key.service';
-import {
-  HostProviderCliSettingsStatusSchema,
-  type HostProviderCliSettings,
-  type HostProviderCliSettingsStatus,
-} from '@devchain/shared';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { Readable } from 'node:stream';
-import {
-  DockerEngineClient,
-  DockerEngineError,
-  DockerVersion,
-} from '../../core/controllers/docker-engine.client';
+import type { ReadableStream } from 'node:stream/web';
+import { z } from 'zod';
+import type {
+  HostProviderCliSettings,
+  HostProviderCliSettingsStatus,
+  HostSkillSettings,
+  HostSkillSettingsStatus,
+  ProjectReplicaChanges,
+  ProjectReplicaOfScope,
+  ProjectReplicaV1,
+} from '@devchain/shared';
+import { getEnvConfig } from '../../../common/config/env.config';
+import { ConflictError } from '../../../common/errors/error-types';
+import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import type { FrozenProject, RemoteStorage } from '../../storage/interfaces/storage.interface';
+import { DockerEngineClient, DockerEngineError } from '../../core/controllers/docker-engine.client';
+import type { DockerVersion } from '../../core/controllers/docker-engine.client';
 import {
   DOCKER_API_VERSION_HEADER,
   DOCKER_ARCHIVE_SHA256_TRAILER,
   DockerArchiveWriteResultSchema,
   DockerImageLoadResultSchema,
   DockerImageMatchResultSchema,
-  type DockerArchiveRequest,
-  type DockerArchiveWriteResult,
-  type DockerBindPrepare,
-  type DockerCapacityResult,
-  type DockerContainerCreate,
-  type DockerHostOptions,
-  type DockerOwnerOptions,
-  type DockerImageLoadResult,
-  type DockerImageMatchResult,
-  type DockerNetworkCreate,
-  type DockerScanResult,
-  type DockerVolumeCreate,
-  type DockerVolumeHolder,
 } from '../host/host-docker.dto';
-import type { ReadableStream } from 'node:stream/web';
+import type {
+  DockerArchiveRequest,
+  DockerArchiveWriteResult,
+  DockerBindPrepare,
+  DockerCapacityResult,
+  DockerContainerCreate,
+  DockerHostOptions,
+  DockerOwnerOptions,
+  DockerImageLoadResult,
+  DockerImageMatchResult,
+  DockerNetworkCreate,
+  DockerScanResult,
+  DockerVolumeCreate,
+  DockerVolumeHolder,
+} from '../host/host-docker.dto';
 import {
   TranscriptFilesService,
   assertTranscriptSize,
 } from '../transcripts/transcript-files.service';
-import {
-  TranscriptListingSchema,
-  TRANSCRIPT_TIMEOUT_MS,
-  type TranscriptFile,
-  type TranscriptRef,
-  type TranscriptListing,
+import { TRANSCRIPT_TIMEOUT_MS } from '../transcripts/transcript-transfer.dto';
+import type {
+  TranscriptFile,
+  TranscriptRef,
+  TranscriptListing,
 } from '../transcripts/transcript-transfer.dto';
-import { Inject, Injectable, Optional } from '@nestjs/common';
-import { z } from 'zod';
-import { RemoteSessionSchema, type RemoteSession } from './git-owner.dto';
-import { VmUidConflictSchema } from '../vm-user-identity';
-import {
-  HostSkillSettingsStatusSchema,
-  type HostSkillSettings,
-  type HostSkillSettingsStatus,
-  PROJECT_REPLICA_CONTENT_TYPE,
-  ProjectReplicaChangesSchema,
-  ProjectReplicaImportResultSchema,
-  ProjectReplicaV1Schema,
-  type ProjectReplicaChanges,
-  type ProjectReplicaOfScope,
-  type ProjectReplicaV1,
-} from '@devchain/shared';
-import { getEnvConfig } from '../../../common/config/env.config';
-import { AppError, ConflictError } from '../../../common/errors/error-types';
-import {
-  STORAGE_SERVICE,
-  type FrozenProject,
-  type RemoteStorage,
-} from '../../storage/interfaces/storage.interface';
-import {
-  ProjectTimeSettlementSchema,
-  type ProjectTimeSettlement,
-} from '../time/project-time-settler.service';
-import {
-  FolderSyncStatusSchema,
-  ForceCopyBackupSchema,
-  ReceiveOnlyChangesSchema,
-  RemoteNeedSchema,
-  SyncDeviceSchema,
-  SyncFolderSchema,
-  SyncFolderConfigurationSchema,
-  type FolderSyncStatus,
-  type RemoteNeed,
-  type SyncDevice,
-  type SyncFolder,
-  type SyncFolderConfiguration,
-  type SyncFolderPatch,
-  type SyncFolderRequest,
-  type SyncStatusOptions,
-  type ForceCopyBackupRequest,
-  type ForceCopyBackup,
-  type ReceiveOnlyChanges,
+import type { RemoteSession } from './git-owner.dto';
+import type { ProjectTimeSettlement } from '../time/project-time-settler.dto';
+import type {
+  FolderSyncStatus,
+  RemoteNeed,
+  SyncDevice,
+  SyncFolder,
+  SyncFolderConfiguration,
+  SyncFolderPatch,
+  SyncFolderRequest,
+  SyncStatusOptions,
+  ForceCopyBackupRequest,
+  ForceCopyBackup,
+  ReceiveOnlyChanges,
 } from '../../file-sync/file-sync.dto';
-import { SCAN_TIMEOUT_MS } from '../../file-sync/file-sync.service';
-import {
-  SyncChownResultSchema,
-  unsupportedChown,
-  type SyncChownRequest,
-  type SyncChownResult,
-} from '../../file-sync/sync-chown.dto';
-import {
-  SyncPathInspectionSchema,
-  type SyncInspectRequest,
-  type SyncPathInspection,
+import { unsupportedChown } from '../../file-sync/sync-chown.dto';
+import type { SyncChownRequest, SyncChownResult } from '../../file-sync/sync-chown.dto';
+import type {
+  SyncInspectRequest,
+  SyncPathInspection,
 } from '../../file-sync/sync-path-inspection.dto';
-import {
-  GitGuardInstallResultSchema,
-  GitGuardRemoveResultSchema,
-  GitIndexResultSchema,
-  type GitGuardRemoveResult,
-  type GitIndexResult,
-  type VmGitGuardRequest,
+import type {
+  GitGuardRemoveResult,
+  GitIndexResult,
+  VmGitGuardRequest,
 } from '../../file-sync/git-guard.dto';
 import type { ProviderAuthClaimBundle } from '../../provider-auth/provider-auth-adapters';
-import type { HostProviderApplyInput } from '../host/host-provider-auth.service';
-import { DockerRuntimeSchema } from '../../core/controllers/docker-runtime';
-import {
-  HOST_HELPER_MIGRATION,
-  HostDockerStatusSchema,
-  HostUpdateStatusSchema,
-} from '../host/host-helper.service';
-import { requireRemoteAddress } from '../remote-address';
+import type { HostProviderApplyInput } from '../host/host-provider-auth.dto';
+import { RemoteApiKeyService, remoteAuthorization } from '../auth/remote-api-key.service';
 import {
   pinnedTlsOptions,
   remoteFetch,
-  type RemoteFetchInit,
   requireRemoteCertificate,
   requireRemoteTls,
 } from '../transport/remote-tls';
+import type { RemoteFetchInit } from '../transport/remote-tls';
 import { discoverRuntime } from '../transport/remote-discovery';
+import {
+  hostRoutes,
+  HostRuntimeSchema,
+  CONTROL_TIMEOUT_MS,
+  REPLICA_TIMEOUT_MS,
+  RUNTIME_TIMEOUT_MS,
+} from '../contract/host-routes';
+import type {
+  HostProviderVerify,
+  HostRoute,
+  HostRouteBody,
+  HostRouteParams,
+  HostRouteResult,
+  HostRuntime,
+  HostUpdateProgress,
+} from '../contract/host-routes';
+import {
+  send,
+  discardBody,
+  invalidHostAnswer,
+  RemoteHostRequestError,
+} from '../transport/host-transport';
+import type { HostSendOptions, HostTarget } from '../transport/host-transport';
 
-const CONTROL_TIMEOUT_MS = 15_000;
-const REPLICA_TIMEOUT_MS = 120_000;
-const RUNTIME_TIMEOUT_MS = 5_000;
-/**
- * The bootstrap installs DevChain and the provider CLIs before it answers.
- * Node's fetch still drops the request after 300 s without response headers;
- * the claim step then watches the bootstrap's `/api/runtime` instead.
- */
-const CLAIM_TIMEOUT_MS = 45 * 60_000;
-/** The host allows each check 90 s. */
-const VERIFY_TIMEOUT_MS = 100_000;
-
-const HostRuntimeSchema = z
-  .object({
-    state: z.string().optional(),
-    bootId: z.string().optional(),
-    docker: DockerRuntimeSchema.optional(),
-    version: z.string().nullable().optional(),
-    /** The running process's home folder; absent on older builds and bootstraps. */
-    homePath: z.string().nullable().optional(),
-    /** The running process's real account ids; absent on older builds. */
-    uid: z.number().nullable().optional(),
-    gid: z.number().nullable().optional(),
-    requestedUid: z.number().int().optional(),
-    requestedGid: z.number().int().optional(),
-    primaryGroup: z.string().optional(),
-    uidConflict: VmUidConflictSchema.optional(),
-    imageVersion: z.string().nullable().optional(),
-    cliVersions: z.record(z.string()).nullable().optional(),
-  })
-  .passthrough();
-export type HostRuntime = z.infer<typeof HostRuntimeSchema>;
-
-const HostProviderVerifySchema = z.object({
-  ok: z.boolean(),
-  summary: z.string(),
-  hint: z.string().nullable(),
-});
-export type HostProviderVerify = z.infer<typeof HostProviderVerifySchema>;
-
-const HostUpdateStatusBodySchema = z.object({
-  status: HostUpdateStatusSchema.omit({ at: true }).passthrough().nullable(),
-});
-export type HostUpdateProgress = NonNullable<z.infer<typeof HostUpdateStatusBodySchema>['status']>;
+export type { HostRuntime, HostProviderVerify } from '../contract/host-routes';
+export { RemoteHostRequestError } from '../transport/host-transport';
 
 /** The bootstrap's claim contract (`apps/host-bootstrap/README.md`). */
 export interface HostClaimRequest {
@@ -191,36 +132,8 @@ export interface HostClaimRequest {
  */
 export type HostClaimOutcome = 'claimed' | 'starting' | 'already_claimed';
 
-const FrozenProjectSchema = z.object({
-  projectId: z.string(),
-  frozenAt: z.string(),
-});
-
-const EpicIdSchema = z.object({ epicId: z.string().min(1) });
-const CreatedEpicSchema = z.object({ id: z.string().min(1) });
-
 /** Epic fields home sends when it creates an epic on the host. */
-export interface HostEpicCreate {
-  projectId: string;
-  statusId: string;
-  title: string;
-  description: string | null;
-  data: Record<string, unknown> | null;
-}
-
-/** A host request failed: unreachable, timed out, or answered with an unexpected status. */
-export class RemoteHostRequestError extends AppError {
-  constructor(
-    message: string,
-    details: { remoteId: string; path: string; status: number | null; hostCode: string | null },
-  ) {
-    super(message, 'REMOTE_HOST_REQUEST_FAILED', 502, details);
-  }
-
-  get status(): number | null {
-    return (this.details?.status as number | null | undefined) ?? null;
-  }
-}
+export type HostEpicCreate = HostRouteBody<typeof hostRoutes.createEpic>;
 
 export type HostImportOutcome =
   | { imported: true; cursor: string }
@@ -240,14 +153,33 @@ export class RemoteHostClient {
     private readonly runtimeTimeoutMs = RUNTIME_TIMEOUT_MS,
   ) {}
 
+  private async target(remoteId: string): Promise<HostTarget> {
+    const remote = await this.storage.getRemote(remoteId);
+    return {
+      ...requireRemoteTls(remote),
+      apiKey: await this.apiKeys.get(remoteId),
+      label: `Remote "${remote.name}"`,
+      remoteId,
+    };
+  }
+
+  /** One request to a registered remote's host over `route`. */
+  private async call<R extends HostRoute>(
+    remoteId: string,
+    route: R,
+    params: HostRouteParams<R>,
+    options?: HostSendOptions<R>,
+  ): Promise<HostRouteResult<R>> {
+    return send(await this.target(remoteId), route, params, options);
+  }
+
   private async dockerClient(
     remoteId: string,
     options: DockerHostOptions,
   ): Promise<DockerEngineClient> {
-    const remote = await this.storage.getRemote(remoteId);
-    const { baseUrl, certificate } = requireRemoteTls(remote);
+    const { baseUrl, certificate, apiKey } = await this.target(remoteId);
     return DockerEngineClient.forHttp(baseUrl, pinnedTlsOptions(certificate), {
-      ...(await this.apiKeys.headers(remoteId)),
+      ...remoteAuthorization(apiKey),
       ...(options.apiVersion ? { [DOCKER_API_VERSION_HEADER]: options.apiVersion } : {}),
     });
   }
@@ -509,12 +441,7 @@ export class RemoteHostClient {
   }
 
   async listTranscripts(remoteId: string, refs: TranscriptRef[]): Promise<TranscriptListing> {
-    const response = await this.request(remoteId, '/api/host/transcripts/list', {
-      method: 'POST',
-      body: JSON.stringify({ refs }),
-      expect: [200],
-    });
-    return parseBody(TranscriptListingSchema, response, remoteId, '/api/host/transcripts/list');
+    return (await this.call(remoteId, hostRoutes.listTranscripts, {}, { body: { refs } })).body;
   }
 
   async uploadTranscript(
@@ -523,32 +450,36 @@ export class RemoteHostClient {
     files: TranscriptFilesService,
     signal?: AbortSignal,
   ): Promise<void> {
-    await this.transferTranscript(remoteId, file, signal, async (send, transferSignal) => {
-      const { stream, size } = await files.read(file);
-      try {
-        assertTranscriptSize(size);
-        const init: RemoteFetchInit = {
-          method: 'PUT',
-          body: stream as unknown as BodyInit,
-          duplex: 'half',
-          signal: transferSignal,
-          headers: {
-            ...(await this.apiKeys.headers(remoteId)),
-            'content-type': 'application/octet-stream',
-            'content-length': String(size),
-          },
-        };
-        const response = await send(init);
+    await this.transferTranscript(
+      remoteId,
+      file,
+      signal,
+      async (fetchTranscript, transferSignal) => {
+        const { stream, size } = await files.read(file);
         try {
-          if (response.status !== 204)
-            throw new Error(`Transcript upload answered ${response.status}`);
+          assertTranscriptSize(size);
+          const init: RemoteFetchInit = {
+            method: 'PUT',
+            body: stream as unknown as BodyInit,
+            duplex: 'half',
+            signal: transferSignal,
+            headers: {
+              'content-type': 'application/octet-stream',
+              'content-length': String(size),
+            },
+          };
+          const response = await fetchTranscript(init);
+          try {
+            if (response.status !== 204)
+              throw new Error(`Transcript upload answered ${response.status}`);
+          } finally {
+            await discardBody(response);
+          }
         } finally {
-          await discardBody(response);
+          stream.destroy();
         }
-      } finally {
-        stream.destroy();
-      }
-    });
+      },
+    );
   }
 
   async downloadTranscript(
@@ -557,29 +488,33 @@ export class RemoteHostClient {
     files: TranscriptFilesService,
     signal?: AbortSignal,
   ): Promise<void> {
-    await this.transferTranscript(remoteId, file, signal, async (send, transferSignal) => {
-      const response = await send({
-        signal: transferSignal,
-        headers: await this.apiKeys.headers(remoteId),
-      });
-      try {
-        if (response.status !== 200)
-          throw new Error(`Transcript download answered ${response.status}`);
-        const length = response.headers.get('content-length');
-        if (length === null || !/^\d+$/.test(length) || !response.body)
-          throw new Error('Transcript response requires Content-Length and a body');
-        const size = Number(length);
-        assertTranscriptSize(size);
-        const stream = Readable.fromWeb(response.body as ReadableStream<Uint8Array>);
+    await this.transferTranscript(
+      remoteId,
+      file,
+      signal,
+      async (fetchTranscript, transferSignal) => {
+        const response = await fetchTranscript({
+          signal: transferSignal,
+        });
         try {
-          await files.write(file, stream, size, transferSignal);
+          if (response.status !== 200)
+            throw new Error(`Transcript download answered ${response.status}`);
+          const length = response.headers.get('content-length');
+          if (length === null || !/^\d+$/.test(length) || !response.body)
+            throw new Error('Transcript response requires Content-Length and a body');
+          const size = Number(length);
+          assertTranscriptSize(size);
+          const stream = Readable.fromWeb(response.body as ReadableStream<Uint8Array>);
+          try {
+            await files.write(file, stream, size, transferSignal);
+          } finally {
+            stream.destroy();
+          }
         } finally {
-          stream.destroy();
+          await discardBody(response);
         }
-      } finally {
-        await discardBody(response);
-      }
-    });
+      },
+    );
   }
 
   private async transferTranscript(
@@ -587,11 +522,11 @@ export class RemoteHostClient {
     file: TranscriptFile,
     signal: AbortSignal | undefined,
     transfer: (
-      send: (init: RemoteFetchInit) => Promise<Response>,
+      fetchTranscript: (init: RemoteFetchInit) => Promise<Response>,
       signal: AbortSignal,
     ) => Promise<void>,
   ): Promise<void> {
-    const { baseUrl, certificate } = requireRemoteTls(await this.storage.getRemote(remoteId));
+    const { baseUrl, certificate, apiKey } = await this.target(remoteId);
     const path = `/api/host/transcripts?${new URLSearchParams(file).toString()}`;
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -602,7 +537,21 @@ export class RemoteHostClient {
     try {
       controller.signal.throwIfAborted();
       const url = `${baseUrl.replace(/\/+$/, '')}${path}`;
-      await transfer((init) => remoteFetch(url, init, certificate), controller.signal);
+      await transfer(
+        (init) =>
+          remoteFetch(
+            url,
+            {
+              ...init,
+              headers: {
+                ...remoteAuthorization(apiKey),
+                ...init.headers,
+              },
+            },
+            certificate,
+          ),
+        controller.signal,
+      );
     } catch (error) {
       throw new RemoteHostRequestError(
         `Transcript transfer failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -615,36 +564,25 @@ export class RemoteHostClient {
   }
 
   async projectExists(remoteId: string, projectId: string): Promise<boolean> {
-    const response = await this.request(remoteId, `/api/projects/${enc(projectId)}`, {
-      method: 'GET',
-      expect: [200, 404],
-    });
-    await discardBody(response);
+    const response = await this.call(remoteId, hostRoutes.projectExists, { projectId });
     return response.status === 200;
   }
 
   async importProject(remoteId: string, replica: ProjectReplicaV1): Promise<HostImportOutcome> {
-    const response = await this.request(remoteId, '/api/host/projects/import', {
-      method: 'POST',
-      body: JSON.stringify(replica),
-      contentType: PROJECT_REPLICA_CONTENT_TYPE,
-      timeoutMs: REPLICA_TIMEOUT_MS,
-      expect: [201, 409],
-    });
+    const response = await this.call(remoteId, hostRoutes.importProject, {}, { body: replica });
     if (response.status === 409) {
-      const code = await readErrorCode(response);
+      const code = response.body;
       if (code !== 'PROJECT_EXISTS') {
         throw new RemoteHostRequestError('Host refused the project import.', {
           remoteId,
-          path: '/api/host/projects/import',
+          path: hostRoutes.importProject.path({}),
           status: 409,
           hostCode: code,
         });
       }
       return { imported: false, reason: 'PROJECT_EXISTS' };
     }
-    const result = ProjectReplicaImportResultSchema.parse(await response.json());
-    return { imported: true, cursor: result.cursor };
+    return { imported: true, cursor: response.body.cursor };
   }
 
   async exportReplica<S extends 'attach' | 'detach'>(
@@ -652,17 +590,13 @@ export class RemoteHostClient {
     projectId: string,
     scope: S,
   ): Promise<ProjectReplicaOfScope<S>> {
-    const path = `/api/host/projects/${enc(projectId)}/replica?scope=${scope}`;
-    const response = await this.request(remoteId, path, {
-      method: 'GET',
-      timeoutMs: REPLICA_TIMEOUT_MS,
-      expect: [200],
-    });
-    const replica = ProjectReplicaV1Schema.parse(await response.json());
+    const params = { projectId, scope };
+    const response = await this.call(remoteId, hostRoutes.exportReplica, params);
+    const replica = response.body;
     if (replica.scope !== scope) {
       throw new RemoteHostRequestError('Host returned a replica of the wrong scope.', {
         remoteId,
-        path,
+        path: hostRoutes.exportReplica.path(params),
         status: response.status,
         hostCode: null,
       });
@@ -676,37 +610,12 @@ export class RemoteHostClient {
     projectId: string,
     options: { since: string | null; full: boolean },
   ): Promise<ProjectReplicaChanges> {
-    const query = new URLSearchParams();
-    if (options.since) query.set('since', options.since);
-    if (options.full) query.set('full', 'true');
-    const queryString = query.toString();
-    const suffix = queryString ? `?${queryString}` : '';
-    const response = await this.request(
-      remoteId,
-      `/api/host/projects/${enc(projectId)}/changes${suffix}`,
-      { method: 'GET', timeoutMs: REPLICA_TIMEOUT_MS, expect: [200] },
-    );
-    return ProjectReplicaChangesSchema.parse(await response.json());
+    return (await this.call(remoteId, hostRoutes.changes, { projectId, ...options })).body;
   }
 
   /** The host's frozen answer; its `frozenAt` is the host-issued import cursor. */
   async freeze(remoteId: string, projectId: string): Promise<FrozenProject> {
-    const path = `/api/host/projects/${enc(projectId)}/freeze`;
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      expect: [200],
-    });
-    const body = await response.json().catch(() => null);
-    const parsed = FrozenProjectSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new RemoteHostRequestError('Host returned an invalid freeze answer.', {
-        remoteId,
-        path,
-        status: response.status,
-        hostCode: null,
-      });
-    }
-    return parsed.data;
+    return (await this.call(remoteId, hostRoutes.freeze, { projectId })).body;
   }
 
   async installGitGuard(
@@ -714,13 +623,8 @@ export class RemoteHostClient {
     projectId: string,
     request: VmGitGuardRequest,
   ): Promise<{ warning: string | null }> {
-    const path = `/api/host/projects/${enc(projectId)}/git-guard`;
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      body: JSON.stringify(request),
-      expect: [200],
-    });
-    return parseBody(GitGuardInstallResultSchema, response, remoteId, path);
+    return (await this.call(remoteId, hostRoutes.installGitGuard, { projectId }, { body: request }))
+      .body;
   }
 
   async removeGitGuard(
@@ -728,16 +632,19 @@ export class RemoteHostClient {
     projectId: string,
     options: { refreshIndex?: boolean } = {},
   ): Promise<GitGuardRemoveResult> {
-    const path = `/api/host/projects/${enc(projectId)}/git-guard`;
-    const response = await this.request(remoteId, path, {
-      method: 'DELETE',
-      ...(options.refreshIndex !== undefined && {
-        body: JSON.stringify({ refreshIndex: options.refreshIndex }),
-      }),
-      ...(options.refreshIndex && { timeoutMs: REPLICA_TIMEOUT_MS }),
-      expect: [200],
-    });
-    return parseBody(GitGuardRemoveResultSchema, response, remoteId, path);
+    return (
+      await this.call(
+        remoteId,
+        hostRoutes.removeGitGuard,
+        { projectId },
+        {
+          ...(options.refreshIndex !== undefined && {
+            body: { refreshIndex: options.refreshIndex },
+          }),
+          ...(options.refreshIndex && { timeoutMs: REPLICA_TIMEOUT_MS }),
+        },
+      )
+    ).body;
   }
 
   async refreshGitIndex(
@@ -745,23 +652,13 @@ export class RemoteHostClient {
     projectId: string,
     since: string | null,
   ): Promise<GitIndexResult> {
-    const path = `/api/host/projects/${enc(projectId)}/git-index`;
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      body: JSON.stringify({ since }),
-      // A large repository's index rebuild can outlast the control timeout.
-      timeoutMs: REPLICA_TIMEOUT_MS,
-      expect: [200],
-    });
-    return parseBody(GitIndexResultSchema, response, remoteId, path);
+    return (
+      await this.call(remoteId, hostRoutes.refreshGitIndex, { projectId }, { body: { since } })
+    ).body;
   }
 
   async thaw(remoteId: string, projectId: string): Promise<void> {
-    const response = await this.request(remoteId, `/api/host/projects/${enc(projectId)}/thaw`, {
-      method: 'POST',
-      expect: [204],
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.thaw, { projectId });
   }
 
   async listSessions(
@@ -769,46 +666,31 @@ export class RemoteHostClient {
     projectId?: string,
     options: { timeoutMs?: number } = {},
   ): Promise<RemoteSession[]> {
-    const path = `/api/sessions${projectId ? `?${new URLSearchParams({ projectId })}` : ''}`;
-    const response = await this.request(remoteId, path, {
-      method: 'GET',
-      ...(options.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
-      expect: [200],
-    });
-    return parseBody(z.array(RemoteSessionSchema), response, remoteId, path);
+    return (await this.call(remoteId, hostRoutes.listSessions, { projectId }, options)).body;
   }
 
   async stopSessions(remoteId: string, projectId: string): Promise<void> {
-    const response = await this.request(
-      remoteId,
-      `/api/host/projects/${enc(projectId)}/stop-sessions`,
-      { method: 'POST', expect: [204] },
-    );
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.stopSessions, { projectId });
   }
 
   /** Returns once the host has no open segment or team batch left for the project. */
   async settleTime(remoteId: string, projectId: string): Promise<ProjectTimeSettlement> {
-    const response = await this.request(
-      remoteId,
-      `/api/host/projects/${enc(projectId)}/settle-time`,
-      {
-        method: 'POST',
-        // The host waits up to its own settle bound before forcing the rest.
-        timeoutMs: getEnvConfig().REMOTES_TIME_SETTLE_TIMEOUT_MS + CONTROL_TIMEOUT_MS,
-        expect: [200],
-      },
-    );
-    return ProjectTimeSettlementSchema.parse(await response.json());
+    return (
+      await this.call(
+        remoteId,
+        hostRoutes.settleTime,
+        { projectId },
+        {
+          // The host waits up to its own settle bound before forcing the rest.
+          timeoutMs: getEnvConfig().REMOTES_TIME_SETTLE_TIMEOUT_MS + CONTROL_TIMEOUT_MS,
+        },
+      )
+    ).body;
   }
 
   /** Deletes the host copy; a copy that is already gone counts as released. */
   async release(remoteId: string, projectId: string): Promise<void> {
-    const response = await this.request(remoteId, `/api/host/projects/${enc(projectId)}/release`, {
-      method: 'POST',
-      expect: [204, 404],
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.release, { projectId });
   }
 
   /** The host epic carrying `data.idempotencyKey = key`, or null when there is none. */
@@ -817,13 +699,11 @@ export class RemoteHostClient {
     projectId: string,
     key: string,
   ): Promise<string | null> {
-    const path = `/api/host/projects/${enc(projectId)}/epics/by-idempotency-key/${enc(key)}`;
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200, 404] });
-    if (response.status === 404) {
-      await discardBody(response);
-      return null;
-    }
-    return (await parseBody(EpicIdSchema, response, remoteId, path)).epicId;
+    const response = await this.call(remoteId, hostRoutes.findEpicByIdempotencyKey, {
+      projectId,
+      key,
+    });
+    return response.status === 404 ? null : response.body.epicId;
   }
 
   /**
@@ -831,23 +711,17 @@ export class RemoteHostClient {
    * project is frozen for a handoff) is a retryable `ConflictError`.
    */
   async createEpic(remoteId: string, epic: HostEpicCreate): Promise<{ id: string }> {
-    const path = '/api/epics';
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      body: JSON.stringify(epic),
-      expect: [201, 423],
-    });
+    const response = await this.call(remoteId, hostRoutes.createEpic, {}, { body: epic });
     if (response.status === 423) {
-      const hostCode = await readErrorCode(response);
       throw new ConflictError('The remote project is locked for a handoff; try again shortly.', {
         code: 'REMOTE_PROJECT_LOCKED',
         retryable: true,
         remoteId,
         projectId: epic.projectId,
-        hostCode,
+        hostCode: response.body,
       });
     }
-    return { id: (await parseBody(CreatedEpicSchema, response, remoteId, path)).id };
+    return { id: response.body.id };
   }
 
   /**
@@ -855,110 +729,56 @@ export class RemoteHostClient {
    * name home already reaches the host by: the host may listen on a wildcard.
    */
   async syncDevice(remoteId: string): Promise<SyncDevice> {
-    const remote = await this.storage.getRemote(remoteId);
-    const path = '/api/host/sync/device';
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
-    const device = await parseBody(SyncDeviceSchema, response, remoteId, path);
-    return {
-      deviceId: device.deviceId,
-      address: dialAddress(device.address, requireRemoteAddress(remote)),
-    };
+    const target = await this.target(remoteId);
+    const device = (await send(target, hostRoutes.syncDevice, {})).body;
+    return { deviceId: device.deviceId, address: dialAddress(device.address, target.baseUrl) };
   }
 
   async syncPeer(remoteId: string, peer: SyncDevice): Promise<void> {
-    const response = await this.request(remoteId, '/api/host/sync/peer', {
-      method: 'POST',
-      body: JSON.stringify(peer),
-      expect: [204],
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.syncPeer, {}, { body: peer });
   }
 
   async syncFolders(remoteId: string, folder: SyncFolderRequest): Promise<SyncFolder> {
-    const path = '/api/host/sync/folders';
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      body: JSON.stringify(folder),
-      expect: [200],
-    });
-    return parseBody(SyncFolderSchema, response, remoteId, path);
+    return (await this.call(remoteId, hostRoutes.syncFolders, {}, { body: folder })).body;
   }
 
   async syncForceCopyBackup(
     remoteId: string,
     request: ForceCopyBackupRequest,
   ): Promise<ForceCopyBackup> {
-    const path = '/api/host/sync/force-copy-backup';
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      body: JSON.stringify(request),
-      expect: [200],
-    });
-    return parseBody(ForceCopyBackupSchema, response, remoteId, path);
+    return (await this.call(remoteId, hostRoutes.syncForceCopyBackup, {}, { body: request })).body;
   }
 
   async syncFolderType(remoteId: string, folderId: string, patch: SyncFolderPatch): Promise<void> {
-    const response = await this.request(remoteId, `/api/host/sync/folders/${enc(folderId)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-      expect: [204],
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.syncFolderType, { folderId }, { body: patch });
   }
 
   async syncFolderConfiguration(
     remoteId: string,
     folderId: string,
   ): Promise<SyncFolderConfiguration> {
-    const path = `/api/host/sync/folders/${enc(folderId)}/configuration`;
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
-    return parseBody(SyncFolderConfigurationSchema, response, remoteId, path);
+    return (await this.call(remoteId, hostRoutes.syncFolderConfiguration, { folderId })).body;
   }
 
   /** Stops sharing the folder on the host; a folder the host no longer has counts as removed. */
   async syncRemoveFolder(remoteId: string, folderId: string): Promise<void> {
-    const response = await this.request(remoteId, `/api/host/sync/folders/${enc(folderId)}`, {
-      method: 'DELETE',
-      expect: [204],
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.syncRemoveFolder, { folderId });
   }
 
   async syncScan(remoteId: string, folderId: string): Promise<void> {
-    // The host answers when its own Syncthing scan ends (SCAN_TIMEOUT_MS).
-    const response = await this.request(remoteId, `/api/host/sync/folders/${enc(folderId)}/scan`, {
-      method: 'POST',
-      expect: [204],
-      timeoutMs: SCAN_TIMEOUT_MS + CONTROL_TIMEOUT_MS,
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.syncScan, { folderId });
   }
 
   async syncRevert(remoteId: string, folderId: string): Promise<void> {
-    const response = await this.request(
-      remoteId,
-      `/api/host/sync/folders/${enc(folderId)}/revert`,
-      { method: 'POST', expect: [204] },
-    );
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.syncRevert, { folderId });
   }
 
   async syncOverride(remoteId: string, folderId: string): Promise<void> {
-    const response = await this.request(
-      remoteId,
-      `/api/host/sync/folders/${enc(folderId)}/override`,
-      {
-        method: 'POST',
-        expect: [204],
-      },
-    );
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.syncOverride, { folderId });
   }
 
   async syncLocalChanges(remoteId: string, folderId: string): Promise<ReceiveOnlyChanges> {
-    const path = `/api/host/sync/folders/${enc(folderId)}/local-changes`;
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
-    return parseBody(ReceiveOnlyChangesSchema, response, remoteId, path);
+    return (await this.call(remoteId, hostRoutes.syncLocalChanges, { folderId })).body;
   }
 
   /** With `deviceId`, includes the host's view of that device's copy. */
@@ -968,65 +788,36 @@ export class RemoteHostClient {
     deviceId?: string,
     options: SyncStatusOptions = {},
   ): Promise<FolderSyncStatus> {
-    const query = new URLSearchParams({ folder: folderId });
-    if (deviceId) query.set('device', deviceId);
-    if (options.allErrors) query.set('errors', 'all');
-    const path = `/api/host/sync/status?${query.toString()}`;
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
-    return parseBody(FolderSyncStatusSchema, response, remoteId, path);
+    return (
+      await this.call(remoteId, hostRoutes.syncStatus, {
+        folderId,
+        deviceId,
+        allErrors: options.allErrors,
+      })
+    ).body;
   }
 
   async syncFolderExists(remoteId: string, folderId: string): Promise<boolean> {
-    const path = `/api/host/sync/status?${new URLSearchParams({ folder: folderId })}`;
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200, 404] });
-    if (response.status === 404) {
-      await discardBody(response);
-      return false;
-    }
-    await parseBody(FolderSyncStatusSchema, response, remoteId, path);
-    return true;
+    const response = await this.call(remoteId, hostRoutes.syncFolderExists, { folderId });
+    return response.status === 200;
   }
 
   async syncRemoteNeed(remoteId: string, folderId: string, deviceId: string): Promise<RemoteNeed> {
-    const path = `/api/host/sync/folders/${enc(folderId)}/remote-need?${new URLSearchParams({ device: deviceId })}`;
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
-    return parseBody(RemoteNeedSchema, response, remoteId, path);
+    return (await this.call(remoteId, hostRoutes.syncRemoteNeed, { folderId, deviceId })).body;
   }
 
   async syncInspect(remoteId: string, input: SyncInspectRequest): Promise<SyncPathInspection> {
-    const path = '/api/host/sync/inspect';
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      body: JSON.stringify(input),
-      expect: [200],
-      timeoutMs: 60_000,
-    });
-    return parseBody(SyncPathInspectionSchema, response, remoteId, path);
+    return (await this.call(remoteId, hostRoutes.syncInspect, {}, { body: input })).body;
   }
 
   async syncChown(remoteId: string, input: SyncChownRequest): Promise<SyncChownResult> {
-    const path = '/api/host/sync/chown';
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      body: JSON.stringify(input),
-      expect: [200, 404],
-      timeoutMs: 60_000,
-    });
-    if (response.status === 404) {
-      await discardBody(response);
-      return unsupportedChown(null, input.items);
-    }
-    return parseBody(SyncChownResultSchema, response, remoteId, path);
+    const response = await this.call(remoteId, hostRoutes.syncChown, {}, { body: input });
+    return response.status === 404 ? unsupportedChown(null, input.items) : response.body;
   }
 
   /** Sets the host's tunnel-attestation label; keeps the phone's instance name in sync. */
   async setInstanceLabel(remoteId: string, label: string): Promise<void> {
-    const response = await this.request(remoteId, '/api/cloud/instance-label', {
-      method: 'PUT',
-      body: JSON.stringify({ label }),
-      expect: [200],
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.setInstanceLabel, {}, { body: { label } });
   }
 
   /** `/api/runtime` of a registered remote. */
@@ -1048,14 +839,16 @@ export class RemoteHostClient {
    * address yet (an unclaimed VM's bootstrap), pinned to `certificate`.
    */
   async runtimeAt(baseUrl: string, certificate: string): Promise<HostRuntime> {
-    const response = await this.fetchUrl(baseUrl, '/api/runtime', {
-      method: 'GET',
-      expect: [200],
-      timeoutMs: this.runtimeTimeoutMs,
-      label: baseUrl,
-      certificate,
-    });
-    return parseBody(HostRuntimeSchema, response, baseUrl, '/api/runtime');
+    return (
+      await send(
+        { baseUrl, certificate, apiKey: null, label: baseUrl },
+        hostRoutes.runtimeAt,
+        {},
+        {
+          timeoutMs: this.runtimeTimeoutMs,
+        },
+      )
+    ).body;
   }
 
   /**
@@ -1085,25 +878,19 @@ export class RemoteHostClient {
     body: HostClaimRequest,
     apiKey?: string,
   ): Promise<HostClaimOutcome> {
-    const response = await this.fetchUrl(bootstrapUrl, '/api/host/claim', {
-      apiKey,
-      certificate,
-      method: 'POST',
-      body: JSON.stringify(body),
-      timeoutMs: CLAIM_TIMEOUT_MS,
-      expect: [200, 409, 504],
-      label: bootstrapUrl,
-    });
-    if (response.status === 200) {
-      await discardBody(response);
-      return 'claimed';
-    }
-    const code = await readErrorCode(response);
+    const response = await send(
+      { baseUrl: bootstrapUrl, certificate, apiKey: apiKey ?? null, label: bootstrapUrl },
+      hostRoutes.claim,
+      {},
+      { body },
+    );
+    if (response.status === 200) return 'claimed';
+    const code = response.body;
     if (response.status === 504) return 'starting';
     if (code === 'ALREADY_CLAIMED') return 'already_claimed';
     throw new RemoteHostRequestError(`The VM refused the claim${code ? ` (${code})` : ''}.`, {
       remoteId: bootstrapUrl,
-      path: '/api/host/claim',
+      path: hostRoutes.claim.path({}),
       status: response.status,
       hostCode: code,
     });
@@ -1114,147 +901,78 @@ export class RemoteHostClient {
     provider: string,
     opencodeProviderIds: string[],
   ): Promise<HostProviderVerify> {
-    const path = '/api/host/provider-auth/verify';
-    const response = await this.request(remoteId, path, {
-      method: 'POST',
-      body: JSON.stringify({ provider, opencodeProviderIds }),
-      timeoutMs: VERIFY_TIMEOUT_MS,
-      expect: [200],
-    });
-    return parseBody(HostProviderVerifySchema, response, remoteId, path);
+    return (
+      await this.call(
+        remoteId,
+        hostRoutes.verifyProviderAuth,
+        {},
+        { body: { provider, opencodeProviderIds } },
+      )
+    ).body;
   }
 
   /** Writes provider login material on a claimed host. The body carries credentials. */
   async applyProviderAuth(remoteId: string, bundle: HostProviderApplyInput): Promise<void> {
-    const response = await this.request(remoteId, '/api/host/provider-auth', {
-      method: 'POST',
-      body: JSON.stringify(bundle),
-      expect: [200],
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.applyProviderAuth, {}, { body: bundle });
   }
 
   async applySshKeys(remoteId: string, keys: string[]): Promise<void> {
-    const response = await this.request(remoteId, '/api/host/ssh-keys', {
-      method: 'POST',
-      body: JSON.stringify({ keys }),
-      expect: [200],
-    });
-    await discardBody(response);
+    await this.call(remoteId, hostRoutes.applySshKeys, {}, { body: { keys } });
   }
 
   /** Starts the host's version install; answers once the install runs outside DevChain. */
   async requestHostUpdate(remoteId: string, version: string): Promise<'started' | 'in_progress'> {
-    const response = await this.request(remoteId, '/api/host/update', {
-      method: 'POST',
-      body: JSON.stringify({ version }),
-      expect: [202, 409],
-    });
-    if (response.status === 202) {
-      await discardBody(response);
-      return 'started';
-    }
-    const code = await readErrorCode(response);
+    const response = await this.call(
+      remoteId,
+      hostRoutes.requestHostUpdate,
+      {},
+      { body: { version } },
+    );
+    if (response.status === 202) return 'started';
+    const code = response.body;
     if (code === 'UPDATE_IN_PROGRESS') return 'in_progress';
     throw new RemoteHostRequestError(`The host refused the update${code ? ` (${code})` : ''}.`, {
       remoteId,
-      path: '/api/host/update',
+      path: hostRoutes.requestHostUpdate.path({}),
       status: 409,
       hostCode: code,
     });
   }
 
   async hostUpdateStatus(remoteId: string): Promise<HostUpdateProgress | null> {
-    const path = '/api/host/update';
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
-    return (await parseBody(HostUpdateStatusBodySchema, response, remoteId, path)).status;
+    return (await this.call(remoteId, hostRoutes.hostUpdateStatus, {})).body.status;
   }
 
   async requestDocker(remoteId: string): Promise<{ jobId: string | null }> {
-    const response = await this.request(remoteId, '/api/host/docker', {
-      method: 'POST',
-      body: '{}',
-      expect: [202],
-    });
-    return parseBody(
-      z.object({ jobId: z.string().nullable() }),
-      response,
-      remoteId,
-      '/api/host/docker',
-    );
+    return (await this.call(remoteId, hostRoutes.requestDocker, {}, { body: {} })).body;
   }
 
   async dockerStatus(remoteId: string) {
-    const path = '/api/host/docker';
-    const response = await this.request(remoteId, path, { method: 'GET', expect: [200] });
-    return (
-      await parseBody(
-        z.object({ status: HostDockerStatusSchema.nullable() }),
-        response,
-        remoteId,
-        path,
-      )
-    ).status;
+    return (await this.call(remoteId, hostRoutes.dockerStatus, {})).body.status;
   }
 
-  getProviderCliSettingsStatus(remoteId: string): Promise<HostProviderCliSettingsStatus> {
-    return this.hostSettingsRequest(
-      remoteId,
-      '/api/host/provider-clis/status',
-      'GET',
-      undefined,
-      200,
-      HostProviderCliSettingsStatusSchema,
-      3000,
-    );
+  async getProviderCliSettingsStatus(remoteId: string): Promise<HostProviderCliSettingsStatus> {
+    return (await this.call(remoteId, hostRoutes.getProviderCliSettingsStatus, {})).body;
   }
 
   async putProviderCliSettings(remoteId: string, body: HostProviderCliSettings): Promise<void> {
-    await this.hostSettingsRequest(
-      remoteId,
-      '/api/host/provider-clis',
-      'PUT',
-      JSON.stringify(body),
-      202,
-      z.object({ revision: z.literal(body.revision) }),
-      3000,
-    );
+    const route = hostRoutes.putProviderCliSettings;
+    const response = await this.call(remoteId, route, {}, { body });
+    checkSettingsRevision(remoteId, route.path({}), response, body.revision);
   }
 
   async checkProviderClis(remoteId: string): Promise<void> {
-    await this.hostSettingsRequest(
-      remoteId,
-      '/api/host/provider-clis/check',
-      'POST',
-      undefined,
-      202,
-      z.object({ accepted: z.literal(true) }),
-      3000,
-    );
+    await this.call(remoteId, hostRoutes.checkProviderClis, {});
   }
 
-  getSkillSettingsStatus(remoteId: string): Promise<HostSkillSettingsStatus> {
-    return this.hostSettingsRequest(
-      remoteId,
-      '/api/host/skill-settings/status',
-      'GET',
-      undefined,
-      200,
-      HostSkillSettingsStatusSchema,
-      3000,
-    );
+  async getSkillSettingsStatus(remoteId: string): Promise<HostSkillSettingsStatus> {
+    return (await this.call(remoteId, hostRoutes.getSkillSettingsStatus, {})).body;
   }
 
   async putSkillSettings(remoteId: string, body: HostSkillSettings): Promise<void> {
-    await this.hostSettingsRequest(
-      remoteId,
-      '/api/host/skill-settings',
-      'PUT',
-      JSON.stringify(body),
-      202,
-      z.object({ revision: z.literal(body.revision) }),
-      3000,
-    );
+    const route = hostRoutes.putSkillSettings;
+    const response = await this.call(remoteId, route, {}, { body });
+    checkSettingsRevision(remoteId, route.path({}), response, body.revision);
   }
 
   async uploadSkillSourceContent(
@@ -1264,160 +982,35 @@ export class RemoteHostClient {
     stream: Readable,
     signal?: AbortSignal,
   ): Promise<void> {
-    const path = `/api/host/skill-settings/local-sources/${enc(name)}/content?${new URLSearchParams({ contentHash })}`;
+    const params = { name, contentHash };
     try {
-      await this.hostSettingsRequest(
-        remoteId,
-        path,
-        'PUT',
-        stream,
-        200,
-        z.object({ name: z.literal(name), contentHash: z.literal(contentHash) }),
-        60_000,
+      const response = await this.call(remoteId, hostRoutes.uploadSkillSourceContent, params, {
+        body: stream,
         signal,
-      );
+      });
+      if (response.body.name !== name || response.body.contentHash !== contentHash) {
+        throw invalidHostAnswer(
+          remoteId,
+          hostRoutes.uploadSkillSourceContent.path(params),
+          response.status,
+        );
+      }
     } finally {
       stream.destroy();
     }
   }
-
-  private async hostSettingsRequest<T>(
-    remoteId: string,
-    path: string,
-    method: 'GET' | 'PUT' | 'POST',
-    body: string | Readable | undefined,
-    expectedStatus: number,
-    schema: z.ZodType<T>,
-    timeoutMs: number,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    const { baseUrl, certificate } = requireRemoteTls(await this.storage.getRemote(remoteId));
-    const controller = new AbortController();
-    const abort = (): void => controller.abort();
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) controller.abort();
-    const timeout = setTimeout(abort, timeoutMs);
-    timeout.unref?.();
-    let response: Response | undefined;
-    try {
-      const init: RemoteFetchInit = {
-        method,
-        signal: controller.signal,
-        ...(body === undefined
-          ? {}
-          : {
-              body: body as BodyInit,
-              headers: {
-                'content-type': typeof body === 'string' ? 'application/json' : 'application/x-tar',
-              },
-              ...(typeof body === 'string' ? {} : { duplex: 'half' as const }),
-            }),
-      };
-      init.headers = { ...(await this.apiKeys.headers(remoteId)), ...init.headers };
-      response = await remoteFetch(`${baseUrl.replace(/\/+$/, '')}${path}`, init, certificate);
-      if (response.status !== expectedStatus)
-        throw new RemoteHostRequestError('Host settings request failed', {
-          remoteId,
-          path,
-          status: response.status,
-          hostCode: null,
-        });
-      return await parseBody(schema, response, remoteId, path);
-    } finally {
-      if (response) await discardBody(response);
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', abort);
-    }
-  }
-
-  private async request(
-    remoteId: string,
-    path: string,
-    options: {
-      method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-      body?: string;
-      contentType?: string;
-      timeoutMs?: number;
-      expect: number[];
-    },
-  ): Promise<Response> {
-    const remote = await this.storage.getRemote(remoteId);
-    const { baseUrl, certificate } = requireRemoteTls(remote);
-    return this.fetchUrl(baseUrl, path, {
-      ...options,
-      apiKey: await this.apiKeys.get(remoteId),
-      label: `Remote "${remote.name}"`,
-      remoteId,
-      certificate,
-    });
-  }
-
-  private async fetchUrl(
-    baseUrl: string,
-    path: string,
-    options: {
-      method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-      body?: string;
-      contentType?: string;
-      timeoutMs?: number;
-      expect: number[];
-      label: string;
-      remoteId?: string;
-      apiKey?: string | null;
-      certificate: string;
-    },
-  ): Promise<Response> {
-    const remoteId = options.remoteId ?? baseUrl;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? CONTROL_TIMEOUT_MS);
-    timeout.unref?.();
-    let response: Response;
-    try {
-      response = await remoteFetch(
-        `${baseUrl.replace(/\/+$/, '')}${path}`,
-        {
-          method: options.method,
-          headers: {
-            ...remoteAuthorization(options.apiKey),
-            ...(options.body !== undefined
-              ? { 'content-type': options.contentType ?? 'application/json' }
-              : {}),
-          },
-          signal: controller.signal,
-          ...(options.body !== undefined && {
-            body: options.body,
-          }),
-        },
-        options.certificate,
-      );
-    } catch (error) {
-      throw new RemoteHostRequestError(
-        `${options.label} is unreachable: ${error instanceof Error ? error.message : String(error)}`,
-        { remoteId, path, status: null, hostCode: null },
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
-    if (!options.expect.includes(response.status)) {
-      const hostCode = await readErrorCode(response);
-      if (path === '/api/host/docker' && hostCode === 'HOST_HELPER_OUTDATED') {
-        throw new RemoteHostRequestError(
-          `The host helper needs one manual migration: ${HOST_HELPER_MIGRATION}`,
-          { remoteId, path, status: response.status, hostCode: 'HOST_HELPER_OUTDATED' },
-        );
-      }
-      throw new RemoteHostRequestError(
-        `${options.label} answered ${response.status} to ${options.method} ${path.split('?')[0]}${hostCode ? ` (${hostCode})` : ''}.`,
-        { remoteId, path, status: response.status, hostCode },
-      );
-    }
-    return response;
-  }
 }
 
-/** Releases the pooled connection; an unread body holds it until garbage collection. */
-async function discardBody(response: Response): Promise<void> {
-  await response.body?.cancel().catch(() => undefined);
+/** A settings route answers with the revision the host stored; any other revision is an invalid answer. */
+function checkSettingsRevision(
+  remoteId: string,
+  path: string,
+  response: { status: number; body: { revision: string } },
+  expected: string,
+): void {
+  if (response.body.revision !== expected) {
+    throw invalidHostAnswer(remoteId, path, response.status);
+  }
 }
 
 /** A Docker upload's JSON answer, checked by `schema`; anything else is an invalid host response. */
@@ -1454,24 +1047,6 @@ function checkDockerAnswer<T>(
   return parsed.data;
 }
 
-async function parseBody<T>(
-  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
-  response: Response,
-  remoteId: string,
-  path: string,
-): Promise<T> {
-  const parsed = schema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) {
-    throw new RemoteHostRequestError(`Host returned an invalid answer to ${path.split('?')[0]}.`, {
-      remoteId,
-      path,
-      status: response.status,
-      hostCode: null,
-    });
-  }
-  return parsed.data;
-}
-
 /** `address` with its host replaced by the host name in `baseUrl`; `dynamic` stays as is. */
 export function dialAddress(address: string, baseUrl: string): string {
   const match = /^(tcp|quic):\/\/.*:(\d+)$/.exec(address);
@@ -1481,16 +1056,4 @@ export function dialAddress(address: string, baseUrl: string): string {
 
 function enc(value: string): string {
   return encodeURIComponent(value);
-}
-
-/** The AppError `code`, or a `details.code` conflict code, from an error body. */
-async function readErrorCode(response: Response): Promise<string | null> {
-  try {
-    const body = (await response.json()) as { code?: unknown; details?: { code?: unknown } };
-    const detailCode = body.details?.code;
-    if (typeof detailCode === 'string') return detailCode;
-    return typeof body.code === 'string' ? body.code : null;
-  } catch {
-    return null;
-  }
 }

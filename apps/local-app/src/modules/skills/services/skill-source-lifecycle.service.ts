@@ -7,7 +7,10 @@ import { getEnvConfig } from '../../../common/config/env.config';
 import { NotFoundError, StorageError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type SkillSourceStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { CommunitySkillSource, LocalSkillSource } from '../../storage/models/domain.models';
 import type { CreateCommunitySourceDto } from '../dtos/community-sources.dto';
 import type { CreateLocalSourceDto } from '../dtos/local-sources.dto';
@@ -42,7 +45,7 @@ export class SkillSourceLifecycleService implements OnApplicationBootstrap {
   private readonly pendingDeferredSources = new Set<string>();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: SkillSourceStorage,
     private readonly skillSourceRegistry: SkillSourceRegistryService,
     private readonly skillSyncService: SkillSyncService,
     private readonly settingsService: SettingsService,

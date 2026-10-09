@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, act, within } from '@testing-library/react';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { AgentsPage } from './AgentsPage';
 
 const toastSpy = jest.fn();
@@ -56,6 +57,18 @@ const baseAgent = {
   profileId: baseProfile.id,
   name: 'Agent One',
   isProjectOwner: false,
+  type: 'agent' as const,
+  modelOverride: null,
+  effortOverride: null,
+  providerConfigId: 'config-1',
+  providerConfig: {
+    id: 'config-1',
+    name: 'default',
+    providerId: baseProvider.id,
+    providerName: baseProvider.name,
+    model: null,
+    effort: null,
+  },
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
   profile: agentProfile,
@@ -145,9 +158,12 @@ function buildFetchMock(overrides?: {
       currentAgents = currentAgents.map((agent) =>
         agent.id === id ? { ...agent, ...body, name: body.name ?? 'Agent One Updated' } : agent,
       );
+      const { type, providerConfig, ...updatedAgent } = currentAgents.find(
+        (agent) => agent.id === id,
+      )!;
       return {
         ok: true,
-        json: async () => currentAgents.find((agent) => agent.id === id) ?? currentAgents[0],
+        json: async () => updatedAgent,
       } as Response;
     }
 
@@ -185,7 +201,8 @@ describe('AgentsPage', () => {
     }
   });
 
-  it('saves edits and closes the dialog on success', async () => {
+  // The page and real cache exercise the PATCH/refetch ordering that can lose enriched fields.
+  it('saves edits, closes the dialog and retains the enriched row after the refetch', async () => {
     const fetchMock = buildFetchMock();
     global.fetch = fetchMock as unknown as typeof fetch;
 
@@ -219,6 +236,21 @@ describe('AgentsPage', () => {
       expect(screen.queryByText('Edit Agent')).not.toBeInTheDocument();
     });
     expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({ title: 'Agent updated' }));
+    expect(queryClient.getQueryData(agentQueryKeys.withGuests('project-1'))).toMatchObject({
+      items: [
+        {
+          id: baseAgent.id,
+          name: 'Agent One Updated',
+          type: 'agent',
+          providerConfig: baseAgent.providerConfig,
+        },
+      ],
+    });
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) => String(url).includes('includeGuests=true') && !init?.method,
+      ).length,
+    ).toBeGreaterThanOrEqual(2);
 
     queryClient.clear();
   });
@@ -396,7 +428,7 @@ describe('AgentsPage', () => {
     });
 
     expect(invalidateSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ queryKey: ['agents', 'project-1'] }),
+      expect.objectContaining({ queryKey: agentQueryKeys.project('project-1') }),
     );
 
     invalidateSpy.mockRestore();

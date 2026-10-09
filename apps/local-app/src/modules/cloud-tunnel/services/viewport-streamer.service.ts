@@ -11,7 +11,7 @@ import { ActiveSessionLookup } from '../../sessions/services/active-session-look
 import { TerminalViewportFacade } from '../../terminal/services/terminal-viewport/terminal-viewport.facade';
 import { AppError, ForbiddenError, NotFoundError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
 import { PairedDeviceWorkspaceAccessService } from '../../e2ee/services/paired-device-workspace-access.service';
 import {
   PAIRED_DEVICE_WORKSPACE_ACCESS_REVOKED_EVENT,
@@ -89,7 +89,7 @@ export class ViewportStreamerService implements OnModuleInit, OnModuleDestroy {
     @Inject(ViewportFrameSink) private readonly sink: ViewportFrameSink,
     // Decides plaintext/encrypted/blocked and seals the screen for the lease owner.
     private readonly viewportCrypto: TunnelViewportCryptoService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage,
     private readonly deviceAccess: PairedDeviceWorkspaceAccessService,
     private readonly workspaceMode: WorkspaceModeCoordinatorService,
   ) {}

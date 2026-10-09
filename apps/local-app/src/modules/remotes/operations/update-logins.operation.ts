@@ -22,7 +22,7 @@ import {
   type ClaimDetails,
   type ClaimProviderState,
 } from './claim.operation';
-import type { HostProviderAuthRemoveSpec } from '../host/host-provider-auth.service';
+import type { HostProviderAuthRemoveSpec } from '../host/host-provider-auth.dto';
 import { RemoteHostClient } from './remote-host.client';
 import {
   HOST_LIFECYCLE_KINDS,

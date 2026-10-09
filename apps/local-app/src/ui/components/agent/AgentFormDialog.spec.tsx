@@ -97,12 +97,24 @@ function setupFetchMock(
       const providerId = providerEffortsMatch[1];
       return {
         ok: true,
-        json: async () =>
-          effortsByProviderId[providerId] ?? {
+        json: async () => {
+          const catalog = effortsByProviderId[providerId] ?? {
             efforts: [],
             supportsEffort: false,
             requiresModelForEffort: false,
-          },
+          };
+          return {
+            ...catalog,
+            efforts: catalog.efforts.map((effort, index) => ({
+              id: `effort-${index}`,
+              providerId,
+              position: index,
+              createdAt: '2026-10-08T00:00:00.000Z',
+              updatedAt: '2026-10-08T00:00:00.000Z',
+              ...effort,
+            })),
+          };
+        },
       } as Response;
     }
     return { ok: true, json: async () => ({}) } as Response;

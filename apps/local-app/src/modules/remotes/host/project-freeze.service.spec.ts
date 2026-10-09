@@ -6,6 +6,7 @@
  */
 import { ProjectFrozenError } from '../../../common/errors/error-types';
 import type { ProjectHostStorage } from '../../storage/interfaces/storage.interface';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { ProjectFreezeService } from './project-freeze.service';
 
 function createStorage(frozen: Array<{ projectId: string; frozenAt: string }> = []) {
@@ -17,13 +18,23 @@ function createStorage(frozen: Array<{ projectId: string; frozenAt: string }> = 
   } satisfies Record<keyof ProjectHostStorage, jest.Mock>;
 }
 
+function createGate(storage: ProjectHostStorage): ProjectWriteGate {
+  const gate = new ProjectWriteGate();
+  gate.bindStorage({
+    ...storage,
+    listRemoteProjectBindings: jest.fn().mockResolvedValue([]),
+    getRemote: jest.fn(),
+  });
+  return gate;
+}
+
 describe('ProjectFreezeService', () => {
   it('restores persisted freezes on start', async () => {
-    const service = new ProjectFreezeService(
-      createStorage([{ projectId: 'p1', frozenAt: '2026-09-22T10:00:00.000Z' }]),
-    );
+    const storage = createStorage([{ projectId: 'p1', frozenAt: '2026-09-22T10:00:00.000Z' }]);
+    const gate = createGate(storage);
+    const service = new ProjectFreezeService(storage, gate);
 
-    await service.onModuleInit();
+    await gate.onModuleInit();
 
     expect(service.isFrozen('p1')).toBe(true);
     expect(() => service.assertWritable('p1')).toThrow(ProjectFrozenError);
@@ -32,7 +43,7 @@ describe('ProjectFreezeService', () => {
 
   it('keeps the first frozenAt when frozen twice and clears it on thaw', async () => {
     const storage = createStorage();
-    const service = new ProjectFreezeService(storage);
+    const service = new ProjectFreezeService(storage, createGate(storage));
 
     const first = await service.freeze('p1');
     const second = await service.freeze('p1');
@@ -50,7 +61,7 @@ describe('ProjectFreezeService', () => {
   it('does not mark a project frozen when persisting fails', async () => {
     const storage = createStorage();
     storage.setProjectFrozen.mockRejectedValue(new Error('not found'));
-    const service = new ProjectFreezeService(storage);
+    const service = new ProjectFreezeService(storage, createGate(storage));
 
     await expect(service.freeze('missing')).rejects.toThrow('not found');
 
@@ -59,7 +70,7 @@ describe('ProjectFreezeService', () => {
 
   it('holds a freeze in memory only and keeps an existing frozenAt', async () => {
     const storage = createStorage();
-    const service = new ProjectFreezeService(storage);
+    const service = new ProjectFreezeService(storage, createGate(storage));
 
     const held = service.hold('p1', '2026-09-22T10:00:00.000Z');
     const again = service.hold('p1', '2026-09-22T11:00:00.000Z');
@@ -73,7 +84,7 @@ describe('ProjectFreezeService', () => {
 
   it('forgets a held freeze without touching storage', () => {
     const storage = createStorage();
-    const service = new ProjectFreezeService(storage);
+    const service = new ProjectFreezeService(storage, createGate(storage));
     service.hold('p1', '2026-09-22T10:00:00.000Z');
 
     service.forget('p1');
@@ -84,7 +95,8 @@ describe('ProjectFreezeService', () => {
   });
 
   it('reports 423 PROJECT_FROZEN', async () => {
-    const service = new ProjectFreezeService(createStorage());
+    const storage = createStorage();
+    const service = new ProjectFreezeService(storage, createGate(storage));
     await service.freeze('p1');
 
     expect(() => service.assertWritable('p1')).toThrow(

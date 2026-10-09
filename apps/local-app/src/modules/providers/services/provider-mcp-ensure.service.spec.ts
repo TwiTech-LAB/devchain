@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ProviderMcpEnsureService } from './provider-mcp-ensure.service';
 import { McpProviderRegistrationService } from './mcp-provider-registration.service';
 import { ProviderAdapterFactory } from '../adapters';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { ProjectRemoteError, ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { Provider } from '../../storage/models/domain.models';
@@ -91,7 +91,6 @@ describe('ProviderMcpEnsureService', () => {
           // No `mcpMode='project_config'` → isMcpCli=true → no projectPath required.
           return {
             providerName: 'agy',
-            requiresProjectProvisioning: true,
             provisionProjectPath: mockTrustProvisioner.provisionProjectPath,
             parseGlobalMcpConfig: jest.fn().mockReturnValue([]),
             buildGlobalMcpServerEntry: jest.fn(),
@@ -132,7 +131,7 @@ describe('ProviderMcpEnsureService', () => {
           useValue: mockAdapterFactory,
         },
         {
-          provide: ProjectWriteAdmissionService,
+          provide: ProjectWriteGate,
           useValue: mockAdmission,
         },
       ],
@@ -167,7 +166,6 @@ describe('ProviderMcpEnsureService', () => {
         if (name === 'agy') {
           return {
             providerName: 'agy',
-            requiresProjectProvisioning: true,
             provisionProjectPath,
             parseGlobalMcpConfig: jest.fn().mockReturnValue([]),
             buildGlobalMcpServerEntry: jest.fn(),
@@ -741,7 +739,6 @@ describe('ProviderMcpEnsureService', () => {
           if (callCount === 3) throw new Error('Adapter lookup failed');
           return {
             providerName: 'agy',
-            requiresProjectProvisioning: true,
             provisionProjectPath: mockTrustProvisioner.provisionProjectPath,
           };
         }
@@ -816,7 +813,6 @@ describe('ProviderMcpEnsureService', () => {
           return {
             providerName: 'claude',
             ensureProjectSettings: mockClaudeEnsureProjectSettings,
-            requiresProjectProvisioning: true,
             provisionProjectPath: claudeProvisionProjectPath,
           };
         }

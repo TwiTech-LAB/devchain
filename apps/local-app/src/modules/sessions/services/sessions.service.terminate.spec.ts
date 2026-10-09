@@ -34,7 +34,7 @@ import type { HooksConfigService } from '../../hooks/services/hooks-config.servi
 import type { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { DEFAULT_FEATURE_FLAGS } from '../../../common/config/feature-flags';
-import type { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
+import type { SessionTerminalRuntimeService } from '../../session-terminal-runtime/session-terminal-runtime.service';
 import type { EpicTimeStore } from '../../epic-time/services/epic-time.store';
 
 const mockStat = stat as jest.MockedFunction<typeof stat>;
@@ -135,12 +135,9 @@ describe('SessionsService.terminateSession — size_bytes', () => {
       } as unknown as ProviderAdapterFactory,
       eventsService as unknown as EventsService,
       terminalSessionRegistry,
-      { clear: jest.fn() } as unknown as RuntimeContextCaptureService,
-      { cleanupSessionSync: jest.fn() } as never,
       {
-        cleanupSession: jest.fn().mockResolvedValue(undefined),
-        reconcileStartup: jest.fn().mockResolvedValue(undefined),
-      } as never,
+        releaseProviderArtifacts: jest.fn().mockResolvedValue(undefined),
+      } as unknown as SessionTerminalRuntimeService,
       {
         readActivationSettings: jest
           .fn()

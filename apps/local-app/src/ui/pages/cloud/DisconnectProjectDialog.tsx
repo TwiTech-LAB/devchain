@@ -5,7 +5,6 @@ import type {
   DockerCopyBackChoice,
   DockerCopyBackRequest,
   DockerSyncGroup,
-  DockerSyncState,
 } from '@/modules/remotes/docker/docker-copy-back.dto';
 import type { DockerDataState } from '@/modules/remotes/docker/docker-plan.dto';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
@@ -27,11 +26,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/ui/components/ui/dialog';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
+import { dockerSyncStateQueryKey, fileSyncStatusQueryKey } from './lib/remote-vm-query-keys';
 import { cn } from '@/ui/lib/utils';
 import { useProjectFileSyncFailures } from './file-sync-failures';
 import { StartError } from './StartError';
-import { FileSyncLossItems, type FolderNeed } from './file-sync-display';
+import { FileSyncLossItems } from './file-sync-display';
 
 /** The Connect dialog's names for the same states. */
 const STATE_LABELS: Record<DockerDataState, string> = {
@@ -174,26 +174,6 @@ function DockerDataTable({
   );
 }
 
-/** Null when the check cannot be read: the option is then not offered. */
-async function fetchSyncState(
-  projectId: string,
-  remoteId: string,
-  signal: AbortSignal,
-): Promise<DockerSyncState | null> {
-  const response = await apiFetch(
-    `/api/projects/${encodeURIComponent(projectId)}/docker/sync-state`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ remoteId }),
-      signal,
-    },
-    { backend: HOME_BACKEND },
-  );
-  if (!response.ok) return null;
-  return (await response.json()) as DockerSyncState;
-}
-
 function description(remoteName: string, offline: boolean, force: boolean): string {
   if (offline) {
     return `${remoteName} cannot be reached. Force disconnect keeps the last home mirror without contacting the VM.`;
@@ -233,6 +213,7 @@ export function DisconnectProjectDialog({
   onFixFileSync: () => void;
   onDisconnect: (force: boolean, dockerCopyBack?: DockerCopyBackRequest) => void;
 }) {
+  const api = useRemoteVmApi();
   const client = useHomeQueryClient();
   // Null until the user decides; the default then follows whether the VM changed data.
   const [copyChoice, setCopyChoice] = useState<boolean | null>(null);
@@ -244,10 +225,10 @@ export function DisconnectProjectDialog({
   // A forced disconnect never reaches the VM, so it has no Docker copy.
   const sync = useQuery(
     {
-      queryKey: [HOME_BACKEND, 'docker-sync-state', projectId, remoteId],
+      queryKey: dockerSyncStateQueryKey(projectId, remoteId),
       enabled: !forced,
       retry: false,
-      queryFn: ({ signal }) => fetchSyncState(projectId, remoteId, signal),
+      queryFn: ({ signal }) => api.readDockerSyncState(projectId, remoteId, signal),
     },
     client,
   );
@@ -269,17 +250,9 @@ export function DisconnectProjectDialog({
   // What home's Syncthing last knew it still needed; the remote cannot be asked.
   const need = useQuery(
     {
-      queryKey: [HOME_BACKEND, 'file-sync', projectId, 'status'],
+      queryKey: fileSyncStatusQueryKey(projectId),
       enabled: forced,
-      queryFn: async ({ signal }) => {
-        const response = await apiFetch(
-          `/api/file-sync/projects/${encodeURIComponent(projectId)}/status`,
-          { signal },
-          { backend: HOME_BACKEND },
-        );
-        if (!response.ok) return { folders: null };
-        return (await response.json()) as { folders: FolderNeed[] | null };
-      },
+      queryFn: ({ signal }) => api.readFileSyncStatus(projectId, signal),
     },
     client,
   );

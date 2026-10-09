@@ -13,33 +13,16 @@ import {
   TooltipTrigger,
 } from '@/ui/components/ui/tooltip';
 import { BusyStatus, Spinner } from '@/ui/components/ui/spinner';
-import {
-  vmProviderConnectionQueryKey,
-  type VmProviderConnectionView,
-} from '@/ui/hooks/useVmProviderConnections';
-import { readErrorMessage } from '@/ui/hooks/useRemotes';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
-
-interface RightsCheck {
-  ok: boolean;
-  missing: string[];
-}
+import { vmProviderConnectionQueryKey, vmProviderRightsQueryKey } from './lib/remote-vm-query-keys';
+import type { ProxmoxRightsCheck, VmProviderConnectionView } from './lib/remote-vm-contracts';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
+import type { RemoteVmApi } from './lib/remote-vm-api';
 
 /** One rights check per server; kept for the page session, since the server stores none. */
-function rightsQuery(connectionId: string) {
+function rightsQuery(api: RemoteVmApi, connectionId: string) {
   return {
-    queryKey: [HOME_BACKEND, 'vm-provider-rights', connectionId] as const,
-    queryFn: async (): Promise<RightsCheck> => {
-      const response = await apiFetch(
-        `/api/vm-providers/${encodeURIComponent(connectionId)}/check`,
-        { method: 'POST' },
-        { backend: HOME_BACKEND },
-      );
-      if (!response.ok)
-        throw new Error(await readErrorMessage(response, 'The rights check failed.'));
-      const body = (await response.json()) as Partial<RightsCheck>;
-      return { ok: body.ok === true, missing: Array.isArray(body.missing) ? body.missing : [] };
-    },
+    queryKey: vmProviderRightsQueryKey(connectionId),
+    queryFn: () => api.checkVmProviderRights(connectionId),
     staleTime: Infinity,
     gcTime: Infinity,
     retry: false,
@@ -58,7 +41,12 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 function Rights({
   check,
 }: {
-  check: { data?: RightsCheck; error: Error | null; isFetching: boolean; dataUpdatedAt: number };
+  check: {
+    data?: ProxmoxRightsCheck;
+    error: Error | null;
+    isFetching: boolean;
+    dataUpdatedAt: number;
+  };
 }) {
   const checkedAt = check.dataUpdatedAt ? new Date(check.dataUpdatedAt).toLocaleString() : null;
   if (check.isFetching && !check.data) {
@@ -123,25 +111,17 @@ export function ProxmoxTab({
   onOpenVms: () => void;
   onConnect: () => void;
 }) {
+  const api = useRemoteVmApi();
   const client = useHomeQueryClient();
   const checks = useQueries(
-    { queries: connections.map((connection) => rightsQuery(connection.id)) },
+    { queries: connections.map((connection) => rightsQuery(api, connection.id)) },
     client,
   );
   const [removeTarget, setRemoveTarget] = useState<VmProviderConnectionView | null>(null);
   const [removeError, setRemoveError] = useState<{ id: string; message: string } | null>(null);
   const remove = useMutation(
     {
-      mutationFn: async (connectionId: string) => {
-        const response = await apiFetch(
-          `/api/vm-providers/${encodeURIComponent(connectionId)}`,
-          { method: 'DELETE' },
-          { backend: HOME_BACKEND },
-        );
-        if (!response.ok) {
-          throw new Error(await readErrorMessage(response, 'Could not remove the server.'));
-        }
-      },
+      mutationFn: (connectionId: string) => api.deleteVmProvider(connectionId),
       onSuccess: () => {
         setRemoveError(null);
         void client.invalidateQueries({ queryKey: vmProviderConnectionQueryKey });

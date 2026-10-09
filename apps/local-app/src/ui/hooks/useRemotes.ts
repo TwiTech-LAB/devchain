@@ -1,13 +1,16 @@
 import { useMemo, useRef } from 'react';
 import { useQuery, type UseMutationResult } from '@tanstack/react-query';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import type {
+  CreateRemoteInput,
+  RemoteProjectBindingRow,
+} from '@/ui/pages/cloud/lib/remote-vm-contracts';
+import { useRemoteVmApi } from '@/ui/pages/cloud/lib/remote-vm-api-context';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import {
   REMOTES_LIST_QUERY_KEY,
   REMOTE_BINDINGS_QUERY_KEY,
-  type RemoteProjectBindingRow,
-} from '@/ui/lib/backend-provider';
+} from '@/ui/pages/cloud/lib/remote-vm-query-keys';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
 import { useHomeSocket } from './useHomeSocket';
 import { useCrudMutation } from './useCrudMutations';
@@ -16,46 +19,16 @@ import { getErrorMessage } from '@/ui/lib/toast-helpers';
 // Fallback when a socket event is missed; the same interval BackendProvider polls at.
 const REMOTES_POLL_MS = 30_000;
 
-export interface CreateRemoteInput {
-  name: string;
-  baseUrl: string;
-  apiKey?: string;
-  /** Read on the VM; the certificate at `baseUrl` must match it. */
-  certificateFingerprint: string;
-}
-
-/** The server's `message` from an error response, or `fallback`. */
-export async function readErrorMessage(res: Response, fallback: string): Promise<string> {
-  const body = (await res.json().catch(() => null)) as { message?: unknown } | null;
-  return typeof body?.message === 'string' ? body.message : fallback;
-}
-
-async function fetchRemotes(signal: AbortSignal): Promise<RemoteListItemDto[]> {
-  const res = await apiFetch('/api/remotes', { signal }, { backend: HOME_BACKEND });
-  if (!res.ok)
-    throw new Error(await readErrorMessage(res, `Failed to load remotes (${res.status})`));
-  const body = (await res.json()) as { items?: RemoteListItemDto[] };
-  return body.items ?? [];
-}
-
-async function fetchBindings(signal: AbortSignal): Promise<RemoteProjectBindingRow[]> {
-  const res = await apiFetch('/api/remotes/bindings', { signal }, { backend: HOME_BACKEND });
-  if (!res.ok) {
-    throw new Error(await readErrorMessage(res, `Failed to load remote bindings (${res.status})`));
-  }
-  const body = (await res.json()) as { items?: RemoteProjectBindingRow[] };
-  return body.items ?? [];
-}
-
 /** Home client for the Cloud page's Remote VM section: remotes, bindings, and their mutations. */
 export function useRemotes() {
+  const api = useRemoteVmApi();
   const queryClient = useHomeQueryClient();
   const keyCandidates = useRef(new WeakMap<CreateRemoteInput, string>()).current;
 
   const remotesQuery = useQuery(
     {
       queryKey: REMOTES_LIST_QUERY_KEY,
-      queryFn: ({ signal }) => fetchRemotes(signal),
+      queryFn: ({ signal }) => api.listRemotes(signal),
       refetchInterval: REMOTES_POLL_MS,
     },
     queryClient,
@@ -64,7 +37,7 @@ export function useRemotes() {
   const bindingsQuery = useQuery(
     {
       queryKey: REMOTE_BINDINGS_QUERY_KEY,
-      queryFn: ({ signal }) => fetchBindings(signal),
+      queryFn: ({ signal }) => api.listBindings(signal),
       refetchInterval: REMOTES_POLL_MS,
     },
     queryClient,
@@ -130,17 +103,7 @@ export function useRemotes() {
       mutationFn: async (input) => {
         const apiKey = keyCandidates.get(input);
         keyCandidates.delete(input);
-        const res = await apiFetch(
-          '/api/remotes',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...input, ...(apiKey ? { apiKey } : {}) }),
-          },
-          { backend: HOME_BACKEND },
-        );
-        if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to add the VM'));
-        return res.json();
+        return api.createRemote({ ...input, ...(apiKey ? { apiKey } : {}) });
       },
       // The create response is an un-enriched Remote (no health fields yet), so the list
       // is refetched from GET /api/remotes rather than optimistically merged.
@@ -166,14 +129,7 @@ export function useRemotes() {
 
   const deleteRemote: UseMutationResult<void, unknown, { id: string; name: string }> =
     useCrudMutation<void, { id: string; name: string }>({
-      mutationFn: async ({ id }) => {
-        const res = await apiFetch(
-          `/api/remotes/${id}`,
-          { method: 'DELETE' },
-          { backend: HOME_BACKEND },
-        );
-        if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to delete remote'));
-      },
+      mutationFn: ({ id }) => api.deleteRemote(id),
       optimistic: {
         queryKey: REMOTES_LIST_QUERY_KEY,
         project: (previous, vars) =>
@@ -195,19 +151,7 @@ export function useRemotes() {
 
   const renameRemote: UseMutationResult<RemoteListItemDto, unknown, { id: string; name: string }> =
     useCrudMutation<RemoteListItemDto, { id: string; name: string }>({
-      mutationFn: async ({ id, name }) => {
-        const res = await apiFetch(
-          `/api/remotes/${id}`,
-          {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name }),
-          },
-          { backend: HOME_BACKEND },
-        );
-        if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to rename the VM'));
-        return res.json();
-      },
+      mutationFn: ({ id, name }) => api.renameRemote(id, name),
       invalidateKeys: [REMOTES_LIST_QUERY_KEY],
       // The Rename dialog and the drawer show a refusal inline; an error toast here would repeat it.
       toast: {

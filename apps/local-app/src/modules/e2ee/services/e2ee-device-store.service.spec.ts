@@ -63,6 +63,67 @@ describe('E2eeDeviceStoreService', () => {
     expect(service.get('unknown')).toBeNull();
   });
 
+  describe('enrollment persistence', () => {
+    it('upgrades unsigned enrollment on a signed re-adopt', () => {
+      const incoming = sample();
+      service.reconcile(incoming, undefined, { enrollment: 'unsigned' });
+      const upgraded = service.reconcile(incoming, undefined, { enrollment: 'signed' });
+
+      expect(upgraded.enrollment).toBe('signed');
+      expect(new E2eeDeviceStoreService(drizzle(sqlite)).get(incoming.kid)?.enrollment).toBe(
+        'signed',
+      );
+    });
+
+    it.each(['reconcile', 'markVerified'] as const)(
+      'preserves signed enrollment through %s',
+      (writer) => {
+        const incoming = sample();
+        service.add({ ...incoming, enrollment: 'signed' });
+        if (writer === 'reconcile')
+          service.reconcile(incoming, undefined, { enrollment: 'unsigned' });
+        else service.markVerified(incoming.kid);
+
+        expect(service.get(incoming.kid)?.enrollment).toBe('signed');
+      },
+    );
+
+    it.each(['add', 'reconcile'] as const)(
+      'protects signed records from unsigned %s supersession',
+      (writer) => {
+        const installId = '11111111-1111-4111-8111-111111111111';
+        const existing = service.add({ ...sample(), installId, enrollment: 'signed' });
+        const incoming = {
+          ...sample('b'.repeat(32)),
+          publicKeyB64: Buffer.alloc(32, 2).toString('base64'),
+        };
+        if (writer === 'add') service.add({ ...incoming, installId, enrollment: 'unsigned' });
+        else service.reconcile(incoming, undefined, { installId, enrollment: 'unsigned' });
+
+        expect(service.get(existing.kid)).toEqual(existing);
+        expect(service.get(incoming.kid)?.enrollment).toBe('unsigned');
+      },
+    );
+
+    it('does not use retained signed status to authorize unsigned supersession', () => {
+      const targetInstallId = '11111111-1111-4111-8111-111111111111';
+      const victim = service.add({ ...sample(), installId: targetInstallId, enrollment: 'signed' });
+      const incoming = {
+        ...sample('b'.repeat(32)),
+        publicKeyB64: Buffer.alloc(32, 2).toString('base64'),
+      };
+      service.add({ ...incoming, enrollment: 'signed' });
+
+      service.reconcile(incoming, undefined, {
+        installId: targetInstallId,
+        enrollment: 'unsigned',
+      });
+
+      expect(service.get(victim.kid)).toEqual(victim);
+      expect(service.get(incoming.kid)?.enrollment).toBe('signed');
+    });
+  });
+
   it('adds a peer device and retrieves it by kid', () => {
     const rec = service.add(sample());
     expect(rec.kid).toBe('a'.repeat(32));
@@ -509,6 +570,32 @@ describe('E2eeDeviceStoreService', () => {
 
       expect(service.list()).toHaveLength(1);
       expect(service.list()[0].kid).toBe(fresh.kid);
+    });
+
+    it('QR complete evicts an older signed record for the same install without an enrollment status', () => {
+      const oldKid = 'a'.repeat(32);
+      service.add({
+        kid: oldKid,
+        publicKeyB64: pub(1),
+        trust: 'verified',
+        verifiedVia: 'qr',
+        installId: INSTALL_A,
+        enrollment: 'signed',
+      });
+
+      const fresh = service.add(
+        {
+          kid: 'b'.repeat(32),
+          publicKeyB64: pub(2),
+          trust: 'verified',
+          verifiedVia: 'qr',
+          installId: INSTALL_A,
+        },
+        { evictVerified: true },
+      );
+
+      expect(service.get(oldKid)).toBeNull();
+      expect(new E2eeDeviceStoreService(drizzle(sqlite)).list()).toEqual([fresh]);
     });
 
     it('TOFU adopt (evictVerified:false) evicts ONLY non-verified and PRESERVES verified (force-unpair defense)', () => {

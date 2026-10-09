@@ -4,7 +4,7 @@ import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { PROJECT_WORKSPACE_CHANGED_EVENT } from '../events/project-workspace-changed.events';
 import { ProjectsService } from './projects.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 describe('ProjectsService relation invalidation and workspace changes', () => {
   const PROJECT_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
@@ -43,7 +43,7 @@ describe('ProjectsService relation invalidation and workspace changes', () => {
       {} as never,
       {} as never,
       provisioning as never,
-      createProjectWriteAdmissionStub() as never,
+      createProjectWriteGateStub() as never,
       eventEmitter as unknown as EventEmitter2,
       undefined,
       undefined,

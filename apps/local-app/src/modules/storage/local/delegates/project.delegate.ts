@@ -1,4 +1,7 @@
+import { DEFAULT_FEATURE_FLAGS } from '../../../../common/config/feature-flags';
+import type { FeatureFlagConfig } from '../../../../common/config/feature-flags';
 import type {
+  ProjectStorage,
   CreateProjectWithTemplateOptions,
   ListResult,
   ProjectListOptions,
@@ -27,9 +30,13 @@ import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage
 const logger = createLogger('ProjectStorageDelegate');
 type ProjectRow = typeof projects.$inferSelect;
 
-export class ProjectStorageDelegate extends BaseStorageDelegate {
+export class ProjectStorageDelegate extends BaseStorageDelegate implements ProjectStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
+  }
+
+  getFeatureFlags(): FeatureFlagConfig {
+    return { ...DEFAULT_FEATURE_FLAGS };
   }
 
   private listSeedableSourceNamesForNewProject(): string[] {

@@ -1,6 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ValidationError } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type ExternalEstimateLogStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   IntegrationConnection,
   IntegrationCredentials,
@@ -38,7 +43,17 @@ export class ExternalMyWorkService {
   private readonly ownerRemoteIdCache = new Map<string, string>();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ExternalEstimateLogStorage &
+      ProjectStorage &
+      Pick<
+        StorageService,
+        | 'findExternalTaskLink'
+        | 'getEpic'
+        | 'getIntegrationConnection'
+        | 'getIntegrationConnectionCredentials'
+        | 'listExternalTaskLinksByRemoteScope'
+      >,
     private readonly providers: ExternalTaskProviderRegistry,
   ) {}
 

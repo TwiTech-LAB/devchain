@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { providerConfigQueries } from '@/ui/lib/provider-configs';
 import { Button } from '@/ui/components/ui/button';
 import { Checkbox } from '@/ui/components/ui/checkbox';
 import { Input } from '@/ui/components/ui/input';
@@ -23,28 +24,16 @@ import {
 import { sameCatalogName, useProviderModels } from '@/ui/hooks/useProviderModels';
 import { useProviderEfforts } from '@/ui/hooks/useProviderEfforts';
 import { shortModelName } from '@/ui/lib/model-utils';
-import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Types
 // ============================================
 
-export interface ProviderConfig {
-  id: string;
-  profileId: string;
-  providerId: string;
-  name: string;
-  options: string | null;
-  env: Record<string, string> | null;
-  model: string | null;
-  effort: string | null;
-}
-
 export interface AgentProfile {
   id: string;
   name: string;
-  providerId: string;
+  providerId?: string;
   provider?: {
     id: string;
     name: string;
@@ -118,15 +107,6 @@ function catalogOptionValue(catalogName: string, configured: string | null): str
   return configured && sameCatalogName(catalogName, configured) ? configured : catalogName;
 }
 
-async function fetchProviderConfigs(
-  fetchFn: FetchFn,
-  profileId: string,
-): Promise<ProviderConfig[]> {
-  const res = await fetchFn(`/api/profiles/${profileId}/provider-configs`);
-  if (!res.ok) throw new Error('Failed to fetch provider configs');
-  return res.json();
-}
-
 function useDebouncedValue<T>(value: T, delay = 250): T {
   const [debouncedValue, setDebouncedValue] = useState(value);
   useEffect(() => {
@@ -192,8 +172,7 @@ export function AgentFormDialog({
 
   // ---- Provider configs query ----
   const { data: providerConfigs } = useQuery({
-    queryKey: ['provider-configs', formData.profileId],
-    queryFn: () => fetchProviderConfigs(fetchFn, formData.profileId),
+    ...providerConfigQueries.profile(fetchFn, formData.profileId),
     enabled: !!formData.profileId,
   });
 

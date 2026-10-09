@@ -144,7 +144,7 @@ export function stripFlag(args: string[], flag: string): string[] {
  * A bare trailing flag and an empty `--flag=` value both count: callers using
  * this as an ownership guard must defer to ambiguous user input.
  */
-export function hasFlagOccurrence(args: string[], flag: string): boolean {
+export function hasFlagOccurrence(args: readonly string[], flag: string): boolean {
   return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
 

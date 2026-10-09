@@ -13,6 +13,13 @@ import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storag
 import { ProviderAdapterFactory } from '../adapters';
 import { isEffortCapable } from '../adapters/capabilities';
 import { createLogger } from '../../../common/logging/logger';
+import type { ProviderEffort } from '../../storage/models/domain.models';
+
+export interface ProviderEffortsResponse {
+  efforts: ProviderEffort[];
+  supportsEffort: boolean;
+  requiresModelForEffort: boolean;
+}
 
 const logger = createLogger('ProviderEffortsController');
 
@@ -49,12 +56,20 @@ const ProviderEffortCreateRequestSchema = z.union([
 @Controller('api/providers/:id/efforts')
 export class ProviderEffortsController {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: Pick<
+      StorageService,
+      | 'bulkCreateProviderEfforts'
+      | 'createProviderEffort'
+      | 'deleteProviderEffort'
+      | 'getProvider'
+      | 'listProviderEffortsByProvider'
+    >,
     private readonly adapterFactory: ProviderAdapterFactory,
   ) {}
 
   @Get()
-  async listProviderEfforts(@Param('id') providerId: string) {
+  async listProviderEfforts(@Param('id') providerId: string): Promise<ProviderEffortsResponse> {
     logger.info({ providerId }, 'GET /api/providers/:id/efforts');
     const provider = await this.storage.getProvider(providerId);
 

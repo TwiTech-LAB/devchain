@@ -3,11 +3,12 @@ import { NotFoundException } from '@nestjs/common';
 import { SubscribersService } from './subscribers.service';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { Subscriber } from '../../storage/models/domain.models';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
+import { NotFoundError } from '../../../common/errors/error-types';
 
 describe('SubscribersService', () => {
-  let admission: ReturnType<typeof createProjectWriteAdmissionStub>;
+  let admission: ReturnType<typeof createProjectWriteGateStub>;
   let service: SubscribersService;
   let mockStorage: jest.Mocked<
     Pick<
@@ -43,7 +44,7 @@ describe('SubscribersService', () => {
   });
 
   beforeEach(async () => {
-    admission = createProjectWriteAdmissionStub();
+    admission = createProjectWriteGateStub();
     mockStorage = {
       listSubscribers: jest.fn(),
       getSubscriber: jest.fn(),
@@ -55,7 +56,7 @@ describe('SubscribersService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteAdmissionService, useValue: admission },
+        { provide: ProjectWriteGate, useValue: admission },
         SubscribersService,
         {
           provide: STORAGE_SERVICE,
@@ -79,13 +80,17 @@ describe('SubscribersService', () => {
   });
 
   describe('updateSubscriber', () => {
-    it('should throw NotFoundException if subscriber does not exist', async () => {
-      mockStorage.getSubscriber.mockResolvedValue(null);
+    it('propagates storage NotFoundError if subscriber does not exist', async () => {
+      mockStorage.updateSubscriber.mockRejectedValue(
+        new NotFoundError('Subscriber', 'non-existent'),
+      );
 
       await expect(service.updateSubscriber('non-existent', { name: 'New Name' })).rejects.toThrow(
-        NotFoundException,
+        NotFoundError,
       );
-      expect(mockStorage.updateSubscriber).not.toHaveBeenCalled();
+      expect(mockStorage.updateSubscriber).toHaveBeenCalledWith('non-existent', {
+        name: 'New Name',
+      });
     });
   });
 
@@ -113,14 +118,13 @@ describe('SubscribersService', () => {
     });
   });
 
-  // Service tests cover admission before writes without the cost of HTTP or storage integration.
   it.each(['create', 'update', 'delete'] as const)(
-    'rejects %s writes to a read-only project before side effects',
+    'propagates %s admission refusals from storage',
     async (operation) => {
       const refusal = new Error('Project is read-only');
-      admission.assertWritable.mockImplementation(() => {
-        throw refusal;
-      });
+      if (operation === 'create') mockStorage.createSubscriber.mockRejectedValue(refusal);
+      else if (operation === 'update') mockStorage.updateSubscriber.mockRejectedValue(refusal);
+      else mockStorage.deleteSubscriber.mockRejectedValue(refusal);
       const existing = createMockSubscriber();
       mockStorage.getSubscriber.mockResolvedValue(existing);
 
@@ -131,10 +135,10 @@ describe('SubscribersService', () => {
             ? service.updateSubscriber(existing.id, { enabled: false })
             : service.deleteSubscriber(existing.id);
       await expect(write).rejects.toBe(refusal);
-      expect(admission.assertWritable).toHaveBeenCalledWith(existing.projectId);
-      expect(mockStorage.createSubscriber).not.toHaveBeenCalled();
-      expect(mockStorage.updateSubscriber).not.toHaveBeenCalled();
-      expect(mockStorage.deleteSubscriber).not.toHaveBeenCalled();
+      expect(admission.assertWritable).not.toHaveBeenCalled();
+      expect(mockStorage.createSubscriber).toHaveBeenCalledTimes(operation === 'create' ? 1 : 0);
+      expect(mockStorage.updateSubscriber).toHaveBeenCalledTimes(operation === 'update' ? 1 : 0);
+      expect(mockStorage.deleteSubscriber).toHaveBeenCalledTimes(operation === 'delete' ? 1 : 0);
     },
   );
 });

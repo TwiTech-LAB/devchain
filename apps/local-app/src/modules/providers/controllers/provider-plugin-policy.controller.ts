@@ -1,7 +1,11 @@
 import { Body, Controller, Delete, Get, Inject, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import { ProviderPluginPolicyService } from '../services/provider-plugin-policy.service';
 
 const logger = createLogger('ProviderPluginPolicyController');
@@ -52,7 +56,9 @@ const PolicyBodySchema = z
 export class ProviderPluginPolicyController {
   constructor(
     private readonly policy: ProviderPluginPolicyService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ProjectStorage &
+      Pick<StorageService, 'getProvider' | 'listProviders'>,
   ) {}
 
   @Get()

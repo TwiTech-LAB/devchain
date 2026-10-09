@@ -5,7 +5,12 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type ExternalEstimateLogStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import { LEGACY_UNASSIGNED_PROJECT_ID } from '../../storage/models/domain.models';
 import type {
   IntegrationConnection,
@@ -65,7 +70,16 @@ function isProviderNotFound(error: unknown): boolean {
 @Injectable()
 export class ExternalTimeMutationService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ExternalEstimateLogStorage &
+      ProjectStorage &
+      Pick<
+        StorageService,
+        | 'getIntegrationConnection'
+        | 'getIntegrationConnectionCredentials'
+        | 'getIntegrationConnectionCredentialsById'
+        | 'listExternalTaskLinksByRemoteTask'
+      >,
     private readonly providers: ExternalTaskProviderRegistry,
     private readonly gate: ProviderOperationGate,
     private readonly store: ExternalTimeMutationStore,

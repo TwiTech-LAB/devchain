@@ -20,12 +20,12 @@ import {
   type DockerSectionState,
 } from './ConnectDockerSection';
 import {
-  FileListChangedError,
   ignoreChange,
   useProjectIgnores,
   useSaveProjectIgnores,
   type IgnoreDraft,
 } from './connect-ignores';
+import { FileListChangedError } from './lib/remote-vm-errors';
 import { ConnectOwnerProblems } from './ConnectOwnerProblems';
 import { IgnoreListEditor } from './IgnoreListEditor';
 import { ProjectList, type ProjectListData } from './ProjectList';

@@ -12,7 +12,7 @@ import { createLogger } from '../../../common/logging/logger';
 import { PtyService } from '../../terminal/services/pty.service';
 import { PreflightService } from '../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../providers/services/provider-mcp-ensure.service';
-import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { SessionDto, SessionHistoryItemDto, SessionHistoryResponseDto } from '../dtos/sessions.dto';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
@@ -24,13 +24,11 @@ import { EventsService } from '../../events/services/events.service';
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { HooksConfigService } from '../../hooks/services/hooks-config.service';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
-import { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
-import { ClaudeLaunchSettingsMaterializerService } from '../../runtime-context-capture/claude-launch-settings-materializer.service';
-import { CodexPluginProfileMaterializerService } from '../../runtime-context-capture/codex-plugin-profile-materializer.service';
+import { SessionTerminalRuntimeService } from '../../session-terminal-runtime/session-terminal-runtime.service';
 import { EpicTimeStore } from '../../epic-time/services/epic-time.store';
 import { EPIC_TIME_DELIVERY_KEY } from '../../epic-time/services/agent-time-accounting.service';
 import type { SessionTerminationContext } from '../../events/catalog/session.stopped';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 const logger = createLogger('SessionsService');
 
@@ -80,7 +78,7 @@ export class SessionsService {
 
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
     @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
     @Inject(forwardRef(() => PtyService)) private readonly ptyService: PtyService,
     @Inject(forwardRef(() => PreflightService)) private readonly preflightService: PreflightService,
@@ -92,11 +90,9 @@ export class SessionsService {
     private readonly eventsService: EventsService,
     @Inject(forwardRef(() => TerminalSessionRegistry))
     private readonly terminalSessionRegistry: TerminalSessionRegistry,
-    private readonly runtimeContextCapture: RuntimeContextCaptureService,
-    private readonly claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
-    private readonly codexPluginProfiles: CodexPluginProfileMaterializerService,
+    private readonly sessionTerminalRuntime: SessionTerminalRuntimeService,
     private readonly epicTimeStore: EpicTimeStore,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {
     this.sqlite = getRawSqliteClient(this.db);
     this.txRunner = new TransactionRunner(this.sqlite);
@@ -141,9 +137,7 @@ export class SessionsService {
         }
         this.ptyService.stopStreaming(sessionId);
         this.terminalSessionRegistry.dispose(sessionId);
-        this.runtimeContextCapture.clear(sessionId);
-        this.claudeLaunchSettings.cleanupSessionSync(sessionId);
-        await this.codexPluginProfiles.cleanupSession(sessionId);
+        await this.sessionTerminalRuntime.releaseProviderArtifacts(sessionId);
         return;
       }
 
@@ -165,14 +159,7 @@ export class SessionsService {
 
       this.ptyService.stopStreaming(sessionId);
       this.terminalSessionRegistry.dispose(sessionId);
-      this.runtimeContextCapture.clear(sessionId);
-      this.claudeLaunchSettings.cleanupSessionSync(sessionId);
-      await this.codexPluginProfiles.cleanupSession(sessionId).catch(() => {
-        logger.warn(
-          { sessionId, errorCode: 'CODEX_PROFILE_CLEANUP_FAILED' },
-          'Failed to clean Codex profile lifecycle after session termination',
-        );
-      });
+      await this.sessionTerminalRuntime.releaseProviderArtifacts(sessionId);
 
       // Best-effort: read transcript file size at stop time to avoid per-request stat on history queries.
       // If transcript_path is NULL or stat fails (deleted file, race with auto-discovery), leave size_bytes NULL.
@@ -218,7 +205,7 @@ export class SessionsService {
           idleTimeoutMs: settings.idleTimeoutMs,
           deliveryKey: EPIC_TIME_DELIVERY_KEY,
           now: stoppedAt,
-          excludedProjectIds: this.admission.listRemoteOwnedProjectIds(),
+          excludedProjectIds: this.gate.listRemoteOwnedProjectIds(),
         });
       });
 

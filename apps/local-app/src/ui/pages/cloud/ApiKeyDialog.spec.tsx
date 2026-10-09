@@ -1,10 +1,11 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ApiKeyDialog } from './ApiKeyDialog';
+import { apiFetch, HOME_BACKEND } from '@/ui/lib/api-transport';
 
-const homeFetch = jest.fn();
+const homeFetch = apiFetch as jest.Mock;
 const invalidateQueries = jest.fn();
-jest.mock('@/ui/hooks/useFetchFactory', () => ({ useHomeFetch: () => homeFetch }));
+jest.mock('@/ui/lib/api-transport', () => ({ apiFetch: jest.fn(), HOME_BACKEND: 'home' }));
 jest.mock('@/ui/components/BackendBoundary', () => ({
   useHomeQueryClient: () => ({ invalidateQueries }),
 }));
@@ -27,6 +28,7 @@ describe('ApiKeyDialog', () => {
     expect(homeFetch).toHaveBeenCalledWith(
       '/api/remotes/vm/api-key',
       expect.objectContaining({ method: 'PUT', body: JSON.stringify({ apiKey: key }) }),
+      { backend: HOME_BACKEND },
     );
     expect(field).toHaveValue('');
     expect(invalidateQueries).toHaveBeenCalled();
@@ -56,6 +58,7 @@ describe('ApiKeyDialog', () => {
     expect(homeFetch).toHaveBeenCalledWith(
       '/api/remotes/vm/api-key/reset',
       expect.objectContaining({ method: 'POST', body: '{}' }),
+      { backend: HOME_BACKEND },
     );
   });
 

@@ -1,5 +1,11 @@
 import { z } from 'zod';
 
+/**
+ * Syncthing answers POST /rest/db/scan only when the scan ends, and a folder's first
+ * scan hashes every file, so a large project takes far longer than a normal REST call.
+ */
+export const SCAN_TIMEOUT_MS = 10 * 60_000;
+
 /** A Syncthing device id: eight dash-separated groups of seven base32 characters. */
 export const DeviceIdSchema = z.string().regex(/^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$/);
 

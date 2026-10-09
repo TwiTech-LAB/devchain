@@ -12,8 +12,8 @@ import type {
   RemoteOperationStepState,
 } from '../../storage/models/domain.models';
 import { RemoteOperationsService } from './remote-operations.service';
-import { utils } from 'ssh2';
 import { ClaimRemoteSchema, InstallHostSchema, SshCredentialsSchema } from './remote-operation.dto';
+import { generateEd25519PublicKey } from '../../../common/test/ssh-key.fixture';
 
 /** A Connect choices store that remembers nothing. */
 const noChoices = { recordAttach: () => undefined } as never;
@@ -347,7 +347,7 @@ describe('RemoteOperationsService.installHost credentials', () => {
       sudoPassword: 'sudo-password-secret',
     };
 
-    const key = utils.generateKeyPairSync('ed25519').public;
+    const key = generateEd25519PublicKey();
     const operation = await service.installHost(
       InstallHostSchema.parse({
         address: '192.168.1.20',
@@ -666,7 +666,7 @@ describe('RemoteOperationsService updateLogins', () => {
 
 // Layer: unit. The service owns the input-to-persisted-details contract for own-VM claims.
 it('persists public keys when claiming an own VM', async () => {
-  const key = utils.generateKeyPairSync('ed25519').public;
+  const key = generateEd25519PublicKey();
   const remoteId = '2bad6067-3d63-4c92-b14a-5d1f04fa2bfd';
   const storage = {
     getRemote: jest.fn(async () => ({ id: remoteId, baseUrl: 'https://vm:3000' })),

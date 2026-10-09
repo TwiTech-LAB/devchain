@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
+import { profileQueries } from '@/ui/lib/profiles';
+import { agentQueries } from '@/ui/lib/agents';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
@@ -35,16 +37,6 @@ import {
 import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-
-interface Agent {
-  id: string;
-  name: string;
-}
-
-interface Profile {
-  id: string;
-  name: string;
-}
 
 interface Provider {
   id: string;
@@ -94,18 +86,6 @@ interface WatcherDialogProps {
   watcher?: Watcher | null;
 }
 
-async function fetchAgents(fetchFn: FetchFn, projectId: string): Promise<{ items: Agent[] }> {
-  const res = await fetchFn(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch agents');
-  return res.json();
-}
-
-async function fetchProfiles(fetchFn: FetchFn, projectId: string): Promise<{ items: Profile[] }> {
-  const res = await fetchFn(`/api/profiles?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch profiles');
-  return res.json();
-}
-
 async function fetchProviders(fetchFn: FetchFn): Promise<{ items: Provider[] }> {
   const res = await fetchFn('/api/providers');
   if (!res.ok) throw new Error('Failed to fetch providers');
@@ -126,14 +106,12 @@ export function WatcherDialog({ open, onOpenChange, watcher }: WatcherDialogProp
 
   // Fetch scope options
   const { data: agentsData } = useQuery({
-    queryKey: ['agents', selectedProjectId],
-    queryFn: () => fetchAgents(fetchFn, selectedProjectId as string),
+    ...agentQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId && open,
   });
 
   const { data: profilesData } = useQuery({
-    queryKey: ['profiles', selectedProjectId],
-    queryFn: () => fetchProfiles(fetchFn, selectedProjectId as string),
+    ...profileQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId && open,
   });
 

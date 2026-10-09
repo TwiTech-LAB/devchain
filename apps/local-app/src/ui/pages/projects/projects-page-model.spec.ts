@@ -1,6 +1,8 @@
 import type { ProjectTemplate, ProjectWithStats, ProjectWorkspace } from './lib/project-contracts';
 import {
   buildProjectsTableModel,
+  buildTemplateUpdateNoticeItems,
+  getTemplateUpdateNoticeItemKeys,
   describeRemoteLock,
   filterAndSortProjects,
   getProjectUpgradeVersion,
@@ -144,6 +146,52 @@ describe('projects-page-model', () => {
         templates,
       ),
     ).toBeNull();
+  });
+
+  // Pure derivation is enough to verify upgrade eligibility, project count, and version-level keys.
+  it('keeps all eligible projects and deduplicates only template target keys', () => {
+    const duplicate = { ...projects[0], id: 'second-registry' };
+    const current = {
+      ...projects[0],
+      id: 'current',
+      templateMetadata: {
+        slug: 'registry',
+        source: 'registry' as const,
+        version: '2.0.0',
+      },
+    };
+    const items = buildTemplateUpdateNoticeItems(
+      [...projects, duplicate, current],
+      templates,
+      new Map(),
+      actions,
+    );
+    expect(items.map(({ projectId, targetVersion }) => [projectId, targetVersion])).toEqual([
+      ['beta', '2.0.0'],
+      ['alpha', '3.0.0'],
+      ['second-registry', '2.0.0'],
+    ]);
+    expect(getTemplateUpdateNoticeItemKeys(items)).toEqual(['registry@2.0.0', 'bundled@3.0.0']);
+    items[0].update?.();
+    expect(actions.upgradeProject).toHaveBeenCalledWith(projects[0], '2.0.0');
+  });
+
+  // Per-state lock messages belong to describeRemoteLock's own test; one owner covers the branch.
+  it('locks notice updates on a remote-owned project', () => {
+    const owner = {
+      projectId: 'beta',
+      remoteId: 'remote-1',
+      remoteName: 'VM',
+      state: 'remote' as const,
+    };
+    const [item] = buildTemplateUpdateNoticeItems(
+      projects,
+      templates,
+      new Map([['beta', owner]]),
+      actions,
+    );
+    expect(item.update).toBeUndefined();
+    expect(item.lockMessage).toBe(describeRemoteLock(owner));
   });
 
   it('builds loading, unavailable, and grouped ready states', () => {

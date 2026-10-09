@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { Loader2, AlertCircle, Terminal as TerminalIcon } from 'lucide-react';
-import type { Preset } from '@/ui/lib/preset-types';
+import { providerConfigQueries } from '@/ui/lib/provider-configs';
+import { projectPresetQueries } from '@/ui/lib/project-presets';
 import { restartKeyForMain } from '@/ui/lib/restart-keys';
 import { useTerminalWindowManager, useTerminalWindows } from '@/ui/terminal-windows';
 import { useToastHelpers } from '@/ui/lib/toast-helpers';
@@ -77,13 +78,6 @@ import { SessionLifecycleModals } from '@/ui/components/chat/SessionLifecycleMod
 import { PreviousSessionsTable } from '@/ui/components/chat/PreviousSessionsTable';
 import { SessionReadSlideOver } from '@/ui/components/chat/SessionReadSlideOver';
 
-interface ProviderConfig {
-  id: string;
-  name: string;
-  profileId: string;
-  providerId: string;
-}
-
 interface HumanReleaseTarget {
   agentId: string;
   agentName: string;
@@ -100,17 +94,6 @@ function describeHumanRelease(target: HumanReleaseTarget | null): string {
   if (!target) return '';
   const noun = target.messageCount === 1 ? 'message' : 'messages';
   return `${target.messageCount} queued ${noun} for ${target.agentName} will send when the terminal is quiet.`;
-}
-
-type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-async function fetchPresets(
-  projectId: string,
-  fetchFn: FetchFn,
-): Promise<{ presets: Preset[]; activePreset: string | null }> {
-  const res = await fetchFn(`/api/projects/${projectId}/presets`);
-  if (!res.ok) throw new Error('Failed to fetch presets');
-  return res.json();
 }
 
 export function ChatPage() {
@@ -310,9 +293,8 @@ export function ChatPage() {
   // ============================================
 
   // Fetch presets for this project
-  const { data: presetsData } = useQuery<{ presets: Preset[]; activePreset: string | null }>({
-    queryKey: ['project-presets', projectId],
-    queryFn: () => fetchPresets(projectId!, apiFetch),
+  const { data: presetsData } = useQuery({
+    ...projectPresetQueries.list(apiFetch, projectId),
     enabled: hasSelectedProject,
   });
   const presets = presetsData?.presets ?? [];
@@ -328,35 +310,12 @@ export function ChatPage() {
   );
 
   // Fetch provider configs for all agent profiles (for preset validation)
-  const { data: configsMap } = useQuery<Map<string, ProviderConfig[]>>({
-    queryKey: [
-      'provider-configs-by-profile',
+  const { data: configsMap } = useQuery({
+    ...providerConfigQueries.byProfiles(
+      apiFetch,
       projectId,
-      agentsWithProfiles.map((a) => a.profileId),
-    ],
-    queryFn: async () => {
-      const profileIds = new Set(agentsWithProfiles.map((a) => a.profileId));
-      if (profileIds.size === 0) return new Map();
-
-      const results = await Promise.all(
-        Array.from(profileIds).map(async (profileId) => {
-          try {
-            const res = await apiFetch(`/api/profiles/${profileId}/provider-configs`);
-            if (!res.ok) return { profileId, configs: [] };
-            const configs = await res.json();
-            return { profileId, configs };
-          } catch {
-            return { profileId, configs: [] };
-          }
-        }),
-      );
-
-      const map = new Map<string, ProviderConfig[]>();
-      results.forEach(({ profileId, configs }) => {
-        map.set(profileId, configs);
-      });
-      return map;
-    },
+      agentsWithProfiles.map((agent) => agent.profileId),
+    ),
     enabled: hasSelectedProject && agentsWithProfiles.length > 0,
   });
 
@@ -376,13 +335,12 @@ export function ChatPage() {
   // Provider Config Switching
   // ============================================
 
-  const { handleSwitchConfig, fetchProviderConfigsForProfile, updatingConfigAgentIds } =
-    useAgentConfigSwitch({
-      apiFetch,
-      projectId,
-      agentPresence: queries.agentPresence,
-      markAgentsForRestart,
-    });
+  const { handleSwitchConfig, updatingConfigAgentIds } = useAgentConfigSwitch({
+    apiFetch,
+    projectId,
+    agentPresence: queries.agentPresence,
+    markAgentsForRestart,
+  });
 
   // ── Agent admin actions (clone / delete / quick-add) ──
   const {
@@ -882,7 +840,6 @@ export function ChatPage() {
       onApplyPreset: handleApplyPreset,
       applyingPreset,
       onSwitchConfig: handleSwitchConfig,
-      fetchProviderConfigsForProfile,
       updatingConfigAgentIds,
     }),
     [
@@ -904,7 +861,6 @@ export function ChatPage() {
       handleApplyPreset,
       applyingPreset,
       handleSwitchConfig,
-      fetchProviderConfigsForProfile,
       updatingConfigAgentIds,
     ],
   );

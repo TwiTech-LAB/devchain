@@ -1,6 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NotFoundError } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   ExternalManagedSubtaskLink,
   IntegrationCredentials,
@@ -52,7 +56,17 @@ export interface ManagedSubtaskSyncHealth {
 @Injectable()
 export class ManagedSubtaskSyncHealthService {
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ProjectStorage &
+      Pick<
+        StorageService,
+        | 'getExternalManagedSubtaskLink'
+        | 'getIntegrationConnection'
+        | 'getIntegrationConnectionById'
+        | 'getIntegrationConnectionCredentialsById'
+        | 'listExternalManagedSubtaskLinksByConnection'
+        | 'listExternalTaskLinksForEpics'
+      >,
     private readonly subscriber: ExternalSubtaskSyncSubscriber,
   ) {}
 

@@ -5,7 +5,12 @@ import { createLogger } from '../../../common/logging/logger';
 import type { RemoteProjectSyncedEventPayload } from '../../events/catalog/remote.project.synced';
 import type { CommittedEvent } from '../../events/services/durable-event-registry.service';
 import { EventsService } from '../../events/services/events.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type IntegrationStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   Epic,
   ExternalManagedSubtaskLink,
@@ -80,7 +85,10 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
   private readonly projectionTails = new Map<string, Promise<void>>();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: IntegrationStorage &
+      ProjectStorage &
+      Pick<StorageService, 'getEpic' | 'listProjectEpics'>,
     private readonly events: EventsService,
     private readonly providers: ExternalTaskProviderRegistry,
     private readonly providerGate: ProviderOperationGate,

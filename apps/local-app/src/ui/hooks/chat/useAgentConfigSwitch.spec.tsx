@@ -1,6 +1,7 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { useAgentConfigSwitch, type UseAgentConfigSwitchOptions } from './useAgentConfigSwitch';
 
 const showSuccess = jest.fn();
@@ -63,7 +64,7 @@ describe('useAgentConfigSwitch — main agents', () => {
       }),
     );
     expect(markAgentsForRestart).toHaveBeenCalledWith(['main:a1']);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agents', 'p1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: agentQueryKeys.project('p1') });
     expect(showSuccess).toHaveBeenCalledWith({
       title: 'Config updated',
       description: 'Restart to apply changes.',
@@ -144,25 +145,6 @@ describe('useAgentConfigSwitch — main agents', () => {
         title: 'Failed to update config',
         description: 'Failed to update agent config',
       }),
-    );
-  });
-
-  it('fetchProviderConfigsForProfile GETs and returns json; throws on !ok', async () => {
-    const apiFetch = jest
-      .fn()
-      .mockResolvedValueOnce(okJson([{ id: 'c1' }]))
-      .mockResolvedValueOnce({ ok: false });
-    const client = makeClient();
-    const { result } = renderHook(() => useAgentConfigSwitch(baseOptions({ apiFetch })), {
-      wrapper: wrapper(client),
-    });
-
-    await expect(result.current.fetchProviderConfigsForProfile('prof1')).resolves.toEqual([
-      { id: 'c1' },
-    ]);
-    expect(apiFetch).toHaveBeenCalledWith('/api/profiles/prof1/provider-configs');
-    await expect(result.current.fetchProviderConfigsForProfile('prof1')).rejects.toThrow(
-      'Failed to fetch provider configs',
     );
   });
 });

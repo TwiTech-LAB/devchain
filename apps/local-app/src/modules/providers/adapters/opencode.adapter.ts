@@ -1,5 +1,6 @@
 import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
+import { OPENCODE_TRAITS } from './opencode.traits';
 import type {
   ProviderAdapter,
   AddMcpServerOptions,
@@ -48,6 +49,7 @@ function deepMergePlainObjects(
 @Injectable()
 export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
   readonly providerName = 'opencode';
+  readonly traits = OPENCODE_TRAITS;
   readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
   readonly mcpMode = 'project_config' as const;
   readonly configFileName = 'opencode.json';
@@ -87,10 +89,6 @@ export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
 
   removeMcpServer(_alias: string): string[] {
     // OpenCode has no mcp remove command; managed via config file.
-    return ['--version'];
-  }
-
-  binaryCheck(_alias: string): string[] {
     return ['--version'];
   }
 

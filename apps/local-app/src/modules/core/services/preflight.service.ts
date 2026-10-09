@@ -2,7 +2,13 @@ import { Injectable, Inject } from '@nestjs/common';
 import { access, mkdir, constants } from 'fs/promises';
 import { createLogger } from '../../../common/logging/logger';
 import * as path from 'path';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   AgentProfile,
   Provider,
@@ -73,7 +79,11 @@ export interface PreflightResult {
 @Injectable()
 export class PreflightService {
   constructor(
-    @Inject('STORAGE_SERVICE') private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage &
+      Pick<StorageService, 'listProviders' | 'listProvidersByIds'>,
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly adapterFactory: ProviderAdapterFactory,
     private readonly executor: ProcessExecutor,

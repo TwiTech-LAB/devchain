@@ -1,3 +1,4 @@
+import type { ExternalEstimateLogStorage } from '../../interfaces/storage.interface';
 import { and, asc, eq } from 'drizzle-orm';
 import {
   ConflictError,
@@ -115,12 +116,17 @@ const LIST_BY_REMOTE_TASK_SQL = `
   WHERE states.provider = ? AND states.remote_task_id = ?
   ORDER BY states.remote_scope_key`;
 
-export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
+export class ExternalEstimateLogStorageDelegate
+  extends BaseStorageDelegate
+  implements ExternalEstimateLogStorage
+{
   constructor(context: StorageDelegateContext) {
     super(context);
   }
 
-  async get(identity: ExternalEstimateLogIdentity): Promise<ExternalEstimateLogState | null> {
+  async getExternalEstimateLogState(
+    identity: ExternalEstimateLogIdentity,
+  ): Promise<ExternalEstimateLogState | null> {
     const normalized = this.normalizeIdentity(identity);
     const row = this.getRow(normalized);
     if (!row) {
@@ -130,7 +136,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     return this.mapState(row);
   }
 
-  async getDailyCheckpoint(
+  async getExternalEstimateLogDailyCheckpoint(
     identity: ExternalEstimateLogIdentity,
   ): Promise<ExternalEstimateLogDailyCheckpoint | null> {
     const normalized = this.normalizeIdentity(identity);
@@ -141,7 +147,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     return this.buildDailyCheckpoint(row, normalized);
   }
 
-  async listByRemoteTask(
+  async listExternalEstimateLogStatesByRemoteTask(
     provider: ExternalEstimateLogIdentity['provider'],
     remoteTaskId: string,
   ): Promise<ExternalEstimateLogState[]> {
@@ -158,14 +164,14 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  listLoggedMinutes(
+  async listExternalEstimateLoggedMinutes(
     provider: ExternalEstimateLogIdentity['provider'],
     identities: ReadonlyArray<{
       projectId: string;
       remoteScopeKey: string;
       remoteTaskId: string;
     }>,
-  ): ExternalEstimateLoggedMinutesEntry[] {
+  ): Promise<ExternalEstimateLoggedMinutesEntry[]> {
     if (identities.length === 0) {
       return [];
     }
@@ -200,7 +206,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
    * targets only the reserved legacy owner; callers authorize the requesting
    * project, current connection, and local link before acting on it.
    */
-  async findUnassigned(
+  async findUnassignedExternalEstimateLogCheckpoint(
     provider: ExternalEstimateLogIdentity['provider'],
     remoteScopeKey: string,
     remoteTaskId: string,
@@ -216,7 +222,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
    * revision predicate on the legacy row plus the project-qualified unique
    * indexes guarantee exactly one winner among concurrent claims.
    */
-  async assignUnassigned(
+  async assignUnassignedExternalEstimateLogCheckpoint(
     data: AssignUnassignedExternalEstimateLogCheckpoint,
   ): Promise<ExternalEstimateLogDailyCheckpoint> {
     const target = this.normalizeIdentity({
@@ -357,7 +363,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  async setLoggedMinutes(
+  async setExternalEstimateLoggedMinutes(
     data: SetExternalEstimateLoggedMinutes,
   ): Promise<ExternalEstimateLogState> {
     const normalized = this.normalizeIdentity(data);
@@ -419,7 +425,9 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  async prepare(data: PrepareExternalEstimateLogOperation): Promise<ExternalEstimateLogState> {
+  async prepareExternalEstimateLogOperation(
+    data: PrepareExternalEstimateLogOperation,
+  ): Promise<ExternalEstimateLogState> {
     const normalized = this.normalizeIdentity(data);
     const operationId = this.requireOperationId(data.operationId);
     this.requireExpectedRevision(data.expectedRevision);
@@ -499,7 +507,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  async markOutcomeUnknown(
+  async markExternalEstimateLogOperationOutcomeUnknown(
     data: ExternalEstimateLogOperationMutation,
   ): Promise<ExternalEstimateLogState> {
     const normalized = this.normalizeIdentity(data);
@@ -522,15 +530,19 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  async confirm(data: ExternalEstimateLogOperationMutation): Promise<ExternalEstimateLogState> {
+  async confirmExternalEstimateLogOperation(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState> {
     return this.settle(data, 'logged');
   }
 
-  async clear(data: ExternalEstimateLogOperationMutation): Promise<ExternalEstimateLogState> {
+  async clearExternalEstimateLogOperation(
+    data: ExternalEstimateLogOperationMutation,
+  ): Promise<ExternalEstimateLogState> {
     return this.settle(data, 'not_logged');
   }
 
-  async storeResolution(
+  async storeExternalEstimateLogResolution(
     data: StoreExternalEstimateLogResolution,
   ): Promise<ExternalEstimateLogState> {
     const normalized = this.normalizeIdentity(data);
@@ -561,7 +573,7 @@ export class ExternalEstimateLogStorageDelegate extends BaseStorageDelegate {
     });
   }
 
-  async applyResolution(
+  async applyExternalEstimateLogResolution(
     data: ExternalEstimateLogOperationMutation,
   ): Promise<ExternalEstimateLogState> {
     const normalized = this.normalizeIdentity(data);

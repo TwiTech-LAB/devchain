@@ -2,7 +2,10 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/commo
 import { ModuleRef } from '@nestjs/core';
 import { createLogger } from '../../../common/logging/logger';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type SubscriberStorage,
+} from '../../storage/interfaces/storage.interface';
 import type {
   Subscriber,
   EventFilter,
@@ -27,7 +30,7 @@ export type { SubscriberExecutionResult } from './subscriber-scheduler.types';
 import { renderTemplate } from '../../../common/template/handlebars-renderer';
 import { buildPromptRenderContext } from '../../../common/template/prompt-render-context';
 import { TeamsService } from '../../teams/services/teams.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 /**
  * Summary result of scheduling subscribers for an event (not execution).
@@ -91,7 +94,8 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
   private sessionRuntimeRef?: SessionRuntime;
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ActionContext['storage'] & SubscriberStorage,
     private readonly terminalIO: TerminalIOService,
     private readonly sessionsService: SessionsService,
     private readonly sessionCoordinator: SessionCoordinatorService,
@@ -101,7 +105,7 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
     private readonly scheduler: AutomationSchedulerService,
     private readonly teamsService: TeamsService,
     private readonly moduleRef: ModuleRef,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   private getSessionRuntime(): SessionRuntime {
@@ -228,7 +232,7 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
       return null;
     }
     // Automations act on the project's agents and sessions, which only its writer may run.
-    if (!this.admission.isWritable(projectId)) {
+    if (!this.gate.isWritable(projectId)) {
       this.logger.debug(
         { eventName, projectId },
         'Project not writable here; skipping automations',

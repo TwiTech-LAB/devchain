@@ -1,5 +1,6 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import {
   and,
   asc,
@@ -19,6 +20,8 @@ import {
   NotFoundError,
   SkillSourceAlwaysEnabledError,
   StorageError,
+  ProjectRemoteError,
+  ProjectFrozenError,
   ValidationError,
 } from '../../../common/errors/error-types';
 import {
@@ -190,6 +193,7 @@ export class SkillsService {
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
     private readonly settingsService: SettingsService,
     private readonly skillSourceRegistry: SkillSourceRegistryService,
+    @Optional() private readonly gate?: ProjectWriteGate,
   ) {}
 
   async listSkills(options: ListSkillsOptions = {}): Promise<Skill[]> {
@@ -584,6 +588,7 @@ export class SkillsService {
     }
     const now = new Date().toISOString();
 
+    this.gate?.assertWritable(normalizedProjectId);
     try {
       await this.db.insert(skillProjectDisabled).values({
         id: randomUUID(),
@@ -615,6 +620,7 @@ export class SkillsService {
     const normalizedProjectId = this.requireNonEmpty(projectId, 'projectId');
     const normalizedSkillId = this.requireNonEmpty(skillId, 'skillId');
 
+    this.gate?.assertWritable(normalizedProjectId);
     await this.db
       .delete(skillProjectDisabled)
       .where(
@@ -739,6 +745,7 @@ export class SkillsService {
       return 0;
     }
 
+    this.gate?.assertWritable(normalizedProjectId);
     await this.db.insert(skillProjectDisabled).values(rowsToInsert);
     return rowsToInsert.length;
   }
@@ -766,6 +773,7 @@ export class SkillsService {
     }
 
     const disabledSkillIds = disabledRows.map((row) => row.skillId);
+    this.gate?.assertWritable(normalizedProjectId);
     await this.db
       .delete(skillProjectDisabled)
       .where(
@@ -863,6 +871,7 @@ export class SkillsService {
         )
         .limit(1);
 
+      this.gate?.assertWritable(normalizedProjectId);
       if (existing[0]) {
         await this.db
           .update(sourceProjectEnabled)
@@ -878,7 +887,9 @@ export class SkillsService {
         });
       }
     } catch (error) {
+      if (error instanceof ProjectRemoteError || error instanceof ProjectFrozenError) throw error;
       if (this.isUniqueConstraintError(error)) {
+        this.gate?.assertWritable(normalizedProjectId);
         await this.db
           .update(sourceProjectEnabled)
           .set({ enabled })

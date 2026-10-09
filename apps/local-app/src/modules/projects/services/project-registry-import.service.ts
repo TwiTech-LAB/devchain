@@ -1,7 +1,7 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import type { PromptTransferCounts } from '../../../common/prompt-transfer';
-import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
 import { SettingsService } from '../../settings/services/settings.service';
 import { RegistryOrchestrationService } from '../../registry/services/registry-orchestration.service';
 import { ProjectsService } from './projects.service';
@@ -43,7 +43,7 @@ export interface CreateFromRegistryResult {
 export class ProjectRegistryImportService {
   constructor(
     private readonly registryOrchestration: RegistryOrchestrationService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage,
     private readonly projectsService: ProjectsService,
     private readonly settingsService: SettingsService,
   ) {}

@@ -9,6 +9,13 @@ import {
   resetRemoteVmFixture,
 } from './testing/remote-vm-section.fixture';
 
+const mockUseAllProjects = jest.fn();
+const mockUseWorkspaces = jest.fn();
+jest.mock('@/ui/hooks/useAllProjects', () => ({
+  useAllProjects: () => mockUseAllProjects(),
+  useWorkspaces: () => mockUseWorkspaces(),
+}));
+
 const mockUseSelectedProject = jest.fn();
 jest.mock('@/ui/hooks/useProjectSelection', () => ({
   useSelectedProject: () => mockUseSelectedProject(),
@@ -20,7 +27,12 @@ const toastSpy = jest.fn();
 jest.mock('@/ui/hooks/use-toast', () => ({ useToast: () => ({ toast: toastSpy }) }));
 
 beforeEach(() =>
-  resetRemoteVmFixture({ useSelectedProject: mockUseSelectedProject, toast: toastSpy }),
+  resetRemoteVmFixture({
+    useSelectedProject: mockUseSelectedProject,
+    useAllProjects: mockUseAllProjects,
+    useWorkspaces: mockUseWorkspaces,
+    toast: toastSpy,
+  }),
 );
 
 const MANAGED = {
@@ -36,8 +48,7 @@ const MANAGED = {
 };
 
 function rightsChecks(): number {
-  return fx.mockFetch.mock.calls.filter(([url]) => String(url) === '/api/vm-providers/pc1/check')
-    .length;
+  return fx.calls.checkVmProviderRights.filter(([id]) => id === 'pc1').length;
 }
 
 const serverBox = () => screen.findByRole('region', { name: 'Proxmox lab' });
@@ -104,10 +115,7 @@ describe('RemoteVmSection Proxmox tab', () => {
     await waitFor(() =>
       expect(screen.queryByRole('region', { name: 'Proxmox lab' })).not.toBeInTheDocument(),
     );
-    expect(fx.mockFetch).toHaveBeenCalledWith(
-      '/api/vm-providers/pc1',
-      expect.objectContaining({ method: 'DELETE' }),
-    );
+    expect(fx.calls.deleteVmProvider).toContainEqual(['pc1']);
     expect(await screen.findByText('Create VMs on your Proxmox server')).toBeInTheDocument();
   });
 
@@ -153,12 +161,9 @@ describe('Proxmox connection setup', () => {
         within(dialog).getByText('Use the address you open the Proxmox web UI with.'),
       ).toBeInTheDocument();
       await userEvent.click(within(dialog).getByRole('button', { name: 'Generate setup block' }));
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        expect.stringMatching(
-          /^\/api\/vm-providers\/proxmox\/setup-block\?.*address=192\.168\.1\.128/,
-        ),
-        expect.anything(),
-      );
+      expect(fx.calls.readProxmoxSetupBlock).toContainEqual([
+        expect.objectContaining({ node: 'pve1', address: '192.168.1.128' }),
+      ]);
       expect(await within(dialog).findByLabelText('Generated setup block')).toHaveValue(
         'pveum pool add devchain',
       );
@@ -192,13 +197,7 @@ describe('Proxmox connection setup', () => {
         within(dialog).getByRole('list', { name: 'Missing Proxmox rights' }),
       ).toHaveTextContent('Sys.AccessNetwork on /nodes/pve1');
       expect(within(dialog).getByText(/re-run the setup block/i)).toBeInTheDocument();
-      expect(fx.mockFetch).toHaveBeenCalledWith(
-        '/api/vm-providers/proxmox/connect',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ connectionString, confirmFingerprint: true }),
-        }),
-      );
+      expect(fx.calls.connectProxmox).toContainEqual([connectionString]);
       await userEvent.click(within(dialog).getByRole('button', { name: 'Add VM' }));
       // The connect dialog's Add VM lands on the VMs tab, where Create VM lives now.
       expect(fx.search).toContain('tab=vms');
@@ -219,10 +218,9 @@ describe('Proxmox connection setup', () => {
     const dialog = screen.getByRole('dialog');
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Generate setup block' }));
-    expect(fx.mockFetch).toHaveBeenCalledWith(
-      '/api/vm-providers/proxmox/setup-block?node=&pool=devchain&storage=&imageStorage=&bridge=',
-      expect.anything(),
-    );
+    expect(fx.calls.readProxmoxSetupBlock).toContainEqual([
+      { node: '', address: '', pool: 'devchain', storage: '', imageStorage: '', bridge: '' },
+    ]);
     expect(await within(dialog).findByLabelText('Generated setup block')).toHaveValue(
       'pveum pool add devchain',
     );
@@ -235,9 +233,8 @@ describe('Proxmox connection setup', () => {
     await userEvent.clear(within(dialog).getByRole('textbox', { name: 'Pool' }));
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Generate setup block' }));
-    expect(fx.mockFetch).toHaveBeenCalledWith(
-      '/api/vm-providers/proxmox/setup-block?node=&storage=&imageStorage=&bridge=',
-      expect.anything(),
-    );
+    expect(fx.calls.readProxmoxSetupBlock).toContainEqual([
+      { node: '', address: '', pool: '', storage: '', imageStorage: '', bridge: '' },
+    ]);
   });
 });

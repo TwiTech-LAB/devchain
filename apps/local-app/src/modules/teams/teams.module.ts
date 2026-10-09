@@ -8,16 +8,9 @@ import { TeamsService } from './services/teams.service';
 import { TeamsStore } from './storage/teams.store';
 import { TeamConfigUpdatedNotifierSubscriber } from './subscribers/team-config-updated-notifier.subscriber';
 import { TeamMembershipChangedNotifierSubscriber } from './subscribers/team-membership-changed-notifier.subscriber';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
 
 @Module({
-  imports: [
-    StorageModule,
-    EventsCoreModule,
-    AgentMessageDeliveryModule,
-    SettingsModule,
-    ProjectWriteAdmissionModule,
-  ],
+  imports: [StorageModule, EventsCoreModule, AgentMessageDeliveryModule, SettingsModule],
   controllers: [TeamsController],
   providers: [
     TeamsService,

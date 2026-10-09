@@ -1,3 +1,4 @@
+import type { ProviderStorage } from '../../interfaces/storage.interface';
 import type { CreateProviderModel, ProviderModel } from '../../models/domain.models';
 import { ConflictError, ValidationError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
@@ -6,7 +7,18 @@ import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage
 
 const logger = createLogger('ProviderModelStorageDelegate');
 
-export class ProviderModelStorageDelegate extends BaseStorageDelegate {
+export class ProviderModelStorageDelegate
+  extends BaseStorageDelegate
+  implements
+    Pick<
+      ProviderStorage,
+      | 'createProviderModel'
+      | 'listProviderModelsByProvider'
+      | 'listProviderModelsByProviderIds'
+      | 'deleteProviderModel'
+      | 'bulkCreateProviderModels'
+    >
+{
   constructor(context: StorageDelegateContext) {
     super(context);
   }

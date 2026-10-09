@@ -105,7 +105,7 @@ export class HomeGitGuardService {
   constructor(
     private readonly fileSync: FileSyncService,
     private readonly git: GitService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: Pick<StorageService, 'getRemote'>,
   ) {}
 
   async install(projectId: string, owner: string | VmGitGuardRequest): Promise<string | null> {

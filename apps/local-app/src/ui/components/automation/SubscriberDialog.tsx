@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
+import { statusQueries } from '@/ui/lib/statuses';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
@@ -24,7 +25,6 @@ import {
 import { useToast } from '@/ui/hooks/use-toast';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-import { fetchStatuses } from '@/ui/pages/board/lib/board-api';
 import {
   createSubscriber,
   updateSubscriber,
@@ -303,8 +303,7 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
   // Fetched on open (not on action selection) so an edit-mode save never races
   // the options it validates against. Shares the board's query key.
   const { data: statusesData } = useQuery({
-    queryKey: ['statuses', selectedProjectId],
-    queryFn: () => fetchStatuses(selectedProjectId as string, fetchFn),
+    ...statusQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId && open,
   });
 

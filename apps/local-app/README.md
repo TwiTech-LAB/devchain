@@ -7,8 +7,5 @@ Storage is local-only: `StorageModule` binds `STORAGE_SERVICE` to the singleton 
 ## Read next
 
 - [Local development](DEV.md) — app-scoped development workflow, ports, and build output.
-- [Repository setup](../../docs/setup.md) — first checkout and launcher setup.
-- [Repository operations](../../docs/operations.md) — canonical commands, environment variables, and maintenance procedures.
-- [Repository architecture](../../docs/architecture.md) — subsystem and runtime models.
+- [Contributing](../../CONTRIBUTING.md) — first checkout, repository commands, and checks before review.
 - [Test helpers](test/helpers/README.md) — integration fixture contracts.
-- [Memory-soak runbook](scripts/memory-soak/README.md) — memory validation and evidence capture.

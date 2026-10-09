@@ -8,7 +8,11 @@ import {
 import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
 import { LocalSkillSourceAdapter } from '../../skills/adapters/local-skill-source.adapter';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type SkillSourceStorage,
+} from '../../storage/interfaces/storage.interface';
 import {
   effectiveSourceSwitches,
   registeredSourceNames,
@@ -44,7 +48,9 @@ export class RemoteSkillSettingsService implements OnModuleDestroy {
   private stopped = false;
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: SkillSourceStorage &
+      Pick<StorageService, 'listRemoteProjectBindings'>,
     private readonly settings: SettingsService,
     private readonly host: RemoteHostClient,
   ) {}

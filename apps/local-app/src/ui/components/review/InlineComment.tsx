@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { agentQueries, type Agent } from '@/ui/lib/agents';
 import { Button } from '@/ui/components/ui/button';
 import { OpaqueBadge } from '@/ui/components/ui/badge';
 import { Textarea } from '@/ui/components/ui/textarea';
@@ -18,19 +19,7 @@ import { useMentionAutocomplete } from '@/ui/hooks/useMentionAutocomplete';
 import { parseMentions } from '@/ui/lib/mentions';
 import type { ReviewComment, CommentType } from '@/ui/lib/reviews';
 import type { ActiveSession } from '@/ui/lib/sessions';
-import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-
-interface Agent {
-  id: string;
-  name: string;
-}
-
-async function fetchAgents(fetchFn: FetchFn, projectId: string): Promise<{ items: Agent[] }> {
-  const res = await fetchFn(`/api/agents?projectId=${encodeURIComponent(projectId)}`);
-  if (!res.ok) throw new Error('Failed to fetch agents');
-  return res.json();
-}
 
 // Simple relative time formatter
 function formatRelativeTime(dateString: string): string {
@@ -481,8 +470,7 @@ export function NewCommentForm({
 
   // Fetch agents for the project (always fetch when projectId is available)
   const { data: agentsData, isLoading: agentsLoading } = useQuery({
-    queryKey: ['agents', projectId],
-    queryFn: () => fetchAgents(fetchFn, projectId),
+    ...agentQueries.list(fetchFn, projectId),
     enabled: !!projectId,
   });
 
@@ -507,7 +495,7 @@ export function NewCommentForm({
   }, [agents, mentionQuery]);
 
   // Handle selecting an agent from autocomplete
-  const handleMentionSelect = (agent: Agent) => {
+  const handleMentionSelect = (agent: Pick<Agent, 'id' | 'name'>) => {
     const newContent = insertMention(agent, content);
     setContent(newContent);
     // Also add to selected agents (pills)

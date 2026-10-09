@@ -10,7 +10,7 @@ function createRehydrator(options?: {
   const sessionTerminalRuntime: Partial<SessionTerminalRuntimeService> = {
     listStartupSessions: jest.fn().mockReturnValue(options?.metas ?? []),
     retireConfirmedLoss: jest.fn(),
-    reconcileCodexStartup: jest.fn().mockResolvedValue(undefined),
+    reconcileProviderStartup: jest.fn().mockResolvedValue(undefined),
   };
 
   const terminalIO: Partial<TerminalIOService> = {
@@ -172,10 +172,10 @@ describe('TerminalRegistryRehydrator', () => {
 
     await rehydrator.onApplicationBootstrap();
 
-    expect(sessionTerminalRuntime.reconcileCodexStartup).toHaveBeenCalledWith(
+    expect(sessionTerminalRuntime.reconcileProviderStartup).toHaveBeenCalledWith(
       new Set(['dead-a', 'dead-b']),
     );
-    const reconcileOrder = (sessionTerminalRuntime.reconcileCodexStartup as jest.Mock).mock
+    const reconcileOrder = (sessionTerminalRuntime.reconcileProviderStartup as jest.Mock).mock
       .invocationCallOrder[0];
     expect(reconcileOrder).toBeGreaterThan(
       Math.max(...(terminalIO.sessionExists as jest.Mock).mock.invocationCallOrder),

@@ -1,5 +1,6 @@
 import { useRef, useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { providerConfigQueryPredicates } from '@/ui/lib/provider-configs';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Textarea } from '@/ui/components/ui/textarea';
@@ -49,7 +50,11 @@ import { EnvEditor, type EnvEditorHandle } from '@/ui/components/EnvEditor';
 import { ProviderEnvScopePopover } from '@/ui/components/ProviderEnvScopePopover';
 import { fetchPreflightChecks } from '@/ui/lib/preflight';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
-import { providerEffortQueryKeys } from '@/ui/lib/provider-effort-query-keys';
+import {
+  providerEffortQueries,
+  providerEffortQueryKeys,
+  type ProviderEffort,
+} from '@/ui/lib/provider-efforts';
 import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import {
@@ -108,25 +113,6 @@ interface ProviderModel {
   position: number;
   createdAt: string;
   updatedAt: string;
-}
-
-interface ProviderEffort {
-  id: string;
-  providerId: string;
-  name: string;
-  position: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-// Response shape of GET /api/providers/:id/efforts (Task 3). supportsEffort is the
-// capability signal derived from isEffortCapable(adapter) at that endpoint only;
-// empty efforts ≠ unsupported. requiresModelForEffort is true for per-model effort
-// mechanisms (e.g. opencode); surfaced so the UI can require a model selection.
-interface ProviderEffortsResponse {
-  efforts: ProviderEffort[];
-  supportsEffort: boolean;
-  requiresModelForEffort: boolean;
 }
 
 interface ProviderMutationError extends Error {
@@ -283,18 +269,6 @@ async function discoverProviderModels(
   return res.json();
 }
 
-async function fetchProviderEfforts(
-  fetchFn: FetchFn,
-  providerId: string,
-): Promise<ProviderEffortsResponse> {
-  const res = await fetchFn(`/api/providers/${providerId}/efforts`);
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Failed to fetch provider efforts' }));
-    throw new Error(error.message || 'Failed to fetch provider efforts');
-  }
-  return res.json();
-}
-
 async function addProviderEffort(
   fetchFn: FetchFn,
   providerId: string,
@@ -353,15 +327,9 @@ async function rescanProviders(fetchFn: FetchFn): Promise<RescanResult> {
 
 function invalidateProviderConfigQueries(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.invalidateQueries({
-    predicate: (q) => {
-      const k = q.queryKey[0];
-      return (
-        k === 'providers' ||
-        k === 'provider-configs' ||
-        k === 'profile-provider-configs' ||
-        k === 'provider-configs-by-profile'
-      );
-    },
+    predicate: (query) =>
+      query.queryKey[0] === providersQueryKeys.list()[0] ||
+      providerConfigQueryPredicates.all(query),
   });
   // Also refresh the providers-page preflight badge
   queryClient.invalidateQueries({ queryKey: providersQueryKeys.preflightAll() });
@@ -568,11 +536,9 @@ function ProviderEffortsSection({ provider }: { provider: Provider }) {
   const [isOpen, setIsOpen] = useState(false);
   const [newEffortName, setNewEffortName] = useState('');
   const [effortDeleteConfirm, setEffortDeleteConfirm] = useState<ProviderEffort | null>(null);
-  const effortsQueryKey = providerEffortQueryKeys.main(provider.id);
 
   const { data, isLoading, isFetching, isError, error } = useQuery({
-    queryKey: effortsQueryKey,
-    queryFn: () => fetchProviderEfforts(fetchFn, provider.id),
+    ...providerEffortQueries.catalog(fetchFn, provider.id),
     enabled: true,
   });
 

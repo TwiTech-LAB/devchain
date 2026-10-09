@@ -1,4 +1,4 @@
-import type { ProviderAuthEntryItem } from '@/ui/hooks/useProviderAuth';
+import type { ProviderAuthEntryItem } from './lib/remote-vm-contracts';
 import {
   changedProviderAuth,
   defaultLoginChoice,

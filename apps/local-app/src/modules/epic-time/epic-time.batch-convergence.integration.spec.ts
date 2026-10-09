@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { EventLogService } from '../events/services/event-log.service';
 import type { EventsService } from '../events/services/events.service';
-import type { ProjectWriteAdmissionService } from '../remotes/admission/project-write-admission.service';
+import type { ProjectWriteGate } from '../storage/write-gate/project-write-gate';
 import type { EventsStreamService } from '../events/services/events-stream.service';
 import { CommittedEventStore } from '../events/services/committed-event.store';
 import { DurableEventDispatcherService } from '../events/services/durable-event-dispatcher.service';
@@ -190,7 +190,7 @@ describe('Epic-time team batch convergence', () => {
     } as unknown as EventsService;
     return new AgentTimeAccountingService(store, events, {
       listRemoteOwnedProjectIds: () => [],
-    } as unknown as ProjectWriteAdmissionService);
+    } as unknown as ProjectWriteGate);
   }
 
   async function startAccounting(): Promise<void> {

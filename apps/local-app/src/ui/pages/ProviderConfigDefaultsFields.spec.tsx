@@ -207,7 +207,7 @@ describe('ProviderConfigDefaultsFields', () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/providers/prov-2/models', undefined);
-      expect(fetchMock).toHaveBeenCalledWith('/api/providers/prov-2/efforts', undefined);
+      expect(fetchMock).toHaveBeenCalledWith('/api/providers/prov-2/efforts', {});
     });
   });
 });

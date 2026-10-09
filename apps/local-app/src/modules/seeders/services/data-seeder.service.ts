@@ -5,7 +5,7 @@ import type Database from 'better-sqlite3';
 import { createLogger } from '../../../common/logging/logger';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { WatchersService } from '../../watchers/services/watchers.service';
 import { seedCompactOnIdleWatcherSeeder } from '../seeders/0001_seed_compact_on_idle_watcher';
 import { seedReplacePermissionModePlanSeeder } from '../seeders/0002_seed_replace_permission_mode_plan';
@@ -22,7 +22,7 @@ import { seedClaudeLaunchSettingsSeeder } from '../seeders/0012_seed_claude_laun
 import { seedPromptTypeTagsSeeder } from '../seeders/0013_seed_prompt_type_tags';
 import { seedPreserveProjectEgressDefaultsSeeder } from '../seeders/0014_seed_preserve_project_egress_defaults';
 import { ProviderEffortSeedingService } from '../../providers/services/provider-effort-seeding.service';
-import type { DataSeeder } from '../types/seeder.types';
+import type { DataSeeder, SeederContext } from '../types/seeder.types';
 
 export const DATA_SEEDERS = 'DATA_SEEDERS';
 export type { DataSeeder, SeederContext } from '../types/seeder.types';
@@ -81,7 +81,8 @@ export class DataSeederService implements OnModuleInit {
   private readonly sqlite: Database.Database;
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: SeederContext['storage'],
     private readonly watchersService: WatchersService,
     private readonly providerEffortSeeding: ProviderEffortSeedingService,
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,

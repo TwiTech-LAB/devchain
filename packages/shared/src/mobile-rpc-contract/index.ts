@@ -1124,6 +1124,7 @@ const e2eeCatalog = {
         publicKeyB64: z.string().min(1),
         installId: z.string().max(100).optional(),
         label: z.string().max(120).optional(),
+        attestation: z.string().max(4096).optional(),
       })
       .passthrough(),
     resultSchema: deviceTrustResultSchema,

@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { getDbConfig } from './db.config';
+import { restrictDatabaseFilePermissions } from './db-file-permissions';
 import { createLogger } from '../../../common/logging/logger';
 import { join } from 'path';
 import { existsSync } from 'fs';
@@ -40,6 +41,7 @@ export const dbProvider: Provider = {
     logger.info({ dbPath: config.dbPath }, 'Initializing SQLite database');
 
     const sqlite = openDatabaseWithNetworkReportExcluded(config.dbPath);
+    restrictDatabaseFilePermissions(config.dbPath);
 
     // Enable WAL mode for better concurrency
     sqlite.pragma('journal_mode = WAL');

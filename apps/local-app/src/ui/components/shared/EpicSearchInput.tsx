@@ -6,8 +6,10 @@ import { Input } from '@/ui/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { cn } from '@/ui/lib/utils';
+import { statusQueries } from '@/ui/lib/statuses';
+import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-import type { Epic, Status, EpicsQueryData } from '@/ui/types';
+import type { Epic, EpicsQueryData } from '@/ui/types';
 
 export interface EpicSearchInputProps {
   /** Project ID for scoping the search */
@@ -15,12 +17,6 @@ export interface EpicSearchInputProps {
   /** Optional className for the container */
   className?: string;
 }
-
-interface StatusesResponse {
-  items: Status[];
-}
-
-type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 async function searchEpics(
   projectId: string,
@@ -30,12 +26,6 @@ async function searchEpics(
   const params = new URLSearchParams({ projectId, q, limit: '10' });
   const res = await fetchFn(`/api/epics?${params.toString()}`);
   if (!res.ok) throw new Error('Failed to search epics');
-  return res.json();
-}
-
-async function fetchStatuses(projectId: string, fetchFn: FetchFn): Promise<StatusesResponse> {
-  const res = await fetchFn(`/api/statuses?projectId=${projectId}`);
-  if (!res.ok) throw new Error('Failed to fetch statuses');
   return res.json();
 }
 
@@ -72,8 +62,7 @@ export function EpicSearchInput({ projectId, className }: EpicSearchInputProps) 
 
   // Fetch statuses for color display (only when dropdown active with query)
   const { data: statusesData } = useQuery({
-    queryKey: ['statuses', projectId],
-    queryFn: () => fetchStatuses(projectId, apiFetch),
+    ...statusQueries.list(apiFetch, projectId),
     enabled: !!projectId && open && debouncedQuery.length > 0,
     staleTime: 5 * 60 * 1000, // 5 minutes
   });

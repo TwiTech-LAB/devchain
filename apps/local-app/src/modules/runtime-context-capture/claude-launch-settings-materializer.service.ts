@@ -7,6 +7,13 @@ import { validateClaudeLaunchSettingsJson } from '@devchain/shared';
 import { ConflictError, IOError, ValidationError } from '../../common/errors/error-types';
 import { createLogger } from '../../common/logging/logger';
 import { hasFlagOccurrence } from '../sessions/utils/profile-options';
+import type {
+  PreparedArtifacts,
+  PrepareProviderLaunchArtifactsInput,
+  ProviderLaunchArtifacts,
+  ProviderPluginPolicyEntry,
+  ProviderSessionArtifacts,
+} from './provider-artifacts.types';
 import {
   getRuntimeContextCaptureRoot,
   getRuntimeContextEndpointPath,
@@ -26,34 +33,22 @@ export const CANONICAL_DEVCHAIN_STATUS_LINE_COMMAND =
 export const CLAUDE_LAUNCH_SETTINGS_ROOT = Symbol('CLAUDE_LAUNCH_SETTINGS_ROOT');
 
 export interface PrepareClaudeLaunchSettingsInput {
-  providerName: string;
   settingsJson: string | null;
-  profileOptionArgs: string[];
+  profileOptionArgs: readonly string[];
   providerEnv: Record<string, string> | null;
   configEnv: Record<string, string> | null;
   sessionId: string;
   epoch: string;
   projectRootPath: string;
-  pluginPolicy?: ReadonlyArray<ClaudePluginPolicyEntry>;
-  policyRequired?: boolean;
-}
-
-export interface ClaudePluginPolicyEntry {
-  pluginId: string;
-  enabled: boolean;
+  pluginPolicy?: ReadonlyArray<ProviderPluginPolicyEntry>;
 }
 
 export interface PreparedClaudeLaunchSettings {
   optionArgs: string[];
   runtimeEnv: Record<string, string>;
-  captureEnabled: boolean;
 }
 
-const INACTIVE_RESULT: PreparedClaudeLaunchSettings = {
-  optionArgs: [],
-  runtimeEnv: {},
-  captureEnabled: false,
-};
+const inactiveResult = (): PreparedClaudeLaunchSettings => ({ optionArgs: [], runtimeEnv: {} });
 
 const STATUS_LINE_NODE_SOURCE = String.raw`
 const fs = require("fs");
@@ -206,7 +201,10 @@ export const DEVCHAIN_STATUS_LINE_SCRIPT = [
 ].join('\n');
 
 @Injectable()
-export class ClaudeLaunchSettingsMaterializerService {
+export class ClaudeLaunchSettingsMaterializerService
+  implements ProviderSessionArtifacts, ProviderLaunchArtifacts
+{
+  readonly providerName = 'claude';
   private readonly rootPath: string;
 
   constructor(
@@ -217,28 +215,55 @@ export class ClaudeLaunchSettingsMaterializerService {
     this.rootPath = rootPath ?? getRuntimeContextCaptureRoot();
   }
 
-  async prepare(input: PrepareClaudeLaunchSettingsInput): Promise<PreparedClaudeLaunchSettings> {
+  assertNoPolicyConflict(profileOptionArgs: readonly string[], policyActive: boolean): void {
+    if (policyActive && hasFlagOccurrence(profileOptionArgs, SETTINGS_FLAG)) {
+      throw new ConflictError(
+        'Profile-supplied --settings conflicts with required DevChain Claude plugin policy.',
+        { field: 'profileOptions', flag: SETTINGS_FLAG },
+      );
+    }
+  }
+
+  prepare(input: PrepareProviderLaunchArtifactsInput): Promise<PreparedArtifacts> {
+    return this.prepareLaunchSettings({
+      settingsJson: input.provider.claudeLaunchSettingsJson,
+      profileOptionArgs: input.profileOptionArgs,
+      providerEnv: input.providerEnv,
+      configEnv: input.configEnv,
+      sessionId: input.sessionId,
+      epoch: input.epoch,
+      projectRootPath: input.projectRootPath,
+      pluginPolicy: input.pluginPolicy,
+    });
+  }
+
+  async cleanupPrepared(_handle: PreparedArtifacts, sessionId: string): Promise<void> {
+    await this.removeSessionFiles(sessionId);
+  }
+
+  private async prepareLaunchSettings(
+    input: PrepareClaudeLaunchSettingsInput,
+  ): Promise<PreparedClaudeLaunchSettings> {
     const prepared = this.prepareSettings(input);
-    if (!prepared) return INACTIVE_RESULT;
+    if (!prepared) return inactiveResult();
 
     let settingsPath: string;
     try {
       settingsPath = await this.materializeSettingsRevision(prepared.settingsJson);
     } catch {
-      await this.cleanupSession(input.sessionId);
+      await this.removeSessionFiles(input.sessionId);
       if (prepared.policyRequired) {
         throw new IOError('Failed to materialize required Claude plugin policy settings.', {
           stage: 'settings_revision',
         });
       }
       this.logFailOpen(input.sessionId);
-      return INACTIVE_RESULT;
+      return inactiveResult();
     }
 
     const settingsOnlyResult: PreparedClaudeLaunchSettings = {
       optionArgs: [SETTINGS_FLAG, settingsPath],
       runtimeEnv: {},
-      captureEnabled: false,
     };
     if (!this.hasCanonicalStatusLine(prepared.parsed)) {
       return settingsOnlyResult;
@@ -250,10 +275,9 @@ export class ClaudeLaunchSettingsMaterializerService {
       return {
         optionArgs: [SETTINGS_FLAG, settingsPath],
         runtimeEnv: { [STATUS_LINE_LOCATOR_ENV]: locatorPath },
-        captureEnabled: true,
       };
     } catch {
-      await this.cleanupSession(input.sessionId);
+      await this.removeSessionFiles(input.sessionId);
       if (prepared.policyRequired) {
         logger.warn(
           { sessionId: input.sessionId },
@@ -262,7 +286,7 @@ export class ClaudeLaunchSettingsMaterializerService {
         return settingsOnlyResult;
       }
       this.logFailOpen(input.sessionId);
-      return INACTIVE_RESULT;
+      return inactiveResult();
     }
   }
 
@@ -273,7 +297,7 @@ export class ClaudeLaunchSettingsMaterializerService {
     );
   }
 
-  async cleanupSession(sessionId: string): Promise<void> {
+  private async removeSessionFiles(sessionId: string): Promise<void> {
     const paths = this.getSessionPaths(sessionId);
     await Promise.all([
       rm(paths.locatorPath, { force: true }),
@@ -297,29 +321,22 @@ export class ClaudeLaunchSettingsMaterializerService {
     }
   }
 
+  reconcileStartup(nonLiveSessionIds: ReadonlySet<string>): void {
+    for (const sessionId of nonLiveSessionIds) {
+      this.cleanupSessionSync(sessionId);
+    }
+  }
+
   private prepareSettings(input: PrepareClaudeLaunchSettingsInput): {
     settingsJson: string;
     parsed: Record<string, unknown>;
     policyRequired: boolean;
   } | null {
     const pluginPolicy = input.pluginPolicy ?? [];
-    const policyRequired = input.policyRequired === true || pluginPolicy.length > 0;
+    const policyRequired = pluginPolicy.length > 0;
 
-    if (input.providerName.toLowerCase() !== 'claude') {
-      if (policyRequired) {
-        throw new ValidationError(
-          'Required Claude plugin policy cannot target a non-Claude provider.',
-        );
-      }
-      return null;
-    }
+    this.assertNoPolicyConflict(input.profileOptionArgs, policyRequired);
     if (hasFlagOccurrence(input.profileOptionArgs, SETTINGS_FLAG)) {
-      if (policyRequired) {
-        throw new ConflictError(
-          'Profile-supplied --settings conflicts with required DevChain Claude plugin policy.',
-          { field: 'profileOptions', flag: SETTINGS_FLAG },
-        );
-      }
       return null;
     }
 

@@ -100,10 +100,24 @@ describe('E2eePairingService (Task:4 — QR auto-verified key exchange)', () => 
   }
 
   it('begin returns the PC public key + a fresh base64 pairing secret', async () => {
+    expect(service.hasPendingPairing()).toBe(false);
     const res = await service.beginQrPairing('chan-1');
+    expect(service.hasPendingPairing()).toBe(true);
     expect(res.pcEncPubKey).toBe(bytesToBase64(pcKeyPair.publicKey));
     expect(res.pcEncKid).toBe(pcKeyPair.kid);
     expect(base64ToBytes(res.pairingSecret).length).toBe(32);
+  });
+
+  it('does not report expired QR sessions as pending', async () => {
+    jest.useFakeTimers();
+    try {
+      await service.beginQrPairing('expires');
+      expect(service.hasPendingPairing()).toBe(true);
+      jest.advanceTimersByTime(5 * 60 * 1000 + 1);
+      expect(service.hasPendingPairing()).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('begin mints a distinct secret per channel', async () => {
@@ -260,6 +274,7 @@ describe('E2eePairingService (Task:4 — QR auto-verified key exchange)', () => 
     const mobile = fromX25519PrivateKey(bytes(0xb0b));
     const begin = await service.beginQrPairing('chan-7');
     await service.completeQrPairing(mobileResponds('chan-7', begin.pairingSecret, mobile));
+    expect(service.hasPendingPairing()).toBe(false);
     // Re-completing the same channel fails — the pending secret was consumed.
     await expect(
       service.completeQrPairing(mobileResponds('chan-7', begin.pairingSecret, mobile)),

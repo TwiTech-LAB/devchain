@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react';
-import type { SshCredentials } from '@/ui/hooks/useRemoteOperations';
+import type { SshCredentials, LocalSshKey } from './lib/remote-vm-contracts';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
@@ -11,7 +11,7 @@ import {
   SelectValue,
 } from '@/ui/components/ui/select';
 import { Textarea } from '@/ui/components/ui/textarea';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import { IdentitySummary } from './IdentitySummary';
 
 export interface SshCredentialDraft {
@@ -70,22 +70,17 @@ function signInMethod(draft: SshCredentialDraft): SignInMethod {
   return draft.keyName ? 'pc-key' : 'pasted-key';
 }
 
-interface LocalKey {
-  name: string;
-  type: string | null;
-  encrypted: boolean;
-}
-
 /**
  * This PC's SSH keys, or none when this PC does not offer them (it lists
  * keys only while it binds to loopback). A key the list no longer holds is
  * dropped from the draft.
  */
-function useLocalKeys(setDraft: Dispatch<SetStateAction<SshCredentialDraft>>): LocalKey[] {
-  const [keys, setKeys] = useState<LocalKey[]>([]);
+function useLocalKeys(setDraft: Dispatch<SetStateAction<SshCredentialDraft>>): LocalSshKey[] {
+  const api = useRemoteVmApi();
+  const [keys, setKeys] = useState<LocalSshKey[]>([]);
   useEffect(() => {
     let cancelled = false;
-    const keep = (available: LocalKey[]) => {
+    const keep = (available: LocalSshKey[]) => {
       if (cancelled) return;
       setKeys(available);
       setDraft((current) =>
@@ -96,14 +91,7 @@ function useLocalKeys(setDraft: Dispatch<SetStateAction<SshCredentialDraft>>): L
     };
     void (async () => {
       try {
-        const response = await apiFetch(
-          '/api/remotes/host-install/ssh-keys',
-          {},
-          { backend: HOME_BACKEND },
-        );
-        if (!response.ok) return keep([]);
-        const result = (await response.json()) as { available?: boolean; keys?: LocalKey[] };
-        keep(result.available === true && Array.isArray(result.keys) ? result.keys : []);
+        keep(await api.listLocalSshKeys());
       } catch {
         keep([]);
       }
@@ -111,7 +99,7 @@ function useLocalKeys(setDraft: Dispatch<SetStateAction<SshCredentialDraft>>): L
     return () => {
       cancelled = true;
     };
-  }, [setDraft]);
+  }, [api, setDraft]);
   return keys;
 }
 

@@ -2,9 +2,9 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { X } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { isGiveOwnershipEligible } from '@/modules/file-sync/sync-path-inspection.dto';
-import { SYNC_CHOWN_PATHS_MAX, SyncChownResultSchema } from '@/modules/file-sync/sync-chown.dto';
-import { apiFetch, HOME_BACKEND } from '@/ui/lib/api-transport';
-import { readErrorMessage } from '@/ui/hooks/useRemotes';
+import { SYNC_CHOWN_PATHS_MAX } from '@/modules/file-sync/sync-chown.dto';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
+import { fileSyncAutoFixQueryKey } from './lib/remote-vm-query-keys';
 import type {
   FailedSyncFile,
   ForceSyncOffer,
@@ -35,7 +35,8 @@ import {
 } from '@/ui/components/ui/dialog';
 import { BusyStatus } from '@/ui/components/ui/spinner';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
-import { FileListChangedError, useProjectIgnores, useSaveProjectIgnores } from './connect-ignores';
+import { useProjectIgnores, useSaveProjectIgnores } from './connect-ignores';
+import { FileListChangedError } from './lib/remote-vm-errors';
 import { FileSyncAutoFixControls } from './FileSyncAutoFixControls';
 import { isSelectableExclusion, useProjectFileSyncFailures } from './file-sync-failures';
 import { useFileSyncPatternPreview } from './file-sync-pattern-preview';
@@ -117,6 +118,7 @@ export function FixFileSyncDialog({
   warning?: string | null;
   onForceSync: (offer: ForceSyncOffer) => void;
 }) {
+  const api = useRemoteVmApi();
   const failed = useProjectFileSyncFailures(projectId);
   const queryClient = useHomeQueryClient();
   const ignores = useProjectIgnores(projectId);
@@ -212,18 +214,11 @@ export function FixFileSyncDialog({
       mutationFn: async (paths: string[]) => {
         const outcomes = [];
         for (let offset = 0; offset < paths.length; offset += SYNC_CHOWN_PATHS_MAX) {
-          const response = await apiFetch(
-            `/api/projects/${encodeURIComponent(projectId)}/file-sync/give-ownership`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ paths: paths.slice(offset, offset + SYNC_CHOWN_PATHS_MAX) }),
-            },
-            { backend: HOME_BACKEND },
+          const result = await api.giveFileOwnership(
+            projectId,
+            paths.slice(offset, offset + SYNC_CHOWN_PATHS_MAX),
           );
-          if (!response.ok)
-            throw new Error(await readErrorMessage(response, 'Could not change VM file owners.'));
-          outcomes.push(...SyncChownResultSchema.parse(await response.json()).items);
+          outcomes.push(...result.items);
         }
         return outcomes;
       },
@@ -232,7 +227,7 @@ export function FixFileSyncDialog({
         setMessage(reasons.length ? reasons.join(' ') : 'The VM user now owns these files.');
         await failed.refetch();
         await queryClient.invalidateQueries({
-          queryKey: [HOME_BACKEND, 'file-sync-auto-fix', projectId],
+          queryKey: fileSyncAutoFixQueryKey(projectId),
         });
       },
     },

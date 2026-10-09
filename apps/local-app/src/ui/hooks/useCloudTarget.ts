@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { HOME_BACKEND, type BackendId } from '@/ui/lib/api-transport';
 import {
   persistCloudTarget,
+  CLOUD_TARGET_CHANGED_EVENT,
   readPersistedCloudTarget,
   type PersistedCloudTarget,
 } from '@/ui/lib/cloud-target';
@@ -29,6 +30,14 @@ export function useCloudTarget(): CloudTarget {
   const { remotes } = useRemotes();
   const [persisted, setPersisted] = useState<PersistedCloudTarget>(readPersistedCloudTarget);
 
+  useEffect(() => {
+    const handleChange = (event: Event) => {
+      setPersisted((event as CustomEvent<PersistedCloudTarget>).detail);
+    };
+    window.addEventListener(CLOUD_TARGET_CHANGED_EVENT, handleChange);
+    return () => window.removeEventListener(CLOUD_TARGET_CHANGED_EVENT, handleChange);
+  }, []);
+
   const eligible = useMemo(
     () =>
       remotes.filter((remote) => remote.online && !remote.apiKeyRejected && remote.versionMatches),
@@ -45,8 +54,8 @@ export function useCloudTarget(): CloudTarget {
       const target: PersistedCloudTarget = remote
         ? { backend: remote.id, remoteName: remote.name }
         : { backend: HOME_BACKEND, remoteName: null };
+      // The change event updates `persisted` through the listener above.
       persistCloudTarget(target);
-      setPersisted(target);
     },
     [eligible],
   );

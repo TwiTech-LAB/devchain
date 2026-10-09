@@ -1,7 +1,12 @@
 import { Injectable, Inject, OnModuleInit, forwardRef } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { ValidationError, ConflictError } from '../../../common/errors/error-types';
-import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type AgentStorage,
+  type GuestStorage,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { EventsService } from '../../events/services/events.service';
 import { RegisterGuestDto, RegisterGuestResultDto } from '../dtos/guest.dto';
@@ -15,7 +20,7 @@ export class GuestsService implements OnModuleInit {
   private guestHealthServiceRef?: { startMonitoring: (guest: Guest) => void };
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage & GuestStorage & ProjectStorage,
     @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
     @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
   ) {

@@ -3,7 +3,12 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type AgentStorage,
+  type GuestStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { EpicCreatedEventPayload } from '../../events/catalog/epic.created';
 
 @Injectable()
@@ -13,7 +18,8 @@ export class SubEpicCreatedNotifierSubscriber {
   constructor(
     private readonly eventLogService: EventLogService,
     private readonly messageDelivery: AgentMessageDeliveryService,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentStorage & GuestStorage & Pick<StorageService, 'getEpic'>,
   ) {}
 
   // If the parent's assignee also happens to be the child's assignee (with a

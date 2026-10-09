@@ -23,6 +23,7 @@ import type { ProviderAdapterFactory } from '../../providers/adapters/provider-a
 import { SessionCoordinatorService } from './session-coordinator.service';
 import { TerminalSessionRegistry } from '../../terminal/services/terminal-session/terminal-session-registry';
 import type { RuntimeContextCaptureService } from '../../runtime-context-capture/runtime-context-capture.service';
+import { SessionTerminalRuntimeService } from '../../session-terminal-runtime/session-terminal-runtime.service';
 import type { EpicTimeStore } from '../../epic-time/services/epic-time.store';
 
 const TEST_TERMINATION = { source: 'web-api' as const, reason: 'user-requested' as const };
@@ -161,9 +162,13 @@ describe('SessionsService', () => {
       providerAdapterFactory as unknown as ProviderAdapterFactory,
       eventsService as unknown as EventsService,
       terminalSessionRegistry as unknown as TerminalSessionRegistry,
-      runtimeContextCapture as unknown as RuntimeContextCaptureService,
-      claudeLaunchSettings as never,
-      codexPluginProfiles as never,
+      new SessionTerminalRuntimeService(
+        dbMock,
+        providerAdapterFactory as unknown as ProviderAdapterFactory,
+        runtimeContextCapture as unknown as RuntimeContextCaptureService,
+        claudeLaunchSettings as never,
+        codexPluginProfiles as never,
+      ),
       {
         readActivationSettings: jest
           .fn()
@@ -389,6 +394,35 @@ describe('SessionsService', () => {
       expect(runtimeContextCapture.clear).not.toHaveBeenCalled();
       expect(claudeLaunchSettings.cleanupSessionSync).not.toHaveBeenCalled();
       expect(codexPluginProfiles.cleanupSession).not.toHaveBeenCalled();
+      expect(eventsService.publish).not.toHaveBeenCalled();
+    });
+
+    // Service coverage uses the real artifact orchestrator to prove already-stopped cleanup stays successful.
+    it('succeeds and logs the warning when Codex cleanup fails for an already-stopped session', async () => {
+      sqlitePrepare.mockReturnValue({
+        run: insertRunMock,
+        get: jest.fn().mockReturnValue({
+          id: 'already-stopped-cleanup',
+          status: 'stopped',
+          agent_id: 'agent-1',
+          tmux_session_id: 'tmux-stopped',
+        }),
+        all: jest.fn().mockReturnValue([]),
+      });
+      codexPluginProfiles.cleanupSession.mockRejectedValue(new Error('cleanup failed'));
+
+      await service.terminateSession('already-stopped-cleanup', TEST_TERMINATION);
+
+      expect(ptyService.stopStreaming).toHaveBeenCalledWith('already-stopped-cleanup');
+      expect(terminalSessionRegistry.dispose).toHaveBeenCalledWith('already-stopped-cleanup');
+      expect(claudeLaunchSettings.cleanupSessionSync).toHaveBeenCalledWith(
+        'already-stopped-cleanup',
+      );
+      expect(mockSessionsLogger.warn).toHaveBeenCalledWith(
+        { sessionId: 'already-stopped-cleanup', errorCode: 'CODEX_PROFILE_CLEANUP_FAILED' },
+        'Failed to clean Codex profile lifecycle after session termination',
+      );
+      expect(insertRunMock).not.toHaveBeenCalled();
       expect(eventsService.publish).not.toHaveBeenCalled();
     });
 

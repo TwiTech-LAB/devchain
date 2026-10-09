@@ -58,7 +58,7 @@ export async function buildExportWatchers(
   watchers: ReadonlyArray<ExportWatcherRow>,
   agents: ReadonlyArray<{ id: string; name: string }>,
   profiles: ReadonlyArray<{ id: string; name: string }>,
-  storage: StorageService,
+  storage: Pick<StorageService, 'getProvider'>,
 ) {
   return Promise.all(
     watchers.map(async (watcher) => {

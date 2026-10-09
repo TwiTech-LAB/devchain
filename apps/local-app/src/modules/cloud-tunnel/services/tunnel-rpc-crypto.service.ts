@@ -17,12 +17,9 @@ import { getMobileRpcCryptoMode, isMobileRpcMethod } from './mobile-rpc-contract
 const logger = createLogger('TunnelRpcCrypto');
 
 /**
- * DI token for the PC-side E2EE-required policy. When true, the PC
- * refuses to accept plaintext RPC `params` — every inbound request MUST be an
- * `E2eeEnvelope` (fail closed). Env-gated (`E2EE_REQUIRED=true`) for gradual rollout;
- * default false so mixed old/new clients keep interoperating in plaintext. The SAME
- * value is advertised in the attest capability descriptor so the mobile side negotiates
- * consistently (`tunnel-client.service.ts#buildE2eeCapability`).
+ * Shared policy for RPC admission, push/viewport delivery, and the attest capability.
+ * Plaintext bootstrap remains available for key enrollment when E2EE is required.
+ * The runtime binding is owned by CloudTunnelModule.
  */
 export const E2EE_REQUIRED_POLICY = 'E2EE_REQUIRED_POLICY';
 
@@ -74,10 +71,10 @@ export type SealedRpcResult =
  * outcome is then re-wrapped — a success as `{ ok:true, data }`, a domain error as
  * `{ ok:false, error }` — and sealed back, so domain errors are never bridge-readable.
  *
- * Mixed-client back-compat: a request whose `params` are NOT an envelope (an older mobile
- * build, or one negotiated to plaintext) passes straight through to the plaintext path —
- * no silent change of behaviour. The pairwise shared key is re-derived on demand from the
- * PC private key + the paired device's public key (never persisted); the envelope `kid`
+ * When the policy permits plaintext, non-envelope params pass through to dispatch;
+ * otherwise only plaintext bootstrap methods are admitted. The pairwise shared key is
+ * re-derived on demand from the PC private key + the paired device's public key (never
+ * persisted); the envelope `kid`
  * identifies the SEALER's device, so both directions resolve the same key.
  */
 @Injectable()
@@ -110,15 +107,11 @@ export class TunnelRpcCryptoService {
       ? getMobileRpcCryptoMode(req.method)
       : 'conditional-seal';
 
-    // When the PC's policy is `e2eeRequired`,
-    // a plaintext (non-envelope) request is REJECTED — no domain content is dispatched.
-    // This is the strict-rollout mode; when the policy is false (default), a non-envelope
-    // request rides the plaintext path so mixed old/new clients interoperate.
     if (!isE2eeEnvelope(params)) {
       // Sealed-only methods (e.g. e2ee.revokeDeviceKey) are rejected when plaintext REGARDLESS
       // of e2eeRequired — a plaintext request carries no verified sender, so it must never
       // reach the dispatch layer (force-unpair defense). Checked before the e2eeRequired gate
-      // because the default mixed-client path below would otherwise dispatch it.
+      // because the plaintext opt-out path below would otherwise dispatch it.
       if (cryptoMode === 'sealed-only') {
         logger.warn(
           { id: req.id, method: req.method },

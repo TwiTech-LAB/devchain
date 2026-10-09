@@ -4,7 +4,6 @@ import {
   Patch,
   Delete,
   Get,
-  Inject,
   Body,
   Param,
   Query,
@@ -30,9 +29,8 @@ import {
   AgentPresenceResponseDto,
   SessionHistoryResponseDto,
 } from '../dtos/sessions.dto';
-import { STORAGE_SERVICE, StorageService } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 const logger = createLogger('SessionsController');
 
@@ -143,8 +141,7 @@ export class SessionsController {
     private readonly sessionsService: SessionsService,
     private readonly messagePoolService: SessionsMessagePoolService,
     private readonly sessionRuntime: SessionRuntime,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   /**
@@ -172,7 +169,8 @@ export class SessionsController {
     // Shared ownership guard (NotFound / Forbidden) — same helper the cloud-tunnel
     // chat.renameSession RPC uses, so the two transports cannot drift.
     await this.sessionsService.validateSessionInProject(id, parsed.data.projectId);
-    this.admission.assertWritable(parsed.data.projectId);
+    // Admit before renaming raw session SQL records.
+    this.gate.assertWritable(parsed.data.projectId);
 
     return this.sessionsService.updateName(id, parsed.data.name);
   }
@@ -196,7 +194,8 @@ export class SessionsController {
     // Shared ownership guard (NotFound / Forbidden) — same helper the cloud-tunnel
     // chat.deleteSessionRecord RPC uses. Running-status check layered on top.
     const session = await this.sessionsService.validateSessionInProject(id, query.data.projectId);
-    this.admission.assertWritable(query.data.projectId);
+    // Admit before deleting raw session SQL records.
+    this.gate.assertWritable(query.data.projectId);
 
     if (session.status === 'running') {
       throw new ConflictException('STATUS_RUNNING');

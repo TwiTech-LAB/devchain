@@ -6,15 +6,8 @@ import { Textarea, type TextareaProps } from '@/ui/components/ui/textarea';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
 import { cn } from '@/ui/lib/utils';
 import { Loader2, ScrollText } from 'lucide-react';
-import type { FetchFn } from '@/ui/lib/api-transport';
+import { promptQueries, selectPromptRows, type PromptSummary } from '@/ui/lib/prompts';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-
-type PromptSummary = {
-  id: string;
-  title: string;
-  tags: string[];
-  projectId: string | null;
-};
 
 interface MarkdownReferenceInputProps
   extends Omit<TextareaProps, 'value' | 'onChange' | 'onKeyDown' | 'onChangeCapture'> {
@@ -33,39 +26,6 @@ interface ActiveToken {
 
 const TOKEN_BOUNDARY = /[\s\[\]\(\)\{\}"'`~!$%^&*+=|\\;,.<>/?]/;
 const MAX_DEFAULT_SUGGESTIONS = 7;
-
-async function fetchPromptSuggestions(
-  fetchFn: FetchFn,
-  {
-    value,
-    projectId,
-    limit,
-  }: {
-    value: string;
-    projectId?: string | null;
-    limit: number;
-  },
-): Promise<PromptSummary[]> {
-  // Prompts require projectId
-  if (projectId === undefined) {
-    return [];
-  }
-
-  const params = new URLSearchParams();
-  params.set('projectId', projectId === null ? '' : projectId);
-  params.set('q', value);
-  params.set('limit', `${limit}`);
-  params.set('offset', '0');
-
-  const response = await fetchFn(`/api/prompts?${params.toString()}`);
-  if (!response.ok) {
-    // Suggestions are decorative: a failed fetch yields an empty list instead
-    // of blocking instruction editing.
-    return [];
-  }
-  const data = (await response.json()) as { items: PromptSummary[] };
-  return data.items ?? [];
-}
 
 function detectReferenceToken(text: string, caret: number | null): ActiveToken | null {
   if (caret === null) {
@@ -178,18 +138,14 @@ export function MarkdownReferenceInput({
     };
   }, [activeTokenStart, activeTokenValue]);
 
-  const projectScopeKey =
-    projectId === undefined ? '__any__' : projectId === null ? '__global__' : projectId;
-
   const suggestionsQuery = useQuery({
-    queryKey: ['markdown-reference-suggestions', debouncedValue, projectScopeKey, maxSuggestions],
+    ...promptQueries.search(fetchFn, projectId, {
+      q: debouncedValue ?? '',
+      limit: maxSuggestions,
+      offset: 0,
+    }),
+    select: selectPromptRows,
     enabled: Boolean(debouncedValue),
-    queryFn: () =>
-      fetchPromptSuggestions(fetchFn, {
-        value: debouncedValue!,
-        projectId,
-        limit: maxSuggestions,
-      }),
     staleTime: 15_000,
   });
 

@@ -17,11 +17,9 @@ import {
   TranscriptFilesService,
   assertTranscriptSize,
 } from '../transcripts/transcript-files.service';
-import {
-  TranscriptFileSchema,
-  TranscriptListRequestSchema,
-  type TranscriptListing,
-} from '../transcripts/transcript-transfer.dto';
+import { TranscriptFileSchema } from '../transcripts/transcript-transfer.dto';
+import { hostRoutes } from '../contract/host-routes';
+import type { HostHandlerResponse } from '../contract/host-routes';
 
 @ApiTags('Host transcripts')
 @Controller('api/host/transcripts')
@@ -32,8 +30,10 @@ export class HostTranscriptsController {
   @HttpCode(200)
   @ApiOperation({ summary: 'List recorded transcript files' })
   @ApiResponse({ status: 200 })
-  list(@Body() body: unknown): Promise<TranscriptListing> {
-    return this.files.list(TranscriptListRequestSchema.parse(body).refs);
+  list(
+    @Body() body: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.listTranscripts, 200>> {
+    return this.files.list(hostRoutes.listTranscripts.body.parse(body).refs);
   }
 
   @Get()

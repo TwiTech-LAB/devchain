@@ -73,7 +73,6 @@ export interface McpCliCapability {
   addMcpServer(options: AddMcpServerOptions): string[];
   listMcpServers(): string[];
   removeMcpServer(alias: string): string[];
-  binaryCheck(alias: string): string[];
   parseListOutput(stdout: string, stderr?: string): McpServerEntry[];
 }
 

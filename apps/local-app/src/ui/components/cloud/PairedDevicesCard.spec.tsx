@@ -44,20 +44,75 @@ describe('PairedDevicesCard', () => {
   });
 
   it.each([
-    { label: 'trust on first use', overrides: {}, name: 'Pixel', badge: 'Trusted on first use' },
+    {
+      label: 'trust on first use',
+      overrides: {},
+      name: 'Pixel',
+      badge: 'Trusted on first use',
+      enrollmentBadge: null,
+    },
     {
       label: 'QR verified',
       overrides: { label: 'iPhone', trust: 'verified', verifiedVia: 'qr' },
       name: 'iPhone',
       badge: 'Verified',
+      enrollmentBadge: null,
     },
-  ] as const)('$label', async ({ overrides, name, badge }) => {
+    {
+      label: 'unsigned email enrollment',
+      overrides: { adoptedVia: 'email-tofu', enrollment: 'unsigned' },
+      name: 'Pixel',
+      badge: 'Trusted on first use',
+      enrollmentBadge: 'Unsigned',
+    },
+    {
+      label: 'legacy email enrollment',
+      overrides: { adoptedVia: 'email-tofu' },
+      name: 'Pixel',
+      badge: 'Trusted on first use',
+      enrollmentBadge: 'Paired before signed enrollment',
+    },
+    {
+      label: 'signed email enrollment',
+      overrides: { adoptedVia: 'email-tofu', enrollment: 'signed' },
+      name: 'Pixel',
+      badge: 'Trusted on first use',
+      enrollmentBadge: null,
+    },
+    {
+      label: 'QR verified unsigned enrollment',
+      overrides: {
+        adoptedVia: 'email-tofu',
+        trust: 'verified',
+        verifiedVia: 'qr',
+        enrollment: 'unsigned',
+      },
+      name: 'Pixel',
+      badge: 'Verified',
+      enrollmentBadge: null,
+    },
+    {
+      label: 'safety-number verified unsigned enrollment',
+      overrides: {
+        adoptedVia: 'email-tofu',
+        trust: 'verified',
+        verifiedVia: 'safety-number',
+        enrollment: 'unsigned',
+      },
+      name: 'Pixel',
+      badge: 'Verified',
+      enrollmentBadge: 'Unsigned',
+    },
+  ] as const)('$label', async ({ overrides, name, badge, enrollmentBadge }) => {
     global.fetch = mockFetch([
       ['/api/e2ee/devices', [device(overrides)]],
     ]) as unknown as typeof fetch;
     render(<PairedDevicesCard />);
     expect(await screen.findByText(name)).toBeInTheDocument();
     expect(screen.getByText(badge)).toBeInTheDocument();
+    const enrollmentLabel = screen.queryByText(/^(Unsigned|Paired before signed enrollment)$/);
+    if (enrollmentBadge) expect(enrollmentLabel).toHaveTextContent(enrollmentBadge);
+    else expect(enrollmentLabel).not.toBeInTheDocument();
   });
 
   it('uses alias, reported label, and fallback precedence across the row and un-pair dialog', async () => {

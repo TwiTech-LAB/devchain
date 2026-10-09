@@ -1,3 +1,4 @@
+import type { ProviderPluginPolicyStorage } from '../../interfaces/storage.interface';
 import { and, asc, eq } from 'drizzle-orm';
 import { providerPluginDefaults, projectProviderPluginOverrides } from '../../db/schema';
 import type {
@@ -9,7 +10,10 @@ import type {
 import { StorageError } from '../../../../common/errors/error-types';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
-export class ProviderPluginPolicyStorageDelegate extends BaseStorageDelegate {
+export class ProviderPluginPolicyStorageDelegate
+  extends BaseStorageDelegate
+  implements ProviderPluginPolicyStorage
+{
   constructor(context: StorageDelegateContext) {
     super(context);
   }

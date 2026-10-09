@@ -8,6 +8,7 @@
 
 import * as fs from 'node:fs/promises';
 import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
+import type { TranscriptTurnState } from '../../terminal/services/session-turn-signals';
 
 /**
  * A resolved reference to the source of a session's transcript data.
@@ -303,6 +304,9 @@ export interface SessionReaderAdapter {
    * from the parsed messages (Claude turn evidence). Without it, a full parse clears the state.
    */
   continuationFromSession?(session: UnifiedSession): unknown;
+
+  /** Presence opts into transcript turn signals, including passes with no new message. */
+  turnState?(metrics: UnifiedMetrics, continuationState: unknown): TranscriptTurnState | null;
 
   /**
    * Get filesystem paths to watch for changes (new sessions, file updates)

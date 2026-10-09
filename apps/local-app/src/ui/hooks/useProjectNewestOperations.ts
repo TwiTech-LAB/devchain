@@ -1,19 +1,9 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
-import { remoteOperationsKeys, type RemoteOperationDto } from './useRemoteOperations';
-
-async function fetchNewest(projectId: string, signal: AbortSignal) {
-  const res = await apiFetch(
-    `/api/remotes/operations?projectId=${encodeURIComponent(projectId)}&limit=1`,
-    { signal },
-    { backend: HOME_BACKEND },
-  );
-  if (!res.ok) throw new Error(`Could not load the project's last operation (${res.status})`);
-  const body = (await res.json()) as { items?: RemoteOperationDto[] };
-  return body.items?.[0] ?? null;
-}
+import { useRemoteVmApi } from '@/ui/pages/cloud/lib/remote-vm-api-context';
+import { remoteOperationsKeys } from '@/ui/pages/cloud/lib/remote-vm-query-keys';
+import type { RemoteOperationDto } from '@/ui/pages/cloud/lib/remote-vm-contracts';
 
 /**
  * The newest operation of each given project, in any state: a cancelled
@@ -23,11 +13,13 @@ async function fetchNewest(projectId: string, signal: AbortSignal) {
 export function useProjectNewestOperations(
   projectIds: readonly string[],
 ): ReadonlyMap<string, RemoteOperationDto> {
+  const api = useRemoteVmApi();
   const operations = useQueries(
     {
       queries: projectIds.map((projectId) => ({
         queryKey: remoteOperationsKeys.newestOfProject(projectId),
-        queryFn: ({ signal }: { signal: AbortSignal }) => fetchNewest(projectId, signal),
+        queryFn: ({ signal }: { signal: AbortSignal }) =>
+          api.readNewestOperation(projectId, signal),
       })),
       // Structurally shared, so the map below changes only when an answer does.
       combine: (results) => results.map((result) => result.data ?? null),

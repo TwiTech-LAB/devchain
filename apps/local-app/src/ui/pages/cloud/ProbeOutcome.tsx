@@ -1,6 +1,6 @@
 import type { ProbeResultDto } from '@/modules/remotes/dtos/remote-probe.dto';
 import { unsupportedHostImageMessage } from '@/modules/remotes/host-image';
-import type { RemoteOperationDto } from '@/ui/hooks/useRemoteOperations';
+import type { RemoteOperationDto } from './lib/remote-vm-contracts';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';

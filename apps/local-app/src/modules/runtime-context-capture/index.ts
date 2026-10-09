@@ -4,7 +4,6 @@ export {
   CANONICAL_DEVCHAIN_STATUS_LINE_COMMAND,
   ClaudeLaunchSettingsMaterializerService,
   DEVCHAIN_STATUS_LINE_SCRIPT,
-  type ClaudePluginPolicyEntry,
   type PrepareClaudeLaunchSettingsInput,
   type PreparedClaudeLaunchSettings,
 } from './claude-launch-settings-materializer.service';
@@ -12,10 +11,10 @@ export {
   CODEX_PLUGIN_PROFILE_ROOT,
   CODEX_PROFILE_HELPER_SOURCE,
   CodexPluginProfileMaterializerService,
-  type CodexPluginPolicyEntry,
   type PrepareCodexPluginProfileInput,
   type PreparedCodexPluginProfile,
 } from './codex-plugin-profile-materializer.service';
+export type { ProviderPluginPolicyEntry } from './provider-artifacts.types';
 export {
   getRuntimeContextCaptureRoot,
   getRuntimeContextEndpointPath,

@@ -201,7 +201,7 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
   // ─── updateProviderWithScopes ───
 
   describe('updateProviderWithScopes', () => {
-    it('returns explicitly mapped camelCase provider fields after an update', () => {
+    it('returns explicitly mapped camelCase provider fields after an update', async () => {
       const original = '{"tui":"default"}';
       const updated = '{\n  "futureSetting": true\n}';
       const provider = seedProvider(undefined, {
@@ -209,7 +209,7 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
         claudeLaunchSettingsJson: original,
       });
 
-      const result = delegate.updateProviderWithScopes(
+      const result = await delegate.updateProviderWithScopes(
         provider.id,
         { claudeLaunchSettingsJson: updated },
         undefined,
@@ -228,14 +228,14 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
       });
     });
 
-    it('updates provider and replaces scopes when envScopes is provided', () => {
+    it('updates provider and replaces scopes when envScopes is provided', async () => {
       const provider = seedProvider({ KEY_A: 'a', KEY_B: 'b' });
       const p1 = seedProject();
       const p2 = seedProject();
 
       insertScopeRow(provider.id, 'KEY_A', p1);
 
-      const result = delegate.updateProviderWithScopes(
+      const result = await delegate.updateProviderWithScopes(
         provider.id,
         { env: { KEY_A: 'a-new', KEY_B: 'b' } },
         { KEY_A: [p2], KEY_B: [p1, p2] },
@@ -249,11 +249,11 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
       expect(scopes['KEY_B']).toEqual(expect.arrayContaining([p1, p2]));
     });
 
-    it('filters out scope entries for keys not in currentEnvKeys', () => {
+    it('filters out scope entries for keys not in currentEnvKeys', async () => {
       const provider = seedProvider({ KEY_A: 'a' });
       const p1 = seedProject();
 
-      delegate.updateProviderWithScopes(provider.id, {}, { KEY_A: [p1], REMOVED_KEY: [p1] }, [
+      await delegate.updateProviderWithScopes(provider.id, {}, { KEY_A: [p1], REMOVED_KEY: [p1] }, [
         'KEY_A',
       ]);
 
@@ -262,14 +262,16 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
       expect(scopes['REMOVED_KEY']).toBeUndefined();
     });
 
-    it('prunes orphan scope rows when envScopes is undefined and keys are removed', () => {
+    it('prunes orphan scope rows when envScopes is undefined and keys are removed', async () => {
       const provider = seedProvider({ KEY_A: 'a', KEY_B: 'b' });
       const p1 = seedProject();
 
       insertScopeRow(provider.id, 'KEY_A', p1);
       insertScopeRow(provider.id, 'KEY_B', p1);
 
-      delegate.updateProviderWithScopes(provider.id, { env: { KEY_A: 'a' } }, undefined, ['KEY_A']);
+      await delegate.updateProviderWithScopes(provider.id, { env: { KEY_A: 'a' } }, undefined, [
+        'KEY_A',
+      ]);
 
       const scopes = delegate.listEnvScopes(provider.id);
       expect(scopes['KEY_A']).toEqual([p1]);
@@ -277,13 +279,13 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
       expect(countScopeRows(provider.id)).toBe(1);
     });
 
-    it('prunes all scope rows when envScopes is undefined and currentEnvKeys is empty', () => {
+    it('prunes all scope rows when envScopes is undefined and currentEnvKeys is empty', async () => {
       const provider = seedProvider({ KEY_A: 'a' });
       const p1 = seedProject();
 
       insertScopeRow(provider.id, 'KEY_A', p1);
 
-      delegate.updateProviderWithScopes(provider.id, { env: null }, undefined, []);
+      await delegate.updateProviderWithScopes(provider.id, { env: null }, undefined, []);
 
       expect(countScopeRows(provider.id)).toBe(0);
     });
@@ -296,14 +298,14 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
 
       const badProjectId = randomUUID();
 
-      expect(() =>
+      await expect(
         delegate.updateProviderWithScopes(
           provider.id,
           { env: { KEY_A: 'modified' } },
           { KEY_A: [badProjectId] },
           ['KEY_A'],
         ),
-      ).toThrow();
+      ).rejects.toThrow();
 
       const dbProvider = await delegate.getProvider(provider.id);
       expect(dbProvider.env).toEqual({ KEY_A: 'original' });
@@ -312,12 +314,12 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
       expect(scopes['KEY_A']).toEqual([p1]);
     });
 
-    it('keeps a key and makes it global on purpose when envScopes clears all of its scopes', () => {
+    it('keeps a key and makes it global on purpose when envScopes clears all of its scopes', async () => {
       const provider = seedProvider({ KEY_A: 'a' });
       const p1 = seedProject('Previously scoped');
       insertScopeRow(provider.id, 'KEY_A', p1);
 
-      delegate.updateProviderWithScopes(provider.id, {}, {}, ['KEY_A']);
+      await delegate.updateProviderWithScopes(provider.id, {}, {}, ['KEY_A']);
 
       expect(delegate.listEnvScopes(provider.id)).toEqual({});
       const unrelated = seedProject('Unrelated');
@@ -326,10 +328,10 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
       expect(effectiveEnv?.KEY_A === 'a').toBe(true);
     });
 
-    it('throws NotFoundError when provider does not exist', () => {
-      expect(() => delegate.updateProviderWithScopes(randomUUID(), {}, undefined, [])).toThrow(
-        'not found',
-      );
+    it('throws NotFoundError when provider does not exist', async () => {
+      await expect(
+        delegate.updateProviderWithScopes(randomUUID(), {}, undefined, []),
+      ).rejects.toThrow('not found');
     });
   });
 

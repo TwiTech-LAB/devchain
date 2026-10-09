@@ -4,7 +4,8 @@ import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
 import { useHomeSocket } from './useHomeSocket';
 import { REMOTES_LIST_QUERY_KEY, REMOTE_BINDINGS_QUERY_KEY } from '@/ui/lib/backend-provider';
 import { useProjectNewestOperations } from './useProjectNewestOperations';
-import { remoteOperationsKeys, useRemoteOperations } from './useRemoteOperations';
+import { useRemoteOperations } from './useRemoteOperations';
+import { remoteOperationsKeys } from '@/ui/pages/cloud/lib/remote-vm-query-keys';
 
 type RemoteOperationAction = Parameters<
   ReturnType<typeof useRemoteOperations>['action']['mutate']

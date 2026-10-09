@@ -1,5 +1,6 @@
 import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
+import { CODEX_TRAITS } from './codex.traits';
 import type {
   ProviderAdapter,
   AddMcpServerOptions,
@@ -36,7 +37,7 @@ export class CodexAdapter
     ProjectProvisioningCapability
 {
   readonly providerName = 'codex';
-  readonly requiresProjectProvisioning = true as const;
+  readonly traits = CODEX_TRAITS;
 
   // Effort maps to the config key `model_reasoning_effort` (`-c
   // model_reasoning_effort=<value>`). Static seed/endpoint metadata.
@@ -155,10 +156,6 @@ export class CodexAdapter
 
   removeMcpServer(alias: string): string[] {
     return ['mcp', 'remove', alias];
-  }
-
-  binaryCheck(alias: string): string[] {
-    return ['mcp', 'check', alias];
   }
 
   buildLaunchArgs({ mode, providerSessionId, profileOptionArgs }: BuildLaunchArgsInput): {

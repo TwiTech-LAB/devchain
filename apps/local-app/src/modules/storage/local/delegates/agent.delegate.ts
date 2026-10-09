@@ -1,4 +1,5 @@
 import type {
+  AgentStorage,
   DeleteAgentOptions,
   ListOptions,
   ListResult,
@@ -28,7 +29,7 @@ export interface AgentStorageDelegateDependencies {
   getProfileProviderConfig: (id: string) => Promise<ProfileProviderConfig>;
 }
 
-export class AgentStorageDelegate extends BaseStorageDelegate {
+export class AgentStorageDelegate extends BaseStorageDelegate implements AgentStorage {
   constructor(
     context: StorageDelegateContext,
     private readonly dependencies: AgentStorageDelegateDependencies,

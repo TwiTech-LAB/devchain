@@ -1,85 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { useRemoteVmApi } from '@/ui/pages/cloud/lib/remote-vm-api-context';
 import { useToastHelpers } from '@/ui/lib/toast-helpers';
-import type { OpencodeLoginDto } from '@/modules/provider-auth/provider-auth.dto';
-import type { ProviderAuthPayloadKind } from '@/modules/storage/models/domain.models';
-
-/** Vault metadata only; the server never sends payloads or ciphertext. */
-export interface ProviderAuthEntryItem {
-  id: string;
-  provider: string;
-  kind: 'static' | 'family';
-  label: string;
-  payloadKind: ProviderAuthPayloadKind;
-  checkedOutRemoteId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  lastVerifiedAt: string | null;
-  lastWritebackAt: string | null;
-}
-
-export interface ProviderAuthReleaseView {
-  entry: ProviderAuthEntryItem;
-  pullStatus: 'pulled' | 'offline' | 'not-needed';
-}
-
-export type ImportResult =
-  | { providerId: string; outcome: 'imported'; entryId: string }
-  | { providerId: string; outcome: 'refused'; reason: string }
-  | { providerId: string; outcome: 'missing' };
-
-/** One login of this PC's OpenCode auth file: an id and a fixed type, never a credential value. */
-export type OpencodeLoginItem = OpencodeLoginDto;
-
-export interface ProviderAuthGenerationView {
-  id: string;
-  provider: string;
-  sessionId: string;
-  state: 'waiting' | 'verifying' | 'stored' | 'failed' | 'cancelled' | 'timed_out';
-  startedAt: string;
-  finishedAt: string | null;
-  entries: ProviderAuthEntryItem[];
-  error: string | null;
-}
-
-export const providerAuthKeys = {
-  all: [HOME_BACKEND, 'provider-auth'] as const,
-};
-
-/** A refused provider-auth request; `details` carries the server's code and context. */
-export class ProviderAuthApiError extends Error {
-  readonly status: number;
-  readonly details: Record<string, unknown> | null;
-
-  constructor(message: string, status: number, details: Record<string, unknown> | null) {
-    super(message);
-    this.name = 'ProviderAuthApiError';
-    this.status = status;
-    this.details = details;
-  }
-}
-
-async function send(path: string, init?: RequestInit): Promise<Response> {
-  const response = await apiFetch(path, init, { backend: HOME_BACKEND });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const details = body?.details;
-    throw new ProviderAuthApiError(
-      body?.message ?? `Provider auth request failed (${response.status})`,
-      response.status,
-      details && typeof details === 'object' ? details : null,
-    );
-  }
-  return response;
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  return (await send(path, init)).json();
-}
-
-const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
+import type { ProviderAuthGenerationView } from '@/ui/pages/cloud/lib/remote-vm-contracts';
+import { ProviderAuthApiError } from '@/ui/pages/cloud/lib/remote-vm-errors';
+import { providerAuthKeys } from '@/ui/pages/cloud/lib/remote-vm-query-keys';
 
 /**
  * Vault entries and their mutations, on the home client so the panel works
@@ -87,14 +13,14 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
  * they are never stored in query caches beyond the request.
  */
 export function useProviderAuth() {
+  const api = useRemoteVmApi();
   const client = useHomeQueryClient();
   const { toast, showError } = useToastHelpers();
 
   const entries = useQuery(
     {
       queryKey: providerAuthKeys.all,
-      queryFn: async ({ signal }) =>
-        (await request<{ items: ProviderAuthEntryItem[] }>('/api/provider-auth', { signal })).items,
+      queryFn: ({ signal }) => api.listProviderAuthEntries(signal),
     },
     client,
   );
@@ -105,12 +31,7 @@ export function useProviderAuth() {
 
   const createStatic = useMutation(
     {
-      mutationFn: (body: Record<string, string>) =>
-        request<ProviderAuthEntryItem>('/api/provider-auth/static', {
-          method: 'POST',
-          headers: JSON_HEADERS,
-          body: JSON.stringify(body),
-        }),
+      mutationFn: (body: Record<string, string>) => api.createStaticProviderAuth(body),
       onSuccess: invalidate,
       onError: (error: Error) =>
         showError({ title: 'Could not store the token', description: error.message }),
@@ -120,12 +41,7 @@ export function useProviderAuth() {
 
   const importOpencode = useMutation(
     {
-      mutationFn: (providerIds: string[]) =>
-        request<{ results: ImportResult[] }>('/api/provider-auth/opencode-import', {
-          method: 'POST',
-          headers: JSON_HEADERS,
-          body: JSON.stringify({ providerIds }),
-        }),
+      mutationFn: (providerIds: string[]) => api.importOpencodeLogins(providerIds),
       onSuccess: invalidate,
       onError: (error: Error) =>
         showError({ title: 'OpenCode import failed', description: error.message }),
@@ -135,9 +51,7 @@ export function useProviderAuth() {
 
   const remove = useMutation(
     {
-      mutationFn: (id: string) =>
-        // DELETE answers with an empty body, so it is not parsed.
-        send(`/api/provider-auth/${id}`, { method: 'DELETE' }).then(() => undefined),
+      mutationFn: (id: string) => api.deleteProviderAuthEntry(id),
       onSuccess: invalidate,
       onError: (error: Error) =>
         showError({ title: 'Could not delete the entry', description: error.message }),
@@ -148,11 +62,7 @@ export function useProviderAuth() {
   const rename = useMutation(
     {
       mutationFn: (input: { id: string; label: string }) =>
-        request<ProviderAuthEntryItem>(`/api/provider-auth/${input.id}`, {
-          method: 'PATCH',
-          headers: JSON_HEADERS,
-          body: JSON.stringify({ label: input.label }),
-        }),
+        api.renameProviderAuthEntry(input.id, input.label),
       onSuccess: invalidate,
       // The row shows a refusal inline; an error toast here would repeat it.
     },
@@ -161,12 +71,7 @@ export function useProviderAuth() {
 
   const release = useMutation(
     {
-      mutationFn: (id: string) =>
-        request<ProviderAuthReleaseView>(`/api/provider-auth/${id}/release`, {
-          method: 'POST',
-          headers: JSON_HEADERS,
-          body: JSON.stringify({}),
-        }),
+      mutationFn: (id: string) => api.releaseProviderAuthEntry(id),
       onSuccess: ({ pullStatus }) => {
         invalidate();
         if (pullStatus === 'offline') {
@@ -200,16 +105,12 @@ export function useProviderAuth() {
  * the query loads each time it opens.
  */
 export function useOpencodeLogins() {
+  const api = useRemoteVmApi();
   const client = useHomeQueryClient();
   const query = useQuery(
     {
-      queryKey: [...providerAuthKeys.all, 'opencode-logins'],
-      queryFn: async ({ signal }) =>
-        (
-          await request<{ logins: OpencodeLoginItem[] }>('/api/provider-auth/opencode-logins', {
-            signal,
-          })
-        ).logins,
+      queryKey: providerAuthKeys.opencodeLogins(),
+      queryFn: ({ signal }) => api.listOpencodeLogins(signal),
     },
     client,
   );
@@ -242,19 +143,18 @@ export function runningGenerationId(error: unknown): string | null {
  * the dialog can stop asking once it closes.
  */
 export function useProviderAuthGeneration(generationId: string | null) {
+  const api = useRemoteVmApi();
   const client = useHomeQueryClient();
   const invalidatedStoredGenerationIds = useRef(new Set<string>());
   const query = useQuery(
     {
-      queryKey: [HOME_BACKEND, 'provider-auth', 'generation', generationId],
+      queryKey: providerAuthKeys.generation(generationId),
       enabled: generationId !== null,
       refetchInterval: (poll: { state: { data?: ProviderAuthGenerationView | undefined } }) =>
         poll.state.data && isGenerationTerminal(poll.state.data.state) ? false : 1000,
       queryFn: async ({ signal }) => {
         if (generationId === null) throw new Error('No generation selected');
-        return request<ProviderAuthGenerationView>(`/api/provider-auth/generate/${generationId}`, {
-          signal,
-        });
+        return api.readProviderAuthGeneration(generationId, signal);
       },
     },
     client,
@@ -280,17 +180,14 @@ export function useProviderAuthGeneration(generationId: string | null) {
 
 /** Starts a login generation and cancels one; the caller closes on terminal state. */
 export function useProviderAuthGenerationActions() {
+  const api = useRemoteVmApi();
   const client = useHomeQueryClient();
   const { showError } = useToastHelpers();
   const invalidate = () => void client.invalidateQueries({ queryKey: providerAuthKeys.all });
   const start = useMutation(
     {
       mutationFn: (body: { provider: string; label?: string }) =>
-        request<ProviderAuthGenerationView>('/api/provider-auth/generate', {
-          method: 'POST',
-          headers: JSON_HEADERS,
-          body: JSON.stringify(body),
-        }),
+        api.startProviderAuthGeneration(body),
       // A login already running is no failure: the dialog shows that login instead.
       onError: (error: Error) => {
         if (runningGenerationId(error)) return;
@@ -301,10 +198,7 @@ export function useProviderAuthGenerationActions() {
   );
   const cancel = useMutation(
     {
-      mutationFn: (generationId: string) =>
-        request<ProviderAuthGenerationView>(`/api/provider-auth/generate/${generationId}/cancel`, {
-          method: 'POST',
-        }).then(() => undefined),
+      mutationFn: (generationId: string) => api.cancelProviderAuthGeneration(generationId),
       onSuccess: invalidate,
       onError: (error: Error) =>
         showError({ title: 'Could not cancel the login', description: error.message }),

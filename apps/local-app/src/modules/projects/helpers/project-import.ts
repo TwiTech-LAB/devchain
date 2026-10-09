@@ -16,7 +16,17 @@ import {
   type PromptReplacementPlan,
 } from '../../../common/prompt-transfer';
 import type { SettingsService } from '../../settings/services/settings.service';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import type {
+  StorageService,
+  AgentProfileStorage,
+  AgentStorage,
+  PromptStorage,
+  ScheduledEpicStorage,
+  SessionStorage,
+  StatusStorage,
+  SubscriberStorage,
+  WatcherStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { SnapshotPromptWriter } from '../../storage/interfaces/snapshot-prompt-writer.interface';
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import {
@@ -35,6 +45,7 @@ import {
 import type { PresetAgentConfig } from './project-presets.helpers';
 import { ImportContext } from '../template-codec/import-context';
 import { TemplatePipeline } from '../template-codec/template-pipeline';
+import type { CodecApplyRuntime } from '../template-codec/template-section-codec';
 
 /**
  * Module-init-validated fallback pipeline. Constructed once when this module loads (so
@@ -160,7 +171,10 @@ export interface ImportProjectInputLike {
 }
 
 interface ImportProjectDeps {
-  storage: StorageService;
+  storage: CodecApplyRuntime['storage'] &
+    SessionStorage &
+    WatcherStorage &
+    Pick<StorageService, 'countEpicsByStatus' | 'updateEpic'>;
   snapshotPromptWriter?: SnapshotPromptWriter;
   settings: SettingsService;
   /** Template section pipeline; falls back to the module singleton when omitted. */
@@ -641,7 +655,16 @@ async function prepareImportContext(
   };
 }
 
-async function loadExistingProjectData(projectId: string, storage: StorageService) {
+async function loadExistingProjectData(
+  projectId: string,
+  storage: AgentProfileStorage &
+    AgentStorage &
+    PromptStorage &
+    ScheduledEpicStorage &
+    StatusStorage &
+    SubscriberStorage &
+    WatcherStorage,
+) {
   const [prompts, profiles, agents, statuses, watchers, subscribers, scheduledEpics] =
     await Promise.all([
       storage.listPrompts({ projectId, limit: 10000, offset: 0 }),
@@ -659,7 +682,7 @@ async function loadExistingProjectData(projectId: string, storage: StorageServic
 async function collectUnmatchedStatuses(
   templateStatuses: ParsedTemplatePayload['statuses'],
   existingStatuses: ExistingProjectData['statuses']['items'],
-  storage: StorageService,
+  storage: Pick<StorageService, 'countEpicsByStatus'>,
 ): Promise<UnmatchedStatus[]> {
   const templateStatusLabels = new Set(
     templateStatuses.map((status) => status.label.trim().toLowerCase()),
@@ -987,7 +1010,7 @@ async function remapEpicAgentAssignments(
   projectId: string,
   oldAgentIdToName: Map<string, string>,
   agentNameToNewId: Map<string, string>,
-  storage: StorageService,
+  storage: Pick<StorageService, 'listEpics' | 'updateEpic'>,
 ) {
   const existingEpics = await storage.listEpics(projectId, {
     limit: 100000,

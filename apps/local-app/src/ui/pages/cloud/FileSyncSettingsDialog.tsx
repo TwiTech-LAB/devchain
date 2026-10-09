@@ -13,12 +13,8 @@ import {
 import { BusyStatus } from '@/ui/components/ui/spinner';
 import { useToastHelpers } from '@/ui/lib/toast-helpers';
 import { IgnoreListEditor } from './IgnoreListEditor';
-import {
-  FileListChangedError,
-  useProjectIgnores,
-  useSaveProjectIgnores,
-  type IgnoreDraft,
-} from './connect-ignores';
+import { useProjectIgnores, useSaveProjectIgnores, type IgnoreDraft } from './connect-ignores';
+import { FileListChangedError } from './lib/remote-vm-errors';
 import { FileSyncAutoFixControls } from './FileSyncAutoFixControls';
 
 export function FileSyncSettingsDialog({

@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { readFile, writeFile } from 'fs/promises';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE, type ReviewStorage } from '../../storage/interfaces/storage.interface';
 import type { ReviewComment } from '../../storage/models/domain.models';
 import { ReviewsService } from './reviews.service';
 import { ValidationError } from '../../../common/errors/error-types';
@@ -9,7 +9,7 @@ import {
   validateResolvedPathWithinRoot,
   validateLineBounds,
 } from '../../../common/validation/path-validation';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 export type SuggestionErrorCode =
   | 'COMMENT_NOT_IN_PROJECT'
@@ -51,9 +51,9 @@ export class ReviewSuggestionApplier {
   private readonly logger = new Logger(ReviewSuggestionApplier.name);
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ReviewStorage,
     private readonly reviewsService: ReviewsService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   async apply(input: ApplySuggestionInput): Promise<ApplySuggestionResult> {
@@ -66,7 +66,8 @@ export class ReviewSuggestionApplier {
         `Comment ${input.commentId} does not belong to this project`,
       );
     }
-    this.admission.assertWritable(review.projectId);
+    // Admit before reading or editing suggestion files.
+    this.gate.assertWritable(review.projectId);
 
     if (!comment.filePath || comment.lineStart === null) {
       throw new SuggestionApplicationError(

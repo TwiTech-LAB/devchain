@@ -3,7 +3,7 @@ import { STORAGE_SERVICE, type WatcherStorage } from '../../storage/interfaces/s
 import type { Watcher, CreateWatcher, UpdateWatcher } from '../../storage/models/domain.models';
 import { WatcherRunnerService } from './watcher-runner.service';
 import { createLogger } from '../../../common/logging/logger';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 /**
  * Result of testing a watcher against current viewport.
@@ -36,7 +36,7 @@ export class WatchersService {
     @Inject(STORAGE_SERVICE) private readonly storage: WatcherStorage,
     @Inject(forwardRef(() => WatcherRunnerService))
     private readonly watcherRunner: WatcherRunnerService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   /**
@@ -66,7 +66,6 @@ export class WatchersService {
    */
   async createWatcher(data: CreateWatcher): Promise<Watcher> {
     this.logger.debug({ name: data.name, projectId: data.projectId }, 'Creating watcher');
-    this.admission.assertWritable(data.projectId);
 
     const watcher = await this.storage.createWatcher(data);
 
@@ -88,7 +87,6 @@ export class WatchersService {
 
     // Verify watcher exists
     const existing = await this.getWatcher(id);
-    this.admission.assertWritable(existing.projectId);
 
     // Update in storage
     const updated = await this.storage.updateWatcher(id, data);
@@ -118,7 +116,8 @@ export class WatchersService {
     this.logger.debug({ id }, 'Deleting watcher');
     const existing = await this.storage.getWatcher(id);
     if (existing) {
-      this.admission.assertWritable(existing.projectId);
+      // Admit before stopping the running watcher.
+      this.gate.assertWritable(existing.projectId);
     }
 
     // Stop watcher if running

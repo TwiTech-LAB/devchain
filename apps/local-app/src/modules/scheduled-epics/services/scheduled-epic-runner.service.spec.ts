@@ -7,7 +7,7 @@ import type {
   Project,
 } from '../../storage/models/domain.models';
 import type { EpicsService } from '../../epics/services/epics.service';
-import { createProjectWriteAdmissionStub } from '../../remotes/admission/testing/project-write-admission.stub';
+import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
 function makeSchedule(overrides: Partial<ScheduledEpic> = {}): ScheduledEpic {
   return {
@@ -136,7 +136,7 @@ describe('ScheduledEpicRunnerService', () => {
       storage as unknown as StorageService,
       epicsService as unknown as EpicsService,
       undefined as never,
-      createProjectWriteAdmissionStub() as never,
+      createProjectWriteGateStub() as never,
     );
     internals = runner as unknown as RunnerInternals;
     storage.updateScheduledEpicRun.mockImplementation(async (_id, data) =>

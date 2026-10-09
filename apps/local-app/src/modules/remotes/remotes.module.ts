@@ -37,7 +37,7 @@ import { HostTranscriptsController } from './host/host-transcripts.controller';
 import { HostTranscriptBodyParser } from './host/host-transcript-body.parser';
 import { Module } from '@nestjs/common';
 import { StorageModule } from '../storage/storage.module';
-import { STORAGE_SERVICE, type StorageService } from '../storage/interfaces/storage.interface';
+import { STORAGE_SERVICE } from '../storage/interfaces/storage.interface';
 import { RealtimeBroadcastModule } from '../realtime/realtime-broadcast.module';
 import { EventsModule } from '../events/events.module';
 import { EventsService } from '../events/services/events.service';
@@ -53,7 +53,7 @@ import { ProjectReplicaBuilder } from './replica/project-replica.builder';
 import { ProjectReplicaApplier } from './replica/project-replica.applier';
 import { HostController } from './host/host.controller';
 import { HostUpdateController } from './host/host-update.controller';
-import { HostHelperService } from './host/host-helper.service';
+import { HostHelperModule } from './host/host-helper.module';
 import { ProviderBaselineService } from './host/provider-baseline.service';
 import { HostProviderAuthController } from './host/host-provider-auth.controller';
 import { HostProviderAuthService } from './host/host-provider-auth.service';
@@ -113,6 +113,7 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     RealtimeBroadcastModule,
     EventsModule,
     ProjectWriteAdmissionModule,
+    HostHelperModule,
     SessionsModule,
     EpicTimeStoreModule,
     FileSyncModule,
@@ -153,7 +154,6 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     RemoteSkillSettingsService,
     RemoteProxyService,
     HostService,
-    HostHelperService,
     ProviderBaselineService,
     HostProviderAuthService,
     HostReplicaBodyParser,
@@ -205,13 +205,16 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     { provide: REMOTE_MIRROR_SYNC_PORT, useExisting: RemoteLiveSyncService },
     {
       provide: ProjectReplicaBuilder,
-      useFactory: (storage: StorageService) => new ProjectReplicaBuilder(storage),
+      useFactory: (storage: ConstructorParameters<typeof ProjectReplicaBuilder>[0]) =>
+        new ProjectReplicaBuilder(storage),
       inject: [STORAGE_SERVICE],
     },
     {
       provide: ProjectReplicaApplier,
-      useFactory: (storage: StorageService, events: EventsService) =>
-        new ProjectReplicaApplier(storage, events),
+      useFactory: (
+        storage: ConstructorParameters<typeof ProjectReplicaApplier>[0],
+        events: EventsService,
+      ) => new ProjectReplicaApplier(storage, events),
       inject: [STORAGE_SERVICE, EventsService],
     },
   ],

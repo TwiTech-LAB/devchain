@@ -173,6 +173,7 @@ describe('ChatTerminal', () => {
 
     // Mock fetch for /api/settings
     global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
       json: () => Promise.resolve({ terminal: { inputMode: 'form' } }),
     });
   });
@@ -276,6 +277,7 @@ describe('ChatTerminal', () => {
 
   const resolveInputMode = (inputMode: 'form' | 'tty') => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ terminal: { inputMode } }),
     });
   };
@@ -309,6 +311,7 @@ describe('ChatTerminal', () => {
   it('stores the Ctrl+C setting before inputMode unlocks one terminal construction', async () => {
     let resolveSettings: ((value: unknown) => void) | undefined;
     (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
       json: () =>
         new Promise((resolve) => {
           resolveSettings = resolve;
@@ -953,6 +956,7 @@ describe('ChatTerminal', () => {
 
   it('retries a timed-out TTY prompt paste with the same request ID and typed ack', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ terminal: { inputMode: 'tty' } }),
     });
     const terminalHandleRef = createRef<ChatTerminalHandle>();
@@ -1004,6 +1008,7 @@ describe('ChatTerminal', () => {
 
   it('surfaces typed TTY prompt-paste failures', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ terminal: { inputMode: 'tty' } }),
     });
     const terminalHandleRef = createRef<ChatTerminalHandle>();
@@ -1040,6 +1045,7 @@ describe('ChatTerminal', () => {
 
   it('surfaces a typed timeout after both TTY attempts use the same request ID', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
       json: () => Promise.resolve({ terminal: { inputMode: 'tty' } }),
     });
     const terminalHandleRef = createRef<ChatTerminalHandle>();

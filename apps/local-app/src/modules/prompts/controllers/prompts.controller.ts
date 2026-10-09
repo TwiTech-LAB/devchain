@@ -14,7 +14,6 @@ import { PromptStorage, STORAGE_SERVICE } from '../../storage/interfaces/storage
 import { CreatePrompt, UpdatePrompt, Prompt } from '../../storage/models/domain.models';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
 
 const logger = createLogger('PromptsController');
 
@@ -34,10 +33,7 @@ const UpdatePromptSchema = z.object({
 
 @Controller('api/prompts')
 export class PromptsController {
-  constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: PromptStorage,
-    private readonly admission: ProjectWriteAdmissionService,
-  ) {}
+  constructor(@Inject(STORAGE_SERVICE) private readonly storage: PromptStorage) {}
 
   @Get()
   async listPrompts(
@@ -89,7 +85,6 @@ export class PromptsController {
     if (!data.projectId) {
       throw new BadRequestException({ message: 'projectId is required' });
     }
-    this.admission.assertWritable(data.projectId);
     return this.storage.createPrompt(data);
   }
 
@@ -101,14 +96,14 @@ export class PromptsController {
     const version = parsed.version || 1;
     const data = { ...parsed, version: undefined } as UpdatePrompt;
     logger.info({ data, version }, 'PUT /api/prompts/:id - calling storage with data');
-    this.admission.assertWritable((await this.storage.getPrompt(id)).projectId);
     return this.storage.updatePrompt(id, data, version);
   }
 
   @Delete(':id')
   async deletePrompt(@Param('id') id: string): Promise<void> {
     logger.info({ id }, 'DELETE /api/prompts/:id');
-    this.admission.assertWritable((await this.storage.getPrompt(id)).projectId);
+    // The delete is a no-op for an unknown id; this read answers 404.
+    await this.storage.getPrompt(id);
     await this.storage.deletePrompt(id);
   }
 }

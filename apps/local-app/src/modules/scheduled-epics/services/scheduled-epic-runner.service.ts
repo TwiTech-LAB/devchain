@@ -1,9 +1,10 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import {
   STORAGE_SERVICE,
-  type StorageService,
   type CreateEpicForProjectInput,
   type ClaimRunResult,
+  type ProjectStorage,
+  type ScheduledEpicStorage,
 } from '../../storage/interfaces/storage.interface';
 import type {
   ScheduledEpic,
@@ -13,7 +14,7 @@ import type {
 import { EpicsService } from '../../epics/services/epics.service';
 import { EventsService } from '../../events/services/events.service';
 import { createLogger } from '../../../common/logging/logger';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { getNextRunAt } from '../helpers/cron-helpers';
 import { renderScheduledEpicTemplate } from '../helpers/template-helpers';
 import type { ScheduledEpicRunnerRefresh } from './scheduled-epics.service';
@@ -37,10 +38,10 @@ export class ScheduledEpicRunnerService
   private readonly skippedProjects = new Set<string>();
 
   constructor(
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage & ScheduledEpicStorage,
     private readonly epicsService: EpicsService,
     private readonly eventsService: EventsService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   onModuleInit(): void {
@@ -105,7 +106,7 @@ export class ScheduledEpicRunnerService
 
   /** Runs of a frozen or remote-owned project wait, unclaimed, until it is writable. */
   private admitProject(projectId: string): boolean {
-    if (this.admission.isWritable(projectId)) {
+    if (this.gate.isWritable(projectId)) {
       this.skippedProjects.delete(projectId);
       return true;
     }

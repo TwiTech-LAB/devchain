@@ -12,11 +12,15 @@ import {
   type ProjectProvisioningContext,
 } from '../../providers/adapters';
 import {
-  ProjectWriteAdmissionService,
+  ProjectWriteGate,
   type RemoteOwnedProject,
-} from '../../remotes/admission/project-write-admission.service';
+} from '../../storage/write-gate/project-write-gate';
 import { ProjectRemoteError, ValidationError } from '../../../common/errors/error-types';
-import type { StorageService } from '../../storage/interfaces/storage.interface';
+import {
+  STORAGE_SERVICE,
+  type StorageService,
+  type ProjectStorage,
+} from '../../storage/interfaces/storage.interface';
 import type { Provider, UpdateProviderMcpMetadata } from '../../storage/models/domain.models';
 
 const logger = createLogger('ProviderMcpEnsureService');
@@ -66,10 +70,11 @@ export class ProviderMcpEnsureService {
   private provisionLocks = new Map<string, Promise<EnsureProjectProvisioningResult>>();
 
   constructor(
-    @Inject('STORAGE_SERVICE') private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: ProjectStorage & Pick<StorageService, 'updateProviderMcpMetadata'>,
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly adapterFactory: ProviderAdapterFactory,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   /**
@@ -427,7 +432,7 @@ export class ProviderMcpEnsureService {
 
     // A remote-owned project's config files sync to the VM with home's URL;
     // no provider configuration may be written into it from home.
-    const remoteOwner = this.admission.getRemoteOwner(matchingProject.id) ?? undefined;
+    const remoteOwner = this.gate.getRemoteOwner(matchingProject.id) ?? undefined;
 
     logger.debug(
       { projectPath, projectId: matchingProject.id, projectName: matchingProject.name },

@@ -1,9 +1,4 @@
-/** What a receiving side still lacks in one shared folder. */
-export interface FolderNeed {
-  id: string;
-  needItems: number;
-  needBytes: number;
-}
+import type { FolderNeed } from './lib/remote-vm-contracts';
 
 /** Per-folder progress the file-sync steps keep in `details.fileSync.folders`. */
 export interface FolderProgress {

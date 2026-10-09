@@ -14,9 +14,13 @@ import { TerminalViewportModule } from '../terminal/terminal-viewport.module';
 import { TerminalKeyInputModule } from '../terminal/terminal-key-input.module';
 import { E2eeModule } from '../e2ee/e2ee.module';
 import { WorkspacesModule } from '../workspaces/workspaces.module';
-import { ProjectWriteAdmissionModule } from '../remotes/admission/project-write-admission.module';
+import { HostHelperModule } from '../remotes/host/host-helper.module';
+import { RealtimeBroadcastModule } from '../realtime/realtime-broadcast.module';
 import { TunnelKeypairService } from './services/tunnel-keypair.service';
-import { TunnelHandlerService } from './services/tunnel-handler.service';
+import {
+  TunnelHandlerService,
+  E2EE_REQUIRE_SIGNED_ENROLLMENT_POLICY,
+} from './services/tunnel-handler.service';
 import { TunnelRpcCryptoService, E2EE_REQUIRED_POLICY } from './services/tunnel-rpc-crypto.service';
 import { TunnelPushCryptoService } from './services/tunnel-push-crypto.service';
 import { TunnelViewportCryptoService } from './services/tunnel-viewport-crypto.service';
@@ -39,6 +43,7 @@ import { MobileRpcWorkspaceAccessService } from './services/mobile-rpc-workspace
   //   - AgentMessageDeliveryModule→ AgentMessageDeliveryService (thread-free send)
   imports: [
     CloudModule,
+    RealtimeBroadcastModule,
     StorageModule,
     SessionsReadModule,
     SessionsLifecycleModule,
@@ -71,10 +76,7 @@ import { MobileRpcWorkspaceAccessService } from './services/mobile-rpc-workspace
     // DbModule-only leaf — no import cycle.
     E2eeModule,
     WorkspacesModule,
-    // Remote-ownership binding map for the mobile board RPCs: `board.listProjects`
-    // hides remote-owned projects and per-project reads answer not-found.
-    // Storage-only dependency, safe for any feature module to import.
-    ProjectWriteAdmissionModule,
+    HostHelperModule,
   ],
   providers: [
     TunnelKeypairService,
@@ -89,10 +91,11 @@ import { MobileRpcWorkspaceAccessService } from './services/mobile-rpc-workspace
     // Viewport transport encryption seam (Phase 4, Task:1): seals the full tmux screen so the
     // bridge relays/buffers it opaque. Same key model + E2eeModule deps as the push seam.
     TunnelViewportCryptoService,
-    // PC-side E2EE-required policy (Phase 2, Task:2): env-gated gradual-rollout flag. When
-    // true, plaintext RPC params are rejected (fail closed) AND push to an incapable peer is
-    // blocked. Default false = mixed-client.
-    { provide: E2EE_REQUIRED_POLICY, useFactory: () => process.env.E2EE_REQUIRED === 'true' },
+    { provide: E2EE_REQUIRED_POLICY, useFactory: () => process.env.E2EE_REQUIRED !== 'false' },
+    {
+      provide: E2EE_REQUIRE_SIGNED_ENROLLMENT_POLICY,
+      useFactory: () => process.env.E2EE_REQUIRE_SIGNED_ENROLLMENT === 'true',
+    },
     TunnelClientService,
     TunnelEventForwarderService,
     AskUserQuestionPushGateService,

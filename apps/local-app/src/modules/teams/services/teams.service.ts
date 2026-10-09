@@ -11,8 +11,11 @@ import { SessionsService } from '../../sessions/services/sessions.service';
 import {
   STORAGE_SERVICE,
   type DeleteAgentOptions,
-  type StorageService,
   type ListResult,
+  type AgentProfileStorage,
+  type AgentStorage,
+  type ProfileProviderConfigStorage,
+  type ProjectStorage,
 } from '../../storage/interfaces/storage.interface';
 import type {
   Agent,
@@ -35,7 +38,7 @@ import {
 } from './teams.validators';
 import { EventsService } from '../../events/services/events.service';
 import { SettingsService } from '../../settings/services/settings.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { createLogger } from '../../../common/logging/logger';
 import type { RecipientContext } from '../dtos/recipient-context.dto';
 
@@ -56,10 +59,14 @@ export class TeamsService {
 
   constructor(
     private readonly teamsStore: TeamsStore,
-    @Inject(STORAGE_SERVICE) private readonly storage: StorageService,
+    @Inject(STORAGE_SERVICE)
+    private readonly storage: AgentProfileStorage &
+      AgentStorage &
+      ProfileProviderConfigStorage &
+      ProjectStorage,
     private readonly moduleRef: ModuleRef,
     private readonly settingsService: SettingsService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
     @Optional() private readonly eventsService?: EventsService,
   ) {}
 
@@ -100,7 +107,6 @@ export class TeamsService {
   }
 
   async createTeam(data: CreateTeam): Promise<Team> {
-    this.admission.assertWritable(data.projectId);
     // De-duplicate memberAgentIds and profileIds silently
     const uniqueMembers = [...new Set(data.memberAgentIds)];
     const uniqueProfileIds = data.profileIds ? [...new Set(data.profileIds)] : undefined;
@@ -242,7 +248,6 @@ export class TeamsService {
     if (!current) {
       throw new NotFoundError('Team', id);
     }
-    this.admission.assertWritable(current.projectId);
 
     // De-duplicate memberAgentIds and profileIds when provided
     const dedupedMembers = data.memberAgentIds ? [...new Set(data.memberAgentIds)] : undefined;
@@ -395,10 +400,6 @@ export class TeamsService {
   }
 
   async disbandTeam(id: string): Promise<void> {
-    const team = await this.teamsStore.getTeam(id);
-    if (team) {
-      this.admission.assertWritable(team.projectId);
-    }
     return this.teamsStore.deleteTeam(id);
   }
 
@@ -564,7 +565,8 @@ export class TeamsService {
       }
     | { error: { code: string; message: string; data?: unknown } }
   > {
-    this.admission.assertWritable(input.projectId);
+    // Admit before returning team/config resolution responses.
+    this.gate.assertWritable(input.projectId);
     // 1. Resolve team
     const teamResult = await this.resolveLedTeam(
       input.leadAgentId,
@@ -745,7 +747,6 @@ export class TeamsService {
     name: string;
     description?: string;
   }) {
-    this.admission.assertWritable(input.projectId);
     const team = await this.teamsStore.getTeam(input.teamId);
     if (!team || team.projectId !== input.projectId) {
       throw new NotFoundError('Team');
@@ -847,7 +848,8 @@ export class TeamsService {
     | { result: { deletedAgentId: string; deletedAgentName: string; teamName: string } }
     | { error: { code: string; message: string } }
   > {
-    this.admission.assertWritable(input.projectId);
+    // Admit before terminating team-agent tmux sessions.
+    this.gate.assertWritable(input.projectId);
     // 1. Resolve led team
     const teamResult = await this.resolveLedTeam(
       input.leadAgentId,
@@ -1062,7 +1064,6 @@ export class TeamsService {
     providerConfigId: string;
     description?: string;
   }): Promise<Agent> {
-    this.admission.assertWritable(input.projectId);
     const team = await this.teamsStore.getTeam(input.teamId);
     if (!team) {
       throw new NotFoundError('Team', input.teamId);
@@ -1104,7 +1105,6 @@ export class TeamsService {
     providerConfigId: string;
     description?: string;
   }): Promise<Agent> {
-    this.admission.assertWritable(input.projectId);
     // Project-guard the selected profile FIRST — prove it belongs to this project
     // before any config lookup, so config validation can never run against an
     // out-of-project profile and a foreign profile id is never revealed.
@@ -1197,7 +1197,8 @@ export class TeamsService {
    *    the agent was a member of — the generic delete path does NOT emit member-removed.
    */
   async deleteAgentForChat(input: { projectId: string; agentId: string }): Promise<void> {
-    this.admission.assertWritable(input.projectId);
+    // Admit before returning the team-lead deletion conflict.
+    this.gate.assertWritable(input.projectId);
     const agent = await this.storage.getAgent(input.agentId);
 
     const ledTeams = (await this.teamsStore.getTeamLeadTeams(input.agentId)).filter(
@@ -1222,7 +1223,6 @@ export class TeamsService {
     projectId: string;
     agentId: string;
   }): Promise<AutomationAgentDeletionResult> {
-    this.admission.assertWritable(input.projectId);
     const agent = await this.storage.getAgent(input.agentId);
     return this.deleteAgentWithSideEffects(input, agent, {
       protectProjectOwner: true,

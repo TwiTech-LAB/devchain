@@ -7,17 +7,18 @@ import {
   InstallHostSchema,
 } from '../../modules/remotes/operations/remote-operation.dto';
 import { CreateVmSchema, ResetVmSchema } from '../../modules/remotes/operations/vm-operations.dto';
+import { generateEd25519PublicKey } from '../test/ssh-key.fixture';
 
 describe('SSH public key validation', () => {
-  const ed25519 = utils.generateKeyPairSync('ed25519').public;
+  const ed25519 = generateEd25519PublicKey();
   it.each([
-    ['ed25519', {}],
-    ['rsa', { bits: 2048 }],
-    ['ecdsa', { bits: 256 }],
-    ['ecdsa', { bits: 384 }],
-    ['ecdsa', { bits: 521 }],
-  ] as const)('accepts OpenSSH %s keys %j and preserves comments', (type, options) => {
-    const content = `${utils.generateKeyPairSync(type, options).public} user@PC`;
+    ['ed25519', generateEd25519PublicKey],
+    ['rsa 2048', () => utils.generateKeyPairSync('rsa', { bits: 2048 }).public],
+    ['ecdsa 256', () => utils.generateKeyPairSync('ecdsa', { bits: 256 }).public],
+    ['ecdsa 384', () => utils.generateKeyPairSync('ecdsa', { bits: 384 }).public],
+    ['ecdsa 521', () => utils.generateKeyPairSync('ecdsa', { bits: 521 }).public],
+  ] as const)('accepts OpenSSH %s keys and preserves comments', (_type, generate) => {
+    const content = `${generate()} user@PC`;
     expect(parseSshPublicKey(content)).toMatchObject({
       type: content.split(' ')[0],
       comment: 'user@PC',

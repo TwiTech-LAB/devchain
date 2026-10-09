@@ -1,3 +1,4 @@
+import type { WatcherStorage } from '../../interfaces/storage.interface';
 import type { CreateWatcher, UpdateWatcher, Watcher } from '../../models/domain.models';
 import { NotFoundError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
@@ -5,7 +6,7 @@ import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage
 
 const logger = createLogger('WatcherStorageDelegate');
 
-export class WatcherStorageDelegate extends BaseStorageDelegate {
+export class WatcherStorageDelegate extends BaseStorageDelegate implements WatcherStorage {
   constructor(context: StorageDelegateContext) {
     super(context);
   }

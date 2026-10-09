@@ -10,7 +10,7 @@ import { UnifiedTemplateService } from '../../registry/services/unified-template
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { ProjectsService, type ImportProjectInput } from './projects.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 const logger = createLogger('ProjectTemplateUpgradeService');
 
@@ -113,7 +113,7 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
     private readonly unifiedTemplateService: UnifiedTemplateService,
     private readonly settingsService: SettingsService,
     private readonly sessionsService: SessionsService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   onModuleInit(): void {
@@ -298,7 +298,8 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
     const { projectId, targetVersion } = input;
 
     logger.info({ projectId, targetVersion }, 'Starting project upgrade');
-    this.admission.assertWritable(projectId);
+    // Admit before template downloads and backup creation.
+    this.gate.assertWritable(projectId);
 
     const resolution = await this.resolveUpgradeTarget({ projectId, targetVersion });
     if (!resolution.success) {
@@ -458,7 +459,6 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
     if (!backup) {
       throw new NotFoundError('Backup', backupId);
     }
-    this.admission.assertWritable(backup.projectId);
 
     // Restore project state
     const importResult = await this.projectsService.importProject({

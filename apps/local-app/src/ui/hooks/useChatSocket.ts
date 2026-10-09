@@ -1,6 +1,7 @@
 import { useRef, useMemo, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Socket } from 'socket.io-client';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { type WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import { useRealtimeDispatch } from '@/ui/hooks/useRealtimeDispatch';
@@ -28,7 +29,7 @@ export function useChatSocket({ projectId }: UseChatSocketOptions): UseChatSocke
         match: (t: string) => t === stateTopic,
         type: 'agent.created',
         entries: [
-          { kind: 'invalidate', queryKey: ['agents', projectId] },
+          { kind: 'invalidate', queryKey: [...agentQueryKeys.project(projectId)] },
           { kind: 'invalidate', queryKey: ['active-sessions', projectId] },
         ],
       },
@@ -36,7 +37,7 @@ export function useChatSocket({ projectId }: UseChatSocketOptions): UseChatSocke
         match: (t: string) => t === stateTopic,
         type: 'team.member.added',
         entries: [
-          { kind: 'invalidate', queryKey: ['agents', projectId] },
+          { kind: 'invalidate', queryKey: [...agentQueryKeys.project(projectId)] },
           { kind: 'invalidate', queryKey: ['teams', projectId] },
         ],
       },
@@ -44,7 +45,7 @@ export function useChatSocket({ projectId }: UseChatSocketOptions): UseChatSocke
         match: (t: string) => t === stateTopic,
         type: 'team.member.removed',
         entries: [
-          { kind: 'invalidate', queryKey: ['agents', projectId] },
+          { kind: 'invalidate', queryKey: [...agentQueryKeys.project(projectId)] },
           { kind: 'invalidate', queryKey: ['teams', projectId] },
         ],
       },
@@ -52,7 +53,7 @@ export function useChatSocket({ projectId }: UseChatSocketOptions): UseChatSocke
         match: (t: string) => t === stateTopic,
         type: 'agent.deleted',
         entries: [
-          { kind: 'invalidate', queryKey: ['agents', projectId] },
+          { kind: 'invalidate', queryKey: [...agentQueryKeys.project(projectId)] },
           { kind: 'invalidate', queryKey: ['agent-presence', projectId] },
           { kind: 'invalidate', queryKey: ['active-sessions', projectId] },
           { kind: 'invalidate', queryKey: ['teams', projectId] },

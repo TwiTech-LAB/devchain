@@ -1,13 +1,9 @@
 import { useCallback, useMemo } from 'react';
 import { useQuery, useQueries } from '@tanstack/react-query';
+import { statusQueries } from '@/ui/lib/statuses';
+import { agentQueries } from '@/ui/lib/agents';
 import type { BoardFilterParams } from '@/ui/lib/url-filters';
-import {
-  fetchStatuses,
-  fetchEpics,
-  fetchSubEpics,
-  fetchSubEpicCounts,
-  fetchAgents,
-} from '@/ui/pages/board/lib/board-api';
+import { fetchEpics, fetchSubEpics, fetchSubEpicCounts } from '@/ui/pages/board/lib/board-api';
 import type { Agent, Epic, Status } from '@/ui/types';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { boardCacheKeys } from '@/ui/lib/board-cache';
@@ -47,8 +43,7 @@ export function useBoardData({ selectedProjectId, filters }: UseBoardDataArgs): 
   );
 
   const { data: statusesData, isLoading: statusesLoading } = useQuery({
-    queryKey: ['statuses', selectedProjectId],
-    queryFn: () => fetchStatuses(selectedProjectId as string, apiFetch),
+    ...statusQueries.list(apiFetch, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 
@@ -59,8 +54,7 @@ export function useBoardData({ selectedProjectId, filters }: UseBoardDataArgs): 
   });
 
   const { data: agentsData } = useQuery({
-    queryKey: ['agents', selectedProjectId],
-    queryFn: () => fetchAgents(selectedProjectId as string, apiFetch),
+    ...agentQueries.list(apiFetch, selectedProjectId),
     enabled: !!selectedProjectId,
   });
 

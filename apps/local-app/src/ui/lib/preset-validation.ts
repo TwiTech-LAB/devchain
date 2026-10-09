@@ -9,7 +9,7 @@ export type { Preset, PresetAgentConfig } from './preset-types';
 export interface Agent {
   id: string;
   name: string;
-  profileId: string;
+  profileId: string | null;
 }
 
 export interface ProviderConfig {
@@ -63,7 +63,7 @@ export function validatePresetAvailability(
     }
 
     // Check config exists in agent's profile
-    const configs = configsByProfile.get(agent.profileId) ?? [];
+    const configs = (agent.profileId ? configsByProfile.get(agent.profileId) : undefined) ?? [];
     const configExists = configs.some(
       (c) => c.name.trim().toLowerCase() === ac.providerConfigName.trim().toLowerCase(),
     );

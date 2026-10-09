@@ -143,6 +143,7 @@ describe('host API between two instances', () => {
       expect(first.replica.tables.epics.map((epic) => epic.id)).toEqual(['epic-1', 'epic-2']);
       expect(first.cursor).toBe(first.replica.generatedAt);
 
+      await instances.host.app.get(ProjectFreezeService).thaw('A');
       await instances.host.storage.createEpicComment({
         epicId: 'epic-2',
         authorName: 'Host agent',

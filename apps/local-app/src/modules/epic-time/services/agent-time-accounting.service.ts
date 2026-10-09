@@ -6,7 +6,7 @@ import type { SessionCrashedEventPayload } from '../../events/catalog/session.cr
 import type { SessionStoppedEventPayload } from '../../events/catalog/session.stopped';
 import { EventsService } from '../../events/services/events.service';
 import type { CommittedEvent } from '../../events/services/durable-event-registry.service';
-import { ProjectWriteAdmissionService } from '../../remotes/admission/project-write-admission.service';
+import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { EpicTimeStore, type EpicTimeActivation } from './epic-time.store';
 
 const logger = createLogger('AgentTimeAccountingService');
@@ -29,7 +29,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
   constructor(
     private readonly store: EpicTimeStore,
     private readonly events: EventsService,
-    private readonly admission: ProjectWriteAdmissionService,
+    private readonly gate: ProjectWriteGate,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -81,7 +81,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
           EPIC_TIME_DELIVERY_KEY,
           activation.idleTimeoutMs,
           new Date(),
-          { excludedProjectIds: this.admission.listRemoteOwnedProjectIds() },
+          { excludedProjectIds: this.gate.listRemoteOwnedProjectIds() },
         );
       }
     });
@@ -147,7 +147,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
       if (!activation || this.destroyed) {
         return;
       }
-      const excludedProjectIds = this.admission.listRemoteOwnedProjectIds();
+      const excludedProjectIds = this.gate.listRemoteOwnedProjectIds();
       await this.store.reconcileSession(
         sessionId,
         activation.trackingStartedAt,
@@ -168,7 +168,7 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
         return;
       }
       // A remote owns these projects' accounting; home only mirrors its settled rows.
-      const excludedProjectIds = this.admission.listRemoteOwnedProjectIds();
+      const excludedProjectIds = this.gate.listRemoteOwnedProjectIds();
       const sessionIds = this.store.listReconciliationSessionIds(
         activation.trackingStartedAt,
         excludedProjectIds,

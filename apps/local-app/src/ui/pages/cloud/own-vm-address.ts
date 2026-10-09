@@ -1,7 +1,6 @@
 import type { ProbeResultDto } from '@/modules/remotes/dtos/remote-probe.dto';
 import { normalizeRemoteBaseUrl } from '@/modules/remotes/dtos/remote.dto';
 import { HOST_INSTALL_BOOTSTRAP_PORT } from '@/modules/remotes/host-install/host-install-block';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
 
 /** The pause between one installer check's answer and the next check. */
 export const INSTALLER_POLL_MS = 5_000;
@@ -50,47 +49,4 @@ export function nothingSentence(result: Extract<ProbeResultDto, { kind: 'nothing
     return `Nothing answers ${orList([...places, 'on SSH port 22'])}. Check the address and the firewall.`;
   }
   return `No DevChain and no installer answers ${orList(places)}.`;
-}
-
-function isProbeResult(body: unknown): body is ProbeResultDto {
-  if (typeof body !== 'object' || body === null) return false;
-  const result = body as Record<string, unknown>;
-  switch (result.kind) {
-    case 'devchain':
-      return typeof result.baseUrl === 'string' && typeof result.versionMatches === 'boolean';
-    case 'installer':
-      return (
-        typeof result.bootstrapUrl === 'string' &&
-        typeof result.state === 'string' &&
-        typeof result.supported === 'boolean'
-      );
-    case 'nothing':
-      return Array.isArray(result.tried);
-    default:
-      return false;
-  }
-}
-
-/** Asks this PC what answers at an address. It creates nothing. */
-export async function probeAddress(
-  address: string,
-  options: { checkSsh: boolean; signal?: AbortSignal },
-): Promise<ProbeResultDto> {
-  const response = await apiFetch(
-    '/api/remotes/probe',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, checkSsh: options.checkSsh }),
-      signal: options.signal,
-    },
-    { backend: HOME_BACKEND },
-  );
-  const body = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) {
-    const message = (body as { message?: unknown } | null)?.message;
-    throw new Error(typeof message === 'string' ? message : 'The address check failed.');
-  }
-  if (!isProbeResult(body)) throw new Error('The address check returned an unknown answer.');
-  return body;
 }

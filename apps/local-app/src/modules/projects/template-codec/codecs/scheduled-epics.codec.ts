@@ -13,7 +13,10 @@
  * declared `requiresState: ['epicsLoaded']` precondition. Fatal in both modes (matrix row 14).
  */
 import { createLogger } from '../../../../common/logging/logger';
-import type { StorageService } from '../../../storage/interfaces/storage.interface';
+import type {
+  StorageService,
+  ScheduledEpicStorage,
+} from '../../../storage/interfaces/storage.interface';
 import type { ImportContext } from '../import-context';
 import type {
   CodecApplyResult,
@@ -37,7 +40,7 @@ interface ScheduledEpicsExportState {
 export async function buildExportScheduledEpics(
   projectId: string,
   state: ScheduledEpicsExportState,
-  storage: StorageService,
+  storage: ScheduledEpicStorage & Pick<StorageService, 'getEpic'>,
 ) {
   const { items: schedules } = await storage.listScheduledEpics(projectId, { limit: 10000 });
 

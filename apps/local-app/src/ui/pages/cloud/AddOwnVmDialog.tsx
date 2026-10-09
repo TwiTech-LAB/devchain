@@ -18,12 +18,13 @@ import { Label } from '@/ui/components/ui/label';
 import { Switch } from '@/ui/components/ui/switch';
 import { useHomeIdentity } from '@/ui/hooks/useHomeIdentity';
 import { useProviderAuth } from '@/ui/hooks/useProviderAuth';
-import type { CreateRemoteInput } from '@/ui/hooks/useRemotes';
 import type {
+  CreateRemoteInput,
   ClaimRequestBody,
   InstallHostRequestBody,
   RemoteOperationDto,
-} from '@/ui/hooks/useRemoteOperations';
+} from './lib/remote-vm-contracts';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { DiskEstimate, SUPPORTED_VM_OS, VmRequirements, useDiskEstimate } from './DiskEstimate';
 import { isClaimableIdentity } from './IdentitySummary';
@@ -35,7 +36,7 @@ import {
   setupProviderAuth,
 } from './login-choices';
 import { SetupLoginStep, useAddLoginLink, useLoginChoices } from './LoginChoiceStep';
-import { addressHost, addressOrigin, hostPort, probeAddress } from './own-vm-address';
+import { addressHost, addressOrigin, hostPort } from './own-vm-address';
 import { OwnVmReview } from './OwnVmReview';
 import { OpenSetupNotice, ProbeOutcome, installerOutcome } from './ProbeOutcome';
 import type { ProjectListData } from './ProjectList';
@@ -117,6 +118,7 @@ export function AddOwnVmDialog({
   onOpenActivity: (operationId: string) => void;
   onViewVm: (remoteId: string) => void;
 }) {
+  const api = useRemoteVmApi();
   const [apiKey, setApiKey] = useState('');
   const [fingerprint, setFingerprint] = useState('');
   const [address, setAddress] = useState(initialAddress ?? '');
@@ -170,30 +172,33 @@ export function AddOwnVmDialog({
   const { onAddLogin, addLoginDialog } = useAddLoginLink(LOGIN_PROVIDERS, setChoice);
 
   const running = useRef<AbortController | null>(null);
-  const runCheck = useCallback(async (value: string) => {
-    running.current?.abort();
-    if (!addressOrigin(value)) {
-      setCheck({ status: 'error', message: ADDRESS_HINT });
-      return;
-    }
-    const controller = new AbortController();
-    running.current = controller;
-    setCheck({ status: 'checking' });
-    try {
-      const result = await probeAddress(value.trim(), {
-        checkSsh: true,
-        signal: controller.signal,
-      });
-      if (!controller.signal.aborted) setCheck({ status: 'done', result });
-    } catch (cause) {
-      if (!controller.signal.aborted) {
-        setCheck({
-          status: 'error',
-          message: getErrorMessage(cause, 'The address check failed.'),
-        });
+  const runCheck = useCallback(
+    async (value: string) => {
+      running.current?.abort();
+      if (!addressOrigin(value)) {
+        setCheck({ status: 'error', message: ADDRESS_HINT });
+        return;
       }
-    }
-  }, []);
+      const controller = new AbortController();
+      running.current = controller;
+      setCheck({ status: 'checking' });
+      try {
+        const result = await api.probeAddress(value.trim(), {
+          checkSsh: true,
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted) setCheck({ status: 'done', result });
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setCheck({
+            status: 'error',
+            message: getErrorMessage(cause, 'The address check failed.'),
+          });
+        }
+      }
+    },
+    [api],
+  );
   useEffect(() => {
     if (initialAddress) void runCheck(initialAddress);
     return () => running.current?.abort();

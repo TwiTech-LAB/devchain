@@ -3,16 +3,7 @@
  * These types represent API response shapes used across multiple features.
  */
 
-/** Status entity from the API */
-export interface Status {
-  id: string;
-  projectId: string;
-  label: string;
-  color: string;
-  position: number;
-  createdAt: string;
-  updatedAt: string;
-}
+export type { Status } from '@/ui/lib/statuses';
 
 /** Epic entity from the API */
 export interface Epic {
@@ -30,13 +21,7 @@ export interface Epic {
   updatedAt: string;
 }
 
-/** Agent entity from the API */
-export interface Agent {
-  id: string;
-  projectId: string;
-  profileId: string;
-  name: string;
-}
+export type { Agent } from '@/ui/lib/agents';
 
 /** Response shape for paginated epics queries */
 export interface EpicsQueryData {

@@ -1,21 +1,14 @@
 import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import * as semver from 'semver';
 import { z } from 'zod';
 import { ConflictError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import {
-  HostHelperService,
-  type HostUpdateStatus,
-  type HostDockerStatus,
-  type ProjectRootResult,
-} from './host-helper.service';
+import { hostRoutes } from '../contract/host-routes';
+import type { HostHandlerResponse } from '../contract/host-routes';
+import { HostHelperService, type ProjectRootResult } from './host-helper.service';
 
 const logger = createLogger('HostUpdateController');
 
-const HostUpdateBodySchema = z
-  .object({ version: z.string().refine((value) => semver.valid(value) === value) })
-  .strict();
 const ProjectRootBodySchema = z.object({ path: z.string().min(1).max(4096) }).strict();
 
 /**
@@ -42,8 +35,9 @@ export class HostUpdateController {
   @HttpCode(202)
   @ApiOperation({ summary: 'Install another DevChain version on this host VM and restart' })
   @ApiResponse({ status: 202, description: 'Update started; poll GET /api/host/update' })
+  // The client ignores this body (contract status 'none'); add a schema when a caller reads it.
   async update(@Body() body: unknown): Promise<{ version: string; state: 'pending' }> {
-    const { version } = HostUpdateBodySchema.parse(body);
+    const { version } = hostRoutes.requestHostUpdate.body.parse(body);
     logger.info({ version }, 'POST /api/host/update');
     await this.helper.requestUpdate(version);
     return { version, state: 'pending' };
@@ -51,7 +45,7 @@ export class HostUpdateController {
 
   @Get('update')
   @ApiOperation({ summary: 'Progress of the last host update' })
-  status(): { status: HostUpdateStatus | null } {
+  status(): HostHandlerResponse<typeof hostRoutes.hostUpdateStatus, 200> {
     return { status: this.helper.readUpdateStatus() };
   }
 
@@ -59,16 +53,18 @@ export class HostUpdateController {
   @HttpCode(202)
   @ApiOperation({ summary: 'Install Docker Engine and Compose in a detached job' })
   @ApiResponse({ status: 202, description: 'Install requested; poll GET /api/host/docker' })
-  async docker(@Body() body: unknown): Promise<{ state: 'pending'; jobId: string | null }> {
-    z.object({})
-      .strict()
-      .parse(body ?? {});
-    return { state: 'pending', ...(await this.helper.requestDocker()) };
+  async docker(
+    @Body() body: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.requestDocker, 202>> {
+    hostRoutes.requestDocker.body.parse(body ?? {});
+    // A variable, not a literal: `state` is not in the contract body (excess-property check).
+    const response = { state: 'pending', ...(await this.helper.requestDocker()) };
+    return response;
   }
 
   @Get('docker')
   @ApiOperation({ summary: 'Progress of the Docker install' })
-  dockerStatus(): { status: HostDockerStatus | null } {
+  dockerStatus(): HostHandlerResponse<typeof hostRoutes.dockerStatus, 200> {
     return { status: this.helper.readDockerStatus() };
   }
 

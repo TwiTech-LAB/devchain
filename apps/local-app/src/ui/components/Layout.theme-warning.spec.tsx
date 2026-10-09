@@ -44,6 +44,7 @@ jest.mock('../hooks/useAppSocket', () => ({
 }));
 
 jest.mock('../hooks/useRuntime', () => ({
+  useRuntimeSync: jest.fn(),
   RuntimeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   useRuntime: () => useRuntimeMock(),
 }));

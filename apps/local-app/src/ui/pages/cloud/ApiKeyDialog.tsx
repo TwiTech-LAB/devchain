@@ -1,8 +1,7 @@
 import { useState, type FormEvent } from 'react';
-import { useHomeFetch } from '@/ui/hooks/useFetchFactory';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
-import { REMOTES_LIST_QUERY_KEY } from '@/ui/lib/backend-provider';
-import { readErrorMessage } from '@/ui/hooks/useRemotes';
+import { REMOTES_LIST_QUERY_KEY } from './lib/remote-vm-query-keys';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { Button } from '@/ui/components/ui/button';
 import { Input } from '@/ui/components/ui/input';
@@ -29,7 +28,7 @@ export function ApiKeyDialog({
   mode: 'enter' | 'reset';
   onClose: () => void;
 }) {
-  const homeFetch = useHomeFetch();
+  const api = useRemoteVmApi();
   const queryClient = useHomeQueryClient();
   const [apiKey, setApiKey] = useState('');
   const [pending, setPending] = useState(false);
@@ -44,15 +43,8 @@ export function ApiKeyDialog({
     setPending(true);
     setError(null);
     try {
-      const response = await homeFetch(
-        `/api/remotes/${remoteId}/api-key${entering ? '' : '/reset'}`,
-        {
-          method: entering ? 'PUT' : 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(entering ? { apiKey: apiKey.trim() } : {}),
-        },
-      );
-      if (!response.ok) throw new Error(await readErrorMessage(response, CHANGE_FAILED));
+      if (entering) await api.setApiKey(remoteId, apiKey.trim());
+      else await api.resetApiKey(remoteId);
       setApiKey('');
       onClose();
     } catch (cause) {
